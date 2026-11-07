@@ -258,3 +258,11 @@ stops the build. It reports target size and volume free space, warns below
 50 GiB, and preserves a caller's `CARGO_INCREMENTAL` (default `1`).
 Existing build-script cache repair compares canonical paths, so macOS aliases
 such as `/var` and `/private/var` preserve valid warm outputs.
+
+Mac window mode changes use `window-state-native/**` refs for native compilation
+and complete `window_state::` controls. The helper temporarily restores the old
+eager native Zoom handoff, requires a runtime regression failure, restores the
+exact committed source and reruns the full geometry group. These synthetic
+controls do not replace the affected Mac beta's normal/Zoom/fullscreen
+quit/relaunch, display/visible-frame and unzoom checks. Linux geometry remains
+on its existing compositor path; the Mac adapter does not patch GPUI core.

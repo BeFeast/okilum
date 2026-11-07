@@ -1,0 +1,60 @@
+# Public synthetic geometry only. No installation, signing or user data.
+name: window-state-native
+on:
+  push:
+    branches: ['window-state-native/**']
+permissions:
+  contents: read
+concurrency:
+  group: window-state-native-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+jobs:
+  geometry:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: window-state-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            window-state-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            math-native-v1-${{ runner.os }}-
+            updater-native-v1-${{ runner.os }}-
+      - name: Verify exact source and pinned native dependencies
+        env:
+          OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+      - name: Check Mac app including mode restoration
+        run: cargo clippy --locked -p okilum-shell --bin okilum -- -D warnings
+      - name: Run Mac geometry negative and restored controls
+        run: |
+          python3 scripts/ci/window-state-check.py
+          test -z "$(git diff -- crates/okilum-shell/src/window_state_macos.rs)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: window-state-2708-Mac
+          path: qa/window-state-2708/
+          if-no-files-found: error
+          retention-days: 7

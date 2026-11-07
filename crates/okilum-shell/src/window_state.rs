@@ -6,6 +6,10 @@ use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
+#[cfg(target_os = "macos")]
+#[path = "window_state_macos.rs"]
+mod macos;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Frame {
     x: f32,
@@ -15,6 +19,9 @@ pub(crate) struct Frame {
     display: Option<String>,
     fullscreen: bool,
     maximized: bool,
+    #[cfg(target_os = "macos")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    normal: Option<macos::NormalFrame>,
 }
 impl Frame {
     fn valid(&self) -> bool {
@@ -53,6 +60,8 @@ struct State {
     pending: Option<gpui::Task<()>>,
     dirty: bool,
     windows: Vec<(String, gpui::AnyWindowHandle)>,
+    #[cfg(target_os = "macos")]
+    restoring: BTreeMap<String, macos::Restore>,
 }
 impl Global for State {}
 
@@ -69,6 +78,8 @@ pub(crate) fn install(directory: PathBuf, cx: &mut App) {
         pending: None,
         dirty: false,
         windows: Vec::new(),
+        #[cfg(target_os = "macos")]
+        restoring: BTreeMap::new(),
     });
     cx.on_app_quit(|cx| {
         let windows = cx.global::<State>().windows.clone();
@@ -140,6 +151,12 @@ pub(crate) fn prepare(
         // A missing display or an off-screen frame returns to the primary display.
         let target = original
             .filter(|d| {
+                #[cfg(target_os = "macos")]
+                if frame.fullscreen || frame.maximized {
+                    // A mode follows the same available display's CURRENT
+                    // visible frame, even after its resolution/insets changed.
+                    return true;
+                }
                 let b = d.visible_bounds();
                 frame.x >= f32::from(b.left())
                     && frame.y >= f32::from(b.top())
@@ -149,6 +166,7 @@ pub(crate) fn prepare(
             .cloned()
             .or_else(|| cx.primary_display());
         if let Some(display) = target {
+            #[cfg(not(target_os = "macos"))]
             let bounds = frame.fitted(display.visible_bounds());
             options.display_id = Some(display.id());
             // X11 ignores state messages sent before the window is mapped.
@@ -157,7 +175,12 @@ pub(crate) fn prepare(
             {
                 options.window_bounds = Some(WindowBounds::Windowed(bounds));
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                options.window_bounds =
+                    Some(macos::opening_bounds(&frame, display.visible_bounds()));
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 options.window_bounds = Some(if frame.fullscreen {
                     WindowBounds::Fullscreen(bounds)
@@ -232,9 +255,14 @@ fn cascade_bounds(source: Bounds<Pixels>, visible: Bounds<Pixels>) -> Bounds<Pix
 }
 
 fn record(key: &str, window: &Window, cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    if !macos::record_allowed(key, window, cx) {
+        return;
+    }
     let bounds = window.window_bounds();
     let frame = bounds.get_bounds();
-    let saved = Frame {
+    #[allow(unused_mut)]
+    let mut saved = Frame {
         x: frame.origin.x.into(),
         y: frame.origin.y.into(),
         width: frame.size.width.into(),
@@ -245,9 +273,18 @@ fn record(key: &str, window: &Window, cx: &mut App) {
             .map(|u| u.to_string()),
         fullscreen: window.is_fullscreen(),
         maximized: window.is_maximized(),
+        #[cfg(target_os = "macos")]
+        normal: None,
     };
     if !saved.valid() {
         return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        saved.maximized = macos::maximized(window);
+        let previous = super::reader_ui_state::window_frame(key, cx)
+            .or_else(|| cx.global::<State>().saved.frames.get(key).cloned());
+        macos::remember_normal(&mut saved, previous.as_ref());
     }
     if super::reader_ui_state::record_frame(key, saved.clone(), window.is_window_active(), cx) {
         return;
@@ -324,7 +361,7 @@ pub(crate) fn track_with_restore(
     window: &mut Window,
     cx: &mut App,
 ) {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = restore;
 
     let Some(key) = key else {
@@ -334,6 +371,8 @@ pub(crate) fn track_with_restore(
     let tracked = &mut cx.global_mut::<State>().windows;
     tracked.retain(|(_, handle)| open_windows.contains(handle));
     tracked.push((key.clone(), window.window_handle()));
+    #[cfg(target_os = "macos")]
+    macos::track(&key, restore, window, cx);
     #[cfg(target_os = "linux")]
     if let Some(frame) = super::reader_ui_state::window_frame(&key, cx)
         .or_else(|| cx.global::<State>().saved.frames.get(&key).cloned())
@@ -414,6 +453,8 @@ mod tests {
                 display: Some(display.uuid().unwrap().to_string()),
                 fullscreen: true,
                 maximized: false,
+                #[cfg(target_os = "macos")]
+                normal: None,
             };
             let state = cx.global_mut::<State>();
             state.saved.frames.insert("root#0".into(), frame.clone());
@@ -430,14 +471,14 @@ mod tests {
             let (first, key) = prepare(WindowOptions::default(), "root", cx);
             assert_eq!(key.as_deref(), Some("root#0"));
             assert_eq!(first.display_id, Some(display.id()));
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             assert!(matches!(
                 first.window_bounds,
                 Some(WindowBounds::Fullscreen(_))
             ));
-            // Linux must map the window before requesting fullscreen. The
-            // persisted intent remains true and track applies it after paint.
-            #[cfg(target_os = "linux")]
+            // Linux maps before requesting fullscreen; Mac primes normal
+            // geometry before its ordered mode requests. Intent stays durable.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             assert!(matches!(
                 first.window_bounds,
                 Some(WindowBounds::Windowed(_))
@@ -473,6 +514,8 @@ mod tests {
             display: None,
             fullscreen: true,
             maximized: false,
+            #[cfg(target_os = "macos")]
+            normal: None,
         };
         let fitted = f.fitted(screen);
         assert_eq!(
