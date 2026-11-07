@@ -12,6 +12,9 @@ suite() {
     bash scripts/ci/test-group.sh "$group" "$limit" "$@" || failed=1
 }
 suite local-writer 900 bash scripts/ci/local-writer-admission.sh
+# #2710: these regression names are outside the original admission filter.
+suite linux-writer-identity 120 cargo test --locked -p okilum-write-authority --lib identity_linux_tests:: -- --nocapture
+suite attached-replica-identity 120 cargo test --locked -p okilum-sync-controller --lib direct::existing::tests:: -- --nocapture
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite first-computer 180 cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite direct-lan 120 cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
