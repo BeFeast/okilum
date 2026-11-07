@@ -1271,6 +1271,8 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
         folder_type: "receiveonly".into(),
         peers: vec![],
         root_identity: None,
+        #[cfg(target_os = "linux")]
+        stable_root_identity: None,
     });
     let mut ready = receiving.clone();
     ready.preparing = false;
@@ -2103,6 +2105,8 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
         folder_type: "sendreceive".into(),
         peers: vec![],
         root_identity: None,
+        #[cfg(target_os = "linux")]
+        stable_root_identity: None,
     };
     let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     let recorded = calls.clone();
@@ -2444,6 +2448,8 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
+                #[cfg(target_os = "linux")]
+                stable_root_identity: None,
             });
             Ok(Output {
                 overview: Default::default(),

@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
 #[cfg(target_os = "macos")]
@@ -21,12 +21,22 @@ struct Identity(u64, u64, #[serde(default)] Option<u64>);
 mod native_identity;
 #[cfg(target_os = "macos")]
 use native_identity::Identity;
+#[cfg(target_os = "linux")]
+pub mod identity_linux;
+#[cfg(target_os = "linux")]
+use identity_linux::Identity;
+#[cfg(all(test, target_os = "linux"))]
+mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
 mod identity_macos_tests;
-#[cfg(target_os = "macos")]
-mod migration_macos;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod migration;
 
-const BINDING_SCHEMA: u32 = if cfg!(target_os = "macos") { 2 } else { 1 };
+const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux")) {
+    2
+} else {
+    1
+};
 
 fn identity(path: &Path) -> Result<Identity> {
     let meta = fs::symlink_metadata(path)?;
@@ -38,7 +48,11 @@ fn identity(path: &Path) -> Result<Identity> {
     {
         native_identity::read(path)
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        identity_linux::read(path)
+    }
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     {
         use std::os::unix::fs::MetadataExt;
         Ok(Identity(
@@ -216,7 +230,7 @@ fn key(root: &Path) -> String {
     // Native path encoding preserves non-UTF8 filenames; canonicalize folds aliases.
     format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()))
 }
-// Legacy Mac records have no volume UUID. Treat a matching inode/birthtime as
+// Legacy Unix records have no filesystem ID. Treat a matching inode/birthtime as
 // a candidate when looking for another scope: an unconverted or missing root
 // must still fence a held physical alias, never authorize a second authority.
 fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
@@ -224,7 +238,7 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if identity == stored {
             return true;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
@@ -312,7 +326,7 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         Self::migrate_legacy_bindings(&account, &root)?;
         if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);

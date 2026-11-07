@@ -29,19 +29,41 @@ outside the cooperative fencing guarantee.
 On macOS (#2692), schema 2 identifies a filesystem object by its full native
 volume UUID, inode and creation time. `fgetattrlist(ATTR_VOL_UUID)` and metadata
 come from the same no-follow file handle. Raw `st_dev` is a diagnostic hint:
-APFS can renumber the Data volume after a reboot or OS update. Other platforms
-retain schema 1 and their existing identity rules.
+APFS can renumber the Data volume after a reboot or OS update. Windows retains
+schema 1 and its existing identity rules.
 
-Existing Mac schema-1 bindings migrate automatically under registry, admission,
+On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
+no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On
+btrfs, unprivileged `BTRFS_IOC_FS_INFO` supplies the full filesystem UUID and
+`BTRFS_IOC_INO_LOOKUP` supplies the containing subvolume tree ID. Snapshots can
+preserve both inode and birthtime, so their different tree IDs must remain
+separate identities. Other Linux filesystems use the native `f_fsid` qualified
+by filesystem type; no libblkid, device access or mount-table lookup is needed.
+
+Existing Mac and Linux schema-1 bindings migrate automatically under registry, admission,
 exclusive writer and owner locks. The canonical root and every recorded authority
 directory/lock inode and nonmissing creation time must match. The migration only
-adds the observed volume UUIDs and updates private binding metadata; it leaves
+adds the observed stable filesystem identities and updates private binding metadata; it leaves
 canonical files, epoch and the complete state/hold record unchanged. A busy old
 writer must finish first. Old schema-1 handles remain stale after publication;
 an unfinished hold still refuses admission. Replaced roots/lock files, unknown
 birth identities and corrupt state fail closed. This is format migration, never
 an automatic Re-attach. Subsequent UUID or inode/creation changes are replacements
-even if the raw device hint stayed equal.
+even if the raw device hint stayed equal. Schema 1 never recorded a UUID, so
+its one-time continuity proof is inode plus nonmissing birthtime, as on macOS;
+Linux additionally preserves the recorded same-filesystem relationships across
+the root, authority directory and three lock files. The historical UUID cannot
+be recovered from a schema-1 record.
+
+Linux Sync attached replicas store the same stable witness alongside their raw
+`(dev, ino)` descriptor guard. The stable witness controls persisted binding
+comparisons; same-boot descriptor checks retain the raw pair. Legacy Sync records
+stored only `(dev, ino)`, without birthtime or filesystem ID: a same-boot refresh
+can persist the new witness, while a renumbered legacy pair requires explicit
+fresh attachment consent with the same authenticated daemon, folder ID, path
+and inode. It cannot silently infer continuity from an inode alone. New stable
+witnesses reject filesystem, subvolume, inode or birthtime changes, including on
+explicit attachment. Neither migration changes Syncthing configuration or notes.
 
 A vault folder re-created at the same canonical path (for example re-received by
 Sync) stays refused until the user re-attaches it: Reader's failed preparation

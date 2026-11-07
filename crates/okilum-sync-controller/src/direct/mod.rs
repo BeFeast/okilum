@@ -463,8 +463,7 @@ impl Controller {
             .find(|v| v.folder_id == fresh.folder_id)
         {
             ensure!(
-                existing::same_binding(old, &fresh)
-                    || old.root_identity.is_none() && existing::same_replica(old, &fresh),
+                existing::same_binding_with_consent(old, &fresh),
                 "folder ID already associated with another replica"
             );
             // Only this explicit, freshly inspected consent can upgrade a legacy
@@ -1244,17 +1243,23 @@ impl Controller {
         )
     }
     fn refresh_attached(&self) -> Result<()> {
-        // Explicitly read-only; offline replicas retain their durable association.
+        // Daemon inspection is read-only; persist upgraded private identity witnesses.
+        // Offline replicas retain their durable association.
         let configs = self.shared.configs.lock().unwrap().clone();
         let mut db = self.shared.db.lock().unwrap();
+        let mut changed = false;
         for attached in &mut db.attached {
             if let Ok(fresh) = inspect_existing(&configs, &attached.path) {
                 ensure!(
                     existing::same_binding(attached, &fresh),
                     "attached replica identity changed"
                 );
+                changed |= *attached != fresh;
                 *attached = fresh;
             }
+        }
+        if changed {
+            self.save(&db)?;
         }
         Ok(())
     }
@@ -1725,6 +1730,8 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
+                #[cfg(target_os = "linux")]
+                stable_root_identity: None,
             });
         let url = offer(&source)?;
         assert!(!url.contains("private-local-path"));

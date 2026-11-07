@@ -285,6 +285,8 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
+                #[cfg(target_os = "linux")]
+                stable_root_identity: None,
             }],
             shared: vec![],
             status: "Ready".into(),
