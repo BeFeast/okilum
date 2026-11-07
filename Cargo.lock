@@ -6093,6 +6093,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "uuid",
  "velopack",
  "windows-sys 0.61.2",
 ]

@@ -23,6 +23,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Network
 
 
 [dev-dependencies]
+uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
