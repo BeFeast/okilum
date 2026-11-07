@@ -1095,6 +1095,54 @@ mod root_relocation_tests {
     }
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod native_identity_diagnosis {
+    use super::*;
+
+    /// A diagnostic, not a product-fix assertion: distinguish ordinary APFS
+    /// metadata restoration from replacement on a disposable synthetic root.
+    #[test]
+    fn diagnostic_2692_creation_time_after_ordinary_mtime_restore() {
+        use std::time::{Duration, SystemTime};
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("control.md"), b"Unchanged canonical bytes\n").unwrap();
+        let account = temporary.path().join("account");
+        let authority = Authority::open_in(&account, &root).unwrap();
+        authority.admit().unwrap();
+        let before = identity(&root).unwrap();
+        File::open(&root)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)),
+            )
+            .unwrap();
+        let after = identity(&root).unwrap();
+        assert_eq!(
+            (before.0, before.1),
+            (after.0, after.1),
+            "same physical directory"
+        );
+        assert_eq!(
+            fs::read(root.join("control.md")).unwrap(),
+            b"Unchanged canonical bytes\n"
+        );
+        println!("ROOT_IDENTITY_2692 before={before:?} after={after:?} same_dev_inode=true");
+        let reopened = Authority::open_in(&account, &root);
+        if before != after {
+            let error = reopened.unwrap_err();
+            assert_eq!(replaced_root(&error), Some(root.canonicalize().unwrap()));
+            println!("ROOT_IDENTITY_2692_METADATA_RESTORE_REPRODUCED: existing admission refuses unchanged directory");
+        } else {
+            reopened.unwrap().admit().unwrap();
+            println!("ROOT_IDENTITY_2692_HYPOTHESIS_NOT_REPRODUCED: need live persisted/current identities");
+        }
+        println!("ROOT_IDENTITY_2692_DIAGNOSIS_ONLY: no live-root cause or product-fix verdict");
+    }
+}
+
 #[cfg(test)]
 mod account_location_tests {
     use super::*;

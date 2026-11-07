@@ -1,0 +1,53 @@
+# Diagnosis only, on disposable hosted APFS. Never installs or repairs live state.
+name: root-identity-native
+on:
+  push:
+    branches: ['root-identity-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+concurrency:
+  group: root-identity-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos-probe:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: root-identity-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            root-identity-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+      - name: Prepare and verify pinned source dependencies
+        run: |
+          test "$(uname -s)" = Darwin
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Observe unchanged-folder metadata and real admission behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          inventory=$(mktemp)
+          cargo test --locked -p okilum-write-authority --lib diagnostic_2692_ -- --list | tee "$inventory"
+          test "$(rg -c ': test$' "$inventory")" = 1
+          mkdir -p qa
+          cargo test --locked -p okilum-write-authority --lib diagnostic_2692_ -- --nocapture --test-threads=1 | tee qa/2692-native-probe.log
+      - name: Retain all native admission and hold controls
+        run: cargo test --locked -p okilum-write-authority --lib -- --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: root-identity-2692-diagnosis
+          path: qa/2692-native-probe.log
+          if-no-files-found: error
+          retention-days: 7
