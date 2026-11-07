@@ -404,7 +404,7 @@ impl Render for RecordsView {
                     .child(TextView::new(&self.content).selectable(true).style(reader_text_style(cx.theme()))
                         .on_link_click(|url, _, _, cx| {
                             // Source-relative links remain available through the ordinary Notes reader.
-                            if let Some(url) = reader_manager_links::external_url(url) { cx.open_url(url.as_str()); }
+                            if okilum_t3::is_http_link(url) { cx.open_url(url); }
                         })))
                 .child(h_flex().gap_2().flex_wrap()
                     .child(Button::new("record-discuss").debug_selector(|| "project-record-discuss".into()).primary()
