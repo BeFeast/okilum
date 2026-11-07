@@ -70,12 +70,22 @@ This replaces whole-workspace serialization after run `42390453208` exhausted
 that deadline; the deadline and every runtime assertion remain unchanged.
 
 Every worker run also requires `windows-recovery` on a GitHub-hosted Windows
-runner (#2551). It runs the existing native `okilum-core` `windows_` suite,
-including file publication, editor recovery and protected history. Discovery
-must contain the unacknowledged-save regression before execution, so a missing
-Windows configuration cannot pass with zero tests. The helper requires both
+runner (#2551, #2700). It runs the existing native `okilum-core` `windows_` unit
+and integration suites, including file publication, editor recovery and
+protected history. Discovery must contain both the unacknowledged-save and
+changed-parent queued-draft regressions before execution, so missing Windows
+coverage cannot pass with zero tests. The helper requires both
 jobs and their required steps; native test failures remain check failures.
 Forgejo PR CI and native release/signing policy are unchanged.
+
+The `forgejo-native-core-pr/**` Windows lane also runs the complete deleted-note
+Reader group. Its #2700 controls reproduce the three old test failures at
+runtime, restore the current tests and require a nonempty pass for each.
+Recovery refusal uses a directory at the journal JSON destination while keeping
+the held lock and its parent in place. The quick-file changed-parent test
+requires authority refusal for the replacement and recovers the exact queued
+draft after the original folder returns; it never implicitly re-attaches a
+different folder.
 
 Every job that discovers these Python suites, including local/hosted full gates
 and the fast and Sync fixture lanes, runs `scripts/ci/setup-python-tests.sh`

@@ -259,10 +259,14 @@ impl Render for CanvasView {
             .overflow_hidden()
             .child(
                 canvas(
-                    move |bounds, _, cx| {
+                    move |bounds, window, cx| {
                         let _ = observed.update(cx, |this, cx| {
                             if this.bounds != bounds {
                                 this.bounds = bounds;
+                                // Notify after this draw has finished. A notification
+                                // during prepaint can be consumed by the current frame,
+                                // leaving the first scene at its unmeasured viewport.
+                                window.request_animation_frame();
                                 cx.notify();
                             }
                         });

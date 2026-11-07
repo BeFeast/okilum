@@ -106,7 +106,13 @@ mod tests {
         ] {
             let intent = RestartIntent::new();
             assert!(intent.request());
-            assert!(matches!(intent.poll(false, status), Next::Refuse(_)));
+            let Next::Refuse(reason) = intent.poll(false, status) else {
+                panic!("a failed/cancelled/withdrawn update must refuse restart");
+            };
+            assert!(
+                !reason.is_empty(),
+                "refusal must explain why nothing was installed"
+            );
             assert!(!intent.requested());
             assert!(matches!(intent.poll(false, CheckStatus::Ready), Next::Wait));
             assert!(intent.request());
