@@ -72,6 +72,9 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
+# #2708: persist native Zoom separately from the normal frame.
+run_tests okilum-shell --bins window_state::
+
 # #2518: run the real-paint, missing-snapshot and row-measurement controls as
 # an explicit non-empty group, in addition to their feed/native module suites.
 run_tests okilum-shell --bins manager_ttfm_

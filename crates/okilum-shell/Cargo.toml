@@ -135,7 +135,7 @@ okilum-sync-controller = { path = "../okilum-sync-controller" }
 libc = "0.2"
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue", "NSGeometry", "objc2-core-foundation"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
