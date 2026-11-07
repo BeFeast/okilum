@@ -31,6 +31,7 @@ cat > "$reporter" <<'SPRINT_REPORTER'
 #!/usr/bin/env python3
 """Bounded Sprint diagnostics; no clipboard API, no credentials, no retries."""
 import argparse
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -160,6 +161,55 @@ def repair_cache(root):
     print('Sprint cache: invalidated stale build-script outputs: ' + (', '.join(removed) or 'none'))
 
 
+def trim_target(root):
+    """Bound only the dedicated Mac Sprint profile while its parent owns the lock."""
+    root = Path(root)
+    if not root.is_absolute() or root == Path('/') or root == Path.home():
+        raise ValueError('Sprint cache requires an absolute dedicated root')
+    target = root / 'target'
+    profile = target / 'aarch64-apple-darwin/sprint'
+    lock = root / 'build.lock'
+    owner = lock / 'owner'
+    for path in [root, target, target / 'aarch64-apple-darwin', profile,
+                 profile / 'incremental', lock, owner]:
+        if path.is_symlink():
+            raise ValueError(f'Refusing Sprint cache symlink: {path}')
+    if owner.read_text().split(maxsplit=1)[0] != str(os.getppid()):
+        raise ValueError('Sprint cache cleanup requires the parent build.lock')
+    try:
+        cap = Decimal(os.environ.get('OKILUM_SPRINT_TARGET_CAP_GIB', '20'))
+        if not cap.is_finite() or cap <= 0 or cap * 1024**2 < 1:
+            raise ValueError('Sprint target cap must be at least 1 KiB')
+        cap_kib = int(cap * 1024**2)
+    except InvalidOperation as error:
+        raise ValueError('OKILUM_SPRINT_TARGET_CAP_GIB must be a positive GiB value') from error
+
+    def size():
+        if not target.exists():
+            return 0
+        return int(subprocess.check_output(['du', '-sk', str(target)], text=True).split()[0])
+
+    free = shutil.disk_usage(root).free / 1024**3
+    print(f'Sprint target volume: free={free:.2f} GiB' +
+          ('; WARNING below 50 GiB' if free < 50 else ''), flush=True)
+    before = after = size()
+    removed = []
+    for path in [profile / 'incremental', profile]:
+        if after <= cap_kib:
+            break
+        if path.is_dir():
+            # The profile's parents are not symlinks; rmtree does not follow
+            # symlinks nested in either disposable directory.
+            shutil.rmtree(path)
+            removed.append(str(path.relative_to(target)))
+            after = size()
+    print(f'Sprint target: before_kib={before} after_kib={after} cap_gib={cap} '
+          f'removed={",".join(removed) or "none"}', flush=True)
+    if after > cap_kib:
+        raise ValueError('Sprint target is still over cap outside the allowed Mac Sprint profile; '
+                         'build stopped without deleting other target outputs')
+
+
 def collect(context, stage, app_log=None):
     app = Path(context['app'])
     sections = []
@@ -228,9 +278,13 @@ def main():
     parser.add_argument('--collect', action='store_true')
     parser.add_argument('--app-log')
     parser.add_argument('--repair-cache')
+    parser.add_argument('--trim-target')
     parser.add_argument('--next-build', action='store_true', help='appcast on stdin')
     parser.add_argument('--registered-copies', nargs=2, metavar=('BUNDLE_ID', 'KEEP'), help='dump on stdin')
     args = parser.parse_args()
+    if args.trim_target:
+        trim_target(args.trim_target)
+        return
     if args.repair_cache:
         repair_cache(args.repair_cache)
         return
@@ -445,7 +499,7 @@ short_sha=$(git rev-parse --short HEAD)
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 export SDKROOT
-export CARGO_TARGET_DIR="$root/target" CARGO_INCREMENTAL=1
+export CARGO_TARGET_DIR="$root/target" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-1}"
 # One above every published Mac build: Sparkle neither puts an older beta over
 # this build nor holds back the next newer beta (a fixed number did both, 04.11).
 if [[ -n ${OKILUM_SPRINT_BUILD:-} ]]; then
@@ -478,6 +532,7 @@ archive="$root/Sparkle.tar.xz"
 if [[ ! -f $archive ]]; then python3 scripts/updater/sparkle.py fetch "$archive"; fi
 python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
 set_stage build
+python3 "$reporter" --trim-target "$root"
 if ! cargo build --locked --profile sprint --target aarch64-apple-darwin -p okilum-shell 2>&1 | tee "$log"; then
     echo "Sprint compile failed; first compiler error (full log: $log):" >&2
     awk '/^error/ {print; n=8} n>0 {if ($0 !~ /^error/) print; n--}' "$log" | head -25 >&2 || true
@@ -549,6 +604,9 @@ done
 supervisor_sign "$bundle_stage" "$SPRINT_IDENTITY" "$SPRINT_BUNDLE_ID"
 codesign --force --options runtime --sign "$SPRINT_IDENTITY" "$bundle_stage"
 codesign --verify --deep --strict "$bundle_stage"
+# Cargo is finished and every executable is staged. Keep the completed build
+# under the same cap too, without deleting a binary still needed for assembly.
+python3 "$reporter" --trim-target "$root"
 unregister "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then

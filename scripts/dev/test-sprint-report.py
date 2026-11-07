@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Isolated Sprint regressions. HTTP is loopback; git resets touch temp clones only."""
 import contextlib
+import io
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/dev/okilum-sprint.sh'
@@ -184,6 +188,9 @@ exec cat
                 'from pathlib import Path\nimport json, sys\n'
                 'with Path(__file__).with_name("parser-calls.jsonl").open("a") as log:\n'
                 '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+            # Velopack is another independent pinned dependency, unrelated to
+            # the generated GPUI clone reset exercised by this fixture.
+            (scripts / 'velopack-setup.py').write_text('pass\n')
             def patch(value):
                 (patches / '0001.diff').write_text('--- a/crates/base/src/text/selection_adapter.rs\n+++ b/crates/base/src/text/selection_adapter.rs\n@@ -1 +1 @@\n-pristine\n+' + value + '\n')
             patch('branch A')
@@ -204,6 +211,184 @@ exec cat
             self.assertEqual(
                 [json.loads(line) for line in (scripts / 'parser-calls.jsonl').read_text().splitlines()],
                 [[], ['--verify'], [], ['--verify'], []])
+
+
+class SprintTargetTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / 'sprint'
+            (root / 'build.lock').mkdir(parents=True)
+            (root / 'build.lock/owner').write_text(f'{os.getpid()} test parent\n')
+            for relative in ['src/note.rs', 'staging.noindex/Okilum.app/binary']:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'keep canonical source and staged app\n')
+            outside = base / 'Applications/Okilum.app/binary'
+            outside.parent.mkdir(parents=True)
+            outside.write_bytes(b'keep installed app\n')
+            helper = base / 'reporter.py'
+            helper.write_text(SOURCE)
+            commands = base / 'bin'
+            commands.mkdir()
+            # ZFS can defer st_blocks accounting even after fsync. Model du's
+            # KiB census deterministically; deletion still uses the real tree.
+            du = commands / 'du'
+            du.write_text('#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\n'
+                          'root=Path(sys.argv[-1]); total=0\n'
+                          'for parent, dirs, files in os.walk(root, followlinks=False):\n'
+                          '    for name in files:\n'
+                          '        p=Path(parent)/name\n'
+                          '        if not p.is_symlink(): total += (p.stat().st_size+1023)//1024\n'
+                          'print(str(total)+"\\t"+str(root))\n')
+            du.chmod(0o755)
+            yield root, helper, outside
+
+    def budget(self, root, helper, cap='0.0002'):
+        env = dict(os.environ, OKILUM_SPRINT_TARGET_CAP_GIB=cap)
+        env['PATH'] = str(root.parent / 'bin') + os.pathsep + env['PATH']
+        return subprocess.run(['python3', str(helper), '--trim-target', str(root)],
+                              env=env, text=True, capture_output=True)
+
+    def fill(self, root, relative, kib):
+        path = root / 'target' / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Incompressible bytes keep du meaningful on compressed APFS/ZFS too.
+        path.write_bytes(os.urandom(kib * 1024))
+        return path
+
+    def assert_kept(self, root, outside):
+        self.assertEqual((root / 'src/note.rs').read_bytes(), b'keep canonical source and staged app\n')
+        self.assertEqual((root / 'staging.noindex/Okilum.app/binary').read_bytes(),
+                         b'keep canonical source and staged app\n')
+        self.assertEqual(outside.read_bytes(), b'keep installed app\n')
+
+    def test_cli_trims_incremental_first_without_touching_warm_deps_or_external_link(self):
+        with self.tree() as (root, helper, outside):
+            inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/old', 256)
+            deps = self.fill(root, 'aarch64-apple-darwin/sprint/deps/warm', 16)
+            (inc.parent / 'external').symlink_to(outside.parent, target_is_directory=True)
+            result = self.budget(root, helper)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(inc.parent.exists())
+            self.assertTrue(deps.is_file())
+            self.assertIn('removed=aarch64-apple-darwin/sprint/incremental\n', result.stdout)
+            self.assertIn('Sprint target volume: free=', result.stdout)
+            self.assert_kept(root, outside)
+
+    def test_cli_removes_only_mac_sprint_profile_if_incremental_is_insufficient(self):
+        with self.tree() as (root, helper, outside):
+            self.fill(root, 'aarch64-apple-darwin/sprint/incremental/old', 256)
+            self.fill(root, 'aarch64-apple-darwin/sprint/deps/old', 256)
+            other = self.fill(root, 'other-triple/debug/keep', 16)
+            result = self.budget(root, helper)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((root / 'target/aarch64-apple-darwin/sprint').exists())
+            self.assertTrue(other.is_file())
+            self.assertIn('removed=aarch64-apple-darwin/sprint/incremental,aarch64-apple-darwin/sprint',
+                          result.stdout)
+            self.assert_kept(root, outside)
+
+    def test_cli_below_cap_retains_outputs_and_default_is_twenty_gib(self):
+        with self.tree() as (root, helper, outside):
+            inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/warm', 16)
+            env = dict(os.environ)
+            env.pop('OKILUM_SPRINT_TARGET_CAP_GIB', None)
+            result = subprocess.run(['python3', str(helper), '--trim-target', str(root)],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('cap_gib=20 removed=none', result.stdout)
+            self.assertTrue(inc.exists())
+            self.assert_kept(root, outside)
+
+    def test_cli_refuses_oversized_other_outputs_without_deleting_them(self):
+        with self.tree() as (root, helper, outside):
+            other = self.fill(root, 'other-triple/debug/keep', 256)
+            result = self.budget(root, helper)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('outside the allowed Mac Sprint profile', result.stderr)
+            self.assertEqual(other.stat().st_size, 256 * 1024)
+            self.assert_kept(root, outside)
+
+    def test_cli_refuses_symlinked_cleanup_paths_and_missing_parent_lock(self):
+        for relative in ['target', 'target/aarch64-apple-darwin',
+                         'target/aarch64-apple-darwin/sprint',
+                         'target/aarch64-apple-darwin/sprint/incremental']:
+            with self.subTest(relative=relative), self.tree() as (root, helper, outside):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to(outside.parent, target_is_directory=True)
+                result = self.budget(root, helper)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Refusing Sprint cache symlink', result.stderr)
+                self.assert_kept(root, outside)
+        with self.tree() as (root, helper, outside):
+            inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/keep', 256)
+            (root / 'build.lock/owner').write_text('0 not the parent\n')
+            result = self.budget(root, helper)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('parent build.lock', result.stderr)
+            self.assertTrue(inc.exists())
+            self.assert_kept(root, outside)
+
+    def test_cli_invalid_caps_never_delete_outputs(self):
+        for cap in ['0', '-1', 'NaN', 'Infinity', 'invalid', '0.00000001']:
+            with self.subTest(cap=cap), self.tree() as (root, helper, outside):
+                inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/keep', 256)
+                result = self.budget(root, helper, cap)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(inc.exists())
+                self.assert_kept(root, outside)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native Mac du accounting control')
+    def test_native_mac_du_trims_real_allocated_cache(self):
+        with self.tree() as (root, helper, outside):
+            inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/old', 8192)
+            deps = self.fill(root, 'aarch64-apple-darwin/sprint/deps/warm', 512)
+            before = int(subprocess.check_output(['du', '-sk', str(root / 'target')], text=True).split()[0])
+            self.assertGreater(before, 2048, 'real allocated-size control must fire')
+            result = subprocess.run(['python3', str(helper), '--trim-target', str(root)],
+                                    env=dict(os.environ, OKILUM_SPRINT_TARGET_CAP_GIB='0.001953125'),
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(inc.parent.exists())
+            self.assertTrue(deps.exists())
+            self.assert_kept(root, outside)
+
+    def test_low_space_warning_uses_the_target_root_volume(self):
+        for free_gib in [49, 51]:
+            with self.subTest(free_gib=free_gib), self.tree() as (root, helper, outside):
+                (root / 'build.lock/owner').write_text(f'{os.getppid()} test parent\n')
+                usage = shutil.disk_usage(root)._replace(free=free_gib * 1024**3)
+                output = io.StringIO()
+                with patch.object(MODULE['shutil'], 'disk_usage', return_value=usage) as disk, \
+                     contextlib.redirect_stdout(output):
+                    MODULE['trim_target'](root)
+                disk.assert_called_once_with(root)
+                self.assertEqual('WARNING below 50 GiB' in output.getvalue(), free_gib < 50)
+                self.assert_kept(root, outside)
+
+    def test_shell_respects_incremental_override_and_bounds_before_build_and_after_staging(self):
+        script = SCRIPT.read_text()
+        line = next(line for line in script.splitlines() if line.startswith('export CARGO_TARGET_DIR='))
+        for setting, expected in [(None, '1'), ('0', '0'), ('1', '1'), ('', '')]:
+            with self.subTest(setting=setting), tempfile.TemporaryDirectory() as root:
+                env = dict(os.environ)
+                env.pop('CARGO_INCREMENTAL', None)
+                if setting is not None:
+                    env['CARGO_INCREMENTAL'] = setting
+                result = subprocess.run(['bash', '-c', 'root="$1"\n' + line +
+                                         '\nprintf "%s" "$CARGO_INCREMENTAL"', 'export-test', root],
+                                        env=env, check=True, text=True, capture_output=True)
+                self.assertEqual(result.stdout, expected)
+        calls = [m.start() for m in re.finditer(
+            re.escape('python3 "$reporter" --trim-target "$root"'), script)]
+        self.assertEqual(len(calls), 2)
+        self.assertLess(script.index('lock_owned=1'), calls[0])
+        self.assertLess(calls[0], script.index('if ! cargo build'))
+        self.assertLess(script.index('codesign --verify --deep --strict "$bundle_stage"'), calls[1])
+        self.assertLess(calls[1], script.index('unregister "$bundle_stage"\n# Target only'))
 
 
 if __name__ == '__main__':

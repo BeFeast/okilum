@@ -243,3 +243,16 @@ fixtures; it performs no release signing/publication and carries no secrets.
 Native compile/tests do not certify first pairing through the signed beta UI;
 record that installation/build, both-direction file evidence and the short video
 separately for #2489.
+
+Sprint cache controls run with `python3 scripts/dev/test-sprint-report.py` in
+the hosted Python gate. They execute the embedded CLI on disposable trees,
+including symlink/outside-path and build-lock controls. The separate
+`sprint-cache-native/**` refs repeat them on hosted macOS, with a real allocated
+`du` control; they never build, sign or install an app.
+
+The local Mac Sprint script defaults to a 20 GiB target cap, configurable with
+`OKILUM_SPRINT_TARGET_CAP_GIB`. Under its existing `build.lock`, it removes the
+Mac Sprint incremental cache first, then that profile if needed, before Cargo
+and after bundle staging. Other target profiles remain untouched; excess there
+stops the build. It reports target size and volume free space, warns below
+50 GiB, and preserves a caller's `CARGO_INCREMENTAL` (default `1`).

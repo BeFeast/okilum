@@ -1,0 +1,25 @@
+# Fake Sprint trees only: no app build, installation, signing or user data.
+name: sprint-cache-native
+on:
+  push:
+    branches: ['sprint-cache-native/**']
+permissions:
+  contents: read
+concurrency:
+  group: sprint-cache-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  cache:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact source and Mac fake-tree cache controls
+        env:
+          OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash -n scripts/dev/okilum-sprint.sh
+          python3 scripts/dev/test-sprint-report.py -v
