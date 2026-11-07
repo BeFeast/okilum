@@ -11,11 +11,19 @@ pub(super) fn is_video(path: &Path) -> bool {
         })
 }
 
-pub(super) fn video_card(root: &Path, path: &Path, cx: &App) -> AnyElement {
+/// File URLs use ordinary Windows paths; vault roots can retain a verbatim
+/// prefix. Resolve both spellings before comparing their vault identities.
+pub(super) fn relative_file(root: &Path, path: &Path) -> anyhow::Result<String> {
+    let root = okilum_core::vault::canonical_root(root)?;
+    let path = path.canonicalize()?;
     let relative = path
         .strip_prefix(root)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned());
+        .map_err(|_| anyhow::anyhow!("The media file is outside this vault"))?;
+    Ok(okilum_core::vault::note_path(relative))
+}
+
+pub(super) fn video_card(root: &Path, path: &Path, cx: &App) -> AnyElement {
+    let relative = relative_file(root, path).ok();
     let name = path
         .file_name()
         .unwrap_or_default()
@@ -56,6 +64,38 @@ pub(super) fn video_card(root: &Path, path: &Path, cx: &App) -> AnyElement {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn media_file_urls_share_the_canonical_vault_identity_and_reject_outside_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("clip #1.MOV");
+        std::fs::write(&file, b"video").unwrap();
+        let canonical = okilum_core::vault::canonical_root(&root).unwrap();
+        let from_url = url::Url::from_file_path(canonical.join("clip #1.MOV"))
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        assert_eq!(relative_file(&canonical, &from_url).unwrap(), "clip #1.MOV");
+        #[cfg(windows)]
+        assert_ne!(
+            canonical.components().next(),
+            from_url.components().next(),
+            "the control must exercise verbatim versus ordinary prefixes"
+        );
+        let outside = dir.path().join("outside.mp3");
+        std::fs::write(&outside, b"audio").unwrap();
+        assert!(relative_file(&root, &outside).is_err());
+        #[cfg(unix)]
+        {
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            assert_eq!(relative_file(&alias, &from_url).unwrap(), "clip #1.MOV");
+            std::os::unix::fs::symlink(&outside, root.join("escape.mp3")).unwrap();
+            assert!(relative_file(&root, &root.join("escape.mp3")).is_err());
+        }
+    }
 
     struct Card(PathBuf);
     impl Render for Card {

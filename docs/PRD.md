@@ -23,6 +23,12 @@ provider jobs, canonical enrollment or deployment.
 
 **Single-file viewer extension (2026-10-06, #560):** [quick viewer](single-file-viewer.md) defines document-only startup, lazy folder browsing and explicit vault upgrade.
 
+**Media and Canvas viewers (#2687–#2690, 2026-11-07):**
+[Read-only media viewers](media-viewers.md) adds MP3/WAV inline/file playback,
+explicit system-player video cards and read-only JSON Canvas cards, edges,
+pan/zoom and note navigation. Canvas viewing is now in scope; editing remains
+separate. Source files are never modified by these viewers.
+
 **Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
 **Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.
@@ -235,7 +241,7 @@ Reader and searcher. Notes changed outside Okilum, in any editor, are picked up 
 file watcher. In-app editing is not part of the v0 reader; it arrived later through
 the approved phases listed in §2.
 
-Deferred with triggers, not dropped: plugins, Canvas, Bases, mobile, web clipping,
+Deferred with triggers, not dropped: plugins, Bases, mobile, web clipping,
 automation, semantic retrieval, accessibility on the GPUI stack, and the Depth-1 web
 client over the frozen protocol.
 

@@ -13,6 +13,7 @@ pub mod agent_skills;
 pub mod analyzer;
 pub mod archive;
 pub mod callout;
+pub mod canvas;
 pub mod capture;
 mod change_detection;
 pub mod code_language;

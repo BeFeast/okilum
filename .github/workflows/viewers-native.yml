@@ -1,0 +1,78 @@
+# Public synthetic fixtures only. No release, installation or signing authority.
+name: viewers-native
+on:
+  push:
+    branches: ['viewers-native/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: viewers-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-viewers-v1
+          cache-on-failure: true
+      - name: Prepare and verify pinned vendor
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Prepare Mac framework
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Prepare Windows test resource
+        # The shell embeds an icon even in test binaries. Reuse the existing
+        # synthetic native-test resource; this job never ships an application.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $icon = python -c "import pathlib,tempfile; print(pathlib.Path(tempfile.mkdtemp(prefix='viewers-icon-')) / 'test.ico')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/ci/test-icon.py $icon
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Decode and playback-state controls
+        shell: bash
+        run: python scripts/ci/viewers-native-check.py audio
+      - name: Image and explicit video-action controls
+        shell: bash
+        run: python scripts/ci/viewers-native-check.py media
+      - name: Reader inline/file dispatch and Canvas navigation
+        shell: bash
+        run: python scripts/ci/viewers-native-check.py reader
+      - name: Canvas model and showcase source controls
+        shell: bash
+        run: |
+          python scripts/ci/viewers-native-check.py canvas
+          python scripts/ci/viewers-native-check.py showcase
