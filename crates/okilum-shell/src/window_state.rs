@@ -3,6 +3,9 @@ use gpui::{
     point, px, size, App, Bounds, Entity, Global, Pixels, Size, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
+
+#[cfg(any(target_os = "macos", test))]
+mod macos;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -24,6 +27,7 @@ impl Frame {
             && self.width > 0.
             && self.height > 0.
     }
+    #[cfg(not(target_os = "macos"))]
     fn fitted(&self, visible: Bounds<Pixels>) -> Bounds<Pixels> {
         let width = self.width.max(600.).min(f32::from(visible.size.width));
         let height = self.height.max(400.).min(f32::from(visible.size.height));
@@ -53,6 +57,8 @@ struct State {
     pending: Option<gpui::Task<()>>,
     dirty: bool,
     windows: Vec<(String, gpui::AnyWindowHandle)>,
+    #[cfg(target_os = "macos")]
+    restoring: BTreeMap<String, Frame>,
 }
 impl Global for State {}
 
@@ -69,6 +75,8 @@ pub(crate) fn install(directory: PathBuf, cx: &mut App) {
         pending: None,
         dirty: false,
         windows: Vec::new(),
+        #[cfg(target_os = "macos")]
+        restoring: BTreeMap::new(),
     });
     cx.on_app_quit(|cx| {
         let windows = cx.global::<State>().windows.clone();
@@ -138,6 +146,7 @@ pub(crate) fn prepare(
         // and visible_bounds (including the dock/menu inset). Keep that native
         // coordinate space paired with its display UUID; do not add an origin.
         // A missing display or an off-screen frame returns to the primary display.
+        #[cfg(not(target_os = "macos"))]
         let target = original
             .filter(|d| {
                 let b = d.visible_bounds();
@@ -148,8 +157,14 @@ pub(crate) fn prepare(
             })
             .cloned()
             .or_else(|| cx.primary_display());
+        // Keep the saved Mac display even when its work area has changed.
+        #[cfg(target_os = "macos")]
+        let target = original.cloned().or_else(|| cx.primary_display());
         if let Some(display) = target {
+            #[cfg(not(target_os = "macos"))]
             let bounds = frame.fitted(display.visible_bounds());
+            #[cfg(target_os = "macos")]
+            let bounds = macos::normal_bounds(&frame, display.visible_bounds());
             options.display_id = Some(display.id());
             // X11 ignores state messages sent before the window is mapped.
             // Apply Linux fullscreen/maximize after the first frame in track().
@@ -157,7 +172,7 @@ pub(crate) fn prepare(
             {
                 options.window_bounds = Some(WindowBounds::Windowed(bounds));
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 options.window_bounds = Some(if frame.fullscreen {
                     WindowBounds::Fullscreen(bounds)
@@ -166,6 +181,12 @@ pub(crate) fn prepare(
                 } else {
                     WindowBounds::Windowed(bounds)
                 });
+            }
+            // Apply the exact outer frame and native mode in track(), after
+            // AppKit has created the window. GPUI initializes a content rect.
+            #[cfg(target_os = "macos")]
+            {
+                options.window_bounds = Some(WindowBounds::Windowed(bounds));
             }
         }
     }
@@ -232,19 +253,53 @@ fn cascade_bounds(source: Bounds<Pixels>, visible: Bounds<Pixels>) -> Bounds<Pix
 }
 
 fn record(key: &str, window: &Window, cx: &mut App) {
-    let bounds = window.window_bounds();
-    let frame = bounds.get_bounds();
-    let saved = Frame {
-        x: frame.origin.x.into(),
-        y: frame.origin.y.into(),
-        width: frame.size.width.into(),
-        height: frame.size.height.into(),
-        display: window
-            .display(cx)
-            .and_then(|d| d.uuid().ok())
-            .map(|u| u.to_string()),
-        fullscreen: window.is_fullscreen(),
-        maximized: window.is_maximized(),
+    #[cfg(not(target_os = "macos"))]
+    let saved = {
+        let bounds = window.window_bounds();
+        let frame = bounds.get_bounds();
+        Frame {
+            x: frame.origin.x.into(),
+            y: frame.origin.y.into(),
+            width: frame.size.width.into(),
+            height: frame.size.height.into(),
+            display: window
+                .display(cx)
+                .and_then(|d| d.uuid().ok())
+                .map(|u| u.to_string()),
+            fullscreen: window.is_fullscreen(),
+            maximized: window.is_maximized(),
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let saved = {
+        let previous = super::reader_ui_state::window_frame(key, cx)
+            .or_else(|| cx.global::<State>().saved.frames.get(key).cloned())
+            .or_else(|| super::reader_ui_state::inherited_window_frame(key, cx));
+        let current = macos::snapshot(window, cx).unwrap_or_else(|| {
+            // Test/headless platform windows have no AppKit handle.
+            let bounds = window.window_bounds().get_bounds();
+            Frame {
+                x: bounds.left().into(),
+                y: bounds.top().into(),
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+                display: window
+                    .display(cx)
+                    .and_then(|d| d.uuid().ok())
+                    .map(|u| u.to_string()),
+                fullscreen: window.is_fullscreen(),
+                maximized: window.is_maximized(),
+            }
+        });
+        // Fullscreen enters a Space asynchronously. Do not replace its saved
+        // intent with the temporary normal frame during the transition.
+        if let Some(target) = cx.global::<State>().restoring.get(key) {
+            if !macos::restore_ready(target, &current) {
+                return;
+            }
+            cx.global_mut::<State>().restoring.remove(key);
+        }
+        macos::capture(current, previous.as_ref())
     };
     if !saved.valid() {
         return;
@@ -324,7 +379,7 @@ pub(crate) fn track_with_restore(
     window: &mut Window,
     cx: &mut App,
 ) {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = restore;
 
     let Some(key) = key else {
@@ -349,6 +404,19 @@ pub(crate) fn track_with_restore(
                 window.zoom_window();
             }
         });
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(frame) = super::reader_ui_state::window_frame(&key, cx)
+        .or_else(|| cx.global::<State>().saved.frames.get(&key).cloned())
+        .or_else(|| super::reader_ui_state::inherited_window_frame(&key, cx))
+        .filter(|frame| restore && frame.valid())
+    {
+        if frame.fullscreen || frame.maximized {
+            cx.global_mut::<State>()
+                .restoring
+                .insert(key.clone(), frame.clone());
+        }
+        macos::restore(&frame, window, cx);
     }
     record(&key, window, cx);
     root.update(cx, |_, cx| {
@@ -430,14 +498,14 @@ mod tests {
             let (first, key) = prepare(WindowOptions::default(), "root", cx);
             assert_eq!(key.as_deref(), Some("root#0"));
             assert_eq!(first.display_id, Some(display.id()));
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             assert!(matches!(
                 first.window_bounds,
                 Some(WindowBounds::Fullscreen(_))
             ));
             // Linux must map the window before requesting fullscreen. The
             // persisted intent remains true and track applies it after paint.
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             assert!(matches!(
                 first.window_bounds,
                 Some(WindowBounds::Windowed(_))
@@ -462,6 +530,55 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_restore_keeps_legacy_geometry_flags_and_deferred_modes(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            install(PathBuf::from("unused-linux-restore-test"), cx);
+            let display = cx.primary_display().unwrap();
+            let visible = display.visible_bounds();
+            for (slot, (fullscreen, maximized)) in [(false, false), (false, true), (true, false)]
+                .into_iter()
+                .enumerate()
+            {
+                let frame = Frame {
+                    x: visible.left().into(),
+                    y: visible.top().into(),
+                    width: 300.,
+                    height: 200.,
+                    display: Some(display.uuid().unwrap().to_string()),
+                    fullscreen,
+                    maximized,
+                };
+                let expected = frame.fitted(visible);
+                let key = format!("linux#{slot}");
+                cx.global_mut::<State>()
+                    .saved
+                    .frames
+                    .insert(key.clone(), frame.clone());
+                let before = serde_json::to_vec(&cx.global::<State>().saved).unwrap();
+                let (options, restored_key) = prepare(WindowOptions::default(), "linux", cx);
+                assert_eq!(restored_key, Some(key));
+                assert_eq!(options.display_id, Some(display.id()));
+                assert_eq!(
+                    options.window_bounds,
+                    Some(WindowBounds::Windowed(expected)),
+                    "Linux still maps a normal frame before its deferred WM request"
+                );
+                assert_eq!(
+                    expected.size,
+                    size(px(600.), px(400.)),
+                    "legacy minimum remains unchanged on Linux"
+                );
+                assert_eq!(
+                    serde_json::to_vec(&cx.global::<State>().saved).unwrap(),
+                    before,
+                    "Linux persisted bytes and native-mode intent must remain unchanged"
+                );
+            }
+        });
+    }
+
     #[test]
     fn frame_clamps_to_visible_primary_and_respects_minimum() {
         let screen = Bounds::new(point(px(10.), px(30.)), size(px(1200.), px(800.)));
@@ -474,10 +591,19 @@ mod tests {
             fullscreen: true,
             maximized: false,
         };
+        #[cfg(not(target_os = "macos"))]
         let fitted = f.fitted(screen);
+        #[cfg(target_os = "macos")]
+        let fitted = macos::normal_bounds(&f, screen);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             fitted,
             Bounds::new(point(px(10.), px(430.)), size(px(1200.), px(400.)))
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            fitted,
+            Bounds::new(point(px(10.), px(810.)), size(px(1200.), px(20.)))
         );
         let mut saved = Saved::default();
         saved.frames.insert("root#0".into(), f.clone());
