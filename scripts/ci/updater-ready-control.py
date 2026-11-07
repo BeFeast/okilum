@@ -18,7 +18,7 @@ FAILURE = 'each restored window must show its ready notice'
 
 def variants(source):
     shared = '    let announced = announcements.windows.entry(window_id).or_default();'
-    inactive = 'announced.claim(package.unwrap_or_default())'
+    inactive = 'package.is_some_and(|package| announced.claim(package))'
     if source.count(shared) != 1 or source.count(inactive) != 1:
         raise ValueError('The two reviewed announcement-control anchors changed')
     return {

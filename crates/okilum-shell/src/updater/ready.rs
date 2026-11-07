@@ -3,7 +3,6 @@
 #[derive(Default, Debug)]
 pub(super) struct Ready {
     package: Option<String>,
-    announced: Option<String>,
     restarting: bool,
 }
 
@@ -11,23 +10,12 @@ impl Ready {
     pub(super) fn observe(&mut self, package: Option<String>) {
         if self.package != package {
             self.package = package;
-            self.announced = None;
             self.restarting = false;
         }
     }
 
     pub(super) fn package(&self) -> Option<&str> {
         self.package.as_deref()
-    }
-
-    /// Call only after a Reader is available to present the notification.
-    pub(super) fn take_announcement(&mut self) -> Option<String> {
-        let package = self.package.as_ref()?;
-        if self.announced.as_ref() == Some(package) {
-            return None;
-        }
-        self.announced = Some(package.clone());
-        Some(package.clone())
     }
 
     /// Reserve one explicit restart, tied to the package the user saw.
@@ -49,16 +37,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ready_survives_absent_window_and_dismissal_without_reannouncing() {
+    fn verified_readiness_tracks_replacements_without_a_window() {
         let mut state = Ready::default();
-        assert_eq!(state.take_announcement(), None);
+        assert_eq!(state.package(), None);
         state.observe(Some("package-1".into()));
         state.observe(Some("package-1".into()));
-        assert_eq!(state.take_announcement().as_deref(), Some("package-1"));
-        assert_eq!(state.take_announcement(), None);
         assert_eq!(state.package(), Some("package-1"));
         state.observe(Some("package-2".into()));
-        assert_eq!(state.take_announcement().as_deref(), Some("package-2"));
+        assert_eq!(state.package(), Some("package-2"));
         assert!(!state.begin_restart("package-1"));
         assert!(state.begin_restart("package-2"));
     }

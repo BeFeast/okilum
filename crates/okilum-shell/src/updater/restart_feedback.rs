@@ -28,11 +28,11 @@ struct Message {
 /// Remembers which ready package was announced, so the same package is not
 /// announced twice but a newer one always is (#2679), even after the older
 /// notice was closed.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 #[derive(Debug, Default)]
 pub(super) struct Announced(Option<String>);
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 impl Announced {
     /// True once per distinct ready package.
     pub(super) fn claim(&mut self, package: &str) -> bool {

@@ -454,24 +454,17 @@ pub(crate) fn install_update() {
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     // Every platform's notice restarts into the newest ready update, not the
     // package that was current when the notice was drawn (#2679).
-    #[cfg(target_os = "linux")]
-    if window.is_window_active() && appimage::take_announcement() {
-        show_ready_notice(window, cx, restart_now);
-    }
     whats_new::notice(window, cx);
+    #[cfg(target_os = "linux")]
+    let package = appimage::ready_package();
     #[cfg(windows)]
-    if window.is_window_active() && windows::take_announcement().is_some() {
-        show_ready_notice(window, cx, restart_now);
-    }
+    let package = windows::ready_package();
     #[cfg(target_os = "macos")]
+    let package = macos::ready_package();
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     {
-        announce_ready(
-            &status::get(),
-            macos::ready_package().as_deref(),
-            window,
-            cx,
-            restart_now,
-        );
+        let package = package.map(|package| format!("{}:{package}", channel()));
+        announce_ready(&status::get(), package.as_deref(), window, cx, restart_now);
     }
     #[cfg(all(target_os = "linux", feature = "updater-ui-harness"))]
     {
@@ -488,19 +481,19 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
 
 /// A Ready announcement belongs to a window, not to the whole application.
 /// Otherwise the first restored window consumes the other windows' notice.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 #[derive(Default)]
 struct ReadyAnnouncements {
     windows: std::collections::HashMap<gpui::WindowId, restart_feedback::Announced>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 impl gpui::Global for ReadyAnnouncements {}
 
-/// Sparkle reports each ready package by version. Every window gets the newest
-/// one, including an inactive or newly opened window. A dismissal stays local
-/// to that window/package; later redraws do not resurrect the same notice.
-#[cfg(any(target_os = "macos", test))]
+/// Each engine supplies only its verified pending package identity. Every
+/// window gets that package, including inactive and newly opened windows.
+/// A dismissal stays local; redraws do not resurrect the same notice.
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 fn announce_ready(
     status: &status::CheckStatus,
     package: Option<&str>,
@@ -524,7 +517,7 @@ fn announce_ready(
     let announced = announcements.windows.entry(window_id).or_default();
     let show = match status {
         CheckStatus::Ready | CheckStatus::RestartRetry(_) => {
-            announced.claim(package.unwrap_or_default())
+            package.is_some_and(|package| announced.claim(package))
         }
         // Transient states while a ready package is verified or replaced.
         CheckStatus::Checking
@@ -813,6 +806,17 @@ mod tests {
         let second = notice_window(cx);
         first.deactivate_window();
         assert!(!first.update(|window, _| window.is_window_active()));
+        second.update(|window, cx| {
+            announce_ready(&status::CheckStatus::Ready, None, window, cx, |_| {
+                panic!("an unverified package cannot authorize Restart")
+            });
+        });
+        second.run_until_parked();
+        assert_eq!(
+            notice_count(second),
+            0,
+            "status alone cannot announce an unverified package"
+        );
         let restarted = Rc::new(Cell::new(0));
         let announce = |visual: &mut gpui::VisualTestContext, package: &'static str| {
             let restarted = restarted.clone();
