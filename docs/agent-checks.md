@@ -48,7 +48,8 @@ concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
-The complete workspace invocation runs independent cases with `--test-threads=1`.
+The complete workspace invocation isolates Reader Log and private reveal-bus cases
+in separate serial processes; ordinary cases run with four test threads.
 They share the product's process-wide log memory pool and async runtime: an
 unrelated case retaining snapshots can correctly cause another small Follow
 fixture to fail admission, and resource contention can leave the D-Bus timeout
@@ -59,6 +60,14 @@ group deadline. Explicit concurrency within individual tests and the separate
 `42373775429` recorded these two failures; the exact cause of the missing D-Bus
 receipt was not established. Neither failed control was accepted as a passing
 verdict.
+
+`workspace-rust-tests.py` first lists every unit/integration/doc case for the
+same four packages. Its three disjoint selections must report exactly that
+inventory in their completed/ignored counts. Every Cargo invocation keeps all
+four packages for the same feature unification and test environment. One
+1320 s deadline covers the complete census and all three selections together.
+This replaces whole-workspace serialization after run `42390453208` exhausted
+that deadline; the deadline and every runtime assertion remain unchanged.
 
 Every worker run also requires `windows-recovery` on a GitHub-hosted Windows
 runner (#2551). It runs the existing native `okilum-core` `windows_` suite,
