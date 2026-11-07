@@ -1,5 +1,6 @@
 //! Exercise actual Reader dispatch, inline media, Canvas input and note navigation.
 use super::*;
+use ::core::prelude::v1::test;
 
 #[gpui::test]
 fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_writes(

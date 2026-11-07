@@ -56,7 +56,9 @@ impl Playback {
         self.duration = decoder.total_duration();
         let position = self.duration.map_or(position, |d| position.min(d));
         if !position.is_zero() {
-            decoder.try_seek(position)?;
+            decoder
+                .try_seek(position)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         }
         self.sink.stop();
         self.sink = Sink::connect_new(&self.mixer);
