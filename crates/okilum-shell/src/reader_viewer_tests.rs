@@ -95,6 +95,10 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     let view = reader.read_with(visual, |r, _| {
         r.file_preview.as_ref().unwrap().canvas.clone().unwrap()
     });
+    // Test windows do not run a platform frame loop. Deliver the frame requested
+    // by first measurement, without simulating an input or pressing Fit.
+    visual.update(|window, cx| window.simulate_next_frame(cx));
+    visual.run_until_parked();
     // The first frame must fit negative scene coordinates without a user input.
     // Previously the measure callback notified during drawing, which left the
     // native window showing only the group border until Fit or another event.
