@@ -334,7 +334,7 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
                 break;
             }
             visual.simulate_event(ScrollWheelEvent {
-                position: form.center(),
+                position: point(form.center().x, form.top() + px(4.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(-300.))),
                 touch_phase: TouchPhase::Moved,
                 modifiers: Modifiers::default(),
