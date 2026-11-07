@@ -51,7 +51,7 @@ pub(super) fn read(path: &Path) -> Result<Identity> {
     let result = unsafe {
         libc::fgetattrlist(
             handle.as_raw_fd(),
-            &mut attributes,
+            (&mut attributes as *mut libc::attrlist).cast(),
             (&mut volume as *mut Volume).cast(),
             std::mem::size_of::<Volume>(),
             0,
