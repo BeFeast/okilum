@@ -13,15 +13,32 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
+#[cfg(target_os = "macos")]
+#[path = "identity_macos.rs"]
+mod native_identity;
+#[cfg(target_os = "macos")]
+use native_identity::Identity;
+#[cfg(all(test, target_os = "macos"))]
+mod identity_macos_tests;
+#[cfg(target_os = "macos")]
+mod migration_macos;
+
+const BINDING_SCHEMA: u32 = if cfg!(target_os = "macos") { 2 } else { 1 };
+
 fn identity(path: &Path) -> Result<Identity> {
     let meta = fs::symlink_metadata(path)?;
     ensure!(
         !meta.file_type().is_symlink(),
         "Writer authority path is a symlink"
     );
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    {
+        native_identity::read(path)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         use std::os::unix::fs::MetadataExt;
         Ok(Identity(
@@ -199,6 +216,21 @@ fn key(root: &Path) -> String {
     // Native path encoding preserves non-UTF8 filenames; canonicalize folds aliases.
     format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()))
 }
+// Legacy Mac records have no volume UUID. Treat a matching inode/birthtime as
+// a candidate when looking for another scope: an unconverted or missing root
+// must still fence a held physical alias, never authorize a second authority.
+fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
+    current.iter().any(|identity| {
+        if identity == stored {
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        if stored.3.is_none() && stored.legacy_matches(identity) {
+            return true;
+        }
+        false
+    })
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Binding {
     schema: u32,
@@ -280,6 +312,8 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
+        #[cfg(target_os = "macos")]
+        Self::migrate_legacy_bindings(&account, &root)?;
         if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
         }
@@ -300,14 +334,16 @@ impl Authority {
                 let b: Binding = read(&p)?;
                 // Canonical path aliases such as bind mounts can still name
                 // the same physical root. Never mint a second authority for it.
-                if ancestor_identities.contains(&b.root_identity) {
+                if physical_candidate(&ancestor_identities, &b.root_identity) {
                     let a = Self {
                         account: account.clone(),
                         binding_path: p.clone(),
                         directory: account.join(key(&b.root)),
                         binding: b.clone(),
                     };
-                    if identity(&b.root).ok().as_ref() == Some(&b.root_identity) {
+                    if identity(&b.root)
+                        .is_ok_and(|current| physical_candidate(&[current], &b.root_identity))
+                    {
                         a.validate()?;
                         return Ok(a);
                     }
@@ -362,7 +398,7 @@ impl Authority {
             file(&directory.join(name), true)?.sync_all()?;
         }
         let binding = Binding {
-            schema: 1,
+            schema: BINDING_SCHEMA,
             root: root.clone(),
             root_identity: identity(&root)?,
             epoch: uuid::Uuid::new_v4().to_string(),
@@ -484,9 +520,10 @@ impl Authority {
                 continue;
             }
             let b: Binding = read(&p)?;
-            if ancestors.contains(&b.root_identity) {
+            if physical_candidate(&ancestors, &b.root_identity) {
                 ensure!(
-                    identity(&b.root).ok().as_ref() != Some(&b.root_identity),
+                    !identity(&b.root)
+                        .is_ok_and(|current| physical_candidate(&[current], &b.root_identity)),
                     "Another vault authority owns this folder; re-attach refused"
                 );
                 let other = Self {
@@ -510,7 +547,7 @@ impl Authority {
     }
     fn validate_binding(&self) -> Result<()> {
         ensure!(
-            self.binding.schema == 1,
+            self.binding.schema == BINDING_SCHEMA,
             "Unsupported local writer authority"
         );
         ensure!(
