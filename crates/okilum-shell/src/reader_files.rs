@@ -495,6 +495,7 @@ impl Reader {
                     && preview.code.is_none()
                     && preview.table.is_none()
                     && preview.archive.is_none()
+                    && !reader_media::is_video(&preview.path)
                     && reader_thumbnail::eligible(rel)
                 {
                     preview.thumbnail = Some(cx.new(|cx| {
@@ -611,6 +612,17 @@ impl Reader {
                 .size_full()
                 .child(self.render_document_header(window, cx))
                 .child(code.clone())
+                .into_any_element();
+        }
+        if reader_media::is_video(&preview.path) {
+            return v_flex()
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(div().p_6().child(reader_media::video_card(
+                    &self.vault_root,
+                    &preview.path,
+                    cx,
+                )))
                 .into_any_element();
         }
         if okilum_core::excalidraw::is_drawing(&preview.rel) {
