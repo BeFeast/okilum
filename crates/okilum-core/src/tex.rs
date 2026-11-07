@@ -9,6 +9,16 @@
 //! Unsupported syntax is an [`Error`] with a short message, never a guess.
 use std::ops::Range;
 
+mod environment;
+
+/// Horizontal alignment of a TeX array column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
 /// Formulas longer than this are left as source: inline math is short, and a
 /// pathological span must not cost more than the line it sits on.
 pub const MAX_FORMULA_BYTES: usize = 4 * 1024;
@@ -30,6 +40,26 @@ pub fn is_inline_formula(content: &str) -> bool {
         .char_indices()
         .any(|(at, c)| c == '$' && !trimmed[..at].ends_with('\\'));
     !inner_dollar && !is_amount(trimmed)
+}
+
+/// A whole paragraph containing a single-dollar TeX environment, as used by
+/// the Jupyter showcase. This explicit boundary cannot pair ordinary prices
+/// across lines. Delimiters and canonical source bytes are never edited.
+pub fn single_dollar_environment(source: &str) -> Option<&str> {
+    let source = source.trim();
+    let body = source.strip_prefix('$')?.strip_suffix('$')?.trim();
+    if body.len() > MAX_FORMULA_BYTES {
+        return None;
+    }
+    let (name, _) = body.strip_prefix(r"\begin{")?.split_once('}')?;
+    if name.is_empty()
+        || name.len() > 32
+        || !name.chars().all(|c| c.is_ascii_alphabetic() || c == '*')
+        || !body.ends_with(&format!(r"\end{{{name}}}"))
+    {
+        return None;
+    }
+    Some(body)
 }
 
 /// A number, optionally signed, with separators and one magnitude or
@@ -122,6 +152,12 @@ pub enum Node {
         mark: char,
         body: Vec<Node>,
     },
+    /// Rows of cells with shared column widths, including nested environments.
+    Array {
+        rows: Vec<Vec<Vec<Node>>>,
+        columns: Vec<Alignment>,
+        small: bool,
+    },
     /// Horizontal space in eighteenths of an em (TeX's `mu`).
     Space(u8),
 }
@@ -139,7 +175,9 @@ impl Node {
         match self {
             Node::Atom { class, .. } => *class,
             Node::Scripts { base, .. } => base.class(),
-            Node::Fenced { .. } | Node::Frac { .. } | Node::Sqrt { .. } => Class::Ord,
+            Node::Fenced { .. } | Node::Frac { .. } | Node::Sqrt { .. } | Node::Array { .. } => {
+                Class::Ord
+            }
             Node::Group(nodes) | Node::Accent { body: nodes, .. } => match nodes.as_slice() {
                 [only] => only.class(),
                 _ => Class::Ord,
@@ -172,6 +210,7 @@ enum End {
     Brace,
     Bracket,
     Right,
+    Cell,
 }
 
 struct Parser<'s> {
@@ -216,6 +255,10 @@ impl Parser<'_> {
     }
 
     fn row(&mut self, end: End) -> Result<Vec<Node>, Error> {
+        self.row_infix(end, false)
+    }
+
+    fn row_infix(&mut self, end: End, denominator: bool) -> Result<Vec<Node>, Error> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return error("Formula is nested too deeply");
@@ -226,6 +269,8 @@ impl Parser<'_> {
                 (None, End::Eof) => break,
                 (None, End::Brace | End::Bracket) => return error("Missing closing brace"),
                 (None, End::Right) => return error("\\left without \\right"),
+                (None, End::Cell) => return error("Missing \\end for math environment"),
+                (Some('&'), End::Cell) => break,
                 (Some('}'), End::Brace) | (Some(']'), End::Bracket) => {
                     self.chars.next();
                     break;
@@ -247,6 +292,31 @@ impl Parser<'_> {
             if end == End::Right && self.at_command("right") {
                 break;
             }
+            if end == End::Cell
+                && (self.at_command("end") || self.at_command("cr") || self.at_command("\\"))
+            {
+                break;
+            }
+            if self.at_command("choose") {
+                if denominator || nodes.is_empty() {
+                    return error("Invalid infix \\choose");
+                }
+                self.next_token();
+                let den = self.row_infix(end, true)?;
+                if den.is_empty() {
+                    return error("Missing denominator for \\choose");
+                }
+                self.depth -= 1;
+                return Ok(vec![Node::Fenced {
+                    open: "(".into(),
+                    close: ")".into(),
+                    body: vec![Node::Frac {
+                        num: nodes,
+                        den,
+                        bar: false,
+                    }],
+                }]);
+            }
             match self.item()? {
                 Some(node) => nodes.push(node),
                 None => continue,
@@ -261,7 +331,7 @@ impl Parser<'_> {
         let rest = self.chars.peek().map_or("", |&(at, _)| &self.source[at..]);
         rest.strip_prefix('\\')
             .and_then(|r| r.strip_prefix(name))
-            .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .is_some_and(|r| name == "\\" || !r.starts_with(|c: char| c.is_ascii_alphabetic()))
     }
 
     fn scripts(&mut self, base: Node) -> Result<Node, Error> {
@@ -360,6 +430,8 @@ impl Parser<'_> {
         };
         Ok(Some(match name.as_str() {
             "" => return error("Lone backslash"),
+            "begin" => self.environment()?,
+            "end" => return error("\\end without \\begin"),
             "frac" | "dfrac" | "tfrac" | "cfrac" => Node::Frac {
                 num: self.argument()?,
                 den: self.argument()?,
@@ -565,6 +637,11 @@ fn restyle(nodes: Vec<Node>, change: impl Fn(&mut Font) + Copy) -> Node {
                     .chain(index.iter_mut().flatten())
                     .for_each(|n| walk(n, change));
             }
+            Node::Array { rows, .. } => rows
+                .iter_mut()
+                .flatten()
+                .flatten()
+                .for_each(|n| walk(n, change)),
             Node::Space(_) => {}
         }
     }
@@ -972,6 +1049,22 @@ fn write_node(node: &Node, out: &mut Linear) {
             out.push(text, *font, matches!(class, Class::Var));
         }
         Node::Group(nodes) => write_row(nodes, out),
+        Node::Array { rows, .. } => {
+            // Inline rendering keeps a matrix's row/cell boundaries explicit.
+            out.plain("[");
+            for (r, cells) in rows.iter().enumerate() {
+                if r > 0 {
+                    out.plain("; ");
+                }
+                for (c, cell) in cells.iter().enumerate() {
+                    if c > 0 {
+                        out.plain(", ");
+                    }
+                    write_row(cell, out);
+                }
+            }
+            out.plain("]");
+        }
         Node::Scripts { base, sub, sup } => {
             write_node(base, out);
             if let Some(sub) = sub {

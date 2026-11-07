@@ -172,6 +172,24 @@ pub fn rewrite_math(text: &str) -> String {
         let content = line.trim_end_matches(['\n', '\r']);
         let prefix_len = container_prefix(content);
         let rest = &content[prefix_len..];
+        if prefix_len == 0
+            && rest.starts_with(r"$\begin{")
+            && (i == 0 || lines[i - 1].1.trim().is_empty())
+            && is_prose(&prose, at)
+        {
+            let end = lines
+                .iter()
+                .enumerate()
+                .skip(i + 1)
+                .find(|(_, (_, line))| line.trim().is_empty())
+                .map_or(lines.len(), |(j, _)| j);
+            let end_at = lines.get(end).map_or(text.len(), |(at, _)| *at);
+            if let Some(source) = crate::tex::single_dollar_environment(&text[at..end_at]) {
+                write_math_fence(&mut out, source, "");
+                i = end;
+                continue;
+            }
+        }
         if !rest.starts_with("$$") || !is_prose(&prose, at + prefix_len) {
             out.push_str(line);
             i += 1;
@@ -215,21 +233,25 @@ pub fn rewrite_math(text: &str) -> String {
             continue;
         };
         let source = body.join("\n");
-        let fence = fence_for(&source);
-        out.push_str(&format!("{prefix}{fence}{MATH_LANG}\n"));
-        for l in source.lines() {
-            out.push_str(if l.is_empty() {
-                prefix.trim_end()
-            } else {
-                prefix
-            });
-            out.push_str(l);
-            out.push('\n');
-        }
-        out.push_str(&format!("{prefix}{fence}\n"));
+        write_math_fence(&mut out, &source, prefix);
         i = close + 1;
     }
     replace_in_prose(&out, inline_math)
+}
+
+fn write_math_fence(out: &mut String, source: &str, prefix: &str) {
+    let fence = fence_for(source);
+    out.push_str(&format!("{prefix}{fence}{MATH_LANG}\n"));
+    for line in source.lines() {
+        out.push_str(if line.is_empty() {
+            prefix.trim_end()
+        } else {
+            prefix
+        });
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("{prefix}{fence}\n"));
 }
 
 fn escaped(s: &str, at: usize) -> bool {
@@ -779,6 +801,22 @@ mod tests {
             rewrite_math("$x$ costs $2$"),
             "![`$x$`](okilum://math/x) costs $2$"
         );
+    }
+
+    #[test]
+    fn single_dollar_environment_paragraph_is_math_without_changing_money_or_code() {
+        let formula = "$\\begin{align}\r\na&=b\\\\\r\nc&=d\r\n\\end{align}$\r\n";
+        let rendered = rewrite_math(formula);
+        assert!(rendered.starts_with("~~~~math\n\\begin{align}\n"));
+        assert!(rendered.ends_with("\\end{align}\n~~~~\n"));
+        for source in [
+            "$5\n$10\n",
+            "```\n$\\begin{matrix}x\\end{matrix}$\n```\n",
+            "`$\\begin{matrix}x\\end{matrix}$`\n",
+        ] {
+            assert_eq!(rewrite_math(source), source);
+        }
+        assert!(!rewrite_math("$\\begin{matrix}x\\end{array}$\n").starts_with("~~~~math"));
     }
 
     #[test]

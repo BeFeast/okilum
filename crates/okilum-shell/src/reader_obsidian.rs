@@ -375,6 +375,131 @@ mod tests {
     }
 
     #[gpui::test]
+    fn math_2684_read_renders_reported_array_rows_and_eqnarray_columns(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        for (formula, row_count, col_count) in [
+            (
+                r"\begin{array}{c} y_1 \\ y_2 \mathtt{t}_i \\ z_{3,4} \end{array}",
+                3,
+                1,
+            ),
+            (
+                r"\begin{array}{c} y_1 \cr y_2 \mathtt{t}_i \cr y_{3} \end{array}",
+                3,
+                1,
+            ),
+            (
+                r"\begin{eqnarray} x' &=& &x \sin\phi &+& z \cos\phi \\ z' &=& - &x \cos\phi &+& z \sin\phi \\ \end{eqnarray}",
+                2,
+                6,
+            ),
+        ] {
+            let source = obsidian::before_links(&format!("$$\n{formula}\n$$\n"));
+            let (_, visual) = cx.add_window_view(|_, _| Fixture {
+                source,
+                clicked: Default::default(),
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("reader-math-formula-0").is_some(),
+                "{formula}"
+            );
+            assert!(visual.debug_bounds("reader-math-error-0").is_none());
+            let grid = visual
+                .debug_bounds("math-array")
+                .expect("actual array grid");
+            assert!(grid.size.height > px(BODY_FONT_SIZE * row_count as f32));
+            for r in 0..row_count {
+                for c in 0..col_count {
+                    let cell = visual
+                        .debug_bounds(sel(format!("math-array-cell-{r}-{c}")))
+                        .expect("every reported cell is laid out");
+                    assert!(cell.size.height > px(0.));
+                    if r > 0 {
+                        let above = visual
+                            .debug_bounds(sel(format!("math-array-cell-{}-{c}", r - 1)))
+                            .unwrap();
+                        assert!(cell.top() >= above.bottom(), "rows must not overlap");
+                        assert!(
+                            (cell.left() - above.left()).abs() < px(0.5),
+                            "column alignment"
+                        );
+                        assert!(
+                            (cell.size.width - above.size.width).abs() < px(0.5),
+                            "shared column widths"
+                        );
+                    }
+                }
+            }
+            visual.update(|window, _| window.remove_window());
+        }
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../okilum-core/tests/fixtures/tex-environments.json"
+        ))
+        .unwrap();
+        let mut matrix_height = None;
+        for fixture in fixtures {
+            let tex = fixture["tex"].as_str().unwrap();
+            for delimiter in ["$$", "$"] {
+                let original = format!("{delimiter}{tex}{delimiter}\n");
+                if delimiter == "$"
+                    && okilum_core::tex::single_dollar_environment(&original).is_none()
+                {
+                    continue;
+                }
+                let source = obsidian::before_links(&original);
+                let (_, visual) = cx.add_window_view(|_, _| Fixture {
+                    source,
+                    clicked: Default::default(),
+                });
+                visual.simulate_resize(size(px(1400.), px(1100.)));
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(
+                    visual.debug_bounds("reader-math-formula-0").is_some(),
+                    "{} {delimiter}",
+                    fixture["name"]
+                );
+                assert!(
+                    visual.debug_bounds("reader-math-error-0").is_none(),
+                    "{}",
+                    fixture["name"]
+                );
+                let grid = visual
+                    .debug_bounds("math-array")
+                    .expect("named environment must actually render its grid");
+                if delimiter == "$$" {
+                    if fixture["name"] == "matrix" {
+                        matrix_height = Some(grid.size.height);
+                    }
+                    if fixture["name"] == "smallmatrix" {
+                        assert!(
+                            grid.size.height < matrix_height.unwrap() * 0.85,
+                            "smallmatrix uses script size"
+                        );
+                    }
+                    if fixture["name"] == "cases" || fixture["name"] == "rcases" {
+                        let selector = if fixture["name"] == "cases" {
+                            "math-delimiter-open"
+                        } else {
+                            "math-delimiter-close"
+                        };
+                        let brace = visual.debug_bounds(selector).expect("cases brace");
+                        assert!(
+                            (brace.size.height - grid.size.height).abs() < px(2.),
+                            "brace spans all rows: {brace:?} vs {grid:?}"
+                        );
+                    }
+                }
+                visual.update(|window, _| window.remove_window());
+            }
+        }
+    }
+
+    #[gpui::test]
     fn corpus_note_renders_obsidian_blocks(cx: &mut gpui::TestAppContext) {
         cx.update(crate::test_init);
         let source = rendered_fixture();

@@ -73,8 +73,12 @@ suite issue2045 120 cargo test --locked -p okilum-shell --bin okilum issue2045_ 
 # #2044: explicit conflict controller and mounted shell acceptance.
 suite conflicts 120 cargo test --locked -p okilum-sync-controller --lib conflicts:: -- --nocapture
 suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ -- --nocapture --test-threads=1
-# Preserve assertion diagnostics even if a later native task aborts the process.
-suite workspace-full 1320 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast -- --nocapture
+# Independent cases share the product's process-wide log memory pool and async
+# runtime. Run them serially: overlapping unrelated fixtures can exhaust the pool
+# or starve a D-Bus positive control before it exercises its intended path.
+# Keep all cases, assertions and the same outer deadline; deliberate concurrency
+# inside individual tests and the separate reveal stress controls stay enabled.
+suite workspace-full 1320 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast -- --nocapture --test-threads=1
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite unix-publish 120 cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
 suite file-editor-network-save-tests 120 cargo test --locked -p okilum-core --lib file_editor::network_save_tests:: --no-fail-fast
