@@ -12,7 +12,7 @@ mod restart_feedback;
 #[cfg(any(target_os = "linux", windows, test))]
 mod restart_intent;
 mod scheduler;
-pub(crate) use policy::{mode, Mode};
+pub(crate) use policy::{Mode, mode};
 pub(crate) mod status;
 pub(crate) mod whats_new;
 #[cfg(windows)]
@@ -146,17 +146,19 @@ fn admit_sparkle_check(automatic: bool) -> bool {
 fn install_schedule(cx: &mut App) {
     let _ = schedule();
     observe_window_focus(cx, || run_check(Trigger::Focus));
-    cx.spawn(async move |cx| loop {
-        // Ticks only consult the policy; the network runs once per due interval.
-        cx.background_executor().timer(Duration::from_secs(1)).await;
-        run_check(Trigger::Interval);
-        cx.update(|cx| {
-            #[cfg(target_os = "linux")]
-            appimage::finish_requested_restart(cx);
-            #[cfg(windows)]
-            windows::finish_requested_restart(cx);
-            restart_feedback::present(cx);
-        });
+    cx.spawn(async move |cx| {
+        loop {
+            // Ticks only consult the policy; the network runs once per due interval.
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            run_check(Trigger::Interval);
+            cx.update(|cx| {
+                #[cfg(target_os = "linux")]
+                appimage::finish_requested_restart(cx);
+                #[cfg(windows)]
+                windows::finish_requested_restart(cx);
+                restart_feedback::present(cx);
+            });
+        }
     })
     .detach();
 }
@@ -463,10 +465,7 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     }
     #[cfg(target_os = "macos")]
     {
-        static ANNOUNCED: Mutex<restart_feedback::Announced> =
-            Mutex::new(restart_feedback::Announced::new());
         announce_ready(
-            &mut ANNOUNCED.lock().unwrap(),
             &status::get(),
             macos::ready_package().as_deref(),
             window,
@@ -487,11 +486,22 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     let _ = (window, cx);
 }
 
-/// Sparkle reports each ready package by version. Announce every newer one,
-/// replacing the previous notice; never the same package twice in a row.
+/// A Ready announcement belongs to a window, not to the whole application.
+/// Otherwise the first restored window consumes the other windows' notice.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ReadyAnnouncements {
+    windows: std::collections::HashMap<gpui::WindowId, restart_feedback::Announced>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl gpui::Global for ReadyAnnouncements {}
+
+/// Sparkle reports each ready package by version. Every window gets the newest
+/// one, including an inactive or newly opened window. A dismissal stays local
+/// to that window/package; later redraws do not resurrect the same notice.
 #[cfg(any(target_os = "macos", test))]
 fn announce_ready(
-    announced: &mut restart_feedback::Announced,
     status: &status::CheckStatus,
     package: Option<&str>,
     window: &mut gpui::Window,
@@ -499,19 +509,39 @@ fn announce_ready(
     restart: impl Fn(&mut App) + 'static,
 ) {
     use status::CheckStatus;
-    match status {
+    let live_windows: Vec<_> = cx
+        .windows()
+        .iter()
+        .map(|handle| handle.window_id())
+        .collect();
+    let window_id = window.window_id();
+    let announcements = cx.default_global::<ReadyAnnouncements>();
+    // Keep the current window even when GPUI temporarily takes it out of the
+    // application during its update. Closed windows retain no announcement state.
+    announcements
+        .windows
+        .retain(|id, _| *id == window_id || live_windows.contains(id));
+    let announced = announcements
+        .windows
+        .entry(window_id)
+        .or_insert_with(restart_feedback::Announced::new);
+    let show = match status {
         CheckStatus::Ready | CheckStatus::RestartRetry(_) => {
-            if window.is_window_active() && announced.claim(package.unwrap_or_default()) {
-                show_ready_notice(window, cx, restart);
-            }
+            announced.claim(package.unwrap_or_default())
         }
         // Transient states while a ready package is verified or replaced.
         CheckStatus::Checking
         | CheckStatus::Available(_)
         | CheckStatus::Downloading(_)
         | CheckStatus::Preparing
-        | CheckStatus::Restarting => {}
-        _ => announced.reset(),
+        | CheckStatus::Restarting => false,
+        _ => {
+            announced.reset();
+            false
+        }
+    };
+    if show {
+        show_ready_notice(window, cx, restart);
     }
 }
 
@@ -706,23 +736,21 @@ mod tests {
         use std::{cell::RefCell, rc::Rc};
         let visual = notice_window(cx);
         let restarted = Rc::new(RefCell::new(Vec::<&str>::new()));
-        let mut announced = restart_feedback::Announced::new();
         let ready = status::CheckStatus::Ready;
         let announce = |visual: &mut gpui::VisualTestContext,
-                        announced: &mut restart_feedback::Announced,
                         status: &status::CheckStatus,
                         package: &'static str| {
             let restarted = restarted.clone();
             visual.update(|window, cx| {
-                announce_ready(announced, status, Some(package), window, cx, move |_| {
+                announce_ready(status, Some(package), window, cx, move |_| {
                     restarted.borrow_mut().push(package)
                 })
             });
             visual.run_until_parked();
         };
-        announce(visual, &mut announced, &ready, "1");
+        announce(visual, &ready, "1");
         assert_eq!(notice_count(visual), 1);
-        announce(visual, &mut announced, &ready, "1");
+        announce(visual, &ready, "1");
         assert_eq!(
             notice_count(visual),
             1,
@@ -735,9 +763,9 @@ mod tests {
             status::CheckStatus::Checking,
             status::CheckStatus::Downloading(Some(40)),
         ] {
-            announce(visual, &mut announced, &transient, "1");
+            announce(visual, &transient, "1");
         }
-        announce(visual, &mut announced, &ready, "2");
+        announce(visual, &ready, "2");
         assert_eq!(
             notice_count(visual),
             1,
@@ -763,17 +791,88 @@ mod tests {
             .executor()
             .advance_clock(std::time::Duration::from_secs(1));
         visual.run_until_parked();
-        announce(visual, &mut announced, &ready, "2");
+        announce(visual, &ready, "2");
         assert_eq!(
             notice_count(visual),
             0,
             "a closed notice stays closed for its package"
         );
-        announce(visual, &mut announced, &ready, "3");
+        announce(visual, &ready, "3");
         assert_eq!(
             notice_count(visual),
             1,
             "a newer package is announced after a closed one"
+        );
+    }
+
+    /// #2719: one restored window must not consume another window's Ready.
+    #[gpui::test]
+    fn ready_announcements_belong_to_each_window(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+        let app = cx.clone();
+        let mut first_app = cx.clone();
+        let mut later_app = cx.clone();
+        let first = notice_window(&mut first_app);
+        let second = notice_window(cx);
+        first.deactivate_window();
+        assert!(!first.update(|window, _| window.is_window_active()));
+        let restarted = Rc::new(Cell::new(0));
+        let announce = |visual: &mut gpui::VisualTestContext, package: &'static str| {
+            let restarted = restarted.clone();
+            visual.update(|window, cx| {
+                announce_ready(
+                    &status::CheckStatus::Ready,
+                    Some(package),
+                    window,
+                    cx,
+                    move |_| restarted.set(if package == "2" { 2 } else { 1 }),
+                );
+            });
+            visual.run_until_parked();
+        };
+        announce(second, "1");
+        announce(first, "1");
+        assert_eq!(
+            notice_count(first),
+            1,
+            "each restored window must show its ready notice"
+        );
+        assert_eq!(notice_count(second), 1);
+
+        first.update(|window, cx| window.remove_notification::<restart_feedback::UpdateNotice>(cx));
+        first.executor().advance_clock(Duration::from_secs(1));
+        first.run_until_parked();
+        announce(first, "1");
+        assert_eq!(notice_count(first), 0, "dismissal stays local and stable");
+        assert_eq!(notice_count(second), 1);
+
+        let later = notice_window(&mut later_app);
+        announce(later, "1");
+        assert_eq!(
+            notice_count(later),
+            1,
+            "a window opened while Ready gets its own notice"
+        );
+        for visual in [&mut *first, &mut *second, &mut *later] {
+            announce(visual, "2");
+            assert_eq!(notice_count(visual), 1, "the new package replaces in place");
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(visual.debug_bounds("restart-update").is_some());
+        }
+        first.update(|window, _| window.activate_window());
+        first.run_until_parked();
+        let restart = first.debug_bounds("restart-update").unwrap().center();
+        first.simulate_click(restart, gpui::Modifiers::default());
+        first.run_until_parked();
+        assert_eq!(restarted.get(), 2, "the current action is wired to Restart");
+
+        later.update(|window, _| window.remove_window());
+        first.run_until_parked();
+        announce(first, "2");
+        assert_eq!(
+            app.read(|cx| cx.global::<ReadyAnnouncements>().windows.len()),
+            2,
+            "closed windows retain no announcement state"
         );
     }
 
