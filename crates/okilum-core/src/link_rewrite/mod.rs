@@ -7,7 +7,12 @@ pub use operation::{Applied, Operation, RecoveryList};
 use crate::{Resolution, Vault};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, ops::Range, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    ops::Range,
+    path::Path,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
@@ -125,6 +130,7 @@ impl Preview {
             Vault::from_note_paths(vault.notes.iter().map(|n| moved_path(&n.path, from, to)));
         // Simulated inventory must not consult pre-move filesystem entries.
         after.root = root.to_path_buf();
+        let rewrite = RewriteContext::new(&vault, &after, from, to);
         let candidates_started = std::time::Instant::now();
         let (candidates, unchanged) = if let Some(index) = index {
             let (paths, unchanged) = index.select(root, &vault, from, to, checkpoint)?;
@@ -217,17 +223,16 @@ impl Preview {
                     .filter(|b| *b == b'\n')
                     .count()
                     + 1;
-                let replacement = replacement(&vault, &after, from, to, &note.path, &target)
-                    .and_then(|next| {
-                        if let Some(next) = &next {
-                            syntax::validate_frontmatter_replacement(
-                                &source,
-                                target.range.clone(),
-                                next,
-                            )?;
-                        }
-                        Ok(next)
-                    });
+                let replacement = replacement(&rewrite, &note.path, &target).and_then(|next| {
+                    if let Some(next) = &next {
+                        syntax::validate_frontmatter_replacement(
+                            &source,
+                            target.range.clone(),
+                            next,
+                        )?;
+                    }
+                    Ok(next)
+                });
                 match replacement {
                     Ok(Some(replacement)) if replacement != target.text => {
                         preview.changes.push(Change {
@@ -372,13 +377,14 @@ impl Preview {
                 .map(|n| moved_path(&n.path, &self.from, &self.to)),
         );
         after.root = root.to_path_buf();
+        let rewrite = RewriteContext::new(&vault, &after, &self.from, &self.to);
         let validate_unaffected = |path: &str, source: &str| -> Result<()> {
             ensure!(
                 !protected.contains(path),
                 "{path} changed; preview again. Nothing was written"
             );
             for target in syntax::targets_in_vault(source, &vault, path) {
-                let unchanged = replacement(&vault, &after, &self.from, &self.to, path, &target)
+                let unchanged = replacement(&rewrite, path, &target)
                     .is_ok_and(|next| next.is_none_or(|next| next == target.text));
                 ensure!(
                     unchanged,
@@ -441,14 +447,56 @@ pub fn moved_path(path: &str, from: &str, to: &str) -> String {
         .map_or_else(|| path.to_owned(), |rest| format!("{to}/{rest}"))
 }
 
+// Keep canonical spelling membership and Unicode case-ambiguity counts for one
+// captured inventory. Rebuilding/scanning these per link made a folder preview
+// proportional to the entire vault size times its number of candidate links.
+struct NotePaths<'a> {
+    exact: HashSet<&'a str>,
+    folded_counts: HashMap<String, usize>,
+}
+impl<'a> NotePaths<'a> {
+    fn new(vault: &'a Vault) -> Self {
+        let mut exact = HashSet::new();
+        let mut folded_counts = HashMap::new();
+        for note in &vault.notes {
+            exact.insert(note.path.as_str());
+            *folded_counts.entry(note.path.to_lowercase()).or_insert(0) += 1;
+        }
+        Self {
+            exact,
+            folded_counts,
+        }
+    }
+    fn unique(&self, path: &str) -> bool {
+        self.folded_counts.get(&path.to_lowercase()) == Some(&1)
+    }
+}
+struct RewriteContext<'a> {
+    before: &'a Vault,
+    after: &'a Vault,
+    before_notes: NotePaths<'a>,
+    after_notes: NotePaths<'a>,
+    from: &'a str,
+    to: &'a str,
+}
+impl<'a> RewriteContext<'a> {
+    fn new(before: &'a Vault, after: &'a Vault, from: &'a str, to: &'a str) -> Self {
+        Self {
+            before,
+            after,
+            before_notes: NotePaths::new(before),
+            after_notes: NotePaths::new(after),
+            from,
+            to,
+        }
+    }
+}
 fn replacement(
-    before: &Vault,
-    after: &Vault,
-    from: &str,
-    to: &str,
+    context: &RewriteContext<'_>,
     source: &str,
     target: &syntax::Target,
 ) -> Result<Option<String>> {
+    let (before, after, from, to) = (context.before, context.after, context.from, context.to);
     let (base, fragment) = target
         .text
         .find('#')
@@ -515,26 +563,15 @@ fn replacement(
             "Folder inventory is incomplete; suffix link target cannot be verified"
         );
     }
-    let is_note = before.notes.iter().any(|n| n.path == resolved);
+    let is_note = context.before_notes.exact.contains(resolved.as_str());
     if is_note {
         ensure!(
-            before
-                .notes
-                .iter()
-                .filter(|n| n.path.to_lowercase() == resolved.to_lowercase())
-                .count()
-                == 1,
+            context.before_notes.unique(&resolved),
             "Case-ambiguous note path"
         );
         let mapped = moved_path(&resolved, from, to);
-        let desired = mapped.as_str();
         ensure!(
-            after
-                .notes
-                .iter()
-                .filter(|n| n.path.to_lowercase() == desired.to_lowercase())
-                .count()
-                == 1,
+            context.after_notes.unique(&mapped),
             "Destination would be case-ambiguous"
         );
     }

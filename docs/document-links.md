@@ -170,3 +170,20 @@ patch 0042 supplies secondary lines for TextView's existing multiline tooltips.
 Managed preview does not enable this desktop opt-in: its source and attachment
 scope remains authoritative. HTTP and other web links retain their system URL
 handler; network file authorities and UNC spellings are not probed.
+
+## Folder move preview cost (#2682)
+
+Rename and move build exact note membership and Unicode lowercase ambiguity
+counts once for each captured before/after inventory. Each candidate link reuses
+those tables instead of scanning and lowercasing every note twice. The tables
+exist only during preview or validation; they are not a persistent authority.
+Inventory completeness, ambiguous identities, source revisions, durable preimages
+and exact Undo keep their existing checks. Reader retains its immediate
+Preparing rename/move notification and confirmation for large link rewrites.
+
+`scripts/ci/folder-move-check.py` compares the compiled old and new preview on
+the same hosted runner, using synthetic 5,000 unrelated notes, 277 referrers and
+11,080 links. Both rename and move must improve by at least three times; the
+runtime test also checks stale-preview refusal, exact rewritten bytes and Undo.
+The comparison is additional evidence, not a substitute for exact-source
+gh-check or actual beta UI verification.

@@ -1,0 +1,59 @@
+# Synthetic local folders only. No install, signing, or publication authority.
+name: folder-move-native
+on:
+  push:
+    branches: ['folder-move-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: folder-move-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  preview:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: folder-move-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            folder-move-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+      - name: Verify exact source and pinned dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Compare old and fixed folder preview on this host
+        run: python3 scripts/ci/folder-move-check.py
+      - name: Retain complete link-rewrite and writer-authority controls
+        shell: bash
+        run: |
+          cargo test --locked -p okilum-core --lib link_rewrite -- --nocapture --test-threads=1
+          cargo test --locked -p okilum-write-authority --lib -- --nocapture --test-threads=1
+          test -z "$(git diff -- crates/okilum-core/src/link_rewrite/mod.rs)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: folder-move-2682-${{ runner.os }}
+          path: qa/folder-move-2682/
+          if-no-files-found: error
+          retention-days: 7
