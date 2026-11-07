@@ -12,12 +12,11 @@ fn run(command: &mut Command) {
 
 /// Compiles the Sparkle bridge and links the vendored stock Sparkle.framework.
 fn main() {
-    // Compile the portable native Manager on both platforms. Runtime panel
-    // macOS and Linux mount the same native session.
+    // All desktop platforms mount the same retained native Manager session.
     println!("cargo:rustc-check-cfg=cfg(native_manager)");
     if matches!(
         env::var("CARGO_CFG_TARGET_OS").as_deref(),
-        Ok("linux" | "macos")
+        Ok("linux" | "macos" | "windows")
     ) {
         println!("cargo:rustc-cfg=native_manager");
     }

@@ -1,0 +1,65 @@
+# Issue-scoped, public synthetic checks; no signing, install or publication.
+name: windows-manager-native
+on:
+  push:
+    branches: ['windows-manager-native/**']
+permissions:
+  contents: read
+concurrency:
+  group: windows-manager-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-manager-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  native:
+    needs: icon
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-manager-native-v1
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-manager-icon
+          path: target/windows-dist
+      - name: Verify source and vendor, export Windows icon
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          printf 'OKILUM_WINDOWS_ICON=%s\n' "$(cygpath -w "$PWD/target/windows-dist/okilum.ico")" >> "$GITHUB_ENV"
+      - name: Compile the shipping Windows Reader
+        run: cargo build --locked -p okilum-shell --bin okilum --no-default-features
+      - name: Run native Manager transport, UI and negative controls
+        run: python scripts/ci/windows-manager-check.py

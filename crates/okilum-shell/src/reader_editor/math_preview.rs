@@ -188,7 +188,7 @@ fn glyph(text: &str, size: f32, italic: bool, bold: bool) -> Div {
 /// True when `nodes` stand taller than a line, so delimiters grow with them.
 fn tall(nodes: &[Node]) -> bool {
     nodes.iter().any(|node| match node {
-        Node::Frac { .. } => true,
+        Node::Frac { .. } | Node::Array { .. } => true,
         Node::Scripts { base, sub, sup } => {
             (base.class() == Class::Large && limits(base)) || (sub.is_some() && sup.is_some())
         }
@@ -204,6 +204,68 @@ fn limits(base: &Node) -> bool {
     matches!(base, Node::Atom { text, class: Class::Large, .. } if !matches!(text.as_str(), "∫" | "∬" | "∭" | "∮"))
 }
 
+/// Match the layout's line boxes so matrix/cases delimiters span all rows,
+/// including fractions and nested arrays, instead of staying two lines tall.
+fn row_height(nodes: &[Node], size: f32) -> f32 {
+    nodes
+        .iter()
+        .map(|node| match node {
+            Node::Atom { class, .. } => size * 1.25 * if *class == Class::Large { 1.3 } else { 1. },
+            Node::Group(body) | Node::Fenced { body, .. } => row_height(body, size),
+            Node::Array { rows, small, .. } => {
+                let size = if *small { scaled(size, SCRIPT) } else { size };
+                rows.iter()
+                    .map(|cells| {
+                        cells
+                            .iter()
+                            .map(|cell| row_height(cell, size))
+                            .fold(size * 1.25, f32::max)
+                    })
+                    .sum::<f32>()
+                    + rows.len().saturating_sub(1) as f32 * size * 0.2
+            }
+            Node::Frac { num, den, .. } => {
+                row_height(num, scaled(size, 0.9))
+                    + row_height(den, scaled(size, 0.9))
+                    + 1.
+                    + size * 0.16
+            }
+            Node::Scripts { base, sub, sup } => {
+                let small = scaled(size, SCRIPT);
+                let script_height = |script: &Option<Vec<Node>>| {
+                    script
+                        .as_ref()
+                        .map_or(small * 0.6, |nodes| row_height(nodes, small))
+                };
+                let base_height = row_height(std::slice::from_ref(base.as_ref()), size);
+                if limits(base) {
+                    base_height
+                        + sub.as_ref().map_or(0., |n| row_height(n, small))
+                        + sup.as_ref().map_or(0., |n| row_height(n, small))
+                } else {
+                    base_height.max(script_height(sub) + script_height(sup))
+                }
+            }
+            Node::Sqrt { body, index } => (row_height(body, size) + 1.)
+                .max(size * 1.25 * if tall(body) { 1.6 } else { 1.1 })
+                .max(
+                    index
+                        .as_ref()
+                        .map_or(0., |n| row_height(n, scaled(size, 0.55)) + size * 0.5),
+                ),
+            Node::Accent { mark, body } => {
+                row_height(body, size)
+                    + if matches!(mark, '\u{305}' | '\u{332}') {
+                        1.
+                    } else {
+                        size * 0.45
+                    }
+            }
+            Node::Space(_) => 0.,
+        })
+        .fold(0., f32::max)
+}
+
 fn element(node: &Node, size: f32, color: Hsla) -> AnyElement {
     match node {
         Node::Atom { text, class, font } => {
@@ -216,6 +278,39 @@ fn element(node: &Node, size: f32, color: Hsla) -> AnyElement {
             glyph(text, size, italic, font.bold).into_any_element()
         }
         Node::Group(nodes) => row(nodes, size, color),
+        Node::Array {
+            rows,
+            columns,
+            small,
+        } => {
+            let size = if *small { scaled(size, SCRIPT) } else { size };
+            let mut grid = div()
+                .grid()
+                .grid_cols_max_content(columns.len() as u16)
+                .items_center()
+                .gap_x(px(size * 0.6))
+                .gap_y(px(size * 0.2))
+                .flex_none()
+                .debug_selector(|| "math-array".into());
+            for (r, cells) in rows.iter().enumerate() {
+                for (c, alignment) in columns.iter().enumerate() {
+                    let cell = h_flex()
+                        .min_h(px(size * 1.25))
+                        .items_center()
+                        .when(*alignment == tex::Alignment::Left, |d| d.justify_start())
+                        .when(*alignment == tex::Alignment::Center, |d| d.justify_center())
+                        .when(*alignment == tex::Alignment::Right, |d| d.justify_end())
+                        .debug_selector(move || format!("math-array-cell-{r}-{c}"))
+                        .child(row(
+                            cells.get(c).map(Vec::as_slice).unwrap_or(&[]),
+                            size,
+                            color,
+                        ));
+                    grid = grid.child(cell);
+                }
+            }
+            grid.into_any_element()
+        }
         Node::Scripts { base, sub, sup } => {
             let small = scaled(size, SCRIPT);
             if limits(base) {
@@ -289,16 +384,22 @@ fn element(node: &Node, size: f32, color: Hsla) -> AnyElement {
             )
             .into_any_element(),
         Node::Fenced { open, close, body } => {
-            let delimiter = size * if tall(body) { 1.8 } else { 1. };
+            let delimiter = size.max(row_height(body, size) / 1.25);
             h_flex()
                 .items_center()
                 .flex_none()
                 .when(!open.is_empty(), |d| {
-                    d.child(glyph(open, delimiter, false, false))
+                    d.child(
+                        glyph(open, delimiter, false, false)
+                            .debug_selector(|| "math-delimiter-open".into()),
+                    )
                 })
                 .child(row(body, size, color))
                 .when(!close.is_empty(), |d| {
-                    d.child(glyph(close, delimiter, false, false))
+                    d.child(
+                        glyph(close, delimiter, false, false)
+                            .debug_selector(|| "math-delimiter-close".into()),
+                    )
                 })
                 .into_any_element()
         }

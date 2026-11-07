@@ -28,7 +28,44 @@ Point 14 of research #1537, accepted 2026-10-24. Live Preview draws inline
   Source mode and canonical Markdown bytes remain unchanged. Display math in
   a rendered callout uses that callout's existing source reveal boundary.
 - Unsupported display TeX retains its source and a visible error reason;
-  it never becomes an empty formula. The supported TeX subset is unchanged.
+  it never becomes an empty formula.
+
+## Alignment environments (#2684)
+
+Read, Live Preview and the caret card share native grids for `array` (`l`, `c`,
+`r` columns), `eqnarray`/`eqnarray*`, `aligned`, `align`/`align*`, `split`,
+`gather`/`gather*`, `gathered`, `equation`/`equation*`, `cases`, and the usual
+`matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix` forms, plus
+`smallmatrix` at script size, one-column `subarray`, and right-braced `rcases`.
+The showcased `{n \choose k}` infix form uses the existing binomial layout.
+Matrix/cases delimiters grow to match all rows, including nested fractions.
+Both `\\`
+and `\cr` separate rows; `&` separates cells. Nested environments retain their
+own separators. Grids share column widths across rows and preserve empty cells.
+Eqnarray accepts additional alignment cells such as those in the reported
+formula, keeping every cell visible. Inline projection keeps row boundaries
+with semicolons and cell boundaries with commas; editing retains exact TeX.
+
+The existing 4 KiB/depth-24 limits apply, with additional limits of 32 columns,
+64 rows and 256 cells per environment. Column rules, custom column macros,
+row-height commands and unsupported environments remain visible source with an
+explicit reason. No external TeX process, network rendering or GPUI core patch.
+Nineteen synthetic fixtures cover all fifteen environments named in #2684,
+including complete Lorenz/Maxwell equations and the cross-product determinant.
+Native tests cover the reported arrays (both row separators, including repeated
+separators/empty rows) and six-column eqnarray, actual non-overlapping row/shared-column
+geometry, smallmatrix size, cases delimiter height, and CRLF Live Preview reveal
+without source changes. A compiled negative control restores
+the previous rejection of `\begin`, requires both native regressions to fail
+at runtime, then restores and reruns them.
+
+A standalone paragraph of the form `$\begin{environment}…\end{environment}$`
+also uses the display renderer, including the multiline form in the Jupyter
+showcase. It must have matching outer environment names within the formula
+budget. Source classification retains its exact byte range for caret/selection
+reveal. Ordinary single-dollar math and prices keep their conservative rules;
+code fences and inline code are excluded. Other delimiter variants remain
+separate scope.
 
 ## Conservative detection
 
@@ -51,7 +88,7 @@ There is no third-party TeX engine: `okilum_core::tex` parses a bounded TeX
 subset (4 KiB per formula, nesting depth 24) into a small layout tree. The
 in-place rendering is that tree written on one line in Unicode, so it uses the
 editor's own text layout, wrapping, selection and hit-testing; the card lays
-the same tree out with GPUI flex elements. No raster, no background job, no
+the same tree out with GPUI flex/grid elements. No raster, no background job, no
 new dependency. A small gpui-kit inline-parser extension replaces tagged
 Reader math images with ordinary styled paragraph text; no gpui core changes are needed.
 The tags carry exact-source fallback labels and are presentation data only.

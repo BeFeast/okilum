@@ -1,6 +1,38 @@
 use super::*;
 use ::core::prelude::v1::test;
 
+// Deliberately outside cfg(native_manager): the old Windows MCP fallback must
+// fail this regression instead of silently excluding its entire test module.
+#[cfg(windows)]
+#[gpui::test]
+fn windows_manager_1788_uses_native_constructor(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let files = fixture::canonical_tempdir();
+    cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let view = ProjectView::new(
+                None,
+                Some(files.path().join("state")),
+                files.path().to_owned(),
+                std::time::Instant::now(),
+                window,
+                cx,
+            );
+            assert!(
+                cfg!(native_manager),
+                "Windows must construct the shared native Manager, not the MCP fallback"
+            );
+            #[cfg(native_manager)]
+            assert!(
+                view.threads.enabled,
+                "shipping constructor must select native"
+            );
+            view
+        });
+        Root::new(view, window, cx)
+    });
+}
+
 #[cfg(native_manager)]
 #[gpui::test]
 fn composer_grows_and_shift_enter_keeps_a_newline_while_enter_sends_once(cx: &mut TestAppContext) {
