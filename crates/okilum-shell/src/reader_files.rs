@@ -439,7 +439,6 @@ impl Reader {
                         reader_canvas::CanvasView::new(
                             self.vault_root.clone(),
                             rel.into(),
-                            self.vault.clone(),
                             reader,
                             cx,
                         )
