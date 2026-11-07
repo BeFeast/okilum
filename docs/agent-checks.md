@@ -56,8 +56,9 @@ control without its required receipt. This isolates scenarios without changing
 the production pool, test inventory, assertions, operation deadlines or 1320 s
 group deadline. Explicit concurrency within individual tests and the separate
 20-run reveal stress/negative controls remain enabled. Hosted attempts of
-`42373775429` recorded both interference failures; neither failed control was
-accepted as a passing verdict.
+`42373775429` recorded these two failures; the exact cause of the missing D-Bus
+receipt was not established. Neither failed control was accepted as a passing
+verdict.
 
 Every worker run also requires `windows-recovery` on a GitHub-hosted Windows
 runner (#2551). It runs the existing native `okilum-core` `windows_` suite,
