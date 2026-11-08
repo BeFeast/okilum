@@ -42,7 +42,7 @@ jobs:
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
           archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
-          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/ci/fetch-ci-dependency.py sparkle "$archive"
           python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
           echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
       - name: Compile shipping Reader and every workspace test target
