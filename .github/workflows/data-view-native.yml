@@ -96,6 +96,7 @@ jobs:
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/data-view-native-app.py "$binary"
+          python3 scripts/ci/data-table-native-app.py "$binary"
       - name: Exercise read-only data viewing and compiled negative controls
         shell: bash
         run: |
@@ -107,7 +108,9 @@ jobs:
         if: always()
         with:
           name: data-view-native-${{ runner.os }}
-          path: ${{ runner.temp }}/data-view-native-app.log
+          path: |
+            ${{ runner.temp }}/data-view-native-app.log
+            ${{ runner.temp }}/data-table-native-app.log
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/cache/save@v4

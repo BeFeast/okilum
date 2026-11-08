@@ -25,7 +25,7 @@ class FetchTests(unittest.TestCase):
                 sparkle.fetch(destination)
             self.assertEqual(destination.read_bytes(), data)
             fallback = request.call_args_list[1].args[0]
-            self.assertEqual(fallback.full_url, sparkle.LOCK['asset_url'])
+            self.assertEqual(fallback.full_url, sparkle.LOCK['asset_api_url'])
             self.assertEqual(fallback.get_header('Accept'), 'application/octet-stream')
 
     def test_hosted_fallback_keeps_the_token_out_of_argv(self):

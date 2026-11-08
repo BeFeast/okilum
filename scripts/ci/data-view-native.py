@@ -16,6 +16,24 @@ assert listing.returncode == 0
 names = [line for line in listing.stdout.splitlines() if line.endswith(': test')]
 assert len(names) == 8, names
 assert run(*base, 'data_view_2669_', '--', '--nocapture', '--test-threads=1').returncode == 0
+table_inventory = run(*base, 'data_table_2735_', '--', '--list')
+assert table_inventory.returncode == 0
+assert len([line for line in table_inventory.stdout.splitlines() if line.endswith(': test')]) == 2
+assert run(*base, 'data_table_2735_', '--', '--nocapture', '--test-threads=1').returncode == 0
+table_source = pathlib.Path('crates/okilum-shell/src/reader_delimited.rs')
+table_positive = table_source.read_bytes()
+sort_action = b'this.sort_column(column, cx);'
+assert table_positive.count(sort_action) == 1
+try:
+    table_source.write_bytes(table_positive.replace(sort_action, b'let _ = column;'))
+    negative = run(*base, 'data_table_2735_native_sort_filter_copy_and_wide_virtualization', '--', '--nocapture', '--test-threads=1')
+    assert negative.returncode != 0
+    assert 'test result: FAILED' in negative.stdout and 'native header click sorted numerically' in negative.stdout
+    print('DATA_TABLE_2735_COMPILED_DISABLED_SORT_CONTROL_FIRED', flush=True)
+finally:
+    table_source.write_bytes(table_positive)
+assert run(*base, 'data_table_2735_', '--', '--nocapture', '--test-threads=1').returncode == 0
+print('DATA_TABLE_2735_RESTORED_NATIVE_SUITE_PASS', flush=True)
 # Preserve the real selection/edit/recovery/image contracts exercised by full Linux.
 for regression in [
     'reader_editor::mode_navigation_tests::',

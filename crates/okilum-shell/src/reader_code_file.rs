@@ -95,6 +95,8 @@ pub(crate) struct CodePreview {
     source_bytes: Option<usize>,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
+    table: Option<Entity<reader_delimited::TablePreview>>,
+    show_table: bool,
     document: Option<Arc<Document>>,
     page: usize,
     structure: structure::Structure,
@@ -145,6 +147,16 @@ enum Loaded {
 }
 
 impl CodePreview {
+    #[cfg(feature = "data-view-native-harness")]
+    pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
+        self.table.clone()
+    }
+
+    #[cfg(feature = "data-view-native-harness")]
+    pub(crate) fn native_source_ready(&self) -> bool {
+        self.document.is_some()
+    }
+
     pub(crate) fn preserve_zoom_anchor(
         &mut self,
         pointer: Option<Point<Pixels>>,
@@ -164,6 +176,11 @@ impl CodePreview {
     ) -> Self {
         let started = Instant::now();
         let json = is_json(&rel);
+        let table =
+            json.then(|| cx.new(|cx| reader_delimited::TablePreview::new(path.clone(), cx)));
+        if let Some(table) = &table {
+            cx.observe(table, |_, _, cx| cx.notify()).detach();
+        }
         let task = cx.background_executor().spawn(async move {
             if std::fs::metadata(&path)?.len() > MAX_BYTES {
                 return anyhow::Ok(Loaded::TooLarge);
@@ -250,6 +267,8 @@ impl CodePreview {
             state: State::Loading,
             source_bytes: None,
             json: None,
+            table,
+            show_table: true,
             document: None,
             page: 0,
             structure: structure::Structure::default(),
@@ -423,8 +442,13 @@ impl CodePreview {
         }
     }
 
-    /// Returns true when whole-file Find owns the paged presentation.
+    /// Find targets the visible table or the whole-file paged presentation.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.show_table {
+            if let Some(table) = self.table.as_ref().filter(|table| table.read(cx).ready()) {
+                return table.update(cx, |table, cx| table.focus_filter(window, cx));
+            }
+        }
         if self
             .document
             .as_ref()
@@ -610,7 +634,46 @@ impl Render for CodePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
+        let table_ready = self
+            .table
+            .as_ref()
+            .is_some_and(|table| table.read(cx).ready());
+        let modes = table_ready.then(|| {
+            h_flex()
+                .px_4()
+                .py_1()
+                .gap_2()
+                .children([true, false].map(|table| {
+                    Button::new(if table { "json-table" } else { "json-source" })
+                        .debug_selector(move || {
+                            if table {
+                                "json-table".into()
+                            } else {
+                                "json-source".into()
+                            }
+                        })
+                        .small()
+                        .ghost()
+                        .label(if table { "Table" } else { "Source" })
+                        .selected(self.show_table == table)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.show_table = table;
+                            cx.notify();
+                        }))
+                }))
+                .into_any_element()
+        });
+        if table_ready && self.show_table {
+            return v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .children(modes)
+                .child(self.table.as_ref().unwrap().clone())
+                .into_any_element();
+        }
         let view = v_flex()
+            .children(modes)
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|this, _: &CopyNode, _, cx| this.copy_node(cx)))
@@ -684,7 +747,7 @@ impl Render for CodePreview {
         };
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.end");
-        result
+        result.into_any_element()
     }
 }
 
@@ -724,6 +787,71 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn data_table_2735_json_defaults_to_table_and_keeps_source(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("rows.json");
+        let source = r#"[{"name":"Alpha","n":10},{"name":"Two","n":2}]"#;
+        std::fs::write(&path, source).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_delimited::bind_keys(cx);
+        });
+        let mut preview = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                CodePreview::new(
+                    fixture.path().into(),
+                    "rows.json".into(),
+                    path.clone(),
+                    window,
+                    cx,
+                )
+            });
+            preview = Some(view.clone());
+            Root::new(cx.new(|_| Surface(view)), window, cx)
+        });
+        visual.simulate_resize(size(px(800.), px(500.)));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("table-duckdb").is_some(),
+            "JSON array opens a table"
+        );
+        let preview = preview.unwrap();
+        preview.update_in(visual, |p, window, cx| {
+            assert!(
+                p.open_paged_find(window, cx),
+                "Find targets the visible JSON table"
+            );
+        });
+        visual.simulate_input("Two");
+        visual.run_until_parked();
+        let first = visual.debug_bounds("delimited-cell-1-0").unwrap();
+        visual.simulate_click(first.center(), Modifiers::default());
+        visual.simulate_keystrokes("secondary-c");
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Two",
+                "Find filters the displayed table"
+            )
+        });
+        let source_button = visual.debug_bounds("json-source").unwrap();
+        visual.simulate_click(source_button.center(), Modifiers::default());
+        visual.run_until_parked();
+        preview.read_with(visual, |p, cx| {
+            assert!(!p.show_table);
+            assert!(p.input().is_some_and(|input| !input.read(cx).is_editable()));
+        });
+        assert!(visual.debug_bounds("json-pretty").is_some());
+        assert!(visual.debug_bounds("table-duckdb").is_none());
+        let button = visual.debug_bounds("json-table").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("table-duckdb").is_some());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+    }
     use ::core::prelude::v1::test;
 
     #[test]

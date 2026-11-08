@@ -128,10 +128,10 @@ def fetch(archive):
             # The runner's short-lived read-only token avoids shared-IP API rate
             # limits. gh strips credentials on the cross-host asset redirect.
             data = subprocess.check_output([
-                'gh', 'api', '--header', 'Accept: application/octet-stream', LOCK['asset_url'],
+                'gh', 'api', '--header', 'Accept: application/octet-stream', LOCK['asset_api_url'],
             ], env=dict(os.environ, GH_TOKEN=token), timeout=60)
         else:
-            request = urllib.request.Request(LOCK['asset_url'], headers={
+            request = urllib.request.Request(LOCK['asset_api_url'], headers={
                 'Accept': 'application/octet-stream',
             })
             with urllib.request.urlopen(request, timeout=60) as response:

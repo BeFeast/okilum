@@ -127,6 +127,75 @@ class Compatibility(unittest.TestCase):
         result = self.compare(old, new)
         self.assertEqual(result['status'], 'FAIL'); self.assertTrue(result['errors'])
 
+    def nullable_usage(self):
+        def usage(status):
+            return obj({
+                'usageStatus': {'type': 'string', 'enum': status},
+                'tokens': {'type': 'integer', 'minimum': 0},
+                'optionalHint': {'type': 'string'},
+            }, ['usageStatus', 'tokens'])
+        return {'usage': doc({'anyOf': [
+            {'$ref': '#/$defs/Complete'}, {'type': 'null'},
+            {'$ref': '#/$defs/Partial'},
+        ]}, {'Complete': usage(['complete']),
+             'Partial': usage(['partial', 'unavailable'])})}
+
+    def widen_nullable_usage(self, old):
+        new = copy.deepcopy(old)
+        for branch in new['usage']['definitions'].values():
+            branch['properties']['localCommand'] = {
+                'anyOf': [{'type': 'boolean'}, {'type': 'null'}]}
+        new['usage']['schema']['anyOf'].reverse()
+        return new
+
+    def test_nullable_discriminated_union_additions_reconsider_unmatched_branches(self):
+        old = self.nullable_usage()
+        new = self.widen_nullable_usage(old)
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'PASS', result)
+        additions = [item for item in result['informational']
+                     if item['path'].endswith('.localCommand')]
+        self.assertEqual(len(additions), 2)
+        self.assertTrue(all('usageStatus=' in item['path'] for item in additions))
+
+    def test_nullable_discriminated_union_still_rejects_breaking_changes(self):
+        old = self.nullable_usage()
+        for change in ('optional field removed', 'required field removed',
+                       'variant removed', 'required field added', 'type narrowed',
+                       'constraint narrowed', 'null removed'):
+            new = self.widen_nullable_usage(old)
+            complete = new['usage']['definitions']['Complete']
+            if change == 'optional field removed':
+                del complete['properties']['optionalHint']
+            elif change == 'required field removed':
+                del complete['properties']['tokens']
+                complete['required'].remove('tokens')
+            elif change == 'variant removed':
+                new['usage']['schema']['anyOf'].pop(0)
+            elif change == 'required field added':
+                complete['required'].append('localCommand')
+            elif change == 'type narrowed':
+                complete['properties']['optionalHint'] = {'type': 'boolean'}
+            elif change == 'constraint narrowed':
+                complete['properties']['tokens']['minimum'] = 1
+            else:
+                new['usage']['schema']['anyOf'].pop(1)
+            with self.subTest(change=change):
+                result = self.compare(old, new)
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertTrue(result['breaking'] or result['errors'], result)
+
+    def test_nullable_ambiguous_union_still_fails_closed_after_common_branch(self):
+        old = {'x': doc({'anyOf': [
+            obj({'a': {'type': 'string'}}), obj({'b': {'type': 'integer'}}),
+            {'type': 'null'}]})}
+        new = {'x': doc({'anyOf': [
+            obj({'c': {'type': 'string'}}), obj({'d': {'type': 'integer'}}),
+            {'type': 'null'}]})}
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'FAIL', result)
+        self.assertTrue(result['errors'], result)
+
     def test_actual_current_consumer_baseline_and_opaque_rpc_are_distinct(self):
         baseline = c.load_baseline()
         result = c.compare(copy.deepcopy(baseline), baseline)
