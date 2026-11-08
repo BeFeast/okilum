@@ -296,6 +296,7 @@ impl Controller {
             api.add_paused_folder(&json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
                 "type":"sendreceive","paused":true,"devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
                 "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+            inventory::merge::checkpoint("handoff-folder-created", receipt.operation);
         }
         let folder = api.folder(vault)?;
         if transfer.witness.is_none() {

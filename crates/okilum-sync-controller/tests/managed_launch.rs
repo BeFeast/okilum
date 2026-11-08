@@ -643,6 +643,12 @@ fn first_sync_fixture(root: &Path) -> Result<FirstSyncFixture> {
     let catalog = second.catalog(peer)?;
     assert_eq!(catalog.len(), 1);
     let vault = catalog[0].id.clone();
+    let a = source.connect()?;
+    let b = target.connect()?;
+    let a_address = a.config()?["options"]["listenAddresses"][0].clone();
+    let b_address = b.config()?["options"]["listenAddresses"][0].clone();
+    a.add_device(&json!({"deviceID":target.device_id,"addresses":[b_address]}))?;
+    b.add_device(&json!({"deviceID":source.device_id,"addresses":[a_address]}))?;
     Ok(FirstSyncFixture {
         source_runtime,
         target_runtime,
@@ -682,10 +688,6 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     let vault = &vault;
     let a = source.connect()?;
     let b = target.connect()?;
-    let a_address = a.config()?["options"]["listenAddresses"][0].clone();
-    let b_address = b.config()?["options"]["listenAddresses"][0].clone();
-    a.add_device(&json!({"deviceID":target.device_id,"addresses":[b_address]}))?;
-    b.add_device(&json!({"deviceID":source.device_id,"addresses":[a_address]}))?;
     let before = (first_sync_files(&here)?, first_sync_files(&there)?);
     assert!(
         second.attach(peer, vault, &here).is_err(),
@@ -1263,13 +1265,17 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
     subreaper()?;
     for stage in [
         "destination-prepared",
+        "source-staged",
+        "source-partial-blob",
         "source-prepared",
         "source-frozen",
         "source-captured",
+        "source-note-captured",
         "source-published",
         "destination-published",
         "source-complete",
         "destination-released",
+        "handoff-folder-created",
         "third-version",
     ] {
         if std::env::var("OKILUM_FIRST_SYNC_CRASH_CASE").is_ok_and(|selected| selected != stage) {
@@ -1314,6 +1320,7 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
             Some(86),
             "checkpoint {stage} never fired"
         );
+        drop(child);
         let receipt: Value =
             serde_json::from_slice(&fs::read(root.path().join("crash-receipt.json"))?)?;
         assert_eq!(receipt["checkpoint"], checkpoint);

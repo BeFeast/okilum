@@ -127,7 +127,7 @@ impl SyncMergePreview {
                         this.message = Some(match result {
                             Ok(()) => "Both copies now contain all files. Conflict versions are kept separately.",
                             Err(Error::Stale) => "Files or connection changed. Refresh the preview before continuing.",
-                            Err(_) => "Merge stopped. Originals must be recovered before a new preview. Sync has not been enabled.",
+                            Err(_) => "Merge stopped. Check pending first Sync below. If no operation is listed, go back to folders and review a fresh preview.",
                         });
                         cx.notify();
                     });
@@ -149,6 +149,7 @@ impl Render for SyncMergePreview {
             .gap_2()
             .child("Review first Sync")
             .child("All files are kept. Different versions are stored separately for resolution.")
+            .child("New here means copied to this folder. New there means copied to the other computer.")
             .child(
                 h_flex()
                     .gap_2()
@@ -160,12 +161,12 @@ impl Render for SyncMergePreview {
                     .child(
                         div()
                             .debug_selector(|| "sync-merge-here-count".into())
-                            .child(format!("New here: {}", plan.count(Kind::OnlyHere))),
+                            .child(format!("New here: {}", plan.count(Kind::OnlyThere))),
                     )
                     .child(
                         div()
                             .debug_selector(|| "sync-merge-there-count".into())
-                            .child(format!("New there: {}", plan.count(Kind::OnlyThere))),
+                            .child(format!("New there: {}", plan.count(Kind::OnlyHere))),
                     )
                     .child(
                         div()
@@ -199,8 +200,8 @@ impl Render for SyncMergePreview {
         for entry in plan.entries().iter().skip(page * page_size).take(page_size) {
             let kind = match entry.kind {
                 Kind::Equal => "Same",
-                Kind::OnlyHere => "New here",
-                Kind::OnlyThere => "New there",
+                Kind::OnlyHere => "New there",
+                Kind::OnlyThere => "New here",
                 Kind::Different => "Conflicting",
             };
             content = content.child(match &entry.conflict_path {

@@ -554,6 +554,10 @@ impl Store {
                     },
                     self.binding.operation,
                 );
+                #[cfg(feature = "first-sync-fixture")]
+                if self.binding.remote_side && path == "different.md" {
+                    checkpoint("source-note-captured", self.binding.operation);
+                }
                 // Verify the captured inode, not a new lookup at the canonical
                 // name. An external writer cannot be silently overwritten.
                 let held = File::from(openat(

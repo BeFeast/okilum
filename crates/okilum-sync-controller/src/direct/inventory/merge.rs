@@ -125,7 +125,7 @@ pub mod fixture {
         }
     }
 }
-fn checkpoint(name: &str, operation: Uuid) {
+pub(in crate::direct) fn checkpoint(name: &str, operation: Uuid) {
     #[cfg(feature = "first-sync-fixture")]
     fixture::checkpoint(name, operation);
     #[cfg(not(feature = "first-sync-fixture"))]
@@ -334,6 +334,7 @@ impl Controller {
                 operation,
                 Arc::new(Mutex::new(Session { store, scope: None })),
             );
+            checkpoint("source-staged", operation);
             return Ok(Response::Staged { operation });
         }
         let session = {
@@ -371,8 +372,14 @@ impl Controller {
                     "first Sync chunk exceeds bound"
                 );
                 let bytes = decode_chunk(&hex)?;
-                let offset = session.store.chunk(blob.as_deref(), offset, &bytes)?;
-                Ok(Response::Chunk { operation, offset })
+                let uploaded = session.store.chunk(blob.as_deref(), offset, &bytes)?;
+                if blob.is_some() && offset == 0 && bytes.len() == CHUNK_BYTES {
+                    checkpoint("source-partial-blob", operation);
+                }
+                Ok(Response::Chunk {
+                    operation,
+                    offset: uploaded,
+                })
             }
             Request::Status { .. } => Ok(Response::Status {
                 operation,
@@ -492,6 +499,9 @@ impl Controller {
                     session.store.save()?;
                 }
                 checkpoint("source-complete", operation);
+                // Terminal journals remain durable; their in-memory manifests
+                // need not accumulate for the rest of the application's life.
+                self.shared.first_sync.lock().unwrap().remove(&operation);
                 Ok(Response::Complete {
                     operation,
                     metadata_hash,
@@ -528,6 +538,7 @@ impl Controller {
                 }
                 session.store.binding.phase = Phase::Cancelled;
                 session.store.save()?;
+                self.shared.first_sync.lock().unwrap().remove(&operation);
                 Ok(Response::Cancelled { operation })
             }
         }
