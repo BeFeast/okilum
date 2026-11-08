@@ -1427,7 +1427,7 @@ fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContex
     assert!(visual.debug_bounds("manager-details").is_some());
     // Details now has a bounded viewport. Exercise actual wheel input rather
     // than clicking an offscreen selector through its ancestor's content mask.
-    let reveal_control = |selector: &str, visual: &mut VisualTestContext| {
+    let reveal_control = |selector: &'static str, visual: &mut VisualTestContext| {
         let viewport = visual.debug_bounds("project-connection-panel").unwrap();
         let control = visual.debug_bounds(selector).unwrap();
         visual.simulate_event(gpui::ScrollWheelEvent {
