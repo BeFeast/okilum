@@ -3,8 +3,15 @@
 set -Eeuo pipefail
 root="${1:?tool directory required}"
 mkdir -p "$root"
-curl -fsSL https://github.com/velopack/velopack/releases/download/1.2.161/vpk.1.2.161.nupkg -o "$root/vpk.nupkg"
-echo "2b56ce117f803fc70c103cb423bd040e395e40370f6ff6e10818e9ff9c26a323  $root/vpk.nupkg" | sha256sum -c -
+vpk_sha256=2b56ce117f803fc70c103cb423bd040e395e40370f6ff6e10818e9ff9c26a323
+if ! echo "$vpk_sha256  $root/vpk.nupkg" | sha256sum -c --status - 2>/dev/null; then
+    rm -f "$root/vpk.nupkg"
+    python3 "$(dirname "$0")/../pinned_download.py" \
+        --url https://github.com/velopack/velopack/releases/download/1.2.161/vpk.1.2.161.nupkg \
+        --fallback https://api.github.com/repos/velopack/velopack/releases/assets/598072248 \
+        --sha256 "$vpk_sha256" --destination "$root/vpk.nupkg"
+fi
+echo "$vpk_sha256  $root/vpk.nupkg" | sha256sum -c -
 python3 - "$root" <<'PY'
 import pathlib, sys, zipfile
 root = pathlib.Path(sys.argv[1])
