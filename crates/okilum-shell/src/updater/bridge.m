@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <Sparkle/Sparkle.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 static NSString *const TSBetaKey = @"OkilumReceiveBetaBuilds";
 
@@ -684,6 +685,11 @@ static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *d
     if (![TSUpdater startUpdater:&error]) TSSend(2, error.localizedDescription);
 }
 void okilum_updater_start(void) {
+    // A separate Reader profile does not own this bundle's installation.
+    // Sparkle's installer service is keyed by CFBundleIdentifier, not by the
+    // Reader state directory: a QA copy can otherwise retain the installed
+    // app's helper and cause its explicit Restart to fail (#2723).
+    if (getenv("OKILUM_STATE_DIR") != NULL) return;
     TSRegisterChannelDefault();
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
     if (TSUpdater || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;

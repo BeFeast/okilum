@@ -35,6 +35,7 @@ jobs:
           python3 scripts/updater/sparkle.py fetch "$archive"
           python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
           export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+          python3 scripts/ci/sparkle-profile-isolation.py
           python3 scripts/ci/sparkle-freshness/negative_control.py "$archive"
           python3 scripts/ci/sparkle-freshness/run.py "$archive"
       - uses: actions/upload-artifact@v4
