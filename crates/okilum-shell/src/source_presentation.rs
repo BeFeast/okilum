@@ -2791,6 +2791,31 @@ This paragraph remains ordinary Markdown.
         }
     }
 
+    #[test]
+    fn math_2741_showcase_inline_symbols_reveal_exact_source_and_preserve_unsupported_input() {
+        let note = source("Inline $\\N$ and $\\lessgtr$; $\\foo$; `\\N`; pay $2$ now.");
+        let provider = CachedProvider::classify(note.clone());
+        let projection = provider.compose(&note, &inactive(&note)).unwrap();
+        assert_eq!(
+            projection.text(),
+            "Inline ℕ and ≶; $\\foo$; \\N; pay $2$ now."
+        );
+        let caret = note.text.find("\\N").unwrap();
+        let active = ActiveSource {
+            anchor: SourceByte(caret),
+            head: SourceByte(caret),
+            ..Default::default()
+        };
+        let editing = provider.compose(&note, &active).unwrap();
+        assert!(editing.text().contains("$\\N$"));
+        assert!(editing.text().contains('≶'));
+        assert_eq!(provider.formula_at(note.stamp, caret).unwrap().tex, "\\N");
+        assert_eq!(
+            note.text.to_string(),
+            "Inline $\\N$ and $\\lessgtr$; $\\foo$; `\\N`; pay $2$ now."
+        );
+    }
+
     /// #1645: inline formulas are drawn in place of their TeX with exact
     /// source mapping; the caret on one shows its source and finds it.
     #[test]

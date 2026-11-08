@@ -141,11 +141,15 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
             .items_center()
             .gap_6()
             .debug_selector(move || format!("reader-math-formula-{offset}"))
-            .child(reader_editor::math_preview::row(
-                &formula.nodes,
-                size,
-                color,
-            ))
+            .child(
+                div()
+                    .debug_selector(move || format!("reader-math-body-{offset}"))
+                    .child(reader_editor::math_preview::row(
+                        &formula.nodes,
+                        size,
+                        color,
+                    )),
+            )
             .when_some(formula.tag.as_ref(), |row, tag| {
                 row.child(
                     div()
@@ -207,8 +211,8 @@ pub(super) fn parse_inline_math(
                 })
                 .collect(),
         }),
-        Err(_) => Some(MarkdownInline {
-            text: image.alt.clone(),
+        Err(error) => Some(MarkdownInline {
+            text: format!("{} [Math: {error}]", image.alt),
             marks: vec![(0..image.alt.len(), TextMark::default().code())],
         }),
     }
@@ -346,7 +350,7 @@ mod tests {
                 state.selected_text_as(SelectionFormat::Plain),
                 // Plain selection includes the paragraph terminator; Source
                 // below must still equal the exact authored bytes without it.
-                "Area x² and α₁; x²; pay $5 and $2$; $x^2$; $\\foo$; bold.\n"
+                "Area x² and α₁; x²; pay $5 and $2$; $x^2$; $\\foo$ [Math: Unknown command \\foo]; bold.\n"
             );
             assert_eq!(state.document_source().unwrap().as_ref(), original);
             assert_eq!(state.selected_text_as(SelectionFormat::Source), original);
@@ -357,6 +361,44 @@ mod tests {
                 "search sees the rendered formula"
             );
         });
+    }
+
+    #[gpui::test]
+    fn math_2741_read_original_display_tags_paint_beside_the_equation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let mut widths = Vec::new();
+        for (source, label) in [
+            (r"\tag{hi} x+y^{2x}", "(hi)"),
+            (r"\tag*{hi} x+y^{2x}", "hi"),
+        ] {
+            let original = format!("$${source}$$\n");
+            assert_eq!(
+                okilum_core::tex::parse_display(source)
+                    .unwrap()
+                    .tag
+                    .as_deref(),
+                Some(label)
+            );
+            let (_, visual) = cx.add_window_view(|_, _| Fixture {
+                source: obsidian::before_links(&original),
+                clicked: Default::default(),
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let body = visual
+                .debug_bounds("reader-math-body-0")
+                .expect("equation paints");
+            let tag = visual
+                .debug_bounds("reader-math-tag-0")
+                .expect("tag paints");
+            assert!(body.size.width > px(0.) && body.size.height > px(0.));
+            assert!(tag.size.width > px(0.) && tag.left() > body.right());
+            assert!(visual.debug_bounds("reader-math-error-0").is_none());
+            widths.push(tag.size.width);
+        }
+        assert!(widths[0] > widths[1], "tag* must omit the parentheses");
     }
 
     #[gpui::test]

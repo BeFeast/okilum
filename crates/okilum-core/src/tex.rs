@@ -475,7 +475,16 @@ impl Parser<'_> {
                 if self.peek_char() != Some('{') {
                     return error("Equation tag needs a braced label");
                 }
+                let start = self.chars.peek().expect("braced tag").0;
                 let text = self.text_argument()?;
+                let end = self.chars.peek().map_or(self.source.len(), |(at, _)| *at);
+                if self.source[start..end]
+                    .as_bytes()
+                    .windows(2)
+                    .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_alphabetic())
+                {
+                    return error("Equation tags currently support plain text labels");
+                }
                 self.tag = Some(if bare { text } else { format!("({text})") });
                 return Ok(None);
             }
