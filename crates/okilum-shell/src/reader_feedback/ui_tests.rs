@@ -1103,6 +1103,9 @@ fn feedback2744_empty_report_sends_default_log_and_allows_opt_out(cx: &mut TestA
     std::fs::write(&log, "synthetic feedback2744 diagnostic\n").unwrap();
     with_reader(cx, |reader| {
         let (view, mut feedback) = open_from_button(reader);
+        feedback.simulate_resize(size(px(600.), px(900.)));
+        feedback.run_until_parked();
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
         let sent = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
         let calls = sent.clone();
         view.update(&mut feedback, |view, cx| {
@@ -1119,8 +1122,24 @@ fn feedback2744_empty_report_sends_default_log_and_allows_opt_out(cx: &mut TestA
         let send = feedback.debug_bounds("feedback-send").unwrap();
         feedback.simulate_click(send.center(), Modifiers::default());
         feedback.run_until_parked();
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "empty Send reached the sender"
+        );
+        view.read_with(&feedback, |view, _| {
+            assert!(matches!(view.state, SendState::Failed(_)), "retry is ready");
+        });
+        // Repaint after async completion so the checkbox is enabled and its
+        // hitbox belongs to the current layout, rather than the Sending frame.
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
         let log_choice = feedback.debug_bounds("feedback-log").unwrap();
-        feedback.simulate_click(log_choice.center(), Modifiers::default());
+        let viewport = feedback.update(|window, _| window.viewport_size());
+        assert!(log_choice.top() >= px(0.) && log_choice.bottom() <= viewport.height);
+        feedback.simulate_click(
+            point(log_choice.left() + px(8.), log_choice.top() + px(8.)),
+            Modifiers::default(),
+        );
         feedback.run_until_parked();
         view.update(&mut feedback, |view, cx| {
             assert!(!view.include_log, "user can uncheck logs");
