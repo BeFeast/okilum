@@ -55,7 +55,8 @@ produce a successful new event.
 
 Expanded connection Details shares a bounded scroll region with connection
 and pairing controls (#2694). It reserves at most 40% of the Manager body's
-height, clips wrapped diagnostic content, and leaves the transcript and
+height and shares remaining space with the transcript after the composer.
+It clips wrapped diagnostic content and leaves the transcript and
 composer in separate layout regions. Expanding or collapsing Details does
 not replace the retained feed, draft, native client or binding.
 

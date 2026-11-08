@@ -55,7 +55,7 @@ def main():
              'project.draft_handoff_surface_visible(visible, cx)', WARM)
     negative('unbounded-details', 'crates/okilum-shell/src/project/native.rs',
              '            .when(self.connection_details, |view| {\n'
-             '                view.flex_none()\n                    .min_h_0()\n'
+             '                view.flex_1()\n                    .min_h_0()\n'
              '                    .max_h(relative(0.4))\n                    .overflow_y_scroll()\n'
              '            })\n', '', DETAILS)
     inventory('restored-inventory', 'project::panel_tests::', 3)

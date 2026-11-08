@@ -739,10 +739,11 @@ impl ProjectView {
             .debug_selector(|| "project-connection-panel".into())
             .w_full()
             .min_w_0()
-            // Technical details scroll in their own bounded region. They must
-            // not shrink to a smaller layout box while painting into history.
+            // Share the space left after the composer with history, with a 40%
+            // ceiling. A nonshrinking region can exhaust a short window.
+            // Overflow clipping keeps the full detail content inside its box.
             .when(self.connection_details, |view| {
-                view.flex_none()
+                view.flex_1()
                     .min_h_0()
                     .max_h(relative(0.4))
                     .overflow_y_scroll()

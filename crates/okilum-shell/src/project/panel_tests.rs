@@ -297,7 +297,7 @@ fn manager_2694_expanded_details_clip_before_history_at_narrow_short_sizes(
             .expect("bounded connection viewport");
         assert!(
             history.size.height >= px(32.),
-            "usable history at {width}x{height}: {history:?}"
+            "usable history at {width}x{height}: {history:?}; connection {connection:?}; collapsed {collapsed:?}"
         );
         assert!(
             connection.bottom() <= history.top() + px(1.),
