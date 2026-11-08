@@ -22,6 +22,10 @@ to that display's visible work area. They cannot be minimized independently.
 - macOS: a native child-window relationship, at the owner's normal level, keeps
   the tool above its owner without application-wide floating/topmost behavior.
   It is excluded from the Window menu; the app retains its single Dock identity.
+  Settings/About use an opaque native AppKit title bar with standard traffic
+  lights, native dragging and the system double-click preference (#2755).
+  Their explicit Close button is in a footer, outside the caption. Reader and
+  Feedback retain their existing chrome; owner lookup and lifecycle are unchanged.
 - Linux: GPUI Floating requests `WM_TRANSIENT_FOR` on X11 or an xdg-toplevel
   parent on Wayland. GPUI chooses the focused window as the transient parent;
   when invoked from another tool that may be a sibling in the same family.
@@ -42,3 +46,30 @@ opaque surface; older Hyprland versions without Lua log the unsupported request.
 No GPUI core or vendor changes are required. Regression tests cover real GPUI
 Settings/Feedback windows and native Windows ownership, styles and lifecycle.
 Native desktop presentation remains subject to the project's normal human/batch QA.
+
+## Settings caption regression (#2755)
+
+`39caa6e39856d1095c7f7c295162e17227263bcb` moved Close from the footer
+into the custom caption and intercepted left-button presses on its entire
+full-height row, including blank padding. Those pixels cannot start a title-bar
+drag. The custom title bar introduced by `7c73ea4f7` also starts the native move
+only on a subsequent mouse-move event over the bar; macOS hands that current
+event to `performWindowDragWithEvent:`. A short caption therefore depends on
+where the next pointer event lands instead of handing the original press to
+AppKit. The main Reader uses the same custom handler, with a taller header and
+different controls, so its working drag does not establish Settings correctness.
+
+On macOS Settings now delegates the whole native caption to AppKit without a
+GPUI overlay or mouse-move handler. Linux and Windows keep their original title
+bar and Close placement. The owner-scoping commits in #1957 (`2e94124f0`,
+`718e0f01b`, `ce6ac797b`, `56f3fe6b4`) change routing/reuse, not caption input;
+the native macOS child attachment predates them (`a7b1a9c50`). These relationships
+are retained, including the Windows HWND owner from #1917.
+
+Regression checks cover the macOS window options, absence of a custom caption,
+Close via pointer/Esc/shortcut/action, per-Reader About reuse, and owner closure.
+TestPlatform cannot simulate AppKit window dragging. Manual Mac verification must
+still cover repeated slow/fast drags across the full caption (active/inactive
+window, every Settings pane and About), native close, footer Close, and movement
+of the owning Reader. Source inspection identifies the dead input strip above;
+it does not substitute for reproducing the reported jumps on the tester's Mac.
