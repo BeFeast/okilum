@@ -1462,11 +1462,13 @@ impl Render for FeedbackView {
                         // A candidate-confirming Enter may arrive just after
                         // its marked range has cleared. Never send or alter it.
                         if this.text.read(cx).ime_settling(cx) {
+                            cx.stop_propagation();
                             return;
                         }
                         if action.secondary || action.shift {
                             cx.propagate();
                         } else {
+                            cx.stop_propagation();
                             this.send(cx);
                         }
                     }))

@@ -2,6 +2,10 @@
 """Execute native Feedback inventory and a real missing-private-field control."""
 from pathlib import Path
 import subprocess
+import sys
+
+# Windows hosted Python otherwise encodes assertion diagnostics as cp1252.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 QA = Path("qa/feedback-identity-2683")
 BASE = ["cargo", "test", "--locked", "-p", "okilum-shell", "--bin", "okilum"]
