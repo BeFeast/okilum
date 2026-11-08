@@ -7,9 +7,12 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
-import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pinned_download import fetch
 
 LOCK = json.loads(Path(__file__).with_name('sparkle-lock.json').read_text())
 # Leaf code first, then containing framework. No --deep signing.
@@ -125,11 +128,7 @@ if __name__ == '__main__':
     args = p.parse_args()
     if args.command == 'fetch':
         # Exact upstream URL and digest; a failed fetch never creates the destination.
-        with urllib.request.urlopen(LOCK['url'], timeout=60) as response:
-            data = response.read()
-        require(sha(data) == LOCK['archive_sha256'], 'Sparkle download SHA256 mismatch')
-        with args.archive.open('xb') as output:
-            output.write(data)
+        fetch(LOCK['url'], LOCK['archive_sha256'], args.archive, LOCK['asset_api_url'])
     elif args.command == 'prepare':
         prepare(args.archive, args.destination)
     else:

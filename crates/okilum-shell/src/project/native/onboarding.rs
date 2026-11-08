@@ -187,7 +187,7 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let stage = self.manager_stage(cx);
-        let mut view = v_flex().w_full().min_w_0().gap_2();
+        let mut view = v_flex().w_full().min_w_0().flex_none().gap_2();
         if stage != Stage::Connected {
             view = view.child(
                 v_flex()
@@ -248,8 +248,7 @@ impl ProjectView {
                 .debug_selector(|| "manager-details".into())
                 .w_full()
                 .min_w_0()
-                .max_h(px(280.))
-                .overflow_y_scroll()
+                .flex_none()
                 .gap_2()
                 .child(div().w_full().whitespace_normal().text_sm().child(details))
                 .child(
@@ -309,6 +308,10 @@ impl ProjectView {
                     );
                 }
             }
+            #[cfg(test)]
+            let panel = panel
+                .relative()
+                .child(super::super::panel_tests::details_paint_probe());
             view = view.child(panel);
         }
         view.into_any_element()

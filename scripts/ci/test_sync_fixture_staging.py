@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from unittest.mock import patch
 import zlib
 
@@ -22,6 +23,7 @@ import zlib
 spec = importlib.util.spec_from_file_location('fixture_stage', Path(__file__).with_name('sync-fixture-stage.py'))
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
+import pinned_download
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux ETXTBSY controls')
@@ -61,6 +63,30 @@ class FixtureStagingTests(unittest.TestCase):
         self.assertIsNone(process.poll())
         self.assertTrue(Path(f'/proc/{process.pid}/exe').samefile(binary))
         return process
+
+    def test_cold_download_503_uses_pinned_api_before_immutable_publication(self):
+        (self.cache / helper.ARCHIVE).unlink()
+        error = urllib.error.HTTPError(helper.URL, 503, 'Service Unavailable', {}, None)
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[error, io.BytesIO(self.archive)]) as network, \
+                patch('subprocess.check_output', side_effect=AssertionError('legacy downloader bypassed pinned fallback')):
+            binary = helper.stage(self.cache)
+            self.assertEqual(binary.read_bytes(), self.executable)
+            self.assertEqual(binary.stat().st_mode & 0o777, 0o555)
+            self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
+            self.assertEqual(network.call_count, 2)
+            request = network.call_args.args[0]
+            self.assertEqual(request.full_url, helper.ASSET_API_URL)
+            self.assertEqual(request.get_header('Accept'), 'application/octet-stream')
+            self.assertEqual(helper.stage(self.cache), binary)
+            self.assertEqual(network.call_count, 2, 'verified cache remains independent of network')
+        subprocess.run([str(binary), '-c', 'pass'], check=True)
+        cold = self.cache / 'another-cold-cache'
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[
+                urllib.error.URLError('offline'), io.BytesIO(b'corrupt archive')]):
+            with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+                helper.stage(cold)
+        self.assertFalse((cold / helper.ARCHIVE).exists())
+        self.assertFalse((cold / helper.BINARY_SHA256 / 'syncthing').exists())
 
     def test_publish_while_executing_and_reuse_verified_inode(self):
         binary = helper.stage(self.cache)
@@ -217,37 +243,16 @@ class FixtureStagingTests(unittest.TestCase):
     def test_concurrent_downloads_do_not_share_partial_archive(self):
         (self.cache / helper.ARCHIVE).unlink()
         barrier = threading.Barrier(4, timeout=10)
-        def download(_command):
+        def download(_request, timeout):
+            self.assertEqual(timeout, 60)
             barrier.wait()
-            return self.archive
-        with patch.object(helper.subprocess, 'check_output', side_effect=download):
+            return io.BytesIO(self.archive)
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=download) as network:
             with ThreadPoolExecutor(max_workers=4) as pool:
                 list(pool.map(lambda _: helper.stage(self.cache), range(4)))
+            self.assertEqual(network.call_count, 4, 'all cold callers exercised the download path')
         self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
         self.assertEqual(list(self.cache.rglob('.stage-*')), [])
-
-    def test_release_download_failure_uses_official_asset_with_identical_pins(self):
-        (self.cache / helper.ARCHIVE).unlink()
-        failed = subprocess.CalledProcessError(22, ['curl', helper.URL])
-        with patch.object(helper.subprocess, 'check_output',
-                          side_effect=[failed, self.archive]) as download:
-            binary = helper.stage(self.cache)
-        self.assertEqual(download.call_args_list[0].args[0][-1], helper.URL)
-        fallback = download.call_args_list[1].args[0]
-        self.assertEqual(fallback[-1], helper.ASSET_URL)
-        self.assertIn('Accept: application/octet-stream', fallback)
-        self.assertEqual(binary.read_bytes(), self.executable)
-        self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
-
-    def test_corrupt_asset_fallback_is_rejected_before_publication(self):
-        (self.cache / helper.ARCHIVE).unlink()
-        failed = subprocess.CalledProcessError(22, ['curl', helper.URL])
-        with patch.object(helper.subprocess, 'check_output',
-                          side_effect=[failed, b'wrong asset']):
-            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
-                helper.stage(self.cache)
-        self.assertFalse((self.cache / helper.ARCHIVE).exists())
-        self.assertFalse((self.cache / helper.BINARY_SHA256).exists())
 
     def test_corrupt_archive_is_rejected_before_publication(self):
         (self.cache / helper.ARCHIVE).write_bytes(b'incomplete download')

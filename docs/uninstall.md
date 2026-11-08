@@ -158,6 +158,9 @@ existing running-instance/Sync checks and confirmation, even if the image moved:
 - `~/.local/share/applications/okilum-appimage.desktop`
 - `~/.local/share/icons/hicolor/scalable/apps/okilum-appimage.svg`
 
+The user desktop database and shared hicolor icon cache are refreshed when the
+tools are available. Shared caches and other applications' icons are retained.
+
 These exact paths follow the existing helper contract rather than XDG_DATA_HOME.
 Foreign payloads are refused and reported; distribution launchers are preserved.
 The optional desktop database refresh does not change default handlers.
