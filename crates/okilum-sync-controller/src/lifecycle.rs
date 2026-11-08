@@ -215,15 +215,6 @@ impl<S: UserServices> Lifecycle<S> {
         Ok(())
     }
     fn prepare_launch(&self, journal: &mut Journal) -> Result<()> {
-        if let Some(launch) = &journal.launch {
-            launch.reference.validate(&journal.instance)?;
-            ensure!(
-                crate::managed_launch::digest(&launch.helper)? == launch.helper_hash
-                    && crate::managed_launch::identity(&launch.helper)? == launch.helper_identity,
-                "managed launch helper replaced"
-            );
-            return Ok(());
-        }
         let source = match &self.launcher {
             Some(path) => path.clone(),
             None => std::env::current_exe()?
@@ -232,6 +223,19 @@ impl<S: UserServices> Lifecycle<S> {
                 .join("okilum-sync-launch"),
         };
         let hash = crate::managed_launch::digest(&source)?;
+        if let Some(launch) = &journal.launch {
+            // Validate the copied helper even on an upgrade. A new package is
+            // never permission to adopt a substituted service/helper/registry.
+            ensure!(
+                crate::managed_launch::digest(&launch.helper)? == launch.helper_hash
+                    && crate::managed_launch::identity(&launch.helper)? == launch.helper_identity,
+                "managed launch helper replaced"
+            );
+            if hash == launch.helper_hash {
+                launch.reference.validate(&journal.instance)?;
+                return Ok(());
+            }
+        }
         // An old journal recognizes ONLY its exact previously generated unit.
         // Stop it before offline config/registry migration. Never stop arbitrary
         // definitions, and never use this process-wide upgrade as a folder proof.
@@ -247,10 +251,21 @@ impl<S: UserServices> Lifecycle<S> {
             self.check_unit(journal)?;
             fs::remove_file(path)?;
             File::open(&self.units)?.sync_all()?;
+        } else if journal.launch.is_some() {
+            // An interrupted upgrade may already have removed the old unit.
+            // It may proceed only if the service is still unregistered/stopped.
+            self.services.verify_stopped(&unit_name(journal))?;
         }
-        let reference = crate::managed_launch::initialize(&journal.instance)?;
+        let reference = if let Some(launch) = &journal.launch {
+            launch.reference.upgrade_package(&journal.instance)?;
+            launch.reference.clone()
+        } else {
+            crate::managed_launch::initialize(&journal.instance)?
+        };
 
-        let helper = self.state.join("okilum-sync-launch");
+        // Content-addressed copies keep the old journal valid until the new
+        // one is durable. A crash never leaves it pointing at replaced bytes.
+        let helper = self.state.join(format!("okilum-sync-launch-{hash}"));
         if helper.try_exists()? {
             ensure!(
                 crate::managed_launch::digest(&helper)? == hash,
@@ -902,6 +917,116 @@ mod tests {
             "\"/tmp/vault %%n $$HOME\""
         );
         assert!(quote(Path::new("/tmp/line\nbreak")).is_err());
+        Ok(())
+    }
+    #[test]
+    fn issue2043_packaged_helper_upgrade_preserves_identity_and_retries_after_stop() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let mut instance = instance(root.path())?;
+        let executable = root.path().join("syncthing");
+        fs::copy("/bin/true", &executable)?;
+        instance.executable = executable.clone();
+        let old = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
+        let name = old.enable(instance.clone())?;
+        let before = old.load()?.unwrap();
+        let old_helper = before.launch.as_ref().unwrap().helper.clone();
+        let old_hash = crate::managed_launch::digest(&old_helper)?;
+        let old_unit = fs::read(units.join(&name))?;
+        fs::copy("/bin/false", &executable)?;
+        let updated = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/false"));
+        services.fail_stop.set(true);
+        assert!(updated.reconcile().is_err());
+        assert!(services.active.get());
+        assert_eq!(fs::read(units.join(&name))?, old_unit);
+        assert_eq!(updated.load()?.unwrap().launch.unwrap().helper, old_helper);
+        services.fail_stop.set(false);
+        services.fail_start.set(true);
+        assert!(updated.reconcile().is_err());
+        assert!(!services.active.get());
+        services.fail_start.set(false);
+        updated.reconcile()?;
+        let after = updated.load()?.unwrap();
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.certificate_hash, before.certificate_hash);
+        assert_eq!(after.instance.home, before.instance.home);
+        let launch = after.launch.unwrap();
+        assert_ne!(launch.helper, old_helper);
+        assert_eq!(crate::managed_launch::digest(&old_helper)?, old_hash);
+        assert_eq!(
+            launch.helper_hash,
+            crate::managed_launch::digest(Path::new("/bin/false"))?
+        );
+        launch.reference.validate(&instance)?;
+        assert!(fs::read_to_string(units.join(&name))?.contains(launch.helper.to_str().unwrap()));
+        assert!(services.active.get());
+        let stops = services
+            .calls
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("stop:"))
+            .count();
+        updated.reconcile()?;
+        assert_eq!(
+            services
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("stop:"))
+                .count(),
+            stops
+        );
+        Ok(())
+    }
+    #[test]
+    fn issue2043_helper_upgrade_never_stops_a_changed_service() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let old = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
+        let name = old.enable(instance(root.path())?)?;
+        fs::write(units.join(&name), "[Service]\nExecStart=/bin/false\n")?;
+        services.calls.borrow_mut().clear();
+        let updated = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/false"));
+        assert!(updated.reconcile().is_err());
+        assert!(services.calls.borrow().is_empty());
+        assert!(services.active.get());
+        assert_eq!(
+            fs::read_to_string(units.join(name))?,
+            "[Service]\nExecStart=/bin/false\n"
+        );
+        Ok(())
+    }
+    #[test]
+    fn issue2043_missing_migration_root_names_the_folder_and_recovery() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let instance = instance(root.path())?;
+        let missing = root.path().join("unmounted-notes");
+        fs::write(
+            instance.home.join("config.xml"),
+            format!(
+                "<configuration><folder id=\"travelling-vault\" path=\"{}\"/></configuration>",
+                missing.display()
+            ),
+        )?;
+        let lifecycle = Lifecycle::new(
+            root.path().join("state"),
+            root.path().join("units"),
+            &services,
+        )
+        .with_launcher(PathBuf::from("/bin/true"));
+        let error = format!("{:#}", lifecycle.enable(instance).unwrap_err());
+        assert!(error.contains("travelling-vault") && error.contains(missing.to_str().unwrap()));
+        assert!(error.contains("reconnect its disk or remove this folder"));
+        assert!(!services.active.get());
         Ok(())
     }
     #[test]

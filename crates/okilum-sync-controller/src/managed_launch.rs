@@ -184,6 +184,19 @@ impl Reference {
         );
         Ok(())
     }
+    /// Only the lifecycle's verified, stopped upgrade may repin package bytes.
+    /// Retain the registry, folder authorities and reference identity unchanged.
+    pub(crate) fn upgrade_package(&self, instance: &ManagedInstance) -> Result<()> {
+        let _gate = self.gate()?;
+        let mut b = self.load()?;
+        let _process = lock_file(&self.directory.join("process.lock"), false, false)?;
+        ensure!(
+            b.home == instance.home && b.executable == instance.executable,
+            "managed package location changed"
+        );
+        b.executable_hash = digest(&instance.executable)?;
+        self.save(&b)
+    }
     fn save(&self, b: &Binding) -> Result<()> {
         private::write(
             &self.directory.join("binding.json"),
@@ -238,8 +251,13 @@ pub(crate) fn initialize(instance: &ManagedInstance) -> Result<Reference> {
         .filter(|e| e.name == "folder")
     {
         let id = e.attributes.get("id").context("folder ID missing")?;
-        let root = PathBuf::from(e.attributes.get("path").context("folder root missing")?)
-            .canonicalize()?;
+        let configured = PathBuf::from(e.attributes.get("path").context("folder root missing")?);
+        let root = configured.canonicalize().with_context(|| {
+            format!(
+                "Sync folder {id} at {} is unavailable; reconnect its disk or remove this folder from Sync before retrying the managed runtime upgrade",
+                configured.display()
+            )
+        })?;
         ensure!(
             !dir.starts_with(&root) && !instance.home.starts_with(&root),
             "managed launch state must be outside the vault"

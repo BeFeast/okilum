@@ -65,7 +65,9 @@ verifies the loaded fragment and absence of drop-ins. After verified stop, it
 removes only that definition, binds current folders, then durably publishes the
 helper journal/unit. UUID, certificate and home remain unchanged. Interrupted
 migration retries under the lifecycle lock. Existing helper bindings never fall
-back to migration when state disappears. A missing preparation receipt after
+back to migration when state disappears. An unavailable migration root names its
+folder ID and path and asks to reconnect the disk or remove that Sync folder.
+A missing preparation receipt after
 launch registration refuses regeneration before config effects, including
 bootstrap/Runtime retries. Partial registration requires explicit recovery; it
 is never reset from an empty registry. The autonomous command also checks the
@@ -74,6 +76,20 @@ exact unit and loaded definition.
 Migration is an explicit process-wide upgrade, not a selected-folder barrier.
 Normal holds/restarts never stop the shared daemon to manufacture a proof.
 Disable/removal retain their existing explicit service-ownership semantics.
+
+## Package upgrades
+
+Reconcile compares the packaged helper with the durable copied helper. A changed
+helper uses the same exact-unit and loaded-definition verification before
+stopping the owned service. With the runtime stopped, the process singleton and
+runtime gate protect repinning the packaged Syncthing hash; folder authorities,
+reference identity, certificate, home and lifecycle UUID remain unchanged.
+Helpers are copied to content-addressed paths. The old helper remains intact
+until and after the replacement journal is durable, so an interrupted copy or
+start can retry without pointing the old journal at new bytes. A modified unit
+is refused before any service effect. A missing unit during retry additionally
+requires verified stopped/unregistered state. No package upgrade is a transport
+quiescence receipt.
 
 ## Acceptance and remaining boundary
 
