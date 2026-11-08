@@ -150,16 +150,12 @@ fn placeholder(sprint: bool) -> &'static str {
     }
 }
 
-/// The report text to send, or `None` when there is nothing to send. A Sprint
-/// build sends its default line for an empty field, as the menu's one-click
-/// Sprint report always has.
-fn report_text(value: &str, sprint: bool) -> Option<String> {
-    if !value.trim().is_empty() {
-        Some(value.to_string())
-    } else if sprint {
-        Some(SPRINT_REPORT_TEXT.to_string())
+/// Empty feedback is valid; Sprint builds retain their one-click default line.
+fn report_text(value: &str, sprint: bool) -> String {
+    if value.trim().is_empty() && sprint {
+        SPRINT_REPORT_TEXT.to_string()
     } else {
-        None
+        value.to_string()
     }
 }
 
@@ -502,9 +498,18 @@ impl FeedbackView {
         let send_cancel = Arc::new(std::sync::Mutex::new(None::<model::CancelSignal>));
         let cancellation = send_cancel.clone();
         let limits_path = feedback_limits_path();
-        let (limits, limits_error) = match limits_path.as_ref().map(|p| model::Limits::load(p)).transpose() {
+        let (limits, limits_error) = match limits_path
+            .as_ref()
+            .map(|p| model::Limits::load(p))
+            .transpose()
+        {
             Ok(limits) => (limits.unwrap_or_default(), None),
-            Err(error) => (model::Limits::default(), Some(format!("Couldn't read attachment limits: {error}. Review Attachment limits before sending."))),
+            Err(error) => (
+                model::Limits::default(),
+                Some(format!(
+                    "Couldn't read attachment limits: {error}. Review Attachment limits before sending."
+                )),
+            ),
         };
         let sender_limits = Arc::new(std::sync::Mutex::new(limits));
         let sending_limits = sender_limits.clone();
@@ -555,7 +560,7 @@ impl FeedbackView {
             image_generation: 0,
             video: None,
             video_error: None,
-            include_log: sprint::enabled(),
+            include_log: true,
             log_path,
             state: SendState::Compose,
             sender: Arc::new(move |report| {
@@ -665,7 +670,9 @@ impl FeedbackView {
                 true
             }
             Err(error) => {
-                self.persistence_error = Some(format!("Couldn't save Feedback draft: {error}. Sending is stopped; copy the report before closing."));
+                self.persistence_error = Some(format!(
+                    "Couldn't save Feedback draft: {error}. Sending is stopped; copy the report before closing."
+                ));
                 false
             }
         }
@@ -691,7 +698,9 @@ impl FeedbackView {
                 self.restore_draft(index, window, cx);
             }
             Err(error) => {
-                self.persistence_error = Some(format!("Couldn't reopen the saved revision: {error}. The current draft was kept as a separate copy."));
+                self.persistence_error = Some(format!(
+                    "Couldn't reopen the saved revision: {error}. The current draft was kept as a separate copy."
+                ));
                 cx.notify();
             }
         }
@@ -757,7 +766,9 @@ impl FeedbackView {
             Ok(image) => self.image = image,
             Err(error) => {
                 self.unavailable_screenshot = saved.screenshot.clone();
-                self.image_error = Some(format!("Couldn't restore the selected screenshot: {error}. Remove it or attach it again."));
+                self.image_error = Some(format!(
+                    "Couldn't restore the selected screenshot: {error}. Remove it or attach it again."
+                ));
             }
         }
         self.video = saved.video;
@@ -911,7 +922,7 @@ impl FeedbackView {
     }
     fn report_without_log(&self, cx: &App) -> Report {
         Report {
-            text: report_text(&self.text.read(cx).value(), sprint::enabled()).unwrap_or_default(),
+            text: report_text(&self.text.read(cx).value(), sprint::enabled()),
             kind: self.kind,
             meta: self.meta.clone(),
             identity: identity::Data {
@@ -950,7 +961,6 @@ impl FeedbackView {
             && self.limit_inputs.is_none()
             && self.preflight_error.is_none()
             && self.selection_limits_error(cx).is_none()
-            && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
     }
     fn send(&mut self, cx: &mut Context<Self>) {
         if !self.can_send(cx) {
@@ -1701,7 +1711,7 @@ impl Render for FeedbackView {
                         Button::new("feedback-send")
                             .debug_selector(|| "feedback-send".into())
                             .primary()
-                            .disabled(!self.can_send(cx))
+                            .disabled(self.busy() || self.attaching)
                             .label(label)
                             .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
                     ),
@@ -1833,13 +1843,15 @@ mod recovery_mounted_tests {
             Some(vec![path.to_owned()])
         });
         draw(visual);
-        assert!(visual
-            .debug_bounds(if video {
-                "feedback-video"
-            } else {
-                "feedback-preview"
-            })
-            .is_some());
+        assert!(
+            visual
+                .debug_bounds(if video {
+                    "feedback-video"
+                } else {
+                    "feedback-preview"
+                })
+                .is_some()
+        );
     }
 
     fn hold(
@@ -2043,11 +2055,12 @@ mod recovery_mounted_tests {
         click(&mut feedback, "feedback-send");
         view.read_with(&feedback, |view, cx| {
             assert!(matches!(view.state, SendState::Compose));
-            assert!(view
-                .preflight_error
-                .as_ref()
-                .unwrap()
-                .contains("configured limit is 20 seconds"));
+            assert!(
+                view.preflight_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("configured limit is 20 seconds")
+            );
             assert_eq!(
                 view.text.read(cx).value(),
                 "Duration validation retains my report"
@@ -2111,10 +2124,12 @@ mod recovery_mounted_tests {
         started
             .try_recv()
             .expect("real Send reached worker scheduling boundary");
-        assert!(saved(&view, &feedback)
-            .1
-            .status
-            .contains("Delivery is uncertain"));
+        assert!(
+            saved(&view, &feedback)
+                .1
+                .status
+                .contains("Delivery is uncertain")
+        );
         click(&mut feedback, "feedback-cancel");
         view.read_with(&feedback, |view, cx| {
             assert!(matches!(view.state, SendState::Sending));
@@ -2133,9 +2148,11 @@ mod recovery_mounted_tests {
         let (_, recovered) = saved(&view, &feedback);
         assert_eq!(recovered.text, "Keep this feedback Ω");
         assert_eq!(recovered.video.as_ref(), Some(&selected));
-        assert!(recovered
-            .status
-            .contains("server may already have received"));
+        assert!(
+            recovered
+                .status
+                .contains("server may already have received")
+        );
         let old_id = view.entity_id();
         feedback.simulate_keystrokes("escape");
         draw(reader);

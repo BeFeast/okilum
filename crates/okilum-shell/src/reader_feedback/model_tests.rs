@@ -237,10 +237,12 @@ fn server_failures_and_untrusted_links_are_errors_without_mutating_the_report() 
     let before = report.copy_text();
     for status in [400, 413, 429, 503] {
         let (url, server) = mock(status, r#"{"error":"Try later"}"#);
-        assert!(send_to(&url, &report)
-            .unwrap_err()
-            .to_string()
-            .contains(&status.to_string()));
+        assert!(
+            send_to(&url, &report)
+                .unwrap_err()
+                .to_string()
+                .contains(&status.to_string())
+        );
         server.join().unwrap();
         assert_eq!(report.copy_text(), before);
     }
@@ -259,6 +261,8 @@ fn payload_character_limits_and_metadata_are_explicit() {
     report.text.push('я');
     assert!(report.validate().is_err());
     report.text = "  ".into();
+    assert!(report.validate().is_ok());
+    report.text = "\0".into();
     assert!(report.validate().is_err());
     let meta = serde_json::to_value(meta()).unwrap();
     for key in [
@@ -279,10 +283,12 @@ fn payload_character_limits_and_metadata_are_explicit() {
     ] {
         assert!(!meta[key].is_null(), "{key}");
     }
-    assert!(report
-        .meta
-        .summary()
-        .contains("Ubuntu 26.04.1 · wayland · GNOME"));
+    assert!(
+        report
+            .meta
+            .summary()
+            .contains("Ubuntu 26.04.1 · wayland · GNOME")
+    );
 }
 #[test]
 fn png_jpeg_and_clipboard_bmp_have_real_png_payloads_and_removable_previews() {
@@ -387,9 +393,11 @@ fn video_is_streamed_as_its_own_multipart_part_with_type_and_name() {
     std::fs::write(&path, body).unwrap();
     let mut report = report();
     report.video = Some(video_file(&path).unwrap());
-    assert!(report
-        .copy_text()
-        .contains("Video attached in the feedback draft: clip.webm (1 KB)."));
+    assert!(
+        report
+            .copy_text()
+            .contains("Video attached in the feedback draft: clip.webm (1 KB).")
+    );
     let (url, server) = mock(201, RECEIPT);
     assert_eq!(send_to(&url, &report).unwrap().issue_number, 123);
     let wire = server.join().unwrap();
@@ -398,9 +406,10 @@ fn video_is_streamed_as_its_own_multipart_part_with_type_and_name() {
         text.contains("name=\"video\"; filename=\"clip.webm\""),
         "{text}"
     );
-    assert!(text
-        .to_ascii_lowercase()
-        .contains("content-type: video/webm"));
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("content-type: video/webm")
+    );
     assert!(wire.windows(body.len()).any(|b| b == body));
     assert!(!text.contains("name=\"screenshot\""));
 }
@@ -417,10 +426,12 @@ fn a_video_that_grew_past_the_cap_or_a_bare_413_keeps_the_draft_with_a_reason() 
         .set_len(MAX_VIDEO + 1)
         .unwrap();
     // Validation fails before any connection is made.
-    assert!(send_to("http://127.0.0.1:9/feedback", &report)
-        .unwrap_err()
-        .to_string()
-        .contains("the limit is"));
+    assert!(
+        send_to("http://127.0.0.1:9/feedback", &report)
+            .unwrap_err()
+            .to_string()
+            .contains("the limit is")
+    );
     let mut report = self::report();
     report.video = Some(video_file(&sized_file(dir.path(), "ok.mp4", 10)).unwrap());
     let (url, server) = mock(413, "{}");
@@ -553,9 +564,10 @@ fn interrupted_primary_upload_reopens_video_for_the_one_fallback() {
         Some(fallback.as_str())
     );
     let wire = received.join().unwrap();
-    assert!(wire
-        .windows(video_bytes.len())
-        .any(|part| part == video_bytes));
+    assert!(
+        wire.windows(video_bytes.len())
+            .any(|part| part == video_bytes)
+    );
     assert_eq!(std::fs::read(video_path).unwrap(), video_bytes);
 }
 
@@ -679,4 +691,21 @@ fn truncated_created_receipt_never_resends_an_accepted_report() {
     assert!(
         matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
+}
+
+#[test]
+fn feedback2744_empty_text_reaches_endpoint_with_metadata_and_logs() {
+    for text in ["", "  \n"] {
+        let mut draft = report();
+        draft.text = text.into();
+        draft.log = Some("synthetic empty feedback diagnostic".into());
+        let (endpoint, server) = mock(201, RECEIPT);
+        assert_eq!(send_to(&endpoint, &draft).unwrap().issue_number, 123);
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        assert!(request.contains("name=\"text\""));
+        assert!(request.contains("0.1.123"));
+        assert!(request.contains("Ubuntu 26.04.1"));
+        assert!(request.contains("synthetic empty feedback diagnostic"));
+        assert!(request.contains(&draft.identity.install_id.to_string()));
+    }
 }
