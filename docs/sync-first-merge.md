@@ -215,3 +215,12 @@ The historical task XML remains unchanged. A native binary test starts from the
 actual state working directory; a compiled negative control removes only that
 startup transition and requires the real store-busy refusal. No store sharing or
 ownership gate is relaxed.
+
+Windows Connect observes the authenticated endpoint before taking its final
+intent transaction. Repeated exclusive directory transactions during startup
+conflict with the helper's protected ancestor reads. The readiness control holds
+an actual native directory reader through several observations, then releases it
+before the final intent check. Its compiled negative restores a transaction before
+observation and must fail as busy; an intervening Disable must still refuse
+readiness. The signed Task lifecycle remains the end-to-end acceptance of this
+ordering, independently of that contention control.

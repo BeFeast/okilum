@@ -93,6 +93,7 @@ def main():
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     subprocess.run(["cargo", "test", "--locked", "-p", "okilum-sync-supervisor"], check=True)
     runpy.run_path(str(Path(__file__).with_name("windows-sync-cwd-check.py")))["check"]()
+    runpy.run_path(str(Path(__file__).with_name("windows-sync-readiness-check.py")))["check"]()
     runpy.run_path(str(Path(__file__).with_name("windows-sync-task-check.py")))["check"](client, notices)
     runpy.run_path(str(Path(__file__).with_name("windows-sync-shell-check.py")))["check"]()
     return 0

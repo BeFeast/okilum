@@ -199,6 +199,23 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
         Registration::Running => (),
         _ => anyhow::bail!("native task registration is not ready"),
     }
+    wait_for_native_ready(&store, &prepared.binding, deadline, || {
+        Ok(platform.inspect(&prepared.binding)? == Registration::Running)
+    })?;
+    let identity = managed_source_identity(&state)?;
+    ensure!(
+        identity == prepared.identity,
+        "native ready identity changed"
+    );
+    Ok(identity)
+}
+
+fn wait_for_native_ready(
+    store: &WindowsStore,
+    binding: &crate::sidecar::Binding,
+    deadline: Instant,
+    mut running: impl FnMut() -> Result<bool>,
+) -> Result<()> {
     loop {
         if Instant::now() >= deadline {
             if let Some(problem) = store
@@ -209,25 +226,23 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
             }
             anyhow::bail!("Sync is still starting; retry Connect to inspect the retained instance");
         }
-        let transaction = store.begin(deadline)?;
-        let current = transaction
-            .current()?
-            .context("native Sync intent disappeared")?;
-        ensure!(
-            current.binding() == &prepared.binding
-                && current.intent() == Intent::Enabled
-                && current.stop().is_none()
-                && current.update().is_none(),
-            "native Sync launch was cancelled or changed"
-        );
-        drop(transaction);
-        if platform.inspect(&prepared.binding)? == Registration::Running {
-            let identity = managed_source_identity(&state)?;
+        // Startup pins protected ancestors while reading its launch/configuration
+        // receipts. Poll only the authenticated endpoint until it is ready: an
+        // exclusive state transaction here can make those reads fail with a
+        // native sharing violation. Recheck intent before granting readiness.
+        if running()? {
+            let transaction = store.begin(deadline)?;
+            let current = transaction
+                .current()?
+                .context("native Sync intent disappeared")?;
             ensure!(
-                identity == prepared.identity,
-                "native ready identity changed"
+                current.binding() == binding
+                    && current.intent() == Intent::Enabled
+                    && current.stop().is_none()
+                    && current.update().is_none(),
+                "native Sync launch was cancelled or changed"
             );
-            return Ok(identity);
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -256,3 +271,6 @@ pub fn disable_current_app() -> Result<()> {
 
 #[cfg(test)]
 mod signed_task_tests;
+
+#[cfg(test)]
+mod tests;

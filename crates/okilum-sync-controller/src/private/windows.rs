@@ -33,6 +33,7 @@ fn text(path: &Path) -> Result<String> {
 }
 fn parent(path: &Path) -> Result<PrivateDirectory> {
     PrivateDirectory::open_existing(&text(path.parent().context("Sync state parent missing")?)?)
+        .with_context(|| format!("pin private Sync parent for {}", path.display()))
 }
 pub(crate) fn directory(path: &Path) -> Result<()> {
     PrivateDirectory::prepare(&text(path)?)?;
