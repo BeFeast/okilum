@@ -89,6 +89,49 @@ fn issue2582_child() -> Result<()> {
                 thread::sleep(Duration::from_millis(50));
             }
         }
+        #[cfg(feature = "first-sync-fixture")]
+        "first-sync-crash" => {
+            let selected = fs::read_to_string(root.join("selected-checkpoint"))?;
+            let evidence = root.clone();
+            okilum_sync_controller::direct::inventory::merge::fixture::install(
+                move |name, operation| {
+                    if name == selected {
+                        let mut receipt =
+                            fs::File::create(evidence.join("crash-receipt.json")).unwrap();
+                        receipt
+                            .write_all(
+                                &serde_json::to_vec(
+                                    &json!({"checkpoint":name,"operation":operation}),
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap();
+                        receipt.sync_all().unwrap();
+                        fs::File::open(&evidence).unwrap().sync_all().unwrap();
+                        unsafe { libc::_exit(86) }
+                    }
+                },
+            );
+            let identities: Vec<DaemonIdentity> =
+                serde_json::from_slice(&fs::read(root.join("identities.json"))?)?;
+            let first = Controller::open(
+                root.join("source-controller"),
+                vec![identities[0].config_file.clone()],
+            )?;
+            first.refresh_pairing()?;
+            let second = Controller::open(
+                root.join("target-controller"),
+                vec![identities[1].config_file.clone()],
+            )?;
+            let peer = second.snapshot()?.peers[0].id;
+            let vault = second.catalog(peer)?[0].id.clone();
+            let preview = second.preview_remote_vault(peer, &vault, &root.join("here"))?;
+            let plan = preview.plan().clone();
+            let mut backend = second.first_sync_backend(preview);
+            plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+                .map_err(|error| anyhow::anyhow!("child merge: {error:?}"))?;
+            anyhow::bail!("selected crash checkpoint was not fired")
+        }
         _ => anyhow::bail!("unknown fixture mode"),
     }
     Ok(())
@@ -485,7 +528,10 @@ fn add_source(source: &Peer, target: &DaemonIdentity, id: &str, path: &Path) -> 
     Ok(())
 }
 
-fn first_sync_runtime(root: &Path, name: &str) -> Result<(Runtime<Services>, DaemonIdentity)> {
+fn first_sync_runtime(
+    root: &Path,
+    name: &str,
+) -> Result<(Runtime<Services>, DaemonIdentity, Services)> {
     let services = Services::default();
     let rest = TcpListener::bind("127.0.0.1:0")?;
     let listen = TcpListener::bind("127.0.0.1:0")?;
@@ -506,7 +552,7 @@ fn first_sync_runtime(root: &Path, name: &str) -> Result<(Runtime<Services>, Dae
         .identity
         .unwrap();
     services.remember_pid(identity.config_file.parent().unwrap())?;
-    Ok((runtime, identity))
+    Ok((runtime, identity, services))
 }
 fn first_sync_files(root: &Path) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
     fn walk(
@@ -545,17 +591,25 @@ fn first_sync_files(root: &Path) -> Result<std::collections::BTreeMap<String, Ve
     walk(root, root, &mut files)?;
     Ok(files)
 }
-#[test]
-#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
-fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff(
-) -> Result<()> {
-    use okilum_sync_controller::merge_preview::Kind;
-    subreaper()?;
-    let root = tempfile::tempdir()?;
-    let (source_runtime, source) = first_sync_runtime(root.path(), "source-runtime")?;
-    let (target_runtime, target) = first_sync_runtime(root.path(), "target-runtime")?;
-    let there = root.path().join("there");
-    let here = root.path().join("here");
+struct FirstSyncFixture {
+    source_runtime: Runtime<Services>,
+    target_runtime: Runtime<Services>,
+    source: DaemonIdentity,
+    target: DaemonIdentity,
+    source_services: Services,
+    target_services: Services,
+    first: Controller,
+    second: Controller,
+    here: PathBuf,
+    there: PathBuf,
+    peer: Uuid,
+    vault: String,
+}
+fn first_sync_fixture(root: &Path) -> Result<FirstSyncFixture> {
+    let (source_runtime, source, source_services) = first_sync_runtime(root, "source-runtime")?;
+    let (target_runtime, target, target_services) = first_sync_runtime(root, "target-runtime")?;
+    let there = root.join("there");
+    let here = root.join("here");
     fs::create_dir(&there)?;
     fs::create_dir(&here)?;
     fs::write(there.join("same.md"), b"same\r\n")?;
@@ -567,14 +621,14 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     fs::write(there.join("binary.dat"), vec![0x93; 12_345])?;
     fs::write(here.join("binary.dat"), vec![0xff; 12_345])?;
     let first = Controller::open(
-        root.path().join("source-controller"),
+        root.join("source-controller"),
         vec![source.config_file.clone()],
     )?;
     let second = Controller::open(
-        root.path().join("target-controller"),
+        root.join("target-controller"),
         vec![target.config_file.clone()],
     )?;
-    first.share_vault(&root.path().join("source-runtime/prepared"), &there)?;
+    first.share_vault(&root.join("source-runtime/prepared"), &there)?;
     let url = first
         .begin_pairing_at(
             "Source fixture",
@@ -588,7 +642,44 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     let peer = second.refresh()?.peers[0].id;
     let catalog = second.catalog(peer)?;
     assert_eq!(catalog.len(), 1);
-    let vault = &catalog[0].id;
+    let vault = catalog[0].id.clone();
+    Ok(FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    })
+}
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff(
+) -> Result<()> {
+    use okilum_sync_controller::merge_preview::Kind;
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture(root.path())?;
+    let vault = &vault;
     let a = source.connect()?;
     let b = target.connect()?;
     let a_address = a.config()?["options"]["listenAddresses"][0].clone();
@@ -674,6 +765,7 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     drop(second);
     source_runtime.disable()?;
     target_runtime.disable()?;
+    drop((source_services, target_services));
     Ok(())
 }
 
@@ -1158,5 +1250,151 @@ fn issue2582_linux_bootstrap_and_replaced_bindings_fail_closed() -> Result<()> {
         2,
         "only the two explicit helper Disable operations may stop a service"
     );
+    Ok(())
+}
+
+/// Every checkpoint is in the production protocol, not in a fake adapter. The
+/// application subprocess dies without Drop; both managed runtimes are then
+/// restarted from their persisted config/authority before explicit recovery.
+#[cfg(feature = "first-sync-fixture")]
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Result<()> {
+    subreaper()?;
+    for stage in [
+        "destination-prepared",
+        "source-prepared",
+        "source-frozen",
+        "source-captured",
+        "source-published",
+        "destination-published",
+        "source-complete",
+        "destination-released",
+        "third-version",
+    ] {
+        if std::env::var("OKILUM_FIRST_SYNC_CRASH_CASE").is_ok_and(|selected| selected != stage) {
+            continue;
+        }
+        let root = tempfile::tempdir()?;
+        let FirstSyncFixture {
+            source_runtime,
+            target_runtime,
+            source,
+            target,
+            source_services,
+            target_services,
+            first,
+            second,
+            here,
+            there,
+            peer: _,
+            vault,
+        } = first_sync_fixture(root.path())?;
+        let originals = (first_sync_files(&here)?, first_sync_files(&there)?);
+        fs::set_permissions(
+            there.join("different.md"),
+            fs::Permissions::from_mode(0o640),
+        )?;
+        private_json(
+            &root.path().join("identities.json"),
+            &json!([source, target]),
+        )?;
+        let checkpoint = if stage == "third-version" {
+            "source-published"
+        } else {
+            stage
+        };
+        fs::write(root.path().join("selected-checkpoint"), checkpoint)?;
+        first.shutdown();
+        second.shutdown();
+        drop((first, second));
+        let mut child = worker("first-sync-crash", root.path())?;
+        assert_eq!(
+            child.0.wait()?.code(),
+            Some(86),
+            "checkpoint {stage} never fired"
+        );
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(root.path().join("crash-receipt.json"))?)?;
+        assert_eq!(receipt["checkpoint"], checkpoint);
+        let operation: Uuid = serde_json::from_value(receipt["operation"].clone())?;
+        source_services.crash_helper(source.config_file.parent().unwrap())?;
+        target_services.crash_helper(target.config_file.parent().unwrap())?;
+        source_services.launch()?;
+        target_services.launch()?;
+        source_services.remember_pid(source.config_file.parent().unwrap())?;
+        target_services.remember_pid(target.config_file.parent().unwrap())?;
+        let first = Controller::open(
+            root.path().join("source-controller"),
+            vec![source.config_file.clone()],
+        )?;
+        first.refresh_pairing()?;
+        let second = Controller::open(
+            root.path().join("target-controller"),
+            vec![target.config_file.clone()],
+        )?;
+        assert!(second
+            .pending_first_sync()?
+            .iter()
+            .any(|pending| pending.operation == operation));
+        if stage == "third-version" {
+            fs::write(
+                there.join("different.md"),
+                b"third version while interrupted",
+            )?;
+            assert!(
+                second.recover_first_sync(operation).is_err(),
+                "third version must require review"
+            );
+            assert_eq!(
+                fs::read(there.join("different.md"))?,
+                b"third version while interrupted"
+            );
+            // Restore only this synthetic test's saved intended canonical bytes.
+            fs::write(there.join("different.md"), &originals.0["different.md"])?;
+        }
+        second
+            .recover_first_sync(operation)
+            .with_context(|| format!("recover checkpoint {stage}"))?;
+        let merged = first_sync_files(&here)?;
+        assert_eq!(merged, first_sync_files(&there)?, "checkpoint {stage}");
+        assert_eq!(
+            merged.len(),
+            7,
+            "recovery created extra conflict copies at {stage}"
+        );
+        for bytes in originals.0.values().chain(originals.1.values()) {
+            assert!(
+                merged.values().any(|value| value == bytes),
+                "original lost at {stage}"
+            );
+        }
+        assert_eq!(
+            fs::metadata(there.join("different.md"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        assert!(second.pending_first_sync()?.is_empty());
+        let a = source.connect()?;
+        let b = target.connect()?;
+        fs::write(here.join("after-recovery.md"), b"later edit")?;
+        wait("post-recovery transfer", || {
+            a.scan(&vault)?;
+            b.scan(&vault)?;
+            Ok(fs::read(there.join("after-recovery.md")).is_ok_and(|bytes| bytes == b"later edit"))
+        })?;
+        // Completed journals never re-run or resurrect a later deleted file.
+        fs::remove_file(here.join("local.md"))?;
+        assert!(second.recover_first_sync(operation).is_err());
+        assert!(!here.join("local.md").exists());
+        first.shutdown();
+        second.shutdown();
+        drop((first, second));
+        source_runtime.disable()?;
+        target_runtime.disable()?;
+        println!("FIRST_SYNC_CRASH_RECOVERY_PASS checkpoint={stage} operation={operation}");
+    }
     Ok(())
 }

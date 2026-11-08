@@ -14,6 +14,7 @@ TESTS = {
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
+    'issue2043_crash_recovery_retains_versions_and_rejects_third_version',
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
 }
 
@@ -37,7 +38,7 @@ def main():
                  '--skip', 'issue2582_child', '--nocapture', '--test-threads=1'],
                 env=env, stdout=output, stderr=subprocess.STDOUT,
                 preexec_fn=lifecycle['parent_death_signal']())
-        result = process.wait(timeout=300)
+        result = process.wait(timeout=600)
         output = log.read_text()
         print(output, flush=True)
         for name in TESTS:

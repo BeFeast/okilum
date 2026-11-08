@@ -16,6 +16,7 @@ pub(super) struct Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     use gpui::{size, Modifiers, TestAppContext};
     use gpui_component::Root;
     use okilum_sync_controller::merge_preview::{Error, Snapshot};

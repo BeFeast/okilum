@@ -21,7 +21,7 @@ archive=syncthing-linux-amd64-v2.1.6.tar.gz
 export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
 artifacts=$(mktemp)
 trap 'unlink "$artifacts"' EXIT
-if ! cargo test --locked -p okilum-sync-controller --test managed_launch --no-run --message-format=json > "$artifacts"; then
+if ! cargo test --locked -p okilum-sync-controller --features first-sync-fixture --test managed_launch --no-run --message-format=json > "$artifacts"; then
     python3 - "$artifacts" <<'DIAGNOSTICS'
 import json,sys
 for line in open(sys.argv[1]):
@@ -39,4 +39,5 @@ print(matches[0])
 PYTHON
 )
 python3 scripts/ci/sync-managed-admission-runs.py "$executable"
+python3 scripts/ci/sync-first-merge-negative-control.py
 python3 scripts/ci/sync-managed-admission-negative-control.py

@@ -41,7 +41,9 @@ Both roots revalidate under those capabilities before the first canonical write.
 Publication preserves originals in the private journal first. Replaced canonical
 inodes move to unique ignored `.okilum-save-first-sync-*` names, and new bytes
 publish with exclusive staging, NOREPLACE and directory fsync. Different files
-keep a deterministic collision-safe extra version. A captured unexpected version
+keep a deterministic collision-safe extra version, with its original extension
+and a recognized first-Sync conflict marker. Existing conflict inventory, note
+banners and explicit resolution can discover both versions. A captured unexpected version
 stops publication and remains retained; it is never silently overwritten.
 Per-file publication gaps recover only against the exact saved original/target
 bytes and root authority. Third versions require review.
@@ -66,9 +68,13 @@ exclusion, unrelated-folder progress and recovery across holder/runtime restart;
 a two-managed-instance fixture checks preview counts, no-consent/stale controls,
 binary chunks, preservation of every original byte version, equal final maps and
 both later transfer directions. Nonzero parent verdicts and fixture kill/reap
-remain mandatory. These controls are under verification, not release evidence.
+remain mandatory. An opt-in fixture feature also interrupts the actual application process at
+durable staging, freeze, capture/publication and handoff checkpoints, restarts
+both managed runtimes, then explicitly recovers the same operation. A compiled
+negative control removes capture-gap recovery and must fail at that actual gap.
+These controls are under verification, not release evidence.
 
-This document describes the backend work in progress. Settings integration,
-interruption coverage, conflict discoverability, Mac/Windows implementation and
-native beta acceptance remain part of #2043. No source merge or passing component
+This document describes the Linux implementation in progress. Hosted
+verification of Settings and interruption controls, Mac/Windows implementation
+and native beta acceptance remain part of #2043. No source merge or passing component
 test alone closes its completion issue.

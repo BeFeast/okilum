@@ -289,7 +289,7 @@ fn full_validation_detects_changed_bytes_even_if_metadata_revision_collides() ->
     fs::write(temp.path().join("note.md"), b"positive control")?;
     let mut binding = header(1, 16).binding;
     binding.policy = tree::policy(&root)?;
-    let mut original = local(binding, temp.path().to_owned(), root.clone())?;
+    let mut original = local(binding, temp.path().to_owned(), root.clone(), &[5; 32])?;
     let good = Tree::collect(&root, temp.path(), true)?;
     assert!(original.matches(&good, true));
     fs::write(temp.path().join("note.md"), b"negative control")?;
@@ -328,7 +328,7 @@ fn stored(path: &Path, peer: Uuid, vault: &str) -> Result<Stored> {
     b.vault = vault.into();
     b.policy = tree::policy(&root)?;
     Ok(Stored {
-        local: local(b, path.into(), root)?,
+        local: local(b, path.into(), root, &[5; 32])?,
         source: source(path),
         expires: Instant::now() + Duration::from_secs(LIFETIME_SECONDS),
     })

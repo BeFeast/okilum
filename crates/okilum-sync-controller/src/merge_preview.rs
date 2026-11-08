@@ -83,7 +83,7 @@ impl Plan {
                 (Some(_), Some(b)) => {
                     let mut n = 1u64;
                     let target = loop {
-                        let candidate = format!("{path}.okilum-first-sync-conflict-{n}");
+                        let candidate = conflict_copy_path(&path, n);
                         if !reserved
                             .iter()
                             .any(|p| p == &candidate || p.starts_with(&format!("{candidate}/")))
@@ -150,6 +150,22 @@ impl Plan {
         }
         backend.apply_if_unchanged(&self.here, &self.there, &self.merged)
     }
+}
+/// Insert the visible marker before the extension so Markdown and binary
+/// copies retain their file type. The number is chosen against both inventories.
+fn conflict_copy_path(path: &str, number: u64) -> String {
+    let path = std::path::Path::new(path);
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let extension = path.extension().and_then(|value| value.to_str());
+    let extension = extension
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        "{stem}.okilum-first-sync-conflict-{number}{extension}"
+    ))
+    .to_str()
+    .unwrap()
+    .to_owned()
 }
 fn plan_fingerprint(here: &Snapshot, there: &Snapshot) -> [u8; 32] {
     let mut hash = Sha256::new();

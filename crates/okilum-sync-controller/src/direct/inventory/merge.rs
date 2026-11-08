@@ -106,6 +106,32 @@ pub(in crate::direct) struct Session {
     scope: Option<ScopedHold>,
 }
 
+/// Disposable integration-test injection. Release/default builds expose no
+/// hook setter and perform no environment-driven interruption.
+#[cfg(feature = "first-sync-fixture")]
+pub mod fixture {
+    use super::*;
+    type Hook = Box<dyn Fn(&str, Uuid) + Send + Sync>;
+    static HOOK: std::sync::OnceLock<Hook> = std::sync::OnceLock::new();
+    pub fn install(hook: impl Fn(&str, Uuid) + Send + Sync + 'static) {
+        assert!(
+            HOOK.set(Box::new(hook)).is_ok(),
+            "fixture hook already installed"
+        );
+    }
+    pub(super) fn checkpoint(name: &str, operation: Uuid) {
+        if let Some(hook) = HOOK.get() {
+            hook(name, operation);
+        }
+    }
+}
+fn checkpoint(name: &str, operation: Uuid) {
+    #[cfg(feature = "first-sync-fixture")]
+    fixture::checkpoint(name, operation);
+    #[cfg(not(feature = "first-sync-fixture"))]
+    let _ = (name, operation);
+}
+
 fn drain(authority: &Authority, operation: Uuid, recover: bool) -> Result<Hold> {
     let mut hold = if recover {
         let observed = authority.snapshot()?;
@@ -367,6 +393,7 @@ impl Controller {
                 );
                 session.store.compatible(false)?;
                 session.store.prepare()?;
+                checkpoint("source-prepared", operation);
                 Ok(Response::Prepared {
                     operation,
                     metadata_hash,
@@ -409,6 +436,7 @@ impl Controller {
                     );
                 }
                 session.store.compatible(recover)?;
+                checkpoint("source-frozen", operation);
                 Ok(Response::Frozen {
                     operation,
                     metadata_hash,
@@ -459,6 +487,7 @@ impl Controller {
                     session.store.binding.phase = Phase::Complete;
                     session.store.save()?;
                 }
+                checkpoint("source-complete", operation);
                 Ok(Response::Complete {
                     operation,
                     metadata_hash,
@@ -646,6 +675,7 @@ impl Controller {
             store.put(Some(hash), bytes)?;
         }
         store.prepare()?;
+        checkpoint("destination-prepared", operation);
         let response = self.first_sync_call(
             preview.peer,
             Request::Stage {
@@ -821,6 +851,7 @@ impl Controller {
         if let Some(hold) = hold {
             hold.release()?;
         }
+        checkpoint("destination-released", operation);
         let receipt = CompletedMerge {
             operation,
             peer,

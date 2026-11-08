@@ -546,6 +546,14 @@ impl Store {
                     RenameFlags::NOREPLACE,
                 )?;
                 parent.sync_all()?;
+                checkpoint(
+                    if self.binding.remote_side {
+                        "source-captured"
+                    } else {
+                        "destination-captured"
+                    },
+                    self.binding.operation,
+                );
                 // Verify the captured inode, not a new lookup at the canonical
                 // name. An external writer cannot be silently overwritten.
                 let held = File::from(openat(
@@ -565,6 +573,27 @@ impl Store {
                     error == rustix::io::Errno::NOENT,
                     "cannot inspect first Sync destination: {error}"
                 );
+                // After a crash between capture and publication, preserve the
+                // displaced inode's permissions as well as its exact bytes.
+                let retained = self.retained(path);
+                match openat(
+                    &parent,
+                    retained.as_str(),
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                    Mode::empty(),
+                ) {
+                    Ok(fd) => {
+                        let captured = File::from(fd);
+                        let metadata = captured.metadata()?;
+                        ensure!(
+                            metadata.is_file() && metadata.nlink() == 1,
+                            "unsafe retained permissions"
+                        );
+                        mode = metadata.mode() & 0o777;
+                    }
+                    Err(rustix::io::Errno::NOENT) => (),
+                    Err(error) => return Err(error.into()),
+                }
             }
             let stage = format!(".okilum-save-first-sync-stage-{}", Uuid::new_v4());
             let mut f = File::from(openat(
@@ -592,7 +621,16 @@ impl Store {
             "first Sync readback differs; recovery required"
         );
         self.binding.phase = Phase::Published;
-        self.save()
+        self.save()?;
+        checkpoint(
+            if self.binding.remote_side {
+                "source-published"
+            } else {
+                "destination-published"
+            },
+            self.binding.operation,
+        );
+        Ok(())
     }
     fn retained(&self, path: &str) -> String {
         format!(

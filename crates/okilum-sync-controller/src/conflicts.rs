@@ -1,4 +1,4 @@
-//! Explicit, bounded inventory of Syncthing and Okilum editor conflict copies. This is
+//! Explicit, bounded inventory of Syncthing, editor and first-Sync conflict copies. This is
 //! filename evidence, not proof of an unresolved conflict or synchronization.
 //! Inventory reads names only. Explicit preview/apply reads exact source bytes.
 //! No daemon or background scan is started.
@@ -90,6 +90,19 @@ fn possible_copy(name: &[u8]) -> bool {
     conflict_marker(name).is_some()
 }
 fn conflict_marker(name: &[u8]) -> Option<(usize, usize)> {
+    let first_sync = b".okilum-first-sync-conflict-";
+    let merge = name
+        .windows(first_sync.len())
+        .enumerate()
+        .filter_map(|(index, part)| {
+            if part != first_sync {
+                return None;
+            }
+            let suffix = &name[index + first_sync.len()..];
+            let digits = suffix.iter().take_while(|b| b.is_ascii_digit()).count();
+            (digits > 0 && suffix[0] != b'0' && (digits == suffix.len() || suffix[digits] == b'.'))
+                .then_some((index, first_sync.len() + digits))
+        });
     [
         b".sync-conflict-".as_slice(),
         b".okilum-conflict-".as_slice(),
@@ -115,11 +128,12 @@ fn conflict_marker(name: &[u8]) -> Option<(usize, usize)> {
                 valid.then_some((index, marker.len() + 23))
             })
     })
+    .chain(merge)
     .min_by_key(|(index, _)| *index)
 }
 
-/// Both filename kinds carry a time and seven-character discriminator. Only
-/// Syncthing's discriminator is a device prefix; Okilum's is random.
+/// Syncthing/editor copies carry a time and discriminator. First-Sync copies
+/// carry a collision-checked ordinal chosen against both original inventories.
 pub fn canonical_path(copy: &Path) -> Option<PathBuf> {
     let name = copy.file_name()?.as_bytes();
     let (index, length) = conflict_marker(name)?;
@@ -206,6 +220,29 @@ mod tests {
             "other version"
         );
         assert!(!inspect_with_limit(vault.path(), 1).unwrap().complete);
+    }
+    #[test]
+    fn first_sync_copies_are_visible_and_map_to_the_original_note() {
+        let vault = tempfile::tempdir().unwrap();
+        let copy = "note.okilum-first-sync-conflict-2.md";
+        std::fs::write(vault.path().join("note.md"), b"local").unwrap();
+        std::fs::write(vault.path().join(copy), b"remote").unwrap();
+        let found = inspect(vault.path()).unwrap();
+        assert!(found.complete);
+        assert_eq!(found.copies, [PathBuf::from(copy)]);
+        assert_eq!(
+            canonical_path(Path::new(copy)),
+            Some(PathBuf::from("note.md"))
+        );
+        assert_eq!(
+            preview(vault.path(), Path::new(copy))
+                .unwrap()
+                .that()
+                .bytes(),
+            b"remote"
+        );
+        assert!(!possible_copy(b"note.okilum-first-sync-conflict-0.md"));
+        assert!(!possible_copy(b"note.okilum-first-sync-conflict-1extra.md"));
     }
     #[test]
     fn missing_folder_and_similar_names_are_not_clean_conflict_receipts() {

@@ -784,6 +784,7 @@ impl Controller {
     /// verification or transfer reconciliation. Used while a pairing step is open.
     pub fn refresh_pairing(&self) -> Result<Snapshot> {
         self.check()?;
+        self.serve_pinned()?;
         let outbound = self.shared.db.lock().unwrap().outbound.clone();
         if let Some((offer, request)) = outbound {
             if offer.expires <= now()? {

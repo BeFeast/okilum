@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+# Explicitly selected only by the hosted disposable-runtime crash fixture.
+first-sync-fixture = []
+
 [dependencies]
 okilum-write-authority = { path = "../okilum-write-authority" }
 anyhow = "1"
