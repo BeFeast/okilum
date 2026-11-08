@@ -52,3 +52,13 @@ The companion pomoi service accepts absent/empty text and generates
 `Feedback from <OS> <version>` for a report with neither a title nor a text
 first line. System metadata and the private log attachment are preserved. The
 private installation identity and optional remembered name remain unchanged.
+
+## Fast reporting (#2749)
+
+Description comes before the optional remembered name and receives focus when
+Feedback opens. Enter in the description sends once; Cmd+Enter on macOS or
+Ctrl+Enter on Linux/Windows inserts a newline. Shift+Enter also remains a newline.
+These shortcuts are scoped to the description, so editing the name or attachment
+limits cannot submit a report. Active IME composition and the 500 ms commit-settle
+window consume Enter without sending or altering the candidate. Sending and
+attachment work retain the existing duplicate-submission guards.
