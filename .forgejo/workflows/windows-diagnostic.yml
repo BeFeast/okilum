@@ -91,7 +91,11 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/icon-env"
           "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
           echo "$RUNNER_TEMP/icon-env/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/cargo-xwin.tgz"
+          python3 scripts/pinned_download.py \
+            --url https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz \
+            --fallback https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512900063 \
+            --sha256 c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360 \
+            --destination "$RUNNER_TEMP/cargo-xwin.tgz"
           echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
       - name: Restore cross-build downloads

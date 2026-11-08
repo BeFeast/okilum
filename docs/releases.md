@@ -92,6 +92,13 @@ credentials are available, otherwise the ordinary compiler. Arch/Windows cache
 Cargo downloads and the verified pinned vendor checkout, never per-commit target
 archives. Native macOS tests and signing/notarization remain enabled.
 
+Sparkle and cargo-xwin build downloads retain their pinned versions and SHA256.
+If the normal GitHub Releases URL fails, they retry through the pinned public
+GitHub asset API with binary content negotiation. Both routes must return the
+same locked bytes before a destination is created. A digest mismatch fails
+without fallback or publication. This changes neither packaged assets nor
+signing/update authority.
+
 ## All-platform Stable: one accepted source, three builds
 
 CI run numbers differ between platforms. Select the **macOS build number** as the
