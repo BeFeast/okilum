@@ -4,21 +4,24 @@
 
 The shipped static type2-runtime is rebuilt from a checksum-pinned upstream
 archive with `scripts/appimage/runtime-per-user.diff`. Its extraction cache is
-`$TMPDIR/appimage_extracted_<effective-uid>_<image-md5>` (the runtime's default
+`$TMPDIR/appimage_extracted_<effective-uid>_<image-md5>_<random-suffix>` (the runtime's default
 temporary directory when TMPDIR is absent). Both `APPIMAGE_EXTRACT_AND_RUN`
 and `--appimage-extract-and-run` use this namespace, including the first external
 launch, managed self-install/re-exec and updater restart. Existing content-only
 cache directories are never reused, removed or changed. Normal FUSE startup remains unchanged. Extraction cleanup gets a positive
 `nftw` descriptor budget: musl treats the upstream zero budget as a successful
 no-op, leaving the cache behind after ordinary exit. `NO_CLEANUP` still explicitly
-retains it.
+retains it. Each launch creates a private mode-0700 directory with `mkdtemp`;
+ending one launch cannot remove another running payload, even for the same UID.
 The image MD5 is only an extraction namespace; release authenticity continues to
 use the signed SHA256 descriptor below.
 
 `scripts/appimage/build-runtime.sh` uses the upstream static Alpine build and its
 checksum-pinned dependency archives. The hosted required check additionally
 builds the unchanged runtime, requires a real two-user extraction failure, then
-executes startup/copy/restart/cleanup controls against the patched runtime.
+executes startup/copy/restart/cleanup controls against the patched runtime. A
+cleanup-only mutation must also lose a still-running same-UID payload before
+the private-directory overlap controls can pass.
 
 ## Update behavior
 

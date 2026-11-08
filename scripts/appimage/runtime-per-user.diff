@@ -11,12 +11,12 @@
 +    int rv = nftw(path, &rm_recursive_callback, 16, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
      return rv == 0;
  }
-@@ -1604,9 +1605,11 @@
+@@ -1604,9 +1605,19 @@
              hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
          }
  
 -        char* prefix = malloc(strlen(temp_base) + 20 + strlen(hexlified_digest) + 2);
-+        char* prefix = malloc(strlen(temp_base) + 20 + 32 + strlen(hexlified_digest) + 2);
++        char* prefix = malloc(strlen(temp_base) + 20 + 32 + strlen(hexlified_digest) + 8);
          strcpy(prefix, temp_base);
 -        strcat(prefix, "/appimage_extracted_");
 +        // A content-only directory in a shared TMPDIR belongs to whichever
@@ -24,4 +24,12 @@
 +        sprintf(prefix + strlen(prefix), "/appimage_extracted_%lu_", (unsigned long)geteuid());
          strcat(prefix, hexlified_digest);
          free(hexlified_digest);
++        // Concurrent launches by the same user must not clean each other's
++        // running payload. Private launch directories also prevent reuse
++        // of another launch's partial extraction.
++        strcat(prefix, "_XXXXXX");
++        if (mkdtemp(prefix) == NULL) {
++            perror("Failed to create private extraction directory");
++            exit(EXIT_EXECERROR);
++        }
  
