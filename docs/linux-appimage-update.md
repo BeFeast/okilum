@@ -239,6 +239,15 @@ a manager. Manager launchers/icons are preserved. A previous launcher bearing
 Okilum's own ownership marker is retired when the running image acquires such
 external integration.
 
+When an older version has already made a duplicate XDG copy, updating that copy
+retires only Okilum's marked launcher if a live manager entry identifies Okilum
+through `Name`, `X-AppImage-Name`, and matching `Exec`/`TryExec`. The current XDG
+image must have both its ownership marker and an identity-bound build record.
+The existing manager image and launcher are retained. Launching the older
+manager image still reaches the newer recorded XDG copy through the older
+installer's existing downgrade guard; startup removes its transient duplicate
+again. Fresh manager installations stay at the manager path from the outset.
+
 The UI owner must coordinate through the parent's registry before wiring the
 minimal lifecycle hook: invoke install off the GPUI thread only on ordinary
 AppImage startup (not help/build-info/QA fixture routes), silently; log an error

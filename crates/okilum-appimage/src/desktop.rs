@@ -121,6 +121,7 @@ pub fn external_launcher(home: &Path, image: &Path) -> Result<Option<PathBuf>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    let previous_duplicate = crate::installation::recorded_install(home, image);
     for entry in entries {
         let path = entry?.path();
         if path.extension() != Some(std::ffi::OsStr::new("desktop")) {
@@ -158,12 +159,25 @@ pub fn external_launcher(home: &Path, image: &Path) -> Result<Option<PathBuf>> {
         {
             continue;
         }
-        if fields
-            .get("Exec")
-            .and_then(|value| executable(value))
-            .as_deref()
-            == Some(image)
-        {
+        let executable = fields.get("Exec").and_then(|value| executable(value));
+        let manager_target = previous_duplicate
+            && fields.get("Name") == Some(&"Okilum")
+            && fields.get("X-AppImage-Name") == Some(&"Okilum")
+            && executable.as_ref().is_some_and(|target| {
+                target != image
+                    && fields
+                        .get("TryExec")
+                        .and_then(|value| entry_string(value))
+                        .as_deref()
+                        == target.to_str()
+                    && fs::symlink_metadata(target).is_ok_and(|metadata| {
+                        metadata.is_file()
+                            && metadata.uid() == unsafe { libc::geteuid() }
+                            && metadata.nlink() == 1
+                            && metadata.mode() & 0o111 != 0
+                    })
+            });
+        if executable.as_deref() == Some(image) || manager_target {
             return Ok(Some(path));
         }
     }
