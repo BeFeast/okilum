@@ -99,7 +99,10 @@ def main():
             require_launch(launch(copy, temporary, uid), copy, uid)
             clean = launch(copy, temporary, uid, retain=False)
             assert clean.returncode == 0, clean
-            assert not cache.exists(), 'normal runtime cleanup must remove only this UID cache'
+            assert not cache.exists(), (
+                'normal runtime cleanup must remove only this UID cache', clean,
+                [(str(p), p.stat().st_uid, oct(p.stat().st_mode))
+                 for p in temporary.rglob('*')])
         assert (legacy.stat(), (legacy / 'foreign-sentinel').stat()) == before
         assert (legacy / 'foreign-sentinel').read_bytes() == b'keep original user cache'
         assert foreign.is_dir() and foreign.stat().st_uid == 19001
