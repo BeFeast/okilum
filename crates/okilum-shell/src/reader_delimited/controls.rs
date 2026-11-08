@@ -66,11 +66,15 @@ impl TablePreview {
                     .text_color(brand::palette(cx).text_muted)
                     .child(label),
             )
-            .children(
-                self.external_error
-                    .as_ref()
-                    .map(|error| div().px_4().pb_2().child(error.clone())),
-            )
+            .children(self.external_error.as_ref().map(|error| {
+                let install = Button::new("table-get-duckdb")
+                    .small()
+                    .ghost()
+                    .label("Get DuckDB")
+                    .on_click(|_, _, cx| cx.open_url("https://duckdb.org/docs/installation/"))
+                    .into_any_element();
+                v_flex().px_4().pb_2().child(error.clone()).child(install)
+            }))
             .into_any_element()
     }
 

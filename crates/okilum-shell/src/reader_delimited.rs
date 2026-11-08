@@ -160,7 +160,9 @@ impl TablePreview {
                     }
                     Err(error) => {
                         eprintln!("Cannot read delimited file: {error:#}");
-                        this.error = Some(if error.kind() == std::io::ErrorKind::InvalidData {
+                        this.error = Some(if this.json() {
+                            "This JSON couldn’t be shown as a table. Use Source to inspect it."
+                        } else if error.kind() == std::io::ErrorKind::InvalidData {
                             "This table couldn’t be read as UTF-8."
                         } else {
                             "This table couldn’t be read."
