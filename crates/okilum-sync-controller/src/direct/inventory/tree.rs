@@ -2,6 +2,7 @@
 use super::*;
 use rustix::fs::{open, openat, Dir, FileType, Mode, OFlags};
 use std::{fs::Metadata, io::Read, os::unix::fs::MetadataExt, path::Component};
+pub(super) type Root = File;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct Stamp {
