@@ -1310,6 +1310,8 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
         if std::env::var("OKILUM_FIRST_SYNC_CRASH_CASE").is_ok_and(|selected| selected != stage) {
             continue;
         }
+        let started = std::time::Instant::now();
+        println!("FIRST_SYNC_CRASH_RECOVERY_BEGIN checkpoint={stage}");
         let root = tempfile::tempdir()?;
         let FirstSyncFixture {
             source_runtime,
@@ -1430,7 +1432,10 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
         drop((first, second));
         source_runtime.disable()?;
         target_runtime.disable()?;
-        println!("FIRST_SYNC_CRASH_RECOVERY_PASS checkpoint={stage} operation={operation}");
+        println!(
+            "FIRST_SYNC_CRASH_RECOVERY_PASS checkpoint={stage} operation={operation} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
     }
     Ok(())
 }

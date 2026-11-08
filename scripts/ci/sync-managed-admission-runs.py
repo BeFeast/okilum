@@ -38,9 +38,16 @@ def main():
                  '--skip', 'issue2582_child', '--nocapture', '--test-threads=1'],
                 env=env, stdout=output, stderr=subprocess.STDOUT,
                 preexec_fn=lifecycle['parent_death_signal']())
-        result = process.wait(timeout=600)
-        output = log.read_text()
-        print(output, flush=True)
+        try:
+            result = process.wait(timeout=600)
+        finally:
+            # A deadline is a failure, but must retain the last fired test and
+            # protocol checkpoint instead of hiding the complete fixture log.
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            output = log.read_text()
+            print(output, flush=True)
         for name in TESTS:
             assert f'test {name} ...' in output and name in output, (name, output)
         # Child subprocesses print their own summaries. Require the parent suite

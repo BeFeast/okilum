@@ -120,6 +120,7 @@ pub mod fixture {
         );
     }
     pub(super) fn checkpoint(name: &str, operation: Uuid) {
+        eprintln!("FIRST_SYNC_FIXTURE_CHECKPOINT name={name} operation={operation}");
         if let Some(hook) = HOOK.get() {
             hook(name, operation);
         }
