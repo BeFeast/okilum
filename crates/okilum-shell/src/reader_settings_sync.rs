@@ -410,8 +410,8 @@ impl SyncSettings {
             self.inspected = None;
         }
         let controller = self.controller.clone();
-        // Pairing observes the authenticated channel/journal, not a repeated
-        // system inventory or executable hash. Vault operations retain full checks.
+        // Pairing reuses its controller without OS runtime inventory or executable
+        // hashing. Folder health still needs fresh authenticated REST observations.
         let pairing_action = match &operation {
             Operation::Read | Operation::Approve(_) | Operation::Reject(_) | Operation::Cancel => {
                 self.snapshot.as_ref().is_some_and(sync_pairing_in_progress)
@@ -425,7 +425,7 @@ impl SyncSettings {
                 .zip(self.snapshot.as_ref())
                 .map(|(controller, snapshot)| Output {
                     runtime_health: Default::default(),
-                    overview: self.presentation.overview.clone(),
+                    overview: Default::default(),
                     connection_error: None,
                     diagnostic: None,
                     controller: controller.clone(),
@@ -480,9 +480,11 @@ impl SyncSettings {
                                     snapshot
                                 }
                                 _ => unreachable!(
-                                    "only pairing journal actions use cached runtime metadata"
+                                    "only pairing journal actions use the pairing snapshot"
                                 ),
                             };
+                            // Cached wizard metadata is not fresh health evidence.
+                            output.overview = output.controller.overview()?;
                             guard.check()?;
                             return Ok(output);
                         }

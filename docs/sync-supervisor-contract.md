@@ -103,8 +103,10 @@ unreachable for over two minutes, a folder reports errors, or every carrier for
 a folder with pending items has been disconnected for over ten minutes.
 Controller reconciliation/pairing errors remain in Settings and do not override
 an independently healthy runtime. Read-only health uses authenticated Status,
-without the process-exit watch reserved for lifecycle Stop. The Fix action opens Sync settings and,
-on macOS, requests a verified managed-helper restart using SIGTERM, never SIGKILL.
+without the process-exit watch reserved for lifecycle Stop. Pairing polls refresh
+folder observations rather than reusing the wizard's cached overview. The Fix
+action opens Sync settings and, on macOS, requests a verified managed-helper
+restart using SIGTERM, never SIGKILL.
 Healthy observations clear the alert; ordinary idle vaults with no pending items do not
 become stale simply because no file was edited. All health I/O stays off Render.
 
