@@ -72,9 +72,15 @@ def stage(cache):
         except subprocess.CalledProcessError:
             # Official API route to the SAME immutable release asset. A CDN 504
             # must not change the fixture's archive or executable checksum.
-            downloaded = subprocess.check_output([
-                'curl', '--fail', '--location', '--retry', '2',
-                '--header', 'Accept: application/octet-stream', ASSET_URL])
+            token = os.environ.get('GITHUB_TOKEN')
+            if token:
+                downloaded = subprocess.check_output([
+                    'gh', 'api', '--header', 'Accept: application/octet-stream', ASSET_URL,
+                ], env=dict(os.environ, GH_TOKEN=token), timeout=60)
+            else:
+                downloaded = subprocess.check_output([
+                    'curl', '--fail', '--location', '--retry', '2',
+                    '--header', 'Accept: application/octet-stream', ASSET_URL])
         data = verified(downloaded, ARCHIVE_SHA256)
         publish(archive, data, 0o444)
     verified(data, ARCHIVE_SHA256)

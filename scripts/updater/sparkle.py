@@ -7,6 +7,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
 import urllib.error
@@ -122,11 +123,19 @@ def fetch(archive):
         with urllib.request.urlopen(LOCK['url'], timeout=60) as response:
             data = response.read()
     except urllib.error.URLError:
-        request = urllib.request.Request(LOCK['asset_url'], headers={
-            'Accept': 'application/octet-stream',
-        })
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
+        token = os.environ.get('GITHUB_TOKEN')
+        if token:
+            # The runner's short-lived read-only token avoids shared-IP API rate
+            # limits. gh strips credentials on the cross-host asset redirect.
+            data = subprocess.check_output([
+                'gh', 'api', '--header', 'Accept: application/octet-stream', LOCK['asset_url'],
+            ], env=dict(os.environ, GH_TOKEN=token), timeout=60)
+        else:
+            request = urllib.request.Request(LOCK['asset_url'], headers={
+                'Accept': 'application/octet-stream',
+            })
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = response.read()
     require(sha(data) == LOCK['archive_sha256'], 'Sparkle download SHA256 mismatch')
     with archive.open('xb') as output:
         output.write(data)

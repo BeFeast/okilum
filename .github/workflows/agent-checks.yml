@@ -41,6 +41,8 @@ jobs:
         with:
           shared-key: agent-macos-sync-v1
       - name: Prepare and verify Mac Sync vendor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
@@ -185,6 +187,7 @@ jobs:
       - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
         env:
           CARGO_NET_OFFLINE: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           source scripts/ci/test-nofile.sh
           tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
