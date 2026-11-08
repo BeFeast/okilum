@@ -51,6 +51,7 @@ def main():
         raise RuntimeError(f"Native Windows private Sync controls did not compile/discover: {listing}")
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     for test in (
+        "sidecar::discovery::managed_configuration_windows_tests::windows_restart_rediscovers_only_private_existing_configuration",
         "sidecar::windows::signature::tests::windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes",
         "sidecar::windows::preparation::tests::windows_offline_preparation_preserves_identity_and_refuses_uncertain_regeneration",
         "sidecar::windows::native::tests::native_task_registration_collision_and_owned_removal",

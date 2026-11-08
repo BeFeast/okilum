@@ -1475,8 +1475,13 @@ fn prepare_native_runtime(
             let managed = okilum_sync_controller::sidecar::discovery::managed_configuration_path(
                 &okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?,
             )?;
+            let selected = configs
+                .first()
+                .map(|path| path.canonicalize())
+                .transpose()?;
+            let managed = managed.map(|path| path.canonicalize()).transpose()?;
             anyhow::ensure!(
-                configs.is_empty() || (configs.len() == 1 && managed.as_ref() == configs.first()),
+                configs.is_empty() || (configs.len() == 1 && managed == selected),
                 "Use Choose existing synced vault for an external Windows Sync connection"
             );
         }

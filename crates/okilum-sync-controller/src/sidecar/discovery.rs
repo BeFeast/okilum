@@ -348,6 +348,87 @@ pub fn managed_configuration_path(state: &std::path::Path) -> Result<Option<std:
     Ok(Some(file))
 }
 
+/// Windows inventory counterpart: validate the existing protected directories
+/// and generated configuration without creating state or contacting the helper.
+#[cfg(windows)]
+pub fn managed_configuration_path(state: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    use super::windows::private::{open_private_file, verify_generated_file, PrivateDirectory};
+    fn text(path: &std::path::Path) -> Result<String> {
+        let raw = path.to_str().context("managed state path is not Unicode")?;
+        let plain = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+        super::windows::path(plain)?;
+        Ok(plain.into())
+    }
+    let state_text = text(state)?;
+    let absent = |path: &std::path::Path| -> Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
+    };
+    if absent(state)? {
+        return Ok(None);
+    }
+    let _state = PrivateDirectory::open_existing(&state_text)?;
+    let config = state.join("config");
+    if absent(&config)? {
+        return Ok(None);
+    }
+    let _config = PrivateDirectory::open_existing(&text(&config)?)?;
+    let path = config.join("config.xml");
+    let Some(file) = open_private_file(&text(&path)?)? else {
+        return Ok(None);
+    };
+    // Syncthing safe-save inherits the pinned config directory's owner grant.
+    // This path is a discovery candidate, never launch or enrollment authority.
+    verify_generated_file(&file)?;
+    Ok(Some(path))
+}
+
+#[cfg(all(test, windows))]
+mod managed_configuration_windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_restart_rediscovers_only_private_existing_configuration() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("managed");
+        assert_eq!(managed_configuration_path(&state)?, None);
+        assert!(!state.exists(), "discovery must not prepare state");
+        crate::private::directory(&state)?;
+        assert_eq!(managed_configuration_path(&state)?, None);
+        let config = state.join("config");
+        std::fs::create_dir(&config)?;
+        assert!(
+            managed_configuration_path(&state).is_err(),
+            "inherited directory DACL is unsafe"
+        );
+        std::fs::remove_dir(&config)?;
+        crate::private::directory(&config)?;
+        assert_eq!(managed_configuration_path(&state)?, None);
+        let file = config.join("config.xml");
+        // Exercise the generated file's inherited single owner grant too.
+        std::fs::write(&file, b"offline configuration fixture")?;
+        for _ in 0..2 {
+            assert_eq!(managed_configuration_path(&state)?, Some(file.clone()));
+        }
+        assert_eq!(std::fs::read(&file)?, b"offline configuration fixture");
+        assert_eq!(std::fs::read_dir(&state)?.count(), 1);
+        assert_eq!(std::fs::read_dir(&config)?.count(), 1);
+        let alias = config.join("alias.xml");
+        std::fs::hard_link(&file, &alias)?;
+        assert!(
+            managed_configuration_path(&state).is_err(),
+            "hard-linked config is unsafe"
+        );
+        std::fs::remove_file(alias)?;
+        assert_eq!(managed_configuration_path(&state)?, Some(file));
+        assert!(managed_configuration_path(std::path::Path::new("relative")).is_err());
+        Ok(())
+    }
+}
+
 #[cfg(all(test, unix))]
 mod managed_configuration_tests {
     use super::*;
