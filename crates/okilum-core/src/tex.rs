@@ -478,8 +478,7 @@ impl Parser<'_> {
                 let start = self.chars.peek().expect("braced tag").0;
                 let text = self.text_argument()?;
                 let end = self.chars.peek().map_or(self.source.len(), |(at, _)| *at);
-                if self.source[start..end]
-                    .as_bytes()
+                if self.source.as_bytes()[start..end]
                     .windows(2)
                     .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_alphabetic())
                 {
