@@ -535,7 +535,7 @@ mod tests {
                 Reader::new(
                     Opts {
                         vault: Some(root.clone()),
-                        note: Some("Home.md".into()),
+                        note: Some("A.md".into()),
                         index_dir: Some(temp.path().join("index")),
                         session_directory: Some(state.clone()),
                         ..Default::default()
@@ -564,7 +564,11 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(!r.batch.running && !r.note_move_pending)
+            assert!(!r.batch.running && !r.note_move_pending);
+            assert_eq!(
+                r.current_rel, "Dest/A.md",
+                "the open first item follows its move while the second item still completes"
+            );
         });
         for path in ["Dest/A.md", "Dest/B.md"] {
             assert_eq!(std::fs::read(root.join(path)).unwrap(), bytes);
@@ -589,6 +593,13 @@ mod tests {
             .unwrap()
         });
         visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.batch.running && !r.note_move_pending);
+            assert_eq!(
+                r.current_rel, "Dest/One.md",
+                "the open item follows batch rename"
+            );
+        });
         for path in ["Dest/One.md", "Dest/Two.md"] {
             assert_eq!(std::fs::read(root.join(path)).unwrap(), bytes);
         }
@@ -624,7 +635,8 @@ mod tests {
             "batch stopped before third item"
         );
         reader.read_with(visual, |r, _| {
-            assert!(!r.batch.running && !r.note_move_pending)
+            assert!(!r.batch.running && !r.note_move_pending);
+            assert_eq!(r.current_rel, "One.md");
         });
         drop(guard);
         reader.update_in(visual, |r, window, cx| {
@@ -637,7 +649,10 @@ mod tests {
             .unwrap()
         });
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert!(!r.batch.running && !r.trash_pending));
+        reader.read_with(visual, |r, _| {
+            assert!(!r.batch.running && !r.trash_pending);
+            assert!(r.current_rel.is_empty(), "successful explicit Trash closes the current document without blocking the second item");
+        });
         assert!(
             !root.join("One.md").exists() && !root.join("C.md").exists(),
             "both files reached Trash"
