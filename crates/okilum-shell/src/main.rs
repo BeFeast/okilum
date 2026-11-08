@@ -3168,9 +3168,7 @@ impl Reader {
         #[cfg(native_manager)]
         if panel == reader_layout::Panel::Backlinks {
             if let Some(project) = &self.project {
-                project.update(cx, |project, cx| {
-                    project.draft_handoff_surface_visible(false, cx)
-                });
+                project.update(cx, |project, cx| project.manager_surface_visible(false, cx));
             }
         }
         self.panels.close(panel);
@@ -7796,7 +7794,7 @@ impl Render for Reader {
                 && workspace_panels.visible(reader_layout::Panel::Backlinks, available)
                 && !self.project_issue_peek_visible(cx);
             project.update(cx, |project, cx| {
-                project.draft_handoff_surface_visible(visible, cx)
+                project.manager_surface_visible(visible, cx)
             });
         }
         let bounds_view = cx.entity().downgrade();

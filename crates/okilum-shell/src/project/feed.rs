@@ -96,6 +96,11 @@ pub(super) struct Feed {
     pub(super) render_calls: std::cell::Cell<usize>,
 }
 impl Feed {
+    #[cfg(test)]
+    pub(super) fn panel_test_follows_tail(&self, cx: &App) -> bool {
+        self.scroller.read(cx).is_following_tail()
+    }
+
     pub(super) fn new(parent: WeakEntity<ProjectView>, cx: &mut Context<Self>) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let scroll = cx.observe(&scroller, |this, _, cx| {
