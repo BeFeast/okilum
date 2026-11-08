@@ -90,10 +90,15 @@ uses the SDK's `libproc` structures; no copied ABI layout or process-name matchi
 supplies authority. Shared inventory, merge and layout-A review now compile on
 Mac as well. APFS UUID/inode/birth witnesses persist root identities across boots.
 
-Older running supervisors without this registry retain their existing pairing
-flow but cannot grant first-merge ownership. Their explicit upgrade/recovery,
-native crash recovery and isolated installed-beta acceptance remain unresolved;
-this section is an implementation checkpoint, not a shipping claim.
+An explicit Connect/Share upgrades a running pre-registry supervisor through
+its signed IPC Stop and a captured kernel exit. Only that verified retirement
+can grant a fresh one-use launch generation. The device certificate, selected
+signed v2.1.6 payload, configuration, folder IDs and direct pairing journal stay
+in place. The new launch reference is pinned in the preparation receipt;
+missing/replaced authority requires recovery rather than regeneration.
+A codesigning digest change in the newly installed bundle does not replace the
+retained, independently signature-verified runtime. Native crash recovery and
+installed-beta acceptance remain under verification; this is not a shipping claim.
 
 ### Isolated native acceptance boundary
 
@@ -120,8 +125,9 @@ before recording completion. It does not unregister, signal or delete account
 state. Native hosted controls cover the parent and path refusals. Installed-beta
 acceptance remains pending.
 
-Older normal Mac connections also need a verified upgrade path for their running
-pre-registry supervisor. Missing launch ownership must never be replaced with a
-REST pause or a process-name/endpoint guess. Keep the existing paired identities,
-configuration and canonical files; do not reset the account state to make a test
-pass. Native first-merge release acceptance remains pending that implementation.
+An interruption after durable verified retirement can resume unregister,
+registry binding and the next one-use registration. An interruption before the
+native exit proof is committed remains recovery pending; a missing endpoint or
+process name never reconstructs it. Existing paired identities, configuration
+and canonical files must remain intact. Installed-beta upgrade and first-merge
+release acceptance remain pending.

@@ -373,7 +373,7 @@ mod tests {
     use super::*;
     #[test]
     fn separate_profile_reopens_without_touching_the_account_or_its_files() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         let root = temporary.path().join("qa");
         private::directory(&root)?;
         let account = temporary.path().join("account");
@@ -416,7 +416,7 @@ mod tests {
     }
     #[test]
     fn overlapping_account_controls_and_redirected_profile_paths_are_refused() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         let root = temporary.path();
         assert!(Profile::prepare(
             root,
@@ -425,7 +425,7 @@ mod tests {
             &root.join("account")
         )
         .is_err());
-        let outside = tempfile::tempdir()?;
+        let outside = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         std::os::unix::fs::symlink(outside.path(), root.join("home"))?;
         assert!(Profile::prepare(
             root,
@@ -439,9 +439,9 @@ mod tests {
     }
     #[test]
     fn reader_state_cannot_be_enrolled_as_a_synthetic_vault_or_helper_home() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         let root = temporary.path();
-        let account = tempfile::tempdir()?;
+        let account = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         for state in [
             root.join("Sync"),
             root.join("SyncDirect"),
@@ -454,7 +454,7 @@ mod tests {
     }
     #[test]
     fn an_existing_marker_cannot_adopt_a_replaced_root() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         let root = temporary.path().join("qa");
         private::directory(&root)?;
         let account = temporary.path().join("account");

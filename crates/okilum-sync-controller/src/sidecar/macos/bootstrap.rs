@@ -43,6 +43,8 @@ pub struct SigningPolicy {
 #[serde(deny_unknown_fields)]
 struct Receipt {
     identity: DaemonIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<crate::managed_launch::Reference>,
 }
 
 /// Explicit Add computer / Connect action only; never call while opening Settings.
@@ -175,19 +177,22 @@ pub fn connect_current_app(
         policy.helper.clone(),
         NativeSignature,
     )?;
-    let (_, digest, _) = bundle.bundled_runtime(&binding, &policy.runtime)?;
-    ensure!(
-        digest == selection.digest(),
-        "selected runtime differs from signed bundle; explicit update required"
-    );
+    bundle.bundled_runtime(&binding, &policy.runtime)?;
+    // The retained v2.1.6 payload was copied from an earlier signed beta. Its
+    // sealed digest can differ after codesigning a newer package; preserve its
+    // identity/configuration and independently verify the retained signature.
+    use super::bundle::SignatureVerifier as _;
+    NativeSignature.verify(&selection.verify_file(&state)?, &policy.runtime)?;
     let payload = Payload::new(binding.clone(), selection, identity.clone());
     payload.verify(&binding)?;
-    if fresh {
-        crate::managed_launch::initialize(&crate::managed_launch::ManagedInstance {
-            home: state.join("config"),
-            executable: payload.verify(&binding)?.executable.into(),
-        })?;
-    }
+    let _upgrade_lock = {
+        let path = state.join("native-upgrade");
+        private::directory(&path)?;
+        private::lock(&path)?
+    };
+    prepare_launch_ownership(
+        &state, app, executable, &binding, &payload, &bundle, &policy, deadline,
+    )?;
     let ready_to_dispatch = {
         let tx = store.begin(deadline)?;
         tx.current()?
@@ -262,6 +267,7 @@ pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity>
         "Mac source identity binding changed"
     );
     receipt.identity.verify_local()?;
+    verify_launch_reference(state, &receipt)?;
     Ok(receipt.identity)
 }
 
@@ -408,6 +414,7 @@ fn prepare_payload(
         &state.join("prepared-identity.json"),
         &serde_json::to_vec(&Receipt {
             identity: identity.clone(),
+            launch: None,
         })?,
     )?;
     UnixStore::open_existing(state)?.publish_selection(deadline, &selection)?;
@@ -511,6 +518,157 @@ pub fn stop_isolated_current_app(policy: SigningPolicy) -> Result<()> {
         .current()?
         .context("QA stop journal missing")?
         .complete_stop(&token, &scope)?;
+    tx.commit(next)?;
+    Ok(())
+}
+
+pub(crate) fn managed_launch_reference(
+    state: &Path,
+) -> Result<Option<crate::managed_launch::Reference>> {
+    match fs::symlink_metadata(state.join("prepared-identity.json")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    let receipt: Receipt =
+        serde_json::from_slice(&private::read(&state.join("prepared-identity.json"))?)?;
+    verify_launch_reference(state, &receipt)?;
+    Ok(receipt.launch)
+}
+fn verify_launch_reference(state: &Path, receipt: &Receipt) -> Result<()> {
+    if let Some(reference) = &receipt.launch {
+        let selection = UnixStore::open_existing(state)?
+            .read_selection(Instant::now() + std::time::Duration::from_secs(5))?
+            .context("managed runtime selection missing")?;
+        reference.validate(&crate::managed_launch::ManagedInstance {
+            home: state.join("config"),
+            executable: selection.verify_file(state)?,
+        })?;
+    }
+    Ok(())
+}
+fn pin_launch_reference(
+    state: &Path,
+    instance: &crate::managed_launch::ManagedInstance,
+) -> Result<()> {
+    let mut receipt: Receipt =
+        serde_json::from_slice(&private::read(&state.join("prepared-identity.json"))?)?;
+    if let Some(reference) = &receipt.launch {
+        reference.validate(instance)?;
+    } else {
+        receipt.launch = Some(crate::managed_launch::initialize(instance)?);
+        private::write(
+            &state.join("prepared-identity.json"),
+            &serde_json::to_vec(&receipt)?,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_launch_ownership(
+    state: &Path,
+    app: &Path,
+    executable: &str,
+    binding: &Binding,
+    payload: &Payload,
+    bundle: &BundleGuard<NativeSignature>,
+    policy: &SigningPolicy,
+    deadline: Instant,
+) -> Result<()> {
+    use super::connection::NativeSupervisor;
+    use crate::sidecar::{
+        authority::{launch::Phase, Reason, StopToken},
+        discovery::Discovered,
+    };
+    let store = UnixStore::open_existing(state)?;
+    let saved = {
+        let tx = store.begin(deadline)?;
+        tx.current()?.context("launch journal missing")?.clone()
+    };
+    ensure!(saved.binding() == binding, "native launch binding changed");
+    let instance = crate::managed_launch::ManagedInstance {
+        home: state.join("config"),
+        executable: payload.verify(binding)?.executable.into(),
+    };
+    // A pinned but missing/damaged registry is recovery, never a legacy upgrade.
+    managed_launch_reference(state)?;
+    if saved
+        .launch_registration()
+        .is_some_and(|launch| launch.phase() == Phase::Ready)
+    {
+        pin_launch_reference(state, &instance)?;
+        return Ok(());
+    }
+    ensure!(
+        saved
+            .launch_registration()
+            .is_some_and(|launch| launch.phase() == Phase::Claimed),
+        "native launch is still unconfirmed; retain its existing generation"
+    );
+    if !saved.native_launch_retired()
+        && saved.stop().is_none()
+        && crate::managed_launch::live_generation(&instance.home).is_ok()
+    {
+        return Ok(());
+    }
+    if !saved.native_launch_retired() {
+        let supervisor = NativeSupervisor::open(
+            app,
+            executable,
+            binding.clone(),
+            policy.app.clone(),
+            policy.helper.clone(),
+            std::time::Duration::from_secs(20),
+        )?;
+        let Discovered::Live(scope) = supervisor.inspect_until(deadline)? else {
+            anyhow::bail!(
+                "existing native Sync helper needs verified recovery; no replacement was started"
+            );
+        };
+        let token = {
+            let mut tx = store.begin(deadline)?;
+            ensure!(
+                tx.current()? == Some(&saved),
+                "native journal changed during upgrade inspection"
+            );
+            if let Some(operation) = saved.stop() {
+                ensure!(
+                    operation.reason == Reason::Disable && operation.scope == scope,
+                    "a different native operation needs recovery"
+                );
+                StopToken {
+                    journal_epoch: saved.journal_epoch(),
+                    operation: operation.clone(),
+                }
+            } else {
+                let (next, token) = saved.disable(scope)?;
+                tx.commit(next)?;
+                token
+            }
+        };
+        let proof = supervisor.retire_for_upgrade(&token)?;
+        let mut tx = store.begin(deadline)?;
+        let retired = tx
+            .current()?
+            .context("native stop journal missing")?
+            .complete_native_retirement(proof)?;
+        tx.commit(retired)?;
+    }
+    // The durable retirement can resume after interruption. No missing hint,
+    // REST pause, process name or PID provides this permission.
+    bundle.verify(binding)?;
+    payload.verify(binding)?;
+    if super::isolation::selected()?.is_none() {
+        super::native::unregister_retired(binding, deadline)?;
+    }
+    pin_launch_reference(state, &instance)?;
+    bundle.verify(binding)?;
+    let mut tx = store.begin(deadline)?;
+    let next = tx
+        .current()?
+        .context("native retirement journal missing")?
+        .enable_retired_native_launch()?;
     tx.commit(next)?;
     Ok(())
 }

@@ -315,6 +315,18 @@ mod native {
         /// One deadline covers authentication, owned-tree Stop, captured-process
         /// exit and final authority revalidation. No PID kill/unregister fallback.
         /// The lifecycle controller must still revalidate at its native mutation.
+        pub(crate) fn retire_for_upgrade(
+            &self,
+            token: &StopToken,
+        ) -> Result<crate::sidecar::authority::launch::VerifiedExit> {
+            self.stop_and_wait(token)?;
+            Ok(
+                crate::sidecar::authority::launch::VerifiedExit::after_native_stop(
+                    self.connection.binding.clone(),
+                    token.clone(),
+                ),
+            )
+        }
         pub fn stop_and_wait(&self, token: &StopToken) -> Result<()> {
             let deadline = Instant::now() + self.budget;
             self.captured.borrow_mut().take();

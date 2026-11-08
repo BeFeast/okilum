@@ -20,10 +20,19 @@ pub struct NativeLaunch {
 impl NativeLaunch {
     pub fn if_registered(config: &Path, executable: &Path) -> Result<Option<Self>> {
         let home = config.parent().context("native config home missing")?;
+        let pinned = crate::sidecar::macos::bootstrap::managed_launch_reference(
+            home.parent().context("native state missing")?,
+        )?;
         if !directory(home)?.try_exists()? {
             return Ok(None);
         }
         let reference = existing(home)?;
+        if let Some(pinned) = pinned {
+            ensure!(
+                pinned == reference,
+                "native launch preparation reference changed"
+            );
+        }
         let process = lock_file(&reference.directory.join("process.lock"), false, false)?;
         let gate = reference.gate()?;
         reference.validate(&ManagedInstance {

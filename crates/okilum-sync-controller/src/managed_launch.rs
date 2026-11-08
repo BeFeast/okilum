@@ -327,6 +327,14 @@ pub(crate) fn configuration(
                 .try_exists()?,
             "managed launch binding missing; recovery required"
         );
+        #[cfg(target_os = "macos")]
+        ensure!(
+            crate::sidecar::macos::bootstrap::managed_launch_reference(
+                home.parent().context("preparation missing")?,
+            )?
+            .is_none(),
+            "managed launch binding missing; recovery required"
+        );
         return Ok(None);
     }
     let r = existing(home)?;
@@ -387,6 +395,13 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     if !directory(home)?.try_exists()? {
         // Legacy supervisors keep their existing pairing capabilities. They
         // have no first-merge fence and cannot grant publication ownership.
+        ensure!(
+            crate::sidecar::macos::bootstrap::managed_launch_reference(
+                home.parent().context("preparation missing")?,
+            )?
+            .is_none(),
+            "managed launch binding missing; recovery required"
+        );
         let config = daemon.connect()?.config()?;
         let mut operations = Vec::new();
         for folder in config["folders"]

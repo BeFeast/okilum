@@ -125,6 +125,12 @@ impl Envelope {
         if let Some(launch) = &self.launch {
             launch.validate()?;
         }
+        if self.native_launch_retired() {
+            ensure!(
+                self.intent == Intent::Disabled && self.stop.is_none() && self.update.is_none(),
+                "retired native launch requires its completed disabled state"
+            );
+        }
         if let Some(update) = &self.update {
             ensure!(!update.update_id.is_nil(), "nil update id");
         }
@@ -367,7 +373,7 @@ impl Envelope {
                 "legacy journal may only be migrated"
             ),
             Stored::Current(current) => {
-                launch::check_successor(current.launch.as_ref(), next.launch.as_ref())?;
+                launch::check_successor(current, next)?;
                 ensure!(
                     next.journal_epoch == current.journal_epoch
                         && current.revision.checked_add(1) == Some(next.revision)
