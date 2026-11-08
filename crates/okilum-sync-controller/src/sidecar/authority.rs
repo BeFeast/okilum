@@ -73,6 +73,11 @@ pub struct Envelope {
     /// Missing in pre-launch-authority journals: recovery, never permission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch: Option<launch::Registration>,
+    /// Present only for newly prepared Windows instances. Legacy sidecars may
+    /// keep their existing transfers, but cannot grant first-merge ownership.
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_launch: Option<crate::managed_launch::Reference>,
 }
 
 impl Envelope {
@@ -87,8 +92,29 @@ impl Envelope {
             update: None,
             stop: None,
             launch: None,
+            #[cfg(windows)]
+            windows_launch: None,
         }
     }
+    #[cfg(windows)]
+    pub(crate) fn bind_windows_launch(
+        mut self,
+        reference: crate::managed_launch::Reference,
+    ) -> Result<Self> {
+        ensure!(
+            self.windows_launch
+                .as_ref()
+                .is_none_or(|saved| saved == &reference),
+            "Windows launch reference changed"
+        );
+        self.windows_launch = Some(reference);
+        Ok(self)
+    }
+    #[cfg(windows)]
+    pub(crate) fn windows_launch(&self) -> Option<&crate::managed_launch::Reference> {
+        self.windows_launch.as_ref()
+    }
+
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
@@ -124,6 +150,12 @@ impl Envelope {
         ensure!(self.revision >= 1, "invalid journal revision");
         if let Some(launch) = &self.launch {
             launch.validate()?;
+        }
+        if self.native_launch_retired() {
+            ensure!(
+                self.intent == Intent::Disabled && self.stop.is_none() && self.update.is_none(),
+                "retired native launch requires its completed disabled state"
+            );
         }
         if let Some(update) = &self.update {
             ensure!(!update.update_id.is_nil(), "nil update id");
@@ -367,7 +399,7 @@ impl Envelope {
                 "legacy journal may only be migrated"
             ),
             Stored::Current(current) => {
-                launch::check_successor(current.launch.as_ref(), next.launch.as_ref())?;
+                launch::check_successor(current, next)?;
                 ensure!(
                     next.journal_epoch == current.journal_epoch
                         && current.revision.checked_add(1) == Some(next.revision)
@@ -407,6 +439,8 @@ impl Envelope {
             update,
             stop: None,
             launch: None,
+            #[cfg(windows)]
+            windows_launch: None,
         };
         envelope.validate()?;
         Ok(envelope)

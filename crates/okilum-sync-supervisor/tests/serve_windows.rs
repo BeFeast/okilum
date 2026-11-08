@@ -388,12 +388,29 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-supervisor"));
     let world = World::with_supervisor(&[], binary.clone());
     let state = world.state.to_str().unwrap().to_string();
-    let run = |args: &[&str]| Process::new(&binary).args(args).output().unwrap();
+    let run = |args: &[&str]| {
+        Process::new(&binary)
+            // Exercise the actual Task Scheduler working-directory contract,
+            // including Idle (which still has to acquire the journal lock).
+            .current_dir(&world.state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
 
     let refused = run(&["--state", &state]);
     assert_eq!(refused.status.code(), Some(1));
     let message = String::from_utf8_lossy(&refused.stderr).into_owned();
-    assert!(message.contains("no signature policy"), "{message}");
+    assert!(
+        message.contains("no Authenticode publisher policy"),
+        "{message}"
+    );
+    assert!(world
+        .store
+        .read_supervisor_failure()
+        .unwrap()
+        .unwrap()
+        .contains("no Authenticode publisher policy"));
     assert!(
         world.child_pid().is_none(),
         "nothing may start without a policy"

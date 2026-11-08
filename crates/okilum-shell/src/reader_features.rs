@@ -29,7 +29,7 @@ impl Feature {
         match self {
             Self::Agents => true,
             Self::SecondBrain => cfg!(all(unix, feature = "brain")),
-            Self::Sync => cfg!(any(target_os = "linux", target_os = "macos")),
+            Self::Sync => cfg!(any(target_os = "linux", target_os = "macos", windows)),
         }
     }
     pub(crate) fn description(self) -> &'static str {
@@ -212,7 +212,7 @@ fn save(path: &Path, feature: Feature, enabled: bool) -> anyhow::Result<()> {
 }
 /// Headless consent (#2589): `okilum sync` pairing turns the Sync module on,
 /// like an opened pairing link, so the next app start keeps serving the pair.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn enable_saved(directory: &Path, feature: Feature) -> anyhow::Result<()> {
     let path = directory.join("features.json");
     if path.exists() {
@@ -230,11 +230,11 @@ pub(crate) fn enable_saved(directory: &Path, feature: Feature) -> anyhow::Result
 }
 /// Turning Sync back on serves paired computers again without Settings (#2589).
 fn resume(feature: Feature, cx: &mut App) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if feature == Feature::Sync {
         reader_settings_sync::serve_paired(cx);
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = (feature, cx);
 }
 fn suspend(feature: Feature, cx: &mut App) {
@@ -242,7 +242,7 @@ fn suspend(feature: Feature, cx: &mut App) {
         reader_t3_settings::suspend(cx);
         cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if feature == Feature::Sync {
         reader_settings_sync::suspend(cx);
     }

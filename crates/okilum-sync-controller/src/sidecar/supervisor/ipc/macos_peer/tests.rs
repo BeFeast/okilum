@@ -236,3 +236,75 @@ fn bundled_app_peer_uses_the_main_executable() -> Result<()> {
     positive.context("real bundled peer must authenticate as its executable")?;
     Ok(())
 }
+
+#[test]
+fn isolated_launch_requires_the_actual_signed_parent_on_its_inherited_channel() -> Result<()> {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    };
+    let own = std::env::current_exe()?;
+    if let Ok(hash) = std::env::var("OKILUM_TEST_QA_PARENT_HASH") {
+        let path =
+            std::env::var_os("OKILUM_TEST_QA_PARENT_PATH").context("test parent path missing")?;
+        let socket = unsafe { UnixStream::from_raw_fd(3) };
+        let result = SignedPeer::new(
+            CodeRequirement::code_directory_hash(&hash)?,
+            Path::new(&path),
+        )?
+        .verify_parent(&socket);
+        assert_eq!(
+            result.is_ok(),
+            std::env::var("OKILUM_TEST_QA_PARENT_ACCEPT")? == "yes",
+            "{result:?}"
+        );
+        return Ok(());
+    }
+    let hash = cdhash(&own);
+    let mut wrong_hash = hash.as_bytes().to_vec();
+    wrong_hash[0] = if wrong_hash[0] == b'0' { b'1' } else { b'0' };
+    let wrong_hash = String::from_utf8(wrong_hash)?;
+    let (same_process, _) = UnixStream::pair()?;
+    assert!(
+        SignedPeer::new(CodeRequirement::code_directory_hash(&hash)?, &own)?
+            .verify_parent(&same_process)
+            .is_err(),
+        "a signed non-parent must refuse"
+    );
+    for (requirement, path, accept) in [
+        (hash.as_str(), own.as_path(), "yes"),
+        (wrong_hash.as_str(), own.as_path(), "no"),
+        (hash.as_str(), Path::new("/bin/ls"), "no"),
+    ] {
+        let (_parent, socket) = UnixStream::pair()?;
+        let descriptor = socket.as_raw_fd();
+        let mut command = Command::new(&own);
+        command.args(["--exact", "sidecar::supervisor::ipc::macos_peer::tests::isolated_launch_requires_the_actual_signed_parent_on_its_inherited_channel", "--nocapture"])
+            .env("OKILUM_TEST_QA_PARENT_HASH", requirement)
+            .env("OKILUM_TEST_QA_PARENT_PATH", path)
+            .env("OKILUM_TEST_QA_PARENT_ACCEPT", accept);
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(descriptor, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                ensure!(status.success(), "signed parent control failed: {accept}");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                anyhow::bail!("signed parent control timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    Ok(())
+}

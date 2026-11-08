@@ -77,9 +77,42 @@ impl<D: StateDir> Store<D> {
             .map(|data| Hint::from_slice(&data))
             .transpose()
     }
+    /// Discovery may race a Windows handle that temporarily excludes reads of
+    /// the atomically replaced hint. Retry only that native contention, within
+    /// the caller's existing budget. No hint or failed read grants authority.
+    pub fn peek_hint_until(&self, deadline: Instant) -> Result<Option<Hint>> {
+        #[cfg(not(windows))]
+        {
+            let _ = deadline;
+            self.peek_hint()
+        }
+        #[cfg(windows)]
+        loop {
+            match self.peek_hint() {
+                Err(error) if hint_sharing_violation(&error) && Instant::now() < deadline => {
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(std::time::Duration::from_millis(2)),
+                    );
+                }
+                result => return result,
+            }
+        }
+    }
     /// Clean supervisor exit. Idempotent.
     pub fn clear_hint(&self, deadline: Instant) -> Result<()> {
         let _lock = self.dir.lock(deadline)?;
         self.dir.remove(HINT)
     }
+}
+
+#[cfg(windows)]
+pub(super) fn hint_sharing_violation(error: &anyhow::Error) -> bool {
+    use windows::Win32::Foundation::ERROR_SHARING_VIOLATION;
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|error| {
+            error.code() == windows::core::HRESULT::from_win32(ERROR_SHARING_VIOLATION.0)
+        })
 }

@@ -4,7 +4,10 @@ use super::{ipc::Status, runtime::OwnedTree, Launch};
 use anyhow::{ensure, Context, Result};
 use std::{
     mem::size_of,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
     time::{Duration, Instant},
 };
 use windows::{
@@ -22,8 +25,9 @@ use windows::{
             },
             Threading::{
                 CreateProcessW, GetProcessId, OpenProcess, ResumeThread, TerminateProcess,
-                WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOW,
+                WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+                CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_SYNCHRONIZE, STARTUPINFOW,
             },
         },
     },
@@ -108,6 +112,15 @@ struct ProcessList {
     ids: [usize; MAX_JOB_PROCESSES],
 }
 impl JobChild {
+    /// The root process object is captured before its first instruction runs.
+    /// This identity is for readiness only; termination always uses the job.
+    pub fn root_pid(&self) -> Result<u32> {
+        ensure!(self.root_running()?, "captured runtime root has exited");
+        let pid = unsafe { GetProcessId(raw(&self.process)) };
+        ensure!(pid != 0, "captured runtime root identity is unavailable");
+        Ok(pid)
+    }
+
     /// The caller must first verify the immutable staged payload signature/hash
     /// and private config/data ownership. Creation is an explicit Enable effect.
     pub fn spawn(launch: &Launch) -> Result<Self> {
@@ -130,6 +143,26 @@ impl JobChild {
             cb: size_of::<STARTUPINFOW>() as u32,
             ..Default::default()
         };
+        // v2.1.6 otherwise inserts a monitor, so the captured root would not
+        // own REST. Preserve the Unicode native environment, replacing only
+        // this documented fixed launch-protocol flag.
+        let mut environment: Vec<_> = std::env::vars_os()
+            .filter(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("STMONITORED"))
+            .map(|(name, value)| {
+                let mut entry = name;
+                entry.push("=");
+                entry.push(value);
+                entry
+            })
+            .collect();
+        environment.push(std::ffi::OsString::from("STMONITORED=1"));
+        environment.sort_by_key(|entry| entry.to_string_lossy().to_lowercase());
+        let mut block = Vec::<u16>::new();
+        for entry in environment {
+            block.extend(entry.encode_wide());
+            block.push(0);
+        }
+        block.push(0);
         let mut process = PROCESS_INFORMATION::default();
         unsafe {
             CreateProcessW(
@@ -138,8 +171,8 @@ impl JobChild {
                 None,
                 None,
                 false,
-                CREATE_SUSPENDED | CREATE_NO_WINDOW,
-                None,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                Some(block.as_ptr().cast()),
                 PCWSTR(directory.as_ptr()),
                 &startup,
                 &mut process,
@@ -328,6 +361,7 @@ mod tests {
     // argv. No shell, Syncthing install, task registration or personal state.
     const FIXTURE: &str = r#"
         fn main() {
+            assert_eq!(std::env::var("STMONITORED").unwrap(), "1", "captured root must serve without a monitor");
             let args: Vec<_> = std::env::args().collect();
             if args.get(1).map(String::as_str) == Some("child") {
                 let until = std::time::Instant::now() + std::time::Duration::from_secs(60);

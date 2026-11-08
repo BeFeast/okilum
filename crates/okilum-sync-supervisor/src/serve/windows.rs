@@ -4,7 +4,7 @@
 //! late (`accept_discovering_within`).
 use super::{Exit, Settings};
 use crate::startup::Prepared;
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use okilum_sync_controller::sidecar::{
     store::{Hint, WindowsDir, WindowsStore},
     supervisor::{
@@ -58,17 +58,29 @@ pub fn run(
         instance: binding.instance,
         generation,
     };
-    let first = PrivatePipe::create(&scope)?;
+    let first = PrivatePipe::create(&scope).context("create Windows supervisor endpoint")?;
     // Checked right before the spawn and again right after it; on a mismatch after the
     // spawn the job is closed (every process in it killed) as the error unwinds.
     selection.verify_file(state)?;
-    let child = JobChild::spawn(&launch)?;
+    policy.verify_image(Path::new(&launch.executable))?;
+    let launch_owner = okilum_sync_controller::managed_launch::NativeLaunch::if_registered(
+        Path::new(&launch.config).join("config.xml").as_path(),
+        Path::new(&launch.executable),
+    )
+    .context("prepare Windows managed launch")?;
+    let child = JobChild::spawn(&launch).context("spawn Windows owned runtime")?;
     selection.verify_file(state)?;
+    policy.verify_image(Path::new(&launch.executable))?;
+    let _launch_owner = launch_owner
+        .map(|owner| owner.ready(child.root_pid()?, generation))
+        .transpose()
+        .context("verify Windows managed runtime readiness")?;
     let tree = JobTree::new(child, settings.stop);
     store.publish_hint(
         Instant::now() + settings.store,
         &Hint::new(generation, own_start_time()?)?,
     )?;
+    store.write_supervisor_failure("", Instant::now() + settings.store)?;
     let mut server: Server<Runtime> = Server::with_generation(
         binding.clone(),
         StoreRuntime::new(store.clone(), tree),

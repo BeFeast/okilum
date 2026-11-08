@@ -75,6 +75,39 @@ pub(crate) fn process_sid(process: HANDLE) -> Result<String> {
         sid_string(user.User.Sid)
     }
 }
+/// Default owner of files created by this process token (an elevated token can
+/// name Administrators here even though its TokenUser is the interactive user).
+pub(crate) fn default_owner_sid() -> Result<String> {
+    use windows::Win32::Security::{TokenOwner, TOKEN_OWNER};
+    let mut raw = HANDLE::default();
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw)?;
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let token = HANDLE(token.as_raw_handle());
+    let mut required = 0;
+    let sizing = unsafe { GetTokenInformation(token, TokenOwner, None, 0, &mut required) };
+    ensure!(
+        sizing
+            .as_ref()
+            .is_err_and(|error| error.code()
+                == windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0))
+            && (size_of::<TOKEN_OWNER>() as u32..=65536).contains(&required),
+        "invalid default-owner token size"
+    );
+    let mut storage = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenOwner,
+            Some(storage.as_mut_ptr().cast()),
+            required,
+            &mut required,
+        )?;
+        sid_string((*storage.as_ptr().cast::<TOKEN_OWNER>()).Owner)
+    }
+}
+
 /// Parse the scheduler's descriptor with Win32, including SDDL aliases. An
 /// absent owner is an error, not permission to assume the current user.
 pub fn descriptor_owner_sid(sddl: &str) -> Result<String> {

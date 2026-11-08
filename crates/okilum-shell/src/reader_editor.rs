@@ -2317,7 +2317,7 @@ impl Reader {
         }
         cx.notify();
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn describe_source_conflict(&self, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.as_ref().filter(|e| e.conflict_detected) else {
             return;
@@ -2380,7 +2380,7 @@ impl Reader {
         .detach();
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     fn describe_source_conflict(&self, _cx: &mut Context<Self>) {}
 
     /// Explicit Save/Keep both publishes the latest local buffer as a new

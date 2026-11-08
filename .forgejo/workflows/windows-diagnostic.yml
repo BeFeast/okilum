@@ -133,6 +133,9 @@ jobs:
           path: target/x86_64-pc-windows-msvc/
           key: beta-windows-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
       - name: Cross-compile Reader and install packager
+        env:
+          OKILUM_WINDOWS_SIGN_SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
+          OKILUM_WINDOWS_SIGN_ISSUER_CHAIN: ${{ vars.OKILUM_WINDOWS_SIGN_ISSUER_CHAIN }}
         run: |
           export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
           export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"

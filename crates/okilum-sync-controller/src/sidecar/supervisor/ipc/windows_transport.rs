@@ -100,6 +100,17 @@ impl WindowsTransport {
             failed: false,
         })
     }
+    /// Capture exit before Stop on this same authenticated connected pipe.
+    pub fn capture_exit(&mut self) -> Result<super::windows_peer::ExitWatch> {
+        let binding = self.binding.clone();
+        let scope = self.scope.clone();
+        self.verify_peer(&binding, &scope)?;
+        match &mut self.wire {
+            Wire::Client(io) => Ok(io.capture_exit()?),
+            Wire::Server(_) => anyhow::bail!("exit capture requires a supervisor client"),
+        }
+    }
+
     /// The supervisor's accept when the client is the app: it connects, and only then is
     /// its process identified (same user, then the signature policy). Nothing is read
     /// or written before that and the retained peer is rechecked on the live pipe.

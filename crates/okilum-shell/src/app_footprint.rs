@@ -1117,6 +1117,9 @@ mod tests {
     /// then update this list.
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
         ("crates/okilum-shell/src/linux_sprint.rs", 5),
+        // Explicit macOS Sync QA validates HOME inside its caller-owned profile;
+        // it adds no account root. See the isolated QA inventory in uninstall.md.
+        ("crates/okilum-shell/src/main.rs", 1),
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
         ("crates/okilum-shell/src/app_footprint.rs", 11),

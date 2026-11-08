@@ -14,8 +14,12 @@ pub struct PolicyWarning {
     pub message: String,
 }
 pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod inventory;
+#[cfg(unix)]
+mod lan;
+#[cfg(windows)]
+#[path = "lan_windows.rs"]
 mod lan;
 mod origin;
 mod source;
@@ -174,7 +178,7 @@ struct Database {
     #[serde(default)]
     sources: Vec<source::Source>,
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 struct Shared {
@@ -197,14 +201,16 @@ struct Shared {
     /// Invitation whose approval reply this process has written to the joiner.
     /// In memory only; a headless inviter waits on it before exiting.
     delivered_approval: Mutex<Option<Uuid>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     inventory: Mutex<inventory::Cache>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     inventory_key: [u8; 32],
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    first_sync: Mutex<BTreeMap<Uuid, Arc<Mutex<inventory::merge::Session>>>>,
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
     inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
-    _lock: std::fs::File,
+    _lock: private::Lock,
 }
 struct Listener {
     stop: Arc<AtomicBool>,
@@ -213,10 +219,19 @@ struct Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        #[cfg(unix)]
         use std::os::fd::AsRawFd;
+        #[cfg(windows)]
+        use std::os::windows::io::AsRawSocket;
         // shutdown affects both duplicated descriptors and wakes accept.
+        #[cfg(unix)]
         unsafe {
             libc::shutdown(self.socket.as_raw_fd(), libc::SHUT_RDWR);
+        }
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::Networking::WinSock::{shutdown, SD_BOTH, SOCKET};
+            shutdown(SOCKET(self.socket.as_raw_socket() as usize), SD_BOTH);
         }
     }
 }
@@ -249,9 +264,13 @@ enum Operation {
         vault: String,
         device: String,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Inspect {
         request: Box<inventory::Request>,
+    },
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    FirstSync {
+        request: Box<inventory::merge::Request>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -295,9 +314,13 @@ enum Reply {
     Observed {
         observation: transfer::Observation,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Inspection {
         response: inventory::Response,
+    },
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    FirstSync {
+        response: inventory::merge::Response,
     },
     NotReady,
     Error {
@@ -320,6 +343,10 @@ pub fn has_paired_computers_or_vaults(state: &Path) -> Result<bool> {
 
 impl Controller {
     pub fn open(state: PathBuf, configs: Vec<PathBuf>) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_controller(&state, &configs)?;
+        }
         let _lock = private::lock(&state)?;
         let file = state.join("direct.json");
         let db = if file.try_exists()? {
@@ -345,6 +372,8 @@ impl Controller {
         };
         // Persist identity once, before creating an offer or exposing its public key.
         private::write(&file, &serde_json::to_vec(&db)?)?;
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        let inventory_key = inventory::persistent_key(&state)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 state,
@@ -361,11 +390,13 @@ impl Controller {
                 history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
                 delivered_approval: Mutex::new(None),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 inventory: Mutex::new(Default::default()),
-                #[cfg(target_os = "linux")]
-                inventory_key: wire::random()?,
-                #[cfg(all(test, target_os = "linux"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                inventory_key,
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                first_sync: Mutex::new(BTreeMap::new()),
+                #[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
                 inspection_hook: Mutex::new(None),
                 _lock,
             }),
@@ -386,6 +417,10 @@ impl Controller {
     }
     pub fn set_configurations(&self, configs: Vec<PathBuf>) -> Result<()> {
         self.check()?;
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_configurations(&configs)?;
+        }
         let mut current = self.shared.configs.lock().unwrap();
         if *current != configs {
             *current = configs;
@@ -457,7 +492,7 @@ impl Controller {
             "operational state must be outside the vault"
         );
         let mut db = self.shared.db.lock().unwrap();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         let upgraded_grants = {
             let mut grants = db.share_grants.clone();
             for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
@@ -480,7 +515,7 @@ impl Controller {
         } else {
             db.attached.push(fresh.clone());
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             db.share_grants = upgraded_grants;
         }
@@ -656,7 +691,7 @@ impl Controller {
                     if shared.stopped.load(Ordering::Acquire) || !shared.access.allowed() {
                         break;
                     }
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                     shared.inventory.lock().unwrap().prune();
                     drop(shared);
                     match listener.accept() {
@@ -772,6 +807,7 @@ impl Controller {
     /// verification or transfer reconciliation. Used while a pairing step is open.
     pub fn refresh_pairing(&self) -> Result<Snapshot> {
         self.check()?;
+        self.serve_pinned()?;
         let outbound = self.shared.db.lock().unwrap().outbound.clone();
         if let Some((offer, request)) = outbound {
             if offer.expires <= now()? {
@@ -929,7 +965,8 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
-        let exchange_transport = !read_only && !operation.removal_only();
+        let exchange_transport = !read_only && !operation.removal_only() && !operation.first_sync();
+        let first_sync = operation.first_sync();
         let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
@@ -946,10 +983,14 @@ impl Controller {
         let mut stream =
             wire::connect(endpoint).map_err(|error| transfer::not_connected(endpoint, error))?;
         self.check()?;
-        if redeem {
+        if redeem || first_sync {
             // The other computer may be busy (daemon inventory, disk). A pairing
             // request waits longer than the 3 s frame bound before giving up (#2589).
-            stream.set_read_timeout(Some(PAIRING_REPLY_TIMEOUT))?;
+            stream.set_read_timeout(Some(if first_sync {
+                Duration::from_secs(90)
+            } else {
+                PAIRING_REPLY_TIMEOUT
+            }))?;
         }
         wire::write(&mut stream, &frame)?;
         let waiting_since = std::time::Instant::now();
@@ -970,6 +1011,10 @@ impl Controller {
         self.check()?;
         let mut reply = response.result;
         if let Some(transport) = response.transport {
+            ensure!(
+                !first_sync,
+                "first Sync cannot exchange transport configuration"
+            );
             ensure!(
                 !read_only,
                 "inspection cannot exchange transport configuration"
@@ -1010,7 +1055,8 @@ impl Controller {
         let (message, signer): (Message, _) =
             wire::open(envelope, &credential, expected.as_deref())?;
         ensure!(
-            !message.operation.read_only() || message.transport.is_none(),
+            (!message.operation.read_only() && !message.operation.first_sync())
+                || message.transport.is_none(),
             "inspection cannot exchange transport configuration"
         );
         ensure!(
@@ -1044,16 +1090,24 @@ impl Controller {
             self.save(&db)?;
         }
         let seed = db.seed;
+        #[cfg(feature = "first-sync-fixture")]
+        let first_sync_fixture = message.operation.first_sync();
         let result = match message.operation {
             Operation::RemoveComputer { id, device, vaults } => {
                 drop(db);
                 self.receive_removal(scope, id, device, vaults, None)
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Operation::Inspect { request } => {
                 drop(db);
                 self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
+            }
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            Operation::FirstSync { request } => {
+                drop(db);
+                self.first_sync_request(scope, &signer, *request)
+                    .map(|response| Reply::FirstSync { response })
             }
             operation => {
                 let reply = self.dispatch(&mut db, scope, operation, signer);
@@ -1065,12 +1119,16 @@ impl Controller {
             }
         };
         let reply = result.unwrap_or_else(|error| {
+            #[cfg(feature = "first-sync-fixture")]
+            if first_sync_fixture {
+                eprintln!("FIRST_SYNC_FIXTURE_REFUSAL: {error:#}");
+            }
             if let Some(message) = removal::public_refusal(&error) {
                 return Reply::Error {
                     message: message.into(),
                 };
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             if let Some(message) = inventory::public_refusal(&error) {
                 return Reply::Error {
                     message: message.into(),
@@ -1246,8 +1304,10 @@ impl Controller {
                     Err(error) => Err(error),
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Operation::Inspect { .. } => anyhow::bail!("inspection requires lock-free dispatch"),
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            Operation::FirstSync { .. } => anyhow::bail!("first Sync requires lock-free dispatch"),
         }
     }
     fn save(&self, db: &Database) -> Result<()> {
@@ -1262,7 +1322,7 @@ impl Controller {
         let configs = self.shared.configs.lock().unwrap().clone();
         let mut db = self.shared.db.lock().unwrap();
         let mut attached = db.attached.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         let mut grants = db.share_grants.clone();
         let mut changed = false;
         for attached in &mut attached {
@@ -1271,7 +1331,7 @@ impl Controller {
                     existing::same_binding(attached, &fresh),
                     "attached replica identity changed"
                 );
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
                     changed |= grant.refresh_source(&fresh, false)?;
                 }
@@ -1281,7 +1341,7 @@ impl Controller {
         }
         if changed {
             db.attached = attached;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             {
                 db.share_grants = grants;
             }
@@ -1291,6 +1351,13 @@ impl Controller {
     }
 }
 impl Operation {
+    fn first_sync(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        if matches!(self, Self::FirstSync { .. }) {
+            return true;
+        }
+        false
+    }
     fn removal_only(&self) -> bool {
         matches!(
             self,
@@ -1298,7 +1365,7 @@ impl Operation {
         )
     }
     fn read_only(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if matches!(self, Self::Inspect { .. }) {
             return true;
         }
@@ -1524,7 +1591,7 @@ fn history_settings(db: &Database) -> Vec<RetentionSetting> {
     settings
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn controller(root: &Path, name: &str) -> Result<Controller> {
@@ -1756,7 +1823,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 stable_root_identity: None,
             });
         let url = offer(&source)?;

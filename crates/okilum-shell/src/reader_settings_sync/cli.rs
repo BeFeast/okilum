@@ -101,6 +101,21 @@ pub(crate) fn entry() -> Option<i32> {
 }
 
 fn run(arguments: &[String]) -> i32 {
+    #[cfg(target_os = "macos")]
+    if arguments == ["qa-stop"] {
+        return match native_signing_policy()
+            .and_then(okilum_sync_controller::sidecar::macos::bootstrap::stop_isolated_current_app)
+        {
+            Ok(()) => {
+                println!("Isolated Sync helper stopped and its exit verified.");
+                0
+            }
+            Err(error) => {
+                eprintln!("okilum sync qa-stop: {error:#}");
+                1
+            }
+        };
+    }
     let request = match parse(arguments) {
         Ok(Some(request)) => request,
         Ok(None) => {
@@ -969,6 +984,7 @@ mod tests {
             snapshot,
             inspected: None,
             selected_destination: None,
+            first_sync: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
             vaults: vec![],

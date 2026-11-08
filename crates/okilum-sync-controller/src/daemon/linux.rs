@@ -292,6 +292,24 @@ fn prepare_with_policy(
             saved.identity,
         ));
     }
+    // Once launch authority exists, a missing preparation receipt is uncertain
+    // ownership, not permission to regenerate/rewrite a live runtime's config.
+    // Launch/configuration admission must never be bypassed by preparation retry.
+    ensure!(
+        !state.join("managed-launch").try_exists()?,
+        "managed preparation receipt missing; explicit recovery required"
+    );
+    if home.try_exists()? {
+        let existing = Element::parse(private::read(&home.join("config.xml"))?.as_slice())?;
+        ensure!(
+            !existing
+                .children
+                .iter()
+                .filter_map(XMLNode::as_element)
+                .any(|e| e.name == "folder"),
+            "prepared folder configuration has no receipt; explicit recovery required"
+        );
+    }
     private::directory(&home)?;
     let output = Command::new(&request.executable)
         .args(["generate", "--home"])
@@ -369,6 +387,10 @@ fn prepare_with_policy(
         device_id: id,
         certificate_hash: fingerprint(&config)?,
     };
+    crate::managed_launch::initialize(&ManagedInstance {
+        home: home.clone(),
+        executable: request.executable.clone(),
+    })?;
     private::write(
         &receipt,
         &serde_json::to_vec(&Prepared {

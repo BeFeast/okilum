@@ -12,6 +12,7 @@ pub(super) enum Step {
     Progress,
     Expired,
     Existing,
+    Merge,
 }
 
 #[derive(Default)]
@@ -93,6 +94,7 @@ impl Render for Wizard {
                                     view.presentation.wizard = None;
                                     view.presentation.managing = None;
                                     view.presentation.dialog_open = false;
+                                    view.close_first_sync_preview(cx);
                                     window.close_dialog(cx);
                                     cx.notify();
                                 })),
@@ -168,7 +170,7 @@ pub(super) fn last_seen(value: &str) -> String {
 }
 
 pub(super) fn notify_approval(name: &str) {
-    #[cfg(not(test))]
+    #[cfg(all(not(test), unix))]
     {
         use std::process::{Command, Stdio};
         let title = format!("{name} wants to connect");
@@ -192,7 +194,7 @@ pub(super) fn notify_approval(name: &str) {
             _ => {}
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, windows))]
     let _ = name;
 }
 
@@ -294,7 +296,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 stable_root_identity: None,
             }],
             shared: vec![],

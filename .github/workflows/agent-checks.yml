@@ -40,7 +40,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
+          cache-on-failure: true
       - name: Prepare and verify Mac Sync vendor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
@@ -71,6 +74,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-windows-recovery-v1
+          cache-on-failure: true
       - name: Prepare and verify Windows vendor
         shell: bash
         run: |
@@ -80,6 +84,11 @@ jobs:
         shell: pwsh
         run: |
           python scripts/ci/windows-recovery-check.py
+          exit $LASTEXITCODE
+      - name: Run native Windows Sync identity controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-sync-identity-check.py
           exit $LASTEXITCODE
       - name: Run native Windows delta console controls
         shell: pwsh
@@ -173,6 +182,7 @@ jobs:
           bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
       - name: Verify bundled Sync Help and brand
         run: |
@@ -185,10 +195,13 @@ jobs:
       - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
         env:
           CARGO_NET_OFFLINE: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           source scripts/ci/test-nofile.sh
           python3 scripts/ci/fetch-ci-dependency.py syncthing "${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture/syncthing-linux-amd64-v2.1.6.tar.gz"
           tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
+      - name: Verify managed launch and configuration admission
+        run: bash scripts/ci/sync-managed-admission.sh
       - name: Reject and reap surviving agent fixture daemons
         if: always()
         run: python3 scripts/ci/sync-fixture-processes.py --root "$RUNNER_TEMP" --cleanup

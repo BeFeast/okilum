@@ -10,30 +10,67 @@ use std::path::{Path, PathBuf};
 /// Hold the original directory open so replacement cannot recycle its inode while
 /// authenticated daemon inspection is in flight. Canonical paths alone are not
 /// filesystem identities.
+#[cfg(unix)]
 pub(super) struct VaultRoot(std::fs::File);
+#[cfg(windows)]
+pub(super) struct VaultRoot(okilum_core::windows_files::Directory);
 impl VaultRoot {
     pub(super) fn open(path: &Path) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_vault(path)?;
+        }
+        #[cfg(unix)]
         let root = Self(
             std::fs::File::open(path)
                 .with_context(|| format!("open vault root {}", path.display()))?,
         );
+        #[cfg(windows)]
+        let root = Self(okilum_core::windows_files::Directory::open(path)?);
         root.verify(path)?;
         Ok(root)
     }
 
-    #[cfg(target_os = "macos")]
-    pub(super) fn stable_identity(
-        &self,
-    ) -> Result<okilum_write_authority::identity_macos::Identity> {
-        okilum_write_authority::identity_macos::from_file(&self.0)
-    }
-
+    #[cfg(unix)]
     pub(super) fn identity(&self) -> Result<(u64, u64)> {
         use std::os::unix::fs::MetadataExt;
         let metadata = self.0.metadata()?;
         Ok((metadata.dev(), metadata.ino()))
     }
 
+    #[cfg(windows)]
+    pub(super) fn identity(&self) -> Result<(u64, u64)> {
+        let info = self.0.information()?;
+        Ok((
+            info.dwVolumeSerialNumber as u64,
+            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        ))
+    }
+
+    pub(super) fn stable_identity(
+        &self,
+    ) -> Result<okilum_write_authority::filesystem_identity::Identity> {
+        #[cfg(unix)]
+        {
+            okilum_write_authority::filesystem_identity::from_file(&self.0)
+        }
+        #[cfg(windows)]
+        {
+            self.0.filesystem_identity()
+        }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn verify(&self, path: &Path) -> Result<()> {
+        let current = okilum_core::windows_files::Directory::open(path)?;
+        ensure!(
+            self.stable_identity()? == current.filesystem_identity()?,
+            "vault root must remain the same real directory"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
     pub(super) fn verify(&self, path: &Path) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         let current = std::fs::symlink_metadata(path)
@@ -67,13 +104,10 @@ pub struct ExistingVault {
     /// Persisted inspection witness. Legacy records need explicit fresh consent.
     #[serde(default)]
     pub root_identity: Option<(u64, u64)>,
-    /// Linux schema-2 witness. The raw pair remains an in-process descriptor guard.
-    #[cfg(target_os = "linux")]
+    /// Native schema-2 witness. The raw pair remains an in-process descriptor guard.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stable_root_identity: Option<okilum_write_authority::identity_linux::Identity>,
-    #[cfg(target_os = "macos")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stable_root_identity: Option<okilum_write_authority::identity_macos::Identity>,
+    pub stable_root_identity: Option<okilum_write_authority::filesystem_identity::Identity>,
 }
 
 /// No state is created, no daemon is started, and every REST operation is GET.
@@ -128,14 +162,10 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
         .collect::<Result<Vec<_>>>()?;
     root.verify(vault)?;
     root.verify(&path)?;
-    use std::os::unix::fs::MetadataExt;
-    let metadata = root.0.metadata()?;
     Ok(ExistingVault {
-        root_identity: Some((metadata.dev(), metadata.ino())),
-        #[cfg(target_os = "linux")]
-        stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(&root.0)?),
-        #[cfg(target_os = "macos")]
-        stable_root_identity: Some(okilum_write_authority::identity_macos::from_file(&root.0)?),
+        root_identity: Some(root.identity()?),
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        stable_root_identity: Some(root.stable_identity()?),
         daemon: candidate.identity.clone(),
         version: candidate.version.clone(),
         folder_id: id.clone(),
@@ -159,7 +189,7 @@ pub(super) fn same_binding(a: &ExistingVault, b: &ExistingVault) -> bool {
     if !same_replica(a, b) {
         return false;
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let (Some(a), Some(b)) = (&a.stable_root_identity, &b.stable_root_identity) {
         return a == b;
     }
@@ -174,11 +204,11 @@ pub(super) fn same_binding_with_consent(saved: &ExistingVault, fresh: &ExistingV
     if same_binding(saved, fresh) {
         return true;
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if saved.stable_root_identity.is_some() {
         return false;
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if saved.stable_root_identity.is_none()
         && fresh.stable_root_identity.is_some()
         && same_replica(saved, fresh)
@@ -246,7 +276,7 @@ impl AttachedVault {
             same_binding(&saved, &fresh),
             "saved replica association changed"
         );
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if saved.stable_root_identity.is_none() && fresh.stable_root_identity.is_some() {
             let _lock = private::lock(&self.state)?;
             let file = self.state.join("existing.json");
@@ -264,6 +294,16 @@ impl AttachedVault {
 /// Configuration-path inventory only. No network request, process launch or state.
 /// Errors, including inaccessible standard paths, are not converted to absence.
 pub fn configuration_paths() -> Result<Vec<PathBuf>> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+        let path = profile.state().join("config/config.xml");
+        return Ok(if path.try_exists()? {
+            vec![path]
+        } else {
+            vec![]
+        });
+    }
+    #[cfg(unix)]
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?);
     #[cfg(target_os = "linux")]
     {
@@ -289,9 +329,24 @@ pub fn configuration_paths() -> Result<Vec<PathBuf>> {
         }
         Ok(paths)
     }
+    #[cfg(windows)]
+    {
+        let home =
+            PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA unavailable")?);
+        let mut paths = Vec::new();
+        for path in [
+            home.join("Syncthing/config.xml"),
+            home.join("Okilum/Sync/config/config.xml"),
+        ] {
+            if path.try_exists()? {
+                paths.push(path);
+            }
+        }
+        Ok(paths)
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -391,7 +446,9 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: Some(root.identity()?),
-            stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(&root.0)?),
+            stable_root_identity: Some(okilum_write_authority::filesystem_identity::from_file(
+                &root.0,
+            )?),
         })
     }
 
@@ -506,7 +563,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: Some((metadata.dev(), metadata.ino())),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             stable_root_identity: None,
         };
         assert!(same_binding(&inspected, &inspected));

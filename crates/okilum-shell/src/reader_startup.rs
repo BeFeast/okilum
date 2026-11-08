@@ -568,8 +568,8 @@ impl Render for Entry {
                             }),
                     ),
             )
-            .when(cfg!(any(target_os = "linux", target_os = "macos")), |card| {
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+            .when(cfg!(any(target_os = "linux", target_os = "macos", windows)), |card| {
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 let card = card.child(
                     Button::new("startup-sync-pairing")
                         .debug_selector(|| "startup-sync-pairing".into())

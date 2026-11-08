@@ -281,6 +281,13 @@ impl PrivateClient {
         .context(OPEN_CONTEXT)?;
         Ok(unsafe { OwnedHandle::from_raw_handle(raw.0) })
     }
+    pub(super) fn capture_exit(&self) -> Result<super::windows_peer::ExitWatch> {
+        self.verify()?;
+        let watch = self.peer.capture_exit()?;
+        self.verify()?;
+        Ok(watch)
+    }
+
     pub fn verify(&self) -> Result<()> {
         let mut sd = PSECURITY_DESCRIPTOR::default();
         unsafe {

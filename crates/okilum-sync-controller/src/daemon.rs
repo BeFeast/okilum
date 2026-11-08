@@ -22,6 +22,16 @@ pub(crate) use linux::managed_transport_identity;
 #[cfg(target_os = "linux")]
 pub use linux::{configuration_paths, managed_identity, prepare, prepare_lan, Preparation};
 
+#[cfg(target_os = "macos")]
+pub use crate::sidecar::macos::bootstrap::managed_source_identity as managed_identity;
+#[cfg(target_os = "macos")]
+pub(crate) use crate::sidecar::macos::bootstrap::managed_transport_identity;
+
+#[cfg(windows)]
+pub use crate::sidecar::windows::bootstrap::managed_source_identity as managed_identity;
+#[cfg(windows)]
+pub(crate) use crate::sidecar::windows::bootstrap::managed_transport_identity;
+
 pub const CLIENT_VERSION: &str = "v2.1.6";
 
 /// External compatibility is independent of the checksum-pinned bundled runtime.
@@ -38,6 +48,9 @@ pub struct DaemonIdentity {
     pub certificate_hash: String,
 }
 impl DaemonIdentity {
+    pub(crate) fn rest_address(&self) -> Result<SocketAddr> {
+        Ok(self.checked_config()?.address)
+    }
     /// APFS may preserve a different spelling of the same configuration path
     /// across launches. Compare the file identity as well as authenticated
     /// device/certificate identity; never accept a similarly named copy.
@@ -195,7 +208,11 @@ struct RestConfig {
     key: String,
 }
 fn read_config(path: &Path) -> Result<RestConfig> {
-    let xml = Element::parse(private::read(path)?.as_slice())?;
+    #[cfg(unix)]
+    let bytes = private::read(path)?;
+    #[cfg(windows)]
+    let bytes = private::public_file(path)?;
+    let xml = Element::parse(bytes.as_slice())?;
     let gui = xml.get_child("gui").context("GUI configuration missing")?;
     ensure!(
         gui.attributes.get("tls").is_none_or(|s| s == "false"),

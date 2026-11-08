@@ -186,8 +186,21 @@ fn native_pipe_peer_rejects_other_process_and_exited_handle() -> Result<()> {
         "same-user wrong process accepted"
     );
     peer.verify_pipe(&server, PeerEnd::Client)?; // positive control: correct live process accepted
+    let waiting = peer.capture_exit()?;
+    ensure!(
+        waiting
+            .wait(Instant::now() + Duration::from_millis(20))
+            .is_err(),
+        "a live captured process must not authorize exit"
+    );
+    let exited = peer.capture_exit()?;
     child.0.kill()?;
     child.0.wait()?;
+    exited.wait(Instant::now() + Duration::from_secs(1))?;
+    ensure!(
+        peer.capture_exit().is_err(),
+        "absence cannot reconstruct a captured exit witness"
+    );
     ensure!(
         peer.verify_pipe(&server, PeerEnd::Client).is_err(),
         "exited peer accepted"

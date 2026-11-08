@@ -79,6 +79,8 @@ pub(super) fn share(
         device != source.daemon.device_id,
         "cannot share with the source daemon"
     );
+    let _admission =
+        crate::admission::configuration(&source.daemon, &source.folder_id, &source.path)?;
     let api = source.daemon.connect()?;
     let folder = api.folder(&source.folder_id)?;
     ensure!(
@@ -176,6 +178,176 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
     Ok(lines)
 }
 impl Controller {
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(in crate::direct) fn attach_completed_first_sync(
+        &self,
+        receipt: &inventory::merge::CompletedMerge,
+    ) -> Result<()> {
+        self.validate_first_sync_completion(receipt, false)?;
+        self.check()?;
+        let path = &receipt.path;
+        let vault = &receipt.vault;
+        let daemon = &receipt.daemon;
+        let configs = self.configuration_paths()?;
+        let inventory = daemon::discover(&configs);
+        let folders = inventory.folders()?;
+        ensure!(
+            inventory.candidates.len() == 1 && inventory.candidates[0].identity == *daemon,
+            "first Sync handoff runtime changed"
+        );
+        let api = daemon.connect()?;
+        let (paired, existing) = {
+            let db = self.shared.db.lock().unwrap();
+            let paired = db
+                .peers
+                .get(&receipt.peer)
+                .cloned()
+                .context("paired computer missing")?;
+            let existing = db
+                .transfers
+                .iter()
+                .find(|t| t.peer == receipt.peer && t.vault == *vault)
+                .cloned();
+            (paired, existing)
+        };
+        for (id, root) in folders {
+            ensure!(
+                (existing.is_some() && id == *vault && root == *path)
+                    || (!path.starts_with(&root) && !root.starts_with(path)),
+                "first Sync handoff overlaps another enrolled folder"
+            );
+        }
+        let _admission = crate::admission::configuration(daemon, vault, path)?;
+        let mut transfer = if let Some(transfer) = existing {
+            ensure!(
+                transfer.path == *path
+                    && transfer.daemon == *daemon
+                    && transfer.owner == Some(receipt.operation),
+                "first Sync handoff ownership changed"
+            );
+            if transfer.active {
+                validate_owned(&transfer, &api.folder(vault)?)?;
+                return Ok(());
+            }
+            transfer
+        } else {
+            self.validate_first_sync_completion(receipt, true)?;
+            let transfer = Transfer {
+                history: history::Policy::default(),
+                create_ignores: create_ignores::Policy::current(),
+                peer: receipt.peer,
+                vault: vault.clone(),
+                path: path.clone(),
+                daemon: daemon.clone(),
+                connection: None,
+                active: false,
+                owner: Some(receipt.operation),
+                destination_identity: Some(DirectoryIdentity::read(path)?),
+                phase: Phase::Promoting,
+                witness: None,
+                label: None,
+            };
+            let mut db = self.shared.db.lock().unwrap();
+            db.transfers.push(transfer.clone());
+            self.save(&db)?;
+            transfer
+        };
+        let connection = if let Some(connection) = &transfer.connection {
+            connection.clone()
+        } else {
+            let response = self.call(
+                paired.endpoint,
+                receipt.peer,
+                &paired.key,
+                &paired.public,
+                Operation::Share {
+                    vault: vault.clone(),
+                    device: daemon.device_id.clone(),
+                },
+            )?;
+            let Reply::Shared { connection } = response else {
+                anyhow::bail!("completed first Sync source sharing unavailable")
+            };
+            ensure!(
+                connection.folder_id == *vault,
+                "first Sync source folder changed"
+            );
+            transfer.connection = Some(connection.clone());
+            self.save_transfer(&transfer)?;
+            connection
+        };
+        let config = api.config()?;
+        if !config["devices"]
+            .as_array()
+            .context("device inventory missing")?
+            .iter()
+            .any(|d| d["deviceID"] == connection.device_id)
+        {
+            api.add_device(&json!({"deviceID":connection.device_id,"name":PAIRED_DEVICE_NAME,
+                "addresses":super::addresses::with_dynamic(&paired.addresses),"introducer":false,"autoAcceptFolders":false}))?;
+        }
+        if !config["folders"]
+            .as_array()
+            .context("folder inventory missing")?
+            .iter()
+            .any(|f| f["id"] == *vault)
+        {
+            self.validate_first_sync_completion(receipt, true)?;
+            api.add_paused_folder(&json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
+                "type":"sendreceive","paused":true,"devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
+                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+            inventory::merge::checkpoint("handoff-folder-created", receipt.operation);
+        }
+        let folder = api.folder(vault)?;
+        if transfer.witness.is_none() {
+            ensure!(
+                folder["label"] == owned_label(&transfer)?
+                    && folder["paused"] == true
+                    && folder["type"] == "sendreceive"
+                    && folder["path"]
+                        .as_str()
+                        .is_some_and(|p| Path::new(p) == path),
+                "first Sync folder creation witness differs"
+            );
+            transfer.witness = Some(folder.clone());
+            self.save_transfer(&transfer)?;
+        }
+        validate_owned(&transfer, &folder)?;
+        if folder["paused"] == true {
+            ensure!(
+                connection.policy.is_none(),
+                "first Sync shared policy requires explicit review"
+            );
+            api.set_ignores(
+                vault,
+                &connection
+                    .ignores
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )?;
+            self.check()?;
+            api.patch_folder(vault, &json!({"paused":false}))?;
+        }
+        transfer.phase = Phase::Bidirectional;
+        transfer.active = true;
+        transfer.witness = Some(api.folder(vault)?);
+        self.save_transfer(&transfer)?;
+        self.relabel_transfer(&mut transfer)?;
+        let attached = inspect_existing(&configs, path)?;
+        let mut db = self.shared.db.lock().unwrap();
+        ensure!(
+            db.attached
+                .iter()
+                .all(|a| a.folder_id != *vault || existing::same_binding(a, &attached)),
+            "first Sync association changed"
+        );
+        if !db.attached.iter().any(|a| a.folder_id == *vault) {
+            db.attached.push(attached);
+            self.save(&db)?;
+        }
+        Ok(())
+    }
     pub fn attach(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<Snapshot> {
         let guard = self.shared.transfer_lock.lock().unwrap();
         self.attach_locked(peer_id, vault_id, destination)?;
@@ -186,6 +358,10 @@ impl Controller {
     }
     fn attach_locked(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<()> {
         self.check()?;
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_vault(destination)?;
+        }
         ensure!(
             catalog_contains(&self.shared.db.lock().unwrap(), peer_id, vault_id),
             "choose a vault from the selected computer's authorized catalog first"
@@ -215,6 +391,7 @@ impl Controller {
         );
         let selected = &inventory.candidates[0];
         let daemon = selected.identity.clone();
+        let _admission = crate::admission::configuration(&daemon, vault_id, &path)?;
         let api = daemon.connect()?;
         let (paired, mut transfer) = {
             let mut db = self.shared.db.lock().unwrap();
@@ -696,7 +873,7 @@ impl ShareGrant {
         );
         Ok(())
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(super) fn refresh_source(&mut self, fresh: &ExistingVault, consent: bool) -> Result<bool> {
         ensure!(
             existing::same_binding(&self.source, fresh)
@@ -934,12 +1111,20 @@ pub(super) fn offline(error: &anyhow::Error) -> bool {
 /// failure, and it is not a firewall problem (#2589). macOS reports a sleeping
 /// LAN host as EHOSTDOWN, which std leaves uncategorized.
 pub(super) fn host_down(error: &std::io::Error) -> bool {
-    matches!(
+    let common = matches!(
         error.kind(),
         std::io::ErrorKind::HostUnreachable
             | std::io::ErrorKind::NetworkUnreachable
             | std::io::ErrorKind::NetworkDown
-    ) || error.raw_os_error() == Some(libc::EHOSTDOWN)
+    );
+    #[cfg(unix)]
+    {
+        common || error.raw_os_error() == Some(libc::EHOSTDOWN)
+    }
+    #[cfg(windows)]
+    {
+        common || error.raw_os_error() == Some(windows::Win32::Networking::WinSock::WSAEHOSTDOWN.0)
+    }
 }
 /// The paired channel's connect error, with a hint that matches the cause.
 pub(super) fn not_connected(endpoint: SocketAddr, error: anyhow::Error) -> anyhow::Error {
@@ -1086,6 +1271,8 @@ impl Controller {
         Ok(())
     }
     fn reconcile_one(&self, transfer: &mut Transfer) -> Result<()> {
+        let _admission =
+            crate::admission::configuration(&transfer.daemon, &transfer.vault, &transfer.path)?;
         transfer.daemon.verify_local()?;
         let configs = self.configuration_paths()?;
         ensure!(
@@ -1529,7 +1716,7 @@ pub(super) fn record_removed_membership(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
@@ -1775,7 +1962,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             stable_root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
@@ -1853,7 +2040,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             stable_root_identity: None,
         };
         let controller = Controller::open(root.path().join("order-controller"), vec![])?;
@@ -2128,6 +2315,15 @@ mod tests {
             &prepared.join("prepared.json"),
             &serde_json::to_vec(&receipt)?,
         )?;
+        // A preparation marker alone no longer grants managed configuration
+        // authority. Keep this a REST component fixture, and establish its real
+        // private launch registry without starting a process or service.
+        assert!(controller.reconcile_transfers().is_err());
+        assert_eq!(patches(), json!([]));
+        crate::managed_launch::initialize(&crate::lifecycle::ManagedInstance {
+            home: home.clone(),
+            executable: PathBuf::from("/bin/true").canonicalize()?,
+        })?;
         controller
             .shared
             .db

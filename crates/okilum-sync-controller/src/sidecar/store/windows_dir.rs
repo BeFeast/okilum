@@ -134,6 +134,19 @@ impl WindowsDir {
     }
 }
 impl Store<WindowsDir> {
+    /// Startup failures have no console when the helper is a login task. Keep
+    /// their bounded diagnostic in the same protected, atomically replaced store.
+    pub fn write_supervisor_failure(&self, message: &str, deadline: Instant) -> Result<()> {
+        let _lock = self.dir.lock(deadline)?;
+        let message: String = message.chars().take(8192).collect();
+        self.dir.write("supervisor-error.log", message.as_bytes())
+    }
+    pub fn read_supervisor_failure(&self) -> Result<Option<String>> {
+        Ok(self
+            .dir
+            .read("supervisor-error.log")?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
     /// Validates an already prepared directory (`PrivateDirectory::prepare`,
     /// after explicit Enable) and remembers its identity. Creates nothing and
     /// holds no handle, so it works while another process holds the lock.

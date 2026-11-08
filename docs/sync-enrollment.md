@@ -1,7 +1,7 @@
 # Sync between your computers
 
 Sync copies a vault's notes and attachments between approved computers using
-Syncthing. On Linux and macOS, Okilum can set this up from a fresh installation with its
+Syncthing. Okilum can set this up from a fresh installation with its
 bundled runtime. You do not need an Okilum account, a service, or a server.
 After the first transfer, saved changes and deletions sync automatically in both
 directions. Keep a separate backup: Sync can copy an accidental deletion too.
@@ -11,9 +11,11 @@ This describes the shipped Linux and macOS flow. The
 records the fresh two-computer run on beta 7538. macOS beta 29262 or later supports
 fresh setup in either role; [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489)
 records the native Mac flow, both-direction file checks and walkthrough. Windows
-is **coming** in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
+requires the installed signed build with its Sync helper; portable packages
+do not include background Sync. Native first-merge acceptance and containing
+betas are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
-## Connect Linux and Mac computers
+## Connect your computers
 
 1. **On the computer that already has your notes**, open the vault and choose
    **Share with another computer…** from the app menu. In Settings → Sync, find
@@ -32,13 +34,17 @@ is **coming** in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
    a lost approval reply does not require another link or request.
 4. **Back on the first computer**, check the name in the visible approval banner.
    Select **Approve** only for the computer you intended to connect, or **Reject**.
-   An OS notification also directs you back to Okilum. Only approval makes the
+   On Linux and Mac, an OS notification also directs you back to Okilum. Only approval makes the
    authorized vault catalog available to the new computer.
 5. **On the new computer**, select **Choose folder** for each wanted vault under
    **Available vaults**. Select an existing folder or create one in the native
    folder dialog. These choices are staged until **Start first sync**. If an
-   unknown destination already has files, Okilum leaves them untouched and asks
-   you to choose an empty folder; do not delete a working copy to make setup proceed.
+   destination already has files, review **New here / New there / Same /
+   Conflicting** and confirm the merge. Different versions stay on both computers.
+   Little overlap requires an additional acknowledgement. Closing the preview
+   starts no merge. If either copy changes, review a fresh preview; after an
+   interruption, use **Recover first sync** on the initiating computer. Never
+   delete a working copy to make setup proceed.
 6. Follow the first transfer in the wizard or close it and inspect the vault's
    state on the Sync page. The received vault opens when the controller reports
    it ready. Save a small edit with **Cmd+S** on Mac or **Ctrl+S** on Linux, check it on the other computer,
@@ -195,11 +201,10 @@ recalled. A new invitation does not revoke an earlier pairing.
 The [30 October decisions and 1 November clarification](https://git.oklabs.uk/BeFeast/okilum/issues/2039)
 set the direction. These parts remain unfinished:
 
-- [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043): preview and lossless
-  first merge when the destination already has files. Local preview groundwork
-  does not enable this flow. Merged PRs
-  [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
-  [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) supply inventory/preflight groundwork, not a complete first-merge UI.
+- Native beta delivery and first-merge acceptance for
+  [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043). The
+  [first-merge contract](sync-first-merge.md) describes revision-bound previews,
+  preservation and explicit recovery; a source merge alone is not delivery.
 - Untrusted-server encryption and the limits of removal for already copied data.
 
 The old service/hub/passkey enrollment is gone from the desktop user flow
@@ -283,8 +288,9 @@ automatic ignore migration.
 A missing include is an error in pinned Syncthing 2.1.6. During first receive,
 Okilum therefore validates and seeds the policy from the authenticated share
 response while the new owned folder is paused, before installing `.stignore`.
-The normal synced file takes over after transfer starts. Existing non-empty
-unknown destinations remain refused; this does not enable #2043.
+The normal synced file takes over after transfer starts. A non-empty destination
+requires the lossless preview and completed merge receipt before enrollment;
+ordinary unknown non-empty attachment remains refused.
 
 For a plain Syncthing server, first let the shared file arrive under its current
 rules. Back up that server's `.stignore`, then prepend the one include line while

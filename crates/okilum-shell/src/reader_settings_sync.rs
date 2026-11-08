@@ -126,6 +126,7 @@ pub(super) fn suspend(cx: &mut App) {
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
+            #[cfg(unix)]
             control::app_released();
             view.snapshot = None;
             view.inspected = None;
@@ -170,6 +171,9 @@ enum Operation {
     Consent(Box<ExistingVault>),
     Attach(uuid::Uuid, String, PathBuf),
     AttachNew(uuid::Uuid, String, PathBuf),
+    ReviewDestination(uuid::Uuid, String, PathBuf),
+    RecoverFirstSync(uuid::Uuid),
+    CancelFirstSync(uuid::Uuid),
 }
 #[cfg(test)]
 #[derive(Clone)]
@@ -178,6 +182,7 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 impl Global for TestWorker {}
 
 struct Output {
+    first_sync: first_sync::Output,
     overview: direct::Overview,
     connection_error: Option<String>,
     diagnostic: Option<String>,
@@ -190,6 +195,7 @@ struct Output {
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
+    first_sync: first_sync::State,
     health: health::Health,
     presentation: presentation::Presentation,
     controller: Option<Controller>,
@@ -316,6 +322,7 @@ impl SyncSettings {
         Self {
             health: Default::default(),
             presentation: Default::default(),
+            first_sync: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
             vaults: vec![],
@@ -364,10 +371,14 @@ impl SyncSettings {
         (name, invitation)
     }
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        if self.first_sync_applying(cx) {
+            return;
+        }
         if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
             return;
         }
         let destination_vault = match &operation {
+            Operation::ReviewDestination(_, vault, _) => Some(vault.clone()),
             Operation::Attach(_, vault, _) | Operation::AttachNew(_, vault, _) => {
                 self.destination_error = None;
                 Some(vault.clone())
@@ -419,6 +430,10 @@ impl SyncSettings {
                     snapshot: snapshot.clone(),
                     inspected: None,
                     selected_destination: None,
+                    first_sync: first_sync::Output {
+                        preview: None,
+                        pending: self.first_sync.pending.clone(),
+                    },
                     #[cfg(target_os = "linux")]
                     runtimes: self.runtimes.clone(),
                     vaults: self.vaults.clone(),
@@ -469,7 +484,7 @@ impl SyncSettings {
                         }
                         let result = perform_scoped(controller, operation, &worker_epoch);
                         // #2589: while the app owns Sync, `okilum sync` runs through it.
-                        #[cfg(not(test))]
+                        #[cfg(all(not(test), unix))]
                         if let Ok(output) = &result {
                             if worker_epoch.is_current() {
                                 control::app_owns(&output.controller);
@@ -540,9 +555,12 @@ impl SyncSettings {
                     cx.refresh_windows();
                     if let Some(operation) = this.pending_destination.take() {
                         this.run(operation, cx);
-                    } else if succeeded && !this.presentation.transfers.is_empty() {
+                    } else if succeeded
+                        && !this.has_first_sync_preview()
+                        && !this.presentation.transfers.is_empty()
+                    {
                         let operation = this.presentation.transfers.pop_front().unwrap();
-                        this.run(operation, cx);
+                        this.start_destination(operation, cx);
                     } else {
                         this.schedule_refresh(cx);
                     }
@@ -553,6 +571,7 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        self.publish_first_sync(output.first_sync, cx);
         self.health.observe(&output.overview, Instant::now());
         if output.connection_error.is_none() {
             // A successful recheck replaces the failed attempt, including its
@@ -881,12 +900,14 @@ fn sync_refresh_interval(snapshot: &Snapshot) -> Option<Duration> {
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
     #[cfg(target_os = "macos")]
-    if let Some(profile) = reader_history::isolated_state_directory() {
-        // Explicit profiles are isolated from the account helper and all live
-        // configuration paths. Their own external connection is read-only here.
-        let config = profile.join("sync/config/config.xml");
-        let configs = config.try_exists()?.then_some(config).into_iter().collect();
-        return Ok((state_location()?, configs));
+    if okilum_sync_controller::sidecar::macos::isolation::selected()?.is_none() {
+        if let Some(profile) = reader_history::isolated_state_directory() {
+            // Explicit profiles are isolated from the account helper and all live
+            // configuration paths. Their own external connection is read-only here.
+            let config = profile.join("sync/config/config.xml");
+            let configs = config.try_exists()?.then_some(config).into_iter().collect();
+            return Ok((state_location()?, configs));
+        }
     }
     let configs = direct::configuration_paths()?;
     #[cfg(target_os = "macos")]
@@ -896,7 +917,7 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         let mut configs = configs;
         if let Some(managed) =
             okilum_sync_controller::sidecar::discovery::managed_configuration_path(
-                &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+                &okilum_sync_controller::sidecar::macos::active_state_directory()?,
             )?
         {
             if !configs.contains(&managed) {
@@ -910,18 +931,31 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
 /// This computer's direct journal folder.
 fn state_location() -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "macos")]
-    if let Some(profile) = reader_history::isolated_state_directory() {
-        let sync = profile.join("sync");
-        ensure_private_sync_directory(&sync)?;
-        return Ok(sync.join("direct"));
+    if okilum_sync_controller::sidecar::macos::isolation::selected()?.is_none() {
+        if let Some(profile) = reader_history::isolated_state_directory() {
+            let sync = profile.join("sync");
+            ensure_private_sync_directory(&sync)?;
+            return Ok(sync.join("direct"));
+        }
     }
     #[cfg(target_os = "linux")]
     let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
     let state =
-        mac_direct_state(&okilum_sync_controller::sidecar::macos::account_state_directory()?)?;
+        mac_direct_state(&okilum_sync_controller::sidecar::macos::active_state_directory()?)?;
+    #[cfg(windows)]
+    let state = {
+        let managed =
+            okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?;
+        let parent = managed
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?;
+        std::fs::create_dir_all(parent)?;
+        parent.join("SyncDirect")
+    };
     Ok(state)
 }
+#[cfg(unix)]
 fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     match std::fs::symlink_metadata(path) {
@@ -1064,8 +1098,11 @@ fn perform_with_locations(
         if matches!(operation, Operation::Restart) {
             health::repair_or_restart(&controller)?;
         }
-        #[cfg(target_os = "macos")]
-        prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
+        #[cfg(any(target_os = "macos", windows))]
+        prepare_native_runtime(&controller, &operation, connect_managed_runtime)?;
+        let first_sync_recovery_read =
+            matches!(&operation, Operation::Read | Operation::EnterPairing)
+                && !controller.pending_first_sync()?.is_empty();
         guard.check()?;
         #[cfg(target_os = "linux")]
         {
@@ -1094,6 +1131,7 @@ fn perform_with_locations(
                     | Operation::Redeem(_, _)
                     | Operation::Attach(_, _, _)
                     | Operation::AttachNew(_, _, _)
+                    | Operation::ReviewDestination(_, _, _)
                     | Operation::Share(_)
             ) {
                 runtime.inventory.folders()?;
@@ -1105,7 +1143,10 @@ fn perform_with_locations(
             if let Operation::Share(path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
             }
-            if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
+            if let Operation::Attach(_, _, path)
+            | Operation::AttachNew(_, _, path)
+            | Operation::ReviewDestination(_, _, path) = &operation
+            {
                 // Check other runtimes before creating even an empty directory.
                 linux_runtime::check_destination(&runtime, path)?;
             }
@@ -1125,11 +1166,13 @@ fn perform_with_locations(
                 };
                 if selected.managed {
                     guard.check()?;
-                    okilum_sync_controller::network_policy::reconcile(
-                        &state.parent().unwrap().join("managed/prepared"),
-                        &selected.identity,
-                        requested,
-                    )?;
+                    if !first_sync_recovery_read {
+                        okilum_sync_controller::network_policy::reconcile(
+                            &state.parent().unwrap().join("managed/prepared"),
+                            &selected.identity,
+                            requested,
+                        )?;
+                    }
                 } else {
                     anyhow::ensure!(
                         requested.is_none(),
@@ -1144,17 +1187,19 @@ fn perform_with_locations(
             }
             controller.set_configurations(runtime.configs.clone())?;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Operation::AttachNew(_, _, path) = &operation {
             guard.check()?;
             destination::prepare(path)?;
         }
         let selected_destination = match &operation {
+            Operation::ReviewDestination(_, _, path) => Some(path.canonicalize()?),
             Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) => {
                 Some(path.canonicalize()?)
             }
             _ => None,
         };
+        let mut selected_destination = selected_destination;
         #[cfg(target_os = "linux")]
         let refresh_inventory_after_action = !matches!(
             &operation,
@@ -1167,25 +1212,53 @@ fn perform_with_locations(
                 | Operation::Catalog(_)
         );
         let mut inspected = None;
+        let mut first_sync = first_sync::Output::default();
         let mut refresh_problem = None;
         let snapshot = match operation {
+            Operation::ReviewDestination(peer, vault, path) => {
+                if std::fs::read_dir(&path)?.next().transpose()?.is_some() {
+                    selected_destination = None;
+                    let preview = controller.preview_remote_vault(peer, &vault, &path)?;
+                    let plan = preview.plan().clone();
+                    let backend = controller.first_sync_backend(preview);
+                    first_sync.preview = Some(first_sync::Prepared {
+                        plan,
+                        backend,
+                        path,
+                    });
+                    controller.snapshot()?
+                } else {
+                    controller.attach(peer, &vault, &path)?
+                }
+            }
+            Operation::RecoverFirstSync(operation) => {
+                controller.recover_first_sync(operation)?;
+                controller.refresh()?
+            }
+            Operation::CancelFirstSync(operation) => {
+                controller.cancel_first_sync(operation)?;
+                controller.refresh()?
+            }
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             #[cfg(target_os = "macos")]
             Operation::Restart => controller.refresh()?,
             Operation::Read | Operation::EnterPairing => {
-                #[cfg(all(target_os = "macos", not(test)))]
-                let observed = health::check_managed().and_then(|()| controller.refresh());
-                #[cfg(not(all(target_os = "macos", not(test))))]
-                let observed = controller.refresh();
+                let observed = if first_sync_recovery_read {
+                    controller.refresh_pairing()
+                } else {
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    let observed = health::check_managed().and_then(|()| controller.refresh());
+                    #[cfg(not(all(target_os = "macos", not(test))))]
+                    let observed = controller.refresh();
+                    observed
+                };
                 match observed {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         #[cfg(target_os = "macos")]
                         let error = with_helper_failure(error);
                         refresh_problem = Some(error);
-                        // Saved enrollment is not first-run state. Keep known
-                        // computers/vaults visible while presenting the failure.
                         controller.snapshot()?
                     }
                 }
@@ -1199,7 +1272,10 @@ fn perform_with_locations(
                     .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?
                     .join("managed/prepared");
                 #[cfg(target_os = "macos")]
-                let prepared = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+                let prepared = okilum_sync_controller::sidecar::macos::active_state_directory()?;
+                #[cfg(windows)]
+                let prepared =
+                    okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?;
                 controller.share_vault(&prepared, &path).with_context(|| {
                     format!(
                         "share vault {} using {}",
@@ -1235,6 +1311,9 @@ fn perform_with_locations(
             }
         };
         guard.check()?;
+        {
+            first_sync.pending = controller.pending_first_sync()?;
+        }
         // Publish folder counts from the same completed action as the snapshot.
         #[cfg(target_os = "linux")]
         let runtime = if refresh_inventory_after_action {
@@ -1247,6 +1326,7 @@ fn perform_with_locations(
         let connection_error =
             connection_error.or_else(|| linux_runtime::connection_error(&runtime));
         Ok(Output {
+            first_sync,
             overview: controller.overview().unwrap_or_default(),
             diagnostic: refresh_problem.as_ref().and_then(|error| {
                 failure_details("refresh", error)["error"]
@@ -1267,29 +1347,38 @@ fn perform_with_locations(
                     .and_then(Path::parent)
                     .ok_or_else(|| anyhow::anyhow!("Sync profile unavailable"))?,
             )?,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             vaults: vec![],
         })
     })?
 }
 #[cfg(target_os = "macos")]
-fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        reader_history::isolated_state_directory().is_none(),
-        "Managed account Sync is unavailable from an isolated Reader profile"
-    );
+fn native_signing_policy(
+) -> anyhow::Result<okilum_sync_controller::sidecar::macos::bootstrap::SigningPolicy> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
-        macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
-        supervisor::ipc::code_requirement::CodeRequirement,
+        macos::bootstrap::SigningPolicy, supervisor::ipc::code_requirement::CodeRequirement,
     };
     let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
     let identifier = option_env!("OKILUM_BUNDLE_ID").context("Sync bundle policy unavailable")?;
-    let policy = SigningPolicy {
+    Ok(SigningPolicy {
         app: CodeRequirement::team_and_identifier(team, identifier)?,
         helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
+    })
+}
+#[cfg(target_os = "macos")]
+fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        reader_history::isolated_state_directory().is_none()
+            || okilum_sync_controller::sidecar::macos::isolation::selected()?.is_some(),
+        "Managed account Sync is unavailable from an isolated Reader profile"
+    );
+    use anyhow::Context as _;
+    use okilum_sync_controller::sidecar::macos::bootstrap::{
+        connect_current_app, ConnectBudget, ConnectOutcome,
     };
+    let policy = native_signing_policy()?;
     // A first Connect prepares Sync and waits for its first helper launch, which
     // on macOS outlasted a single shared budget (#2589).
     match connect_current_app(true, policy, ConnectBudget::CONNECT)
@@ -1309,6 +1398,11 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
         }
     }
 }
+#[cfg(windows)]
+fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    let identity = okilum_sync_controller::sidecar::windows::bootstrap::connect_current_app(true)?;
+    controller.set_configurations(vec![identity.config_file])
+}
 fn user_error(error: &anyhow::Error) -> String {
     #[cfg(target_os = "linux")]
     if error.is::<legacy::PreviousConnection>() {
@@ -1317,6 +1411,12 @@ fn user_error(error: &anyhow::Error) -> String {
     let text = format!("{error:#}").to_lowercase();
     if text.contains("sync is disabled") {
         "Sync is disabled. Enable Sync in Settings → Features, then try Add computer again.".into()
+    } else if cfg!(windows)
+        && (text.contains("authenticode")
+            || text.contains("signed build")
+            || text.contains("portable app"))
+    {
+        "Sync requires the installed signed Windows build with its background helper. Install that build, then try again.".into()
     } else if text.contains("local sync folder") {
         "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
     } else if text.contains("network policy") {
@@ -1340,7 +1440,7 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("signing") || text.contains("bundle") || text.contains("runtime") {
         "A verified Sync runtime is not available in this build. Install a signed beta that includes Sync and try again.".into()
     } else if text.contains("nonempty") || text.contains("non-empty") {
-        "This folder already contains files. Your files have not changed. Choose an empty folder to start Sync.".into()
+        "This folder already contains files. Your files have not changed. Return to Choose folder to review a lossless merge preview.".into()
     } else if text.contains("expired") {
         "This pairing URL expired. Create a new one on the other computer.".into()
     } else if text.contains("daemon")
@@ -1359,8 +1459,8 @@ fn user_error(error: &anyhow::Error) -> String {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn prepare_mac_runtime(
+#[cfg(any(target_os = "macos", windows, test))]
+fn prepare_native_runtime(
     controller: &Controller,
     operation: &Operation,
     connect: impl FnOnce(&Controller) -> anyhow::Result<()>,
@@ -1369,13 +1469,29 @@ fn prepare_mac_runtime(
     // Opening Settings and Add computer must not depend on SMAppService approval,
     // global process inventory, signing checks or the bounded runtime startup.
     if matches!(operation, Operation::Share(_)) {
+        #[cfg(windows)]
+        {
+            let configs = controller.configuration_paths()?;
+            let managed = okilum_sync_controller::sidecar::discovery::managed_configuration_path(
+                &okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?,
+            )?;
+            let selected = configs
+                .first()
+                .map(|path| path.canonicalize())
+                .transpose()?;
+            let managed = managed.map(|path| path.canonicalize()).transpose()?;
+            anyhow::ensure!(
+                configs.is_empty() || (configs.len() == 1 && managed == selected),
+                "Use Choose existing synced vault for an external Windows Sync connection"
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             let configs = controller.configuration_paths()?;
             if !configs.is_empty() {
                 let managed =
                     okilum_sync_controller::sidecar::discovery::managed_configuration_path(
-                        &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+                        &okilum_sync_controller::sidecar::macos::active_state_directory()?,
                     )?;
                 anyhow::ensure!(
                     configs.len() == 1 && managed.as_ref().is_some_and(|p| p == &configs[0]),
@@ -1387,7 +1503,10 @@ fn prepare_mac_runtime(
     }
     if matches!(
         operation,
-        Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)
+        Operation::Redeem(..)
+            | Operation::Attach(..)
+            | Operation::AttachNew(..)
+            | Operation::ReviewDestination(..)
     ) && controller.configuration_paths()?.is_empty()
     {
         connect(controller)?;
@@ -1402,13 +1521,16 @@ use failure::failure_details;
 #[path = "reader_settings_sync/presentation.rs"]
 pub(super) mod presentation;
 
+#[cfg(unix)]
 #[path = "reader_settings_sync/cli.rs"]
 pub(crate) mod cli;
+#[cfg(unix)]
 #[path = "reader_settings_sync/control.rs"]
 mod control;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
-#[cfg(test)]
+mod first_sync;
+#[cfg(all(test, unix))]
 #[path = "reader_settings_sync/tests.rs"]
 mod tests;
 #[path = "reader_settings_sync/view.rs"]

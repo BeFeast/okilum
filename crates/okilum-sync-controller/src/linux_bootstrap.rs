@@ -2,7 +2,7 @@
 //! never call this module's Connect entry. No fallback to PATH or another daemon.
 use crate::{
     daemon::{self, DaemonIdentity, Preparation},
-    lifecycle::{Lifecycle, Systemd},
+    lifecycle::{Lifecycle, Systemd, UserServices},
     private,
 };
 use anyhow::{ensure, Context, Result};
@@ -88,6 +88,34 @@ pub fn connect(
     configs: &[PathBuf],
     check: impl Fn() -> Result<()>,
 ) -> Result<DaemonIdentity> {
+    connect_with(
+        confirmed,
+        state,
+        units,
+        configs,
+        check,
+        packaged_runtime,
+        Systemd,
+        None,
+    )
+}
+/// Inject package/service boundaries for isolated fixtures. Consent, inventory,
+/// pinned binary, preparation and the production launch path remain identical.
+#[doc(hidden)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit package, cancellation and service adapters for isolated native verification"
+)]
+pub fn connect_with<S: UserServices>(
+    confirmed: bool,
+    state: &Path,
+    units: &Path,
+    configs: &[PathBuf],
+    check: impl Fn() -> Result<()>,
+    package: impl Fn() -> Result<PathBuf>,
+    services: S,
+    launcher: Option<PathBuf>,
+) -> Result<DaemonIdentity> {
     ensure!(
         state.is_absolute() && units.is_absolute(),
         "absolute managed paths required"
@@ -112,7 +140,7 @@ pub fn connect(
             !state.join("prepared").try_exists()?,
             "partial Sync preparation requires recovery"
         );
-        let packaged = packaged_runtime()?;
+        let packaged = package()?;
         let runtime = state.join("syncthing");
         let mut input = fs::OpenOptions::new()
             .read(true)
@@ -159,10 +187,20 @@ pub fn connect(
         "Sync is disabled"
     );
     check()?;
-    Lifecycle::new(state.join("service"), units.to_owned(), Systemd).enable(instance)?;
-    wait_for_rest(&check, || identity.connect().map(|_| ()))?;
-    check()?;
-    crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
+    let lifecycle = Lifecycle::new(state.join("service"), units.to_owned(), services);
+    let lifecycle = match launcher {
+        Some(path) => lifecycle.with_launcher(path),
+        None => lifecycle,
+    };
+    lifecycle.enable(instance)?;
+    wait_for_rest(&check, || {
+        identity.connect()?;
+        // REST can answer before the owned launcher finishes its authenticated
+        // startup readback and releases its configuration gate. Retry only that
+        // bounded contention, never a held vault or incompatible identity.
+        crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
+        Ok(())
+    })?;
     check()?;
     Ok(identity)
 }
@@ -179,10 +217,13 @@ fn wait_for_rest(
         match connect() {
             Ok(()) => return Ok(()),
             Err(error)
-                if error
-                    .chain()
-                    .any(|e| e.to_string() == "Syncthing REST unavailable")
-                    && std::time::Instant::now() < deadline => {}
+                if error.chain().any(|e| {
+                    e.to_string() == "Syncthing REST unavailable"
+                        || matches!(
+                            e.downcast_ref::<std::fs::TryLockError>(),
+                            Some(std::fs::TryLockError::WouldBlock)
+                        )
+                }) && std::time::Instant::now() < deadline => {}
             Err(error) => {
                 return Err(error.context(
                     "Sync setup could not verify the bundled connection; refresh to retry",
@@ -211,6 +252,21 @@ mod tests {
             },
         )?;
         assert_eq!(attempts, 3, "startup waited for actual REST readiness");
+        attempts = 0;
+        wait_for_rest(
+            || Ok(()),
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    return Err(std::fs::TryLockError::WouldBlock.into());
+                }
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            attempts, 2,
+            "REST-ready startup still waits for launch admission"
+        );
         attempts = 0;
         let error = wait_for_rest(
             || Ok(()),

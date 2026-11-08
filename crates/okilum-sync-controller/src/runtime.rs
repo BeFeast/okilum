@@ -2,7 +2,7 @@
 //! saved choice; it never prepares a daemon or registers a service.
 use crate::{
     daemon::{discover, prepare, DaemonIdentity, Preparation},
-    lifecycle::{Lifecycle, Systemd},
+    lifecycle::{Lifecycle, Systemd, UserServices},
     private,
 };
 use anyhow::{ensure, Context, Result};
@@ -24,13 +24,31 @@ pub struct Snapshot {
     pub removed: bool,
     pub identity: Option<DaemonIdentity>,
 }
-pub struct Runtime {
+pub struct Runtime<S = Systemd> {
     state: PathBuf,
     units: PathBuf,
+    services: S,
+    launcher: Option<PathBuf>,
 }
-impl Runtime {
+impl Runtime<Systemd> {
     pub fn new(state: PathBuf, units: PathBuf) -> Self {
-        Self { state, units }
+        Self {
+            state,
+            units,
+            services: Systemd,
+            launcher: None,
+        }
+    }
+}
+impl<S: UserServices + Clone> Runtime<S> {
+    /// Isolated service adapter; production uses Systemd and package discovery.
+    pub fn with_services(state: PathBuf, units: PathBuf, services: S, launcher: PathBuf) -> Self {
+        Self {
+            state,
+            units,
+            services,
+            launcher: Some(launcher),
+        }
     }
     pub fn snapshot(&self) -> Result<Option<Snapshot>> {
         let file = self.state.join("runtime.json");
@@ -145,8 +163,16 @@ impl Runtime {
         self.save(&saved)?;
         Ok(saved)
     }
-    fn lifecycle(&self) -> Lifecycle<Systemd> {
-        Lifecycle::new(self.state.join("service"), self.units.clone(), Systemd)
+    fn lifecycle(&self) -> Lifecycle<S> {
+        let lifecycle = Lifecycle::new(
+            self.state.join("service"),
+            self.units.clone(),
+            self.services.clone(),
+        );
+        match &self.launcher {
+            Some(path) => lifecycle.with_launcher(path.clone()),
+            None => lifecycle,
+        }
     }
     fn save(&self, saved: &Snapshot) -> Result<()> {
         private::write(

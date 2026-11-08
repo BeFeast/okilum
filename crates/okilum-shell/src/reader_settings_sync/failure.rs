@@ -20,6 +20,9 @@ impl Operation {
             Self::Consent(_) => "attach_existing",
             Self::Attach(..) => "receive_vault",
             Self::AttachNew(..) => "receive_new_vault",
+            Self::ReviewDestination(..) => "review_first_sync",
+            Self::RecoverFirstSync(_) => "recover_first_sync",
+            Self::CancelFirstSync(_) => "cancel_first_sync",
             #[cfg(target_os = "linux")]
             Self::SelectConnection(_) => "select_connection",
             #[cfg(target_os = "linux")]

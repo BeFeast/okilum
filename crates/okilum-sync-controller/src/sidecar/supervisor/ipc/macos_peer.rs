@@ -252,6 +252,19 @@ pub struct SignedPeer {
     executable: PathBuf,
 }
 impl SignedPeer {
+    /// The isolated helper accepts its inherited launch channel only from its
+    /// actual parent, signed as the app beside this helper. A marker or --state
+    /// path alone is never launch permission.
+    pub fn verify_parent(&self, stream: &UnixStream) -> Result<()> {
+        self.verify(stream, PeerEnd::Client)?;
+        let token = peer_audit_token(stream)?;
+        let pid = u32::from_ne_bytes(token[20..24].try_into()?);
+        ensure!(
+            pid == unsafe { libc::getppid() } as u32,
+            "QA launch peer is not the helper parent"
+        );
+        Ok(())
+    }
     pub fn new(requirement: CodeRequirement, executable: &Path) -> Result<Self> {
         std::fs::canonicalize(executable).context("the expected executable does not exist")?;
         Ok(Self {
