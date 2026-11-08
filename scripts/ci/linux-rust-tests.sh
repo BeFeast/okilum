@@ -19,6 +19,7 @@ suite attached-replica-identity 120 cargo test --locked -p okilum-sync-controlle
 suite first-computer 180 cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite direct-lan 120 cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
 suite reader-settings-sync 300 cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: -- --nocapture --test-threads=1
+suite feedback-fast-report 120 cargo test --locked -p okilum-shell --bin okilum reader_feedback::ui_tests::feedback2749_ -- --nocapture --test-threads=1
 suite direct-tests 180 cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
 suite sync-cli 180 cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
