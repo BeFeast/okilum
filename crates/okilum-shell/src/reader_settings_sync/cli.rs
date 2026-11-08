@@ -977,6 +977,7 @@ mod tests {
             _ => anyhow::bail!("not part of this pairing"),
         };
         Ok(Output {
+            runtime_health: Default::default(),
             overview: Default::default(),
             connection_error: None,
             diagnostic: None,

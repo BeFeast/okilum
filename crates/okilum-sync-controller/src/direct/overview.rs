@@ -23,7 +23,30 @@ pub struct VaultOverview {
     pub files: u64,
     pub bytes: u64,
     pub needed_bytes: u64,
+    pub needed_items: u64,
+    pub errors: bool,
     pub shared_with: Vec<String>,
+}
+impl VaultOverview {
+    fn read_status(&mut self, status: &serde_json::Value) {
+        self.files = status["globalFiles"].as_u64().unwrap_or(0);
+        self.bytes = status["globalBytes"].as_u64().unwrap_or(0);
+        self.needed_bytes = status["needBytes"].as_u64().unwrap_or(0);
+        self.needed_items = status["needTotalItems"].as_u64().unwrap_or_else(|| {
+            [
+                "needFiles",
+                "needDirectories",
+                "needSymlinks",
+                "needDeletes",
+            ]
+            .iter()
+            .map(|key| status[key].as_u64().unwrap_or(0))
+            .sum()
+        });
+        self.errors = status["state"] == "error"
+            || status["pullErrors"].as_u64().unwrap_or(0) > 0
+            || status["errors"].as_u64().unwrap_or(0) > 0;
+    }
 }
 impl Controller {
     /// Called on the background executor, never from Render.
@@ -103,17 +126,11 @@ impl Controller {
                             .filter(|device| *device != &vault.daemon.device_id)
                             .any(|device| connections["connections"][device]["connected"] == true);
                     }
-                    observed.files = status["globalFiles"].as_u64().unwrap_or(0);
-                    observed.bytes = status["globalBytes"].as_u64().unwrap_or(0);
-                    observed.needed_bytes = status["needBytes"].as_u64().unwrap_or(0);
+                    observed.read_status(&status);
                     if !vault.paused {
-                        observed.state = if status["state"] == "error"
-                            || status["pullErrors"].as_u64().unwrap_or(0) > 0
-                        {
+                        observed.state = if observed.errors {
                             "Needs attention"
-                        } else if status["state"] == "idle"
-                            && status["needTotalItems"].as_u64() == Some(0)
-                        {
+                        } else if status["state"] == "idle" && observed.needed_items == 0 {
                             "Up to date"
                         } else {
                             "Syncing"
@@ -167,5 +184,39 @@ impl Controller {
             }
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn idle_and_zero_byte_pending_items_are_distinct() {
+        let mut vault = VaultOverview::default();
+        vault.read_status(&serde_json::json!({"state":"idle", "needTotalItems":0}));
+        assert_eq!(vault.needed_items, 0);
+        assert!(!vault.errors);
+        vault.read_status(&serde_json::json!({"state":"idle", "needTotalItems":1, "needBytes":0}));
+        assert_eq!(vault.needed_items, 1);
+        assert_eq!(vault.needed_bytes, 0);
+        vault.read_status(&serde_json::json!({"state":"idle", "needFiles":0, "needDirectories":1, "needDeletes":2}));
+        assert_eq!(
+            vault.needed_items, 3,
+            "older REST fields retain pending zero-byte work"
+        );
+    }
+    #[test]
+    fn status_error_counts_are_visible_and_recovery_clears_them() {
+        let mut vault = VaultOverview::default();
+        for status in [
+            serde_json::json!({"state":"error"}),
+            serde_json::json!({"state":"idle", "pullErrors":1}),
+            serde_json::json!({"state":"idle", "errors":1}),
+        ] {
+            vault.read_status(&status);
+            assert!(vault.errors);
+            vault.read_status(&serde_json::json!({"state":"idle", "needTotalItems":0}));
+            assert!(!vault.errors);
+        }
     }
 }

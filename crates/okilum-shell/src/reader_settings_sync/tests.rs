@@ -900,6 +900,7 @@ fn guided_worker(
                 states.front().unwrap().clone()
             };
             Ok(Output {
+                runtime_health: Default::default(),
                 overview: Default::default(),
                 connection_error: None,
                 diagnostic: None,
@@ -1473,6 +1474,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
             let local =
                 policy == okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn;
             Ok(Output {
+                runtime_health: Default::default(),
                 overview: Default::default(),
                 connection_error: None,
                 diagnostic: None,
@@ -1640,6 +1642,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
             }
             calls.lock().unwrap().push("read");
             Ok(Output {
+                runtime_health: Default::default(),
                 overview: Default::default(),
                 connection_error: None,
                 diagnostic: None,
@@ -2041,6 +2044,7 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
             view.presentation.wizard = Some(step);
             view.publish(
                 Output {
+                    runtime_health: Default::default(),
                     overview: Default::default(),
                     connection_error: None,
                     diagnostic: None,
@@ -2138,6 +2142,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
                 _ => panic!("unexpected existing-connection operation"),
             };
             Ok(Output {
+                runtime_health: Default::default(),
                 overview: Default::default(),
                 connection_error: None,
                 diagnostic: None,
@@ -2464,6 +2469,7 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
                 stable_root_identity: None,
             });
             Ok(Output {
+                runtime_health: Default::default(),
                 overview: Default::default(),
                 connection_error: None,
                 diagnostic: None,
@@ -2525,7 +2531,9 @@ fn issue2752_failed_first_attempt_rechecks_and_clears_all_old_errors(cx: &mut Te
             view.presentation.error_details =
                 Some("Syncthing REST unavailable: Connection refused".into());
             view.presentation.details = true;
-            view.health.failed();
+            let now = std::time::Instant::now();
+            view.health.failed(now - Duration::from_secs(121));
+            view.health.failed(now);
             view.schedule_refresh(cx);
             view
         });
@@ -2553,5 +2561,80 @@ fn issue2752_failed_first_attempt_rechecks_and_clears_all_old_errors(cx: &mut Te
         assert!(!view.presentation.details);
         assert!(view.health.message().is_none());
         assert!(view.snapshot.is_some());
+    });
+}
+
+#[gpui::test]
+fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_clears_banner(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let (root, visual) =
+        cx.add_window_view(|window, cx| Root::new(cx.new(|cx| fixture(window, cx)), window, cx));
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    let output = |runtime_health, connection_error: Option<String>| {
+        let mut overview = direct::Overview::default();
+        overview.vaults.insert(
+            PathBuf::from("/synthetic"),
+            direct::VaultOverview {
+                available: true,
+                connected: true,
+                state: "Up to date".into(),
+                ..Default::default()
+            },
+        );
+        Output {
+            runtime_health,
+            first_sync: Default::default(),
+            overview,
+            connection_error,
+            diagnostic: Some("synthetic controller reconciliation error".into()),
+            controller: controller.clone(),
+            snapshot: snapshot(None),
+            inspected: None,
+            selected_destination: None,
+            #[cfg(target_os = "linux")]
+            runtimes: vec![],
+            vaults: vec![],
+        }
+    };
+    view.update(visual, |view, cx| {
+        view.publish(
+            output(Default::default(), Some("Replica needs review".into())),
+            cx,
+        );
+        assert!(
+            view.error.is_some(),
+            "Settings keeps its actionable controller error"
+        );
+        assert!(
+            view.health.message().is_none(),
+            "healthy Sync must not become a red alarm"
+        );
+        view.publish(
+            output(
+                super::health::Runtime {
+                    down: true,
+                    unreachable: false,
+                },
+                None,
+            ),
+            cx,
+        );
+        assert!(
+            view.health.message().is_some(),
+            "control: helper down must still warn"
+        );
+        view.publish(output(Default::default(), None), cx);
+        assert!(
+            view.health.message().is_none(),
+            "recovery clears the banner automatically"
+        );
+        assert!(view.error.is_none());
+        assert!(view.presentation.error_details.is_none());
     });
 }

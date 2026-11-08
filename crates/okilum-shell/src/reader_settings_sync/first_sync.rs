@@ -80,6 +80,7 @@ mod tests {
             cx.set_global(TestWorker(Arc::new(move |_| {
                 let _keep = &directory;
                 Ok(super::super::Output {
+                    runtime_health: Default::default(),
                     first_sync: Default::default(),
                     overview: Default::default(),
                     diagnostic: None,
