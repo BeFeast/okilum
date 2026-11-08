@@ -1067,6 +1067,8 @@ impl Controller {
             self.save(&db)?;
         }
         let seed = db.seed;
+        #[cfg(feature = "first-sync-fixture")]
+        let first_sync_fixture = message.operation.first_sync();
         let result = match message.operation {
             Operation::RemoveComputer { id, device, vaults } => {
                 drop(db);
@@ -1094,6 +1096,10 @@ impl Controller {
             }
         };
         let reply = result.unwrap_or_else(|error| {
+            #[cfg(feature = "first-sync-fixture")]
+            if first_sync_fixture {
+                eprintln!("FIRST_SYNC_FIXTURE_REFUSAL: {error:#}");
+            }
             if let Some(message) = removal::public_refusal(&error) {
                 return Reply::Error {
                     message: message.into(),

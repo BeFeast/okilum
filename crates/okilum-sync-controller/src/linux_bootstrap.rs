@@ -193,9 +193,14 @@ pub fn connect_with<S: UserServices>(
         None => lifecycle,
     };
     lifecycle.enable(instance)?;
-    wait_for_rest(&check, || identity.connect().map(|_| ()))?;
-    check()?;
-    crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
+    wait_for_rest(&check, || {
+        identity.connect()?;
+        // REST can answer before the owned launcher finishes its authenticated
+        // startup readback and releases its configuration gate. Retry only that
+        // bounded contention, never a held vault or incompatible identity.
+        crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
+        Ok(())
+    })?;
     check()?;
     Ok(identity)
 }
@@ -212,10 +217,13 @@ fn wait_for_rest(
         match connect() {
             Ok(()) => return Ok(()),
             Err(error)
-                if error
-                    .chain()
-                    .any(|e| e.to_string() == "Syncthing REST unavailable")
-                    && std::time::Instant::now() < deadline => {}
+                if error.chain().any(|e| {
+                    e.to_string() == "Syncthing REST unavailable"
+                        || matches!(
+                            e.downcast_ref::<std::fs::TryLockError>(),
+                            Some(std::fs::TryLockError::WouldBlock)
+                        )
+                }) && std::time::Instant::now() < deadline => {}
             Err(error) => {
                 return Err(error.context(
                     "Sync setup could not verify the bundled connection; refresh to retry",
@@ -244,6 +252,21 @@ mod tests {
             },
         )?;
         assert_eq!(attempts, 3, "startup waited for actual REST readiness");
+        attempts = 0;
+        wait_for_rest(
+            || Ok(()),
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    return Err(std::fs::TryLockError::WouldBlock.into());
+                }
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            attempts, 2,
+            "REST-ready startup still waits for launch admission"
+        );
         attempts = 0;
         let error = wait_for_rest(
             || Ok(()),
