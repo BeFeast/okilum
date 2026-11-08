@@ -109,9 +109,12 @@ def main():
         assert (legacy / 'foreign-sentinel').read_bytes() == b'keep original user cache'
         assert foreign.is_dir() and foreign.stat().st_uid == 19001
         # FUSE mode is unchanged by the patch; runtime metadata stays usable.
-        for option in ('--appimage-help', '--appimage-offset', '--appimage-version'):
+        for option, expected in (
+                ('--appimage-help', b'AppImage options:'),
+                ('--appimage-offset', str(args.runtime.stat().st_size).encode()),
+                ('--appimage-version', b'okilum-per-user')):
             result = subprocess.run([str(fixed), option], capture_output=True, timeout=10)
-            assert result.returncode == 0 and result.stdout, (option, result)
+            assert result.returncode == 0 and expected in result.stdout + result.stderr, (option, result)
         print('APPIMAGE_TWO_USER_START_REEXEC_RESTART_CLEANUP_PASS', flush=True)
 
 
