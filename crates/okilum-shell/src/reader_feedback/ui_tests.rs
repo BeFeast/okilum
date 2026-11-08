@@ -3,6 +3,157 @@ use ::core::prelude::v1::test;
 use gpui_component::WindowExt;
 
 #[gpui::test]
+fn feedback2749_description_precedes_name_and_keeps_initial_focus(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (_, mut feedback) = open_from_button(reader);
+        feedback.simulate_resize(size(px(600.), px(900.)));
+        feedback.run_until_parked();
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
+        let description = feedback.debug_bounds("feedback-description").unwrap();
+        let name = feedback.debug_bounds("feedback-reporter").unwrap();
+        assert!(
+            description.bottom() <= name.top(),
+            "description precedes name"
+        );
+    });
+}
+
+#[gpui::test]
+fn feedback2749_description_keys_send_once_and_name_enter_does_not_send(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let sent = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            view.include_log = false;
+            view.sender = Arc::new(move |report| {
+                sent.lock().unwrap().push(report);
+                anyhow::bail!("synthetic offline retry")
+            });
+        });
+        feedback.simulate_input("First line");
+        feedback.simulate_keystrokes("secondary-enter");
+        feedback.simulate_input("Second line");
+        feedback.run_until_parked();
+        assert!(calls.lock().unwrap().is_empty(), "newline must not send");
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "First line\nSecond line");
+        });
+        feedback.simulate_keystrokes("enter");
+        feedback.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1, "one Enter, one report");
+        assert_eq!(calls.lock().unwrap()[0].text, "First line\nSecond line");
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.reporter
+                .update(cx, |input, cx| input.focus(window, cx));
+        });
+        feedback.simulate_input("synthetic-reporter-2749");
+        feedback.simulate_keystrokes("enter secondary-enter");
+        feedback.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1, "name keys cannot send");
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.reporter.read(cx).value(), "synthetic-reporter-2749");
+        });
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.remount(window, cx);
+            view.text.update(cx, |input, cx| input.focus(window, cx));
+        });
+        feedback.run_until_parked();
+        feedback.simulate_keystrokes("enter");
+        feedback.run_until_parked();
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "remounted description sends"
+        );
+        assert_eq!(
+            calls.lock().unwrap()[1].identity.reporter_name,
+            "synthetic-reporter-2749"
+        );
+    });
+}
+
+#[gpui::test]
+fn feedback2749_composition_settle_and_busy_guards(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let sent = calls.clone();
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.include_log = false;
+            view.sender = Arc::new(move |report| {
+                sent.lock().unwrap().push(report);
+                anyhow::bail!("synthetic offline retry")
+            });
+            view.text.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "か", None, window, cx);
+                assert!(input.ime_composing(), "real marked-text positive control");
+            });
+        });
+        feedback.run_until_parked();
+        feedback.simulate_keystrokes("enter secondary-enter");
+        feedback.run_until_parked();
+        assert!(calls.lock().unwrap().is_empty(), "composition cannot send");
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.text.update(cx, |input, cx| {
+                assert_eq!(input.value(), "か", "candidate remains intact");
+                let marked = input.marked_text_range(window, cx);
+                assert!(marked.is_some());
+                input.replace_text_in_range(marked, "漢", window, cx);
+                assert!(!input.ime_composing());
+                assert!(
+                    input.ime_settling(cx),
+                    "real commit-settle positive control"
+                );
+            });
+        });
+        feedback.run_until_parked();
+        feedback.simulate_keystrokes("enter");
+        feedback.run_until_parked();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "candidate-confirming Enter cannot send"
+        );
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "漢")
+        });
+        feedback
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        for sending in [false, true] {
+            view.update(&mut feedback, |view, cx| {
+                view.attaching = !sending;
+                view.state = if sending {
+                    SendState::Sending
+                } else {
+                    SendState::Compose
+                };
+                cx.notify();
+            });
+            feedback.run_until_parked();
+            feedback.simulate_keystrokes("enter");
+            feedback.run_until_parked();
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "busy/attachment work cannot send"
+            );
+        }
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.attaching = false;
+            view.state = SendState::Compose;
+            view.text.update(cx, |input, cx| input.focus(window, cx));
+            cx.notify();
+        });
+        feedback.run_until_parked();
+        feedback.simulate_keystrokes("enter");
+        feedback.run_until_parked();
+        assert_eq!(calls.lock().unwrap().len(), 1, "guard cleared, Enter sends");
+        assert_eq!(calls.lock().unwrap()[0].text, "漢");
+    });
+}
+
+#[gpui::test]
 fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_install(
     cx: &mut TestAppContext,
 ) {
@@ -773,7 +924,7 @@ fn feedback_backspace_to_empty_keeps_caret_and_next_line_visible(cx: &mut TestAp
                     "empty field returns to the first line"
                 );
             });
-            feedback.simulate_keystrokes("enter");
+            feedback.simulate_keystrokes("secondary-enter");
             feedback.simulate_input("visible next line");
             feedback_caret_in_view(&view, &mut feedback);
             view.read_with(&feedback, |view, cx| {
@@ -1064,7 +1215,7 @@ fn minimum_feedback_window_keeps_actions_visible_and_submit_from_input(cx: &mut 
                 "{selector} must stay horizontally visible at minimum size"
             );
         }
-        feedback.simulate_keystrokes("secondary-enter");
+        feedback.simulate_keystrokes("enter");
         feedback.run_until_parked();
         assert_eq!(
             calls.lock().unwrap().len(),
@@ -1085,7 +1236,7 @@ fn minimum_feedback_window_keeps_actions_visible_and_submit_from_input(cx: &mut 
                 }
                 cx.notify();
             });
-            feedback.simulate_keystrokes("secondary-enter");
+            feedback.simulate_keystrokes("enter");
             feedback.run_until_parked();
         }
         assert_eq!(

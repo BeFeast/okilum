@@ -13,12 +13,7 @@ use model::{Kind, Metadata, Receipt, Report};
 
 gpui::actions!(
     okilum_feedback,
-    [
-        SendFeedback,
-        CloseFeedback,
-        SendSprintReport,
-        SubmitFeedback
-    ]
+    [SendFeedback, CloseFeedback, SendSprintReport]
 );
 #[derive(Default)]
 struct Drafts(std::collections::HashMap<WindowId, Draft>);
@@ -31,17 +26,6 @@ impl Global for Drafts {}
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Drafts::default());
     cx.bind_keys([
-        // Override the multiline Input's own secondary-enter/newline binding.
-        KeyBinding::new(
-            "secondary-enter",
-            SubmitFeedback,
-            Some("OkilumFeedbackWindow > Input"),
-        ),
-        KeyBinding::new(
-            "secondary-enter",
-            SubmitFeedback,
-            Some("OkilumFeedbackWindow"),
-        ),
         KeyBinding::new("secondary-v", Paste, Some("OkilumFeedback")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("shift-insert", Paste, Some("OkilumFeedback")),
@@ -301,7 +285,6 @@ struct FeedbackWindow {
 impl Render for FeedbackWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.view.clone();
-        let submit_view = self.view.clone();
         let p = brand::palette(cx);
         v_flex()
             .size_full()
@@ -309,9 +292,6 @@ impl Render for FeedbackWindow {
             .text_color(p.text)
             .key_context("OkilumFeedbackWindow")
             .track_focus(&self.focus)
-            .capture_action(move |_: &SubmitFeedback, _, cx| {
-                submit_view.update(cx, |view, cx| view.send(cx));
-            })
             .capture_action(move |_: &CloseFeedback, window, cx| {
                 let sending = view.update(cx, |view, cx| {
                     if matches!(view.state, SendState::Sending) {
@@ -479,9 +459,11 @@ impl FeedbackView {
             },
         );
         let text = cx.new(|cx| {
-            TextareaState::new(window, cx)
+            let mut text = TextareaState::new(window, cx)
                 .auto_grow(3, 8)
-                .placeholder(placeholder(sprint::enabled()))
+                .placeholder(placeholder(sprint::enabled()));
+            text.set_ime_settle(std::time::Duration::from_millis(500));
+            text
         });
         let subscription = cx.subscribe(
             &text,
@@ -813,6 +795,7 @@ impl FeedbackView {
             let mut text = TextareaState::new(window, cx)
                 .auto_grow(3, 8)
                 .placeholder(placeholder(sprint::enabled()));
+            text.set_ime_settle(std::time::Duration::from_millis(500));
             text.set_value(value, window, cx);
             text.set_selected_range(selection, cx);
             text.set_scroll_offset(scroll, cx);
@@ -1454,8 +1437,6 @@ impl Render for FeedbackView {
                     .text_sm()
                     .child("Sending creates a public issue. Your message, system details and chosen screenshot or video are public. Diagnostic logs stay private."),
             )
-            .child(div().debug_selector(|| "feedback-reporter".into()).child(Input::new(&self.reporter).disabled(busy)))
-            .child(div().text_sm().child("Your optional name and a random installation ID are sent privately to group reports. Public issues show only an opaque label. Your name is remembered on this installation."))
             .child(h_flex().gap_1().children(
                 [(Kind::Bug, "Problem"), (Kind::Feature, "Idea")].map(|(kind, label)| {
                     Button::new(label)
@@ -1471,7 +1452,33 @@ impl Render for FeedbackView {
                         }))
                 }),
             ))
-            .child(Textarea::new(&self.text).flex_shrink_0().disabled(busy))
+            .child(
+                div()
+                    .debug_selector(|| "feedback-description".into())
+                    .flex_shrink_0()
+                    // Only the description sends with Enter. Reporter and
+                    // attachment-limit inputs retain their own key handling.
+                    .capture_action(cx.listener(|this, action: &gpui_component::input::Enter, _, cx| {
+                        // A candidate-confirming Enter may arrive just after
+                        // its marked range has cleared. Never send or alter it.
+                        if this.text.read(cx).ime_settling(cx) {
+                            return;
+                        }
+                        if action.secondary || action.shift {
+                            cx.propagate();
+                        } else {
+                            this.send(cx);
+                        }
+                    }))
+                    .child(Textarea::new(&self.text).disabled(busy)),
+            )
+            .child(div().text_sm().text_color(p.text_muted).child(if cfg!(target_os = "macos") {
+                "Enter to send · ⌘Enter for a new line"
+            } else {
+                "Enter to send · Ctrl+Enter for a new line"
+            }))
+            .child(div().debug_selector(|| "feedback-reporter".into()).child(Input::new(&self.reporter).disabled(busy)))
+            .child(div().text_sm().child("Your optional name and a random installation ID are sent privately to group reports. Public issues show only an opaque label. Your name is remembered on this installation."))
             .child(
                 div()
                     .debug_selector(|| "feedback-metadata".into())
