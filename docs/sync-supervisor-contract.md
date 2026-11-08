@@ -102,8 +102,13 @@ when its enabled helper is down, authenticated REST has been continuously
 unreachable for over two minutes, a folder reports errors, or every carrier for
 a folder with pending items has been disconnected for over ten minutes.
 Controller reconciliation/pairing errors remain in Settings and do not override
-an independently healthy runtime. Read-only health uses authenticated Status,
-without the process-exit watch reserved for lifecycle Stop. Pairing polls refresh
+an independently healthy runtime. Read-only macOS health observes the launchd job
+and kernel process liveness separately from authenticated REST. Sparkle can remove
+the original executing image during an in-place update; a failed Security.framework
+image/Status inspection does not establish an outage. Lifecycle authentication and
+publication authority still require their full original checks. Unknown inspection
+errors remain Settings diagnostics and do not start the REST outage timer. The job
+check ignores historical LastExitStatus while a current PID is alive. Pairing polls refresh
 folder observations rather than reusing the wizard's cached overview. The Fix
 action opens Sync settings and, on macOS, requests a verified managed-helper
 restart using SIGTERM, never SIGKILL.

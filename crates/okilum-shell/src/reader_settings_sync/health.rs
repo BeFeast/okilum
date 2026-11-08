@@ -118,30 +118,44 @@ pub(super) fn managed_enabled() -> bool {
     .unwrap_or(false)
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
 struct HelperDown;
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(any(target_os = "macos", test))]
 impl std::fmt::Display for HelperDown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Sync helper is not responding")
+        f.write_str("Sync helper is not running")
     }
 }
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(any(target_os = "macos", test))]
 impl std::error::Error for HelperDown {}
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug)]
+struct RestUnavailable;
+#[cfg(any(target_os = "macos", test))]
+impl std::fmt::Display for RestUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Syncthing REST unavailable for enabled Sync")
+    }
+}
+#[cfg(any(target_os = "macos", test))]
+impl std::error::Error for RestUnavailable {}
+
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn runtime(result: &anyhow::Result<()>) -> Runtime {
     match result {
-        Ok(()) => Runtime::default(),
         Err(error) if error.is::<HelperDown>() => Runtime {
             down: true,
             unreachable: false,
         },
-        Err(_) => Runtime {
+        Err(error) if error.is::<RestUnavailable>() => Runtime {
             down: false,
             unreachable: true,
         },
+        // Lifecycle/inspection failures remain Settings diagnostics. They do not
+        // establish either a stopped helper or an unreachable Sync REST service.
+        _ => Runtime::default(),
     }
 }
 
@@ -152,54 +166,29 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
     }
     use okilum_sync_controller::{
         daemon,
-        sidecar::{discovery, macos::account_state_directory},
-    };
-    // REST alone can be an orphan runtime: also authenticate the helper.
-    use anyhow::Context as _;
-    use okilum_sync_controller::sidecar::{
-        macos::connection::NativeConnection, store::UnixStore,
-        supervisor::ipc::code_requirement::CodeRequirement,
+        sidecar::{
+            discovery,
+            macos::{account_state_directory, health::account_helper_running},
+        },
     };
     let state = account_state_directory()?;
-    let binding = {
-        let store = UnixStore::open_existing(&state)?;
-        let tx = store.begin(Instant::now() + Duration::from_secs(2))?;
-        tx.current()?
-            .context("Sync journal unavailable")?
-            .binding()
-            .clone()
-    };
-    let own = std::env::current_exe()?.canonicalize()?;
-    let app = own
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .context("app bundle unavailable")?;
-    let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
-    let identifier = option_env!("OKILUM_BUNDLE_ID").context("Sync signing policy unavailable")?;
-    let supervisor = NativeConnection::open(
-        app,
-        "okilum",
-        binding,
-        CodeRequirement::team_and_identifier(team, identifier)?,
-        CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
-        Duration::from_secs(2),
-    )?;
-    match supervisor.inspect()? {
-        discovery::Discovered::Live(_) => {}
-        discovery::Discovered::Absent => return Err(HelperDown.into()),
-        discovery::Discovered::Unreachable(reason) => {
-            anyhow::bail!("Sync helper inspection unavailable: {reason}");
-        }
+    // Health observes the launchd job independently of lifecycle authentication.
+    // Sparkle may unlink a live old helper image while installing the new bundle;
+    // failed code-path/Status inspection does not mean that helper stopped.
+    let helper = account_helper_running();
+    if matches!(helper, Ok(false)) {
+        return Err(HelperDown.into());
     }
-    let config = discovery::managed_configuration_path(&state)?
-        .ok_or_else(|| anyhow::anyhow!("enabled Sync has no managed configuration"))?;
-    let discovered = daemon::discover(&[config]);
-    anyhow::ensure!(
-        !discovered.candidates.is_empty(),
-        "Syncthing REST unavailable for enabled Sync"
-    );
-    Ok(())
+    let rest_available = discovery::managed_configuration_path(&state)
+        .ok()
+        .flatten()
+        .is_some_and(|config| !daemon::discover(&[config]).candidates.is_empty());
+    if !rest_available {
+        return Err(RestUnavailable.into());
+    }
+    // Unknown helper observation is actionable in Settings, but a healthy REST
+    // service must not become a false red alarm after the outage grace period.
+    helper.map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
@@ -374,6 +363,55 @@ mod tests {
             },
         );
         overview
+    }
+
+    #[test]
+    fn lifecycle_inspection_failure_with_healthy_rest_never_starts_an_outage_timer() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let overview = healthy();
+        let unavailable_image = Err(anyhow::anyhow!(
+            "Sync helper inspection unavailable: original image was unlinked by update"
+        ));
+        for elapsed in [Duration::ZERO, UNREACHABLE * 2, STALE * 2] {
+            health.observe(&overview, runtime(&unavailable_image), now + elapsed);
+            assert!(
+                health.message().is_none(),
+                "inspection failure is not a REST outage"
+            );
+        }
+        health.observe(&overview, runtime(&Err(HelperDown.into())), now + STALE * 3);
+        assert!(
+            health.message().is_some(),
+            "a confirmed stopped helper must warn"
+        );
+        health.observe(&overview, runtime(&unavailable_image), now + STALE * 4);
+        assert!(
+            health.message().is_none(),
+            "live recovery clears even before lifecycle repair"
+        );
+    }
+
+    #[test]
+    fn confirmed_rest_outage_has_grace_and_recovers_independently_of_inspection() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let overview = healthy();
+        let unavailable = Err(RestUnavailable.into());
+        health.observe(&overview, runtime(&unavailable), now);
+        assert!(health.message().is_none());
+        health.observe(
+            &overview,
+            runtime(&unavailable),
+            now + UNREACHABLE + Duration::from_secs(1),
+        );
+        assert!(health.message().is_some());
+        health.observe(
+            &overview,
+            runtime(&Ok(())),
+            now + UNREACHABLE + Duration::from_secs(2),
+        );
+        assert!(health.message().is_none());
     }
 
     #[test]
