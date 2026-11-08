@@ -46,7 +46,17 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
         .write_all(b"changed-package")?;
     assert!(prepare(&prepared_state, &preparation).is_err());
     fs::copy(&binary, &package)?;
-    fs::remove_file(prepared_state.join("prepared.json"))?;
+    let receipt = prepared_state.join("prepared.json");
+    let saved_receipt = fs::read(&receipt)?;
+    let saved_config = fs::read(&identity.config_file)?;
+    fs::remove_file(&receipt)?;
+    assert!(
+        prepare(&prepared_state, &preparation).is_err(),
+        "missing launch-era receipt cannot authorize configuration regeneration"
+    );
+    assert_eq!(fs::read(&identity.config_file)?, saved_config);
+    fs::write(&receipt, saved_receipt)?;
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600))?;
     let (_, resumed) = prepare(&prepared_state, &preparation)?;
     assert_eq!(resumed.device_id, id);
     let mut changed = preparation.clone();
@@ -55,7 +65,8 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     let units =
         PathBuf::from(std::env::var_os("HOME").context("user home")?).join(".config/systemd/user");
     let state = root.path().join("controller");
-    let controller = Lifecycle::new(state.clone(), units.clone(), Systemd);
+    let controller = Lifecycle::new(state.clone(), units.clone(), Systemd)
+        .with_launcher(PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")));
     assert!(!controller.desired_enabled()?);
     controller.disable()?;
     assert!(!state.exists());
@@ -131,7 +142,8 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     assert_eq!(property("ActiveState")?, "active");
     assert_eq!(fs::read(home.join("cert.pem"))?, certificate);
     controller.disable()?;
-    let reopened = Lifecycle::new(state, units.clone(), Systemd);
+    let reopened = Lifecycle::new(state, units.clone(), Systemd)
+        .with_launcher(PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")));
     reopened.reconcile()?;
     assert_eq!(property("UnitFileState")?, "");
     assert_eq!(property("ActiveState")?, "inactive");

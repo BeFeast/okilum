@@ -135,6 +135,7 @@ impl Controller {
                 source
             }
         };
+        let _admission = crate::admission::configuration(&daemon, &source.id, &path)?;
         no_overlap(&configs, &path, &source.id)?;
         root.verify(&path)?;
         self.check()?;

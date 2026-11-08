@@ -43,11 +43,12 @@ build_features=()
 if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* && "${GITHUB_REF_NAME}" != forgejo-linux-pr/hourly-* ]]; then
     build_features=(--features appimage-acceptance-harness)
 fi
-cargo build --profile "$cargo_profile" --locked -p okilum-shell "${build_features[@]}"
+cargo build --profile "$cargo_profile" --locked -p okilum-shell -p okilum-sync-controller --bin okilum --bin okilum-sync-launch "${build_features[@]}"
 # Cargo names the dev profile's directory "debug"; others use the profile name.
 profile_dir=$cargo_profile
 [[ $cargo_profile != dev ]] || profile_dir=debug
 binary="$(realpath -m "${CARGO_TARGET_DIR:-target}")/$profile_dir/okilum"
+launch_binary="$(realpath -m "${CARGO_TARGET_DIR:-target}")/$profile_dir/okilum-sync-launch"
 mkdir -p dist/appimage/evidence
 python3 scripts/appimage/check-elf.py "$binary" \
     2>&1 | tee dist/appimage/evidence/elf-before-deploy.log
@@ -82,6 +83,7 @@ echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 # Extraction mode avoids any FUSE requirement on the build runner.
 export APPIMAGE_EXTRACT_AND_RUN=1
 ./tools/linuxdeploy --appdir AppDir --executable "$binary" \
+    --executable "$launch_binary" \
     --executable /usr/bin/gpgv \
     --library "$(pkg-config --variable=libdir alsa)/libasound.so.2" \
     --desktop-file ../../scripts/arch/okilum.desktop \
