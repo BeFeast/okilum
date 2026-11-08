@@ -20,6 +20,7 @@ use std::{path::Path, time::Duration};
 
 fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings {
     SyncSettings {
+        health: Default::default(),
         // Legacy flow fixtures explicitly open their controls; production defaults are tested below.
         presentation: super::presentation::Presentation {
             advanced: true,
@@ -901,6 +902,7 @@ fn guided_worker(
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,
@@ -1473,6 +1475,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot: snapshot(None),
                 inspected: None,
@@ -1639,6 +1642,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot: ready.clone(),
                 inspected: None,
@@ -2039,6 +2043,7 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
                 Output {
                     overview: Default::default(),
                     connection_error: None,
+                    diagnostic: None,
                     controller: controller.clone(),
                     snapshot: saved.clone(),
                     inspected: None,
@@ -2135,6 +2140,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: preview,
@@ -2460,6 +2466,7 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,
@@ -2502,5 +2509,49 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
             .unwrap()
             .shared
             .contains(&path));
+    });
+}
+
+#[gpui::test]
+fn issue2752_failed_first_attempt_rechecks_and_clears_all_old_errors(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            // No successful snapshot and no background serving owner: exactly
+            // the Settings-first failure that previously never retried.
+            view.error = Some("Sync could not finish this step".into());
+            view.presentation.error_details =
+                Some("Syncthing REST unavailable: Connection refused".into());
+            view.presentation.details = true;
+            view.health.failed();
+            view.schedule_refresh(cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "positive control: failed attempt is still displayed"
+    );
+    view.read_with(visual, |view, _| assert!(view.health.message().is_some()));
+    visual.executor().advance_clock(Duration::from_secs(31));
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read"],
+        "recovery must not need Try again"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view.error.is_none());
+        assert!(view.presentation.error_details.is_none());
+        assert!(!view.presentation.details);
+        assert!(view.health.message().is_none());
+        assert!(view.snapshot.is_some());
     });
 }

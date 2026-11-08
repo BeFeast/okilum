@@ -79,6 +79,13 @@ impl Syncthing {
         );
         Ok(())
     }
+    /// Explicit managed recovery: authenticate the pinned device before asking
+    /// its runtime to exit. An orphan from an older helper is never killed by PID.
+    pub fn shutdown(&self, expected_device: &str) -> Result<()> {
+        self.verify_identity(expected_device)?;
+        self.request(Method::POST, "/rest/system/shutdown", None)?;
+        Ok(())
+    }
     pub fn config(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/config", None)
     }
@@ -416,6 +423,72 @@ pub enum Destination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn issue2752_shutdown_authenticates_the_device_before_the_mutation() -> Result<()> {
+        use std::io::{BufRead, BufReader, Write};
+        fn receive(stream: &std::net::TcpStream) -> String {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut result = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                result.push_str(&line);
+                if line == "\r\n" {
+                    return result;
+                }
+            }
+        }
+        let access = NetworkAccess::default();
+        let _scope = access.enter();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let client = Syncthing::connect(listener.local_addr()?, "fixture-key")?;
+        let server = std::thread::spawn(move || {
+            for expected in ["GET /rest/system/status ", "POST /rest/system/shutdown "] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = receive(&stream);
+                assert!(request.starts_with(expected), "{request}");
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("x-api-key: fixture-key\r\n"));
+                let body = if expected.starts_with("GET") {
+                    r#"{"myID":"fixture-device"}"#
+                } else {
+                    ""
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        client.shutdown("fixture-device")?;
+        server.join().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let client = Syncthing::connect(listener.local_addr()?, "fixture-key")?;
+        let serving = listener.try_clone()?;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = serving.accept().unwrap();
+            assert!(receive(&stream).starts_with("GET /rest/system/status "));
+            let body = r#"{"myID":"another-device"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        assert!(client.shutdown("fixture-device").is_err());
+        server.join().unwrap();
+        listener.set_nonblocking(true)?;
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "a changed device must receive no shutdown request"
+        );
+        Ok(())
+    }
+
     #[test]
     fn issue2486_file_info_encodes_the_complete_note_path() -> Result<()> {
         use std::io::{Read, Write};

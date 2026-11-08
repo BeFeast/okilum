@@ -201,8 +201,17 @@ pub(super) fn notify_approval(name: &str) {
 /// Shared approval banner, visible even when Settings is on another section.
 pub(crate) fn approval_banner(cx: &mut App) -> AnyElement {
     let view = cx.try_global::<BackgroundSync>().map(|s| s.0.clone());
-    view.map(|view| view.update(cx, |view, cx| view.render_approval(cx)))
-        .unwrap_or_else(|| div().into_any_element())
+    view.map(|view| {
+        view.update(cx, |view, cx| {
+            v_flex()
+                .w_full()
+                .flex_shrink_0()
+                .child(view.render_health(cx))
+                .child(view.render_approval(cx))
+                .into_any_element()
+        })
+    })
+    .unwrap_or_else(|| div().into_any_element())
 }
 
 #[cfg(test)]

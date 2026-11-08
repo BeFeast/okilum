@@ -6,6 +6,8 @@ impl Operation {
         match self {
             Self::Remove(_) => "remove_computer",
             Self::Read => "refresh",
+            #[cfg(target_os = "macos")]
+            Self::Restart => "restart_sync",
             Self::Retention(..) => "history_retention",
             Self::EnterPairing => "open_settings",
             Self::Begin(_) => "add_computer",

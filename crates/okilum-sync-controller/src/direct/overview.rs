@@ -17,6 +17,8 @@ pub struct ComputerOverview {
 #[derive(Clone, Debug, Default)]
 pub struct VaultOverview {
     pub available: bool,
+    /// Any peer carrying this vault, including introduced Syncthing mesh peers.
+    pub connected: bool,
     pub state: String,
     pub files: u64,
     pub bytes: u64,
@@ -94,6 +96,13 @@ impl Controller {
             if let Ok(api) = vault.daemon.connect() {
                 if let Ok(status) = api.status(&vault.folder_id) {
                     observed.available = true;
+                    if let Ok(connections) = api.connections() {
+                        observed.connected = vault
+                            .peers
+                            .iter()
+                            .filter(|device| *device != &vault.daemon.device_id)
+                            .any(|device| connections["connections"][device]["connected"] == true);
+                    }
                     observed.files = status["globalFiles"].as_u64().unwrap_or(0);
                     observed.bytes = status["globalBytes"].as_u64().unwrap_or(0);
                     observed.needed_bytes = status["needBytes"].as_u64().unwrap_or(0);

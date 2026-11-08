@@ -658,6 +658,86 @@ mod launch_authority {
     }
 
     #[test]
+    fn supervised_restart_revokes_stale_generation_and_preserves_identity() {
+        use crate::sidecar::supervisor::{lease::Lease, Launch};
+        let dir = directory();
+        let state = dir.path().canonicalize().unwrap();
+        let store = Store::open_existing(&state).unwrap();
+        let mut binding = binding();
+        binding.state_directory = state.to_str().unwrap().into();
+        let image = state.join("runtime-fixture");
+        fs::write(&image, b"synthetic").unwrap();
+        let launch = Launch {
+            executable: image.to_str().unwrap().into(),
+            config: "/config".into(),
+            data: "/data".into(),
+        };
+        store
+            .begin(soon())
+            .unwrap()
+            .commit(Envelope::first_with_launch(binding.clone()))
+            .unwrap();
+        store
+            .dispatch_launch(&binding, soon())
+            .unwrap()
+            .execute(|_| Ok(()))
+            .unwrap();
+        let first = store.claim_launch(&binding, soon()).unwrap();
+        assert!(
+            store.claim_launch(&binding, soon()).is_err(),
+            "ordinary callers cannot re-arm"
+        );
+        let before = store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap()
+            .clone();
+        let lease = Lease::acquire(&state, &launch).unwrap();
+        let next = store
+            .claim_supervised_launch(&binding, &lease, soon())
+            .unwrap();
+        assert_ne!(first, next, "stale IPC generation must be revoked");
+        let after = store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap()
+            .clone();
+        assert_eq!(after.binding(), before.binding());
+        assert_eq!(after.revision(), before.revision() + 1);
+        assert_eq!(after.intent(), Intent::Enabled);
+        assert!(
+            Lease::acquire(&state, &launch).is_err(),
+            "another helper cannot race the spawn"
+        );
+        store
+            .begin(soon())
+            .unwrap()
+            .commit(after.set_intent(Intent::Disabled).unwrap())
+            .unwrap();
+        assert!(store
+            .claim_supervised_launch(&binding, &lease, soon())
+            .is_err());
+        store
+            .write_supervisor_failure("launch failure: fixture", soon())
+            .unwrap();
+        assert_eq!(
+            store.read_supervisor_failure().unwrap().as_deref(),
+            Some("launch failure: fixture")
+        );
+        assert_eq!(
+            fs::metadata(state.join("supervisor-error.log"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
     fn fresh_intent_dispatch_and_claim_are_distinct_durable_one_use_steps() {
         let (dir, store, binding) = fresh();
         assert_eq!(phase(&store), LaunchPhase::Ready);

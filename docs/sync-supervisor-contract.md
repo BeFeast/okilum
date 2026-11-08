@@ -82,3 +82,64 @@ Order matters, each step failing closed:
   preparation, not at Stop time); to be measured on a real Mac with a long user name.
 - The signature policy values and the development variant (compile-time `cfg` and a
   pinned digest), in the signing PR, taken from the release build configuration.
+
+
+## Helper restarts and visible failures (#2752)
+
+Enabled Sync survives a launchd helper restart without re-enrollment. Before
+renewing a consumed launch generation the helper holds a separate owner-private
+lifetime lock and verifies there are no surviving processes running the selected
+runtime. It commits a new claimed generation under the journal lock, preserving
+binding, device identity and configuration. Ordinary dispatch/claim callers still
+cannot re-arm a generation. Pending lifecycle operations prevent recovery. A
+surviving orphan runtime is reported rather than adopted or duplicated. SIGTERM
+flushes the owned runtime before helper exit so normal replacement can restart.
+
+Startup/runtime failures are retained in the private Sync state's
+`supervisor-error.log`; app diagnostic details include this reason. A healthy
+serving generation clears it. Every main window shows a persistent red alert
+when enabled configured Sync is unavailable, or when a vault has made no Sync
+progress/contact for over ten minutes. The Fix action opens Sync settings and,
+on macOS, requests a verified managed-helper restart using SIGTERM, never SIGKILL.
+Connected up-to-date observations clear the alert; ordinary idle vaults do not
+become stale simply because no file was edited. All health I/O stays off Render.
+
+Explicit `OKILUM_STATE_DIR` Reader profiles isolate their direct journal and
+external Sync configuration under `<profile>/sync`, including health observation.
+They never discover, bootstrap or restart the account-wide managed helper. This
+allows native failure QA by stopping only a disposable profile's runtime while
+leaving the user's real Sync and vault untouched.
+
+
+A second Mac recovery failure was traced to a persisted `okilum` config path
+versus the same APFS file spelled `Okilum`. Replica continuity now compares
+matching device/certificate identity plus the configuration file's device/inode
+when its spelling differs on macOS; a copied config or replaced vault is still
+refused. Successful Settings rechecks clear both the friendly error and expanded
+previous diagnostics; a failed first attempt schedules another check even before
+there is a snapshot.
+
+
+Mac replica roots now use the existing writer authority's APFS volume UUID,
+inode and birthtime identity, read from the held directory descriptor. The
+`st_dev` value is diagnostic for UUID-bearing records. A legacy saved root whose
+device hint already changed is upgraded only by an explicit Fix/attach-existing
+consent after fresh authenticated inspection; ordinary refresh does not infer
+continuity from an inode alone. Fix keeps existing vault membership and peers.
+
+
+The destination ownership witness on completed receive transfers uses the same
+APFS stable identity. Refresh upgrades same-boot legacy witnesses and refreshes
+diagnostic device hints only after the complete authenticated folder/membership
+witness validates. Fix consent can upgrade a legacy destination whose inode is
+unchanged; a replaced root or changed stable volume is refused. This also keeps
+receiver history/ignore reconciliation from using a previous boot's device hint.
+
+
+The explicit restart action first asks the authenticated, device-pinned managed
+runtime to shut down when it is reachable. This covers upgrading an older
+helper that has no SIGTERM handler, and a surviving orphan that would otherwise
+keep the new lease from starting. It neither adopts nor kills an arbitrary PID.
+A helper that is missing must be restarted even when the existing runtime can
+still serve a freshly inspected replica. Native service CLI requests are bounded;
+the subsequent authenticated recheck establishes whether recovery succeeded.

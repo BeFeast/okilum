@@ -82,6 +82,7 @@ mod tests {
                 Ok(super::super::Output {
                     first_sync: Default::default(),
                     overview: Default::default(),
+                    diagnostic: None,
                     connection_error: None,
                     controller: controller.clone(),
                     snapshot: controller.snapshot()?,

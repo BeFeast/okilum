@@ -4,6 +4,8 @@ use anyhow::{ensure, Result};
 
 pub mod ipc;
 #[cfg(unix)]
+pub mod lease;
+#[cfg(unix)]
 pub mod process_group;
 pub mod runtime;
 

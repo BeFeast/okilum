@@ -51,6 +51,34 @@ impl DaemonIdentity {
     pub(crate) fn rest_address(&self) -> Result<SocketAddr> {
         Ok(self.checked_config()?.address)
     }
+    /// APFS may preserve a different spelling of the same configuration path
+    /// across launches. Compare the file identity as well as authenticated
+    /// device/certificate identity; never accept a similarly named copy.
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        if self.device_id != other.device_id || self.certificate_hash != other.certificate_hash {
+            return false;
+        }
+        if self.config_file == other.config_file {
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            match (
+                std::fs::metadata(&self.config_file),
+                std::fs::metadata(&other.config_file),
+            ) {
+                (Ok(a), Ok(b)) => {
+                    a.is_file() && b.is_file() && a.dev() == b.dev() && a.ino() == b.ino()
+                }
+                _ => false,
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
     /// Re-read the credential locally and authenticate the same instance.
     pub fn connect(&self) -> Result<Syncthing> {
         let config = self.checked_config()?;
