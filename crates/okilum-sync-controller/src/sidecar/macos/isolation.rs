@@ -273,8 +273,14 @@ impl super::registration::RegistrationPort for NativeLaunchPort {
                 .context("QA launch intent missing")?
                 .phase()
             {
-                Phase::Ready => super::Status::NotRegistered,
-                Phase::Dispatched | Phase::Claimed => super::Status::Enabled,
+                // Dispatch consumes permission before RegistrationGuard's final
+                // native status check. It is not itself a native registration.
+                // A reopened port cannot redispatch a spent journal even when
+                // no child was started: dispatch_launch still requires Ready.
+                Phase::Ready | Phase::Dispatched if self.channel.is_none() => {
+                    super::Status::NotRegistered
+                }
+                _ => super::Status::Enabled,
             },
         )
     }
@@ -371,6 +377,68 @@ pub fn authorize_helper(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dispatched_permission_passes_native_preflight_without_rearming() -> Result<()> {
+        use super::super::{registration::RegistrationPort, Status};
+        use crate::sidecar::{authority::Envelope, store::UnixStore, Binding};
+        use std::time::{Duration, Instant};
+
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
+        let root = temporary.path().join("qa");
+        private::directory(&root)?;
+        let profile = Profile::prepare(
+            &root,
+            &root.join("home"),
+            &root.join("reader"),
+            &temporary.path().join("account"),
+        )?;
+        private::directory(&profile.state())?;
+        let store = UnixStore::open_existing(&profile.state())?;
+        let binding = Binding {
+            installation: Uuid::new_v4(),
+            instance: Uuid::new_v4(),
+            owner: rustix::process::geteuid().as_raw().to_string(),
+            supervisor: "/usr/bin/true".into(),
+            state_directory: profile.state().to_str().unwrap().into(),
+            device_identity: "fixture-device".into(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        store
+            .begin(deadline)?
+            .commit(Envelope::first_with_launch(binding.clone()))?;
+        let mut port = NativeLaunchPort::new(profile.clone());
+        assert_eq!(port.status(deadline)?, Status::NotRegistered);
+        let generation = store
+            .dispatch_launch(&binding, deadline)?
+            .execute(|generation| {
+                // This is RegistrationGuard's exact post-dispatch preflight, before
+                // it may invoke the one native effect. The old port reported Enabled.
+                assert_eq!(
+                    port.status(deadline)?,
+                    Status::NotRegistered,
+                    "dispatch permission was mistaken for native registration"
+                );
+                assert!(store.dispatch_launch(&binding, deadline).is_err());
+                let mut reopened = NativeLaunchPort::new(profile.clone());
+                assert_eq!(reopened.status(deadline)?, Status::NotRegistered);
+                // A disposable child exercises the real port's spawn/channel effect;
+                // signed parent/helper authentication has separate native controls.
+                port.register(deadline)?;
+                assert!(port.channel.is_some());
+                assert_eq!(port.status(deadline)?, Status::Enabled);
+                Ok(generation)
+            })?;
+        assert_eq!(store.claim_launch(&binding, deadline)?, generation);
+        assert_eq!(
+            NativeLaunchPort::new(profile).status(deadline)?,
+            Status::Enabled
+        );
+        assert!(store.claim_launch(&binding, deadline).is_err());
+        assert!(store.dispatch_launch(&binding, deadline).is_err());
+        Ok(())
+    }
+
     #[test]
     fn separate_profile_reopens_without_touching_the_account_or_its_files() -> Result<()> {
         let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;

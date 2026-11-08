@@ -38,6 +38,7 @@ def main():
         if not re.search(r": test$", listed.stdout, re.M):
             raise RuntimeError(f"native Mac Sync filter did not fire: {selected}")
         subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
+    subprocess.run([sys.executable, "scripts/ci/macos-isolated-launch-check.py"], check=True)
 
 
 if __name__ == "__main__":

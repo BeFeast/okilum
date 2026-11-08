@@ -125,6 +125,15 @@ before recording completion. It does not unregister, signal or delete account
 state. Native hosted controls cover the parent and path refusals. Installed-beta
 acceptance remains pending.
 
+The first installed 30092 isolated launch exposed a status-adapter error before
+pairing: committing `Dispatched` was reported as native registration, so the
+ordinary final preflight refused its own dispatch. The isolated port now keeps
+permission separate from its actual spawn/channel effect. A spent dispatch still
+cannot be reissued, and a claimed generation remains registered on reopen. A
+native control exercises the actual port's disposable child/channel and one-use
+claim; its compiled old-status control must fail the post-dispatch assertion.
+This correction still requires a containing beta and the synthetic UI acceptance.
+
 An interruption after durable verified retirement can resume unregister,
 registry binding and the next one-use registration. An interruption before the
 native exit proof is committed remains recovery pending; a missing endpoint or
