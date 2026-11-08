@@ -74,8 +74,13 @@ if ($Action -eq 'create') {
         $mine = Open-Store 'My'
         try { $mine.Add($leaf) } finally { $mine.Close() }
         Write-Host 'Native fixture leaf stored'
-        $trusted = Open-Store 'Root'
-        try { $trusted.Add([System.Security.Cryptography.X509Certificates.X509Certificate2]::new($root.RawData)) } finally { $trusted.Close() }
+        # X509Store.Add into CurrentUser Root opens a GUI trust confirmation,
+        # even from a NonInteractive host. Use the explicit force option of the
+        # native administration CLI on this disposable hosted account only.
+        $publicRoot = [System.IO.Path]::ChangeExtension($Metadata, 'root.cer')
+        [System.IO.File]::WriteAllBytes($publicRoot, $root.RawData)
+        & "$env:SystemRoot\System32\certutil.exe" -user -f -addstore Root $publicRoot
+        if ($LASTEXITCODE -ne 0) { throw 'Installing the disposable fixture root failed' }
         [ordered]@{ schema=1; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
             ConvertTo-Json -Compress | Set-Content -LiteralPath $Metadata -Encoding UTF8
         Write-Host 'Native fixture leaf and disposable CurrentUser trust installed'
@@ -96,10 +101,8 @@ if ($Action -eq 'sign') {
     Write-Host 'Native fixture embedded signature verified'
     exit 0
 }
-$trusted = Open-Store 'Root'
-try {
-    foreach ($certificate in $trusted.Certificates.Find('FindByThumbprint', $record.root, $false)) { $trusted.Remove($certificate) }
-} finally { $trusted.Close() }
+& "$env:SystemRoot\System32\certutil.exe" -user -f -delstore Root $record.root
+if ($LASTEXITCODE -ne 0) { throw 'Removing the disposable fixture root failed' }
 $mine = Open-Store 'My'
 try {
     foreach ($thumbprint in @($record.leaf)) {
