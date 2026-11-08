@@ -97,6 +97,8 @@ def main():
             os.chown(copy.parent, uid, uid)
             os.chown(copy, uid, uid)
             require_launch(launch(copy, temporary, uid), copy, uid)
+            # Cleanup must unlink this symlink, never traverse its foreign target.
+            (cache / 'foreign-link').symlink_to(legacy, target_is_directory=True)
             clean = launch(copy, temporary, uid, retain=False)
             assert clean.returncode == 0, clean
             assert not cache.exists(), (

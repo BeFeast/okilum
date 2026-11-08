@@ -8,8 +8,10 @@ archive with `scripts/appimage/runtime-per-user.diff`. Its extraction cache is
 temporary directory when TMPDIR is absent). Both `APPIMAGE_EXTRACT_AND_RUN`
 and `--appimage-extract-and-run` use this namespace, including the first external
 launch, managed self-install/re-exec and updater restart. Existing content-only
-cache directories are never reused, removed or changed. Normal FUSE startup and
-the runtime's existing extraction cleanup/NO_CLEANUP behavior remain unchanged.
+cache directories are never reused, removed or changed. Normal FUSE startup remains unchanged. Extraction cleanup gets a positive
+`nftw` descriptor budget: musl treats the upstream zero budget as a successful
+no-op, leaving the cache behind after ordinary exit. `NO_CLEANUP` still explicitly
+retains it.
 The image MD5 is only an extraction namespace; release authenticity continues to
 use the signed SHA256 descriptor below.
 
