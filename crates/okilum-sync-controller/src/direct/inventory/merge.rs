@@ -190,6 +190,12 @@ impl Controller {
         let operation = request.operation();
         ensure!(!operation.is_nil(), "first Sync operation identity missing");
         let state = self.first_sync_state()?;
+        if matches!(&request, Request::Cancel { .. })
+            && !state.join(operation.to_string()).try_exists()?
+        {
+            // A remote hold cannot precede its durable operation directory.
+            return Ok(Response::Cancelled { operation });
+        }
         if let Request::Stage {
             header,
             metadata_hash,
@@ -407,6 +413,17 @@ impl Controller {
                 );
                 if let Some(scope) = session.scope.take() {
                     scope.release_and_resume()?;
+                } else {
+                    let authority = session.store.binding.authority.open()?;
+                    let observed = authority.snapshot()?;
+                    if observed.phase != okilum_write_authority::Phase::Open {
+                        let hold = drain(&authority, operation, true)?;
+                        ScopedHold::cancel_unpublished(
+                            &authorized.daemon,
+                            &authorized.folder_id,
+                            hold,
+                        )?;
+                    }
                 }
                 session.store.binding.phase = Phase::Cancelled;
                 session.store.save()?;
@@ -440,6 +457,7 @@ pub struct PendingMerge {
     pub path: PathBuf,
     pub vault: String,
     pub peer: Uuid,
+    pub remote_side: bool,
 }
 
 pub(in crate::direct) struct CompletedMerge {
@@ -740,14 +758,13 @@ impl Controller {
             };
             let operation = Uuid::parse_str(&name)?;
             let store = Store::open(&state, operation)?;
-            if !store.binding.remote_side
-                && !matches!(store.binding.phase, Phase::Complete | Phase::Cancelled)
-            {
+            if !matches!(store.binding.phase, Phase::Complete | Phase::Cancelled) {
                 result.push(PendingMerge {
                     operation,
                     path: store.binding.source.path,
                     vault: store.binding.source.folder_id,
                     peer: store.binding.peer,
+                    remote_side: store.binding.remote_side,
                 });
             }
         }
@@ -757,5 +774,34 @@ impl Controller {
         let _serial = self.shared.transfer_lock.lock().unwrap();
         let mut store = Store::open(&self.first_sync_state()?, operation)?;
         self.continue_first_sync(&mut store, true)
+    }
+    pub fn cancel_first_sync(&self, operation: Uuid) -> Result<()> {
+        let _serial = self.shared.transfer_lock.lock().unwrap();
+        let mut store = Store::open(&self.first_sync_state()?, operation)?;
+        ensure!(
+            !store.binding.remote_side
+                && matches!(store.binding.phase, Phase::Staging | Phase::Prepared),
+            "first Sync already published files; recover it to keep both versions"
+        );
+        let response = self.first_sync_call(
+            store.binding.peer,
+            Request::Cancel {
+                operation,
+                metadata_hash: store.binding.metadata_hash.clone(),
+            },
+        )?;
+        ensure!(
+            matches!(response,Response::Cancelled{operation:id} if id==operation),
+            "source cancellation was not acknowledged"
+        );
+        let authority = store.binding.authority.open()?;
+        let observed = authority.snapshot()?;
+        if observed.phase != okilum_write_authority::Phase::Open {
+            let hold = drain(&authority, operation, true)?;
+            let token = hold.token().clone();
+            hold.release(&token)?;
+        }
+        store.binding.phase = Phase::Cancelled;
+        store.save()
     }
 }

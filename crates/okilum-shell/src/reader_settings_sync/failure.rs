@@ -19,6 +19,12 @@ impl Operation {
             Self::Attach(..) => "receive_vault",
             Self::AttachNew(..) => "receive_new_vault",
             #[cfg(target_os = "linux")]
+            Self::ReviewDestination(..) => "review_first_sync",
+            #[cfg(target_os = "linux")]
+            Self::RecoverFirstSync(_) => "recover_first_sync",
+            #[cfg(target_os = "linux")]
+            Self::CancelFirstSync(_) => "cancel_first_sync",
+            #[cfg(target_os = "linux")]
             Self::SelectConnection(_) => "select_connection",
             #[cfg(target_os = "linux")]
             Self::Network(..) => "network_policy",

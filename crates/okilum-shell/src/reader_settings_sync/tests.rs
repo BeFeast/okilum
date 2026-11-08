@@ -27,6 +27,8 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
             ..Default::default()
         },
         #[cfg(target_os = "linux")]
+        first_sync: Default::default(),
+        #[cfg(target_os = "linux")]
         runtimes: vec![],
         vaults: vec![],
         controller: None,
@@ -905,6 +907,8 @@ fn guided_worker(
                 inspected: None,
                 selected_destination,
                 #[cfg(target_os = "linux")]
+                first_sync: Default::default(),
+                #[cfg(target_os = "linux")]
                 runtimes: vec![linux_runtime::Choice {
                     identity: okilum_sync_controller::daemon::DaemonIdentity {
                         config_file: PathBuf::from("/fixture-managed/config.xml"),
@@ -1475,6 +1479,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
                 snapshot: snapshot(None),
                 inspected: None,
                 selected_destination: None,
+                first_sync: Default::default(),
                 runtimes: vec![network_choice(true, local)],
                 vaults: vec![],
             })
@@ -1640,6 +1645,8 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
                 snapshot: ready.clone(),
                 inspected: None,
                 selected_destination: None,
+                #[cfg(target_os = "linux")]
+                first_sync: Default::default(),
                 #[cfg(target_os = "linux")]
                 runtimes: vec![],
                 vaults: vec![],
@@ -2040,6 +2047,8 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
                     inspected: None,
                     selected_destination: None,
                     #[cfg(target_os = "linux")]
+                    first_sync: Default::default(),
+                    #[cfg(target_os = "linux")]
                     runtimes: vec![],
                     vaults: vec![],
                 },
@@ -2134,6 +2143,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
                 snapshot,
                 inspected: preview,
                 selected_destination: None,
+                first_sync: Default::default(),
                 runtimes: vec![],
                 vaults: vec![],
             })
@@ -2458,6 +2468,8 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
                 snapshot,
                 inspected: None,
                 selected_destination: None,
+                #[cfg(target_os = "linux")]
+                first_sync: Default::default(),
                 #[cfg(target_os = "linux")]
                 runtimes: vec![],
                 vaults: vec![vault.clone()],

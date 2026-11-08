@@ -1,4 +1,5 @@
 //! Lossless first-sync planning. No daemon discovery, file IO or implicit consent.
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Complete, authenticated inventory of regular canonical files. Adapters must
@@ -31,6 +32,7 @@ pub struct Plan {
     there: Snapshot,
     entries: Vec<Entry>,
     merged: BTreeMap<String, Vec<u8>>,
+    fingerprint: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -42,7 +44,7 @@ pub enum Error {
 }
 /// Opaque consent cannot be transplanted to a different plan or revision.
 #[derive(Clone, Debug)]
-pub struct Consent(Plan);
+pub struct Consent([u8; 32]);
 
 impl Plan {
     /// Exact read-only inputs retained by this revision-bound plan.
@@ -108,11 +110,13 @@ impl Plan {
                 conflict_path,
             });
         }
+        let fingerprint = plan_fingerprint(&here, &there);
         Ok(Self {
             here,
             there,
             entries,
             merged,
+            fingerprint,
         })
     }
     pub fn entries(&self) -> &[Entry] {
@@ -134,18 +138,36 @@ impl Plan {
         if self.unrelated_warning() && !acknowledge_unrelated {
             return Err(Error::UnrelatedConsentRequired);
         }
-        Ok(Consent(self.clone()))
+        Ok(Consent(self.fingerprint))
     }
     pub fn apply(
         &self,
         consent: Consent,
         backend: &mut (impl Backend + ?Sized),
     ) -> Result<(), Error> {
-        if consent.0 != *self {
+        if consent.0 != self.fingerprint {
             return Err(Error::Stale);
         }
         backend.apply_if_unchanged(&self.here, &self.there, &self.merged)
     }
+}
+fn plan_fingerprint(here: &Snapshot, there: &Snapshot) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"okilum-first-sync-consent-v1\0");
+    for snapshot in [here, there] {
+        for value in [snapshot.scope.as_bytes(), snapshot.revision.as_bytes()] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value);
+        }
+        hash.update((snapshot.files.len() as u64).to_le_bytes());
+        for (path, bytes) in &snapshot.files {
+            for value in [path.as_bytes(), bytes.as_slice()] {
+                hash.update((value.len() as u64).to_le_bytes());
+                hash.update(value);
+            }
+        }
+    }
+    hash.finalize().into()
 }
 /// Serialized adapter boundary. Before ANY mutation, re-read and compare both
 /// complete snapshots (scope, revision AND bytes). Abort with Stale on mismatch.

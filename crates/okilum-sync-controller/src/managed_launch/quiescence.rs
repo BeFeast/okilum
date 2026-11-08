@@ -67,6 +67,58 @@ fn same_generation(expected: &Generation, actual: &Generation) -> Result<()> {
     Ok(())
 }
 impl ScopedHold {
+    /// Cancellation before ANY merge publication needs no exclusive transport
+    /// receipt: it restores normal Sync, never publishes a canonical byte.
+    pub fn cancel_unpublished(daemon: &DaemonIdentity, folder: &str, hold: Hold) -> Result<()> {
+        hold.validate_held(hold.token())?;
+        let home = daemon
+            .config_file
+            .parent()
+            .context("managed home missing")?;
+        let reference = existing(home)?;
+        let gate = lock_file(&reference.directory.join("gate.lock"), false, false)?;
+        let binding = reference.load()?;
+        let registered = binding
+            .folders
+            .get(folder)
+            .context("managed folder missing")?;
+        ensure!(
+            registered.root == hold.root(),
+            "unpublished cancellation root changed"
+        );
+        let path = reference
+            .directory
+            .join("scoped-holds")
+            .join(format!("{:x}.json", Sha256::digest(folder.as_bytes())));
+        let has_record = path.try_exists()?;
+        if has_record {
+            let mut record: Record = serde_json::from_slice(&private::read(&path)?)?;
+            ensure!(
+                record.operation == hold.token().operation_id
+                    && record.epoch == hold.token().epoch
+                    && matches!(
+                        record.phase,
+                        Phase::Pausing | Phase::Quiescent | Phase::ResumeAuthorized
+                    ),
+                "unpublished cancellation transport identity differs"
+            );
+            record.phase = Phase::ResumeAuthorized;
+            private::write(&path, &serde_json::to_vec(&record)?)?;
+        } else {
+            ensure!(
+                daemon.connect()?.folder(folder)?["paused"] == false,
+                "unpublished folder has an unknown pause; review before cancellation"
+            );
+        }
+        let operation = hold.token().operation_id.clone();
+        let token = hold.token().clone();
+        hold.release(&token)?;
+        drop(gate);
+        if has_record {
+            Self::resume_committed(daemon, folder, &operation)?;
+        }
+        Ok(())
+    }
     pub fn configuration_before_pause(&self) -> Result<Value> {
         self.validate()?;
         let mut config = self.daemon.connect()?.config()?;

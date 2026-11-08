@@ -13,7 +13,7 @@ use okilum_sync_controller::merge_preview::{
 };
 
 pub(crate) struct SyncMergePreview {
-    plan: Option<Returned<Plan>>,
+    plan: Option<Returned<std::sync::Arc<Plan>>>,
     backend: Option<Returned<Box<dyn Backend>>>,
     completion: Work,
     acknowledged: bool,
@@ -26,6 +26,18 @@ pub(crate) struct SyncMergePreview {
     recovery: Option<RecoveryFlow>,
 }
 impl SyncMergePreview {
+    pub(crate) fn outcome(&self) -> Option<bool> {
+        if self.finished {
+            Some(true)
+        } else if self.stopped && !self.busy {
+            Some(false)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn applying(&self) -> bool {
+        self.busy
+    }
     /// Legacy factories remain opaque until their owner adopts the shared lease.
     pub(crate) fn new(plan: Plan, backend: Box<dyn Backend>) -> Self {
         Self::new_tracked(plan, backend, Work::unknown())
@@ -33,7 +45,9 @@ impl SyncMergePreview {
     /// The factory's queued/output lease must cover the incoming backend until
     /// this constructor reserves its idle ownership. Use the mount's SAME Work.
     pub(crate) fn new_tracked(plan: Plan, backend: Box<dyn Backend>, completion: Work) -> Self {
-        let plan = completion.reserve().map(|lease| lease.owned(plan));
+        let plan = completion
+            .reserve()
+            .map(|lease| lease.owned(std::sync::Arc::new(plan)));
         let backend = completion.reserve().map(|lease| lease.owned(backend));
         let stopped = backend.is_none();
         Self {
@@ -138,16 +152,33 @@ impl Render for SyncMergePreview {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(format!("Identical: {}", plan.count(Kind::Equal)))
-                    .child(format!("Only here: {}", plan.count(Kind::OnlyHere)))
-                    .child(format!("Only there: {}", plan.count(Kind::OnlyThere)))
-                    .child(format!("Different: {}", plan.count(Kind::Different))),
+                    .child(
+                        div()
+                            .debug_selector(|| "sync-merge-same-count".into())
+                            .child(format!("Same: {}", plan.count(Kind::Equal))),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "sync-merge-here-count".into())
+                            .child(format!("New here: {}", plan.count(Kind::OnlyHere))),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "sync-merge-there-count".into())
+                            .child(format!("New there: {}", plan.count(Kind::OnlyThere))),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "sync-merge-conflict-count".into())
+                            .child(format!("Conflicting: {}", plan.count(Kind::Different))),
+                    ),
             );
         if plan.unrelated_warning() {
             content = content
                 .child("Fewer than half of paths overlap. These may be unrelated vaults.")
                 .child(
                     Button::new("sync-merge-ack")
+                        .debug_selector(|| "sync-merge-ack".into())
                         .label(if self.acknowledged {
                             "Different vaults acknowledged"
                         } else {
@@ -167,10 +198,10 @@ impl Render for SyncMergePreview {
         let page = self.page.min(pages.saturating_sub(1));
         for entry in plan.entries().iter().skip(page * page_size).take(page_size) {
             let kind = match entry.kind {
-                Kind::Equal => "Identical",
-                Kind::OnlyHere => "Only here",
-                Kind::OnlyThere => "Only there",
-                Kind::Different => "Different",
+                Kind::Equal => "Same",
+                Kind::OnlyHere => "New here",
+                Kind::OnlyThere => "New there",
+                Kind::Different => "Conflicting",
             };
             content = content.child(match &entry.conflict_path {
                 Some(conflict) => format!("{kind}: {} → {conflict}", entry.path),
@@ -202,6 +233,7 @@ impl Render for SyncMergePreview {
         );
         content = content.child(
             Button::new("sync-merge-apply")
+                .debug_selector(|| "sync-merge-apply".into())
                 .label(if self.busy {
                     "Merging…"
                 } else {

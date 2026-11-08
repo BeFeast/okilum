@@ -969,6 +969,8 @@ mod tests {
             inspected: None,
             selected_destination: None,
             #[cfg(target_os = "linux")]
+            first_sync: Default::default(),
+            #[cfg(target_os = "linux")]
             runtimes: vec![],
             vaults: vec![],
         })

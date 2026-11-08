@@ -12,6 +12,8 @@ pub(super) enum Step {
     Progress,
     Expired,
     Existing,
+    #[cfg(target_os = "linux")]
+    Merge,
 }
 
 #[derive(Default)]
@@ -93,6 +95,8 @@ impl Render for Wizard {
                                     view.presentation.wizard = None;
                                     view.presentation.managing = None;
                                     view.presentation.dialog_open = false;
+                                    #[cfg(target_os = "linux")]
+                                    view.close_first_sync_preview(cx);
                                     window.close_dialog(cx);
                                     cx.notify();
                                 })),
