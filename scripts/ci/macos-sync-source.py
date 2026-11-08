@@ -9,7 +9,9 @@ def main():
     if sys.platform != "darwin":
         raise RuntimeError("native Mac Sync controls require macOS")
     for package, target, selected in (
+        ("okilum-write-authority", "--lib", "identity_macos_tests::"),
         ("okilum-sync-controller", "--lib", "direct::source::tests::"),
+        ("okilum-sync-controller", "--lib", "direct::existing::tests::issue2752_"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_peer::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_exit::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),

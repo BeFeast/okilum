@@ -176,7 +176,7 @@ fn sync_labels_managed_external_and_paused_wording(cx: &mut TestAppContext) {
         folder_type: "sendreceive".into(),
         peers: vec![],
         root_identity: None,
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         stable_root_identity: None,
     };
     visual.update(|window, cx| {

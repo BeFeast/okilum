@@ -17,10 +17,9 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
 #[cfg(target_os = "macos")]
-#[path = "identity_macos.rs"]
-mod native_identity;
+pub mod identity_macos;
 #[cfg(target_os = "macos")]
-use native_identity::Identity;
+use identity_macos::Identity;
 #[cfg(target_os = "linux")]
 pub mod identity_linux;
 #[cfg(target_os = "linux")]
@@ -46,7 +45,7 @@ fn identity(path: &Path) -> Result<Identity> {
     );
     #[cfg(target_os = "macos")]
     {
-        native_identity::read(path)
+        identity_macos::read(path)
     }
     #[cfg(target_os = "linux")]
     {

@@ -3,6 +3,7 @@ use super::*;
 use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux_runtime::managed_service_directory;
@@ -61,6 +62,8 @@ fn serve_paired_from(
                     if let Some(trace) = &trace {
                         trace.event("sync_action_failed", failure_details("serve", &error));
                     }
+                    // A failed journal read must remain visible outside Settings.
+                    start_serving(cx);
                 }
             }
         });
@@ -177,6 +180,7 @@ impl Global for TestWorker {}
 struct Output {
     overview: direct::Overview,
     connection_error: Option<String>,
+    diagnostic: Option<String>,
     controller: Controller,
     snapshot: Snapshot,
     inspected: Option<ExistingVault>,
@@ -410,6 +414,7 @@ impl SyncSettings {
                 .map(|(controller, snapshot)| Output {
                     overview: self.presentation.overview.clone(),
                     connection_error: None,
+                    diagnostic: None,
                     controller: controller.clone(),
                     snapshot: snapshot.clone(),
                     inspected: None,
@@ -437,6 +442,8 @@ impl SyncSettings {
                             return worker_epoch.run(|| (worker.0)(operation))?;
                         }
                         if let Some(mut output) = pairing_poll {
+                            #[cfg(all(target_os = "macos", not(test)))]
+                            health::check_managed()?;
                             let guard = ControllerGuard {
                                 ticket: worker_epoch,
                                 controller: output.controller.clone(),
@@ -555,6 +562,9 @@ impl SyncSettings {
             self.presentation.retry = None;
         } else {
             self.health.failed();
+            if let Some(diagnostic) = output.diagnostic {
+                self.presentation.error_details = Some(diagnostic);
+            }
         }
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
@@ -1024,10 +1034,6 @@ fn perform_with_locations(
             Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
             _ => {}
         }
-        #[cfg(all(target_os = "macos", not(test)))]
-        if !matches!(operation, Operation::Restart) {
-            health::check_managed()?;
-        }
         let (state, configs) = resolve().context("resolve local Sync state and connections")?;
         // The old desktop stored service enrollment alongside `direct`, not
         // inside it. Do not bootstrap a second daemon over that saved setup.
@@ -1053,7 +1059,7 @@ fn perform_with_locations(
         guard.check()?;
         #[cfg(target_os = "macos")]
         if matches!(operation, Operation::Restart) {
-            health::restart_managed()?;
+            health::repair_or_restart(&controller)?;
         }
         #[cfg(target_os = "macos")]
         prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
@@ -1158,12 +1164,28 @@ fn perform_with_locations(
                 | Operation::Catalog(_)
         );
         let mut inspected = None;
+        let mut refresh_problem = None;
         let snapshot = match operation {
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             #[cfg(target_os = "macos")]
             Operation::Restart => controller.refresh()?,
-            Operation::Read | Operation::EnterPairing => controller.refresh()?,
+            Operation::Read | Operation::EnterPairing => {
+                let observed = (|| {
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    health::check_managed()?;
+                    controller.refresh()
+                })();
+                match observed {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        refresh_problem = Some(error);
+                        // Saved enrollment is not first-run state. Keep known
+                        // computers/vaults visible while presenting the failure.
+                        controller.snapshot()?
+                    }
+                }
+            }
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,
             Operation::Share(path) => {
@@ -1216,12 +1238,18 @@ fn perform_with_locations(
         } else {
             runtime
         };
+        let connection_error = refresh_problem.as_ref().map(user_error);
+        #[cfg(target_os = "linux")]
+        let connection_error =
+            connection_error.or_else(|| linux_runtime::connection_error(&runtime));
         Ok(Output {
             overview: controller.overview().unwrap_or_default(),
-            #[cfg(target_os = "linux")]
-            connection_error: linux_runtime::connection_error(&runtime),
-            #[cfg(target_os = "macos")]
-            connection_error: None,
+            diagnostic: refresh_problem.as_ref().and_then(|error| {
+                failure_details("refresh", error)["error"]
+                    .as_str()
+                    .map(str::to_owned)
+            }),
+            connection_error,
             controller,
             snapshot,
             inspected,
@@ -1316,6 +1344,9 @@ fn user_error(error: &anyhow::Error) -> String {
         || text.contains("syncthing")
     {
         "No compatible Syncthing connection is available. Select the existing instance explicitly, or check its connection and refresh.".into()
+    } else if text.contains("attached replica identity changed") {
+        "The saved vault identity needs repair. Use Fix to reconnect this computer's existing Sync."
+            .into()
     } else if text.contains("reject") {
         "The other computer declined pairing. Create a new pairing URL to try again.".into()
     } else {

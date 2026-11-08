@@ -901,6 +901,7 @@ fn guided_worker(
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,
@@ -1272,7 +1273,7 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
         folder_type: "receiveonly".into(),
         peers: vec![],
         root_identity: None,
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         stable_root_identity: None,
     });
     let mut ready = receiving.clone();
@@ -1472,6 +1473,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot: snapshot(None),
                 inspected: None,
@@ -1637,6 +1639,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot: ready.clone(),
                 inspected: None,
@@ -2036,6 +2039,7 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
                 Output {
                     overview: Default::default(),
                     connection_error: None,
+                    diagnostic: None,
                     controller: controller.clone(),
                     snapshot: saved.clone(),
                     inspected: None,
@@ -2106,7 +2110,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
         folder_type: "sendreceive".into(),
         peers: vec![],
         root_identity: None,
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         stable_root_identity: None,
     };
     let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
@@ -2131,6 +2135,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: preview,
@@ -2449,12 +2454,13 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stable_root_identity: None,
             });
             Ok(Output {
                 overview: Default::default(),
                 connection_error: None,
+                diagnostic: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,

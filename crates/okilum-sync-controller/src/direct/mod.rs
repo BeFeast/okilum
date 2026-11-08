@@ -1754,7 +1754,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stable_root_identity: None,
             });
         let url = offer(&source)?;

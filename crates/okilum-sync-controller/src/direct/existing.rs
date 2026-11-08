@@ -64,6 +64,9 @@ pub struct ExistingVault {
     #[cfg(target_os = "linux")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stable_root_identity: Option<okilum_write_authority::identity_linux::Identity>,
+    #[cfg(target_os = "macos")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_root_identity: Option<okilum_write_authority::identity_macos::Identity>,
 }
 
 /// No state is created, no daemon is started, and every REST operation is GET.
@@ -124,6 +127,8 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
         root_identity: Some((metadata.dev(), metadata.ino())),
         #[cfg(target_os = "linux")]
         stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(&root.0)?),
+        #[cfg(target_os = "macos")]
+        stable_root_identity: Some(okilum_write_authority::identity_macos::from_file(&root.0)?),
         daemon: candidate.identity.clone(),
         version: candidate.version.clone(),
         folder_id: id.clone(),
@@ -141,13 +146,13 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
 }
 
 pub(super) fn same_replica(a: &ExistingVault, b: &ExistingVault) -> bool {
-    a.daemon == b.daemon && a.folder_id == b.folder_id && a.path == b.path
+    a.daemon.same_instance(&b.daemon) && a.folder_id == b.folder_id && a.path == b.path
 }
 pub(super) fn same_binding(a: &ExistingVault, b: &ExistingVault) -> bool {
     if !same_replica(a, b) {
         return false;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let (Some(a), Some(b)) = (&a.stable_root_identity, &b.stable_root_identity) {
         return a == b;
     }
@@ -162,11 +167,11 @@ pub(super) fn same_binding_with_consent(saved: &ExistingVault, fresh: &ExistingV
     if same_binding(saved, fresh) {
         return true;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if saved.stable_root_identity.is_some() {
         return false;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if saved.stable_root_identity.is_none()
         && fresh.stable_root_identity.is_some()
         && same_replica(saved, fresh)
@@ -234,7 +239,7 @@ impl AttachedVault {
             same_binding(&saved, &fresh),
             "saved replica association changed"
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if saved.stable_root_identity.is_none() && fresh.stable_root_identity.is_some() {
             let _lock = private::lock(&self.state)?;
             let file = self.state.join("existing.json");
@@ -283,6 +288,84 @@ pub fn configuration_paths() -> Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn issue2752_same_file_config_alias_retains_replica_but_copies_and_changed_identity_do_not(
+    ) -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let vault = temp.path().join("vault");
+        fs::create_dir(&vault)?;
+        let config = temp.path().join("Config.xml");
+        let alias = temp.path().join("config.xml");
+        fs::write(&config, b"synthetic configuration")?;
+        // Exercise both the usual case-insensitive APFS and case-sensitive QA.
+        if !alias.exists() {
+            fs::hard_link(&config, &alias)?;
+        }
+        let root = VaultRoot::open(&vault)?;
+        let saved = ExistingVault {
+            daemon: DaemonIdentity {
+                config_file: alias,
+                device_id: "fixture".into(),
+                certificate_hash: "fixture".into(),
+            },
+            version: "v2.1.6".into(),
+            folder_id: "fixture".into(),
+            path: vault,
+            label: "Fixture".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: Some(root.identity()?),
+            stable_root_identity: Some(okilum_write_authority::identity_macos::from_file(&root.0)?),
+        };
+        let mut fresh = saved.clone();
+        fresh.daemon.config_file = config;
+        assert!(
+            same_binding(&saved, &fresh),
+            "same authenticated config inode must survive spelling differences"
+        );
+        fresh.daemon.device_id = "another-device".into();
+        assert!(!same_binding(&saved, &fresh));
+        fresh = saved.clone();
+        fresh.daemon.certificate_hash = "another-certificate".into();
+        assert!(!same_binding(&saved, &fresh));
+        fresh = saved.clone();
+        fresh.daemon.config_file = temp.path().join("copy.xml");
+        fs::write(&fresh.daemon.config_file, b"synthetic configuration")?;
+        assert!(
+            !same_binding(&saved, &fresh),
+            "copied configuration grants no continuity"
+        );
+        fresh = saved.clone();
+        let mut replaced = serde_json::to_value(&fresh)?;
+        replaced["stable_root_identity"][1] = 0.into();
+        let replaced = serde_json::from_value(replaced)?;
+        assert!(
+            !same_binding(&saved, &replaced),
+            "vault replacement remains refused"
+        );
+        let mut renumbered = serde_json::to_value(&fresh)?;
+        renumbered["stable_root_identity"][0] = 12345.into();
+        renumbered["root_identity"][0] = 12345.into();
+        let renumbered: ExistingVault = serde_json::from_value(renumbered)?;
+        assert!(
+            same_binding(&saved, &renumbered),
+            "APFS device hints may change after reboot"
+        );
+        let mut legacy = renumbered.clone();
+        legacy.stable_root_identity = None;
+        assert!(
+            !same_binding(&legacy, &saved),
+            "a legacy device mismatch requires explicit repair consent"
+        );
+        assert!(
+            same_binding_with_consent(&legacy, &saved),
+            "Fix can upgrade the verified legacy replica"
+        );
+        Ok(())
+    }
 
     #[cfg(target_os = "linux")]
     fn linux_vault(path: &Path) -> Result<ExistingVault> {
@@ -416,7 +499,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: Some((metadata.dev(), metadata.ino())),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         assert!(same_binding(&inspected, &inspected));

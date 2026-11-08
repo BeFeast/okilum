@@ -964,6 +964,7 @@ mod tests {
         Ok(Output {
             overview: Default::default(),
             connection_error: None,
+            diagnostic: None,
             controller,
             snapshot,
             inspected: None,

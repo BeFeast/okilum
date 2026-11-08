@@ -109,3 +109,20 @@ external Sync configuration under `<profile>/sync`, including health observation
 They never discover, bootstrap or restart the account-wide managed helper. This
 allows native failure QA by stopping only a disposable profile's runtime while
 leaving the user's real Sync and vault untouched.
+
+
+A second Mac recovery failure was traced to a persisted `okilum` config path
+versus the same APFS file spelled `Okilum`. Replica continuity now compares
+matching device/certificate identity plus the configuration file's device/inode
+when its spelling differs on macOS; a copied config or replaced vault is still
+refused. Successful Settings rechecks clear both the friendly error and expanded
+previous diagnostics; a failed first attempt schedules another check even before
+there is a snapshot.
+
+
+Mac replica roots now use the existing writer authority's APFS volume UUID,
+inode and birthtime identity, read from the held directory descriptor. The
+`st_dev` value is diagnostic for UUID-bearing records. A legacy saved root whose
+device hint already changed is upgraded only by an explicit Fix/attach-existing
+consent after fresh authenticated inspection; ordinary refresh does not infer
+continuity from an inode alone. Fix keeps existing vault membership and peers.

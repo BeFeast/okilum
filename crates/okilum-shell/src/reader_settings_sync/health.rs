@@ -53,9 +53,7 @@ impl Health {
     }
     pub(super) fn message(&self) -> Option<&'static str> {
         if self.down {
-            Some(
-                "Sync is not running; changes from your other computers are not reaching this one.",
-            )
+            Some("Sync needs attention; changes from your other computers may be missing.")
         } else if self.stale {
             Some("This vault has not synced with your other computers for more than 10 minutes.")
         } else {
@@ -110,7 +108,7 @@ mod tests {
             .vaults
             .insert(PathBuf::from("/synthetic"), Default::default());
         health.observe(&overview, now);
-        assert!(health.message().unwrap().contains("not running"));
+        assert!(health.message().unwrap().contains("needs attention"));
         let vault = overview.vaults.values_mut().next().unwrap();
         vault.available = true;
         vault.state = "Up to date".into();
@@ -215,6 +213,28 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
         "Syncthing REST unavailable for enabled Sync"
     );
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn repair_or_restart(controller: &Controller) -> anyhow::Result<()> {
+    // Fix is explicit consent to refresh this computer's existing replica
+    // witness. It never adds a new vault or changes peers/device identity.
+    let snapshot = controller.snapshot()?;
+    let configs = controller.configuration_paths()?;
+    let inspected = snapshot
+        .attached
+        .iter()
+        .map(|vault| direct::inspect_existing(&configs, &vault.path))
+        .collect::<anyhow::Result<Vec<_>>>();
+    if let Ok(inspected) = inspected {
+        if !inspected.is_empty() {
+            for vault in inspected {
+                controller.attach_existing(&vault, true)?;
+            }
+            return Ok(());
+        }
+    }
+    restart_managed()
 }
 
 #[cfg(target_os = "macos")]
