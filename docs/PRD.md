@@ -45,8 +45,8 @@ setup through Settings (#2489). On the existing computer, **Share with another
 computer…** → **Share with my computers** shares an ordinary vault; **Add
 computer** produces a private, one-computer pairing URL valid for one hour.
 On the new computer, **Get notes from another computer** → paste URL → **Connect**;
-confirm on the old computer, then choose a vault and an empty local folder on the
-new one. First pairing requires the same LAN. The bundled runtime prepares
+confirm on the old computer, then choose a vault and a local folder on the new one. A folder containing
+files requires the lossless first-Sync review and explicit confirmation below. First pairing requires the same LAN. The bundled runtime prepares
 automatically when no existing runtime needs selection, receives the vault and
 starts bidirectional Sync. Saved edits and deletions propagate. No account,
 Okilum service or required hub participates; the former service/passkey desktop
@@ -68,8 +68,13 @@ through authenticated paired/introducer routes (#2042); no device list is stored
 in the vault. Removed computers keep their files.
 Copied data cannot be recalled, and untrusted-server encryption remains open.
 
-A non-empty new destination is refused pending lossless preview/merge (#2043);
-merged PRs #2511/#2513 provide inventory/preflight groundwork, but do not enable this flow. Incoming changes update open reading
+A non-empty new destination shows a [lossless first-Sync preview](sync-first-merge.md)
+(#2043): New here, New there, Same and Conflicting. Explicit confirmation merges
+the complete union and keeps both differing versions on both computers. Little
+path overlap requires an additional warning acknowledgement. A changed revision
+invalidates consent; interrupted operations remain visible for explicit recovery.
+Unknown non-empty attachment without this completed merge remains refused.
+Incoming changes update open reading
 and clean editing views. With unsaved edits, a notice preserves local text;
 explicit Save or **Keep both versions** saves a separate
 `.okilum-conflict-<time>-<random>` copy without replacing the incoming file
@@ -80,8 +85,10 @@ use staggered 30-day history on both managed sides, reconcile existing owned
 folders, offer per-computer retention settings and guarded Restore in Note history
 and Recover notes (#2045). This is not a backup of every local edit. [Shared ignore policy](sync-enrollment.md#one-shared-ignore-policy-2046)
 uses a synced file with a preserved local block (#2046). The Mac walkthrough and
-first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489). Windows is **coming** in
-[#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
+first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489).
+Windows uses the installed signed build with its Sync helper and pinned runtime;
+portable packages do not contain the helper. Native first-merge acceptance and
+beta delivery are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
 
@@ -448,7 +455,7 @@ measurable.
 
 ## 10. Still open
 
-- Remaining direct Sync work: non-empty first merge, untrusted-server encryption
+- Remaining direct Sync work: untrusted-server encryption
   and native release acceptance (see [the Sync status](sync-enrollment.md)).
   Fleet removal uses the introducer mesh without a device list in the vault;
   common exclusions live in `.okilum/sync-ignore` with preserved local exceptions.

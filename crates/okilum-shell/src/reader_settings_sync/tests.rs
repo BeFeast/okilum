@@ -270,7 +270,7 @@ fn reader_settings_sync_validates_before_starting_any_controller(cx: &mut TestAp
 fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
     let nonempty = user_error(&anyhow::anyhow!("unknown nonempty destination"));
     assert!(nonempty.contains("Your files have not changed"));
-    assert!(nonempty.contains("empty folder"));
+    assert!(nonempty.contains("lossless merge preview"));
     let expired = user_error(&anyhow::anyhow!("invitation expired"));
     assert!(expired.contains("Create a new one"));
     let secret = "okilum://pair/private-token";

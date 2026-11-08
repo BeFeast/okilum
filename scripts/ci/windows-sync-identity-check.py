@@ -53,6 +53,7 @@ def main():
     for test in (
         "sidecar::windows::signature::tests::windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes",
         "sidecar::windows::preparation::tests::windows_offline_preparation_preserves_identity_and_refuses_uncertain_regeneration",
+        "sidecar::windows::native::tests::native_task_registration_collision_and_owned_removal",
         "managed_launch::windows::tests::windows_listener_and_process_proofs_require_live_kernel_owners",
         "direct::lan::tests::windows_lan_selection_requires_live_physical_interfaces",
         "direct::inventory::tree::tests::windows_inventory_reads_binary_bytes_and_refuses_redirects_and_hardlinks",

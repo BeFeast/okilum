@@ -4,7 +4,7 @@
 
 This guide covers Linux and macOS beta 29262 or later, including two fresh installations. Install Okilum on both computers, open the vault containing your notes on the first, and keep both computers on the same LAN for first pairing. Okilum sets up its bundled Syncthing automatically when no existing connection needs attention. No account or server is required. Keep a separate backup: Sync can propagate edits and deletions.
 
-The Mac walkthrough and first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489). On Mac, allow local network access when macOS asks. If Login Items approval is required, allow Okilum Sync in System Settings → General → Login Items, then use Try again. Keep the existing Sync state and identity. Windows is coming in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
+The Mac walkthrough and first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489). On Mac, allow local network access when macOS asks. If Login Items approval is required, allow Okilum Sync in System Settings → General → Login Items, then use Try again. Keep the existing Sync state and identity. Windows requires the installed signed build with its Sync helper; portable packages do not include background Sync. Native first-merge acceptance and containing beta builds are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
 ## 1. First computer: share your vault
 
@@ -26,7 +26,7 @@ Compare the displayed name and computer identities with the second computer. Sel
 
 ## 5. Second computer: choose the vault and local folder
 
-Under Available vaults, find the intended vault and select Choose folder. In the native folder dialog, choose or create an empty local folder. After selecting the wanted vaults, select Start first sync. A non-empty folder is refused until the lossless preview and merge in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043); do not delete existing files to force this step.
+Under Available vaults, find the intended vault and select Choose folder. In the native folder dialog, choose or create a local folder. After selecting the wanted vaults, select Start first sync. If the folder contains files, review New here, New there, Same and Conflicting, then explicitly confirm the merge. Every original is retained; different versions stay on both computers. Little overlap requires an additional acknowledgement. Changed files require a fresh preview; interrupted work stays visible under Recover first sync. Closing the preview starts no merge. See [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043); never delete existing files to force setup.
 
 ## 6. Wait for the first transfer
 

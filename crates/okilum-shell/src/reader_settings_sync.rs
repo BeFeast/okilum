@@ -1303,6 +1303,12 @@ fn user_error(error: &anyhow::Error) -> String {
     let text = format!("{error:#}").to_lowercase();
     if text.contains("sync is disabled") {
         "Sync is disabled. Enable Sync in Settings → Features, then try Add computer again.".into()
+    } else if cfg!(windows)
+        && (text.contains("authenticode")
+            || text.contains("signed build")
+            || text.contains("portable app"))
+    {
+        "Sync requires the installed signed Windows build with its background helper. Install that build, then try again.".into()
     } else if text.contains("local sync folder") {
         "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
     } else if text.contains("network policy") {
@@ -1326,7 +1332,7 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("signing") || text.contains("bundle") || text.contains("runtime") {
         "A verified Sync runtime is not available in this build. Install a signed beta that includes Sync and try again.".into()
     } else if text.contains("nonempty") || text.contains("non-empty") {
-        "This folder already contains files. Your files have not changed. Choose an empty folder to start Sync.".into()
+        "This folder already contains files. Your files have not changed. Return to Choose folder to review a lossless merge preview.".into()
     } else if text.contains("expired") {
         "This pairing URL expired. Create a new one on the other computer.".into()
     } else if text.contains("daemon")

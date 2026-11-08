@@ -74,6 +74,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-windows-recovery-v1
+          cache-on-failure: true
       - name: Prepare and verify Windows vendor
         shell: bash
         run: |
