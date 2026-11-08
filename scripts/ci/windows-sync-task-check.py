@@ -47,7 +47,7 @@ def check(runtime, notices):
     direct = state.with_name('SyncDirect')
     if state.exists() or direct.exists():
         raise RuntimeError('native task control refuses an existing account connection')
-    powershell = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+    powershell = ['pwsh.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
                   str(Path(__file__).with_name('windows-sync-task-certificate.ps1').resolve())]
     with tempfile.TemporaryDirectory(prefix='okilum-native-task-') as temporary:
         root = Path(temporary).resolve()
@@ -58,7 +58,7 @@ def check(runtime, notices):
         cleanup_client = None
         created = False
         try:
-            subprocess.run([*powershell, '-Action', 'create', '-Metadata', str(metadata)], check=True, timeout=90)
+            subprocess.run([*powershell, '-Action', 'create', '-Metadata', str(metadata)], check=True, timeout=90, stdin=subprocess.DEVNULL)
             created = True
             certificate = json.loads(metadata.read_text(encoding='utf-8-sig'))
             env = dict(os.environ, CARGO_PROFILE_DEV_DEBUG='0', OKILUM_WINDOWS_SIGN_SUBJECT=certificate['subject'],
@@ -70,7 +70,7 @@ def check(runtime, notices):
             shutil.copyfile(runtime, initial / 'syncthing.exe')
             shutil.copytree(notices, initial / 'Syncthing')
             for executable in ['okilum.exe', 'okilum-sync-supervisor.exe', 'syncthing.exe']:
-                subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(initial / executable)], check=True, timeout=90)
+                subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(initial / executable)], check=True, timeout=90, stdin=subprocess.DEVNULL)
             evidence = root / 'native-task-evidence.json'
             cleanup_client = initial / 'okilum.exe'
             run(cleanup_client, 'initial', evidence, state, env)
@@ -89,7 +89,7 @@ def check(runtime, notices):
                 except Exception as error:
                     print(f'Native fixture cleanup remains failed: {error}', flush=True)
             if created:
-                subprocess.run([*powershell, '-Action', 'cleanup', '-Metadata', str(metadata)], check=True, timeout=90)
+                subprocess.run([*powershell, '-Action', 'cleanup', '-Metadata', str(metadata)], check=True, timeout=90, stdin=subprocess.DEVNULL)
 
 
 if __name__ == '__main__':

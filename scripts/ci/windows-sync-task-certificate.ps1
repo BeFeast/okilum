@@ -7,27 +7,68 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'Native signing fixtures run only on a disposable hosted Windows runner'
 }
-# This is launched from pwsh by Python into Windows PowerShell. Load its own
-# security provider explicitly rather than inheriting pwsh's module search path.
-Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -Force
-if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
-    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' | Out-Null
+Write-Host "Native fixture certificate phase: $Action"
+# Use PowerShell 7's .NET certificate API. Windows PowerShell's PKI/provider
+# autoload inherited from pwsh stalled before returning a fixture certificate.
+function Persist-Certificate($certificate) {
+    $bytes = $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, '')
+    try {
+        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+        return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes, '', $flags)
+    } finally { [Array]::Clear($bytes, 0, $bytes.Length) }
+}
+function Open-Store([string]$name) {
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($name, 'CurrentUser')
+    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+    return $store
+}
+function Certificate([string]$thumbprint) {
+    $store = Open-Store 'My'
+    try {
+        $found = $store.Certificates.Find('FindByThumbprint', $thumbprint, $false)
+        if ($found.Count -ne 1) { throw 'Fixture certificate missing or ambiguous' }
+        return $found[0]
+    } finally { $store.Close() }
 }
 if ($Action -eq 'create') {
     if (Test-Path -LiteralPath $Metadata) { throw 'Fixture certificate metadata already exists' }
     $id = [Guid]::NewGuid().ToString('N')
-    $root = New-SelfSignedCertificate -Type Custom -Subject "CN=Okilum native fixture root $id" `
-        -KeyUsage CertSign,CRLSign,DigitalSignature -TextExtension @('2.5.29.19={critical}{text}ca=true') `
-        -CertStoreLocation 'Cert:\CurrentUser\My' -NotAfter (Get-Date).AddHours(2) `
-        -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256
-    $leaf = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Okilum native fixture publisher $id" `
-        -Signer $root -CertStoreLocation 'Cert:\CurrentUser\My' -NotAfter (Get-Date).AddHours(1) `
-        -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','CurrentUser')
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    try { $store.Add($root) } finally { $store.Close() }
-    [ordered]@{ schema=1; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
-        ConvertTo-Json -Compress | Set-Content -LiteralPath $Metadata -Encoding UTF8
+    $start = [DateTimeOffset]::Now.AddMinutes(-5)
+    $rootKey = [System.Security.Cryptography.RSA]::Create(2048)
+    $leafKey = [System.Security.Cryptography.RSA]::Create(2048)
+    try {
+        $rootRequest = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=Okilum native fixture root $id", $rootKey,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $rootRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $false, 0, $true))
+        $usage = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyCertSign -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::CrlSign
+        $rootRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($usage, $true))
+        $rootRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($rootRequest.PublicKey, $false))
+        $root = Persist-Certificate ($rootRequest.CreateSelfSigned($start, [DateTimeOffset]::Now.AddHours(2)))
+        Write-Host 'Native fixture root created'
+        $leafRequest = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=Okilum native fixture publisher $id", $leafKey,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
+        $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature, $true))
+        $purposes = [System.Security.Cryptography.OidCollection]::new()
+        [void]$purposes.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3'))
+        $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($purposes, $true))
+        $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($leafRequest.PublicKey, $false))
+        $unsignedKey = $leafRequest.Create($root, $start, [DateTimeOffset]::Now.AddHours(1), [Guid]::NewGuid().ToByteArray())
+        $withKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($unsignedKey, $leafKey)
+        $leaf = Persist-Certificate $withKey
+        $mine = Open-Store 'My'
+        try { $mine.Add($root); $mine.Add($leaf) } finally { $mine.Close() }
+        $trusted = Open-Store 'Root'
+        try { $trusted.Add([System.Security.Cryptography.X509Certificates.X509Certificate2]::new($root.RawData)) } finally { $trusted.Close() }
+        [ordered]@{ schema=1; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $Metadata -Encoding UTF8
+        Write-Host 'Native fixture leaf and disposable CurrentUser trust installed'
+    } finally { $rootKey.Dispose(); $leafKey.Dispose() }
     exit 0
 }
 $record = Get-Content -Raw -LiteralPath $Metadata | ConvertFrom-Json
@@ -35,17 +76,31 @@ if ($record.schema -ne 1 -or $record.root -notmatch '^[A-F0-9]{40}$' -or $record
     throw 'Invalid fixture certificate identity'
 }
 if ($Action -eq 'sign') {
-    $certificate = Get-Item -LiteralPath "Cert:\CurrentUser\My\$($record.leaf)"
+    $certificate = Certificate $record.leaf
     if ($certificate.Subject -ne $record.subject) { throw 'Fixture certificate subject changed' }
     $result = Set-AuthenticodeSignature -FilePath $File -Certificate $certificate -HashAlgorithm SHA256 -IncludeChain All
     if ($result.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
         throw "Fixture signature failed: $($result.Status) $($result.StatusMessage)"
     }
+    Write-Host 'Native fixture embedded signature verified'
     exit 0
 }
-foreach ($path in @("Cert:\CurrentUser\Root\$($record.root)", "Cert:\CurrentUser\My\$($record.leaf)", "Cert:\CurrentUser\My\$($record.root)")) {
-    if (Test-Path -LiteralPath $path) {
-        if ($path.StartsWith('Cert:\CurrentUser\Root\')) { Remove-Item -LiteralPath $path }
-        else { Remove-Item -LiteralPath $path -DeleteKey }
+$trusted = Open-Store 'Root'
+try {
+    foreach ($certificate in $trusted.Certificates.Find('FindByThumbprint', $record.root, $false)) { $trusted.Remove($certificate) }
+} finally { $trusted.Close() }
+$mine = Open-Store 'My'
+try {
+    foreach ($thumbprint in @($record.leaf, $record.root)) {
+        foreach ($certificate in $mine.Certificates.Find('FindByThumbprint', $thumbprint, $false)) {
+            if ($certificate.Subject -notlike 'CN=Okilum native fixture *') { throw 'Refusing to remove a non-fixture key' }
+            $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
+            try {
+                if ($key -isnot [System.Security.Cryptography.RSACng]) { throw 'Fixture key is not a disposable CNG key' }
+                $key.Key.Delete()
+            } finally { if ($key) { $key.Dispose() } }
+            $mine.Remove($certificate)
+        }
     }
-}
+} finally { $mine.Close() }
+Write-Host 'Native fixture trust and private keys removed'
