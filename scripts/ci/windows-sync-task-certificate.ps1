@@ -46,23 +46,34 @@ if ($Action -eq 'create') {
                  [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::CrlSign
         $rootRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($usage, $true))
         $rootRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($rootRequest.PublicKey, $false))
-        $root = Persist-Certificate ($rootRequest.CreateSelfSigned($start, [DateTimeOffset]::Now.AddHours(2)))
+        $root = $rootRequest.CreateSelfSigned($start, [DateTimeOffset]::Now.AddHours(2))
         Write-Host 'Native fixture root created'
         $leafRequest = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
             "CN=Okilum native fixture publisher $id", $leafKey,
             [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        Write-Host 'Native fixture leaf request created'
         $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
         $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
             [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature, $true))
         $purposes = [System.Security.Cryptography.OidCollection]::new()
         [void]$purposes.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3'))
         $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($purposes, $true))
+        Write-Host 'Native fixture code-signing purpose encoded'
         $leafRequest.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($leafRequest.PublicKey, $false))
-        $unsignedKey = $leafRequest.Create($root, $start, [DateTimeOffset]::Now.AddHours(1), [Guid]::NewGuid().ToByteArray())
-        $withKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($unsignedKey, $leafKey)
+        Write-Host 'Native fixture leaf request prepared'
+        # The issuer is an ephemeral key already held in this process. Avoid
+        # exporting/reimporting it and then rediscovering it through a provider.
+        $signer = [System.Security.Cryptography.X509Certificates.X509SignatureGenerator]::CreateForRSA(
+            $rootKey, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $issued = $leafRequest.Create($root.SubjectName, $signer, $start,
+                                      [DateTimeOffset]::Now.AddHours(1), [Guid]::NewGuid().ToByteArray())
+        Write-Host 'Native fixture leaf certificate issued'
+        $withKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($issued, $leafKey)
         $leaf = Persist-Certificate $withKey
+        Write-Host 'Native fixture leaf private key persisted'
         $mine = Open-Store 'My'
-        try { $mine.Add($root); $mine.Add($leaf) } finally { $mine.Close() }
+        try { $mine.Add($leaf) } finally { $mine.Close() }
+        Write-Host 'Native fixture leaf stored'
         $trusted = Open-Store 'Root'
         try { $trusted.Add([System.Security.Cryptography.X509Certificates.X509Certificate2]::new($root.RawData)) } finally { $trusted.Close() }
         [ordered]@{ schema=1; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
@@ -91,13 +102,17 @@ try {
 } finally { $trusted.Close() }
 $mine = Open-Store 'My'
 try {
-    foreach ($thumbprint in @($record.leaf, $record.root)) {
+    foreach ($thumbprint in @($record.leaf)) {
         foreach ($certificate in $mine.Certificates.Find('FindByThumbprint', $thumbprint, $false)) {
             if ($certificate.Subject -notlike 'CN=Okilum native fixture *') { throw 'Refusing to remove a non-fixture key' }
             $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
             try {
-                if ($key -isnot [System.Security.Cryptography.RSACng]) { throw 'Fixture key is not a disposable CNG key' }
-                $key.Key.Delete()
+                if ($key -is [System.Security.Cryptography.RSACng]) {
+                    $key.Key.Delete()
+                } elseif ($key -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+                    $key.PersistKeyInCsp = $false
+                    $key.Clear()
+                } else { throw 'Fixture private-key provider cannot be cleaned up' }
             } finally { if ($key) { $key.Dispose() } }
             $mine.Remove($certificate)
         }
