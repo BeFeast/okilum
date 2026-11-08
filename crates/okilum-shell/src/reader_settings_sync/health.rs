@@ -21,6 +21,16 @@ impl Health {
         self.stalled
             .retain(|path, _| overview.vaults.contains_key(path));
         self.stale = false;
+        let old_contact = !connected
+            && overview
+                .computers
+                .values()
+                .filter_map(|computer| computer.last_seen.as_deref())
+                .filter_map(|seen| chrono::DateTime::parse_from_rfc3339(seen).ok())
+                .any(|seen| {
+                    chrono::Utc::now().signed_duration_since(seen).num_seconds()
+                        > STALE.as_secs() as i64
+                });
         for (path, vault) in &overview.vaults {
             if vault.available
                 && vault.state == "Up to date"
@@ -37,7 +47,8 @@ impl Health {
                 entry.0 = now;
             }
             entry.1 = vault.needed_bytes;
-            self.stale |= now.saturating_duration_since(entry.0) > STALE;
+            self.stale |= now.saturating_duration_since(entry.0) > STALE
+                || old_contact && !vault.shared_with.is_empty();
         }
     }
     pub(super) fn message(&self) -> Option<&'static str> {

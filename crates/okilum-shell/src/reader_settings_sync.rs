@@ -547,6 +547,15 @@ impl SyncSettings {
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
         self.health.observe(&output.overview, Instant::now());
+        if output.connection_error.is_none() {
+            // A successful recheck replaces the failed attempt, including its
+            // expanded diagnostic list. Never retain yesterday's REST errors.
+            self.presentation.error_details = None;
+            self.presentation.details = false;
+            self.presentation.retry = None;
+        } else {
+            self.health.failed();
+        }
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
             if self.presentation.notified != Some(pending.request_id) {
@@ -663,10 +672,11 @@ impl SyncSettings {
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
         let interval = match &self.snapshot {
-            Some(snapshot) => {
-                sync_refresh_interval(snapshot).or_else(|| self.serving.then_some(SERVE_RETRY))
-            }
-            None => self.serving.then_some(SERVE_RETRY),
+            Some(snapshot) => sync_refresh_interval(snapshot).or_else(|| {
+                (self.serving || self.error.is_some() || !snapshot.attached.is_empty())
+                    .then_some(SERVE_RETRY)
+            }),
+            None => (self.serving || self.error.is_some()).then_some(SERVE_RETRY),
         };
         let Some(interval) = interval else {
             return;

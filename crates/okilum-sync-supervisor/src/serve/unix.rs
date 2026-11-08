@@ -37,8 +37,12 @@ pub fn run<C: PeerCheck>(
     {
         RESTART.store(false, std::sync::atomic::Ordering::Relaxed);
         anyhow::ensure!(
-            unsafe { libc::signal(libc::SIGTERM, request_restart as libc::sighandler_t) }
-                != libc::SIG_ERR,
+            unsafe {
+                libc::signal(
+                    libc::SIGTERM,
+                    request_restart as *const () as libc::sighandler_t,
+                )
+            } != libc::SIG_ERR,
             "cannot install Sync shutdown handler"
         );
     }
