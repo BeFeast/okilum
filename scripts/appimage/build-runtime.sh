@@ -25,6 +25,12 @@ build() {
 if [[ $controls == --controls ]]; then
     build
     cp "$source_dir/out/runtime-x86_64" "$scratch/baseline-runtime"
+    # A cleanup-only mutation keeps upstream's shared extraction name. The
+    # overlap control must fail here before testing private launch lifetimes.
+    sed -i 's/nftw(path, \&rm_recursive_callback, 0,/nftw(path, \&rm_recursive_callback, 16,/' "$source_dir/src/runtime/runtime.c"
+    build
+    cp "$source_dir/out/runtime-x86_64" "$scratch/shared-runtime"
+    sed -i 's/nftw(path, \&rm_recursive_callback, 16,/nftw(path, \&rm_recursive_callback, 0,/' "$source_dir/src/runtime/runtime.c"
 fi
 git -C "$source_dir" apply "$root/scripts/appimage/runtime-per-user.diff"
 printf '%s\n' "$revision-okilum-per-user" > "$source_dir/src/runtime/version"
@@ -33,5 +39,6 @@ mkdir -p "$(dirname "$destination")"
 install -m755 "$source_dir/out/runtime-x86_64" "$destination"
 if [[ $controls == --controls ]]; then
     sudo python3 "$root/scripts/appimage/runtime-controls.py" \
-        --runtime "$destination" --baseline "$scratch/baseline-runtime"
+        --runtime "$destination" --baseline "$scratch/baseline-runtime" \
+        --shared-runtime "$scratch/shared-runtime"
 fi
