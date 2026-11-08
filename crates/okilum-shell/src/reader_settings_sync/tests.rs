@@ -287,7 +287,7 @@ fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Re
         Operation::EnterPairing,
         Operation::Begin("First Mac".into()),
     ] {
-        super::prepare_mac_runtime(&controller, &operation, |_| {
+        super::prepare_native_runtime(&controller, &operation, |_| {
             called.set(true);
             anyhow::bail!("macOS Sync approval required")
         })?;
@@ -299,7 +299,7 @@ fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Re
     let invitation =
         controller.begin_pairing_at("First Mac", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?;
     assert!(invitation.offer_url.is_some());
-    let error = super::prepare_mac_runtime(
+    let error = super::prepare_native_runtime(
         &controller,
         &Operation::Redeem("private-url".into(), "Mac".into()),
         |_| {
@@ -2399,12 +2399,12 @@ fn issue2489_mac_source_bootstrap_requires_the_explicit_share_action() -> anyhow
     let directory = tempfile::tempdir()?;
     let controller = Controller::open(directory.path().join("direct"), vec![])?;
     let fired = Cell::new(false);
-    super::prepare_mac_runtime(&controller, &Operation::Read, |_| {
+    super::prepare_native_runtime(&controller, &Operation::Read, |_| {
         fired.set(true);
         Ok(())
     })?;
     assert!(!fired.get(), "ordinary refresh cannot start a Mac helper");
-    let error = super::prepare_mac_runtime(
+    let error = super::prepare_native_runtime(
         &controller,
         &Operation::Share(directory.path().join("Notes")),
         |_| {

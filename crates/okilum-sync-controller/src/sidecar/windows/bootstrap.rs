@@ -217,7 +217,12 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
         );
         drop(transaction);
         if platform.inspect(&prepared.binding)? == Registration::Running {
-            return managed_source_identity(&state);
+            let identity = managed_source_identity(&state)?;
+            ensure!(
+                identity == prepared.identity,
+                "native ready identity changed"
+            );
+            return Ok(identity);
         }
         std::thread::sleep(Duration::from_millis(50));
     }

@@ -92,6 +92,7 @@ def main():
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     subprocess.run(["cargo", "test", "--locked", "-p", "okilum-sync-supervisor"], check=True)
     runpy.run_path(str(Path(__file__).with_name("windows-sync-task-check.py")))["check"](client, notices)
+    runpy.run_path(str(Path(__file__).with_name("windows-sync-shell-check.py")))["check"]()
     return 0
 
 if __name__ == "__main__":

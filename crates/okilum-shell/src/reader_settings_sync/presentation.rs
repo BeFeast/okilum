@@ -170,7 +170,7 @@ pub(super) fn last_seen(value: &str) -> String {
 }
 
 pub(super) fn notify_approval(name: &str) {
-    #[cfg(not(test))]
+    #[cfg(all(not(test), unix))]
     {
         use std::process::{Command, Stdio};
         let title = format!("{name} wants to connect");
@@ -194,7 +194,7 @@ pub(super) fn notify_approval(name: &str) {
             _ => {}
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, windows))]
     let _ = name;
 }
 
@@ -287,7 +287,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 stable_root_identity: None,
             }],
             shared: vec![],

@@ -56,7 +56,7 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn show_sync_pairing(window: &mut Window, cx: &mut App) {
     reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
     if reader_features::enabled(reader_features::Feature::Sync, cx) {
@@ -65,7 +65,7 @@ pub(crate) fn show_sync_pairing(window: &mut Window, cx: &mut App) {
     show_section_from(None, Some(Section::Sync), Some(window.window_handle()), cx);
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn share_sync_menu_item(
     reader: WeakEntity<Reader>,
 ) -> gpui_component::menu::PopupMenuItem {
@@ -479,7 +479,7 @@ enum Section {
     Updates,
     About,
     Inbox,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Sync,
 }
 impl Section {
@@ -501,7 +501,7 @@ impl Section {
             Self::Updates => "updates",
             Self::About => "about",
             Self::Inbox => "inbox",
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Sync => "sync",
         }
     }
@@ -516,7 +516,7 @@ impl Section {
             Some("logs") => Self::Logs,
             Some("updates") => Self::Updates,
             Some("inbox") => Self::Inbox,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Some("sync") => Self::Sync,
             _ => Self::About,
         }
@@ -534,7 +534,7 @@ impl Section {
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
             Self::About => Icon::new(IconName::Info),
             Self::Inbox => Icon::new(IconName::Inbox),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Sync => Icon::new(IconName::RotateCw),
         }
     }
@@ -550,7 +550,7 @@ impl Section {
             Self::Updates => "Updates",
             Self::About => "About",
             Self::Inbox => "Inbox",
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Sync => "Sync",
         }
     }
@@ -560,7 +560,7 @@ struct Settings {
     _vaults_changes: Option<Subscription>,
     content_scroll: ScrollHandle,
     t3: Option<Entity<reader_t3_settings::T3Settings>>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
     theme_picker: Entity<theme_picker::ThemePicker>,
@@ -612,7 +612,7 @@ impl Settings {
     }
 
     fn enable_section(&mut self, _section: Section, _cx: &mut Context<Self>) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if _section == Section::Sync {
             reader_features::set_enabled(reader_features::Feature::Sync, true, _cx);
             if !reader_features::enabled(reader_features::Feature::Sync, _cx) {
@@ -678,7 +678,7 @@ impl Settings {
         Self {
             _features: cx.observe_global::<reader_features::Features>(|this, cx| {
                 this.t3 = None;
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 {
                     this.sync = None;
                     if this.section == Section::Sync
@@ -698,7 +698,7 @@ impl Settings {
 
             t3: None,
             section: Section::remembered(cx),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             sync: None,
             theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
             font_picker: cx.new(|_| reader_fonts::Picker::default()),
@@ -1842,7 +1842,7 @@ impl Settings {
                         .into_any_element()
                 }
             }
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Section::Sync => div().size_full().children(self.sync.clone()).into_any_element(),
             Section::T3 => content.children(self.t3.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
@@ -1860,13 +1860,13 @@ impl Render for Settings {
         if !self.section.available(cx) {
             self.section = Section::Features;
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if self.section == Section::Sync
             && !reader_features::enabled(reader_features::Feature::Sync, cx)
         {
             self.section = Section::Features;
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if self.section == Section::Sync
             && reader_features::enabled(reader_features::Feature::Sync, cx)
             && self.sync.is_none()
@@ -2041,7 +2041,7 @@ impl Render for Settings {
                             Section::T3,
                             Section::Updates,
                             Section::Inbox,
-                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                             Section::Sync,
                             // Developer options sit low (#1355).
                             Section::Logs,
@@ -2126,12 +2126,12 @@ impl Render for Settings {
             )
             .child(content)
             .children({
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 {
                     (self.section != Section::Sync)
                         .then(|| reader_settings_sync::presentation::approval_banner(cx))
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
                     None::<AnyElement>
                 }
@@ -2275,7 +2275,7 @@ mod tests {
         visual.simulate_resize(size(px(820.), px(650.)));
         visual.run_until_parked();
         assert!(visual.debug_bounds("settings-section-T3").is_none());
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         assert!(visual.debug_bounds("settings-section-Sync").is_some());
         for feature in Feature::ALL
             .into_iter()
@@ -2298,7 +2298,7 @@ mod tests {
             });
         }
         assert!(visual.debug_bounds("settings-section-T3").is_some());
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         assert!(visual.debug_bounds("settings-section-Sync").is_some());
         let toggle = visual.debug_bounds("settings-feature-agents").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());

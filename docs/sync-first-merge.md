@@ -176,3 +176,24 @@ another identity. Signed helper/runtime and MPL provenance are retained outside
 updater `current`. The native preparation control runs the real pinned generator
 under isolated USERPROFILE/LOCALAPPDATA. Task/Connect and Settings composition
 remain pending; preparation code alone does not enable the Windows user flow.
+
+
+Windows Settings now uses the same layout-A review and first-merge controller.
+Invitation creation remains independent of runtime startup. Explicit Share or a
+first receive connects the signed installed payload through offline preparation
+and the native Task Scheduler adapter. Portable distributions surface the missing
+helper instead of starting another runtime. The existing account-local Sync and
+SyncDirect paths remain the identity locations; no journal is migrated into the
+rebuildable index. Windows does not expose the Unix-only `okilum sync` CLI/control
+socket. Its running desktop owns the private direct-controller lock.
+
+The native signed-task control uses only a fresh GitHub-hosted Windows account.
+A temporary fixture certificate exercises the production Authenticode policy;
+it does not enable same-user development trust or access release signing. The
+control leaves the actual scheduled helper running while its source package is
+removed, then checks the same generation, certificate/key hashes and paired
+journal identity through a newly located signed app. Stop captures the exact
+server process object from its authenticated pipe before the request, requires
+complete owned-Job shutdown, and waits for that process's kernel exit. Re-enable
+must preserve identities and produce a fresh generation. These are acceptance
+controls, not a statement that Windows beta delivery has occurred.

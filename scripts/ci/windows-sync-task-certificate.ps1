@@ -7,6 +7,12 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'Native signing fixtures run only on a disposable hosted Windows runner'
 }
+# This is launched from pwsh by Python into Windows PowerShell. Load its own
+# security provider explicitly rather than inheriting pwsh's module search path.
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -Force
+if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' | Out-Null
+}
 if ($Action -eq 'create') {
     if (Test-Path -LiteralPath $Metadata) { throw 'Fixture certificate metadata already exists' }
     $id = [Guid]::NewGuid().ToString('N')

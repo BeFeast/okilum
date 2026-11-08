@@ -118,6 +118,7 @@ pub(super) fn suspend(cx: &mut App) {
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
+            #[cfg(unix)]
             control::app_released();
             view.snapshot = None;
             view.inspected = None;
@@ -466,7 +467,7 @@ impl SyncSettings {
                         }
                         let result = perform_scoped(controller, operation, &worker_epoch);
                         // #2589: while the app owns Sync, `okilum sync` runs through it.
-                        #[cfg(not(test))]
+                        #[cfg(all(not(test), unix))]
                         if let Ok(output) = &result {
                             if worker_epoch.is_current() {
                                 control::app_owns(&output.controller);
@@ -887,8 +888,19 @@ fn state_location() -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let state =
         mac_direct_state(&okilum_sync_controller::sidecar::macos::active_state_directory()?)?;
+    #[cfg(windows)]
+    let state = {
+        let managed =
+            okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?;
+        let parent = managed
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?;
+        std::fs::create_dir_all(parent)?;
+        parent.join("SyncDirect")
+    };
     Ok(state)
 }
+#[cfg(unix)]
 fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     match std::fs::symlink_metadata(path) {
@@ -1005,8 +1017,8 @@ fn perform_with_locations(
             controller: controller.clone(),
         };
         guard.check()?;
-        #[cfg(target_os = "macos")]
-        prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
+        #[cfg(any(target_os = "macos", windows))]
+        prepare_native_runtime(&controller, &operation, connect_managed_runtime)?;
         let first_sync_recovery_read =
             matches!(&operation, Operation::Read | Operation::EnterPairing)
                 && !controller.pending_first_sync()?.is_empty();
@@ -1094,7 +1106,7 @@ fn perform_with_locations(
             }
             controller.set_configurations(runtime.configs.clone())?;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Operation::AttachNew(_, _, path) = &operation {
             guard.check()?;
             destination::prepare(path)?;
@@ -1164,6 +1176,9 @@ fn perform_with_locations(
                     .join("managed/prepared");
                 #[cfg(target_os = "macos")]
                 let prepared = okilum_sync_controller::sidecar::macos::active_state_directory()?;
+                #[cfg(windows)]
+                let prepared =
+                    okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?;
                 controller.share_vault(&prepared, &path).with_context(|| {
                     format!(
                         "share vault {} using {}",
@@ -1214,7 +1229,7 @@ fn perform_with_locations(
             overview: controller.overview().unwrap_or_default(),
             #[cfg(target_os = "linux")]
             connection_error: linux_runtime::connection_error(&runtime),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             connection_error: None,
             controller,
             snapshot,
@@ -1229,7 +1244,7 @@ fn perform_with_locations(
                     .and_then(Path::parent)
                     .ok_or_else(|| anyhow::anyhow!("Sync profile unavailable"))?,
             )?,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             vaults: vec![],
         })
     })?
@@ -1274,6 +1289,11 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
             anyhow::bail!("macOS Sync approval required; Connect again after approval")
         }
     }
+}
+#[cfg(windows)]
+fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    let identity = okilum_sync_controller::sidecar::windows::bootstrap::connect_current_app(true)?;
+    controller.set_configurations(vec![identity.config_file])
 }
 fn user_error(error: &anyhow::Error) -> String {
     #[cfg(target_os = "linux")]
@@ -1322,8 +1342,8 @@ fn user_error(error: &anyhow::Error) -> String {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn prepare_mac_runtime(
+#[cfg(any(target_os = "macos", windows, test))]
+fn prepare_native_runtime(
     controller: &Controller,
     operation: &Operation,
     connect: impl FnOnce(&Controller) -> anyhow::Result<()>,
@@ -1332,6 +1352,17 @@ fn prepare_mac_runtime(
     // Opening Settings and Add computer must not depend on SMAppService approval,
     // global process inventory, signing checks or the bounded runtime startup.
     if matches!(operation, Operation::Share(_)) {
+        #[cfg(windows)]
+        {
+            let configs = controller.configuration_paths()?;
+            let managed = okilum_sync_controller::sidecar::discovery::managed_configuration_path(
+                &okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()?,
+            )?;
+            anyhow::ensure!(
+                configs.is_empty() || (configs.len() == 1 && managed.as_ref() == configs.first()),
+                "Use Choose existing synced vault for an external Windows Sync connection"
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             let configs = controller.configuration_paths()?;
@@ -1368,14 +1399,16 @@ use failure::failure_details;
 #[path = "reader_settings_sync/presentation.rs"]
 pub(super) mod presentation;
 
+#[cfg(unix)]
 #[path = "reader_settings_sync/cli.rs"]
 pub(crate) mod cli;
+#[cfg(unix)]
 #[path = "reader_settings_sync/control.rs"]
 mod control;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
 mod first_sync;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "reader_settings_sync/tests.rs"]
 mod tests;
 #[path = "reader_settings_sync/view.rs"]
