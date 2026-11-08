@@ -1175,7 +1175,8 @@ fn perform_with_locations(
             Operation::Restart => controller.refresh()?,
             Operation::Read | Operation::EnterPairing => {
                 #[cfg(all(target_os = "macos", not(test)))]
-                let observed = health::check_managed().and_then(|()| controller.refresh());
+                let observed = health::check_managed_with_recovery(|| guard.check())
+                    .and_then(|()| controller.refresh());
                 #[cfg(not(all(target_os = "macos", not(test))))]
                 let observed = controller.refresh();
                 match observed {

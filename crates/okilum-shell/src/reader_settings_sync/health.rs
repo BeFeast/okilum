@@ -118,23 +118,34 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
     if !managed_enabled() {
         return Ok(());
     }
+    inspect_managed()
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(super) fn check_managed_with_recovery(
+    check: impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     // Sparkle can unlink the previous bundle while its signed helper remains
     // alive. Reuse the existing guarded restart once per app process; never
     // rebind replica witnesses or treat a restart request as healthy Sync.
     static RECOVERY_REQUESTED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
-    recover_managed_once(inspect_managed(), &RECOVERY_REQUESTED, restart_managed)
+    recover_managed_once(check_managed(), &RECOVERY_REQUESTED, &check, || {
+        restart_managed_guarded(&check)
+    })
 }
 
 #[cfg(any(test, target_os = "macos"))]
 fn recover_managed_once(
     observed: anyhow::Result<()>,
     requested: &std::sync::atomic::AtomicBool,
+    check_request: impl FnOnce() -> anyhow::Result<()>,
     restart: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let Err(error) = observed else {
         return Ok(());
     };
+    check_request()?;
     if !requested.swap(true, std::sync::atomic::Ordering::SeqCst) {
         use anyhow::Context as _;
         restart().context("Could not restart the managed Sync helper")?;
@@ -224,6 +235,12 @@ pub(super) fn repair_or_restart(controller: &Controller) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub(super) fn restart_managed() -> anyhow::Result<()> {
+    restart_managed_guarded(|| Ok(()))
+}
+
+#[cfg(target_os = "macos")]
+fn restart_managed_guarded(check: impl Fn() -> anyhow::Result<()>) -> anyhow::Result<()> {
+    check()?;
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::{
@@ -267,6 +284,19 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
         NativeSignature,
     )?;
     bundle.verify(&binding)?;
+    let revalidate = || -> anyhow::Result<()> {
+        check()?;
+        let tx = store.begin(Instant::now() + Duration::from_secs(2))?;
+        let saved = tx.current()?.context("Sync journal unavailable")?;
+        anyhow::ensure!(
+            saved.binding() == &binding
+                && saved.intent() == Intent::Enabled
+                && saved.stop().is_none()
+                && saved.update().is_none(),
+            "Sync ownership or lifecycle changed before helper recovery"
+        );
+        Ok(())
+    };
     // Older installed helpers have no SIGTERM cleanup. Stop only the
     // authenticated account runtime before replacing that helper, so its
     // surviving child cannot permanently block the new supervisor lease.
@@ -275,20 +305,21 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
     {
         let discovered = okilum_sync_controller::daemon::discover(&[config]);
         for candidate in discovered.candidates {
-            candidate
-                .identity
-                .connect()?
-                .shutdown(&binding.device_identity)?;
+            let client = candidate.identity.connect()?;
+            revalidate()?;
+            client.shutdown(&binding.device_identity)?;
         }
     }
     let target = format!("gui/{}/com.befeast.okilum.sync", binding.owner);
     // TERM lets the new helper flush its owned tree. -k would SIGKILL it and
     // leave an orphan runtime, which the lifetime lease correctly refuses.
+    revalidate()?;
     let stopped = bounded_request(
         std::process::Command::new("/bin/launchctl").args(["kill", "SIGTERM", &target]),
         Duration::from_secs(5),
     )?;
     if stopped == Some(false) {
+        revalidate()?;
         let started = bounded_request(
             std::process::Command::new("/bin/launchctl").args(["kickstart", &target]),
             Duration::from_secs(5),
@@ -341,6 +372,7 @@ mod tests {
             let result = recover_managed_once(
                 Err(anyhow::anyhow!("Sync helper is not responding")),
                 &requested,
+                || Ok(()),
                 || {
                     requests.set(requests.get() + 1);
                     Ok(())
@@ -356,9 +388,12 @@ mod tests {
             1,
             "a stale helper needs one bounded recovery request"
         );
-        recover_managed_once(Ok(()), &requested, || {
-            panic!("authenticated recovery must not restart the healthy helper")
-        })
+        recover_managed_once(
+            Ok(()),
+            &requested,
+            || Ok(()),
+            || panic!("authenticated recovery must not restart the healthy helper"),
+        )
         .unwrap();
         assert_eq!(requests.get(), 1);
     }
@@ -367,10 +402,33 @@ mod tests {
     fn healthy_managed_sync_does_not_consume_recovery_or_restart() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let requested = AtomicBool::new(false);
-        recover_managed_once(Ok(()), &requested, || {
-            panic!("healthy Sync must stay running")
-        })
+        recover_managed_once(
+            Ok(()),
+            &requested,
+            || Ok(()),
+            || panic!("healthy Sync must stay running"),
+        )
         .unwrap();
+        assert!(!requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn revoked_managed_recovery_ticket_has_no_effect_and_preserves_retry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let epoch = Epoch::default();
+        let ticket = epoch.ticket();
+        epoch.invalidate();
+        let requested = AtomicBool::new(false);
+        let result = recover_managed_once(
+            Err(anyhow::anyhow!("helper unavailable")),
+            &requested,
+            || {
+                ticket.check()?;
+                Ok(())
+            },
+            || panic!("a revoked worker must not restart Sync"),
+        );
+        assert!(result.unwrap_err().to_string().contains("superseded"));
         assert!(!requested.load(Ordering::SeqCst));
     }
 
@@ -381,6 +439,7 @@ mod tests {
         let result = recover_managed_once(
             Err(anyhow::anyhow!("helper unavailable")),
             &requested,
+            || Ok(()),
             || anyhow::bail!("bundle ownership could not be verified"),
         );
         let text = format!("{:#}", result.unwrap_err());
@@ -388,6 +447,7 @@ mod tests {
         assert!(recover_managed_once(
             Err(anyhow::anyhow!("helper unavailable")),
             &requested,
+            || Ok(()),
             || panic!("refused ownership cannot cause a restart loop")
         )
         .is_err());
