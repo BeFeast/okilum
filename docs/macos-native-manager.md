@@ -47,6 +47,19 @@ Warm reopening records retained-client reuse and explicitly null unobserved
 phases; it does not claim physical socket reuse. See
 [stream timing](manager-stream-transport.md) for phase definitions.
 
+Reader panel visibility owns this measurement separately from project
+selection activation (#2693). Hiding the retained Manager cancels its pending
+paint probe immediately; reopening invalidates the cached feed and starts a
+fresh measurement. Empty feeds, stale callbacks and repeated redraws cannot
+produce a successful new event.
+
+Expanded connection Details shares a bounded scroll region with connection
+and pairing controls (#2694). It reserves at most 40% of the Manager body's
+height and shares remaining space with the transcript after the composer.
+It clips wrapped diagnostic content and leaves the transcript and
+composer in separate layout regions. Expanding or collapsing Details does
+not replace the retained feed, draft, native client or binding.
+
 Compare Mac/Linux on the same committed source, and before/after on the same
 machine in the same session. Hosted GPUI timings are regression evidence,
 not the installed Mac's time-to-first-message. A build or green CI alone is

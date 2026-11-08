@@ -122,6 +122,12 @@ Job credentials have `contents: read` only, checkout does not persist credential
 and no repository/organization secrets or private cache services are referenced.
 Concurrent checks of a branch cancel the older run.
 
+The Linux Sync fixture archive and Manager panel native gate's Sparkle archive
+can fall back from a failed GitHub release download to the same release's
+official asset API. Both paths must match the existing locked SHA256 before
+staging; an incorrect checksum, API metadata response or missing primary URL
+never becomes a passing dependency. This changes only CI archive transport.
+
 The helper blocks on **this SHA, workflow, branch and event**, prints the run URL,
 per-step timestamps/conclusions and the last 100 failed log lines. Exit codes:
 `0` pass, `1` code/check failure, `75` no verdict (API/auth, cancellation, timeout,

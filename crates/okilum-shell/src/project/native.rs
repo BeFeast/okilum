@@ -60,6 +60,12 @@ impl Native {
     pub(super) fn set_detail_test_client(&mut self, client: Arc<NativeClient>) {
         self.client = Some(client);
     }
+    #[cfg(test)]
+    pub(super) fn set_panel_test_ready(&mut self) {
+        self.stream_ready = true;
+        self.ever_ready = true;
+        self.phase = ConnectionPhase::Connected;
+    }
     pub(super) fn new(window: &mut Window, cx: &mut Context<ProjectView>) -> Self {
         let parent = cx.entity().downgrade();
         let actions = cx.new(|_| actions::Actions::new(parent));
@@ -729,8 +735,19 @@ impl ProjectView {
             .actions
             .update(cx, |a, cx| a.set_enabled(enabled, cx));
         let mut view = v_flex()
+            .id("project-connection-panel")
+            .debug_selector(|| "project-connection-panel".into())
             .w_full()
             .min_w_0()
+            // Share the space left after the composer with history, with a 40%
+            // ceiling. A nonshrinking region can exhaust a short window.
+            // Overflow clipping keeps the full detail content inside its box.
+            .when(self.connection_details, |view| {
+                view.flex_1()
+                    .min_h_0()
+                    .max_h(relative(0.4))
+                    .overflow_y_scroll()
+            })
             .gap_2()
             .child(self.render_manager_onboarding(window, cx));
         if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
