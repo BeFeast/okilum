@@ -2,6 +2,7 @@
 use super::*;
 use rustix::fs::{open, openat, Dir, FileType, Mode, OFlags};
 use std::{fs::Metadata, io::Read, os::unix::fs::MetadataExt, path::Component};
+pub(super) type Root = File;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct Stamp {
@@ -56,6 +57,11 @@ pub(super) fn identity(root: &File) -> Result<(u64, u64)> {
     let m = root.metadata()?;
     Ok((m.dev(), m.ino()))
 }
+pub(super) fn stable_identity(
+    root: &Root,
+) -> Result<okilum_write_authority::filesystem_identity::Identity> {
+    okilum_write_authority::filesystem_identity::from_file(root)
+}
 pub(super) fn verify_root(root: &File, path: &Path) -> Result<()> {
     let current = open_root(path)?;
     ensure!(
@@ -77,13 +83,15 @@ pub(super) fn validate_path(path: &str) -> Result<()> {
     );
     Ok(())
 }
-fn excluded(path: &str) -> bool {
+pub(super) fn excluded(path: &str) -> bool {
     path == "worktrees"
         || path == ".claude/worktrees"
         || matches!(path, ".stfolder" | ".stversions" | ".stignore")
-        || path
-            .split('/')
-            .any(|p| p == ".okilum-index" || p.starts_with(".okilum-save-"))
+        || path.split('/').any(|p| {
+            p == ".okilum-index"
+                || p.starts_with(".okilum-save-")
+                || p.starts_with(".okilum-create-")
+        })
 }
 /// This slice deliberately refuses custom glob/include/negation policies rather
 /// than approximating Syncthing's matcher and exposing excluded user content.

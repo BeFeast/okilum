@@ -254,6 +254,26 @@ class FixtureStagingTests(unittest.TestCase):
         self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
         self.assertEqual(list(self.cache.rglob('.stage-*')), [])
 
+    def test_cdn_failure_uses_same_pinned_official_asset(self):
+        (self.cache / helper.ARCHIVE).unlink()
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[
+            urllib.error.URLError('CDN unavailable'), io.BytesIO(self.archive),
+        ]) as download:
+            binary = helper.stage(self.cache)
+        self.assertEqual(binary.read_bytes(), self.executable)
+        self.assertEqual(download.call_args_list[1].args[0].full_url, helper.ASSET_API_URL)
+        self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
+
+    def test_api_fallback_still_refuses_unpinned_bytes(self):
+        (self.cache / helper.ARCHIVE).unlink()
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[
+            urllib.error.URLError('CDN unavailable'), io.BytesIO(b'wrong asset'),
+        ]):
+            with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+                helper.stage(self.cache)
+        self.assertFalse((self.cache / helper.ARCHIVE).exists())
+        self.assertFalse((self.cache / helper.BINARY_SHA256).exists())
+
     def test_corrupt_archive_is_rejected_before_publication(self):
         (self.cache / helper.ARCHIVE).write_bytes(b'incomplete download')
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):

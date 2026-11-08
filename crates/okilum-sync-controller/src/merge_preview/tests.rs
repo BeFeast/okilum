@@ -1014,3 +1014,45 @@ mod completion_ownership_regressions {
         assert!(receive.try_recv().unwrap().returned());
     }
 }
+
+#[test]
+fn conflict_copies_keep_extensions_and_avoid_both_sides_reserved_paths() {
+    let plan = Plan::preview(
+        snapshot(
+            "here",
+            &[
+                ("folder/note.md", b"local"),
+                (
+                    "folder/note.okilum-first-sync-conflict-1.md",
+                    b"reserved local",
+                ),
+            ],
+        ),
+        snapshot(
+            "there",
+            &[
+                ("folder/note.md", b"remote"),
+                (
+                    "folder/note.okilum-first-sync-conflict-2.md/child",
+                    b"reserved subtree",
+                ),
+            ],
+        ),
+    )
+    .unwrap();
+    let copy = plan
+        .entries()
+        .iter()
+        .find(|entry| entry.path == "folder/note.md")
+        .unwrap()
+        .conflict_path
+        .as_deref()
+        .unwrap();
+    assert_eq!(copy, "folder/note.okilum-first-sync-conflict-3.md");
+    assert_eq!(plan.merged_files()[copy], b"remote");
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        crate::conflicts::canonical_path(std::path::Path::new(copy)),
+        Some(std::path::PathBuf::from("folder/note.md"))
+    );
+}

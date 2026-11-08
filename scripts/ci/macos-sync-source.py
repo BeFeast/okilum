@@ -45,9 +45,16 @@ def main():
         raise RuntimeError("native Mac Sync controls require macOS")
     health_negative_controls()
     for package, target, selected in (
+        ("okilum-sync-supervisor", "--lib", "args::tests::"),
+        ("okilum-sync-supervisor", "--lib", "serve::unix::tests::"),
+        ("okilum-sync-controller", "--lib", "direct::source::tests::"),
+        ("okilum-sync-controller", "--lib", "direct::inventory::tests::"),
+        ("okilum-sync-controller", "--lib", "managed_launch::macos::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::macos::isolation::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::macos::bootstrap::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::authority::launch::tests::"),
         ("okilum-sync", "--lib", "tests::issue2752_"),
         ("okilum-write-authority", "--lib", "identity_macos_tests::"),
-        ("okilum-sync-controller", "--lib", "direct::source::tests::"),
         ("okilum-sync-controller", "--lib", "direct::overview::tests::"),
         ("okilum-sync-controller", "--lib", "direct::existing::tests::issue2752_"),
         ("okilum-sync-controller", "--lib", "direct::transfer::tests::issue2752_"),
@@ -56,9 +63,9 @@ def main():
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::lease::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::store::tests::launch_authority::"),
-        ("okilum-sync-supervisor", "--lib", "args::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::health::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::tests::"),
+        ("okilum-shell", "--bin=okilum", "reader_settings_sync::first_sync::tests::"),
         # #2708: compile AppKit bindings and execute normal/zoom/fullscreen controls.
         ("okilum-shell", "--bin=okilum", "window_state::"),
     ):

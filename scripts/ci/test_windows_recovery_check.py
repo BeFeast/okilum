@@ -23,7 +23,7 @@ class WindowsRecoveryCheckTests(unittest.TestCase):
     def test_discovered_regression_runs_and_propagates_failure(self):
         for result in (0, 101):
             listing = subprocess.CompletedProcess([], 0,
-                check.REGRESSION + ": test\n" + check.PARENT_REGRESSION + ": test\n")
+                check.REGRESSION + ": test\n" + check.PARENT_REGRESSION + ": test\n" + check.SYNC_REGRESSION + ": test\n")
             with patch.object(check.subprocess, "run", side_effect=[
                     listing, subprocess.CompletedProcess([], result)]) as run:
                 self.assertEqual(check.main(), result)

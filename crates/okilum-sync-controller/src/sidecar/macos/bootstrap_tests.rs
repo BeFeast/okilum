@@ -116,3 +116,65 @@ fn no_opt_in_cannot_reach_inventory_state_or_bundle() {
     let error = connect_current_app(false, policy, ConnectBudget::CONNECT).unwrap_err();
     assert!(error.to_string().contains("explicit Connect consent"));
 }
+
+#[test]
+fn native_launch_preparation_preserves_existing_identity_and_never_repairs_a_lost_registry(
+) -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().canonicalize()?;
+    let (source, digest) = fixture(&root)?;
+    let state = state(&root, "existing")?;
+    let identity = prepare_payload(
+        &state,
+        &source,
+        &digest,
+        b"fixture provenance",
+        Instant::now() + Duration::from_secs(5),
+    )?;
+    let vault = root.join("existing-vault");
+    fs::create_dir(&vault)?;
+    fs::write(vault.join("kept.bin"), [0, 255, 42])?;
+    let config = state.join("config/config.xml");
+    let mut xml = xmltree::Element::parse(private::read(&config)?.as_slice())?;
+    let mut folder = xmltree::Element::new("folder");
+    folder
+        .attributes
+        .insert("id".into(), "existing-folder-id".into());
+    folder
+        .attributes
+        .insert("path".into(), vault.to_str().unwrap().into());
+    xml.children.push(xmltree::XMLNode::Element(folder));
+    let mut bytes = vec![];
+    xml.write(&mut bytes)?;
+    private::write(&config, &bytes)?;
+    let certificate = fs::read(state.join("config/cert.pem"))?;
+    let secret = fs::read(state.join("config/key.pem"))?;
+    let instance = crate::managed_launch::ManagedInstance {
+        home: state.join("config"),
+        executable: UnixStore::open_existing(&state)?
+            .read_selection(Instant::now() + Duration::from_secs(5))?
+            .unwrap()
+            .verify_file(&state)?,
+    };
+    pin_launch_reference(&state, &instance)?;
+    let pinned = managed_launch_reference(&state)?.context("launch reference was not persisted")?;
+    pin_launch_reference(&state, &instance)?;
+    assert_eq!(managed_launch_reference(&state)?, Some(pinned));
+    assert_eq!(fs::read(&config)?, bytes);
+    assert_eq!(fs::read(state.join("config/cert.pem"))?, certificate);
+    assert_eq!(fs::read(state.join("config/key.pem"))?, secret);
+    assert_eq!(fs::read(vault.join("kept.bin"))?, [0, 255, 42]);
+    identity.verify_local()?;
+    fs::rename(
+        state.join("managed-launch"),
+        state.join("retained-registry"),
+    )?;
+    assert!(managed_launch_reference(&state).is_err());
+    assert!(pin_launch_reference(&state, &instance).is_err());
+    assert!(
+        !state.join("managed-launch").exists(),
+        "lost authority must never be regenerated"
+    );
+    assert_eq!(fs::read(&config)?, bytes);
+    Ok(())
+}

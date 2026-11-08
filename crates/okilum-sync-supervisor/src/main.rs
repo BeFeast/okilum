@@ -76,6 +76,25 @@ mod unix_main {
             None => default_state_directory()?,
         };
         let own = std::env::current_exe().context("cannot resolve this executable")?;
+        #[cfg(all(target_os = "macos", not(feature = "dev-same-user")))]
+        if state != default_state_directory()? {
+            use okilum_sync_controller::sidecar::macos::isolation;
+            anyhow::ensure!(
+                args.state.is_some() && args.instance.is_some(),
+                "QA helper requires explicit state and instance"
+            );
+            let policy = okilum_sync_supervisor::policy::build_policy()?
+                .context("QA helper requires the production signing policy")?;
+            let app = own
+                .parent()
+                .context("helper directory missing")?
+                .join(policy.app_executable);
+            isolation::select(isolation::authorize_helper(
+                &state,
+                &app,
+                policy.app_requirement,
+            )?)?;
+        }
         let store = UnixStore::open_existing(&state)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         match startup::prepare(&store, &state, args.instance, &own, deadline)? {
@@ -88,7 +107,9 @@ mod unix_main {
                 #[cfg(all(target_os = "macos", not(feature = "dev-same-user")))]
                 anyhow::ensure!(
                     std::fs::canonicalize(&state)?
-                        == std::fs::canonicalize(default_state_directory()?)?,
+                        == std::fs::canonicalize(
+                            okilum_sync_controller::sidecar::macos::active_state_directory()?
+                        )?,
                     "recovery pending: production Sync requires the account state directory"
                 );
                 let exit = serve::run(
@@ -164,8 +185,22 @@ mod windows_main {
         }
         #[cfg(not(feature = "dev-same-user"))]
         {
-            anyhow::bail!("no signature policy is configured in this build; refusing to serve")
+            Ok(Arc::new(okilum_sync_controller::sidecar::windows::signature::AuthenticodePolicy::from_build()?))
         }
+    }
+
+    pub fn record_failure(error: &anyhow::Error) {
+        let _ = (|| -> Result<()> {
+            let args = args::parse(std::env::args_os().skip(1))?;
+            let state = args.state.context("Windows state unavailable")?;
+            let store = WindowsStore::open_existing(
+                state.to_str().context("Windows state is not Unicode")?,
+            )?;
+            store.write_supervisor_failure(
+                &format!("{error:#}"),
+                Instant::now() + Duration::from_secs(2),
+            )
+        })();
     }
 
     pub fn main() -> Result<ExitCode> {
@@ -178,6 +213,13 @@ mod windows_main {
         let state_text = state
             .to_str()
             .context("the state path must be valid UTF-8")?;
+        // Task Scheduler retains the historical state WorkingDirectory. Windows
+        // holds a read/traverse handle for the process CWD, which conflicts with
+        // the store's directory-exclusive transaction. Release only that CWD
+        // handle; all runtime/configuration paths remain explicit and absolute.
+        // Keeping the task definition intact preserves existing registrations.
+        std::env::set_current_dir(own.parent().context("helper directory missing")?)
+            .context("release inherited state working directory")?;
         let store = WindowsStore::open_existing(state_text)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         match startup::prepare(&store, &state, args.instance, &own, deadline)? {
@@ -207,6 +249,7 @@ fn main() -> std::process::ExitCode {
     match windows_main::main() {
         Ok(code) => code,
         Err(error) => {
+            windows_main::record_failure(&error);
             eprintln!("okilum-sync-supervisor: {error:#}");
             std::process::ExitCode::from(1)
         }

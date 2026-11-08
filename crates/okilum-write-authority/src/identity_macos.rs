@@ -30,7 +30,7 @@ impl Identity {
     }
 }
 
-pub(super) fn read(path: &Path) -> Result<Identity> {
+pub fn read(path: &Path) -> Result<Identity> {
     let handle = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -38,7 +38,7 @@ pub(super) fn read(path: &Path) -> Result<Identity> {
     from_file(&handle)
 }
 
-/// Stable persisted identity read from the caller's held no-follow descriptor.
+/// Stable APFS identity from the same already-open no-follow handle.
 pub fn from_file(handle: &File) -> Result<Identity> {
     let meta = handle.metadata()?;
     // Darwin attribute buffers have a four-byte length followed by the requested

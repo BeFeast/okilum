@@ -68,7 +68,8 @@ pub(crate) fn write(path: &Path, data: &[u8]) -> Result<()> {
     File::open(parent)?.sync_all()?;
     Ok(())
 }
-pub(crate) fn lock(path: &Path) -> Result<File> {
+pub(crate) type Lock = File;
+pub(crate) fn lock(path: &Path) -> Result<Lock> {
     directory(path)?;
     let f = OpenOptions::new()
         .write(true)

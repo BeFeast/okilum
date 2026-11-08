@@ -2,7 +2,9 @@
 //! never acquire write authority here. The durable intent survives lost replies.
 use super::*;
 use serde_json::{json, Value};
-use std::{fs::File, io::Read, os::unix::fs::MetadataExt};
+use std::io::Read;
+#[cfg(unix)]
+use std::{fs::File, os::unix::fs::MetadataExt};
 
 pub(super) const STAGING: &str = ".okilum-create-*";
 const OLD: &[&str] = &[
@@ -36,6 +38,7 @@ pub(super) fn lines() -> Vec<String> {
 fn generated(patterns: &[String]) -> Vec<u8> {
     format!("{}\n", patterns.join("\n")).into_bytes()
 }
+#[cfg(unix)]
 fn read(root: &Path, identity: (u64, u64)) -> Result<Vec<u8>> {
     let fd = rustix::fs::open(
         root,
@@ -71,6 +74,29 @@ fn read(root: &Path, identity: (u64, u64)) -> Result<Vec<u8>> {
         current.is_dir() && (current.dev(), current.ino()) == identity,
         "Ignore policy vault moved"
     );
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn read(root: &Path, identity: (u64, u64)) -> Result<Vec<u8>> {
+    let held = existing::VaultRoot::open(root)?;
+    ensure!(
+        held.identity()? == identity,
+        "Ignore policy vault identity changed"
+    );
+    let directory = okilum_core::windows_files::Directory::open(root)?;
+    let file = directory.open_file(std::ffi::OsStr::new(".stignore"))?;
+    ensure!(
+        file.metadata()?.len() <= 65536,
+        "Ignore policy exceeds the migration limit"
+    );
+    let mut bytes = vec![];
+    file.take(65537).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 65536,
+        "Ignore policy exceeds the migration limit"
+    );
+    held.verify(root)?;
     Ok(bytes)
 }
 

@@ -89,6 +89,15 @@ impl Syncthing {
     pub fn config(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/config", None)
     }
+    /// Nonblocking bounded event history from the authenticated runtime. The
+    /// caller binds cursors to the runtime generation and rejects missing proof.
+    pub fn folder_pause_events(&self, since: u64) -> Result<Value> {
+        self.request(
+            Method::GET,
+            &format!("/rest/events?events=FolderPaused&since={since}&limit=256&timeout=0"),
+            None,
+        )
+    }
     /// Update transport options only and verify the authenticated runtime's reply.
     pub fn patch_options(&self, changes: &Value) -> Result<Value> {
         self.request(Method::PATCH, "/rest/config/options", Some(changes))?;

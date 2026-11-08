@@ -7,12 +7,11 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
-import sys
+import subprocess
 import tarfile
 import tempfile
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pinned_download import fetch
+import urllib.error
+import urllib.request
 
 LOCK = json.loads(Path(__file__).with_name('sparkle-lock.json').read_text())
 # Leaf code first, then containing framework. No --deep signing.
@@ -117,6 +116,31 @@ def prepare(archive, destination):
             shutil.rmtree(stage)
 
 
+def fetch(archive):
+    # Both official routes identify the same pinned release asset. A failed
+    # network fetch or checksum never publishes a destination archive.
+    try:
+        with urllib.request.urlopen(LOCK['url'], timeout=60) as response:
+            data = response.read()
+    except urllib.error.URLError:
+        token = os.environ.get('GITHUB_TOKEN')
+        if token:
+            # The runner's short-lived read-only token avoids shared-IP API rate
+            # limits. gh strips credentials on the cross-host asset redirect.
+            data = subprocess.check_output([
+                'gh', 'api', '--header', 'Accept: application/octet-stream', LOCK['asset_api_url'],
+            ], env=dict(os.environ, GH_TOKEN=token), timeout=60)
+        else:
+            request = urllib.request.Request(LOCK['asset_api_url'], headers={
+                'Accept': 'application/octet-stream',
+            })
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = response.read()
+    require(sha(data) == LOCK['archive_sha256'], 'Sparkle download SHA256 mismatch')
+    with archive.open('xb') as output:
+        output.write(data)
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='command', required=True)
@@ -127,8 +151,7 @@ if __name__ == '__main__':
     a = sub.add_parser('fetch'); a.add_argument('archive', type=Path)
     args = p.parse_args()
     if args.command == 'fetch':
-        # Exact upstream URL and digest; a failed fetch never creates the destination.
-        fetch(LOCK['url'], LOCK['archive_sha256'], args.archive, LOCK['asset_api_url'])
+        fetch(args.archive)
     elif args.command == 'prepare':
         prepare(args.archive, args.destination)
     else:

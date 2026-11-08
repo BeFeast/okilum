@@ -5,13 +5,14 @@ import subprocess
 
 REGRESSION = "file_editor::windows_editor_tests::windows_editor_unacknowledged_commit_retains_history_and_draft"
 PARENT_REGRESSION = "windows_editor_changed_parent_keeps_the_latest_queued_draft"
+SYNC_REGRESSION = "windows_files::tests::windows_sync_create_preserving_keeps_captured_bytes_dacl_and_a_racing_destination"
 
 
 def main():
     command = ["cargo", "test", "--locked", "-p", "okilum-core", "--tests", "windows_"]
     listing = subprocess.run(command + ["--", "--list"], text=True,
                              stdout=subprocess.PIPE, check=True).stdout
-    for regression in (REGRESSION, PARENT_REGRESSION):
+    for regression in (REGRESSION, PARENT_REGRESSION, SYNC_REGRESSION):
         if f"{regression}: test" not in listing.splitlines():
             raise RuntimeError(f"Windows regression did not compile/discover: {regression}")
     return subprocess.run(command + ["--", "--nocapture", "--test-threads=1"],

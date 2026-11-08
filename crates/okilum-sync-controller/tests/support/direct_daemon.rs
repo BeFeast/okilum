@@ -1,6 +1,6 @@
 //! Disposable Syncthing daemons only; no user inventory, config or lifecycle.
 #[path = "fixture_process.rs"]
-mod fixture_process;
+pub(crate) mod fixture_process;
 use anyhow::{ensure, Context, Result};
 use okilum_sync::Syncthing;
 use serde_json::json;

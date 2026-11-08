@@ -142,6 +142,10 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
     }
     fn read(&mut self, name: &str) -> Result<Option<Task>> {
         let Some(task) = self.task(name)? else {
+            ensure!(
+                !self.guard.running(name)?,
+                "owned supervisor is live but its task registration is missing"
+            );
             return Ok(None);
         };
         let sddl = unsafe { task.GetSecurityDescriptor(1)? }.to_string();

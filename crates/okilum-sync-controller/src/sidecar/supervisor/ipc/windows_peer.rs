@@ -2,10 +2,13 @@
 //! obtain the expected process handle through trusted launch/signature ownership
 //! validation, and retain the connected pipe through the subsequent exchange.
 use crate::sidecar::windows::security::{current_sid, process_sid};
-use anyhow::{ensure, Result};
-use std::os::windows::io::{AsRawHandle, OwnedHandle};
+use anyhow::{ensure, Context, Result};
+use std::{
+    os::windows::io::{AsRawHandle, OwnedHandle},
+    time::Instant,
+};
 use windows::Win32::{
-    Foundation::{HANDLE, WAIT_TIMEOUT},
+    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Storage::FileSystem::{GetFileType, FILE_TYPE_PIPE},
     System::{
         Pipes::{
@@ -30,6 +33,27 @@ pub struct ProcessPeer {
     pid: u32,
     owner_sid: String,
 }
+/// A duplicate of the process object captured from the authenticated pipe.
+/// It observes kernel exit only and exposes no process-termination operation.
+pub struct ExitWatch {
+    process: OwnedHandle,
+}
+impl ExitWatch {
+    pub fn wait(self, deadline: Instant) -> Result<()> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .context("supervisor exit deadline elapsed")?;
+        let milliseconds = remaining.as_millis().clamp(1, u32::MAX as u128 - 1) as u32;
+        let result =
+            unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), milliseconds) };
+        ensure!(
+            result == WAIT_OBJECT_0 && Instant::now() < deadline,
+            "captured supervisor has not exited inside the stop budget"
+        );
+        Ok(())
+    }
+}
+
 impl ProcessPeer {
     pub(super) fn owner_sid(&self) -> &str {
         &self.owner_sid
@@ -51,6 +75,13 @@ impl ProcessPeer {
         };
         peer.verify_process()?;
         Ok(peer)
+    }
+
+    pub(super) fn capture_exit(&self) -> Result<ExitWatch> {
+        self.verify_process()?;
+        let process = self.process.try_clone()?;
+        self.verify_process()?;
+        Ok(ExitWatch { process })
     }
 
     fn verify_process(&self) -> Result<()> {

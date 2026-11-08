@@ -161,6 +161,7 @@ pub fn reconcile(
     let policy = choice
         .or(saved.as_ref().map(|s| s.policy))
         .unwrap_or(Policy::PublicDiscoveryAndRelays);
+    let _admission = crate::managed_launch::runtime_configuration(selected)?;
     let config = api.config()?;
     let changes = changes(&config, daemon::managed_listen_address(prepared)?, policy)?;
     let mut intent = Journal {

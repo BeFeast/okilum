@@ -1,4 +1,4 @@
-use super::WindowsStore as Store;
+use super::{StateDir, WindowsStore as Store};
 use crate::sidecar::{
     authority::{Envelope, Stored},
     windows::private::PrivateDirectory,
@@ -120,6 +120,52 @@ fn unicode_and_spaces_state_path_preserves_journal_and_hint_across_reopen() {
     );
     assert_eq!(final_store.read_hint(soon()).unwrap(), None);
     assert_eq!(names(&path), ["sidecar.json"]);
+}
+
+#[test]
+fn windows_hint_discovery_retries_only_native_contention_within_its_deadline() {
+    use crate::sidecar::store::Hint;
+    let (_parent, path, store) = prepared();
+    let hint = Hint::new(Uuid::new_v4(), 42).unwrap();
+    store.publish_hint(soon(), &hint).unwrap();
+    let exclusive = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path.join("endpoint.json"))
+        .unwrap();
+    let error = store.peek_hint().unwrap_err();
+    assert!(super::hint::hint_sharing_violation(&error));
+
+    // Keeping the actual incompatible kernel handle open must exhaust this
+    // budget, rather than return absence or authorize a generation.
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(200);
+    let error = store.peek_hint_until(deadline).unwrap_err();
+    assert!(super::hint::hint_sharing_violation(&error));
+    assert!(
+        Instant::now() >= deadline,
+        "hint contention returned before the discovery deadline"
+    );
+
+    // An actual concurrent holder releases its exact File, never a path/PID.
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(exclusive);
+    });
+    let observed = store.peek_hint_until(Instant::now() + Duration::from_secs(2));
+    holder.join().unwrap();
+    assert_eq!(observed.unwrap(), Some(hint.clone()));
+
+    // Structural failures remain errors: retrying contention cannot adopt a
+    // hard-linked or malformed hint, even when its generation looks plausible.
+    fs::hard_link(path.join("endpoint.json"), path.join("alias.json")).unwrap();
+    assert!(store.peek_hint_until(soon()).is_err());
+    fs::remove_file(path.join("alias.json")).unwrap();
+    assert_eq!(store.peek_hint_until(soon()).unwrap(), Some(hint));
+    let malformed = b"{\"schema\":1,\"generation\":\"not-a-uuid\"}";
+    store.dir.write("endpoint.json", malformed).unwrap();
+    assert!(store.peek_hint_until(soon()).is_err());
+    assert_eq!(fs::read(path.join("endpoint.json")).unwrap(), malformed);
 }
 
 #[test]

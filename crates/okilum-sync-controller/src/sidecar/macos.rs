@@ -15,6 +15,8 @@ pub mod connect;
 pub mod connection;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 pub mod inventory;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod isolation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod payload;
 #[cfg(unix)]
@@ -188,4 +190,14 @@ pub fn account_state_directory() -> Result<std::path::PathBuf> {
     let home = unsafe { CStr::from_ptr(entry.pw_dir) };
     Ok(std::path::PathBuf::from(OsStr::from_bytes(home.to_bytes()))
         .join("Library/Application Support/Okilum/Sync"))
+}
+
+/// Normal launches always use the account root. Only explicit native QA launch
+/// selection can redirect the complete Sync control plane.
+#[cfg(target_os = "macos")]
+pub fn active_state_directory() -> Result<std::path::PathBuf> {
+    match isolation::selected()? {
+        Some(profile) => Ok(profile.state()),
+        None => account_state_directory(),
+    }
 }

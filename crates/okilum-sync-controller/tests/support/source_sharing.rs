@@ -132,6 +132,18 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         .unwrap()
         .is_empty());
     assert!(!pair.source.vault.join(".stfolder").exists());
+    // #2582: initial source publication must enter admission before seeding
+    // ignores/markers or creating a resumable folder configuration.
+    let source_authority = okilum_write_authority::Authority::for_root(&pair.source.vault)?;
+    let hold = source_authority.begin_drain("source-enrollment-refusal")?;
+    let token = hold.token().clone();
+    assert!(pair
+        .first
+        .share_vault(&pair.prepared, &pair.source.vault)
+        .is_err());
+    assert!(!pair.source.vault.join(".stignore").exists());
+    assert!(!pair.source.vault.join(".stfolder").exists());
+    hold.release(&token)?;
     let shared = pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     assert_eq!(shared.shared, vec![pair.source.vault.clone()]);
     let id = pair.shared_catalog()?;
@@ -166,6 +178,29 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         id,
         "source share or authorization was not durable"
     );
+    // A receive hold refuses before either local configuration or remote Share;
+    // a source hold independently refuses the remote membership publisher.
+    let receiver_authority = okilum_write_authority::Authority::for_root(&pair.target.vault)?;
+    let hold = receiver_authority.begin_drain("receive-enrollment-refusal")?;
+    let token = hold.token().clone();
+    assert!(pair
+        .second
+        .attach(pair.peer, &id, &pair.target.vault)
+        .is_err());
+    assert!(pair.target.api.config()?["folders"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    hold.release(&token)?;
+    let hold = source_authority.begin_drain("remote-share-refusal")?;
+    let token = hold.token().clone();
+    let before_share = pair.source.api.folder(&id)?;
+    assert!(pair
+        .second
+        .attach(pair.peer, &id, &pair.target.vault)
+        .is_err());
+    assert_eq!(pair.source.api.folder(&id)?, before_share);
+    hold.release(&token)?;
     pair.second.attach(pair.peer, &id, &pair.target.vault)?;
     wait(
         "ordinary source initial receive and automatic promotion",
@@ -175,6 +210,14 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         },
     )?;
     assert_eq!(pair.target.api.folder(&id)?["type"], "sendreceive");
+    let hold = receiver_authority.begin_drain("promotion-reconcile-refusal")?;
+    let token = hold.token().clone();
+    let before_reconcile = pair.target.api.folder(&id)?;
+    assert!(pair.second.reconcile_transfers().is_err());
+    assert_eq!(pair.target.api.folder(&id)?, before_reconcile);
+    hold.release(&token)?;
+    pair.second.reconcile_transfers()?;
+
     assert_eq!(
         hashes(&pair.source.vault, &initial)?,
         before,
@@ -351,7 +394,7 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
     .canonicalize()?;
     let (mut source, source_prepared) =
         Peer::managed_lan(root.path(), "address-source", binary.clone())?;
-    let (target, target_prepared) = Peer::managed_lan(root.path(), "address-target", binary)?;
+    let (target, _target_prepared) = Peer::managed_lan(root.path(), "address-target", binary)?;
     let first = Controller::open(
         root.path().join("source-controller"),
         vec![source.home.join("config.xml")],
@@ -374,13 +417,23 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
             assert_eq!(options[key], false, "fixture permits fallback: {key}");
         }
     }
-    // Simulate the legacy channel: temporarily hide only the fixture's managed
-    // receipts so no transport hints are advertised/applied. Daemons, identities,
-    // trust, folders and the authenticated pairing path are otherwise identical.
-    for prepared in [&source_prepared, &target_prepared] {
-        fs::rename(
-            prepared.join("prepared.json"),
-            prepared.join("held-prepared.json"),
+    // Suppress transport hints with real loopback-only listeners. A missing
+    // managed receipt is now an ownership refusal (#2582), so the negative
+    // control must retain valid identities/admission while removing LAN hints.
+    for runtime in [&source, &target] {
+        let listen = format!("tcp://127.0.0.1:{}", runtime.listen.port());
+        runtime
+            .api
+            .patch_options(&json!({"listenAddresses":[listen]}))?;
+        wait(
+            "loopback listener installed without LAN advertisement",
+            || {
+                let status = runtime.api.identity()?;
+                let services = status["connectionServiceStatus"]
+                    .as_object()
+                    .context("listener status missing")?;
+                Ok(!services.is_empty() && services.keys().all(|key| key == &listen))
+            },
         )?;
     }
     let url = first
@@ -436,11 +489,23 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
             json!(["dynamic"])
         );
     }
-    for prepared in [&source_prepared, &target_prepared] {
-        fs::rename(
-            prepared.join("held-prepared.json"),
-            prepared.join("prepared.json"),
-        )?;
+    for runtime in [&source, &target] {
+        let listen = format!("tcp://0.0.0.0:{}", runtime.listen.port());
+        runtime
+            .api
+            .patch_options(&json!({"listenAddresses":[listen]}))?;
+        wait("LAN listener advertises authenticated hints", || {
+            let status = runtime.api.identity()?;
+            let service = &status["connectionServiceStatus"][&listen];
+            Ok(service["lanAddresses"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|address| address.strip_prefix("tcp://"))
+                    .filter_map(|address| address.parse::<std::net::SocketAddr>().ok())
+                    .any(|address| !address.ip().is_loopback() && !address.ip().is_unspecified())
+            }))
+        })?;
     }
     // Positive control: the very same catalog call exchanges both directions.
     // No fixture REST device-address override is allowed on this success path.

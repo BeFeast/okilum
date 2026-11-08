@@ -21,7 +21,7 @@ build() {
     if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
         qa_features=(--features settings-ui-harness)
     fi
-    cargo build --release --locked -p okilum-shell "${qa_features[@]}"
+    cargo build --release --locked -p okilum-shell -p okilum-sync-controller --bin okilum --bin okilum-sync-launch "${qa_features[@]}"
     if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
         cargo test --release --locked -p okilum-shell --features settings-ui-harness \
             reader_settings::tests
@@ -31,6 +31,7 @@ build() {
 package() {
     cd "$OKILUM_SOURCE"
     install -Dm755 target/release/okilum "$pkgdir/usr/bin/okilum"
+    install -Dm755 target/release/okilum-sync-launch "$pkgdir/usr/bin/okilum-sync-launch"
     install -Dm644 scripts/arch/okilum.desktop "$pkgdir/usr/share/applications/okilum.desktop"
     local icon=crates/okilum-shell/assets/brand/app-icon-light.svg
     install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/scalable/apps/okilum.svg"

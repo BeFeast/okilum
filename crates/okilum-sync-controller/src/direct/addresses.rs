@@ -92,7 +92,7 @@ pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
     let [config] = configs else {
         return Ok(None);
     };
-    let state = crate::sidecar::macos::account_state_directory()?;
+    let state = crate::sidecar::macos::active_state_directory()?;
     let Some(owned) = crate::sidecar::discovery::managed_configuration_path(&state)? else {
         return Ok(None);
     };
@@ -112,13 +112,28 @@ pub(super) fn owned_runtime(configs: &[PathBuf], daemon: &DaemonIdentity) -> Res
 }
 #[cfg(target_os = "macos")]
 pub(super) fn owned_runtime(_configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
-    let state = crate::sidecar::macos::account_state_directory()?;
+    let state = crate::sidecar::macos::active_state_directory()?;
     Ok(
         match crate::sidecar::discovery::managed_configuration_path(&state)? {
             Some(config) => config.canonicalize()? == daemon.config_file,
             None => false,
         },
     )
+}
+
+#[cfg(windows)]
+pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
+    let [config] = configs else { return Ok(None) };
+    let state = crate::sidecar::windows::bootstrap::active_state_directory()?;
+    let owned = state.join("config/config.xml");
+    if !owned.try_exists()? || config.canonicalize()? != owned.canonicalize()? {
+        return Ok(None);
+    }
+    Ok(crate::daemon::managed_identity(&state).ok())
+}
+#[cfg(windows)]
+pub(super) fn owned_runtime(configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
+    Ok(managed(configs)?.is_some_and(|managed| managed == *daemon))
 }
 
 pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
@@ -207,6 +222,7 @@ impl Controller {
             addresses.sort();
             addresses.dedup();
             if json!(addresses) != current["addresses"] {
+                let _admission = crate::managed_launch::runtime_configuration(&identity)?;
                 api.set_device_addresses(device, &addresses)?;
             }
         }

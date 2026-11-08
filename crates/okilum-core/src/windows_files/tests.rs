@@ -514,3 +514,59 @@ fn windows_save_last_moment_symlink_cannot_modify_its_target() {
 
 #[path = "tests/owner.rs"]
 mod owner;
+
+#[test]
+fn windows_sync_create_preserving_keeps_captured_bytes_dacl_and_a_racing_destination() {
+    use windows_sys::Win32::Security::{
+        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SetFileSecurityW,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let (temp, directory) = fixture();
+    let captured = OsStr::new(".okilum-save-first-sync-original");
+    directory.create(captured, &[0, 255, 42]).unwrap();
+    let retained = directory.child(captured).unwrap();
+    let text: Vec<_> = "D:P(A;;FA;;;OW)(A;;FR;;;SY)"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut raw = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text.as_ptr(),
+                1,
+                &mut raw,
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let descriptor = Descriptor(raw);
+    assert_ne!(
+        unsafe {
+            SetFileSecurityW(
+                wide(&retained).unwrap().as_ptr(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor.0,
+            )
+        },
+        0
+    );
+    let original_security = permissions(&retained);
+    assert!(original_security.dacl_protected);
+    assert_ne!(original_security, permissions(temp.path()));
+    let canonical = OsStr::new("different.md");
+    directory
+        .create_preserving(canonical, b"other version\r\n", Some(captured))
+        .unwrap();
+    let path = directory.child(canonical).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"other version\r\n");
+    assert_eq!(permissions(&path), original_security);
+    assert_eq!(fs::read(&retained).unwrap(), [0, 255, 42]);
+    assert_eq!(permissions(&retained), original_security);
+    assert!(directory
+        .create_preserving(canonical, b"must not replace", Some(captured))
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"other version\r\n");
+    assert_eq!(fs::read(&retained).unwrap(), [0, 255, 42]);
+}

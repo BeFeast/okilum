@@ -13,17 +13,28 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
 #[cfg(target_os = "macos")]
 pub mod identity_macos;
 #[cfg(target_os = "macos")]
+pub use identity_macos as native_identity;
+#[cfg(target_os = "macos")]
 use identity_macos::Identity;
 #[cfg(target_os = "linux")]
 pub mod identity_linux;
 #[cfg(target_os = "linux")]
+pub use identity_linux as filesystem_identity;
+#[cfg(target_os = "linux")]
 use identity_linux::Identity;
+#[cfg(target_os = "macos")]
+pub use native_identity as filesystem_identity;
+#[cfg(windows)]
+#[path = "identity_windows.rs"]
+pub mod filesystem_identity;
+#[cfg(windows)]
+use filesystem_identity::Identity;
 #[cfg(all(test, target_os = "linux"))]
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
@@ -65,32 +76,7 @@ fn identity(path: &Path) -> Result<Identity> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::{
-            fs::{MetadataExt, OpenOptionsExt},
-            io::AsRawHandle,
-        };
-        use windows_sys::Win32::Storage::FileSystem::*;
-        ensure!(
-            meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-            "Reparse point in writer authority"
-        );
-        let f = OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        ensure!(
-            unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } != 0,
-            "Cannot verify writer authority identity"
-        );
-        Ok(Identity(
-            info.dwVolumeSerialNumber as u64,
-            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
-            Some(
-                ((info.ftCreationTime.dwHighDateTime as u64) << 32)
-                    | info.ftCreationTime.dwLowDateTime as u64,
-            ),
-        ))
+        filesystem_identity::read(path)
     }
 }
 
@@ -284,7 +270,37 @@ pub struct Authority {
     directory: PathBuf,
     binding: Binding,
 }
+/// Durable operational reference for autonomous publishers. Reopening never
+/// registers a root or repairs a missing/replaced authority. Keep outside the
+/// vault and disposable indexes, alongside the consumer's own identity binding.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DurableBinding {
+    account: PathBuf,
+    binding: Binding,
+}
+impl DurableBinding {
+    pub fn open(&self) -> Result<Authority> {
+        let authority = Authority {
+            account: self.account.clone(),
+            binding_path: self
+                .account
+                .join(format!("{}.json", key(&self.binding.root))),
+            directory: self.account.join(key(&self.binding.root)),
+            binding: self.binding.clone(),
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+}
 impl Authority {
+    pub fn durable_binding(&self) -> Result<DurableBinding> {
+        let (authority, _lock) = self.locked()?;
+        Ok(DurableBinding {
+            account: authority.account,
+            binding: authority.binding,
+        })
+    }
     /// Register/open an actual vault before opening editors. Nested publishers
     /// resolve to the existing enclosing authority rather than inventing one.
     pub fn for_root(root: &Path) -> Result<Self> {
@@ -748,6 +764,20 @@ pub struct Hold {
     _owner: File,
 }
 impl Hold {
+    pub fn root(&self) -> &Path {
+        self.authority.root()
+    }
+    /// Validate an already drained local ownership capability. Transport
+    /// adapters must separately prove that their own publishers have stopped.
+    pub fn validate_held(&self, expected: &Token) -> Result<()> {
+        let (_authority, _lock) = self.authority.locked()?;
+        let state = self.authority.state()?;
+        ensure!(
+            state.phase == Phase::Held && expected == &self.token && token(&state)? == *expected,
+            "Local writer hold is stale or not drained"
+        );
+        Ok(())
+    }
     pub fn token(&self) -> &Token {
         &self.token
     }
@@ -889,6 +919,20 @@ mod tests {
         fs::create_dir(t.path().join("vault")).unwrap();
         let a = Authority::open_in(&t.path().join("account"), &t.path().join("vault")).unwrap();
         (t, a)
+    }
+    #[test]
+    fn local_writer_admission_durable_sync_binding_never_recreates_missing_authority() -> Result<()>
+    {
+        let (_temp, authority) = fixture();
+        let binding = authority.durable_binding()?;
+        let encoded = serde_json::to_vec(&binding)?;
+        let reopened: DurableBinding = serde_json::from_slice(&encoded)?;
+        let lease = reopened.open()?.admit()?;
+        drop(lease);
+        fs::remove_file(&authority.binding_path)?;
+        assert!(reopened.open().is_err());
+        assert!(!authority.binding_path.exists());
+        Ok(())
     }
     #[test]
     fn local_writer_admission_review_parallel_normal_writers_all_succeed() {

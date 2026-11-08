@@ -56,6 +56,14 @@ fn validate(descriptor: &Descriptor, sid: &str) -> Result<()> {
     validate_grant(descriptor, sid, 3) // OBJECT_INHERIT | CONTAINER_INHERIT
 }
 fn validate_grant(descriptor: &Descriptor, sid: &str, flags: u8) -> Result<()> {
+    validate_file_grant(descriptor, sid, flags, false)
+}
+fn validate_file_grant(
+    descriptor: &Descriptor,
+    sid: &str,
+    flags: u8,
+    generated: bool,
+) -> Result<()> {
     let mut owner = PSID::default();
     let mut defaulted = BOOL::default();
     let mut control = 0;
@@ -64,10 +72,14 @@ fn validate_grant(descriptor: &Descriptor, sid: &str, flags: u8) -> Result<()> {
     let mut acl: *mut ACL = std::ptr::null_mut();
     unsafe {
         GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut defaulted)?;
-        ensure!(sid_string(owner)? == sid, "state belongs to another user");
+        let owner = sid_string(owner)?;
+        ensure!(
+            owner == sid || (generated && owner == super::security::default_owner_sid()?),
+            "state belongs to another user"
+        );
         GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision)?;
         ensure!(
-            control & SE_DACL_PROTECTED.0 != 0,
+            generated || control & SE_DACL_PROTECTED.0 != 0,
             "state DACL must be protected from inheritance"
         ); // SE_DACL_PROTECTED
         GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)?;
@@ -93,7 +105,7 @@ fn validate_grant(descriptor: &Descriptor, sid: &str, flags: u8) -> Result<()> {
         let ace = &*ptr.cast::<ACCESS_ALLOWED_ACE>();
         ensure!(
             ace.Header.AceType == 0
-                && ace.Header.AceFlags == flags
+                && (ace.Header.AceFlags == flags || (generated && ace.Header.AceFlags == 0x10))
                 && ace.Mask == FILE_ALL_ACCESS.0,
             "unexpected private access rule"
         ); // ALLOW
@@ -325,6 +337,15 @@ pub(crate) fn open_private_file(path: &str) -> Result<Option<std::fs::File>> {
 }
 /// Owner, protected single-grant DACL, one hard link, no reparse point.
 pub(crate) fn verify_private_file(file: &std::fs::File) -> Result<()> {
+    verify_file(file, false)
+}
+/// Syncthing safe-saves config/certificate files with the single owner grant
+/// inherited from the pinned protected config directory. Journals still require
+/// their explicit protected DACL and never use this adapter.
+pub(crate) fn verify_generated_file(file: &std::fs::File) -> Result<()> {
+    verify_file(file, true)
+}
+fn verify_file(file: &std::fs::File, generated: bool) -> Result<()> {
     let raw = HANDLE(file.as_raw_handle());
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     unsafe {
@@ -349,7 +370,7 @@ pub(crate) fn verify_private_file(file: &std::fs::File) -> Result<()> {
         )
         .ok()?;
     }
-    validate_grant(&Descriptor(descriptor), &current_sid()?, 0)
+    validate_file_grant(&Descriptor(descriptor), &current_sid()?, 0, generated)
         .map_err(|e| e.context("private regular journal required"))
 }
 

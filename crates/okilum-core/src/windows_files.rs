@@ -83,7 +83,7 @@ fn retry<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Resul
     }
     operation()
 }
-pub(crate) fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
+pub fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // File owns the handle for the complete call; info has the required layout.
     ensure!(
@@ -156,6 +156,40 @@ pub(crate) fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_IN
     Ok((file, bytes, info))
 }
 
+/// One representable NTFS/Win32 name, with no ADS, device or trimming alias.
+pub fn validate_file_name(name: &OsStr) -> Result<()> {
+    let mut components = Path::new(name).components();
+    ensure!(
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
+        "Expected one filename"
+    );
+    // Refuse ADS, aliases produced by Win32 trimming, and device names.
+    let text = name.to_str().context("A filename is not Unicode")?;
+    ensure!(
+        !text
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+            && !text.ends_with([' ', '.']),
+        "Invalid Windows filename"
+    );
+    let stem = text
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    ensure!(
+        !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
+            && !(stem.starts_with("COM") || stem.starts_with("LPT"))
+                .then(|| &stem[3..])
+                .is_some_and(
+                    |n| ["1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"].contains(&n)
+                ),
+        "Reserved Windows filename"
+    );
+    Ok(())
+}
+
 /// Keeps every ancestor open without DELETE sharing: neither a parent nor the
 /// directory itself can be renamed/replaced during an operation. Files remain
 /// visible to ordinary child-file readers/writers. Directory WRITE sharing is
@@ -171,19 +205,34 @@ impl Directory {
             .map(|file| information(file).map(|info| identity(&info)))
             .collect()
     }
-    pub(crate) fn information(&self) -> Result<BY_HANDLE_FILE_INFORMATION> {
+    pub fn information(&self) -> Result<BY_HANDLE_FILE_INFORMATION> {
         information(self._ancestors.last().unwrap())
     }
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
+    }
+    /// Read from the retained ordinary-directory handle, never reopen its path.
+    pub fn metadata(&self) -> Result<std::fs::Metadata> {
+        Ok(self
+            ._ancestors
+            .last()
+            .context("Missing pinned directory")?
+            .metadata()?)
+    }
+    pub fn filesystem_identity(
+        &self,
+    ) -> Result<okilum_write_authority::filesystem_identity::Identity> {
+        okilum_write_authority::filesystem_identity::from_file(
+            self._ancestors.last().context("Missing pinned directory")?,
+        )
     }
     pub(crate) fn read(&self, name: &OsStr) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
         read_file(&self.child(name)?)
     }
-    pub(crate) fn open_file(&self, name: &OsStr) -> Result<File> {
+    pub fn open_file(&self, name: &OsStr) -> Result<File> {
         Ok(open_regular(&self.child(name)?)?.0)
     }
-    pub(crate) fn create_directory(&self, name: &OsStr) -> Result<()> {
+    pub fn create_directory(&self, name: &OsStr) -> Result<()> {
         let destination = self.child(name)?;
         let prepared = self
             .path
@@ -270,37 +319,8 @@ impl Directory {
         plain(&information(&file)?, true, &file)?;
         Ok(file)
     }
-    pub(crate) fn child(&self, name: &OsStr) -> Result<PathBuf> {
-        let mut components = Path::new(name).components();
-        ensure!(
-            matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
-            "Expected one filename"
-        );
-        // Refuse ADS, aliases produced by Win32 trimming, and device names.
-        let text = name.to_str().context("A filename is not Unicode")?;
-        ensure!(
-            !text
-                .chars()
-                .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-                && !text.ends_with([' ', '.']),
-            "Invalid Windows filename"
-        );
-        let stem = text
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim_end_matches(' ')
-            .to_ascii_uppercase();
-        ensure!(
-            !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
-                && !(stem.starts_with("COM") || stem.starts_with("LPT"))
-                    .then(|| &stem[3..])
-                    .is_some_and(
-                        |n| ["1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"]
-                            .contains(&n)
-                    ),
-            "Reserved Windows filename"
-        );
+    pub fn child(&self, name: &OsStr) -> Result<PathBuf> {
+        validate_file_name(name)?;
         Ok(self.path.join(name))
     }
     fn prepared(&self, bytes: &[u8], security_source: Option<&File>) -> Result<PathBuf> {
@@ -402,8 +422,20 @@ impl Directory {
     }
     /// Publishes a complete new file without replacing a concurrent creator.
     pub fn create(&self, name: &OsStr, bytes: &[u8]) -> Result<()> {
+        self.create_preserving(name, bytes, None)
+    }
+    /// First Sync can retain a displaced inode under an ignored recovery name
+    /// and publish into the now-absent canonical name with that original DACL
+    /// and encryption. A racing creator is never replaced.
+    pub fn create_preserving(
+        &self,
+        name: &OsStr,
+        bytes: &[u8],
+        original: Option<&OsStr>,
+    ) -> Result<()> {
         let destination = self.child(name)?;
-        let prepared = self.prepared(bytes, None)?;
+        let source = original.map(|name| self.open_file(name)).transpose()?;
+        let prepared = self.prepared(bytes, source.as_ref())?;
         move_no_replace(&prepared, &destination).context("Publish new file without overwrite")?;
         Ok(())
     }

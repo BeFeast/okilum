@@ -3,6 +3,10 @@
 use super::*;
 use globset::GlobBuilder;
 
+#[cfg(unix)]
+mod files;
+#[cfg(windows)]
+#[path = "shared_ignores/files_windows.rs"]
 mod files;
 use files::Files;
 const LIMIT: usize = 65536;
@@ -138,9 +142,8 @@ pub(super) fn shared_source(
     Ok(Some(data))
 }
 pub(super) fn validate_source_file(path: &Path) -> Result<Vec<u8>> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::symlink_metadata(path)?;
-    let files = Files::open(path, (m.dev(), m.ino()))?;
+    let root = existing::VaultRoot::open(path)?;
+    let files = Files::open(path, root.identity()?)?;
     let local = files.local()?.context("Local ignore file missing")?;
     ensure!(included(&local)?, "Shared ignore include missing");
     let policy = files
@@ -341,7 +344,7 @@ fn check_daemon(api: &okilum_sync::Syncthing, id: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

@@ -20,6 +20,7 @@ pub trait UserServices {
     fn disable_stop(&self, name: &str) -> Result<()>;
     fn verify_stopped(&self, name: &str) -> Result<()>;
 }
+#[derive(Clone, Copy)]
 pub struct Systemd;
 impl Systemd {
     fn run(args: &[&str]) -> Result<()> {
@@ -99,12 +100,23 @@ struct Journal {
     unit_directory: PathBuf,
     desired_enabled: bool,
     certificate_hash: String,
+    #[serde(default)]
+    launch: Option<Launch>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Launch {
+    reference: crate::managed_launch::Reference,
+    helper: PathBuf,
+    helper_hash: String,
+    helper_identity: crate::managed_launch::Identity,
 }
 /// Creating/reading this handle has no filesystem or service side effects.
 pub struct Lifecycle<S> {
     state: PathBuf,
     units: PathBuf,
     services: S,
+    launcher: Option<PathBuf>,
 }
 impl<S: UserServices> Lifecycle<S> {
     pub fn new(state: PathBuf, units: PathBuf, services: S) -> Self {
@@ -112,7 +124,13 @@ impl<S: UserServices> Lifecycle<S> {
             state,
             units,
             services,
+            launcher: None,
         }
+    }
+    /// Package discovery (or an isolated fixture) supplies the dedicated helper.
+    pub fn with_launcher(mut self, launcher: PathBuf) -> Self {
+        self.launcher = Some(launcher);
+        self
     }
     /// Only called as a consequence of explicit Enable Sync. The journal is
     /// committed first so a interrupted registration can be retried on reopening.
@@ -139,6 +157,7 @@ impl<S: UserServices> Lifecycle<S> {
                 instance,
                 unit_directory: self.units.clone(),
                 desired_enabled: false,
+                launch: None,
             },
         };
         self.check_binding(&journal)?;
@@ -147,6 +166,7 @@ impl<S: UserServices> Lifecycle<S> {
             "managed device identity changed"
         );
         self.check_unit(&journal)?;
+        self.prepare_launch(&mut journal)?;
         journal.desired_enabled = true;
         self.save(&journal)?;
         self.reconcile_locked(&journal)?;
@@ -175,8 +195,11 @@ impl<S: UserServices> Lifecycle<S> {
             return Ok(());
         }
         let _lock = self.lock()?;
-        if let Some(journal) = self.load()? {
+        if let Some(mut journal) = self.load()? {
             self.check_binding(&journal)?;
+            if journal.desired_enabled {
+                self.prepare_launch(&mut journal)?;
+            }
             self.reconcile_locked(&journal)?;
         }
         Ok(())
@@ -190,6 +213,93 @@ impl<S: UserServices> Lifecycle<S> {
             "service ownership scope changed"
         );
         Ok(())
+    }
+    fn prepare_launch(&self, journal: &mut Journal) -> Result<()> {
+        let source = match &self.launcher {
+            Some(path) => path.clone(),
+            None => std::env::current_exe()?
+                .parent()
+                .context("package directory missing")?
+                .join("okilum-sync-launch"),
+        };
+        let hash = crate::managed_launch::digest(&source)?;
+        if let Some(launch) = &journal.launch {
+            // Validate the copied helper even on an upgrade. A new package is
+            // never permission to adopt a substituted service/helper/registry.
+            ensure!(
+                crate::managed_launch::digest(&launch.helper)? == launch.helper_hash
+                    && crate::managed_launch::identity(&launch.helper)? == launch.helper_identity,
+                "managed launch helper replaced"
+            );
+            if hash == launch.helper_hash {
+                launch.reference.validate(&journal.instance)?;
+                return Ok(());
+            }
+        }
+        // An old journal recognizes ONLY its exact previously generated unit.
+        // Stop it before offline config/registry migration. Never stop arbitrary
+        // definitions, and never use this process-wide upgrade as a folder proof.
+        if let Some(file) = self.check_unit(journal)? {
+            let name = unit_name(journal);
+            let path = self.units.join(&name);
+            self.services.reload()?;
+            self.services.verify_definition(&name, &path)?;
+            unchanged(&path, &file)?;
+            self.services.disable_stop(&name)?;
+            self.services.verify_stopped(&name)?;
+            unchanged(&path, &file)?;
+            self.check_unit(journal)?;
+            fs::remove_file(path)?;
+            File::open(&self.units)?.sync_all()?;
+        } else if journal.launch.is_some() {
+            // An interrupted upgrade may already have removed the old unit.
+            // It may proceed only if the service is still unregistered/stopped.
+            self.services.verify_stopped(&unit_name(journal))?;
+        }
+        let reference = if let Some(launch) = &journal.launch {
+            launch.reference.upgrade_package(&journal.instance)?;
+            launch.reference.clone()
+        } else {
+            crate::managed_launch::initialize(&journal.instance)?
+        };
+
+        // Content-addressed copies keep the old journal valid until the new
+        // one is durable. A crash never leaves it pointing at replaced bytes.
+        let helper = self.state.join(format!("okilum-sync-launch-{hash}"));
+        if helper.try_exists()? {
+            ensure!(
+                crate::managed_launch::digest(&helper)? == hash,
+                "partial helper identity differs"
+            );
+        } else {
+            let mut input = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&source)?;
+            let temporary = self.state.join(format!("lifecycle-{}.tmp", Uuid::new_v4()));
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o500)
+                .open(&temporary)?;
+            std::io::copy(&mut input, &mut output)?;
+            output.sync_all()?;
+            let publish = fs::hard_link(&temporary, &helper);
+            let _ = fs::remove_file(&temporary);
+            publish?;
+            File::open(&self.state)?.sync_all()?;
+        }
+        ensure!(
+            crate::managed_launch::digest(&helper)? == hash,
+            "copied helper identity differs"
+        );
+        journal.launch = Some(Launch {
+            reference,
+            helper_identity: crate::managed_launch::identity(&helper)?,
+            helper,
+            helper_hash: hash,
+        });
+        self.save(journal)
     }
     fn check_unit(&self, journal: &Journal) -> Result<Option<File>> {
         let path = self.units.join(unit_name(journal));
@@ -221,6 +331,11 @@ impl<S: UserServices> Lifecycle<S> {
         let name = unit_name(journal);
         let path = self.units.join(&name);
         if journal.desired_enabled {
+            let launch = journal
+                .launch
+                .as_ref()
+                .context("managed launch binding missing")?;
+            launch.reference.validate(&journal.instance)?;
             canonical_instance(journal.instance.clone())?;
             ensure!(
                 certificate_hash(&journal.instance)? == journal.certificate_hash,
@@ -392,6 +507,15 @@ fn canonical_instance(instance: ManagedInstance) -> Result<ManagedInstance> {
     Ok(instance)
 }
 fn unit_contents(j: &Journal) -> Result<String> {
+    let Some(launch) = &j.launch else {
+        return legacy_unit_contents(j);
+    };
+    Ok(format!(
+        "# Owned by Okilum; identity {}\n[Unit]\nDescription=Okilum folder sync\nStartLimitIntervalSec=60\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={} --state={} --instance={}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nKillMode=control-group\n\n[Install]\nWantedBy=default.target\n",
+        j.id, quote(&launch.helper)?, quote(launch.helper.parent().context("helper directory missing")?)?, j.id
+    ))
+}
+fn legacy_unit_contents(j: &Journal) -> Result<String> {
     Ok(format!(
         "# Owned by Okilum; identity {}\n[Unit]\nDescription=Okilum folder sync\nStartLimitIntervalSec=60\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={} serve --no-browser --no-restart --no-upgrade --home={}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nEnvironment=STMONITORED=1\n\n[Install]\nWantedBy=default.target\n",
         j.id, quote(&j.instance.executable)?, quote(&j.instance.home)?
@@ -422,6 +546,37 @@ fn regular(path: &Path) -> Result<()> {
         "state file must be private"
     );
     Ok(())
+}
+/// Production autonomous entry. This deliberately consumes the Linux lifecycle
+/// journal, not the unrelated macOS/Windows sidecar Store/Selection contract.
+pub fn run_managed(state: &Path, instance: Uuid) -> Result<()> {
+    ensure!(state.is_absolute(), "absolute service state required");
+    let bytes = crate::private::read(&state.join("lifecycle.json"))?;
+    let journal: Journal = serde_json::from_slice(&bytes)?;
+    ensure!(
+        journal.id == instance && journal.desired_enabled,
+        "managed launch is not enabled"
+    );
+    let lifecycle = Lifecycle::new(state.to_owned(), journal.unit_directory.clone(), Systemd);
+    lifecycle.check_binding(&journal)?;
+    lifecycle
+        .check_unit(&journal)?
+        .context("managed unit missing")?;
+    Systemd.verify_definition(
+        &unit_name(&journal),
+        &journal.unit_directory.join(unit_name(&journal)),
+    )?;
+    let launch = journal
+        .launch
+        .as_ref()
+        .context("managed launch binding missing")?;
+    ensure!(
+        std::env::current_exe()?.canonicalize()? == launch.helper.canonicalize()?
+            && crate::managed_launch::digest(&launch.helper)? == launch.helper_hash
+            && crate::managed_launch::identity(&launch.helper)? == launch.helper_identity,
+        "autonomous launch helper identity changed"
+    );
+    crate::managed_launch::run(&launch.reference, &journal.instance)
 }
 fn private_dir(path: &Path) -> Result<()> {
     if !path.exists() {
@@ -496,7 +651,11 @@ mod tests {
                 .write(true)
                 .mode(0o600)
                 .open(home.join(name))?;
-            f.write_all(name.as_bytes())?;
+            f.write_all(if name == "config.xml" {
+                b"<configuration/>"
+            } else {
+                name.as_bytes()
+            })?;
         }
         Ok(ManagedInstance {
             home,
@@ -509,7 +668,8 @@ mod tests {
         let services = Services::default();
         let state = root.path().join("state");
         let units = root.path().join("units");
-        let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services);
+        let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         assert!(!lifecycle.desired_enabled()?);
         lifecycle.disable()?;
         lifecycle.reconcile()?;
@@ -523,7 +683,8 @@ mod tests {
         assert_eq!(fs::read(instance.home.join("cert.pem"))?, cert);
         assert_eq!(lifecycle.enable(instance)?, id);
         lifecycle.disable()?;
-        let reopened = Lifecycle::new(state, units, &services);
+        let reopened =
+            Lifecycle::new(state, units, &services).with_launcher(PathBuf::from("/bin/true"));
         reopened.reconcile()?;
         assert!(!services.active.get() && !services.registered.get());
         Ok(())
@@ -534,7 +695,8 @@ mod tests {
         let services = Services::default();
         let state = root.path().join("state");
         let units = root.path().join("units");
-        let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services);
+        let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         let instance = instance(root.path())?;
         let name = lifecycle.enable(instance)?;
         services.fail_stop.set(true);
@@ -562,14 +724,16 @@ mod tests {
         let services = Services::default();
         let units = root.path().join("units");
         let state = root.path().join("state");
-        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         services.fail_start.set(true);
         assert!(controller.enable(instance(root.path())?).is_err());
         assert!(controller.desired_enabled()?);
         assert!(services.registered.get() && !services.active.get());
         let unit = fs::read_dir(&units)?.next().unwrap()?.file_name();
         services.fail_start.set(false);
-        let reopened = Lifecycle::new(state, units.clone(), &services);
+        let reopened = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         reopened.reconcile()?;
         assert!(services.active.get());
         assert_eq!(fs::read_dir(&units)?.count(), 1);
@@ -583,7 +747,8 @@ mod tests {
         let services = Services::default();
         let state = root.path().join("state");
         let units = root.path().join("units");
-        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         let instance = instance(root.path())?;
         let certificate = fs::read(instance.home.join("cert.pem"))?;
         let name = controller.enable(instance.clone())?;
@@ -603,7 +768,8 @@ mod tests {
             .filter(|call| call.starts_with("start:"))
             .count();
         assert!(starts > 0, "Enable must exercise the service boundary");
-        let reopened = Lifecycle::new(state, units.clone(), &services);
+        let reopened = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         for _ in 0..3 {
             reopened.disable()?;
             reopened.reconcile()?;
@@ -638,7 +804,8 @@ mod tests {
         let services = Services::default();
         let state = root.path().join("state");
         let units = root.path().join("units");
-        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         services.fail_start.set(true);
         assert!(controller.enable(instance(root.path())?).is_err());
         assert!(controller.desired_enabled()?);
@@ -662,7 +829,8 @@ mod tests {
         // Observing that completion must not authorize another Enable on retry.
         services.fail_start.set(false);
         services.active.set(true);
-        let reopened = Lifecycle::new(state, units.clone(), &services);
+        let reopened = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         assert!(!reopened.desired_enabled()?);
         assert!(reopened.reconcile().is_err());
         assert!(services.active.get());
@@ -699,7 +867,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         let services = Services::default();
         let units = root.path().join("units");
-        let lifecycle = Lifecycle::new(root.path().join("state"), units.clone(), &services);
+        let lifecycle = Lifecycle::new(root.path().join("state"), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         let instance = instance(root.path())?;
         let name = lifecycle.enable(instance.clone())?;
         lifecycle.disable()?;
@@ -720,7 +889,8 @@ mod tests {
         let services = Services::default();
         let state = root.path().join("state");
         let units = root.path().join("units");
-        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
         let instance = instance(root.path())?;
         let name = controller.enable(instance.clone())?;
         *services.replace_on_start.borrow_mut() = Some(units.join(name));
@@ -734,7 +904,8 @@ mod tests {
         let sentinel = root.path().join("sentinel");
         fs::write(&sentinel, "external")?;
         std::os::unix::fs::symlink(&sentinel, second.join("lifecycle.lock"))?;
-        let other = Lifecycle::new(second, units, &services);
+        let other =
+            Lifecycle::new(second, units, &services).with_launcher(PathBuf::from("/bin/true"));
         assert!(other.enable(instance).is_err());
         assert_eq!(fs::read_to_string(sentinel)?, "external");
         Ok(())
@@ -746,6 +917,194 @@ mod tests {
             "\"/tmp/vault %%n $$HOME\""
         );
         assert!(quote(Path::new("/tmp/line\nbreak")).is_err());
+        Ok(())
+    }
+    #[test]
+    fn issue2043_packaged_helper_upgrade_preserves_identity_and_retries_after_stop() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let mut instance = instance(root.path())?;
+        let executable = root.path().join("syncthing");
+        fs::copy("/bin/true", &executable)?;
+        instance.executable = executable.clone();
+        let old = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
+        let name = old.enable(instance.clone())?;
+        let before = old.load()?.unwrap();
+        let old_helper = before.launch.as_ref().unwrap().helper.clone();
+        let old_hash = crate::managed_launch::digest(&old_helper)?;
+        let old_unit = fs::read(units.join(&name))?;
+        fs::copy("/bin/false", &executable)?;
+        let updated = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/false"));
+        services.fail_stop.set(true);
+        assert!(updated.reconcile().is_err());
+        assert!(services.active.get());
+        assert_eq!(fs::read(units.join(&name))?, old_unit);
+        assert_eq!(updated.load()?.unwrap().launch.unwrap().helper, old_helper);
+        services.fail_stop.set(false);
+        services.fail_start.set(true);
+        assert!(updated.reconcile().is_err());
+        assert!(!services.active.get());
+        services.fail_start.set(false);
+        updated.reconcile()?;
+        let after = updated.load()?.unwrap();
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.certificate_hash, before.certificate_hash);
+        assert_eq!(after.instance.home, before.instance.home);
+        let launch = after.launch.unwrap();
+        assert_ne!(launch.helper, old_helper);
+        assert_eq!(crate::managed_launch::digest(&old_helper)?, old_hash);
+        assert_eq!(
+            launch.helper_hash,
+            crate::managed_launch::digest(Path::new("/bin/false"))?
+        );
+        launch.reference.validate(&instance)?;
+        assert!(fs::read_to_string(units.join(&name))?.contains(launch.helper.to_str().unwrap()));
+        assert!(services.active.get());
+        let stops = services
+            .calls
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("stop:"))
+            .count();
+        updated.reconcile()?;
+        assert_eq!(
+            services
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("stop:"))
+                .count(),
+            stops
+        );
+        Ok(())
+    }
+    #[test]
+    fn issue2043_helper_upgrade_never_stops_a_changed_service() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let old = Lifecycle::new(state.clone(), units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/true"));
+        let name = old.enable(instance(root.path())?)?;
+        fs::write(units.join(&name), "[Service]\nExecStart=/bin/false\n")?;
+        services.calls.borrow_mut().clear();
+        let updated = Lifecycle::new(state, units.clone(), &services)
+            .with_launcher(PathBuf::from("/bin/false"));
+        assert!(updated.reconcile().is_err());
+        assert!(services.calls.borrow().is_empty());
+        assert!(services.active.get());
+        assert_eq!(
+            fs::read_to_string(units.join(name))?,
+            "[Service]\nExecStart=/bin/false\n"
+        );
+        Ok(())
+    }
+    #[test]
+    fn issue2043_missing_migration_root_names_the_folder_and_recovery() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let instance = instance(root.path())?;
+        let missing = root.path().join("unmounted-notes");
+        fs::write(
+            instance.home.join("config.xml"),
+            format!(
+                "<configuration><folder id=\"travelling-vault\" path=\"{}\"/></configuration>",
+                missing.display()
+            ),
+        )?;
+        let lifecycle = Lifecycle::new(
+            root.path().join("state"),
+            root.path().join("units"),
+            &services,
+        )
+        .with_launcher(PathBuf::from("/bin/true"));
+        let error = format!("{:#}", lifecycle.enable(instance).unwrap_err());
+        assert!(error.contains("travelling-vault") && error.contains(missing.to_str().unwrap()));
+        assert!(error.contains("reconnect its disk or remove this folder"));
+        assert!(!services.active.get());
+        Ok(())
+    }
+    #[test]
+    fn issue2582_exact_legacy_unit_migrates_and_changed_definition_is_refused() -> Result<()> {
+        for changed in [false, true] {
+            let root = tempfile::tempdir()?;
+            let services = Services::default();
+            let state = root.path().join("service");
+            let units = root.path().join("units");
+            private_dir(&state)?;
+            fs::create_dir(&units)?;
+            let instance = instance(root.path())?;
+            let journal = Journal {
+                id: Uuid::new_v4(),
+                certificate_hash: certificate_hash(&instance)?,
+                instance: instance.clone(),
+                unit_directory: units.clone(),
+                desired_enabled: true,
+                launch: None,
+            };
+            let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
+                .with_launcher(PathBuf::from("/bin/true"));
+            lifecycle.save(&journal)?;
+            let name = unit_name(&journal);
+            let contents = legacy_unit_contents(&journal)?;
+            fs::write(
+                units.join(&name),
+                if changed {
+                    contents.replace("RestartSec=5", "RestartSec=9")
+                } else {
+                    contents.clone()
+                },
+            )?;
+            services.active.set(true);
+            services.registered.set(true);
+            if changed {
+                assert!(lifecycle.reconcile().is_err());
+                assert!(
+                    services.calls.borrow().is_empty(),
+                    "foreign unit must never be stopped"
+                );
+                assert!(lifecycle.load()?.unwrap().launch.is_none());
+            } else {
+                lifecycle.reconcile()?;
+                let updated = lifecycle.load()?.unwrap();
+                assert_eq!(updated.id, journal.id);
+                assert!(updated.launch.is_some());
+                let unit = fs::read_to_string(units.join(&name))?;
+                assert!(unit.contains("okilum-sync-launch") && !unit.contains(" serve "));
+                assert_eq!(
+                    services
+                        .calls
+                        .borrow()
+                        .iter()
+                        .filter(|s| s.starts_with("stop:"))
+                        .count(),
+                    1
+                );
+                lifecycle.reconcile()?;
+                assert_eq!(
+                    services
+                        .calls
+                        .borrow()
+                        .iter()
+                        .filter(|s| s.starts_with("stop:"))
+                        .count(),
+                    1
+                );
+                let reference = state
+                    .parent()
+                    .unwrap()
+                    .join("managed-launch/reference.json");
+                fs::remove_file(reference)?;
+                // The journal reference still validates binding.json; deleting the
+                // independently discoverable reference must also refuse reconcile.
+                assert!(lifecycle.reconcile().is_err());
+            }
+        }
         Ok(())
     }
 }

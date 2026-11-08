@@ -1,20 +1,27 @@
 //! Explicit desktop Sync operations. Importing this crate never discovers or starts a daemon.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod admission;
 #[cfg(target_os = "linux")]
 pub mod lifecycle;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod managed_launch;
 pub mod merge_preview;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod daemon;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod direct;
 pub mod pairing;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod private;
+#[cfg(windows)]
+#[path = "private/windows.rs"]
+mod private;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod enrollment;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod folder;
 
 #[cfg(target_os = "linux")]
@@ -22,7 +29,7 @@ pub mod runtime;
 
 pub mod readiness;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod presentation;
 
 #[cfg(target_os = "linux")]

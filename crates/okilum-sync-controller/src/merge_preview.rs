@@ -1,4 +1,5 @@
 //! Lossless first-sync planning. No daemon discovery, file IO or implicit consent.
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Complete, authenticated inventory of regular canonical files. Adapters must
@@ -31,6 +32,7 @@ pub struct Plan {
     there: Snapshot,
     entries: Vec<Entry>,
     merged: BTreeMap<String, Vec<u8>>,
+    fingerprint: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -42,9 +44,17 @@ pub enum Error {
 }
 /// Opaque consent cannot be transplanted to a different plan or revision.
 #[derive(Clone, Debug)]
-pub struct Consent(Plan);
+pub struct Consent([u8; 32]);
 
 impl Plan {
+    /// Exact read-only inputs retained by this revision-bound plan.
+    pub fn originals(&self) -> (&Snapshot, &Snapshot) {
+        (&self.here, &self.there)
+    }
+    /// Proposed lossless union. Inspecting it grants no publication authority.
+    pub fn merged_files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.merged
+    }
     pub fn preview(here: Snapshot, there: Snapshot) -> Result<Self, Error> {
         validate(&here)?;
         validate(&there)?;
@@ -73,7 +83,7 @@ impl Plan {
                 (Some(_), Some(b)) => {
                     let mut n = 1u64;
                     let target = loop {
-                        let candidate = format!("{path}.okilum-first-sync-conflict-{n}");
+                        let candidate = conflict_copy_path(&path, n);
                         if !reserved
                             .iter()
                             .any(|p| p == &candidate || p.starts_with(&format!("{candidate}/")))
@@ -100,11 +110,13 @@ impl Plan {
                 conflict_path,
             });
         }
+        let fingerprint = plan_fingerprint(&here, &there);
         Ok(Self {
             here,
             there,
             entries,
             merged,
+            fingerprint,
         })
     }
     pub fn entries(&self) -> &[Entry] {
@@ -126,18 +138,52 @@ impl Plan {
         if self.unrelated_warning() && !acknowledge_unrelated {
             return Err(Error::UnrelatedConsentRequired);
         }
-        Ok(Consent(self.clone()))
+        Ok(Consent(self.fingerprint))
     }
     pub fn apply(
         &self,
         consent: Consent,
         backend: &mut (impl Backend + ?Sized),
     ) -> Result<(), Error> {
-        if consent.0 != *self {
+        if consent.0 != self.fingerprint {
             return Err(Error::Stale);
         }
         backend.apply_if_unchanged(&self.here, &self.there, &self.merged)
     }
+}
+/// Insert the visible marker before the extension so Markdown and binary
+/// copies retain their file type. The number is chosen against both inventories.
+fn conflict_copy_path(path: &str, number: u64) -> String {
+    let path = std::path::Path::new(path);
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let extension = path.extension().and_then(|value| value.to_str());
+    let extension = extension
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        "{stem}.okilum-first-sync-conflict-{number}{extension}"
+    ))
+    .to_str()
+    .unwrap()
+    .to_owned()
+}
+fn plan_fingerprint(here: &Snapshot, there: &Snapshot) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"okilum-first-sync-consent-v1\0");
+    for snapshot in [here, there] {
+        for value in [snapshot.scope.as_bytes(), snapshot.revision.as_bytes()] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value);
+        }
+        hash.update((snapshot.files.len() as u64).to_le_bytes());
+        for (path, bytes) in &snapshot.files {
+            for value in [path.as_bytes(), bytes.as_slice()] {
+                hash.update((value.len() as u64).to_le_bytes());
+                hash.update(value);
+            }
+        }
+    }
+    hash.finalize().into()
 }
 /// Serialized adapter boundary. Before ANY mutation, re-read and compare both
 /// complete snapshots (scope, revision AND bytes). Abort with Stale on mismatch.
@@ -425,7 +471,7 @@ pub mod filesystem {
     /// supersede an interrupted operation. Neither variant publishes files.
     pub enum PreparedSession {
         Fresh {
-            plan: Plan,
+            plan: Box<Plan>,
             session: FilesystemSession,
         },
         Recovery(FilesystemSession),
@@ -436,7 +482,10 @@ pub mod filesystem {
                 RecoveryStatus::Fresh => {
                     let (here, there) = session.snapshots()?;
                     let plan = Plan::preview(here, there)?;
-                    Ok(Self::Fresh { plan, session })
+                    Ok(Self::Fresh {
+                        plan: Box::new(plan),
+                        session,
+                    })
                 }
                 RecoveryStatus::Pending => Ok(Self::Recovery(session)),
                 RecoveryStatus::Complete => Err(failure(

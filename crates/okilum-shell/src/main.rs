@@ -136,7 +136,7 @@ mod reader_viewer_tests;
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
 mod reader_shortcuts;
@@ -146,7 +146,7 @@ mod reader_split;
 mod reader_stignore;
 #[cfg(target_os = "linux")]
 mod reader_sync_conflicts;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_sync_merge;
 mod reader_t3_settings;
 mod reader_table_copy;
@@ -7207,7 +7207,7 @@ fn reader_more_menu(
                     .checked(current == mode)
                     .on_click(move |_, window, cx| set_appearance(mode, Some(&vault), window, cx))
             };
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             let settings_reader_for_sync = reader.clone();
             let settings_reader = reader.clone();
             let wrap_reader = reader.clone();
@@ -7262,7 +7262,7 @@ fn reader_more_menu(
                     }),
             )
             .map(|menu| {
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 let menu = menu.item(reader_settings::share_sync_menu_item(
                     settings_reader_for_sync.clone(),
                 ));
@@ -8274,11 +8274,11 @@ impl Render for Reader {
                 })
             })
             .children({
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 {
                     Some(reader_settings_sync::presentation::approval_banner(cx))
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
                     None::<AnyElement>
                 }
@@ -8540,6 +8540,11 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = initialize_native_sync_qa() {
+        eprintln!("Native Sync isolation: {error:#}");
+        std::process::exit(1);
+    }
     #[cfg(feature = "data-view-native-harness")]
     if reader_delimited::native_harness::entry() {
         return;
@@ -8586,7 +8591,7 @@ fn main() {
     }
     // `okilum sync …` is headless: it exits before the updater, single-instance
     // handoff, AppImage re-exec or any GPUI initialization (#2589).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(unix)]
     if let Some(code) = reader_settings_sync::cli::entry() {
         std::process::exit(code);
     }
@@ -8718,7 +8723,7 @@ fn main() {
     };
     let _instance_lock = instance_lock;
     // Only the instance that owns the profile answers paired computers (#2589).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let serves_sync = _instance_lock.is_some();
     // A forwarded launch never races the active Reader's apply operation. The
     // primary repairs interrupted decisions before any path validation, cache
@@ -8798,7 +8803,7 @@ fn main() {
         }
         updater::install(cx);
         // Paired computers reach this app without Settings → Sync (#2589).
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if serves_sync {
             reader_settings_sync::serve_paired(cx);
         }
@@ -13134,4 +13139,23 @@ mod reader_scroll_key_tests {
             assert_ne!(after_page, position(visual));
         }
     }
+}
+
+/// Explicit acceptance scope before state, threads or services are opened. A
+/// Reader profile alone never redirects the production Sync connection.
+#[cfg(target_os = "macos")]
+fn initialize_native_sync_qa() -> anyhow::Result<()> {
+    use okilum_sync_controller::sidecar::macos::{account_state_directory, isolation};
+    let Some(root) = std::env::var_os("OKILUM_SYNC_QA_ROOT") else {
+        return Ok(());
+    };
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("QA HOME missing"))?;
+    let state = reader_history::isolated_state_directory()
+        .ok_or_else(|| anyhow::anyhow!("QA requires explicit absolute OKILUM_STATE_DIR"))?;
+    isolation::select(isolation::Profile::prepare(
+        std::path::Path::new(&root),
+        std::path::Path::new(&home),
+        &state,
+        &account_state_directory()?,
+    )?)
 }

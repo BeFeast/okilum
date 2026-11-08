@@ -3,6 +3,7 @@ use std::{fs, os::unix::fs::symlink};
 
 fn header(files: usize, bytes: usize) -> Header {
     Header {
+        auth: "fixture capability".into(),
         id: Uuid::new_v4(),
         revision: "revision".into(),
         manifest: String::new(),
@@ -162,7 +163,7 @@ fn chunks_bind_offsets_revision_identity_and_content_hash_with_frame_controls() 
 }
 #[test]
 fn no_follow_tree_rejects_unsafe_paths_special_files_hardlinks_and_custom_ignores() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let vault = temp.path().join("vault");
     fs::create_dir(&vault)?;
     fs::write(vault.join("safe.md"), b"positive control")?;
@@ -189,11 +190,9 @@ fn no_follow_tree_rejects_unsafe_paths_special_files_hardlinks_and_custom_ignore
     fs::hard_link(vault.join("safe.md"), vault.join("hardlink"))?;
     assert!(Tree::collect(&root, &vault, true).is_err());
     fs::remove_file(vault.join("hardlink"))?;
-    rustix::fs::mkfifoat(
-        &root,
-        "fifo",
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-    )?;
+    use std::os::unix::ffi::OsStrExt;
+    let fifo = std::ffi::CString::new(vault.join("fifo").as_os_str().as_bytes())?;
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert!(Tree::collect(&root, &vault, true).is_err());
     fs::remove_file(vault.join("fifo"))?;
     fs::write(
@@ -222,7 +221,7 @@ fn no_follow_tree_rejects_unsafe_paths_special_files_hardlinks_and_custom_ignore
 }
 #[test]
 fn oversized_inventories_are_errors_not_truncated_success() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let root = tree::open_root(temp.path())?;
     let file = File::create(temp.path().join("oversize"))?;
     file.set_len(MAX_BYTES as u64 + 1)?;
@@ -231,7 +230,7 @@ fn oversized_inventories_are_errors_not_truncated_success() -> Result<()> {
 }
 #[test]
 fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let controller = Controller::open(temp.path().join("controller"), vec![])?;
     let scope = Uuid::new_v4();
     let signer = wire::public(&wire::random()?)?;
@@ -283,12 +282,12 @@ fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()>
 
 #[test]
 fn full_validation_detects_changed_bytes_even_if_metadata_revision_collides() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let root = Arc::new(tree::open_root(temp.path())?);
     fs::write(temp.path().join("note.md"), b"positive control")?;
     let mut binding = header(1, 16).binding;
     binding.policy = tree::policy(&root)?;
-    let mut original = local(binding, temp.path().to_owned(), root.clone())?;
+    let mut original = local(binding, temp.path().to_owned(), root.clone(), &[5; 32])?;
     let good = Tree::collect(&root, temp.path(), true)?;
     assert!(original.matches(&good, true));
     fs::write(temp.path().join("note.md"), b"negative control")?;
@@ -327,14 +326,14 @@ fn stored(path: &Path, peer: Uuid, vault: &str) -> Result<Stored> {
     b.vault = vault.into();
     b.policy = tree::policy(&root)?;
     Ok(Stored {
-        local: local(b, path.into(), root)?,
+        local: local(b, path.into(), root, &[5; 32])?,
         source: source(path),
         expires: Instant::now() + Duration::from_secs(LIFETIME_SECONDS),
     })
 }
 #[test]
 fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     fs::write(temp.path().join("note.md"), b"cache positive control")?;
     let mut cache = Cache::default();
     let a = Uuid::new_v4();
@@ -382,7 +381,7 @@ fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Resu
 #[test]
 fn unchanged_reopening_retains_capability_but_installs_the_fresh_validated_snapshot() -> Result<()>
 {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     fs::write(temp.path().join("note.md"), b"unchanged canonical bytes")?;
     let peer = Uuid::new_v4();
     let mut cache = Cache::default();
@@ -440,7 +439,7 @@ fn paused_receiving_and_missing_folder_state_are_explicit_refusals() -> Result<(
 }
 #[test]
 fn opaque_binding_frames_hide_local_paths_usernames_and_raw_identity() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let path = temp.path().join("home/private-user/vault");
     fs::create_dir_all(&path)?;
     let root = tree::open_root(&path)?;
@@ -481,7 +480,7 @@ fn opaque_binding_frames_hide_local_paths_usernames_and_raw_identity() -> Result
 }
 #[test]
 fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let state = temp.path().join("state");
     let controller = Controller::open(state.clone(), vec![])?;
     fs::create_dir_all(state.join("nested"))?;
@@ -507,7 +506,7 @@ fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> 
 #[test]
 fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> Result<()> {
     use std::sync::mpsc;
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let server = Controller::open(temp.path().join("server"), vec![])?;
     let offer = server
         .begin_pairing_at("Server", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
@@ -634,7 +633,7 @@ fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> R
 
 #[test]
 fn opened_inventory_descriptor_must_match_the_approved_root_identity() -> Result<()> {
-    let temp = tempfile::tempdir()?;
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let path = temp.path().join("vault");
     fs::create_dir(&path)?;
     fs::write(path.join("note.md"), b"approved root")?;

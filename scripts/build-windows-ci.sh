@@ -32,6 +32,7 @@ env "$windows_cc" cargo xwin build --locked --target x86_64-pc-windows-msvc \
     --profile windows-diagnostic -p okilum-sync-supervisor
 cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/okilum-sync-supervisor.exe" "$output/okilum-sync-supervisor.exe"
 python3 scripts/windows/pe.py gui "$output/okilum-sync-supervisor.exe"
+python3 scripts/syncthing/windows_bundle.py stage --payload "$output"
 python3 scripts/third-party-notices.py --stage "$output"
 cp docs/windows-diagnostic.md "$output/README.md"
 cargo metadata --locked --format-version 1 > "$output/metadata.json"

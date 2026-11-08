@@ -104,6 +104,9 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
     pub fn register_prepared(&mut self) -> Result<ManagedStatus> {
         self.register_until(None)
     }
+    pub fn native_status(&mut self) -> Result<Status> {
+        self.service.status(Instant::now() + self.budget)
+    }
     /// User action for the exact prepared generation displayed by the UI. This
     /// never prepares missing state, repairs uncertainty or creates permission.
     pub fn enable_confirmed(&mut self, generation: uuid::Uuid) -> Result<ManagedStatus> {
@@ -147,7 +150,7 @@ mod native {
     use super::*;
     use crate::sidecar::{
         macos::{
-            account_state_directory,
+            active_state_directory,
             bundle::{BundleGuard, NativeSignature},
             connection::NativeSupervisor,
             native::RegistrationService,
@@ -179,11 +182,40 @@ mod native {
             self.supervisor.inspect_until(deadline)
         }
     }
+    enum NativePort {
+        Account(RegistrationService),
+        Isolated(super::super::isolation::NativeLaunchPort),
+    }
+    impl NativePort {
+        fn new(root: &Path) -> Result<Self> {
+            Ok(match super::super::isolation::selected()? {
+                Some(profile) => {
+                    ensure!(profile.state() == root, "QA state selection changed");
+                    Self::Isolated(super::super::isolation::NativeLaunchPort::new(
+                        profile.clone(),
+                    ))
+                }
+                None => Self::Account(RegistrationService),
+            })
+        }
+    }
+    impl RegistrationPort for NativePort {
+        fn status(&mut self, deadline: Instant) -> Result<Status> {
+            match self {
+                Self::Account(port) => port.status(deadline),
+                Self::Isolated(port) => port.status(deadline),
+            }
+        }
+        fn register(&mut self, deadline: Instant) -> Result<()> {
+            match self {
+                Self::Account(port) => port.register(deadline),
+                Self::Isolated(port) => port.register(deadline),
+            }
+        }
+    }
     /// Concrete production composition. The native service port is private and
     /// reachable only after durable dispatch. No generic Controller/outer lock.
-    pub struct NativeRegistrationGuard(
-        RegistrationGuard<UnixDir, NativeProof, RegistrationService>,
-    );
+    pub struct NativeRegistrationGuard(RegistrationGuard<UnixDir, NativeProof, NativePort>);
     impl NativeRegistrationGuard {
         pub fn open(
             app: &Path,
@@ -204,7 +236,7 @@ mod native {
                         .canonicalize()?,
                 "registration requires the calling app's own executable"
             );
-            let root = account_state_directory()?;
+            let root = active_state_directory()?;
             ensure!(
                 Path::new(&binding.state_directory) == root,
                 "recovery pending: registration requires the account state directory"
@@ -236,12 +268,15 @@ mod native {
                 binding,
                 store,
                 proof,
-                RegistrationService,
+                NativePort::new(&root)?,
                 budget,
             )?))
         }
         pub fn register_prepared(&mut self) -> Result<ManagedStatus> {
             self.0.register_prepared()
+        }
+        pub fn native_status(&mut self) -> Result<Status> {
+            self.0.native_status()
         }
         pub fn enable_confirmed(&mut self, generation: uuid::Uuid) -> Result<ManagedStatus> {
             self.0.enable_confirmed(generation)

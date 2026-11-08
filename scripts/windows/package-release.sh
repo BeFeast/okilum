@@ -33,10 +33,18 @@ PY
 }
 
 signed_release() {
-    bash "$here/sign.sh" "$payload/okilum.exe" "$payload/okilum-sync-supervisor.exe" &&
+    local programs=("$payload/okilum.exe" "$payload/okilum-sync-supervisor.exe")
+    if [ -f "$payload/syncthing.exe" ]; then
+        # Pinned ssign refuses existing signatures. Strip only the verified
+        # upstream certificate table, never a section or preceding overlay.
+        python3 "$here/../syncthing/windows_bundle.py" prepare-signing --payload "$payload" || return
+        programs+=("$payload/syncthing.exe")
+    fi
+    bash "$here/sign.sh" "${programs[@]}" &&
+    { [ ! -f "$payload/syncthing.exe" ] || python3 "$here/../syncthing/windows_bundle.py" seal --payload "$payload"; } &&
     python3 "$here/portable-zip.py" "$payload" "$version" &&
     OKILUM_WINDOWS_SIGN_TEMPLATE="$here/sign.sh {{file...}}" \
-    OKILUM_WINDOWS_SIGN_EXCLUDE='[\\/](okilum|okilum-sync-supervisor)\.exe$' \
+    OKILUM_WINDOWS_SIGN_EXCLUDE='[\\/](okilum|okilum-sync-supervisor|syncthing)\.exe$' \
         bash "$here/pack.sh" "$tools" "$payload" "$output" &&
     python3 "$here/verify-signatures.py" "$output" "$payload"/okilum-*-x86_64.zip
 }

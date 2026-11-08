@@ -36,7 +36,7 @@ pub struct TaskScheduler<A>(pub A);
 pub fn task_name(binding: &Binding) -> String {
     format!("Okilum-Sync-{}", binding.instance)
 }
-pub(super) fn path(value: &str) -> Result<()> {
+pub(crate) fn path(value: &str) -> Result<()> {
     safe_text(value)?;
     let bytes = value.as_bytes();
     ensure!(
@@ -410,3 +410,21 @@ mod scheduler_roundtrip_tests {
         .is_err());
     }
 }
+
+#[cfg(windows)]
+pub mod bootstrap;
+
+#[cfg(windows)]
+pub mod signature;
+
+#[cfg(windows)]
+pub mod payload;
+
+#[cfg(windows)]
+mod preparation;
+
+#[cfg(windows)]
+mod connection;
+
+#[cfg(windows)]
+mod guard;

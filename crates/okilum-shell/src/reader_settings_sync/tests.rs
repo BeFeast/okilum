@@ -27,6 +27,7 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
             wizard: Some(super::presentation::Step::Start),
             ..Default::default()
         },
+        first_sync: Default::default(),
         #[cfg(target_os = "linux")]
         runtimes: vec![],
         vaults: vec![],
@@ -270,7 +271,7 @@ fn reader_settings_sync_validates_before_starting_any_controller(cx: &mut TestAp
 fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
     let nonempty = user_error(&anyhow::anyhow!("unknown nonempty destination"));
     assert!(nonempty.contains("Your files have not changed"));
-    assert!(nonempty.contains("empty folder"));
+    assert!(nonempty.contains("lossless merge preview"));
     let expired = user_error(&anyhow::anyhow!("invitation expired"));
     assert!(expired.contains("Create a new one"));
     let secret = "okilum://pair/private-token";
@@ -287,7 +288,7 @@ fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Re
         Operation::EnterPairing,
         Operation::Begin("First Mac".into()),
     ] {
-        super::prepare_mac_runtime(&controller, &operation, |_| {
+        super::prepare_native_runtime(&controller, &operation, |_| {
             called.set(true);
             anyhow::bail!("macOS Sync approval required")
         })?;
@@ -299,7 +300,7 @@ fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Re
     let invitation =
         controller.begin_pairing_at("First Mac", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?;
     assert!(invitation.offer_url.is_some());
-    let error = super::prepare_mac_runtime(
+    let error = super::prepare_native_runtime(
         &controller,
         &Operation::Redeem("private-url".into(), "Mac".into()),
         |_| {
@@ -907,6 +908,7 @@ fn guided_worker(
                 snapshot,
                 inspected: None,
                 selected_destination,
+                first_sync: Default::default(),
                 #[cfg(target_os = "linux")]
                 runtimes: vec![linux_runtime::Choice {
                     identity: okilum_sync_controller::daemon::DaemonIdentity {
@@ -1480,6 +1482,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
                 snapshot: snapshot(None),
                 inspected: None,
                 selected_destination: None,
+                first_sync: Default::default(),
                 runtimes: vec![network_choice(true, local)],
                 vaults: vec![],
             })
@@ -1647,6 +1650,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
                 snapshot: ready.clone(),
                 inspected: None,
                 selected_destination: None,
+                first_sync: Default::default(),
                 #[cfg(target_os = "linux")]
                 runtimes: vec![],
                 vaults: vec![],
@@ -2048,6 +2052,7 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
                     snapshot: saved.clone(),
                     inspected: None,
                     selected_destination: None,
+                    first_sync: Default::default(),
                     #[cfg(target_os = "linux")]
                     runtimes: vec![],
                     vaults: vec![],
@@ -2145,6 +2150,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
                 snapshot,
                 inspected: preview,
                 selected_destination: None,
+                first_sync: Default::default(),
                 runtimes: vec![],
                 vaults: vec![],
             })
@@ -2404,12 +2410,12 @@ fn issue2489_mac_source_bootstrap_requires_the_explicit_share_action() -> anyhow
     let directory = tempfile::tempdir()?;
     let controller = Controller::open(directory.path().join("direct"), vec![])?;
     let fired = Cell::new(false);
-    super::prepare_mac_runtime(&controller, &Operation::Read, |_| {
+    super::prepare_native_runtime(&controller, &Operation::Read, |_| {
         fired.set(true);
         Ok(())
     })?;
     assert!(!fired.get(), "ordinary refresh cannot start a Mac helper");
-    let error = super::prepare_mac_runtime(
+    let error = super::prepare_native_runtime(
         &controller,
         &Operation::Share(directory.path().join("Notes")),
         |_| {
@@ -2471,6 +2477,7 @@ fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &m
                 snapshot,
                 inspected: None,
                 selected_destination: None,
+                first_sync: Default::default(),
                 #[cfg(target_os = "linux")]
                 runtimes: vec![],
                 vaults: vec![vault.clone()],
@@ -2582,6 +2589,7 @@ fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_c
         );
         Output {
             runtime_health,
+            first_sync: Default::default(),
             overview,
             connection_error,
             diagnostic: Some("synthetic controller reconciliation error".into()),

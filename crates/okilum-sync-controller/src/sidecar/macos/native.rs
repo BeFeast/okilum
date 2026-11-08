@@ -5,7 +5,7 @@ use crate::sidecar::{
     authority::{launch::Dispatch, StopToken},
     supervisor::ipc::Scope,
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use objc2::rc::Retained;
 use objc2_foundation::{NSProcessInfo, NSString};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
@@ -173,7 +173,47 @@ impl super::registration::RegistrationPort for RegistrationService {
     }
 }
 
-/// Read-only approval state for the current app bundled service.
-pub(super) fn registration_status() -> Result<Status> {
-    service_status(PLIST)
+/// Only after the controller durably recorded both authenticated owned-tree
+/// Stop and captured supervisor exit. No ordinary registration/absence probe
+/// may unregister an existing service to obtain another launch permission.
+pub(super) fn unregister_retired(binding: &Binding, deadline: Instant) -> Result<()> {
+    use crate::sidecar::store::UnixStore;
+    let state = super::account_state_directory()?;
+    ensure!(
+        std::path::Path::new(&binding.state_directory) == state,
+        "native upgrade state changed"
+    );
+    let store = UnixStore::open_existing(&state)?;
+    let saved = {
+        let tx = store.begin(deadline)?;
+        tx.current()?.context("retirement journal missing")?.clone()
+    };
+    ensure!(
+        saved.binding() == binding
+            && saved.native_launch_retired()
+            && saved.intent() == crate::sidecar::Intent::Disabled
+            && saved.stop().is_none(),
+        "native unregister requires verified retirement"
+    );
+    ensure!(Instant::now() < deadline, "native upgrade deadline elapsed");
+    if !matches!(
+        service_status(PLIST)?,
+        Status::NotRegistered | Status::NotFound
+    ) {
+        unsafe { service(PLIST)?.unregisterAndReturnError() }
+            .map_err(|error| anyhow::anyhow!("native upgrade unregister failed: {error}"))?;
+    }
+    ensure!(
+        matches!(
+            service_status(PLIST)?,
+            Status::NotRegistered | Status::NotFound
+        ),
+        "native unregister is still pending"
+    );
+    let tx = store.begin(deadline)?;
+    ensure!(
+        tx.current()? == Some(&saved),
+        "native retirement changed during unregister"
+    );
+    Ok(())
 }
