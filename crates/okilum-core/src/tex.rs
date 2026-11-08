@@ -9,6 +9,7 @@
 //! Unsupported syntax is an [`Error`] with a short message, never a guess.
 use std::ops::Range;
 
+#[path = "tex/environment.rs"]
 mod environment;
 
 /// Horizontal alignment of a TeX array column.
