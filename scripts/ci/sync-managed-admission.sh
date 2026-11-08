@@ -39,4 +39,5 @@ PYTHON
 )
 python3 scripts/ci/sync-managed-admission-runs.py "$executable"
 python3 scripts/ci/sync-first-merge-negative-control.py
+python3 scripts/ci/sync-first-merge-expiry-negative-control.py
 python3 scripts/ci/sync-managed-admission-negative-control.py

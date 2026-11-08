@@ -113,6 +113,19 @@ pub mod fixture {
     use super::*;
     type Hook = Box<dyn Fn(&str, Uuid) + Send + Sync>;
     static HOOK: std::sync::OnceLock<Hook> = std::sync::OnceLock::new();
+    /// Expire actual completed inspections without a two-minute test sleep.
+    /// A live request retaining the snapshot makes this control fail explicitly.
+    pub fn expire_inspections(controller: &Controller) -> usize {
+        let mut cache = controller.shared.inventory.lock().unwrap();
+        let mut count = 0;
+        for stored in cache.entries.values_mut() {
+            Arc::get_mut(stored)
+                .expect("inspection fixture must be idle before expiry")
+                .expires = Instant::now();
+            count += 1;
+        }
+        count
+    }
     pub fn install(hook: impl Fn(&str, Uuid) + Send + Sync + 'static) {
         assert!(
             HOOK.set(Box::new(hook)).is_ok(),
@@ -594,6 +607,12 @@ impl merge_preview::Backend for Apply {
         merged: &BTreeMap<String, Vec<u8>>,
     ) -> std::result::Result<(), merge_preview::Error> {
         ensure_plan(&self.preview, here, there, merged)?;
+        // Keep the existing transaction serialization across reopening too, so
+        // a queued confirmation cannot age its fresh capability behind a merge.
+        let _serial = self.controller.shared.transfer_lock.lock().unwrap();
+        self.controller
+            .renew_first_sync_preview(&mut self.preview)
+            .map_err(|_| merge_preview::Error::Stale)?;
         self.controller
             .begin_first_sync(&self.preview)
             .map_err(|error| merge_preview::Error::Backend(format!("{error:#}")))
@@ -635,7 +654,7 @@ impl Controller {
         Ok(())
     }
     fn begin_first_sync(&self, preview: &Preview) -> Result<()> {
-        let _serial = self.shared.transfer_lock.lock().unwrap();
+        // Apply retains transfer_lock from admission through this transaction.
         self.check()?;
         self.validate_remote_preview(preview)?;
         self.ordinary_first_sync_destination(&preview.local.path)?;
