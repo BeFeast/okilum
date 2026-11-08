@@ -52,7 +52,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
     required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
                 "Verify agent helper controls", "Stress private reveal bus (20 runs)",
-                "Run CI, releases and updater Python suites",
+                "Run CI, releases and updater Python suites", "Verify per-user AppImage runtime",
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Reject and reap surviving agent fixture daemons"}

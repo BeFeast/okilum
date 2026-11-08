@@ -6,6 +6,10 @@ Regenerate it with cargo-about 0.9.2 and `python3 scripts/third-party-notices.py
 The generator uses all workspace features and platforms, including build-time
 components; this is a conservative superset of any individual release.
 
+- AppImage type2-runtime: MIT with its statically linked dependency notices in
+  AppImage-runtime.txt. Source pinned in scripts/appimage/build-runtime.sh; the
+  per-user extraction namespace modification is runtime-per-user.diff. The
+  source archive and patch remain available for rebuilding/relinking.
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
   Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
