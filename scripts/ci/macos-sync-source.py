@@ -3,6 +3,28 @@
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+
+def recovery_negative_control():
+    path = Path("crates/okilum-shell/src/reader_settings_sync/health.rs")
+    original = path.read_bytes()
+    guard = b"if !requested.swap(true, std::sync::atomic::Ordering::SeqCst) {"
+    assert original.count(guard) == 1
+    test = "reader_settings_sync::health::tests::managed_recovery_requests_once_and_waits_for_authenticated_health"
+    command = ["cargo", "test", "--locked", "-p", "okilum-shell", "--bin=okilum", test,
+               "--", "--exact", "--nocapture", "--test-threads=1"]
+    try:
+        # Restore the old no-automatic-restart behavior in compiled code.
+        path.write_bytes(original.replace(guard, b"if requested.swap(true, std::sync::atomic::Ordering::SeqCst) && false {"))
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        print(result.stdout, flush=True)
+        assert result.returncode != 0 and "running 1 test" in result.stdout
+        assert "0 passed; 1 failed" in result.stdout
+        assert "a stale helper needs one bounded recovery request" in result.stdout
+    finally:
+        path.write_bytes(original)
+    subprocess.run(command, check=True)
 
 
 def main():
@@ -31,6 +53,7 @@ def main():
         if not re.search(r": test$", listed.stdout, re.M):
             raise RuntimeError(f"native Mac Sync filter did not fire: {selected}")
         subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
+    recovery_negative_control()
 
 
 if __name__ == "__main__":

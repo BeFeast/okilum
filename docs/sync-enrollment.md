@@ -6,6 +6,15 @@ bundled runtime. You do not need an Okilum account, a service, or a server.
 After the first transfer, saved changes and deletions sync automatically in both
 directions. Keep a separate backup: Sync can copy an accidental deletion too.
 
+On macOS, an enabled managed connection requests one guarded helper restart per
+app process if authenticated helper health fails, including when an app update
+replaces the old helper's executable. Existing signing, ownership, saved intent
+and device-identity checks apply. The failure remains visible until a later
+authenticated helper and REST check succeeds; a restart request alone does not
+clear it. This does not rebind vault identities or change pairing/folders. Those
+repairs still require the explicit Fix action. Isolated Reader profiles do not
+restart the account-wide helper.
+
 This describes the shipped Linux and macOS flow. The
 [Linux outcome](https://git.oklabs.uk/BeFeast/okilum/issues/2039#issuecomment-46260)
 records the fresh two-computer run on beta 7538. macOS beta 29262 or later supports

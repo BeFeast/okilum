@@ -118,6 +118,34 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
     if !managed_enabled() {
         return Ok(());
     }
+    // Sparkle can unlink the previous bundle while its signed helper remains
+    // alive. Reuse the existing guarded restart once per app process; never
+    // rebind replica witnesses or treat a restart request as healthy Sync.
+    static RECOVERY_REQUESTED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    recover_managed_once(inspect_managed(), &RECOVERY_REQUESTED, restart_managed)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn recover_managed_once(
+    observed: anyhow::Result<()>,
+    requested: &std::sync::atomic::AtomicBool,
+    restart: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let Err(error) = observed else {
+        return Ok(());
+    };
+    if !requested.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        use anyhow::Context as _;
+        restart().context("Could not restart the managed Sync helper")?;
+    }
+    // The helper may take time to renew its generation. Keep the original
+    // failure visible until the next authenticated helper + REST observation.
+    Err(error)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn inspect_managed() -> anyhow::Result<()> {
     use okilum_sync_controller::{
         daemon,
         sidecar::{discovery, macos::account_state_directory},
@@ -304,6 +332,66 @@ fn bounded_request(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[test]
+    fn managed_recovery_requests_once_and_waits_for_authenticated_health() {
+        use std::{cell::Cell, sync::atomic::AtomicBool};
+        let requested = AtomicBool::new(false);
+        let requests = Cell::new(0);
+        for _ in 0..3 {
+            let result = recover_managed_once(
+                Err(anyhow::anyhow!("Sync helper is not responding")),
+                &requested,
+                || {
+                    requests.set(requests.get() + 1);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Sync helper is not responding"
+            );
+        }
+        assert_eq!(
+            requests.get(),
+            1,
+            "a stale helper needs one bounded recovery request"
+        );
+        recover_managed_once(Ok(()), &requested, || {
+            panic!("authenticated recovery must not restart the healthy helper")
+        })
+        .unwrap();
+        assert_eq!(requests.get(), 1);
+    }
+
+    #[test]
+    fn healthy_managed_sync_does_not_consume_recovery_or_restart() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let requested = AtomicBool::new(false);
+        recover_managed_once(Ok(()), &requested, || {
+            panic!("healthy Sync must stay running")
+        })
+        .unwrap();
+        assert!(!requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn refused_managed_recovery_stays_failed_without_repeated_requests() {
+        use std::sync::atomic::AtomicBool;
+        let requested = AtomicBool::new(false);
+        let result = recover_managed_once(
+            Err(anyhow::anyhow!("helper unavailable")),
+            &requested,
+            || anyhow::bail!("bundle ownership could not be verified"),
+        );
+        let text = format!("{:#}", result.unwrap_err());
+        assert!(text.contains("bundle ownership could not be verified"));
+        assert!(recover_managed_once(
+            Err(anyhow::anyhow!("helper unavailable")),
+            &requested,
+            || panic!("refused ownership cannot cause a restart loop")
+        )
+        .is_err());
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn launchctl_style_request_has_success_failure_and_hung_child_controls() -> anyhow::Result<()> {
