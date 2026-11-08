@@ -57,13 +57,19 @@ fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_
 }
 
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(state.join("reader-diagnostic.log"), "synthetic feedback diagnostic\n").unwrap();
     cx.update(|cx| {
         crate::test_init(cx);
+        cx.set_global(reader_diagnostics::LaunchTrace(reader_diagnostics::Trace::new(
+            Some(state), None,
+        )));
         version_info::install(cx);
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
-    let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
     std::fs::create_dir(&vault).unwrap();
     std::fs::write(vault.join("start.md"), "# Feedback\nA normal note.\n").unwrap();
@@ -1109,8 +1115,11 @@ fn feedback2744_empty_report_sends_default_log_and_allows_opt_out(cx: &mut TestA
         let send = feedback.debug_bounds("feedback-send").unwrap();
         feedback.simulate_click(send.center(), Modifiers::default());
         feedback.run_until_parked();
+        let log_choice = feedback.debug_bounds("feedback-log").unwrap();
+        feedback.simulate_click(log_choice.center(), Modifiers::default());
+        feedback.run_until_parked();
         view.update(&mut feedback, |view, cx| {
-            view.include_log = false;
+            assert!(!view.include_log, "user can uncheck logs");
             view.log_path = None;
             view.send(cx);
         });

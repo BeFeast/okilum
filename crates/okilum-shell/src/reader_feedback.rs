@@ -1764,8 +1764,14 @@ mod recovery_mounted_tests {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(drafts.clone());
         });
+        let state = directory.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::write(state.join("reader-diagnostic.log"), "synthetic diagnostic\n").unwrap();
         cx.update(|cx| {
             crate::test_init(cx);
+            cx.set_global(reader_diagnostics::LaunchTrace(reader_diagnostics::Trace::new(
+                Some(state), None,
+            )));
             version_info::install(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
@@ -1898,6 +1904,7 @@ mod recovery_mounted_tests {
             .save(&screenshot)
             .unwrap();
         let (view, mut feedback) = open(reader);
+        view.update(&mut feedback, |view, _| view.include_log = false);
         feedback.simulate_input("Keep this report while adjusting limits");
         choose(&mut feedback, &path, true);
         choose(&mut feedback, &screenshot, false);
