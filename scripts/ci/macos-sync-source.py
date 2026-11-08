@@ -10,10 +10,13 @@ def main():
         raise RuntimeError("native Mac Sync controls require macOS")
     for package, target, selected in (
         ("okilum-sync-controller", "--lib", "direct::source::tests::"),
+        ("okilum-sync-controller", "--lib", "direct::inventory::tests::"),
+        ("okilum-sync-controller", "--lib", "managed_launch::macos::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_peer::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_exit::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::tests::"),
+        ("okilum-shell", "--bin=okilum", "reader_settings_sync::first_sync::tests::"),
         # #2708: compile AppKit bindings and execute normal/zoom/fullscreen controls.
         ("okilum-shell", "--bin=okilum", "window_state::"),
     ):

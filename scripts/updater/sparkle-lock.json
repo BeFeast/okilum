@@ -1,6 +1,7 @@
 {
   "version": "2.10.0",
   "url": "https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz",
+  "asset_url": "https://api.github.com/repos/sparkle-project/Sparkle/releases/assets/562081725",
   "archive_sha256": "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c",
   "entries": {
     "Sparkle.framework/Autoupdate": {

@@ -142,6 +142,7 @@ impl ProcessGroupTree {
         let arguments = launch.unix_arguments()?;
         let image = std::fs::canonicalize(&launch.executable)?;
         let child = Command::new(&image)
+            .env("STMONITORED", "1")
             .args(&arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

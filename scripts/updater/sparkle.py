@@ -9,6 +9,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 
 LOCK = json.loads(Path(__file__).with_name('sparkle-lock.json').read_text())
@@ -114,6 +115,23 @@ def prepare(archive, destination):
             shutil.rmtree(stage)
 
 
+def fetch(archive):
+    # Both official routes identify the same pinned release asset. A failed
+    # network fetch or checksum never publishes a destination archive.
+    try:
+        with urllib.request.urlopen(LOCK['url'], timeout=60) as response:
+            data = response.read()
+    except urllib.error.URLError:
+        request = urllib.request.Request(LOCK['asset_url'], headers={
+            'Accept': 'application/octet-stream',
+        })
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+    require(sha(data) == LOCK['archive_sha256'], 'Sparkle download SHA256 mismatch')
+    with archive.open('xb') as output:
+        output.write(data)
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='command', required=True)
@@ -124,12 +142,7 @@ if __name__ == '__main__':
     a = sub.add_parser('fetch'); a.add_argument('archive', type=Path)
     args = p.parse_args()
     if args.command == 'fetch':
-        # Exact upstream URL and digest; a failed fetch never creates the destination.
-        with urllib.request.urlopen(LOCK['url'], timeout=60) as response:
-            data = response.read()
-        require(sha(data) == LOCK['archive_sha256'], 'Sparkle download SHA256 mismatch')
-        with args.archive.open('xb') as output:
-            output.write(data)
+        fetch(args.archive)
     elif args.command == 'prepare':
         prepare(args.archive, args.destination)
     else:

@@ -218,3 +218,33 @@ pub fn live_generation(home: &Path) -> Result<Generation> {
     );
     Ok(receipt)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn darwin_listener_proof_requires_the_exact_owner_and_endpoint() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        owns_rest(std::process::id(), address)?;
+        assert!(owns_rest(unsafe { libc::getppid() } as u32, address).is_err());
+        drop(listener);
+        assert!(owns_rest(std::process::id(), address).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn darwin_process_witness_uses_kernel_birth_parent_and_executable() -> Result<()> {
+        let pid = std::process::id();
+        assert_eq!(process_parent(pid)?, unsafe { libc::getppid() } as u32);
+        assert_eq!(process_start(pid)?, process_start(pid)?);
+        assert_eq!(
+            identity(&process_image(pid)?)?,
+            identity(&std::env::current_exe()?)?
+        );
+        assert!(process_start(u32::MAX).is_err());
+        Ok(())
+    }
+}

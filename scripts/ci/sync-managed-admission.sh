@@ -14,11 +14,10 @@ run_group() {
 run_group cargo test --locked -p okilum-sync-controller --lib lifecycle::tests:: -- --nocapture
 run_group cargo test --locked -p okilum-sync-controller --lib linux_bootstrap::tests:: -- --nocapture
 run_group cargo test --locked -p okilum-sync-controller --lib runtime::tests::unopened_and_disabled_runtime_has_no_effects -- --exact --nocapture
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture"
-archive=syncthing-linux-amd64-v2.1.6.tar.gz
-# The source-sharing step fetches this pinned public fixture first.
-(cd "$cache"; echo "524ef4e1df1850b719e2378c8369956f4e5f2ab9a46fdf7f45f2b925012147aa  $archive" | sha256sum --check)
-export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
+# Reuse the same archive AND executable checksum verifier/atomic publisher as
+# source sharing; the old version-named executable is no longer populated.
+OKILUM_SYNC_DIRECT_CLIENT=$(python3 scripts/ci/sync-fixture-stage.py)
+export OKILUM_SYNC_DIRECT_CLIENT
 artifacts=$(mktemp)
 trap 'unlink "$artifacts"' EXIT
 if ! cargo test --locked -p okilum-sync-controller --features first-sync-fixture --test managed_launch --no-run --message-format=json > "$artifacts"; then
