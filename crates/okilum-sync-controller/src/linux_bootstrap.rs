@@ -102,6 +102,10 @@ pub fn connect(
 /// Inject package/service boundaries for isolated fixtures. Consent, inventory,
 /// pinned binary, preparation and the production launch path remain identical.
 #[doc(hidden)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit package, cancellation and service adapters for isolated native verification"
+)]
 pub fn connect_with<S: UserServices>(
     confirmed: bool,
     state: &Path,

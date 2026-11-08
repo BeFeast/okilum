@@ -13,6 +13,7 @@ TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
+    'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
 }
 
 
@@ -31,7 +32,7 @@ def main():
     try:
         with log.open('w') as output:
             process = subprocess.Popen(
-                [str(Path(sys.argv[1]).resolve()), 'issue2582_', '--include-ignored',
+                [str(Path(sys.argv[1]).resolve()), '--include-ignored',
                  '--skip', 'issue2582_child', '--nocapture', '--test-threads=1'],
                 env=env, stdout=output, stderr=subprocess.STDOUT,
                 preexec_fn=lifecycle['parent_death_signal']())
@@ -41,11 +42,11 @@ def main():
         for name in TESTS:
             assert f'test {name} ...' in output and name in output, (name, output)
         # Child subprocesses print their own summaries. Require the parent suite
-        # to report exactly all THREE selected tests, never a non-empty child.
-        assert result == 0 and 'test result: ok. 3 passed; 0 failed;' in output, (result, output)
+        # to report exactly all selected tests, never a non-empty child.
+        assert result == 0 and f'test result: ok. {len(TESTS)} passed; 0 failed;' in output, (result, output)
         assert not lifecycle['check'](work), 'surviving fixture process'
         lifecycle['reap']()
-        print('MANAGED_ADMISSION_PASS: 3 selected tests passed; fixture processes=0; children reaped', flush=True)
+        print(f'MANAGED_ADMISSION_PASS: {len(TESTS)} selected tests passed; fixture processes=0; children reaped', flush=True)
         return 0
     finally:
         if process is not None:

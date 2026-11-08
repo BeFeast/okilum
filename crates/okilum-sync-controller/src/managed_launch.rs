@@ -26,6 +26,9 @@ use std::{
 use uuid::Uuid;
 use xmltree::{Element, XMLNode};
 
+mod quiescence;
+pub use quiescence::ScopedHold;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Identity(u64, u64, Option<u64>);
@@ -404,7 +407,7 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     })
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Generation {
     pub id: Uuid,
@@ -416,6 +419,10 @@ pub struct Generation {
     pub executable_hash: String,
     pub rest_address: SocketAddr,
     pub rest_start_time: Option<String>,
+    /// These folders had no runner at all in this process generation. This is
+    /// recorded from the exact offline configuration before the child starts.
+    #[serde(default)]
+    pub paused_at_start: Vec<String>,
 }
 /// Bind authenticated REST to the exact kernel process, not merely to another
 /// process with the same certificate/home. /proc/net alone is insufficient:
@@ -451,8 +458,10 @@ fn rest_listener(pid: u32, address: SocketAddr) -> Result<Option<String>> {
         IpAddr::V6(ip) => (
             "tcp6",
             ip.octets()
-                .chunks_exact(4)
-                .map(|b| format!("{:08X}", u32::from_le_bytes(b.try_into().unwrap())))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| format!("{:08X}", u32::from_le_bytes(*b)))
                 .collect::<String>(),
         ),
     };
@@ -512,6 +521,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
     let mut xml = Element::parse(private::read(&b.home.join("config.xml"))?.as_slice())?;
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
+    let mut paused_at_start = Vec::new();
     for e in xml
         .children
         .iter_mut()
@@ -544,8 +554,11 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                     "uncertain launch admission"
                 );
                 set_paused(e);
-                closed.push(id);
+                closed.push(id.clone());
             }
+        }
+        if e.get_child("paused").and_then(Element::get_text).as_deref() == Some("true") {
+            paused_at_start.push(id.clone());
         }
     }
     let mut bytes = Vec::new();
@@ -599,6 +612,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
             executable_hash: b.executable_hash.clone(),
             rest_address,
             rest_start_time: None,
+            paused_at_start,
         };
         private::write(
             &r.directory.join("generation.json"),

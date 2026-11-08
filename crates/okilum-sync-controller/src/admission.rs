@@ -15,6 +15,8 @@ pub(crate) fn configuration(
     folder: &str,
     root: &Path,
 ) -> Result<Configuration> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = (daemon, folder);
     #[cfg(target_os = "linux")]
     let runtime = crate::managed_launch::configuration(daemon, folder, root)?;
     // Acquire after the runtime gate, just like launch. The operation remains

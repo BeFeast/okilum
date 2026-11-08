@@ -66,6 +66,25 @@ fn issue2582_child() -> Result<()> {
                 thread::sleep(Duration::from_millis(50));
             }
         }
+        "scoped-holder" => {
+            let daemon: DaemonIdentity =
+                serde_json::from_slice(&fs::read(root.join("scoped-daemon.json"))?)?;
+            let authority = Authority::for_root(&root.join("selected"))?;
+            let mut hold = authority.begin_drain("scoped-first-sync")?;
+            let token = hold.token().clone();
+            wait("local writers drained", || hold.try_hold(&token))?;
+            let scope = okilum_sync_controller::managed_launch::ScopedHold::acquire(
+                daemon, "selected", hold, false,
+            )?;
+            scope.validate()?;
+            fs::write(
+                root.join("holder-ready"),
+                "transport and local writers quiescent",
+            )?;
+            loop {
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
         _ => anyhow::bail!("unknown fixture mode"),
     }
     Ok(())
@@ -459,6 +478,131 @@ fn add_source(source: &Peer, target: &DaemonIdentity, id: &str, path: &Path) -> 
     source.api.add_paused_folder(&json!({"id":id,"path":path,"type":"sendreceive","paused":true,
         "rescanIntervalS":0,"fsWatcherEnabled":false,"devices":[{"deviceID":source.id},{"deviceID":target.device_id}]}))?;
     source.api.patch_folder(id, &json!({"paused":false}))?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart() -> Result<()> {
+    use okilum_sync_controller::managed_launch::ScopedHold;
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("runtime");
+    let services = Services::default();
+    let rest = TcpListener::bind("127.0.0.1:0")?;
+    let listen = TcpListener::bind("127.0.0.1:0")?;
+    let request = Preparation {
+        executable: binary()?,
+        rest_address: rest.local_addr()?,
+        listen_address: listen.local_addr()?,
+    };
+    drop((rest, listen));
+    let runtime = Runtime::with_services(
+        state,
+        root.path().join("units"),
+        services.clone(),
+        launcher(),
+    );
+    let identity = runtime
+        .enable(Selection::Managed(request), &[])?
+        .identity
+        .unwrap();
+    let home = identity.config_file.parent().unwrap();
+    services.remember_pid(home)?;
+    let source = Peer::new(root.path(), "source", binary()?)?;
+    let selected = root.path().join("selected");
+    let second = root.path().join("second");
+    let source_second = root.path().join("source-second");
+    for path in [&selected, &second, &source_second] {
+        fs::create_dir(path)?;
+    }
+    let api = identity.connect()?;
+    let address = api.config()?["options"]["listenAddresses"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    source
+        .api
+        .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+    for (id, path, source_path) in [
+        ("selected", &selected, &source.vault),
+        ("second", &second, &source_second),
+    ] {
+        FolderController::new(root.path().join(format!("{id}-state"))).enroll(
+            &identity,
+            std::slice::from_ref(&identity.config_file),
+            &approval(&identity, &source, id),
+            path,
+        )?;
+        add_source(&source, &identity, id, source_path)?;
+        fs::write(source_path.join("control.md"), format!("{id} before hold"))?;
+    }
+    wait("positive control transfers before scoped hold", || {
+        source.api.scan("selected")?;
+        source.api.scan("second")?;
+        Ok(selected.join("control.md").exists() && second.join("control.md").exists())
+    })?;
+    private_json(
+        &root.path().join("scoped-daemon.json"),
+        &serde_json::to_value(&identity)?,
+    )?;
+    let mut child = worker("scoped-holder", root.path())?;
+    wait("actual transport drain receipt", || {
+        Ok(root.path().join("holder-ready").exists())
+    })?;
+    assert_eq!(api.folder("selected")?["paused"], true);
+    assert_eq!(api.folder("second")?["paused"], false);
+    let authority = Authority::for_root(&selected)?;
+    assert!(authority.operation().is_err());
+    fs::write(
+        source.vault.join("withheld.md"),
+        b"withheld during scoped hold",
+    )?;
+    fs::write(
+        source_second.join("progress.md"),
+        b"unrelated folder continues",
+    )?;
+    wait("unrelated folder transfer under scoped gate", || {
+        source.api.scan("selected")?;
+        source.api.scan("second")?;
+        Ok(second.join("progress.md").exists())
+    })?;
+    for _ in 0..10 {
+        source.api.scan("selected")?;
+        assert!(
+            !selected.join("withheld.md").exists(),
+            "transport published during scoped ownership"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    fixture_process::stop(&mut child.0)?;
+    assert_eq!(authority.snapshot()?.phase, Phase::RecoveryPending);
+    services.crash_runtime()?;
+    services.launch()?;
+    services.remember_pid(home)?;
+    assert!(live_generation(home)?
+        .paused_at_start
+        .contains(&"selected".into()));
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    wait("recovery drains local writers", || hold.try_hold(&token))?;
+    let scope = ScopedHold::acquire(identity.clone(), "selected", hold, true)?;
+    scope.validate()?;
+    assert!(!selected.join("withheld.md").exists());
+    scope.release_and_resume()?;
+    wait(
+        "same withheld change transfers after authorized release",
+        || {
+            source.api.scan("selected")?;
+            Ok(selected.join("withheld.md").exists())
+        },
+    )?;
+    assert_eq!(
+        fs::read(selected.join("withheld.md"))?,
+        b"withheld during scoped hold"
+    );
+    assert!(authority.operation().is_ok());
+    runtime.disable()?;
     Ok(())
 }
 

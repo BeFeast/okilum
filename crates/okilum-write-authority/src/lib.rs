@@ -779,6 +779,20 @@ pub struct Hold {
     _owner: File,
 }
 impl Hold {
+    pub fn root(&self) -> &Path {
+        self.authority.root()
+    }
+    /// Validate an already drained local ownership capability. Transport
+    /// adapters must separately prove that their own publishers have stopped.
+    pub fn validate_held(&self, expected: &Token) -> Result<()> {
+        let (_authority, _lock) = self.authority.locked()?;
+        let state = self.authority.state()?;
+        ensure!(
+            state.phase == Phase::Held && expected == &self.token && token(&state)? == *expected,
+            "Local writer hold is stale or not drained"
+        );
+        Ok(())
+    }
     pub fn token(&self) -> &Token {
         &self.token
     }
