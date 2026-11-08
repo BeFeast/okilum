@@ -388,24 +388,79 @@ impl Controller {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DirectoryIdentity {
     device: u64,
     inode: u64,
+    #[cfg(target_os = "macos")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stable: Option<okilum_write_authority::identity_macos::Identity>,
+}
+impl PartialEq for DirectoryIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(target_os = "macos")]
+        if let (Some(a), Some(b)) = (&self.stable, &other.stable) {
+            return a == b;
+        }
+        self.device == other.device && self.inode == other.inode
+    }
 }
 impl DirectoryIdentity {
     fn read(path: &Path) -> Result<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::symlink_metadata(path)?;
-        ensure!(
-            metadata.is_dir() && !metadata.file_type().is_symlink(),
-            "destination must remain a real directory"
-        );
+        let root = existing::VaultRoot::open(path)?;
+        let (device, inode) = root.identity()?;
         Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            device,
+            inode,
+            #[cfg(target_os = "macos")]
+            stable: Some(root.stable_identity()?),
         })
+    }
+    #[cfg(target_os = "macos")]
+    fn permits_refresh(&self, current: &Self, consent: bool) -> bool {
+        self == current || consent && self.stable.is_none() && self.inode == current.inode
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Controller {
+    /// Explicit Fix upgrades only existing authenticated transfer associations.
+    pub fn repair_transfer_identities(&self, consent: bool) -> Result<()> {
+        ensure!(
+            consent,
+            "transfer identity recovery requires explicit consent"
+        );
+        self.reconcile_macos_transfer_identities(true)
+    }
+    pub(super) fn reconcile_macos_transfer_identities(&self, consent: bool) -> Result<()> {
+        self.check()?;
+        let _guard = self.shared.transfer_lock.lock().unwrap();
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for mut transfer in transfers
+            .into_iter()
+            .filter(|t| t.active && !t.legacy_hold())
+        {
+            let current = DirectoryIdentity::read(&transfer.path)?;
+            let saved = transfer
+                .destination_identity
+                .as_ref()
+                .context("transfer root witness missing")?;
+            ensure!(
+                saved.permits_refresh(&current, consent),
+                "destination directory identity changed"
+            );
+            if saved.stable.is_some() && saved.device == current.device {
+                continue;
+            }
+            // Check the full saved folder/membership witness before persisting
+            // a boot-stable identity or refreshing its diagnostic device hint.
+            let api = transfer.daemon.connect()?;
+            transfer.destination_identity = Some(current);
+            validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+            self.save_transfer(&transfer)?;
+        }
+        Ok(())
     }
 }
 
@@ -1477,6 +1532,34 @@ pub(super) fn record_removed_membership(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn issue2752_transfer_identity_survives_device_renumbering_and_guards_legacy_repair(
+    ) -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let current = DirectoryIdentity::read(root.path())?;
+        let mut changed = serde_json::to_value(&current)?;
+        changed["device"] = 12345.into();
+        changed["stable"][0] = 12345.into();
+        let changed: DirectoryIdentity = serde_json::from_value(changed)?;
+        assert_eq!(current, changed);
+        assert!(changed.permits_refresh(&current, false));
+        let mut legacy = changed.clone();
+        legacy.stable = None;
+        assert!(!legacy.permits_refresh(&current, false));
+        assert!(legacy.permits_refresh(&current, true));
+        legacy.inode += 1;
+        assert!(!legacy.permits_refresh(&current, true));
+        let mut replaced = serde_json::to_value(&changed)?;
+        replaced["stable"][3] = serde_json::json!(vec![7u8; 16]);
+        let replaced: DirectoryIdentity = serde_json::from_value(replaced)?;
+        assert!(
+            !replaced.permits_refresh(&current, true),
+            "a changed volume cannot be repaired as the old one"
+        );
+        Ok(())
+    }
+
     fn fixture() -> Result<(tempfile::TempDir, Transfer, Value, Observation, Value)> {
         let root = tempfile::tempdir()?;
         let transfer = Transfer {
@@ -1692,7 +1775,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
@@ -1770,7 +1853,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         let controller = Controller::open(root.path().join("order-controller"), vec![])?;

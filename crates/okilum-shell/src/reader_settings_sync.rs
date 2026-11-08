@@ -3,6 +3,7 @@ use super::*;
 use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux_runtime::managed_service_directory;
@@ -41,7 +42,12 @@ fn serve_paired_from(
     let trace = reader_diagnostics::trace(cx);
     // Off the UI thread, and offline: reading the journal never starts Sync.
     let saved = cx.background_executor().spawn(async move {
-        state().and_then(|state| direct::has_paired_computers_or_vaults(&state))
+        state().and_then(|state| {
+            let paired = direct::has_paired_computers_or_vaults(&state)?;
+            #[cfg(all(target_os = "macos", not(test)))]
+            let paired = paired || health::managed_enabled();
+            Ok(paired)
+        })
     });
     cx.spawn(async move |cx| {
         let saved = saved.await;
@@ -56,6 +62,8 @@ fn serve_paired_from(
                     if let Some(trace) = &trace {
                         trace.event("sync_action_failed", failure_details("serve", &error));
                     }
+                    // A failed journal read must remain visible outside Settings.
+                    start_serving(cx);
                 }
             }
         });
@@ -124,6 +132,7 @@ pub(super) fn suspend(cx: &mut App) {
             view.busy = false;
             view.serving = false;
             view.error = None;
+            view.health = Default::default();
             view.awaiting_open = None;
             view.pending_destination = None;
             view.destination_error = None;
@@ -140,6 +149,8 @@ enum Operation {
     Remove(String),
     Retention(PathBuf, direct::RetentionDays),
     Read,
+    #[cfg(target_os = "macos")]
+    Restart,
     EnterPairing,
     #[cfg(target_os = "linux")]
     SelectConnection(PathBuf),
@@ -169,6 +180,7 @@ impl Global for TestWorker {}
 struct Output {
     overview: direct::Overview,
     connection_error: Option<String>,
+    diagnostic: Option<String>,
     controller: Controller,
     snapshot: Snapshot,
     inspected: Option<ExistingVault>,
@@ -178,6 +190,7 @@ struct Output {
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
+    health: health::Health,
     presentation: presentation::Presentation,
     controller: Option<Controller>,
     snapshot: Option<Snapshot>,
@@ -301,6 +314,7 @@ impl SyncSettings {
     }
     fn idle() -> Self {
         Self {
+            health: Default::default(),
             presentation: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
@@ -400,6 +414,7 @@ impl SyncSettings {
                 .map(|(controller, snapshot)| Output {
                     overview: self.presentation.overview.clone(),
                     connection_error: None,
+                    diagnostic: None,
                     controller: controller.clone(),
                     snapshot: snapshot.clone(),
                     inspected: None,
@@ -427,6 +442,8 @@ impl SyncSettings {
                             return worker_epoch.run(|| (worker.0)(operation))?;
                         }
                         if let Some(mut output) = pairing_poll {
+                            #[cfg(all(target_os = "macos", not(test)))]
+                            health::check_managed()?;
                             let guard = ControllerGuard {
                                 ticket: worker_epoch,
                                 controller: output.controller.clone(),
@@ -480,6 +497,9 @@ impl SyncSettings {
                             this.publish(output, cx);
                         }
                         Err(error) => {
+                            if refresh || this.serving {
+                                this.health.failed();
+                            }
                             this.presentation.transfers.clear();
                             this.presentation.error_details = failure_details(action, &error)
                                 ["error"]
@@ -517,6 +537,7 @@ impl SyncSettings {
                         }
                     }
                     cx.notify();
+                    cx.refresh_windows();
                     if let Some(operation) = this.pending_destination.take() {
                         this.run(operation, cx);
                     } else if succeeded && !this.presentation.transfers.is_empty() {
@@ -532,6 +553,19 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        self.health.observe(&output.overview, Instant::now());
+        if output.connection_error.is_none() {
+            // A successful recheck replaces the failed attempt, including its
+            // expanded diagnostic list. Never retain yesterday's REST errors.
+            self.presentation.error_details = None;
+            self.presentation.details = false;
+            self.presentation.retry = None;
+        } else {
+            self.health.failed();
+            if let Some(diagnostic) = output.diagnostic {
+                self.presentation.error_details = Some(diagnostic);
+            }
+        }
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
             if self.presentation.notified != Some(pending.request_id) {
@@ -648,8 +682,11 @@ impl SyncSettings {
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
         let interval = match &self.snapshot {
-            Some(snapshot) => sync_refresh_interval(snapshot),
-            None => self.serving.then_some(SERVE_RETRY),
+            Some(snapshot) => sync_refresh_interval(snapshot).or_else(|| {
+                (self.serving || self.error.is_some() || !snapshot.attached.is_empty())
+                    .then_some(SERVE_RETRY)
+            }),
+            None => (self.serving || self.error.is_some()).then_some(SERVE_RETRY),
         };
         let Some(interval) = interval else {
             return;
@@ -843,6 +880,14 @@ fn sync_refresh_interval(snapshot: &Snapshot) -> Option<Duration> {
     }
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = reader_history::isolated_state_directory() {
+        // Explicit profiles are isolated from the account helper and all live
+        // configuration paths. Their own external connection is read-only here.
+        let config = profile.join("sync/config/config.xml");
+        let configs = config.try_exists()?.then_some(config).into_iter().collect();
+        return Ok((state_location()?, configs));
+    }
     let configs = direct::configuration_paths()?;
     #[cfg(target_os = "macos")]
     let configs = {
@@ -864,6 +909,12 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
 }
 /// This computer's direct journal folder.
 fn state_location() -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = reader_history::isolated_state_directory() {
+        let sync = profile.join("sync");
+        ensure_private_sync_directory(&sync)?;
+        return Ok(sync.join("direct"));
+    }
     #[cfg(target_os = "linux")]
     let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
@@ -936,8 +987,30 @@ fn perform_scoped(
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
     let _serial = serial_actions();
-    perform_with_locations(controller, operation, ticket, locations)
+    let result = perform_with_locations(controller, operation, ticket, locations);
+    #[cfg(target_os = "macos")]
+    let result = result.map_err(with_helper_failure);
+    result
 }
+#[cfg(target_os = "macos")]
+fn with_helper_failure(error: anyhow::Error) -> anyhow::Error {
+    let diagnostic = (|| -> anyhow::Result<Option<String>> {
+        if reader_history::isolated_state_directory().is_some() {
+            return Ok(None);
+        }
+        let state = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+        okilum_sync_controller::sidecar::store::UnixStore::open_existing(&state)?
+            .read_supervisor_failure()
+    })()
+    .ok()
+    .flatten()
+    .filter(|text| !text.is_empty());
+    match diagnostic {
+        Some(text) => error.context(format!("Sync helper: {text}")),
+        None => error,
+    }
+}
+
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
 fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
@@ -987,6 +1060,10 @@ fn perform_with_locations(
             controller: controller.clone(),
         };
         guard.check()?;
+        #[cfg(target_os = "macos")]
+        if matches!(operation, Operation::Restart) {
+            health::repair_or_restart(&controller)?;
+        }
         #[cfg(target_os = "macos")]
         prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
         guard.check()?;
@@ -1090,10 +1167,29 @@ fn perform_with_locations(
                 | Operation::Catalog(_)
         );
         let mut inspected = None;
+        let mut refresh_problem = None;
         let snapshot = match operation {
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
-            Operation::Read | Operation::EnterPairing => controller.refresh()?,
+            #[cfg(target_os = "macos")]
+            Operation::Restart => controller.refresh()?,
+            Operation::Read | Operation::EnterPairing => {
+                #[cfg(all(target_os = "macos", not(test)))]
+                let observed = health::check_managed().and_then(|()| controller.refresh());
+                #[cfg(not(all(target_os = "macos", not(test))))]
+                let observed = controller.refresh();
+                match observed {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        #[cfg(target_os = "macos")]
+                        let error = with_helper_failure(error);
+                        refresh_problem = Some(error);
+                        // Saved enrollment is not first-run state. Keep known
+                        // computers/vaults visible while presenting the failure.
+                        controller.snapshot()?
+                    }
+                }
+            }
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,
             Operation::Share(path) => {
@@ -1146,12 +1242,18 @@ fn perform_with_locations(
         } else {
             runtime
         };
+        let connection_error = refresh_problem.as_ref().map(user_error);
+        #[cfg(target_os = "linux")]
+        let connection_error =
+            connection_error.or_else(|| linux_runtime::connection_error(&runtime));
         Ok(Output {
             overview: controller.overview().unwrap_or_default(),
-            #[cfg(target_os = "linux")]
-            connection_error: linux_runtime::connection_error(&runtime),
-            #[cfg(target_os = "macos")]
-            connection_error: None,
+            diagnostic: refresh_problem.as_ref().and_then(|error| {
+                failure_details("refresh", error)["error"]
+                    .as_str()
+                    .map(str::to_owned)
+            }),
+            connection_error,
             controller,
             snapshot,
             inspected,
@@ -1172,6 +1274,10 @@ fn perform_with_locations(
 }
 #[cfg(target_os = "macos")]
 fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        reader_history::isolated_state_directory().is_none(),
+        "Managed account Sync is unavailable from an isolated Reader profile"
+    );
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
@@ -1242,6 +1348,9 @@ fn user_error(error: &anyhow::Error) -> String {
         || text.contains("syncthing")
     {
         "No compatible Syncthing connection is available. Select the existing instance explicitly, or check its connection and refresh.".into()
+    } else if text.contains("attached replica identity changed") {
+        "The saved vault identity needs repair. Use Fix to reconnect this computer's existing Sync."
+            .into()
     } else if text.contains("reject") {
         "The other computer declined pairing. Create a new pairing URL to try again.".into()
     } else {
@@ -1321,3 +1430,6 @@ mod advanced;
 
 #[path = "reader_settings_sync/ignore_editor.rs"]
 mod ignore_editor;
+
+#[path = "reader_settings_sync/health.rs"]
+mod health;

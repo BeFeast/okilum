@@ -6,7 +6,7 @@ use std::os::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq)]
-pub(super) struct Identity(
+pub struct Identity(
     pub(super) u64, // diagnostic st_dev hint only for UUID-bearing identities
     pub(super) u64,
     #[serde(default)] pub(super) Option<u64>,
@@ -35,6 +35,11 @@ pub(super) fn read(path: &Path) -> Result<Identity> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
+    from_file(&handle)
+}
+
+/// Stable persisted identity read from the caller's held no-follow descriptor.
+pub fn from_file(handle: &File) -> Result<Identity> {
     let meta = handle.metadata()?;
     // Darwin attribute buffers have a four-byte length followed by the requested
     // UUID. ATTR_VOL_INFO selects volume attributes; it contributes no payload.

@@ -54,6 +54,21 @@ mod unix_main {
         }
     }
 
+    pub fn record_failure(error: &anyhow::Error) {
+        let state = args::parse(std::env::args_os().skip(1))
+            .ok()
+            .and_then(|args| args.state)
+            .or_else(|| default_state_directory().ok());
+        if let Some(state) = state {
+            if let Ok(store) = UnixStore::open_existing(&state) {
+                let _ = store.write_supervisor_failure(
+                    &format!("{error:#}"),
+                    Instant::now() + Duration::from_secs(2),
+                );
+            }
+        }
+    }
+
     pub fn main() -> Result<ExitCode> {
         let args = args::parse(std::env::args_os().skip(1))?;
         let state = match args.state.clone() {
@@ -111,6 +126,7 @@ fn main() -> std::process::ExitCode {
     match unix_main::main() {
         Ok(code) => code,
         Err(error) => {
+            unix_main::record_failure(&error);
             eprintln!("okilum-sync-supervisor: {error:#}");
             std::process::ExitCode::from(1)
         }

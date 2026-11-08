@@ -17,6 +17,13 @@ use std::{path::Path, time::Instant};
 #[cfg(any(not(target_os = "macos"), test))]
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+extern "C" fn request_restart(_: libc::c_int) {
+    RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 type Runtime = StoreRuntime<UnixDir, ProcessGroupTree>;
 
 pub fn run<C: PeerCheck>(
@@ -26,18 +33,35 @@ pub fn run<C: PeerCheck>(
     settings: &Settings,
     peer_check: impl Fn() -> C,
 ) -> Result<Exit> {
+    #[cfg(target_os = "macos")]
+    {
+        RESTART.store(false, std::sync::atomic::Ordering::Relaxed);
+        anyhow::ensure!(
+            unsafe {
+                libc::signal(
+                    libc::SIGTERM,
+                    request_restart as *const () as libc::sighandler_t,
+                )
+            } != libc::SIG_ERR,
+            "cannot install Sync shutdown handler"
+        );
+    }
     let Prepared {
         binding,
         selection,
         launch,
     } = prepared;
+    let lease = okilum_sync_controller::sidecar::supervisor::lease::Lease::acquire(state, &launch)?;
     // macOS launchd may restart a crashed helper. Only the one helper that
     // durably consumes the dispatched generation may spawn; no hint/absence
     // probe can grant another attempt. Claim failure has no process effects.
     #[cfg(target_os = "macos")]
-    let generation = store.claim_launch(&binding, Instant::now() + settings.store)?;
+    let generation =
+        store.claim_supervised_launch(&binding, &lease, Instant::now() + settings.store)?;
     #[cfg(not(target_os = "macos"))]
     let generation = Uuid::new_v4();
+    #[cfg(not(target_os = "macos"))]
+    let _lease = lease;
     let scope = okilum_sync_controller::sidecar::supervisor::ipc::Scope {
         installation: binding.installation,
         instance: binding.instance,
@@ -59,6 +83,8 @@ pub fn run<C: PeerCheck>(
         StoreRuntime::new(store.clone(), tree),
         generation,
     );
+    // A current healthy generation clears the previous failure receipt.
+    store.write_supervisor_failure("", Instant::now() + settings.store)?;
     let outcome = serve(
         &mut server,
         &endpoint,
@@ -70,6 +96,9 @@ pub fn run<C: PeerCheck>(
     // Whatever ended the loop, the hint must not outlive the supervisor.
     let cleared = close_and_clear(endpoint, &store, Instant::now() + settings.store);
     let exit = outcome?;
+    if exit == Exit::RuntimeExited {
+        store.write_supervisor_failure(super::describe(&exit), Instant::now() + settings.store)?;
+    }
     cleared.context("clearing the generation hint failed")?;
     Ok(exit)
 }
@@ -93,6 +122,14 @@ fn serve<C: PeerCheck>(
     peer_check: &impl Fn() -> C,
 ) -> Result<Exit> {
     loop {
+        #[cfg(target_os = "macos")]
+        if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::ensure!(
+                server.runtime_mut().flush_tree()? == Status::Stopped,
+                "Sync runtime cleanup incomplete during helper restart"
+            );
+            return Ok(Exit::RestartRequested);
+        }
         if server.runtime_mut().tree().root_exited()? {
             // Flush stragglers (the leader is unreaped, so signalling is safe), then
             // report the crash. A tree that cannot be certified gone is an error too.

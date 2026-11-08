@@ -76,6 +76,14 @@ impl Envelope {
     pub fn launch_registration(&self) -> Option<&Registration> {
         self.launch.as_ref()
     }
+    /// Called only with the exclusive supervisor lease and no surviving runtime.
+    /// Preserve enrollment and identity, revoke old IPC/Stop generations.
+    pub(crate) fn restart_claim(&self, binding: &Binding) -> Result<Self> {
+        // Reuse every lifecycle/binding check of an initial claim.
+        let mut next = self.advance_launch(Phase::Claimed, Phase::Claimed, binding)?;
+        next.launch.as_mut().unwrap().generation = Uuid::new_v4();
+        Ok(next)
+    }
     fn advance_launch(&self, expected: Phase, next: Phase, binding: &Binding) -> Result<Self> {
         ensure!(
             self.binding() == binding,
