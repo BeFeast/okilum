@@ -234,6 +234,7 @@ configuration and private service records, never canonical note metadata.
   [source editing and safe save](reader-source-editing.md) (#354),
   [rename / move](reader-source-editing.md#rename--move-ordinary-notes-360) (#360)
   and [link updates on rename / move](reader-source-editing.md#update-links-during-rename--move-440) (#440),
+  [Tree selection and explicit batch operations](tree-batch-selection.md) (#2681),
   [Tasks editing](typed-note-views.md) (#636),
   [Board management](project-board.md#board-management-1862) (#1862), and the
   [AI Brain POC](ai-brain-poc.md) (§11). Nothing writes metadata, record IDs or

@@ -1,0 +1,74 @@
+# Disposable hosted native controls only; no app installation or release signing.
+name: tree-batch-native
+on:
+  push:
+    branches: ['tree-batch-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: tree-batch-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Preserve native source line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: tree-batch-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/patches/*.diff') }}-${{ github.sha }}
+          restore-keys: |
+            tree-batch-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/patches/*.diff') }}-
+            feedback-identity-v1-${{ runner.os }}-
+            math-native-v1-${{ runner.os }}-
+      - name: Prepare exact source and native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+          else
+            python scripts/ci/test-icon.py "$RUNNER_TEMP/test.ico"
+          fi
+      - name: Exercise native Tree selection, batch operations and compiled missing-selection control
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$RUNNER_TEMP/test.ico")"
+          fi
+          python3 scripts/ci/tree-batch-check.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tree-batch-${{ runner.os }}
+          path: qa/tree-batch-2681/
+          if-no-files-found: warn
+          retention-days: 7

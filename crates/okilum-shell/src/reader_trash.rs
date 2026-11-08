@@ -133,11 +133,16 @@ impl Reader {
     }
 
     fn trash_blocked(&self, path: &str, reason: &str, window: &mut Window, cx: &mut App) {
+        self.complete_batch_item(Err(reason.to_owned()));
         self.trace_trash("trash_blocked", path, Some(reason), cx);
         reader_toast::transient(reason.to_owned(), window, cx);
     }
 
     pub(super) fn delete_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tree_focus.contains_focused(window, cx) && self.tree.selected_paths().len() > 1 {
+            self.open_batch_dialog(reader_batch::Kind::Trash, window, cx);
+            return;
+        }
         let path = if self.tree_focus.contains_focused(window, cx) {
             self.tree.cursor.clone().unwrap_or_default()
         } else {
@@ -178,10 +183,21 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.batch.running && !self.batch.dispatching {
+            reader_toast::transient(
+                "A batch is running. Stop it before another file operation.",
+                window,
+                cx,
+            );
+            return;
+        }
         self.trace_trash("trash_requested", &relative, None, cx);
         let blocked = if relative.is_empty() {
             Some("Select a file or folder first")
-        } else if self.trash_pending || self.note_move_pending {
+        } else if self.trash_pending
+            || self.note_move_pending
+            || (self.batch.running && !self.batch.dispatching)
+        {
             Some("Another file operation is still running. Please wait")
         } else if self
             .loading
@@ -315,6 +331,7 @@ impl Reader {
                 Err(error) => {
                     let _ = this.update_in_own_window(cx, |this, window, cx| {
                         this.trash_pending = false;
+                        this.complete_batch_item(Err(format!("{error:#}")));
                         this.trace_trash(
                             "trash_failed",
                             &relative,
@@ -541,6 +558,7 @@ impl Reader {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
+                        this.complete_batch_item(Ok(()));
                         this.trace_trash("trash_done", &relative, None, cx);
                         if creation.as_ref().is_some_and(|completed| {
                             this.creation_undo
@@ -584,6 +602,7 @@ impl Reader {
                         this.show_trash_toast(window, cx);
                     }
                     Err(error) => {
+                        this.complete_batch_item(Err(format!("{error:#}")));
                         this.trace_trash(
                             "trash_failed",
                             &relative,

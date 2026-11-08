@@ -103,6 +103,7 @@ impl Reader {
     }
 
     fn rename_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.complete_batch_item(Err(message.clone()));
         let operation = if self.renaming.is_some() {
             "rename"
         } else {
@@ -244,6 +245,10 @@ impl Reader {
     }
 
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tree.selected_paths().len() > 1 {
+            self.open_batch_dialog(reader_batch::Kind::Rename, window, cx);
+            return;
+        }
         if let Some(path) = self.tree.cursor.clone() {
             self.begin_rename(path, window, cx);
         } else {
@@ -271,7 +276,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.note_move_pending || self.trash_pending {
+        if self.note_move_pending || self.trash_pending || self.batch.running {
             self.file_operation_blocked(
                 "rename",
                 &path,
@@ -467,6 +472,10 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
+            !self.batch.running || self.batch.dispatching,
+            "A batch is running. Stop it before another file operation."
+        );
+        anyhow::ensure!(
             !self.loading.as_ref().is_some_and(|l| l.active),
             "Wait for loading to finish"
         );
@@ -562,6 +571,7 @@ impl Reader {
                 .update_in_own_window(cx, |this, window, cx| {
                     window.remove_notification::<MoveProgress>(cx);
                     if cancel.check().is_err() {
+                        this.complete_batch_item(Err("Move cancelled.".into()));
                         this.note_move_pending = false;
                         this.enable_rename(cx);
                         cx.notify();
@@ -612,6 +622,7 @@ impl Reader {
                     if let Some(update) = confirmed {
                         this.finish_move(pending, update, window, cx);
                     } else {
+                        this.complete_batch_item(Err("Move cancelled.".into()));
                         this.enable_rename(cx);
                     }
                     cx.notify();
@@ -836,6 +847,7 @@ impl Reader {
                 self.rename_error(format!("{error:#}"), cx);
             }
             Ok(moved) => {
+                self.complete_batch_item(Ok(()));
                 self.trace_file_operation("move", "finished", &pending.to, None, cx);
                 self.renaming = None;
                 let journal = moved.journal.clone();
