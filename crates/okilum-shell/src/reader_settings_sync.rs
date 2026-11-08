@@ -989,7 +989,7 @@ fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
     );
     Ok(())
 }
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn mac_direct_state(managed: &Path) -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
     let parent = managed.parent().context("Sync state parent unavailable")?;

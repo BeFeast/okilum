@@ -70,7 +70,8 @@ fetch linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/1
 # Upstream release 1.9.1 publishes this SHA256 in its release asset digest:
 # https://github.com/AppImage/appimagetool/releases/expanded_assets/1.9.1
 fetch appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 https://api.github.com/repos/AppImage/appimagetool/releases/assets/324406736
-fetch runtime https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46 https://api.github.com/repos/AppImage/type2-runtime/releases/assets/657374641
+# A content-only extraction cache in the upstream runtime collides across users.
+bash ../../scripts/appimage/build-runtime.sh tools/runtime
 # Prove the pinned runtime needs no host libfuse (or any other shared library).
 # Positive control: the same inspection must detect the system shell's loader.
 readelf -lW /bin/sh > evidence/runtime-positive-control.log

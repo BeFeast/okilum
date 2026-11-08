@@ -274,3 +274,12 @@ stops the build. It reports target size and volume free space, warns below
 50 GiB, and preserves a caller's `CARGO_INCREMENTAL` (default `1`).
 Existing build-script cache repair compares canonical paths, so macOS aliases
 such as `/var` and `/private/var` preserve valid warm outputs.
+
+The required `Verify per-user AppImage runtime` step rebuilds checksum-pinned
+upstream type2-runtime source in its static Alpine Docker environment, then
+applies `scripts/appimage/runtime-per-user.diff`. Real SquashFS process controls
+run as two different Linux UIDs. The unchanged runtime must reproduce the
+foreign-cache extraction failure; the patched runtime must launch, re-exec and
+restart both copies through both extraction entry forms, clean up only its own
+cache and preserve the other user's tree. This runs before Rust compilation and
+does not install an app or certify the official beta GUI flow.

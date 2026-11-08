@@ -9,7 +9,10 @@
 //! Unsupported syntax is an [`Error`] with a short message, never a guess.
 use std::ops::Range;
 
+#[path = "tex/environment.rs"]
 mod environment;
+#[path = "tex/symbols.rs"]
+mod symbols;
 
 /// Horizontal alignment of a TeX array column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +192,22 @@ impl Node {
 
 /// Parse one formula's content (without its `$` delimiters).
 pub fn parse(source: &str) -> Result<Vec<Node>, Error> {
+    parse_formula(source, false).map(|formula| formula.nodes)
+}
+
+/// A display formula and its optional upright equation label. Tags belong to
+/// the whole display, independently of where their command appears in source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Display {
+    pub nodes: Vec<Node>,
+    pub tag: Option<String>,
+}
+
+pub fn parse_display(source: &str) -> Result<Display, Error> {
+    parse_formula(source, true)
+}
+
+fn parse_formula(source: &str, display: bool) -> Result<Display, Error> {
     if source.len() > MAX_FORMULA_BYTES {
         return error("Formula is too long to preview");
     }
@@ -196,12 +215,17 @@ pub fn parse(source: &str) -> Result<Vec<Node>, Error> {
         chars: source.char_indices().peekable(),
         source,
         depth: 0,
+        display,
+        tag: None,
     };
     let nodes = parser.row(End::Eof)?;
     if nodes.is_empty() {
         return error("Empty formula");
     }
-    Ok(nodes)
+    Ok(Display {
+        nodes,
+        tag: parser.tag,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,6 +241,8 @@ struct Parser<'s> {
     chars: std::iter::Peekable<std::str::CharIndices<'s>>,
     source: &'s str,
     depth: usize,
+    display: bool,
+    tag: Option<String>,
 }
 
 enum Token {
@@ -432,6 +458,35 @@ impl Parser<'_> {
             "" => return error("Lone backslash"),
             "begin" => self.environment()?,
             "end" => return error("\\end without \\begin"),
+            "tag" => {
+                if !self.display {
+                    return error("Equation tags require display math ($$…$$)");
+                }
+                if self.depth != 1 {
+                    return error("Equation tags must belong to the outer display");
+                }
+                if self.tag.is_some() {
+                    return error("A display can have only one equation tag");
+                }
+                let bare = self.peek_char() == Some('*');
+                if bare {
+                    self.chars.next();
+                }
+                if self.peek_char() != Some('{') {
+                    return error("Equation tag needs a braced label");
+                }
+                let start = self.chars.peek().expect("braced tag").0;
+                let text = self.text_argument()?;
+                let end = self.chars.peek().map_or(self.source.len(), |(at, _)| *at);
+                if self.source.as_bytes()[start..end]
+                    .windows(2)
+                    .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_alphabetic())
+                {
+                    return error("Equation tags currently support plain text labels");
+                }
+                self.tag = Some(if bare { text } else { format!("({text})") });
+                return Ok(None);
+            }
             "frac" | "dfrac" | "tfrac" | "cfrac" => Node::Frac {
                 num: self.argument()?,
                 den: self.argument()?,
@@ -515,12 +570,14 @@ impl Parser<'_> {
                     }
                 } else if let Some(space) = space(&name) {
                     Node::Space(space)
-                } else if let Some((text, class)) = symbol(&name) {
+                } else if let Some((text, class)) = symbol(&name).or_else(|| symbols::symbol(&name))
+                {
                     let mut node = Node::atom(text, class);
                     if class == Class::Var {
                         // Greek capitals are upright in TeX; lowercase italic.
                         if let Node::Atom { font, .. } = &mut node {
-                            font.upright = text.chars().all(char::is_uppercase);
+                            font.upright =
+                                !name.starts_with("var") && text.chars().all(char::is_uppercase);
                         }
                     }
                     node
@@ -738,16 +795,21 @@ fn negate(text: &str) -> String {
 fn accent(name: &str) -> Option<char> {
     Some(match name {
         "hat" | "widehat" => '\u{302}',
-        "check" => '\u{30C}',
+        "check" | "widecheck" => '\u{30C}',
         "tilde" | "widetilde" => '\u{303}',
         "acute" => '\u{301}',
         "grave" => '\u{300}',
         "dot" => '\u{307}',
         "ddot" => '\u{308}',
+        "dddot" => '\u{20DB}',
+        "ddddot" => '\u{20DC}',
+        "mathring" => '\u{30A}',
         "breve" => '\u{306}',
         "bar" | "overline" => '\u{305}',
-        "underline" => '\u{332}',
+        "underline" | "underbar" => '\u{332}',
         "vec" | "overrightarrow" => '\u{20D7}',
+        "overleftarrow" => '\u{20D6}',
+        "overleftrightarrow" => '\u{20E1}',
         _ => return None,
     })
 }
@@ -773,14 +835,30 @@ fn delimiter_command(name: &str) -> Option<&'static str> {
         "}" | "rbrace" => "}",
         "|" | "Vert" => "‖",
         "vert" => "|",
-        "langle" => "⟨",
-        "rangle" => "⟩",
+        "langle" | "lang" | "lt" => "⟨",
+        "rangle" | "rang" | "gt" => "⟩",
         "lfloor" => "⌊",
         "rfloor" => "⌋",
         "lceil" => "⌈",
         "rceil" => "⌉",
         "lvert" | "rvert" => "|",
         "lVert" | "rVert" => "‖",
+        "lparen" => "(",
+        "rparen" => ")",
+        "lbrack" => "[",
+        "rbrack" => "]",
+        "llbracket" => "⟦",
+        "rrbracket" => "⟧",
+        "lBrace" => "⦃",
+        "rBrace" => "⦄",
+        "lmoustache" => "⎰",
+        "rmoustache" => "⎱",
+        "lgroup" => "⟮",
+        "rgroup" => "⟯",
+        "ulcorner" => "┌",
+        "urcorner" => "┐",
+        "llcorner" => "└",
+        "lrcorner" => "┘",
         "backslash" => "\\",
         _ => return None,
     })

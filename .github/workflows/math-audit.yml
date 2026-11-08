@@ -1,0 +1,29 @@
+name: math-audit
+on:
+  push:
+    branches: ['math-audit/**']
+permissions:
+  contents: read
+jobs:
+  parser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Audit original showcase formulas with production parser
+        run: |
+          rustc --edition 2021 scripts/ci/tex-audit.rs -o "$RUNNER_TEMP/tex-audit"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path('docs/evidence/math-2741/showcase-formulas.json').read_text())
+          Path(os.environ['RUNNER_TEMP'], 'formulas.txt').write_text('\0'.join(('D' if x['display'] else 'I') + '\t' + x['tex'] for x in data['formulas']))
+          PY
+          "$RUNNER_TEMP/tex-audit" "$RUNNER_TEMP/formulas.txt" | tee "$RUNNER_TEMP/math-audit.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: math-audit
+          path: ${{ runner.temp }}/math-audit.txt
+          if-no-files-found: error

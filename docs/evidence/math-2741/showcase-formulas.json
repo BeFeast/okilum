@@ -1,0 +1,4866 @@
+{
+  "source_sha256": "5d27876b593b63a13922d1262d7a799cee6406b83a49181535e2698c9756ceba",
+  "source": "https://github.com/KaTeX/KaTeX/blob/main/docs/supported.md",
+  "formulas": [
+    {
+      "line": 30,
+      "display": false,
+      "tex": "a'"
+    },
+    {
+      "line": 30,
+      "display": false,
+      "tex": "\\tilde{a}"
+    },
+    {
+      "line": 30,
+      "display": false,
+      "tex": "\\mathring{g}"
+    },
+    {
+      "line": 31,
+      "display": false,
+      "tex": "a''"
+    },
+    {
+      "line": 31,
+      "display": false,
+      "tex": "\\widetilde{ac}"
+    },
+    {
+      "line": 31,
+      "display": false,
+      "tex": "\\overgroup{AB}"
+    },
+    {
+      "line": 32,
+      "display": false,
+      "tex": "a^{\\prime}"
+    },
+    {
+      "line": 32,
+      "display": false,
+      "tex": "\\utilde{AB}"
+    },
+    {
+      "line": 32,
+      "display": false,
+      "tex": "\\undergroup{AB}"
+    },
+    {
+      "line": 33,
+      "display": false,
+      "tex": "\\acute{a}"
+    },
+    {
+      "line": 33,
+      "display": false,
+      "tex": "\\vec{F}"
+    },
+    {
+      "line": 33,
+      "display": false,
+      "tex": "\\Overrightarrow{AB}"
+    },
+    {
+      "line": 34,
+      "display": false,
+      "tex": "\\bar{y}"
+    },
+    {
+      "line": 34,
+      "display": false,
+      "tex": "\\overleftarrow{AB}"
+    },
+    {
+      "line": 34,
+      "display": false,
+      "tex": "\\overrightarrow{AB}"
+    },
+    {
+      "line": 35,
+      "display": false,
+      "tex": "\\breve{a}"
+    },
+    {
+      "line": 35,
+      "display": false,
+      "tex": "\\underleftarrow{AB}"
+    },
+    {
+      "line": 35,
+      "display": false,
+      "tex": "\\underrightarrow{AB}"
+    },
+    {
+      "line": 36,
+      "display": false,
+      "tex": "\\check{a}"
+    },
+    {
+      "line": 36,
+      "display": false,
+      "tex": "\\overleftharpoon{ac}"
+    },
+    {
+      "line": 36,
+      "display": false,
+      "tex": "\\overrightharpoon{ac}"
+    },
+    {
+      "line": 37,
+      "display": false,
+      "tex": "\\dot{a}"
+    },
+    {
+      "line": 37,
+      "display": false,
+      "tex": "\\overleftrightarrow{AB}"
+    },
+    {
+      "line": 37,
+      "display": false,
+      "tex": "\\overbrace{AB}"
+    },
+    {
+      "line": 38,
+      "display": false,
+      "tex": "\\ddot{a}"
+    },
+    {
+      "line": 38,
+      "display": false,
+      "tex": "\\underleftrightarrow{AB}"
+    },
+    {
+      "line": 38,
+      "display": false,
+      "tex": "\\underbrace{AB}"
+    },
+    {
+      "line": 39,
+      "display": false,
+      "tex": "\\dddot{a}"
+    },
+    {
+      "line": 39,
+      "display": false,
+      "tex": "\\overline{AB}"
+    },
+    {
+      "line": 39,
+      "display": false,
+      "tex": "\\overbracket{AB}"
+    },
+    {
+      "line": 40,
+      "display": false,
+      "tex": "\\ddddot{a}"
+    },
+    {
+      "line": 40,
+      "display": false,
+      "tex": "\\underline{AB}"
+    },
+    {
+      "line": 40,
+      "display": false,
+      "tex": "\\underbracket{AB}"
+    },
+    {
+      "line": 41,
+      "display": false,
+      "tex": "\\grave{a}"
+    },
+    {
+      "line": 41,
+      "display": false,
+      "tex": "\\underbar{X}"
+    },
+    {
+      "line": 41,
+      "display": false,
+      "tex": "\\overlinesegment{AB}"
+    },
+    {
+      "line": 42,
+      "display": false,
+      "tex": "\\hat{\\theta}"
+    },
+    {
+      "line": 42,
+      "display": false,
+      "tex": "\\widecheck{ac}"
+    },
+    {
+      "line": 42,
+      "display": false,
+      "tex": "\\underlinesegment{AB}"
+    },
+    {
+      "line": 43,
+      "display": false,
+      "tex": "\\widehat{ac}"
+    },
+    {
+      "line": 49,
+      "display": false,
+      "tex": "\\text{\\'{a}}"
+    },
+    {
+      "line": 49,
+      "display": false,
+      "tex": "\\text{\\~{a}}"
+    },
+    {
+      "line": 49,
+      "display": false,
+      "tex": "\\text{\\.{a}}"
+    },
+    {
+      "line": 49,
+      "display": false,
+      "tex": "\\text{\\H{a}}"
+    },
+    {
+      "line": 50,
+      "display": false,
+      "tex": "\\text{\\`{a}}"
+    },
+    {
+      "line": 51,
+      "display": false,
+      "tex": "\\text{\\^{a}}"
+    },
+    {
+      "line": 51,
+      "display": false,
+      "tex": "\\text{\\u{a}}"
+    },
+    {
+      "line": 51,
+      "display": false,
+      "tex": "\\text{\\r{a}}"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "(~)"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "\\lparen~\\rparen"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "⌈~⌉"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "\\lceil~\\rceil"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "~~~~~"
+    },
+    {
+      "line": 59,
+      "display": false,
+      "tex": "\\uparrow"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "[~]"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "\\lbrack~\\rbrack"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "⌊~⌋"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "\\lfloor~\\rfloor"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "~~~~~"
+    },
+    {
+      "line": 60,
+      "display": false,
+      "tex": "\\downarrow"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "\\{ \\}"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "\\lbrace \\rbrace"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "⎰⎱"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "\\lmoustache \\rmoustache"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 61,
+      "display": false,
+      "tex": "\\updownarrow"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "⟨~⟩"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "\\langle~\\rangle"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "⟮~⟯"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "\\lgroup~\\rgroup"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "~~~~~"
+    },
+    {
+      "line": 62,
+      "display": false,
+      "tex": "\\Uparrow"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "\\vert"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "\\vert"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "┌ ┐"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "\\ulcorner \\urcorner"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 63,
+      "display": false,
+      "tex": "\\Downarrow"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "\\Vert"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "\\Vert"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "└ ┘"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "\\llcorner \\lrcorner"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 64,
+      "display": false,
+      "tex": "\\Updownarrow"
+    },
+    {
+      "line": 65,
+      "display": false,
+      "tex": "\\lvert~\\rvert"
+    },
+    {
+      "line": 65,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 65,
+      "display": false,
+      "tex": "\\lVert~\\rVert"
+    },
+    {
+      "line": 65,
+      "display": false,
+      "tex": "~~~~~"
+    },
+    {
+      "line": 65,
+      "display": false,
+      "tex": "\\backslash"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "\\lang~\\rang"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "\\left\\lt~\\right\\gt"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "⟦~⟧"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "\\llbracket~\\rrbracket"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "~~~~"
+    },
+    {
+      "line": 66,
+      "display": false,
+      "tex": "/"
+    },
+    {
+      "line": 67,
+      "display": false,
+      "tex": "\\lBrace~\\rBrace"
+    },
+    {
+      "line": 71,
+      "display": false,
+      "tex": "\\left(\\LARGE{AB}\\right)"
+    },
+    {
+      "line": 73,
+      "display": false,
+      "tex": "( \\big( \\Big( \\bigg( \\Bigg("
+    },
+    {
+      "line": 90,
+      "display": false,
+      "tex": "\\begin{matrix} a & b \\\\ c & d \\end{matrix}"
+    },
+    {
+      "line": 90,
+      "display": false,
+      "tex": "\\begin{array}{cc}a & b\\\\c & d\\end{array}"
+    },
+    {
+      "line": 91,
+      "display": false,
+      "tex": "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}"
+    },
+    {
+      "line": 91,
+      "display": false,
+      "tex": "\\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}"
+    },
+    {
+      "line": 92,
+      "display": false,
+      "tex": "\\begin{vmatrix} a & b \\\\ c & d \\end{vmatrix}"
+    },
+    {
+      "line": 92,
+      "display": false,
+      "tex": "\\begin{Vmatrix} a & b \\\\ c & d \\end{Vmatrix}"
+    },
+    {
+      "line": 93,
+      "display": false,
+      "tex": "\\begin{Bmatrix} a & b \\\\ c & d \\end{Bmatrix}"
+    },
+    {
+      "line": 93,
+      "display": false,
+      "tex": "\\def\\arraystretch{1.5}\\begin{array}{c:c:c} a & b & c \\\\ \\hline d & e & f \\\\ \\hdashline g & h & i \\end{array}"
+    },
+    {
+      "line": 94,
+      "display": false,
+      "tex": "x = \\begin{cases} a &\\text{if } b \\\\ c &\\text{if } d \\end{cases}"
+    },
+    {
+      "line": 94,
+      "display": false,
+      "tex": "\\begin{rcases} a &\\text{if } b \\\\ c &\\text{if } d \\end{rcases}⇒…"
+    },
+    {
+      "line": 95,
+      "display": false,
+      "tex": "\\begin{smallmatrix} a & b \\\\ c & d \\end{smallmatrix}"
+    },
+    {
+      "line": 95,
+      "display": true,
+      "tex": "\\sum_{\\begin{subarray}{l} i\\in\\Lambda\\\\  0<j<n\\end{subarray}}"
+    },
+    {
+      "line": 107,
+      "display": true,
+      "tex": "\\begin{equation}\\begin{split}a &=b+c\\\\&=e+f\\end{split}\\end{equation}"
+    },
+    {
+      "line": 107,
+      "display": true,
+      "tex": "\\begin{align} a&=b+c \\\\ d+e&=f \\end{align}"
+    },
+    {
+      "line": 108,
+      "display": true,
+      "tex": "\\begin{gather} a=b \\\\ e=b+c \\end{gather}"
+    },
+    {
+      "line": 108,
+      "display": true,
+      "tex": "\\begin{alignat}{2}10&x+&3&y=2\\\\3&x+&13&y=4\\end{alignat}"
+    },
+    {
+      "line": 109,
+      "display": true,
+      "tex": "\\begin{CD}A @>a>> B \\\\@VbVV @AAcA\\\\C @= D\\end{CD}"
+    },
+    {
+      "line": 144,
+      "display": false,
+      "tex": "\\href{https://katex.org/}{\\KaTeX}"
+    },
+    {
+      "line": 145,
+      "display": false,
+      "tex": "\\url{https://katex.org/}"
+    },
+    {
+      "line": 146,
+      "display": false,
+      "tex": "\\includegraphics[height=0.8em, totalheight=0.9em, width=0.9em, alt=KA logo]{https://katex.org/img/khan-academy.png}"
+    },
+    {
+      "line": 147,
+      "display": false,
+      "tex": "\\htmlId{bar}{x}"
+    },
+    {
+      "line": 148,
+      "display": false,
+      "tex": "\\htmlClass{foo}{x}"
+    },
+    {
+      "line": 149,
+      "display": false,
+      "tex": "\\htmlStyle{color: red;}{x}"
+    },
+    {
+      "line": 150,
+      "display": false,
+      "tex": "\\htmlData{foo=a, bar=b}{x}"
+    },
+    {
+      "line": 161,
+      "display": false,
+      "tex": "Α Β Γ Δ Ε Ζ Η Θ Ι \\allowbreak Κ Λ Μ Ν Ξ Ο Π Ρ Σ Τ Υ Φ Χ Ψ Ω"
+    },
+    {
+      "line": 162,
+      "display": false,
+      "tex": "\\allowbreak α β γ δ ϵ ζ η θ ι κ λ μ ν ξ o π \\allowbreak ρ σ τ υ ϕ χ ψ ω ε ϑ ϖ ϱ ς φ ϝ"
+    },
+    {
+      "line": 166,
+      "display": false,
+      "tex": "\\Alpha"
+    },
+    {
+      "line": 166,
+      "display": false,
+      "tex": "\\Beta"
+    },
+    {
+      "line": 166,
+      "display": false,
+      "tex": "\\Gamma"
+    },
+    {
+      "line": 166,
+      "display": false,
+      "tex": "\\Delta"
+    },
+    {
+      "line": 167,
+      "display": false,
+      "tex": "\\Epsilon"
+    },
+    {
+      "line": 167,
+      "display": false,
+      "tex": "\\Zeta"
+    },
+    {
+      "line": 167,
+      "display": false,
+      "tex": "\\Eta"
+    },
+    {
+      "line": 167,
+      "display": false,
+      "tex": "\\Theta"
+    },
+    {
+      "line": 168,
+      "display": false,
+      "tex": "\\Iota"
+    },
+    {
+      "line": 168,
+      "display": false,
+      "tex": "\\Kappa"
+    },
+    {
+      "line": 168,
+      "display": false,
+      "tex": "\\Lambda"
+    },
+    {
+      "line": 168,
+      "display": false,
+      "tex": "\\Mu"
+    },
+    {
+      "line": 169,
+      "display": false,
+      "tex": "\\Nu"
+    },
+    {
+      "line": 169,
+      "display": false,
+      "tex": "\\Xi"
+    },
+    {
+      "line": 169,
+      "display": false,
+      "tex": "\\Omicron"
+    },
+    {
+      "line": 169,
+      "display": false,
+      "tex": "\\Pi"
+    },
+    {
+      "line": 170,
+      "display": false,
+      "tex": "\\Rho"
+    },
+    {
+      "line": 170,
+      "display": false,
+      "tex": "\\Sigma"
+    },
+    {
+      "line": 170,
+      "display": false,
+      "tex": "\\Tau"
+    },
+    {
+      "line": 170,
+      "display": false,
+      "tex": "\\Upsilon"
+    },
+    {
+      "line": 171,
+      "display": false,
+      "tex": "\\Phi"
+    },
+    {
+      "line": 171,
+      "display": false,
+      "tex": "\\Chi"
+    },
+    {
+      "line": 171,
+      "display": false,
+      "tex": "\\Psi"
+    },
+    {
+      "line": 171,
+      "display": false,
+      "tex": "\\Omega"
+    },
+    {
+      "line": 172,
+      "display": false,
+      "tex": "\\varGamma"
+    },
+    {
+      "line": 172,
+      "display": false,
+      "tex": "\\varDelta"
+    },
+    {
+      "line": 172,
+      "display": false,
+      "tex": "\\varTheta"
+    },
+    {
+      "line": 172,
+      "display": false,
+      "tex": "\\varLambda"
+    },
+    {
+      "line": 173,
+      "display": false,
+      "tex": "\\varXi"
+    },
+    {
+      "line": 173,
+      "display": false,
+      "tex": "\\varPi"
+    },
+    {
+      "line": 173,
+      "display": false,
+      "tex": "\\varSigma"
+    },
+    {
+      "line": 173,
+      "display": false,
+      "tex": "\\varUpsilon"
+    },
+    {
+      "line": 174,
+      "display": false,
+      "tex": "\\varPhi"
+    },
+    {
+      "line": 174,
+      "display": false,
+      "tex": "\\varPsi"
+    },
+    {
+      "line": 174,
+      "display": false,
+      "tex": "\\varOmega"
+    },
+    {
+      "line": 175,
+      "display": false,
+      "tex": "\\alpha"
+    },
+    {
+      "line": 175,
+      "display": false,
+      "tex": "\\beta"
+    },
+    {
+      "line": 175,
+      "display": false,
+      "tex": "\\gamma"
+    },
+    {
+      "line": 175,
+      "display": false,
+      "tex": "\\delta"
+    },
+    {
+      "line": 176,
+      "display": false,
+      "tex": "\\epsilon"
+    },
+    {
+      "line": 176,
+      "display": false,
+      "tex": "\\zeta"
+    },
+    {
+      "line": 176,
+      "display": false,
+      "tex": "\\eta"
+    },
+    {
+      "line": 176,
+      "display": false,
+      "tex": "\\theta"
+    },
+    {
+      "line": 177,
+      "display": false,
+      "tex": "\\iota"
+    },
+    {
+      "line": 177,
+      "display": false,
+      "tex": "\\kappa"
+    },
+    {
+      "line": 177,
+      "display": false,
+      "tex": "\\lambda"
+    },
+    {
+      "line": 177,
+      "display": false,
+      "tex": "\\mu"
+    },
+    {
+      "line": 178,
+      "display": false,
+      "tex": "\\nu"
+    },
+    {
+      "line": 178,
+      "display": false,
+      "tex": "\\xi"
+    },
+    {
+      "line": 178,
+      "display": false,
+      "tex": "\\omicron"
+    },
+    {
+      "line": 178,
+      "display": false,
+      "tex": "\\pi"
+    },
+    {
+      "line": 179,
+      "display": false,
+      "tex": "\\rho"
+    },
+    {
+      "line": 179,
+      "display": false,
+      "tex": "\\sigma"
+    },
+    {
+      "line": 179,
+      "display": false,
+      "tex": "\\tau"
+    },
+    {
+      "line": 179,
+      "display": false,
+      "tex": "\\upsilon"
+    },
+    {
+      "line": 180,
+      "display": false,
+      "tex": "\\phi"
+    },
+    {
+      "line": 180,
+      "display": false,
+      "tex": "\\chi"
+    },
+    {
+      "line": 180,
+      "display": false,
+      "tex": "\\psi"
+    },
+    {
+      "line": 180,
+      "display": false,
+      "tex": "\\omega"
+    },
+    {
+      "line": 181,
+      "display": false,
+      "tex": "\\varepsilon"
+    },
+    {
+      "line": 181,
+      "display": false,
+      "tex": "\\varkappa"
+    },
+    {
+      "line": 181,
+      "display": false,
+      "tex": "\\vartheta"
+    },
+    {
+      "line": 181,
+      "display": false,
+      "tex": "\\thetasym"
+    },
+    {
+      "line": 182,
+      "display": false,
+      "tex": "\\varpi"
+    },
+    {
+      "line": 182,
+      "display": false,
+      "tex": "\\varrho"
+    },
+    {
+      "line": 182,
+      "display": false,
+      "tex": "\\varsigma"
+    },
+    {
+      "line": 182,
+      "display": false,
+      "tex": "\\varphi"
+    },
+    {
+      "line": 183,
+      "display": false,
+      "tex": "\\digamma "
+    },
+    {
+      "line": 189,
+      "display": false,
+      "tex": "\\imath"
+    },
+    {
+      "line": 189,
+      "display": false,
+      "tex": "\\nabla"
+    },
+    {
+      "line": 189,
+      "display": false,
+      "tex": "\\Im"
+    },
+    {
+      "line": 189,
+      "display": false,
+      "tex": "\\Reals"
+    },
+    {
+      "line": 189,
+      "display": false,
+      "tex": "\\text{\\OE}"
+    },
+    {
+      "line": 190,
+      "display": false,
+      "tex": "\\jmath"
+    },
+    {
+      "line": 190,
+      "display": false,
+      "tex": "\\partial"
+    },
+    {
+      "line": 190,
+      "display": false,
+      "tex": "\\image"
+    },
+    {
+      "line": 190,
+      "display": false,
+      "tex": "\\wp"
+    },
+    {
+      "line": 190,
+      "display": false,
+      "tex": "\\text{\\o}"
+    },
+    {
+      "line": 191,
+      "display": false,
+      "tex": "\\aleph"
+    },
+    {
+      "line": 191,
+      "display": false,
+      "tex": "\\Game"
+    },
+    {
+      "line": 191,
+      "display": false,
+      "tex": "\\Bbbk"
+    },
+    {
+      "line": 191,
+      "display": false,
+      "tex": "\\weierp"
+    },
+    {
+      "line": 191,
+      "display": false,
+      "tex": "\\text{\\O}"
+    },
+    {
+      "line": 192,
+      "display": false,
+      "tex": "\\alef"
+    },
+    {
+      "line": 192,
+      "display": false,
+      "tex": "\\Finv"
+    },
+    {
+      "line": 192,
+      "display": false,
+      "tex": "\\N"
+    },
+    {
+      "line": 192,
+      "display": false,
+      "tex": "\\Z"
+    },
+    {
+      "line": 192,
+      "display": false,
+      "tex": "\\text{\\ss}"
+    },
+    {
+      "line": 193,
+      "display": false,
+      "tex": "\\alefsym"
+    },
+    {
+      "line": 193,
+      "display": false,
+      "tex": "\\cnums"
+    },
+    {
+      "line": 193,
+      "display": false,
+      "tex": "\\natnums"
+    },
+    {
+      "line": 193,
+      "display": false,
+      "tex": "\\text{\\aa}"
+    },
+    {
+      "line": 193,
+      "display": false,
+      "tex": "\\text{\\i}"
+    },
+    {
+      "line": 194,
+      "display": false,
+      "tex": "\\beth"
+    },
+    {
+      "line": 194,
+      "display": false,
+      "tex": "\\Complex"
+    },
+    {
+      "line": 194,
+      "display": false,
+      "tex": "\\R"
+    },
+    {
+      "line": 194,
+      "display": false,
+      "tex": "\\text{\\AA}"
+    },
+    {
+      "line": 194,
+      "display": false,
+      "tex": "\\text{\\j}"
+    },
+    {
+      "line": 195,
+      "display": false,
+      "tex": "\\gimel"
+    },
+    {
+      "line": 195,
+      "display": false,
+      "tex": "\\ell"
+    },
+    {
+      "line": 195,
+      "display": false,
+      "tex": "\\Re"
+    },
+    {
+      "line": 195,
+      "display": false,
+      "tex": "\\text{\\ae}"
+    },
+    {
+      "line": 196,
+      "display": false,
+      "tex": "\\daleth"
+    },
+    {
+      "line": 196,
+      "display": false,
+      "tex": "\\hbar"
+    },
+    {
+      "line": 196,
+      "display": false,
+      "tex": "\\real"
+    },
+    {
+      "line": 196,
+      "display": false,
+      "tex": "\\text{\\AE}"
+    },
+    {
+      "line": 197,
+      "display": false,
+      "tex": "\\eth"
+    },
+    {
+      "line": 197,
+      "display": false,
+      "tex": "\\hslash"
+    },
+    {
+      "line": 197,
+      "display": false,
+      "tex": "\\reals"
+    },
+    {
+      "line": 197,
+      "display": false,
+      "tex": "\\text{\\oe}"
+    },
+    {
+      "line": 199,
+      "display": false,
+      "tex": "∂ ∇ ℑ Ⅎ ℵ ℶ ℷ ℸ ⅁ ℏ ð − ∗"
+    },
+    {
+      "line": 215,
+      "display": false,
+      "tex": "\\text{𝐀-𝐙 𝐚-𝐳 𝟎-𝟗}"
+    },
+    {
+      "line": 215,
+      "display": false,
+      "tex": "\\text{𝔸-}ℤ\\ 𝕜"
+    },
+    {
+      "line": 216,
+      "display": false,
+      "tex": "\\text{𝐴-𝑍 𝑎-𝑧}"
+    },
+    {
+      "line": 216,
+      "display": false,
+      "tex": "\\text{𝖠-𝖹 𝖺-𝗓 𝟢-𝟫}"
+    },
+    {
+      "line": 217,
+      "display": false,
+      "tex": "\\text{𝑨-𝒁 𝒂-𝒛}"
+    },
+    {
+      "line": 217,
+      "display": false,
+      "tex": "\\text{𝗔-𝗭 𝗮-𝘇 𝟬-𝟵}"
+    },
+    {
+      "line": 218,
+      "display": false,
+      "tex": "\\text{𝒜-𝒵}"
+    },
+    {
+      "line": 218,
+      "display": false,
+      "tex": "\\text{𝘈-𝘡 𝘢-𝘻}"
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "\\text{"
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "-"
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "}\\text{ "
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "-"
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "}"
+    },
+    {
+      "line": 219,
+      "display": false,
+      "tex": "\\text{𝙰-𝚉 𝚊-𝚣 𝟶-𝟿}"
+    },
+    {
+      "line": 220,
+      "display": false,
+      "tex": "\\text{𝕬-𝖅 𝖆-𝖟}"
+    },
+    {
+      "line": 238,
+      "display": false,
+      "tex": "\\char\"263a"
+    },
+    {
+      "line": 246,
+      "display": false,
+      "tex": "\\cancel{5}"
+    },
+    {
+      "line": 246,
+      "display": false,
+      "tex": "\\overbrace{a+b+c}^{\\text{note}}"
+    },
+    {
+      "line": 247,
+      "display": false,
+      "tex": "\\bcancel{5}"
+    },
+    {
+      "line": 247,
+      "display": false,
+      "tex": "\\underbrace{a+b+c}_{\\text{note}}"
+    },
+    {
+      "line": 248,
+      "display": false,
+      "tex": "\\xcancel{ABC}"
+    },
+    {
+      "line": 248,
+      "display": false,
+      "tex": "\\not ="
+    },
+    {
+      "line": 249,
+      "display": false,
+      "tex": "\\text{\\sout{abc}}"
+    },
+    {
+      "line": 249,
+      "display": false,
+      "tex": "\\boxed{\\pi=\\frac c d}"
+    },
+    {
+      "line": 250,
+      "display": false,
+      "tex": "a_{\\angl n}"
+    },
+    {
+      "line": 250,
+      "display": false,
+      "tex": "a_\\angln"
+    },
+    {
+      "line": 251,
+      "display": false,
+      "tex": "\\overbracket{a+b+c}^{\\text{note}}"
+    },
+    {
+      "line": 251,
+      "display": false,
+      "tex": "\\underbracket{a+b+c}_{\\text{note}}"
+    },
+    {
+      "line": 252,
+      "display": false,
+      "tex": "\\phase{-78^\\circ}"
+    },
+    {
+      "line": 256,
+      "display": true,
+      "tex": "\\tag{hi} x+y^{2x}"
+    },
+    {
+      "line": 259,
+      "display": true,
+      "tex": "\\tag*{hi} x+y^{2x}"
+    },
+    {
+      "line": 273,
+      "display": false,
+      "tex": "x_n"
+    },
+    {
+      "line": 273,
+      "display": false,
+      "tex": "\\stackrel{!}{=}"
+    },
+    {
+      "line": 273,
+      "display": false,
+      "tex": "a \\atop b"
+    },
+    {
+      "line": 274,
+      "display": false,
+      "tex": "e^x"
+    },
+    {
+      "line": 274,
+      "display": false,
+      "tex": "\\overset{!}{=}"
+    },
+    {
+      "line": 274,
+      "display": false,
+      "tex": "a\\raisebox{0.25em}{"
+    },
+    {
+      "line": 274,
+      "display": false,
+      "tex": "}c"
+    },
+    {
+      "line": 275,
+      "display": false,
+      "tex": "\\reflectbox{KaTeX}"
+    },
+    {
+      "line": 276,
+      "display": false,
+      "tex": "\\mathreflectbox{x^2}"
+    },
+    {
+      "line": 277,
+      "display": false,
+      "tex": "_u^o "
+    },
+    {
+      "line": 277,
+      "display": false,
+      "tex": "\\underset{!}{=}"
+    },
+    {
+      "line": 277,
+      "display": false,
+      "tex": "a+\\left(\\vcenter{\\frac{\\frac a b}c}\\right)"
+    },
+    {
+      "line": 278,
+      "display": true,
+      "tex": "\\sum_{\\substack{0<i<m\\\\0<j<n}}"
+    },
+    {
+      "line": 290,
+      "display": false,
+      "tex": "{=}\\mathllap{/\\,}"
+    },
+    {
+      "line": 290,
+      "display": false,
+      "tex": "\\left(x^{\\smash{2}}\\right)"
+    },
+    {
+      "line": 291,
+      "display": false,
+      "tex": "\\mathrlap{\\,/}{=}"
+    },
+    {
+      "line": 291,
+      "display": false,
+      "tex": "\\sqrt{\\smash[b]{y}}"
+    },
+    {
+      "line": 293,
+      "display": false,
+      "tex": "\\displaystyle\\sum_{\\mathclap{1\\le i\\le j\\le n}} x_{ij}"
+    },
+    {
+      "line": 333,
+      "display": false,
+      "tex": "\\gdef\\VERT{|}"
+    },
+    {
+      "line": 337,
+      "display": false,
+      "tex": "\\forall"
+    },
+    {
+      "line": 337,
+      "display": false,
+      "tex": "\\complement"
+    },
+    {
+      "line": 337,
+      "display": false,
+      "tex": "\\therefore"
+    },
+    {
+      "line": 337,
+      "display": false,
+      "tex": "\\emptyset"
+    },
+    {
+      "line": 338,
+      "display": false,
+      "tex": "\\exists"
+    },
+    {
+      "line": 338,
+      "display": false,
+      "tex": "\\subset"
+    },
+    {
+      "line": 338,
+      "display": false,
+      "tex": "\\because"
+    },
+    {
+      "line": 338,
+      "display": false,
+      "tex": "\\empty"
+    },
+    {
+      "line": 339,
+      "display": false,
+      "tex": "\\exist"
+    },
+    {
+      "line": 339,
+      "display": false,
+      "tex": "\\supset"
+    },
+    {
+      "line": 339,
+      "display": false,
+      "tex": "\\mapsto"
+    },
+    {
+      "line": 339,
+      "display": false,
+      "tex": "\\varnothing"
+    },
+    {
+      "line": 340,
+      "display": false,
+      "tex": "\\nexists"
+    },
+    {
+      "line": 340,
+      "display": false,
+      "tex": "\\mid"
+    },
+    {
+      "line": 340,
+      "display": false,
+      "tex": "\\to"
+    },
+    {
+      "line": 340,
+      "display": false,
+      "tex": "\\implies"
+    },
+    {
+      "line": 341,
+      "display": false,
+      "tex": "\\in"
+    },
+    {
+      "line": 341,
+      "display": false,
+      "tex": "\\land"
+    },
+    {
+      "line": 341,
+      "display": false,
+      "tex": "\\gets"
+    },
+    {
+      "line": 341,
+      "display": false,
+      "tex": "\\impliedby"
+    },
+    {
+      "line": 342,
+      "display": false,
+      "tex": "\\isin"
+    },
+    {
+      "line": 342,
+      "display": false,
+      "tex": "\\lor"
+    },
+    {
+      "line": 342,
+      "display": false,
+      "tex": "\\leftrightarrow"
+    },
+    {
+      "line": 342,
+      "display": false,
+      "tex": "\\iff"
+    },
+    {
+      "line": 343,
+      "display": false,
+      "tex": "\\notin"
+    },
+    {
+      "line": 343,
+      "display": false,
+      "tex": "\\ni"
+    },
+    {
+      "line": 343,
+      "display": false,
+      "tex": "\\notni"
+    },
+    {
+      "line": 343,
+      "display": false,
+      "tex": "\\neg"
+    },
+    {
+      "line": 344,
+      "display": false,
+      "tex": "\\Set{ x \\VERT x<\\frac 1 2 }"
+    },
+    {
+      "line": 344,
+      "display": false,
+      "tex": "\\set{x\\VERT x<5}"
+    },
+    {
+      "line": 346,
+      "display": false,
+      "tex": "∀ ∴ ∁ ∵ ∃ ∣ ∈ ∉ ∋ ⊂ ⊃ ∧ ∨ ↦ → ← ↔ ¬"
+    },
+    {
+      "line": 352,
+      "display": false,
+      "tex": "\\def\\foo{x^2} \\foo + \\foo"
+    },
+    {
+      "line": 353,
+      "display": false,
+      "tex": "\\gdef\\foo#1{#1^2} \\foo{y} + \\foo{y}"
+    },
+    {
+      "line": 387,
+      "display": false,
+      "tex": "\\sum"
+    },
+    {
+      "line": 387,
+      "display": false,
+      "tex": "\\prod"
+    },
+    {
+      "line": 387,
+      "display": false,
+      "tex": "\\bigotimes"
+    },
+    {
+      "line": 387,
+      "display": false,
+      "tex": "\\bigvee"
+    },
+    {
+      "line": 388,
+      "display": false,
+      "tex": "\\int"
+    },
+    {
+      "line": 388,
+      "display": false,
+      "tex": "\\coprod"
+    },
+    {
+      "line": 388,
+      "display": false,
+      "tex": "\\bigoplus"
+    },
+    {
+      "line": 388,
+      "display": false,
+      "tex": "\\bigwedge"
+    },
+    {
+      "line": 389,
+      "display": false,
+      "tex": "\\iint"
+    },
+    {
+      "line": 389,
+      "display": false,
+      "tex": "\\intop"
+    },
+    {
+      "line": 389,
+      "display": false,
+      "tex": "\\bigodot"
+    },
+    {
+      "line": 389,
+      "display": false,
+      "tex": "\\bigcap"
+    },
+    {
+      "line": 390,
+      "display": false,
+      "tex": "\\iiint"
+    },
+    {
+      "line": 390,
+      "display": false,
+      "tex": "\\smallint"
+    },
+    {
+      "line": 390,
+      "display": false,
+      "tex": "\\biguplus"
+    },
+    {
+      "line": 390,
+      "display": false,
+      "tex": "\\bigcup"
+    },
+    {
+      "line": 391,
+      "display": false,
+      "tex": "\\oint"
+    },
+    {
+      "line": 391,
+      "display": false,
+      "tex": "\\oiint"
+    },
+    {
+      "line": 391,
+      "display": false,
+      "tex": "\\oiiint"
+    },
+    {
+      "line": 391,
+      "display": false,
+      "tex": "\\bigsqcup"
+    },
+    {
+      "line": 393,
+      "display": false,
+      "tex": "∫ ∬ ∭ ∮ ∏ ∐ ∑ ⋀ ⋁ ⋂ ⋃ ⨀ ⨁ ⨂ ⨄ ⨆"
+    },
+    {
+      "line": 399,
+      "display": false,
+      "tex": "+"
+    },
+    {
+      "line": 399,
+      "display": false,
+      "tex": "\\cdot"
+    },
+    {
+      "line": 399,
+      "display": false,
+      "tex": "\\gtrdot"
+    },
+    {
+      "line": 399,
+      "display": false,
+      "tex": "x \\pmod a"
+    },
+    {
+      "line": 400,
+      "display": false,
+      "tex": "-"
+    },
+    {
+      "line": 400,
+      "display": false,
+      "tex": "\\cdotp"
+    },
+    {
+      "line": 400,
+      "display": false,
+      "tex": "\\intercal"
+    },
+    {
+      "line": 400,
+      "display": false,
+      "tex": "x \\pod a"
+    },
+    {
+      "line": 401,
+      "display": false,
+      "tex": "/"
+    },
+    {
+      "line": 401,
+      "display": false,
+      "tex": "\\centerdot"
+    },
+    {
+      "line": 401,
+      "display": false,
+      "tex": "\\land"
+    },
+    {
+      "line": 401,
+      "display": false,
+      "tex": "\\rhd"
+    },
+    {
+      "line": 402,
+      "display": false,
+      "tex": "*"
+    },
+    {
+      "line": 402,
+      "display": false,
+      "tex": "\\circ"
+    },
+    {
+      "line": 402,
+      "display": false,
+      "tex": "\\leftthreetimes"
+    },
+    {
+      "line": 402,
+      "display": false,
+      "tex": "\\rightthreetimes"
+    },
+    {
+      "line": 403,
+      "display": false,
+      "tex": "\\amalg"
+    },
+    {
+      "line": 403,
+      "display": false,
+      "tex": "\\circledast"
+    },
+    {
+      "line": 403,
+      "display": false,
+      "tex": "\\ldotp"
+    },
+    {
+      "line": 403,
+      "display": false,
+      "tex": "\\rtimes"
+    },
+    {
+      "line": 404,
+      "display": false,
+      "tex": "\\And"
+    },
+    {
+      "line": 404,
+      "display": false,
+      "tex": "\\circledcirc"
+    },
+    {
+      "line": 404,
+      "display": false,
+      "tex": "\\lor"
+    },
+    {
+      "line": 404,
+      "display": false,
+      "tex": "\\setminus"
+    },
+    {
+      "line": 405,
+      "display": false,
+      "tex": "\\ast"
+    },
+    {
+      "line": 405,
+      "display": false,
+      "tex": "\\circleddash"
+    },
+    {
+      "line": 405,
+      "display": false,
+      "tex": "\\lessdot"
+    },
+    {
+      "line": 405,
+      "display": false,
+      "tex": "\\smallsetminus"
+    },
+    {
+      "line": 406,
+      "display": false,
+      "tex": "\\barwedge"
+    },
+    {
+      "line": 406,
+      "display": false,
+      "tex": "\\Cup"
+    },
+    {
+      "line": 406,
+      "display": false,
+      "tex": "\\lhd"
+    },
+    {
+      "line": 406,
+      "display": false,
+      "tex": "\\sqcap"
+    },
+    {
+      "line": 407,
+      "display": false,
+      "tex": "\\bigcirc"
+    },
+    {
+      "line": 407,
+      "display": false,
+      "tex": "\\cup"
+    },
+    {
+      "line": 407,
+      "display": false,
+      "tex": "\\ltimes"
+    },
+    {
+      "line": 407,
+      "display": false,
+      "tex": "\\sqcup"
+    },
+    {
+      "line": 408,
+      "display": false,
+      "tex": "\\bmod"
+    },
+    {
+      "line": 408,
+      "display": false,
+      "tex": "\\curlyvee"
+    },
+    {
+      "line": 408,
+      "display": false,
+      "tex": "x \\mod a"
+    },
+    {
+      "line": 408,
+      "display": false,
+      "tex": "\\times"
+    },
+    {
+      "line": 409,
+      "display": false,
+      "tex": "\\boxdot"
+    },
+    {
+      "line": 409,
+      "display": false,
+      "tex": "\\curlywedge"
+    },
+    {
+      "line": 409,
+      "display": false,
+      "tex": "\\mp"
+    },
+    {
+      "line": 409,
+      "display": false,
+      "tex": "\\unlhd"
+    },
+    {
+      "line": 410,
+      "display": false,
+      "tex": "\\boxminus"
+    },
+    {
+      "line": 410,
+      "display": false,
+      "tex": "\\div"
+    },
+    {
+      "line": 410,
+      "display": false,
+      "tex": "\\odot"
+    },
+    {
+      "line": 410,
+      "display": false,
+      "tex": "\\unrhd"
+    },
+    {
+      "line": 411,
+      "display": false,
+      "tex": "\\boxplus"
+    },
+    {
+      "line": 411,
+      "display": false,
+      "tex": "\\divideontimes"
+    },
+    {
+      "line": 411,
+      "display": false,
+      "tex": "\\ominus"
+    },
+    {
+      "line": 411,
+      "display": false,
+      "tex": "\\uplus"
+    },
+    {
+      "line": 412,
+      "display": false,
+      "tex": "\\boxtimes"
+    },
+    {
+      "line": 412,
+      "display": false,
+      "tex": "\\dotplus"
+    },
+    {
+      "line": 412,
+      "display": false,
+      "tex": "\\oplus"
+    },
+    {
+      "line": 412,
+      "display": false,
+      "tex": "\\vee"
+    },
+    {
+      "line": 413,
+      "display": false,
+      "tex": "\\bullet"
+    },
+    {
+      "line": 413,
+      "display": false,
+      "tex": "\\doublebarwedge"
+    },
+    {
+      "line": 413,
+      "display": false,
+      "tex": "\\otimes"
+    },
+    {
+      "line": 413,
+      "display": false,
+      "tex": "\\veebar"
+    },
+    {
+      "line": 414,
+      "display": false,
+      "tex": "\\Cap"
+    },
+    {
+      "line": 414,
+      "display": false,
+      "tex": "\\doublecap"
+    },
+    {
+      "line": 414,
+      "display": false,
+      "tex": "\\oslash"
+    },
+    {
+      "line": 414,
+      "display": false,
+      "tex": "\\wedge"
+    },
+    {
+      "line": 415,
+      "display": false,
+      "tex": "\\cap"
+    },
+    {
+      "line": 415,
+      "display": false,
+      "tex": "\\doublecup"
+    },
+    {
+      "line": 415,
+      "display": false,
+      "tex": "\\pm"
+    },
+    {
+      "line": 415,
+      "display": false,
+      "tex": "\\wr"
+    },
+    {
+      "line": 417,
+      "display": false,
+      "tex": "+ - / * ⋅ ∘ ∙ ± × ÷ ∓ ∔ ∧ ∨ ∩ ∪ ≀ ⊎ ⊓ ⊔ ⊕ ⊖ ⊗ ⊘ ⊙ ⊚ ⊛ ⊝ ◯ ∖ {}"
+    },
+    {
+      "line": 423,
+      "display": false,
+      "tex": "\\frac{a}{b}"
+    },
+    {
+      "line": 423,
+      "display": false,
+      "tex": "\\tfrac{a}{b}"
+    },
+    {
+      "line": 423,
+      "display": false,
+      "tex": "\\genfrac ( ] {2pt}{1}a{a+1}"
+    },
+    {
+      "line": 424,
+      "display": false,
+      "tex": "{a \\over b}"
+    },
+    {
+      "line": 424,
+      "display": false,
+      "tex": "\\dfrac{a}{b}"
+    },
+    {
+      "line": 424,
+      "display": false,
+      "tex": "{a \\above{2pt} b+1}"
+    },
+    {
+      "line": 425,
+      "display": false,
+      "tex": "a/b"
+    },
+    {
+      "line": 425,
+      "display": false,
+      "tex": "\\cfrac{a}{1 + \\cfrac{1}{b}}"
+    },
+    {
+      "line": 429,
+      "display": false,
+      "tex": "\\binom{n}{k}"
+    },
+    {
+      "line": 429,
+      "display": false,
+      "tex": "\\dbinom{n}{k}"
+    },
+    {
+      "line": 429,
+      "display": false,
+      "tex": "{n\\brace k}"
+    },
+    {
+      "line": 430,
+      "display": false,
+      "tex": "{n \\choose k}"
+    },
+    {
+      "line": 430,
+      "display": false,
+      "tex": "\\tbinom{n}{k}"
+    },
+    {
+      "line": 430,
+      "display": false,
+      "tex": "{n\\brack k}"
+    },
+    {
+      "line": 436,
+      "display": false,
+      "tex": "\\arcsin"
+    },
+    {
+      "line": 436,
+      "display": false,
+      "tex": "\\cosec"
+    },
+    {
+      "line": 436,
+      "display": false,
+      "tex": "\\deg"
+    },
+    {
+      "line": 436,
+      "display": false,
+      "tex": "\\sec"
+    },
+    {
+      "line": 437,
+      "display": false,
+      "tex": "\\arccos"
+    },
+    {
+      "line": 437,
+      "display": false,
+      "tex": "\\cosh"
+    },
+    {
+      "line": 437,
+      "display": false,
+      "tex": "\\dim"
+    },
+    {
+      "line": 437,
+      "display": false,
+      "tex": "\\sin"
+    },
+    {
+      "line": 438,
+      "display": false,
+      "tex": "\\arctan"
+    },
+    {
+      "line": 438,
+      "display": false,
+      "tex": "\\cot"
+    },
+    {
+      "line": 438,
+      "display": false,
+      "tex": "\\exp"
+    },
+    {
+      "line": 438,
+      "display": false,
+      "tex": "\\sinh"
+    },
+    {
+      "line": 439,
+      "display": false,
+      "tex": "\\arctg"
+    },
+    {
+      "line": 439,
+      "display": false,
+      "tex": "\\cotg"
+    },
+    {
+      "line": 439,
+      "display": false,
+      "tex": "\\hom"
+    },
+    {
+      "line": 439,
+      "display": false,
+      "tex": "\\sh"
+    },
+    {
+      "line": 440,
+      "display": false,
+      "tex": "\\arcctg"
+    },
+    {
+      "line": 440,
+      "display": false,
+      "tex": "\\coth"
+    },
+    {
+      "line": 440,
+      "display": false,
+      "tex": "\\ker"
+    },
+    {
+      "line": 440,
+      "display": false,
+      "tex": "\\tan"
+    },
+    {
+      "line": 441,
+      "display": false,
+      "tex": "\\arg"
+    },
+    {
+      "line": 441,
+      "display": false,
+      "tex": "\\csc"
+    },
+    {
+      "line": 441,
+      "display": false,
+      "tex": "\\lg"
+    },
+    {
+      "line": 441,
+      "display": false,
+      "tex": "\\tanh"
+    },
+    {
+      "line": 442,
+      "display": false,
+      "tex": "\\ch"
+    },
+    {
+      "line": 442,
+      "display": false,
+      "tex": "\\ctg"
+    },
+    {
+      "line": 442,
+      "display": false,
+      "tex": "\\ln"
+    },
+    {
+      "line": 442,
+      "display": false,
+      "tex": "\\tg"
+    },
+    {
+      "line": 443,
+      "display": false,
+      "tex": "\\cos"
+    },
+    {
+      "line": 443,
+      "display": false,
+      "tex": "\\cth"
+    },
+    {
+      "line": 443,
+      "display": false,
+      "tex": "\\log"
+    },
+    {
+      "line": 443,
+      "display": false,
+      "tex": "\\th"
+    },
+    {
+      "line": 444,
+      "display": false,
+      "tex": "\\operatorname{f}"
+    },
+    {
+      "line": 445,
+      "display": false,
+      "tex": "\\argmax"
+    },
+    {
+      "line": 445,
+      "display": false,
+      "tex": "\\injlim"
+    },
+    {
+      "line": 445,
+      "display": false,
+      "tex": "\\min"
+    },
+    {
+      "line": 445,
+      "display": false,
+      "tex": "\\varinjlim"
+    },
+    {
+      "line": 446,
+      "display": false,
+      "tex": "\\argmin"
+    },
+    {
+      "line": 446,
+      "display": false,
+      "tex": "\\lim"
+    },
+    {
+      "line": 446,
+      "display": false,
+      "tex": "\\plim"
+    },
+    {
+      "line": 446,
+      "display": false,
+      "tex": "\\varliminf"
+    },
+    {
+      "line": 447,
+      "display": false,
+      "tex": "\\det"
+    },
+    {
+      "line": 447,
+      "display": false,
+      "tex": "\\liminf"
+    },
+    {
+      "line": 447,
+      "display": false,
+      "tex": "\\Pr"
+    },
+    {
+      "line": 447,
+      "display": false,
+      "tex": "\\varlimsup"
+    },
+    {
+      "line": 448,
+      "display": false,
+      "tex": "\\gcd"
+    },
+    {
+      "line": 448,
+      "display": false,
+      "tex": "\\limsup"
+    },
+    {
+      "line": 448,
+      "display": false,
+      "tex": "\\projlim"
+    },
+    {
+      "line": 448,
+      "display": false,
+      "tex": "\\varprojlim"
+    },
+    {
+      "line": 449,
+      "display": false,
+      "tex": "\\inf"
+    },
+    {
+      "line": 449,
+      "display": false,
+      "tex": "\\max"
+    },
+    {
+      "line": 449,
+      "display": false,
+      "tex": "\\sup"
+    },
+    {
+      "line": 450,
+      "display": false,
+      "tex": "\\operatorname*{f}"
+    },
+    {
+      "line": 450,
+      "display": false,
+      "tex": "\\operatornamewithlimits{f}"
+    },
+    {
+      "line": 456,
+      "display": false,
+      "tex": "\\sqrt{x}"
+    },
+    {
+      "line": 458,
+      "display": false,
+      "tex": "\\sqrt[3]{x}"
+    },
+    {
+      "line": 462,
+      "display": false,
+      "tex": "\\stackrel{!}{=}"
+    },
+    {
+      "line": 466,
+      "display": false,
+      "tex": "="
+    },
+    {
+      "line": 466,
+      "display": false,
+      "tex": "\\doteqdot"
+    },
+    {
+      "line": 466,
+      "display": false,
+      "tex": "\\lessapprox"
+    },
+    {
+      "line": 466,
+      "display": false,
+      "tex": "\\smile"
+    },
+    {
+      "line": 467,
+      "display": false,
+      "tex": "<"
+    },
+    {
+      "line": 467,
+      "display": false,
+      "tex": "\\eqcirc"
+    },
+    {
+      "line": 467,
+      "display": false,
+      "tex": "\\lesseqgtr"
+    },
+    {
+      "line": 467,
+      "display": false,
+      "tex": "\\sqsubset"
+    },
+    {
+      "line": 468,
+      "display": false,
+      "tex": ">"
+    },
+    {
+      "line": 468,
+      "display": false,
+      "tex": "\\eqcolon"
+    },
+    {
+      "line": 468,
+      "display": false,
+      "tex": "\\lesseqqgtr"
+    },
+    {
+      "line": 468,
+      "display": false,
+      "tex": "\\sqsubseteq"
+    },
+    {
+      "line": 469,
+      "display": false,
+      "tex": ":"
+    },
+    {
+      "line": 469,
+      "display": false,
+      "tex": "\\Eqcolon"
+    },
+    {
+      "line": 469,
+      "display": false,
+      "tex": "\\lessgtr"
+    },
+    {
+      "line": 469,
+      "display": false,
+      "tex": "\\sqsupset"
+    },
+    {
+      "line": 470,
+      "display": false,
+      "tex": "\\approx"
+    },
+    {
+      "line": 470,
+      "display": false,
+      "tex": "\\eqqcolon"
+    },
+    {
+      "line": 470,
+      "display": false,
+      "tex": "\\lesssim"
+    },
+    {
+      "line": 470,
+      "display": false,
+      "tex": "\\sqsupseteq"
+    },
+    {
+      "line": 471,
+      "display": false,
+      "tex": "\\approxcolon"
+    },
+    {
+      "line": 471,
+      "display": false,
+      "tex": "\\Eqqcolon"
+    },
+    {
+      "line": 471,
+      "display": false,
+      "tex": "\\ll"
+    },
+    {
+      "line": 471,
+      "display": false,
+      "tex": "\\Subset"
+    },
+    {
+      "line": 472,
+      "display": false,
+      "tex": "\\approxcoloncolon"
+    },
+    {
+      "line": 472,
+      "display": false,
+      "tex": "\\eqsim"
+    },
+    {
+      "line": 472,
+      "display": false,
+      "tex": "\\lll"
+    },
+    {
+      "line": 472,
+      "display": false,
+      "tex": "\\subset"
+    },
+    {
+      "line": 473,
+      "display": false,
+      "tex": "\\approxeq"
+    },
+    {
+      "line": 473,
+      "display": false,
+      "tex": "\\eqslantgtr"
+    },
+    {
+      "line": 473,
+      "display": false,
+      "tex": "\\llless"
+    },
+    {
+      "line": 473,
+      "display": false,
+      "tex": "\\subseteq"
+    },
+    {
+      "line": 474,
+      "display": false,
+      "tex": "\\asymp"
+    },
+    {
+      "line": 474,
+      "display": false,
+      "tex": "\\eqslantless"
+    },
+    {
+      "line": 474,
+      "display": false,
+      "tex": "\\lt"
+    },
+    {
+      "line": 474,
+      "display": false,
+      "tex": "\\subseteqq"
+    },
+    {
+      "line": 475,
+      "display": false,
+      "tex": "\\backepsilon"
+    },
+    {
+      "line": 475,
+      "display": false,
+      "tex": "\\equiv"
+    },
+    {
+      "line": 475,
+      "display": false,
+      "tex": "\\mid"
+    },
+    {
+      "line": 475,
+      "display": false,
+      "tex": "\\succ"
+    },
+    {
+      "line": 476,
+      "display": false,
+      "tex": "\\backsim"
+    },
+    {
+      "line": 476,
+      "display": false,
+      "tex": "\\fallingdotseq"
+    },
+    {
+      "line": 476,
+      "display": false,
+      "tex": "\\models"
+    },
+    {
+      "line": 476,
+      "display": false,
+      "tex": "\\succapprox"
+    },
+    {
+      "line": 477,
+      "display": false,
+      "tex": "\\backsimeq"
+    },
+    {
+      "line": 477,
+      "display": false,
+      "tex": "\\frown"
+    },
+    {
+      "line": 477,
+      "display": false,
+      "tex": "\\multimap"
+    },
+    {
+      "line": 477,
+      "display": false,
+      "tex": "\\succcurlyeq"
+    },
+    {
+      "line": 478,
+      "display": false,
+      "tex": "\\between"
+    },
+    {
+      "line": 478,
+      "display": false,
+      "tex": "\\ge"
+    },
+    {
+      "line": 478,
+      "display": false,
+      "tex": "\\origof"
+    },
+    {
+      "line": 478,
+      "display": false,
+      "tex": "\\succeq"
+    },
+    {
+      "line": 479,
+      "display": false,
+      "tex": "\\bowtie"
+    },
+    {
+      "line": 479,
+      "display": false,
+      "tex": "\\geq"
+    },
+    {
+      "line": 479,
+      "display": false,
+      "tex": "\\owns"
+    },
+    {
+      "line": 479,
+      "display": false,
+      "tex": "\\succsim"
+    },
+    {
+      "line": 480,
+      "display": false,
+      "tex": "\\bumpeq"
+    },
+    {
+      "line": 480,
+      "display": false,
+      "tex": "\\geqq"
+    },
+    {
+      "line": 480,
+      "display": false,
+      "tex": "\\parallel"
+    },
+    {
+      "line": 480,
+      "display": false,
+      "tex": "\\Supset"
+    },
+    {
+      "line": 481,
+      "display": false,
+      "tex": "\\Bumpeq"
+    },
+    {
+      "line": 481,
+      "display": false,
+      "tex": "\\geqslant"
+    },
+    {
+      "line": 481,
+      "display": false,
+      "tex": "\\perp"
+    },
+    {
+      "line": 481,
+      "display": false,
+      "tex": "\\supset"
+    },
+    {
+      "line": 482,
+      "display": false,
+      "tex": "\\circeq"
+    },
+    {
+      "line": 482,
+      "display": false,
+      "tex": "\\gg"
+    },
+    {
+      "line": 482,
+      "display": false,
+      "tex": "\\pitchfork"
+    },
+    {
+      "line": 482,
+      "display": false,
+      "tex": "\\supseteq"
+    },
+    {
+      "line": 483,
+      "display": false,
+      "tex": "\\colonapprox"
+    },
+    {
+      "line": 483,
+      "display": false,
+      "tex": "\\ggg"
+    },
+    {
+      "line": 483,
+      "display": false,
+      "tex": "\\prec"
+    },
+    {
+      "line": 483,
+      "display": false,
+      "tex": "\\supseteqq"
+    },
+    {
+      "line": 484,
+      "display": false,
+      "tex": "\\Colonapprox"
+    },
+    {
+      "line": 484,
+      "display": false,
+      "tex": "\\gggtr"
+    },
+    {
+      "line": 484,
+      "display": false,
+      "tex": "\\precapprox"
+    },
+    {
+      "line": 484,
+      "display": false,
+      "tex": "\\thickapprox"
+    },
+    {
+      "line": 485,
+      "display": false,
+      "tex": "\\coloneq"
+    },
+    {
+      "line": 485,
+      "display": false,
+      "tex": "\\gt"
+    },
+    {
+      "line": 485,
+      "display": false,
+      "tex": "\\preccurlyeq"
+    },
+    {
+      "line": 485,
+      "display": false,
+      "tex": "\\thicksim"
+    },
+    {
+      "line": 486,
+      "display": false,
+      "tex": "\\Coloneq"
+    },
+    {
+      "line": 486,
+      "display": false,
+      "tex": "\\gtrapprox"
+    },
+    {
+      "line": 486,
+      "display": false,
+      "tex": "\\preceq"
+    },
+    {
+      "line": 486,
+      "display": false,
+      "tex": "\\trianglelefteq"
+    },
+    {
+      "line": 487,
+      "display": false,
+      "tex": "\\coloneqq"
+    },
+    {
+      "line": 487,
+      "display": false,
+      "tex": "\\gtreqless"
+    },
+    {
+      "line": 487,
+      "display": false,
+      "tex": "\\precsim"
+    },
+    {
+      "line": 487,
+      "display": false,
+      "tex": "\\triangleq"
+    },
+    {
+      "line": 488,
+      "display": false,
+      "tex": "\\Coloneqq"
+    },
+    {
+      "line": 488,
+      "display": false,
+      "tex": "\\gtreqqless"
+    },
+    {
+      "line": 488,
+      "display": false,
+      "tex": "\\propto"
+    },
+    {
+      "line": 488,
+      "display": false,
+      "tex": "\\trianglerighteq"
+    },
+    {
+      "line": 489,
+      "display": false,
+      "tex": "\\colonsim"
+    },
+    {
+      "line": 489,
+      "display": false,
+      "tex": "\\gtrless"
+    },
+    {
+      "line": 489,
+      "display": false,
+      "tex": "\\risingdotseq"
+    },
+    {
+      "line": 489,
+      "display": false,
+      "tex": "\\varpropto"
+    },
+    {
+      "line": 490,
+      "display": false,
+      "tex": "\\Colonsim"
+    },
+    {
+      "line": 490,
+      "display": false,
+      "tex": "\\gtrsim"
+    },
+    {
+      "line": 490,
+      "display": false,
+      "tex": "\\shortmid"
+    },
+    {
+      "line": 490,
+      "display": false,
+      "tex": "\\vartriangle"
+    },
+    {
+      "line": 491,
+      "display": false,
+      "tex": "\\cong"
+    },
+    {
+      "line": 491,
+      "display": false,
+      "tex": "\\imageof"
+    },
+    {
+      "line": 491,
+      "display": false,
+      "tex": "\\shortparallel"
+    },
+    {
+      "line": 491,
+      "display": false,
+      "tex": "\\vartriangleleft"
+    },
+    {
+      "line": 492,
+      "display": false,
+      "tex": "\\curlyeqprec"
+    },
+    {
+      "line": 492,
+      "display": false,
+      "tex": "\\in"
+    },
+    {
+      "line": 492,
+      "display": false,
+      "tex": "\\sim"
+    },
+    {
+      "line": 492,
+      "display": false,
+      "tex": "\\vartriangleright"
+    },
+    {
+      "line": 493,
+      "display": false,
+      "tex": "\\curlyeqsucc"
+    },
+    {
+      "line": 493,
+      "display": false,
+      "tex": "\\Join"
+    },
+    {
+      "line": 493,
+      "display": false,
+      "tex": "\\simcolon"
+    },
+    {
+      "line": 493,
+      "display": false,
+      "tex": "\\vcentcolon"
+    },
+    {
+      "line": 494,
+      "display": false,
+      "tex": "\\dashv"
+    },
+    {
+      "line": 494,
+      "display": false,
+      "tex": "\\le"
+    },
+    {
+      "line": 494,
+      "display": false,
+      "tex": "\\simcoloncolon"
+    },
+    {
+      "line": 494,
+      "display": false,
+      "tex": "\\vdash"
+    },
+    {
+      "line": 495,
+      "display": false,
+      "tex": "\\dblcolon"
+    },
+    {
+      "line": 495,
+      "display": false,
+      "tex": "\\leq"
+    },
+    {
+      "line": 495,
+      "display": false,
+      "tex": "\\simeq"
+    },
+    {
+      "line": 495,
+      "display": false,
+      "tex": "\\vDash"
+    },
+    {
+      "line": 496,
+      "display": false,
+      "tex": "\\doteq"
+    },
+    {
+      "line": 496,
+      "display": false,
+      "tex": "\\leqq"
+    },
+    {
+      "line": 496,
+      "display": false,
+      "tex": "\\smallfrown"
+    },
+    {
+      "line": 496,
+      "display": false,
+      "tex": "\\Vdash"
+    },
+    {
+      "line": 497,
+      "display": false,
+      "tex": "\\Doteq"
+    },
+    {
+      "line": 497,
+      "display": false,
+      "tex": "\\leqslant"
+    },
+    {
+      "line": 497,
+      "display": false,
+      "tex": "\\smallsmile"
+    },
+    {
+      "line": 497,
+      "display": false,
+      "tex": "\\Vvdash"
+    },
+    {
+      "line": 499,
+      "display": false,
+      "tex": "= < > : ∈ ∋ ∝ ∼ ∽ ≂ ≃ ≅ ≈ ≊ ≍ ≎ ≏ ≐ ≑ ≒ ≓ ≖ ≗ ≜ ≡ ≤ ≥ ≦ ≧ ≫ ≬ ≳ ≷ ≺ ≻ ≼ ≽ ≾ ≿ ⊂ ⊃ ⊆ ⊇ ⊏ ⊐ ⊑ ⊒ ⊢ ⊣ ⊩ ⊪ ⊸ ⋈ ⋍ ⋐ ⋑ ⋔ ⋙ ⋛ ⋞ ⋟ ⌢ ⌣ ⩾ ⪆ ⪌ ⪕ ⪖ ⪯ ⪰ ⪷ ⪸ ⫅ ⫆ ≲ ⩽ ⪅ ≶ ⋚ ⪋ ⟂ ⊨ ⊶ ⊷"
+    },
+    {
+      "line": 503,
+      "display": false,
+      "tex": "\\not ="
+    },
+    {
+      "line": 507,
+      "display": false,
+      "tex": "\\gnapprox"
+    },
+    {
+      "line": 507,
+      "display": false,
+      "tex": "\\ngeqslant"
+    },
+    {
+      "line": 507,
+      "display": false,
+      "tex": "\\nsubseteq"
+    },
+    {
+      "line": 507,
+      "display": false,
+      "tex": "\\precneqq"
+    },
+    {
+      "line": 508,
+      "display": false,
+      "tex": "\\gneq"
+    },
+    {
+      "line": 508,
+      "display": false,
+      "tex": "\\ngtr"
+    },
+    {
+      "line": 508,
+      "display": false,
+      "tex": "\\nsubseteqq"
+    },
+    {
+      "line": 508,
+      "display": false,
+      "tex": "\\precnsim"
+    },
+    {
+      "line": 509,
+      "display": false,
+      "tex": "\\gneqq"
+    },
+    {
+      "line": 509,
+      "display": false,
+      "tex": "\\nleq"
+    },
+    {
+      "line": 509,
+      "display": false,
+      "tex": "\\nsucc"
+    },
+    {
+      "line": 509,
+      "display": false,
+      "tex": "\\subsetneq"
+    },
+    {
+      "line": 510,
+      "display": false,
+      "tex": "\\gnsim"
+    },
+    {
+      "line": 510,
+      "display": false,
+      "tex": "\\nleqq"
+    },
+    {
+      "line": 510,
+      "display": false,
+      "tex": "\\nsucceq"
+    },
+    {
+      "line": 510,
+      "display": false,
+      "tex": "\\subsetneqq"
+    },
+    {
+      "line": 511,
+      "display": false,
+      "tex": "\\gvertneqq"
+    },
+    {
+      "line": 511,
+      "display": false,
+      "tex": "\\nleqslant"
+    },
+    {
+      "line": 511,
+      "display": false,
+      "tex": "\\nsupseteq"
+    },
+    {
+      "line": 511,
+      "display": false,
+      "tex": "\\succnapprox"
+    },
+    {
+      "line": 512,
+      "display": false,
+      "tex": "\\lnapprox"
+    },
+    {
+      "line": 512,
+      "display": false,
+      "tex": "\\nless"
+    },
+    {
+      "line": 512,
+      "display": false,
+      "tex": "\\nsupseteqq"
+    },
+    {
+      "line": 512,
+      "display": false,
+      "tex": "\\succneqq"
+    },
+    {
+      "line": 513,
+      "display": false,
+      "tex": "\\lneq"
+    },
+    {
+      "line": 513,
+      "display": false,
+      "tex": "\\nmid"
+    },
+    {
+      "line": 513,
+      "display": false,
+      "tex": "\\ntriangleleft"
+    },
+    {
+      "line": 513,
+      "display": false,
+      "tex": "\\succnsim"
+    },
+    {
+      "line": 514,
+      "display": false,
+      "tex": "\\lneqq"
+    },
+    {
+      "line": 514,
+      "display": false,
+      "tex": "\\notin"
+    },
+    {
+      "line": 514,
+      "display": false,
+      "tex": "\\ntrianglelefteq"
+    },
+    {
+      "line": 514,
+      "display": false,
+      "tex": "\\supsetneq"
+    },
+    {
+      "line": 515,
+      "display": false,
+      "tex": "\\lnsim"
+    },
+    {
+      "line": 515,
+      "display": false,
+      "tex": "\\notni"
+    },
+    {
+      "line": 515,
+      "display": false,
+      "tex": "\\ntriangleright"
+    },
+    {
+      "line": 515,
+      "display": false,
+      "tex": "\\supsetneqq"
+    },
+    {
+      "line": 516,
+      "display": false,
+      "tex": "\\lvertneqq"
+    },
+    {
+      "line": 516,
+      "display": false,
+      "tex": "\\nparallel"
+    },
+    {
+      "line": 516,
+      "display": false,
+      "tex": "\\ntrianglerighteq"
+    },
+    {
+      "line": 516,
+      "display": false,
+      "tex": "\\varsubsetneq"
+    },
+    {
+      "line": 517,
+      "display": false,
+      "tex": "\\ncong"
+    },
+    {
+      "line": 517,
+      "display": false,
+      "tex": "\\nprec"
+    },
+    {
+      "line": 517,
+      "display": false,
+      "tex": "\\nvdash"
+    },
+    {
+      "line": 517,
+      "display": false,
+      "tex": "\\varsubsetneqq"
+    },
+    {
+      "line": 518,
+      "display": false,
+      "tex": "\\ne"
+    },
+    {
+      "line": 518,
+      "display": false,
+      "tex": "\\npreceq"
+    },
+    {
+      "line": 518,
+      "display": false,
+      "tex": "\\nvDash"
+    },
+    {
+      "line": 518,
+      "display": false,
+      "tex": "\\varsupsetneq"
+    },
+    {
+      "line": 519,
+      "display": false,
+      "tex": "\\neq"
+    },
+    {
+      "line": 519,
+      "display": false,
+      "tex": "\\nshortmid"
+    },
+    {
+      "line": 519,
+      "display": false,
+      "tex": "\\nVDash"
+    },
+    {
+      "line": 519,
+      "display": false,
+      "tex": "\\varsupsetneqq"
+    },
+    {
+      "line": 520,
+      "display": false,
+      "tex": "\\ngeq"
+    },
+    {
+      "line": 520,
+      "display": false,
+      "tex": "\\nshortparallel"
+    },
+    {
+      "line": 520,
+      "display": false,
+      "tex": "\\nVdash"
+    },
+    {
+      "line": 521,
+      "display": false,
+      "tex": "\\ngeqq"
+    },
+    {
+      "line": 521,
+      "display": false,
+      "tex": "\\nsim"
+    },
+    {
+      "line": 521,
+      "display": false,
+      "tex": "\\precnapprox"
+    },
+    {
+      "line": 523,
+      "display": false,
+      "tex": "∉ ∌ ∤ ∦ ≁ ≆ ≠ ≨ ≩ ≮ ≯ ≰ ≱ ⊀ ⊁ ⊈ ⊉ ⊊ ⊋ ⊬ ⊭ ⊮ ⊯ ⋠ ⋡ ⋦ ⋧ ⋨ ⋩ ⋬ ⋭ ⪇ ⪈ ⪉ ⪊ ⪵ ⪶ ⪹ ⪺ ⫋ ⫌"
+    },
+    {
+      "line": 529,
+      "display": false,
+      "tex": "\\circlearrowleft"
+    },
+    {
+      "line": 529,
+      "display": false,
+      "tex": "\\leftharpoonup"
+    },
+    {
+      "line": 529,
+      "display": false,
+      "tex": "\\rArr"
+    },
+    {
+      "line": 530,
+      "display": false,
+      "tex": "\\circlearrowright"
+    },
+    {
+      "line": 530,
+      "display": false,
+      "tex": "\\leftleftarrows"
+    },
+    {
+      "line": 530,
+      "display": false,
+      "tex": "\\rarr"
+    },
+    {
+      "line": 531,
+      "display": false,
+      "tex": "\\curvearrowleft"
+    },
+    {
+      "line": 531,
+      "display": false,
+      "tex": "\\leftrightarrow"
+    },
+    {
+      "line": 531,
+      "display": false,
+      "tex": "\\restriction"
+    },
+    {
+      "line": 532,
+      "display": false,
+      "tex": "\\curvearrowright"
+    },
+    {
+      "line": 532,
+      "display": false,
+      "tex": "\\Leftrightarrow"
+    },
+    {
+      "line": 532,
+      "display": false,
+      "tex": "\\rightarrow"
+    },
+    {
+      "line": 533,
+      "display": false,
+      "tex": "\\Darr"
+    },
+    {
+      "line": 533,
+      "display": false,
+      "tex": "\\leftrightarrows"
+    },
+    {
+      "line": 533,
+      "display": false,
+      "tex": "\\Rightarrow"
+    },
+    {
+      "line": 534,
+      "display": false,
+      "tex": "\\dArr"
+    },
+    {
+      "line": 534,
+      "display": false,
+      "tex": "\\leftrightharpoons"
+    },
+    {
+      "line": 534,
+      "display": false,
+      "tex": "\\rightarrowtail"
+    },
+    {
+      "line": 535,
+      "display": false,
+      "tex": "\\darr"
+    },
+    {
+      "line": 535,
+      "display": false,
+      "tex": "\\leftrightsquigarrow"
+    },
+    {
+      "line": 535,
+      "display": false,
+      "tex": "\\rightharpoondown"
+    },
+    {
+      "line": 536,
+      "display": false,
+      "tex": "\\dashleftarrow"
+    },
+    {
+      "line": 536,
+      "display": false,
+      "tex": "\\Lleftarrow"
+    },
+    {
+      "line": 536,
+      "display": false,
+      "tex": "\\rightharpoonup"
+    },
+    {
+      "line": 537,
+      "display": false,
+      "tex": "\\dashrightarrow"
+    },
+    {
+      "line": 537,
+      "display": false,
+      "tex": "\\longleftarrow"
+    },
+    {
+      "line": 537,
+      "display": false,
+      "tex": "\\rightleftarrows"
+    },
+    {
+      "line": 538,
+      "display": false,
+      "tex": "\\downarrow"
+    },
+    {
+      "line": 538,
+      "display": false,
+      "tex": "\\Longleftarrow"
+    },
+    {
+      "line": 538,
+      "display": false,
+      "tex": "\\rightleftharpoons"
+    },
+    {
+      "line": 539,
+      "display": false,
+      "tex": "\\Downarrow"
+    },
+    {
+      "line": 539,
+      "display": false,
+      "tex": "\\longleftrightarrow"
+    },
+    {
+      "line": 539,
+      "display": false,
+      "tex": "\\rightrightarrows"
+    },
+    {
+      "line": 540,
+      "display": false,
+      "tex": "\\downdownarrows"
+    },
+    {
+      "line": 540,
+      "display": false,
+      "tex": "\\Longleftrightarrow"
+    },
+    {
+      "line": 540,
+      "display": false,
+      "tex": "\\rightsquigarrow"
+    },
+    {
+      "line": 541,
+      "display": false,
+      "tex": "\\downharpoonleft"
+    },
+    {
+      "line": 541,
+      "display": false,
+      "tex": "\\longmapsto"
+    },
+    {
+      "line": 541,
+      "display": false,
+      "tex": "\\Rrightarrow"
+    },
+    {
+      "line": 542,
+      "display": false,
+      "tex": "\\downharpoonright"
+    },
+    {
+      "line": 542,
+      "display": false,
+      "tex": "\\longrightarrow"
+    },
+    {
+      "line": 542,
+      "display": false,
+      "tex": "\\Rsh"
+    },
+    {
+      "line": 543,
+      "display": false,
+      "tex": "\\gets"
+    },
+    {
+      "line": 543,
+      "display": false,
+      "tex": "\\Longrightarrow"
+    },
+    {
+      "line": 543,
+      "display": false,
+      "tex": "\\searrow"
+    },
+    {
+      "line": 544,
+      "display": false,
+      "tex": "\\Harr"
+    },
+    {
+      "line": 544,
+      "display": false,
+      "tex": "\\looparrowleft"
+    },
+    {
+      "line": 544,
+      "display": false,
+      "tex": "\\swarrow"
+    },
+    {
+      "line": 545,
+      "display": false,
+      "tex": "\\hArr"
+    },
+    {
+      "line": 545,
+      "display": false,
+      "tex": "\\looparrowright"
+    },
+    {
+      "line": 545,
+      "display": false,
+      "tex": "\\to"
+    },
+    {
+      "line": 546,
+      "display": false,
+      "tex": "\\harr"
+    },
+    {
+      "line": 546,
+      "display": false,
+      "tex": "\\Lrarr"
+    },
+    {
+      "line": 546,
+      "display": false,
+      "tex": "\\twoheadleftarrow"
+    },
+    {
+      "line": 547,
+      "display": false,
+      "tex": "\\hookleftarrow"
+    },
+    {
+      "line": 547,
+      "display": false,
+      "tex": "\\lrArr"
+    },
+    {
+      "line": 547,
+      "display": false,
+      "tex": "\\twoheadrightarrow"
+    },
+    {
+      "line": 548,
+      "display": false,
+      "tex": "\\hookrightarrow"
+    },
+    {
+      "line": 548,
+      "display": false,
+      "tex": "\\lrarr"
+    },
+    {
+      "line": 548,
+      "display": false,
+      "tex": "\\Uarr"
+    },
+    {
+      "line": 549,
+      "display": false,
+      "tex": "\\iff"
+    },
+    {
+      "line": 549,
+      "display": false,
+      "tex": "\\Lsh"
+    },
+    {
+      "line": 549,
+      "display": false,
+      "tex": "\\uArr"
+    },
+    {
+      "line": 550,
+      "display": false,
+      "tex": "\\impliedby"
+    },
+    {
+      "line": 550,
+      "display": false,
+      "tex": "\\mapsto"
+    },
+    {
+      "line": 550,
+      "display": false,
+      "tex": "\\uarr"
+    },
+    {
+      "line": 551,
+      "display": false,
+      "tex": "\\implies"
+    },
+    {
+      "line": 551,
+      "display": false,
+      "tex": "\\nearrow"
+    },
+    {
+      "line": 551,
+      "display": false,
+      "tex": "\\uparrow"
+    },
+    {
+      "line": 552,
+      "display": false,
+      "tex": "\\Larr"
+    },
+    {
+      "line": 552,
+      "display": false,
+      "tex": "\\nleftarrow"
+    },
+    {
+      "line": 552,
+      "display": false,
+      "tex": "\\Uparrow"
+    },
+    {
+      "line": 553,
+      "display": false,
+      "tex": "\\lArr"
+    },
+    {
+      "line": 553,
+      "display": false,
+      "tex": "\\nLeftarrow"
+    },
+    {
+      "line": 553,
+      "display": false,
+      "tex": "\\updownarrow"
+    },
+    {
+      "line": 554,
+      "display": false,
+      "tex": "\\larr"
+    },
+    {
+      "line": 554,
+      "display": false,
+      "tex": "\\nleftrightarrow"
+    },
+    {
+      "line": 554,
+      "display": false,
+      "tex": "\\Updownarrow"
+    },
+    {
+      "line": 555,
+      "display": false,
+      "tex": "\\leadsto"
+    },
+    {
+      "line": 555,
+      "display": false,
+      "tex": "\\nLeftrightarrow"
+    },
+    {
+      "line": 555,
+      "display": false,
+      "tex": "\\upharpoonleft"
+    },
+    {
+      "line": 556,
+      "display": false,
+      "tex": "\\leftarrow"
+    },
+    {
+      "line": 556,
+      "display": false,
+      "tex": "\\nrightarrow"
+    },
+    {
+      "line": 556,
+      "display": false,
+      "tex": "\\upharpoonright"
+    },
+    {
+      "line": 557,
+      "display": false,
+      "tex": "\\Leftarrow"
+    },
+    {
+      "line": 557,
+      "display": false,
+      "tex": "\\nRightarrow"
+    },
+    {
+      "line": 557,
+      "display": false,
+      "tex": "\\upuparrows"
+    },
+    {
+      "line": 558,
+      "display": false,
+      "tex": "\\leftarrowtail"
+    },
+    {
+      "line": 558,
+      "display": false,
+      "tex": "\\nwarrow"
+    },
+    {
+      "line": 558,
+      "display": false,
+      "tex": "\\mapsfrom"
+    },
+    {
+      "line": 559,
+      "display": false,
+      "tex": "\\leftharpoondown"
+    },
+    {
+      "line": 559,
+      "display": false,
+      "tex": "\\Rarr"
+    },
+    {
+      "line": 561,
+      "display": false,
+      "tex": "← ↑ → ↓ ↔ ↕ ↖ ↗ ↘ ↙ ↚ ↛ ↞ ↠ ↢ ↣ ↦ ↩ ↪ ↫ ↬ ↭ ↮ ↰ ↱↶ ↷ ↺ ↻ ↼ ↽ ↾ ↾ ↿ ⇀ ⇁ ⇂ ⇃ ⇄ ⇆ ⇇ ⇈ ⇉ ⇊ ⇋ ⇌⇍ ⇎ ⇏ ⇐ ⇑ ⇒ ⇓ ⇔ ⇕ ⇚ ⇛ ⇝ ⇠ ⇢ ⟵ ⟶ ⟷ ⟸ ⟹ ⟺ ⟼"
+    },
+    {
+      "line": 567,
+      "display": false,
+      "tex": "\\xleftarrow{abc}"
+    },
+    {
+      "line": 567,
+      "display": false,
+      "tex": "\\xrightarrow[under]{over}"
+    },
+    {
+      "line": 568,
+      "display": false,
+      "tex": "\\xLeftarrow{abc}"
+    },
+    {
+      "line": 568,
+      "display": false,
+      "tex": "\\xRightarrow{abc}"
+    },
+    {
+      "line": 569,
+      "display": false,
+      "tex": "\\xleftrightarrow{abc}"
+    },
+    {
+      "line": 569,
+      "display": false,
+      "tex": "\\xLeftrightarrow{abc}"
+    },
+    {
+      "line": 570,
+      "display": false,
+      "tex": "\\xhookleftarrow{abc}"
+    },
+    {
+      "line": 570,
+      "display": false,
+      "tex": "\\xhookrightarrow{abc}"
+    },
+    {
+      "line": 571,
+      "display": false,
+      "tex": "\\xtwoheadleftarrow{abc}"
+    },
+    {
+      "line": 571,
+      "display": false,
+      "tex": "\\xtwoheadrightarrow{abc}"
+    },
+    {
+      "line": 572,
+      "display": false,
+      "tex": "\\xleftharpoonup{abc}"
+    },
+    {
+      "line": 572,
+      "display": false,
+      "tex": "\\xrightharpoonup{abc}"
+    },
+    {
+      "line": 573,
+      "display": false,
+      "tex": "\\xleftharpoondown{abc}"
+    },
+    {
+      "line": 573,
+      "display": false,
+      "tex": "\\xrightharpoondown{abc}"
+    },
+    {
+      "line": 574,
+      "display": false,
+      "tex": "\\xleftrightharpoons{abc}"
+    },
+    {
+      "line": 574,
+      "display": false,
+      "tex": "\\xrightleftharpoons{abc}"
+    },
+    {
+      "line": 575,
+      "display": false,
+      "tex": "\\xtofrom{abc}"
+    },
+    {
+      "line": 575,
+      "display": false,
+      "tex": "\\xmapsto{abc}"
+    },
+    {
+      "line": 576,
+      "display": false,
+      "tex": "\\xlongequal{abc}"
+    },
+    {
+      "line": 586,
+      "display": false,
+      "tex": "\\bra{\\phi}"
+    },
+    {
+      "line": 586,
+      "display": false,
+      "tex": "\\ket{\\psi}"
+    },
+    {
+      "line": 586,
+      "display": false,
+      "tex": "\\braket{\\phi\\VERT\\psi}"
+    },
+    {
+      "line": 587,
+      "display": false,
+      "tex": "\\Bra{\\phi}"
+    },
+    {
+      "line": 587,
+      "display": false,
+      "tex": "\\Ket{\\psi}"
+    },
+    {
+      "line": 587,
+      "display": false,
+      "tex": "\\Braket{ ϕ \\VERT \\frac{∂^2}{∂ t^2} \\VERT ψ }"
+    },
+    {
+      "line": 598,
+      "display": false,
+      "tex": "\\color{blue} F=ma"
+    },
+    {
+      "line": 602,
+      "display": false,
+      "tex": "\\textcolor{blue}{F=ma}"
+    },
+    {
+      "line": 603,
+      "display": false,
+      "tex": "\\textcolor{#228B22}{F=ma}"
+    },
+    {
+      "line": 604,
+      "display": false,
+      "tex": "\\colorbox{aqua}{"
+    },
+    {
+      "line": 604,
+      "display": false,
+      "tex": "}"
+    },
+    {
+      "line": 605,
+      "display": false,
+      "tex": "\\fcolorbox{red}{aqua}{"
+    },
+    {
+      "line": 605,
+      "display": false,
+      "tex": "}"
+    },
+    {
+      "line": 615,
+      "display": false,
+      "tex": "\\mathrm{Ab0}"
+    },
+    {
+      "line": 615,
+      "display": false,
+      "tex": "\\mathbf{Ab0}"
+    },
+    {
+      "line": 615,
+      "display": false,
+      "tex": "\\mathsf{Ab0}"
+    },
+    {
+      "line": 616,
+      "display": false,
+      "tex": "\\mathnormal{Ab0}"
+    },
+    {
+      "line": 616,
+      "display": false,
+      "tex": "\\textbf{Ab0}"
+    },
+    {
+      "line": 616,
+      "display": false,
+      "tex": "\\textsf{Ab0}"
+    },
+    {
+      "line": 617,
+      "display": false,
+      "tex": "\\textrm{Ab0}"
+    },
+    {
+      "line": 617,
+      "display": false,
+      "tex": "\\bf Ab0"
+    },
+    {
+      "line": 617,
+      "display": false,
+      "tex": "\\sf Ab0"
+    },
+    {
+      "line": 618,
+      "display": false,
+      "tex": "\\rm Ab0"
+    },
+    {
+      "line": 618,
+      "display": false,
+      "tex": "\\bold{Ab0}"
+    },
+    {
+      "line": 618,
+      "display": false,
+      "tex": "\\mathsfit{Ab0}"
+    },
+    {
+      "line": 619,
+      "display": false,
+      "tex": "\\textnormal{Ab0}"
+    },
+    {
+      "line": 619,
+      "display": false,
+      "tex": "\\boldsymbol{Ab0}"
+    },
+    {
+      "line": 619,
+      "display": false,
+      "tex": "\\Bbb{AB}"
+    },
+    {
+      "line": 620,
+      "display": false,
+      "tex": "\\text{Ab0}"
+    },
+    {
+      "line": 620,
+      "display": false,
+      "tex": "\\bm{Ab0}"
+    },
+    {
+      "line": 620,
+      "display": false,
+      "tex": "\\mathbb{AB}"
+    },
+    {
+      "line": 621,
+      "display": false,
+      "tex": "\\textup{Ab0}"
+    },
+    {
+      "line": 621,
+      "display": false,
+      "tex": "\\textmd{Ab0}"
+    },
+    {
+      "line": 621,
+      "display": false,
+      "tex": "\\frak{Ab0}"
+    },
+    {
+      "line": 622,
+      "display": false,
+      "tex": "\\mathit{Ab0}"
+    },
+    {
+      "line": 622,
+      "display": false,
+      "tex": "\\mathtt{Ab0}"
+    },
+    {
+      "line": 622,
+      "display": false,
+      "tex": "\\mathfrak{Ab0}"
+    },
+    {
+      "line": 623,
+      "display": false,
+      "tex": "\\textit{Ab0}"
+    },
+    {
+      "line": 623,
+      "display": false,
+      "tex": "\\texttt{Ab0}"
+    },
+    {
+      "line": 623,
+      "display": false,
+      "tex": "\\mathcal{AB0}"
+    },
+    {
+      "line": 624,
+      "display": false,
+      "tex": "\\it Ab0"
+    },
+    {
+      "line": 624,
+      "display": false,
+      "tex": "\\tt Ab0"
+    },
+    {
+      "line": 624,
+      "display": false,
+      "tex": "\\cal AB0"
+    },
+    {
+      "line": 625,
+      "display": false,
+      "tex": "\\emph{Ab0}"
+    },
+    {
+      "line": 625,
+      "display": false,
+      "tex": "\\mathscr{AB}"
+    },
+    {
+      "line": 627,
+      "display": false,
+      "tex": "\\textsf{\\textbf{H}}"
+    },
+    {
+      "line": 627,
+      "display": false,
+      "tex": "\\mathsf{\\mathbf{H}}"
+    },
+    {
+      "line": 629,
+      "display": false,
+      "tex": "\\pmb{\\mu}"
+    },
+    {
+      "line": 635,
+      "display": false,
+      "tex": "\\Huge AB"
+    },
+    {
+      "line": 635,
+      "display": false,
+      "tex": "\\normalsize AB"
+    },
+    {
+      "line": 636,
+      "display": false,
+      "tex": "\\huge AB"
+    },
+    {
+      "line": 636,
+      "display": false,
+      "tex": "\\small AB"
+    },
+    {
+      "line": 637,
+      "display": false,
+      "tex": "\\LARGE AB"
+    },
+    {
+      "line": 637,
+      "display": false,
+      "tex": "\\footnotesize AB"
+    },
+    {
+      "line": 638,
+      "display": false,
+      "tex": "\\Large AB"
+    },
+    {
+      "line": 638,
+      "display": false,
+      "tex": "\\scriptsize AB"
+    },
+    {
+      "line": 639,
+      "display": false,
+      "tex": "\\large AB"
+    },
+    {
+      "line": 639,
+      "display": false,
+      "tex": "\\tiny AB"
+    },
+    {
+      "line": 646,
+      "display": false,
+      "tex": "\\displaystyle\\sum_{i=1}^n"
+    },
+    {
+      "line": 647,
+      "display": false,
+      "tex": "\\textstyle\\sum_{i=1}^n"
+    },
+    {
+      "line": 648,
+      "display": false,
+      "tex": "\\scriptstyle x"
+    },
+    {
+      "line": 649,
+      "display": false,
+      "tex": "\\scriptscriptstyle x"
+    },
+    {
+      "line": 650,
+      "display": false,
+      "tex": "\\lim\\limits_x"
+    },
+    {
+      "line": 651,
+      "display": false,
+      "tex": "\\lim\\nolimits_x"
+    },
+    {
+      "line": 652,
+      "display": false,
+      "tex": "\\verb!x^2!"
+    },
+    {
+      "line": 660,
+      "display": false,
+      "tex": "\\dots"
+    },
+    {
+      "line": 660,
+      "display": false,
+      "tex": "\\KaTeX"
+    },
+    {
+      "line": 661,
+      "display": false,
+      "tex": "\\%"
+    },
+    {
+      "line": 661,
+      "display": false,
+      "tex": "\\cdots"
+    },
+    {
+      "line": 661,
+      "display": false,
+      "tex": "\\LaTeX"
+    },
+    {
+      "line": 662,
+      "display": false,
+      "tex": "\\#"
+    },
+    {
+      "line": 662,
+      "display": false,
+      "tex": "\\ddots"
+    },
+    {
+      "line": 662,
+      "display": false,
+      "tex": "\\TeX"
+    },
+    {
+      "line": 663,
+      "display": false,
+      "tex": "\\&"
+    },
+    {
+      "line": 663,
+      "display": false,
+      "tex": "\\ldots"
+    },
+    {
+      "line": 663,
+      "display": false,
+      "tex": "\\nabla"
+    },
+    {
+      "line": 664,
+      "display": false,
+      "tex": "\\_"
+    },
+    {
+      "line": 664,
+      "display": false,
+      "tex": "\\vdots"
+    },
+    {
+      "line": 664,
+      "display": false,
+      "tex": "\\infty"
+    },
+    {
+      "line": 665,
+      "display": false,
+      "tex": "\\text{\\textunderscore}"
+    },
+    {
+      "line": 665,
+      "display": false,
+      "tex": "\\dotsb"
+    },
+    {
+      "line": 665,
+      "display": false,
+      "tex": "\\infin"
+    },
+    {
+      "line": 666,
+      "display": false,
+      "tex": "\\text{--}"
+    },
+    {
+      "line": 666,
+      "display": false,
+      "tex": "\\dotsc"
+    },
+    {
+      "line": 666,
+      "display": false,
+      "tex": "\\checkmark"
+    },
+    {
+      "line": 667,
+      "display": false,
+      "tex": "\\text{\\textendash}"
+    },
+    {
+      "line": 667,
+      "display": false,
+      "tex": "\\dotsi"
+    },
+    {
+      "line": 667,
+      "display": false,
+      "tex": "\\dag"
+    },
+    {
+      "line": 668,
+      "display": false,
+      "tex": "\\text{---}"
+    },
+    {
+      "line": 668,
+      "display": false,
+      "tex": "\\dotsm"
+    },
+    {
+      "line": 668,
+      "display": false,
+      "tex": "\\dagger"
+    },
+    {
+      "line": 669,
+      "display": false,
+      "tex": "\\text{\\textemdash}"
+    },
+    {
+      "line": 669,
+      "display": false,
+      "tex": "\\dotso"
+    },
+    {
+      "line": 669,
+      "display": false,
+      "tex": "\\text{\\textdagger}"
+    },
+    {
+      "line": 670,
+      "display": false,
+      "tex": "\\text{\\textasciitilde}"
+    },
+    {
+      "line": 670,
+      "display": false,
+      "tex": "\\sdot"
+    },
+    {
+      "line": 670,
+      "display": false,
+      "tex": "\\ddag"
+    },
+    {
+      "line": 671,
+      "display": false,
+      "tex": "\\text{\\textasciicircum}"
+    },
+    {
+      "line": 671,
+      "display": false,
+      "tex": "\\mathellipsis"
+    },
+    {
+      "line": 671,
+      "display": false,
+      "tex": "\\ddagger"
+    },
+    {
+      "line": 672,
+      "display": false,
+      "tex": "`"
+    },
+    {
+      "line": 673,
+      "display": false,
+      "tex": "\\text{\\textquoteleft}"
+    },
+    {
+      "line": 673,
+      "display": false,
+      "tex": "\\Box"
+    },
+    {
+      "line": 673,
+      "display": false,
+      "tex": "\\Dagger"
+    },
+    {
+      "line": 674,
+      "display": false,
+      "tex": "\\lq"
+    },
+    {
+      "line": 674,
+      "display": false,
+      "tex": "\\square"
+    },
+    {
+      "line": 674,
+      "display": false,
+      "tex": "\\angle"
+    },
+    {
+      "line": 675,
+      "display": false,
+      "tex": "\\text{\\textquoteright}"
+    },
+    {
+      "line": 675,
+      "display": false,
+      "tex": "\\blacksquare"
+    },
+    {
+      "line": 675,
+      "display": false,
+      "tex": "\\measuredangle"
+    },
+    {
+      "line": 676,
+      "display": false,
+      "tex": "\\rq"
+    },
+    {
+      "line": 676,
+      "display": false,
+      "tex": "\\triangle"
+    },
+    {
+      "line": 676,
+      "display": false,
+      "tex": "\\sphericalangle"
+    },
+    {
+      "line": 677,
+      "display": false,
+      "tex": "\\text{\\textquotedblleft}"
+    },
+    {
+      "line": 677,
+      "display": false,
+      "tex": "\\triangledown"
+    },
+    {
+      "line": 677,
+      "display": false,
+      "tex": "\\top"
+    },
+    {
+      "line": 678,
+      "display": false,
+      "tex": "\""
+    },
+    {
+      "line": 678,
+      "display": false,
+      "tex": "\\triangleleft"
+    },
+    {
+      "line": 678,
+      "display": false,
+      "tex": "\\bot"
+    },
+    {
+      "line": 679,
+      "display": false,
+      "tex": "\\text{\\textquotedblright}"
+    },
+    {
+      "line": 679,
+      "display": false,
+      "tex": "\\triangleright"
+    },
+    {
+      "line": 679,
+      "display": false,
+      "tex": "\\"
+    },
+    {
+      "line": 679,
+      "display": false,
+      "tex": " `\\"
+    },
+    {
+      "line": 680,
+      "display": false,
+      "tex": "\\colon"
+    },
+    {
+      "line": 680,
+      "display": false,
+      "tex": "\\bigtriangledown"
+    },
+    {
+      "line": 680,
+      "display": false,
+      "tex": "\\text{\\textdollar}"
+    },
+    {
+      "line": 681,
+      "display": false,
+      "tex": "\\backprime"
+    },
+    {
+      "line": 681,
+      "display": false,
+      "tex": "\\bigtriangleup"
+    },
+    {
+      "line": 681,
+      "display": false,
+      "tex": "\\pounds"
+    },
+    {
+      "line": 682,
+      "display": false,
+      "tex": "\\prime"
+    },
+    {
+      "line": 682,
+      "display": false,
+      "tex": "\\blacktriangle"
+    },
+    {
+      "line": 682,
+      "display": false,
+      "tex": "\\mathsterling"
+    },
+    {
+      "line": 683,
+      "display": false,
+      "tex": "\\text{\\textless}"
+    },
+    {
+      "line": 683,
+      "display": false,
+      "tex": "\\blacktriangledown"
+    },
+    {
+      "line": 683,
+      "display": false,
+      "tex": "\\text{\\textsterling}"
+    },
+    {
+      "line": 684,
+      "display": false,
+      "tex": "\\text{\\textgreater}"
+    },
+    {
+      "line": 684,
+      "display": false,
+      "tex": "\\blacktriangleleft"
+    },
+    {
+      "line": 684,
+      "display": false,
+      "tex": "\\yen"
+    },
+    {
+      "line": 685,
+      "display": false,
+      "tex": "\\text{\\textbar}"
+    },
+    {
+      "line": 685,
+      "display": false,
+      "tex": "\\blacktriangleright"
+    },
+    {
+      "line": 685,
+      "display": false,
+      "tex": "\\surd"
+    },
+    {
+      "line": 686,
+      "display": false,
+      "tex": "\\text{\\textbardbl}"
+    },
+    {
+      "line": 686,
+      "display": false,
+      "tex": "\\diamond"
+    },
+    {
+      "line": 686,
+      "display": false,
+      "tex": "\\degree"
+    },
+    {
+      "line": 687,
+      "display": false,
+      "tex": "\\text{\\textbraceleft}"
+    },
+    {
+      "line": 687,
+      "display": false,
+      "tex": "\\Diamond"
+    },
+    {
+      "line": 687,
+      "display": false,
+      "tex": "\\text{\\textdegree}"
+    },
+    {
+      "line": 688,
+      "display": false,
+      "tex": "\\text{\\textbraceright}"
+    },
+    {
+      "line": 688,
+      "display": false,
+      "tex": "\\lozenge"
+    },
+    {
+      "line": 688,
+      "display": false,
+      "tex": "\\mho"
+    },
+    {
+      "line": 689,
+      "display": false,
+      "tex": "\\text{\\textbackslash}"
+    },
+    {
+      "line": 689,
+      "display": false,
+      "tex": "\\blacklozenge"
+    },
+    {
+      "line": 689,
+      "display": false,
+      "tex": "\\diagdown"
+    },
+    {
+      "line": 690,
+      "display": false,
+      "tex": "\\text{\\P}"
+    },
+    {
+      "line": 690,
+      "display": false,
+      "tex": "\\star"
+    },
+    {
+      "line": 690,
+      "display": false,
+      "tex": "\\diagup"
+    },
+    {
+      "line": 691,
+      "display": false,
+      "tex": "\\text{\\S}"
+    },
+    {
+      "line": 691,
+      "display": false,
+      "tex": "\\bigstar"
+    },
+    {
+      "line": 691,
+      "display": false,
+      "tex": "\\flat"
+    },
+    {
+      "line": 692,
+      "display": false,
+      "tex": "\\text{\\sect}"
+    },
+    {
+      "line": 692,
+      "display": false,
+      "tex": "\\clubsuit"
+    },
+    {
+      "line": 692,
+      "display": false,
+      "tex": "\\natural"
+    },
+    {
+      "line": 693,
+      "display": false,
+      "tex": "\\copyright"
+    },
+    {
+      "line": 693,
+      "display": false,
+      "tex": "\\clubs"
+    },
+    {
+      "line": 693,
+      "display": false,
+      "tex": "\\sharp"
+    },
+    {
+      "line": 694,
+      "display": false,
+      "tex": "\\circledR"
+    },
+    {
+      "line": 694,
+      "display": false,
+      "tex": "\\diamondsuit"
+    },
+    {
+      "line": 694,
+      "display": false,
+      "tex": "\\heartsuit"
+    },
+    {
+      "line": 695,
+      "display": false,
+      "tex": "\\text{\\textregistered}"
+    },
+    {
+      "line": 695,
+      "display": false,
+      "tex": "\\diamonds"
+    },
+    {
+      "line": 695,
+      "display": false,
+      "tex": "\\hearts"
+    },
+    {
+      "line": 696,
+      "display": false,
+      "tex": "\\circledS"
+    },
+    {
+      "line": 696,
+      "display": false,
+      "tex": "\\spadesuit"
+    },
+    {
+      "line": 696,
+      "display": false,
+      "tex": "\\spades"
+    },
+    {
+      "line": 697,
+      "display": false,
+      "tex": "\\text{\\textcircled a}"
+    },
+    {
+      "line": 697,
+      "display": false,
+      "tex": "\\maltese"
+    },
+    {
+      "line": 697,
+      "display": false,
+      "tex": "\\minuso"
+    },
+    {
+      "line": 699,
+      "display": false,
+      "tex": " £ ¥ ∇ ∞ · ∠ ∡ ∢ ♠ ♡ ♢ ♣ ♭ ♮ ♯ ✓ …  ⋮  ⋯  ⋱  !"
+    },
+    {
+      "line": 737,
+      "display": false,
+      "tex": "\\rule{1em}{1em}"
+    },
+    {
+      "line": 737,
+      "display": false,
+      "tex": "\\scriptscriptstyle\\rule{1em}{1em}"
+    },
+    {
+      "line": 737,
+      "display": false,
+      "tex": "\\huge\\rule{1em}{1em}"
+    },
+    {
+      "line": 738,
+      "display": false,
+      "tex": "\\rule{18mu}{18mu}"
+    },
+    {
+      "line": 738,
+      "display": false,
+      "tex": "\\scriptscriptstyle\\rule{18mu}{18mu}"
+    },
+    {
+      "line": 738,
+      "display": false,
+      "tex": "\\huge\\rule{18mu}{18mu}"
+    },
+    {
+      "line": 739,
+      "display": false,
+      "tex": "\\rule{10pt}{10pt}"
+    },
+    {
+      "line": 739,
+      "display": false,
+      "tex": "\\scriptscriptstyle\\rule{10pt}{10pt}"
+    },
+    {
+      "line": 739,
+      "display": false,
+      "tex": "\\huge\\rule{10pt}{10pt}"
+    }
+  ]
+}
