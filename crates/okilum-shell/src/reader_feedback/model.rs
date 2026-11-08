@@ -483,10 +483,6 @@ impl Report {
     fn validate(&self) -> Result<()> {
         self.identity.validate()?;
         ensure!(
-            !self.text.trim().is_empty(),
-            "Describe your feedback before sending."
-        );
-        ensure!(
             self.text.chars().count() <= 10_000 && !self.text.contains('\0'),
             "Feedback must contain at most 10,000 characters and no NUL characters."
         );

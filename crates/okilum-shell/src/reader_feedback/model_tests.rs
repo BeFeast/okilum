@@ -259,6 +259,8 @@ fn payload_character_limits_and_metadata_are_explicit() {
     report.text.push('я');
     assert!(report.validate().is_err());
     report.text = "  ".into();
+    assert!(report.validate().is_ok());
+    report.text = "\0".into();
     assert!(report.validate().is_err());
     let meta = serde_json::to_value(meta()).unwrap();
     for key in [
@@ -679,4 +681,21 @@ fn truncated_created_receipt_never_resends_an_accepted_report() {
     assert!(
         matches!(alternate.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
+}
+
+#[test]
+fn feedback2744_empty_text_reaches_endpoint_with_metadata_and_logs() {
+    for text in ["", "  \n"] {
+        let mut draft = report();
+        draft.text = text.into();
+        draft.log = Some("synthetic empty feedback diagnostic".into());
+        let (endpoint, server) = mock(201, RECEIPT);
+        assert_eq!(send_to(&endpoint, &draft).unwrap().issue_number, 123);
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        assert!(request.contains("name=\"text\""));
+        assert!(request.contains("0.1.123"));
+        assert!(request.contains("Ubuntu 26.04.1"));
+        assert!(request.contains("synthetic empty feedback diagnostic"));
+        assert!(request.contains(&draft.identity.install_id.to_string()));
+    }
 }
