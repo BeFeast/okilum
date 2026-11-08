@@ -1674,7 +1674,18 @@ mod tests {
             std::fs::read_to_string(root.join("Many 0.md")).unwrap(),
             "External edit"
         );
-        std::fs::remove_dir_all(dir).unwrap();
+        // Windows keeps the editor's draft handle open for the Reader lifetime.
+        // Close the fixture window and release its entity before deleting files.
+        let released = reader.downgrade();
+        visual.update(|window, _| window.remove_window());
+        drop(reader);
+        cx.run_until_parked();
+        assert!(
+            released.upgrade().is_none(),
+            "fixture Reader must release its file handles"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!dir.exists(), "fixture cleanup must actually complete");
     }
     #[gpui::test]
     fn folder_keys_rename_without_toggling_and_move_updates_descendant_links(
