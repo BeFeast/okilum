@@ -84,6 +84,17 @@ pub(super) struct Header {
     files: usize,
     bytes: usize,
 }
+impl Header {
+    /// Reopening an inventory may replace its short-lived capability, never
+    /// any fact covered by the user's existing review and consent.
+    fn same_reviewed_facts(&self, fresh: &Self) -> bool {
+        self.binding == fresh.binding
+            && self.revision == fresh.revision
+            && self.manifest == fresh.manifest
+            && self.files == fresh.files
+            && self.bytes == fresh.bytes
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Request {
@@ -474,6 +485,33 @@ impl Controller {
         ensure!(configs.len() == 1, "selected runtime changed");
         self.validate_local(&preview.local, &managed(&configs[0])?, true)?;
         self.validate_remote(preview.peer, &preview.remote)
+    }
+    /// Explicit confirmation reopens the bounded remote inspection rather than
+    /// replaying a capability that may have expired while the user reviewed it.
+    /// Only its opaque handle can change: both complete revisions and bindings
+    /// must still equal the original plan before any durable merge is created.
+    fn renew_first_sync_preview(&self, preview: &mut Preview) -> Result<()> {
+        let configs = self.configuration_paths()?;
+        ensure!(configs.len() == 1, "selected runtime changed");
+        let daemon = managed(&configs[0])?;
+        self.validate_local(&preview.local, &daemon, true)?;
+        let Response::Open { header } = self.inspection_call(
+            preview.peer,
+            Request::Open {
+                vault: preview.remote.binding.vault.clone(),
+            },
+        )?
+        else {
+            anyhow::bail!("incomplete inventory reopening");
+        };
+        ensure!(
+            !header.id.is_nil() && preview.remote.same_reviewed_facts(&header),
+            "first Sync facts changed; refresh preview"
+        );
+        self.validate_remote(preview.peer, &header)?;
+        self.validate_local(&preview.local, &daemon, true)?;
+        preview.remote = header;
+        Ok(())
     }
     /// Retrieve one exact file from a still-current preview. Binary content is
     /// assembled only after all offsets, hashes and both revisions validate.

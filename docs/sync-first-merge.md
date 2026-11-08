@@ -13,6 +13,15 @@ canonical ignore policy, selected managed runtime and both byte revisions.
 that exact plan. The existing warning requires acknowledgement for little path
 overlap. Unsafe/incomplete inventories refuse instead of truncating a preview.
 
+Read-only remote inventory capabilities keep their existing 120-second lifetime.
+Ordinary page, content and validation requests do not extend it. Confirmation
+explicitly reopens the authenticated inventory and compares every reviewed fact:
+paired/root/runtime/ignore bindings, the complete byte revision and manifest,
+and file/byte counts. Both full revisions are revalidated before replacing only
+the opaque capability. Changed facts refuse as stale and require a new review;
+unchanged facts can proceed after a long review without replaying an expired
+capability. This is not a writer lease or an extension of the inspection protocol.
+
 After confirmation, a unique operation stores its immutable manifest and
 content-addressed preimages under the private controller's `first-sync/`, outside
 both vaults and their deletable indexes. Metadata and blob chunks are bounded,
@@ -73,6 +82,21 @@ durable staging, freeze, capture/publication and handoff checkpoints, restarts
 both managed runtimes, then explicitly recovers the same operation. A compiled
 negative control removes capture-gap recovery and must fail at that actual gap.
 These controls are under verification, not release evidence.
+
+The managed two-instance control also expires the actual source cache after
+review, proves ordinary validation still refuses it, then requires confirmation
+to reopen unchanged facts and complete the lossless union and both later transfer
+directions. Expired previews with local, remote or runtime changes still publish
+no merge bytes. A compiled negative restores the old live-capability requirement
+and must fail at the real expired-review merge. The 120-second cache lifetime,
+600-second managed-acceptance deadline and every fencing gate stay unchanged.
+
+On the signed Mac 30137 acceptance fixture, the first review was left open for
+over ten minutes. Confirmation stopped before any durable operation or canonical
+write; all originals remained intact. Source inspection and elapsed review time
+identified the expired-capability admission gap; the native backend diagnostic
+was not retained, so the compiled regression independently exercises that cause. The reopening change requires exact-HEAD hosted verification and
+a new containing native beta acceptance before delivery can be claimed.
 
 This document describes the Linux implementation in progress. Hosted
 verification of Settings and interruption controls, Mac/Windows implementation

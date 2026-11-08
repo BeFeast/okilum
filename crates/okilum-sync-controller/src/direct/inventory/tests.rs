@@ -34,6 +34,36 @@ fn entries() -> Vec<Entry> {
         })
         .collect()
 }
+#[test]
+fn confirmation_reopening_only_replaces_opaque_inventory_capabilities() {
+    let reviewed = header(7, 1024);
+    let mut fresh = reviewed.clone();
+    fresh.id = Uuid::new_v4();
+    fresh.auth = "new authenticated capability".into();
+    assert!(reviewed.same_reviewed_facts(&fresh));
+    let mut changed = vec![fresh.clone(); 18];
+    changed[0].binding.pair = Uuid::new_v4();
+    changed[1].binding.owner.push('x');
+    changed[2].binding.reader.push('x');
+    changed[3].binding.vault.push('x');
+    changed[4].binding.remote = false;
+    changed[5].binding.root_binding.push('x');
+    changed[6].binding.device.push('x');
+    changed[7].binding.certificate.push('x');
+    changed[8].binding.config.push('x');
+    changed[9].binding.generation = Uuid::new_v4();
+    changed[10].binding.started.push('x');
+    changed[11].binding.policy.push('x');
+    changed[12].revision.push('x');
+    changed[13].manifest.push('x');
+    changed[14].files += 1;
+    changed[15].bytes += 1;
+    changed[16].files -= 1;
+    changed[17].bytes -= 1;
+    for stale in changed {
+        assert!(!reviewed.same_reviewed_facts(&stale), "{stale:?}");
+    }
+}
 fn page(header: &Header, offset: usize, entries: &[Entry]) -> Response {
     Response::Page {
         header: header.clone(),

@@ -712,24 +712,56 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         "preview/adapter construction must not publish"
     );
     // Stale local and remote revisions refuse before any merge publication.
+    #[cfg(feature = "first-sync-fixture")]
+    assert_eq!(
+        okilum_sync_controller::direct::inventory::merge::fixture::expire_inspections(&first),
+        1,
+        "expiry control must exercise the source's actual cached inspection"
+    );
     fs::write(here.join("local.md"), b"changed since preview")?;
-    assert!(plan
-        .apply(plan.consent(true).unwrap(), backend.as_mut())
-        .is_err());
-    assert_eq!(first_sync_files(&there)?, before.1);
+    assert_eq!(
+        plan.apply(plan.consent(true).unwrap(), backend.as_mut()),
+        Err(okilum_sync_controller::merge_preview::Error::Stale)
+    );
+    let mut changed_local = before.0.clone();
+    changed_local.insert("local.md".into(), b"changed since preview".to_vec());
+    assert_eq!(
+        (first_sync_files(&here)?, first_sync_files(&there)?),
+        (changed_local, before.1.clone())
+    );
+    assert!(first.pending_first_sync()?.is_empty());
+    assert!(second.pending_first_sync()?.is_empty());
     fs::write(here.join("local.md"), before.0.get("local.md").unwrap())?;
     let preview = second.preview_remote_vault(peer, vault, &here)?;
     let plan = preview.plan().clone();
     let mut backend = second.first_sync_backend(preview);
+    #[cfg(feature = "first-sync-fixture")]
+    assert_eq!(
+        okilum_sync_controller::direct::inventory::merge::fixture::expire_inspections(&first),
+        1
+    );
     fs::write(there.join("remote.md"), b"remote changed since preview")?;
-    assert!(plan
-        .apply(plan.consent(true).unwrap(), backend.as_mut())
-        .is_err());
-    assert_eq!(first_sync_files(&here)?, before.0);
+    assert_eq!(
+        plan.apply(plan.consent(true).unwrap(), backend.as_mut()),
+        Err(okilum_sync_controller::merge_preview::Error::Stale)
+    );
+    let mut changed_remote = before.1.clone();
+    changed_remote.insert("remote.md".into(), b"remote changed since preview".to_vec());
+    assert_eq!(
+        (first_sync_files(&here)?, first_sync_files(&there)?),
+        (before.0.clone(), changed_remote)
+    );
+    assert!(first.pending_first_sync()?.is_empty());
+    assert!(second.pending_first_sync()?.is_empty());
     fs::write(there.join("remote.md"), before.1.get("remote.md").unwrap())?;
     let preview = second.preview_remote_vault(peer, vault, &here)?;
     let plan = preview.plan().clone();
     let mut backend = second.first_sync_backend(preview);
+    #[cfg(feature = "first-sync-fixture")]
+    assert_eq!(
+        okilum_sync_controller::direct::inventory::merge::fixture::expire_inspections(&first),
+        1
+    );
     let addresses: Vec<String> = a.device(&target.device_id)?["addresses"]
         .as_array()
         .unwrap()
@@ -739,9 +771,9 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     let mut changed = addresses.clone();
     changed.push("tcp://127.0.0.1:1".into());
     a.set_device_addresses(&target.device_id, &changed)?;
-    assert!(
-        plan.apply(plan.consent(true).unwrap(), backend.as_mut())
-            .is_err(),
+    assert_eq!(
+        plan.apply(plan.consent(true).unwrap(), backend.as_mut()),
+        Err(okilum_sync_controller::merge_preview::Error::Stale),
         "a real runtime configuration change must invalidate preview consent"
     );
     assert_eq!(
@@ -749,6 +781,8 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         before,
         "stale runtime configuration must publish zero merge bytes"
     );
+    assert!(first.pending_first_sync()?.is_empty());
+    assert!(second.pending_first_sync()?.is_empty());
     a.set_device_addresses(&target.device_id, &addresses)?;
     let preview = second.preview_remote_vault(peer, vault, &here)?;
     let plan = preview.plan().clone();
@@ -757,9 +791,26 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         .iter()
         .filter_map(|entry| entry.conflict_path.clone())
         .collect::<Vec<_>>();
+    #[cfg(feature = "first-sync-fixture")]
+    assert_eq!(
+        okilum_sync_controller::direct::inventory::merge::fixture::expire_inspections(&first),
+        1
+    );
+    #[cfg(feature = "first-sync-fixture")]
+    assert!(
+        second.validate_remote_preview(&preview).is_err(),
+        "ordinary inspection must still refuse the expired capability"
+    );
+    assert_eq!(
+        (first_sync_files(&here)?, first_sync_files(&there)?),
+        before,
+        "expiry and read-only validation must not authorize publication"
+    );
     let mut backend = second.first_sync_backend(preview);
     plan.apply(plan.consent(true).unwrap(), backend.as_mut())
         .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))?;
+    #[cfg(feature = "first-sync-fixture")]
+    println!("FIRST_SYNC_EXPIRED_REVIEW_PASS: unchanged complete facts reopened at confirmation");
     let merged = first_sync_files(&here)?;
     assert_eq!(merged, first_sync_files(&there)?);
     assert_eq!(merged.len(), 7);
