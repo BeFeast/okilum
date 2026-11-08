@@ -60,12 +60,16 @@ fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContex
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     std::fs::create_dir(&state).unwrap();
-    std::fs::write(state.join("reader-diagnostic.log"), "synthetic feedback diagnostic\n").unwrap();
+    std::fs::write(
+        state.join("reader-diagnostic.log"),
+        "synthetic feedback diagnostic\n",
+    )
+    .unwrap();
     cx.update(|cx| {
         crate::test_init(cx);
-        cx.set_global(reader_diagnostics::LaunchTrace(reader_diagnostics::Trace::new(
-            Some(state), None,
-        )));
+        cx.set_global(reader_diagnostics::LaunchTrace(
+            reader_diagnostics::Trace::new(Some(state), None),
+        ));
         version_info::install(cx);
         bind_keys(cx);
         cx.set_reduce_motion(true);
