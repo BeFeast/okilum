@@ -184,6 +184,10 @@ pub(super) fn repair_or_restart(controller: &Controller) -> anyhow::Result<()> {
                 controller.attach_existing(&vault, true)?;
             }
             controller.repair_transfer_identities(true)?;
+            #[cfg(not(test))]
+            if check_managed().is_err() {
+                return restart_managed();
+            }
             return Ok(());
         }
     }
@@ -235,6 +239,20 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
         NativeSignature,
     )?;
     bundle.verify(&binding)?;
+    // Older installed helpers have no SIGTERM cleanup. Stop only the
+    // authenticated account runtime before replacing that helper, so its
+    // surviving child cannot permanently block the new supervisor lease.
+    if let Some(config) =
+        okilum_sync_controller::sidecar::discovery::managed_configuration_path(&state)?
+    {
+        let discovered = okilum_sync_controller::daemon::discover(&[config]);
+        for candidate in discovered.candidates {
+            candidate
+                .identity
+                .connect()?
+                .shutdown(&binding.device_identity)?;
+        }
+    }
     let target = format!("gui/{}/com.befeast.okilum.sync", binding.owner);
     // TERM lets the new helper flush its owned tree. -k would SIGKILL it and
     // leave an orphan runtime, which the lifetime lease correctly refuses.

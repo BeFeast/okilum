@@ -134,3 +134,12 @@ diagnostic device hints only after the complete authenticated folder/membership
 witness validates. Fix consent can upgrade a legacy destination whose inode is
 unchanged; a replaced root or changed stable volume is refused. This also keeps
 receiver history/ignore reconciliation from using a previous boot's device hint.
+
+
+The explicit restart action first asks the authenticated, device-pinned managed
+runtime to shut down when it is reachable. This covers upgrading an older
+helper that has no SIGTERM handler, and a surviving orphan that would otherwise
+keep the new lease from starting. It neither adopts nor kills an arbitrary PID.
+A helper that is missing must be restarted even when the existing runtime can
+still serve a freshly inspected replica. Native service CLI requests are bounded;
+the subsequent authenticated recheck establishes whether recovery succeeded.
