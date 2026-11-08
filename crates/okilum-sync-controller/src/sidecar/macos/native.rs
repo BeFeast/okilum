@@ -172,8 +172,3 @@ impl super::registration::RegistrationPort for RegistrationService {
         Ok(())
     }
 }
-
-/// Read-only approval state for the current app bundled service.
-pub(super) fn registration_status() -> Result<Status> {
-    service_status(PLIST)
-}

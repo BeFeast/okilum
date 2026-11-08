@@ -92,7 +92,7 @@ pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
     let [config] = configs else {
         return Ok(None);
     };
-    let state = crate::sidecar::macos::account_state_directory()?;
+    let state = crate::sidecar::macos::active_state_directory()?;
     let Some(owned) = crate::sidecar::discovery::managed_configuration_path(&state)? else {
         return Ok(None);
     };
@@ -112,7 +112,7 @@ pub(super) fn owned_runtime(configs: &[PathBuf], daemon: &DaemonIdentity) -> Res
 }
 #[cfg(target_os = "macos")]
 pub(super) fn owned_runtime(_configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
-    let state = crate::sidecar::macos::account_state_directory()?;
+    let state = crate::sidecar::macos::active_state_directory()?;
     Ok(
         match crate::sidecar::discovery::managed_configuration_path(&state)? {
             Some(config) => config.canonicalize()? == daemon.config_file,

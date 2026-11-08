@@ -191,3 +191,13 @@ pub fn account_state_directory() -> Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(OsStr::from_bytes(home.to_bytes()))
         .join("Library/Application Support/Okilum/Sync"))
 }
+
+/// Normal launches always use the account root. Only explicit native QA launch
+/// selection can redirect the complete Sync control plane.
+#[cfg(target_os = "macos")]
+pub fn active_state_directory() -> Result<std::path::PathBuf> {
+    match isolation::selected()? {
+        Some(profile) => Ok(profile.state()),
+        None => account_state_directory(),
+    }
+}

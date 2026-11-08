@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 pub(super) struct VaultRoot(std::fs::File);
 impl VaultRoot {
     pub(super) fn open(path: &Path) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_vault(path)?;
+        }
         let root = Self(
             std::fs::File::open(path)
                 .with_context(|| format!("open vault root {}", path.display()))?,
@@ -254,6 +258,15 @@ impl AttachedVault {
 /// Configuration-path inventory only. No network request, process launch or state.
 /// Errors, including inaccessible standard paths, are not converted to absence.
 pub fn configuration_paths() -> Result<Vec<PathBuf>> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+        let path = profile.state().join("config/config.xml");
+        return Ok(if path.try_exists()? {
+            vec![path]
+        } else {
+            vec![]
+        });
+    }
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?);
     #[cfg(target_os = "linux")]
     {

@@ -190,11 +190,9 @@ fn no_follow_tree_rejects_unsafe_paths_special_files_hardlinks_and_custom_ignore
     fs::hard_link(vault.join("safe.md"), vault.join("hardlink"))?;
     assert!(Tree::collect(&root, &vault, true).is_err());
     fs::remove_file(vault.join("hardlink"))?;
-    rustix::fs::mkfifoat(
-        &root,
-        "fifo",
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-    )?;
+    use std::os::unix::ffi::OsStrExt;
+    let fifo = std::ffi::CString::new(vault.join("fifo").as_os_str().as_bytes())?;
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert!(Tree::collect(&root, &vault, true).is_err());
     fs::remove_file(vault.join("fifo"))?;
     fs::write(

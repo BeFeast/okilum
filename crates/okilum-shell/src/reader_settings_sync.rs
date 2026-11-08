@@ -869,7 +869,7 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         let mut configs = configs;
         if let Some(managed) =
             okilum_sync_controller::sidecar::discovery::managed_configuration_path(
-                &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+                &okilum_sync_controller::sidecar::macos::active_state_directory()?,
             )?
         {
             if !configs.contains(&managed) {
@@ -886,7 +886,7 @@ fn state_location() -> anyhow::Result<PathBuf> {
     let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
     let state =
-        mac_direct_state(&okilum_sync_controller::sidecar::macos::account_state_directory()?)?;
+        mac_direct_state(&okilum_sync_controller::sidecar::macos::active_state_directory()?)?;
     Ok(state)
 }
 fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
@@ -1163,7 +1163,7 @@ fn perform_with_locations(
                     .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?
                     .join("managed/prepared");
                 #[cfg(target_os = "macos")]
-                let prepared = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+                let prepared = okilum_sync_controller::sidecar::macos::active_state_directory()?;
                 controller.share_vault(&prepared, &path).with_context(|| {
                     format!(
                         "share vault {} using {}",
@@ -1235,19 +1235,27 @@ fn perform_with_locations(
     })?
 }
 #[cfg(target_os = "macos")]
-fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+fn native_signing_policy(
+) -> anyhow::Result<okilum_sync_controller::sidecar::macos::bootstrap::SigningPolicy> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
-        macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
-        supervisor::ipc::code_requirement::CodeRequirement,
+        macos::bootstrap::SigningPolicy, supervisor::ipc::code_requirement::CodeRequirement,
     };
     let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
     let identifier = option_env!("OKILUM_BUNDLE_ID").context("Sync bundle policy unavailable")?;
-    let policy = SigningPolicy {
+    Ok(SigningPolicy {
         app: CodeRequirement::team_and_identifier(team, identifier)?,
         helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
+    })
+}
+#[cfg(target_os = "macos")]
+fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use okilum_sync_controller::sidecar::macos::bootstrap::{
+        connect_current_app, ConnectBudget, ConnectOutcome,
     };
+    let policy = native_signing_policy()?;
     // A first Connect prepares Sync and waits for its first helper launch, which
     // on macOS outlasted a single shared budget (#2589).
     match connect_current_app(true, policy, ConnectBudget::CONNECT)
@@ -1330,7 +1338,7 @@ fn prepare_mac_runtime(
             if !configs.is_empty() {
                 let managed =
                     okilum_sync_controller::sidecar::discovery::managed_configuration_path(
-                        &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+                        &okilum_sync_controller::sidecar::macos::active_state_directory()?,
                     )?;
                 anyhow::ensure!(
                     configs.len() == 1 && managed.as_ref().is_some_and(|p| p == &configs[0]),

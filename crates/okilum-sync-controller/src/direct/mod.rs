@@ -330,6 +330,10 @@ pub fn has_paired_computers_or_vaults(state: &Path) -> Result<bool> {
 
 impl Controller {
     pub fn open(state: PathBuf, configs: Vec<PathBuf>) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_controller(&state, &configs)?;
+        }
         let _lock = private::lock(&state)?;
         let file = state.join("direct.json");
         let db = if file.try_exists()? {
@@ -400,6 +404,10 @@ impl Controller {
     }
     pub fn set_configurations(&self, configs: Vec<PathBuf>) -> Result<()> {
         self.check()?;
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_configurations(&configs)?;
+        }
         let mut current = self.shared.configs.lock().unwrap();
         if *current != configs {
             *current = configs;

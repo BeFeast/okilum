@@ -358,6 +358,10 @@ impl Controller {
     }
     fn attach_locked(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<()> {
         self.check()?;
+        #[cfg(target_os = "macos")]
+        if let Some(profile) = crate::sidecar::macos::isolation::selected()? {
+            profile.require_vault(destination)?;
+        }
         ensure!(
             catalog_contains(&self.shared.db.lock().unwrap(), peer_id, vault_id),
             "choose a vault from the selected computer's authorized catalog first"

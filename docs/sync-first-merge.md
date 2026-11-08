@@ -97,13 +97,12 @@ this section is an implementation checkpoint, not a shipping claim.
 
 ### Isolated native acceptance boundary
 
-The Reader profile override does not currently isolate Mac Sync: the direct
-journal and signed helper use the account-derived Application Support location.
-Acceptance must therefore add a separate, explicit Sync profile before driving
-this flow on a user's Mac. Reusing that account helper for a synthetic Reader
-profile would still reconcile the user's existing connections.
+A Reader profile override alone does not isolate Mac Sync. Native QA must also
+explicitly select `OKILUM_SYNC_QA_ROOT` before launching the app. Its `HOME` and
+absolute `OKILUM_STATE_DIR` must be separate descendants of that already-private
+root. Normal launches retain the account-derived Application Support location.
 
-The intended isolated path uses an explicitly selected, private QA root, disjoint
+The isolated path uses an explicitly selected, private QA root, disjoint
 from the account control plane. Reader HOME/state and all selectable vaults must
 be inside it; vaults belong under its `vaults/` child and cannot overlap control
 state. The same installed signed app verifies and starts its own signed helper
@@ -112,7 +111,14 @@ registration or account-state migration. Its launch still consumes the existing
 one-use permission, proves the calling app's parent identity, and serves the
 same signed IPC and first-merge protocol. A normal app relaunch can reconnect to
 that retained generation; explicit authenticated Stop owns fixture cleanup.
-This is a planned acceptance path, not an implemented or verified capability.
+The helper accepts the separate root only through an inherited channel from
+its actual signed parent app; a standalone `--state` path cannot select it.
+Controller/configuration selection and vault opening refuse account or external
+paths. `okilum sync qa-stop` in that same QA profile records Disable, authenticates
+its exact helper generation, requests Stop and waits for the captured kernel exit
+before recording completion. It does not unregister, signal or delete account
+state. Native hosted controls cover the parent and path refusals. Installed-beta
+acceptance remains pending.
 
 Older normal Mac connections also need a verified upgrade path for their running
 pre-registry supervisor. Missing launch ownership must never be replaced with a

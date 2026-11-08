@@ -2,7 +2,7 @@
 //! a Reader profile nor an arbitrary helper --state argument selects it.
 use crate::private;
 use anyhow::{ensure, Context, Result};
-use okilum_write_authority::filesystem_identity::{self, Identity};
+use okilum_write_authority::filesystem_identity::Identity;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -131,7 +131,7 @@ impl Profile {
             let saved = Marker {
                 schema: 1,
                 id: Uuid::new_v4(),
-                identity: filesystem_identity::read(&root)?,
+                identity: crate::managed_launch::identity(&root)?,
                 root: root.clone(),
                 reader_home: reader_home.to_owned(),
                 reader_state: reader_state.to_owned(),
@@ -167,7 +167,7 @@ impl Profile {
         ensure!(
             self.0.schema == 1
                 && !self.0.id.is_nil()
-                && filesystem_identity::read(&self.0.root)? == self.0.identity,
+                && crate::managed_launch::identity(&self.0.root)? == self.0.identity,
             "QA profile directory was replaced"
         );
         private::directory(&self.0.root)?;
@@ -185,6 +185,24 @@ impl Profile {
     pub fn root(&self) -> &Path {
         &self.0.root
     }
+    pub fn require_controller(&self, state: &Path, configs: &[PathBuf]) -> Result<()> {
+        self.verify()?;
+        ensure!(
+            state == self.0.root.join("SyncDirect"),
+            "QA direct state is outside its selected profile"
+        );
+        self.require_configurations(configs)
+    }
+    pub fn require_configurations(&self, configs: &[PathBuf]) -> Result<()> {
+        self.verify()?;
+        let expected = self.state().join("config/config.xml");
+        ensure!(
+            configs.is_empty() || configs == [expected],
+            "QA selection cannot adopt an account or external runtime"
+        );
+        Ok(())
+    }
+
     pub fn require_vault(&self, path: &Path) -> Result<()> {
         self.verify()?;
         let canonical = path.canonicalize()?;
@@ -224,6 +242,132 @@ pub fn selected() -> Result<Option<&'static Profile>> {
     Ok(profile)
 }
 
+/// The isolated path reuses the ordinary revision-bound registration dispatch,
+/// but starts the verified bundled helper directly instead of registering the
+/// account's launchd service. Only that helper may consume the one-use claim.
+#[cfg(target_os = "macos")]
+pub(crate) struct NativeLaunchPort {
+    profile: Profile,
+    channel: Option<std::os::unix::net::UnixStream>,
+}
+#[cfg(target_os = "macos")]
+impl NativeLaunchPort {
+    pub(crate) fn new(profile: Profile) -> Self {
+        Self {
+            profile,
+            channel: None,
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+impl super::registration::RegistrationPort for NativeLaunchPort {
+    fn status(&mut self, deadline: std::time::Instant) -> Result<super::Status> {
+        use crate::sidecar::{authority::launch::Phase, store::UnixStore};
+        self.profile.verify()?;
+        let store = UnixStore::open_existing(&self.profile.state())?;
+        let tx = store.begin(deadline)?;
+        let saved = tx.current()?.context("QA launch journal missing")?;
+        Ok(
+            match saved
+                .launch_registration()
+                .context("QA launch intent missing")?
+                .phase()
+            {
+                Phase::Ready => super::Status::NotRegistered,
+                Phase::Dispatched | Phase::Claimed => super::Status::Enabled,
+            },
+        )
+    }
+    fn register(&mut self, deadline: std::time::Instant) -> Result<()> {
+        use crate::sidecar::{authority::launch::Phase, store::UnixStore, Intent};
+        use std::{
+            os::{
+                fd::AsRawFd,
+                unix::{fs::OpenOptionsExt, net::UnixStream, process::CommandExt},
+            },
+            process::{Command, Stdio},
+        };
+        self.profile.verify()?;
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "QA dispatch deadline elapsed"
+        );
+        let store = UnixStore::open_existing(&self.profile.state())?;
+        let binding = {
+            let tx = store.begin(deadline)?;
+            let saved = tx.current()?.context("QA launch journal missing")?;
+            ensure!(
+                saved.intent() == Intent::Enabled
+                    && saved.stop().is_none()
+                    && saved.update().is_none()
+                    && saved
+                        .launch_registration()
+                        .is_some_and(|launch| launch.phase() == Phase::Dispatched),
+                "QA launch requires the dispatched one-use permission"
+            );
+            saved.binding().clone()
+        };
+        ensure!(
+            Path::new(&binding.state_directory) == self.profile.state(),
+            "QA binding changed"
+        );
+        let (parent, child) = UnixStream::pair()?;
+        let descriptor = child.as_raw_fd();
+        let log = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.profile.state().join("isolated-supervisor.log"))?;
+        let mut command = Command::new(&binding.supervisor);
+        command
+            .arg("--state")
+            .arg(self.profile.state())
+            .arg("--instance")
+            .arg(binding.instance.to_string())
+            .env("OKILUM_SYNC_QA_PARENT_FD", "3")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log));
+        // Only this child inherits the launch channel. All other descriptors
+        // retain CLOEXEC, including the app side of the socket pair.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(descriptor, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn()?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        self.channel = Some(parent);
+        Ok(())
+    }
+}
+
+/// Validate the explicit helper root AND the inherited signed parent before
+/// opening its journal or consuming launch permission. Ordinary launchd starts
+/// never call this function and continue using the account-derived location.
+#[cfg(target_os = "macos")]
+pub fn authorize_helper(
+    state: &Path,
+    app: &Path,
+    app_requirement: crate::sidecar::supervisor::ipc::code_requirement::CodeRequirement,
+) -> Result<Profile> {
+    use crate::sidecar::supervisor::ipc::macos_peer::SignedPeer;
+    use std::os::{fd::FromRawFd, unix::net::UnixStream};
+    let descriptor: i32 = std::env::var("OKILUM_SYNC_QA_PARENT_FD")
+        .context("QA helper requires its signed parent launch channel")?
+        .parse()?;
+    ensure!(descriptor == 3, "unexpected QA parent descriptor");
+    let stream = unsafe { UnixStream::from_raw_fd(descriptor) };
+    SignedPeer::new(app_requirement, app)?.verify_parent(&stream)?;
+    Profile::open(state, &super::account_state_directory()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +397,21 @@ mod tests {
         fs::create_dir(root.join("vaults/here"))?;
         profile.require_vault(&root.join("vaults/here"))?;
         assert!(profile.require_vault(&account).is_err());
+        profile.require_controller(&root.join("SyncDirect"), &[])?;
+        profile.require_controller(
+            &root.join("SyncDirect"),
+            &[profile.state().join("config/config.xml")],
+        )?;
+        assert!(profile
+            .require_controller(&account.join("SyncDirect"), &[])
+            .is_err());
+        assert!(profile
+            .require_controller(
+                &root.join("SyncDirect"),
+                &[account.join("config/config.xml")]
+            )
+            .is_err());
+        assert!(profile.require_vault(&root.join("reader-state")).is_err());
         Ok(())
     }
     #[test]

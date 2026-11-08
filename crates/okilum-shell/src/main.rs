@@ -8542,6 +8542,11 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = initialize_native_sync_qa() {
+        eprintln!("Native Sync isolation: {error:#}");
+        std::process::exit(1);
+    }
     #[cfg(feature = "data-view-native-harness")]
     if reader_delimited::native_harness::entry() {
         return;
@@ -13136,4 +13141,23 @@ mod reader_scroll_key_tests {
             assert_ne!(after_page, position(visual));
         }
     }
+}
+
+/// Explicit acceptance scope before state, threads or services are opened. A
+/// Reader profile alone never redirects the production Sync connection.
+#[cfg(target_os = "macos")]
+fn initialize_native_sync_qa() -> anyhow::Result<()> {
+    use okilum_sync_controller::sidecar::macos::{account_state_directory, isolation};
+    let Some(root) = std::env::var_os("OKILUM_SYNC_QA_ROOT") else {
+        return Ok(());
+    };
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("QA HOME missing"))?;
+    let state = reader_history::isolated_state_directory()
+        .ok_or_else(|| anyhow::anyhow!("QA requires explicit absolute OKILUM_STATE_DIR"))?;
+    isolation::select(isolation::Profile::prepare(
+        std::path::Path::new(&root),
+        std::path::Path::new(&home),
+        &state,
+        &account_state_directory()?,
+    )?)
 }
