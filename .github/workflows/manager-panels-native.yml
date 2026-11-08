@@ -1,0 +1,68 @@
+name: manager-panels-native
+on:
+  push:
+    branches: ['manager-panels-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: manager-panels-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: manager-panels-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/patches/*.diff') }}-${{ github.sha }}
+          restore-keys: |
+            manager-panels-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/patches/*.diff') }}-
+            tree-batch-v1-${{ runner.os }}-
+            manager-pairing-native-v1-${{ runner.os }}-
+      - name: Verify source and native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          test "$(uname -m)" = arm64
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/ci/fetch-ci-dependency.py sparkle "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+      - name: Compile shipping Reader and every workspace test target
+        run: |
+          cargo build --locked -p okilum-shell --bin okilum
+          cargo test --locked --workspace --no-run
+      - name: Exercise mounted Reader panels and compiled negative controls
+        run: python3 scripts/ci/manager-panels-check.py
+      - name: Retain complete native Manager, gateway and Board controls
+        shell: bash
+        run: |
+          for filter in project:: reader_project_navigation::; do
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list > "$RUNNER_TEMP/manager-tests.txt"
+            grep -q ': test$' "$RUNNER_TEMP/manager-tests.txt"
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: manager-panels-macOS
+          path: qa/manager-panels-2693-2694/
+          if-no-files-found: warn
+          retention-days: 7

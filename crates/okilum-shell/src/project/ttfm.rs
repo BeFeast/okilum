@@ -91,10 +91,25 @@ impl ProjectView {
     pub(super) fn ttfm_open(&mut self, opened: Instant, cx: &mut Context<Self>) {
         self.ttfm.cancel();
         self.ttfm = Ttfm::open(opened, self.native.active(), cx);
+        self.ttfm_surface_visible = None;
         self.feed.update(cx, |feed, cx| {
             feed.ttfm = Some(self.ttfm.clone());
             // A warm feed may otherwise reuse a cached frame with the old probe.
             cx.notify();
         });
+    }
+
+    /// Selection activation and physical Reader visibility are independent:
+    /// closing the right panel retains its ProjectView and native client.
+    pub(crate) fn manager_surface_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if !visible {
+            // Fence an old row's paint callback even when closed before the
+            // first visible frame established the handoff lease.
+            self.ttfm.cancel();
+        } else if self.ttfm_surface_visible == Some(false) {
+            self.ttfm_open(Instant::now(), cx);
+        }
+        self.ttfm_surface_visible = Some(visible);
+        self.draft_handoff_surface_visible(visible, cx);
     }
 }

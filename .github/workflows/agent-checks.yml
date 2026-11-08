@@ -197,6 +197,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           source scripts/ci/test-nofile.sh
+          python3 scripts/ci/fetch-ci-dependency.py syncthing "${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture/syncthing-linux-amd64-v2.1.6.tar.gz"
           tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
       - name: Verify managed launch and configuration admission
         run: bash scripts/ci/sync-managed-admission.sh

@@ -40,6 +40,8 @@ mod message_types;
 mod models;
 #[cfg(native_manager)]
 mod native;
+#[cfg(all(test, native_manager))]
+mod panel_tests;
 #[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
 pub(crate) mod performance;
 pub(crate) mod records;
@@ -174,6 +176,8 @@ pub(crate) struct ProjectView {
     threads: threads::Directory,
     #[cfg(native_manager)]
     ttfm: ttfm::Ttfm,
+    #[cfg(native_manager)]
+    ttfm_surface_visible: Option<bool>,
 }
 
 pub(super) struct ManagerStarted;
@@ -512,6 +516,8 @@ impl ProjectView {
             threads: threads::Directory::default(),
             #[cfg(native_manager)]
             ttfm,
+            #[cfg(native_manager)]
+            ttfm_surface_visible: None,
         }
     }
 

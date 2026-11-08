@@ -57,13 +57,23 @@ fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_
 }
 
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        state.join("reader-diagnostic.log"),
+        "synthetic feedback diagnostic\n",
+    )
+    .unwrap();
     cx.update(|cx| {
         crate::test_init(cx);
+        cx.set_global(reader_diagnostics::LaunchTrace(
+            reader_diagnostics::Trace::new(Some(state), None),
+        ));
         version_info::install(cx);
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
-    let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
     std::fs::create_dir(&vault).unwrap();
     std::fs::write(vault.join("start.md"), "# Feedback\nA normal note.\n").unwrap();
@@ -164,9 +174,10 @@ fn feedback_window_pastes_text_and_image_and_remove_omits_the_attachment(cx: &mu
         visual.run_until_parked();
         view.read_with(visual, |view, cx| {
             assert_eq!(view.text.read(cx).value(), "Report text");
-            assert!(!view.include_log);
+            assert!(view.include_log);
             assert!(view.image.is_none());
         });
+        view.update(visual, |view, _| view.include_log = false);
         visual.update(|_, cx| {
             cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image {
                 format: gpui::ImageFormat::Png,
@@ -370,6 +381,7 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
         view.update_in(visual, |view, window, cx| {
             view.text
                 .update(cx, |text, cx| text.set_value("Keep my draft", window, cx));
+            view.include_log = false;
             view.log_path = None; // Off means no log access is needed to send.
             view.sender = Arc::new(move |report| {
                 calls.lock().unwrap().push(report);
@@ -778,14 +790,15 @@ fn sprint_default_text_is_a_placeholder_and_the_empty_send_fallback() {
     // #1597: the Sprint line was the starting value with the caret before it.
     assert_eq!(placeholder(true), "Sprint test report");
     assert_ne!(placeholder(false), "Sprint test report");
-    assert_eq!(report_text("", true).as_deref(), Some("Sprint test report"));
+    assert_eq!(report_text("", true), "Sprint test report");
+    assert_eq!(report_text("  \n", true), "Sprint test report");
     assert_eq!(
-        report_text("  \n", true).as_deref(),
-        Some("Sprint test report")
+        report_text("", false),
+        "",
+        "empty release feedback is valid"
     );
-    assert_eq!(report_text("", false), None, "release Send stays disabled");
-    assert_eq!(report_text("ываы", true).as_deref(), Some("ываы"));
-    assert_eq!(report_text("Typed", false).as_deref(), Some("Typed"));
+    assert_eq!(report_text("ываы", true), "ываы");
+    assert_eq!(report_text("Typed", false), "Typed");
 }
 
 #[gpui::test]
@@ -1077,8 +1090,74 @@ fn minimum_feedback_window_keeps_actions_visible_and_submit_from_input(cx: &mut 
         }
         assert_eq!(
             calls.lock().unwrap().len(),
-            1,
-            "attachment/empty guards retained"
+            2,
+            "attachment work blocks duplicate sends; empty text is accepted"
         );
+    });
+}
+
+#[gpui::test]
+fn feedback2744_empty_report_sends_default_log_and_allows_opt_out(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("diagnostic.log");
+    std::fs::write(&log, "synthetic feedback2744 diagnostic\n").unwrap();
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        feedback.simulate_resize(size(px(600.), px(900.)));
+        feedback.run_until_parked();
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let calls = sent.clone();
+        view.update(&mut feedback, |view, cx| {
+            assert!(view.include_log, "logs default on for every OS");
+            assert!(view.text.read(cx).value().is_empty());
+            assert!(view.reporter.read(cx).value().is_empty());
+            assert!(view.can_send(cx));
+            view.log_path = Some(log);
+            view.sender = Arc::new(move |report| {
+                calls.lock().unwrap().push(report);
+                anyhow::bail!("synthetic offline retry")
+            });
+        });
+        let send = feedback.debug_bounds("feedback-send").unwrap();
+        feedback.simulate_click(send.center(), Modifiers::default());
+        feedback.run_until_parked();
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "empty Send reached the sender"
+        );
+        view.read_with(&feedback, |view, _| {
+            assert!(matches!(view.state, SendState::Failed(_)), "retry is ready");
+        });
+        // Repaint after async completion so the checkbox is enabled and its
+        // hitbox belongs to the current layout, rather than the Sending frame.
+        feedback.update(|window, cx| window.draw(cx).clear(cx));
+        let log_choice = feedback.debug_bounds("feedback-log").unwrap();
+        let viewport = feedback.update(|window, _| window.viewport_size());
+        assert!(log_choice.top() >= px(0.) && log_choice.bottom() <= viewport.height);
+        feedback.simulate_click(
+            point(log_choice.left() + px(8.), log_choice.top() + px(8.)),
+            Modifiers::default(),
+        );
+        feedback.run_until_parked();
+        view.update(&mut feedback, |view, cx| {
+            assert!(!view.include_log, "user can uncheck logs");
+            view.log_path = None;
+            view.send(cx);
+        });
+        feedback.run_until_parked();
+        let calls = sent.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].text, "");
+        assert_eq!(
+            calls[0].log.as_deref(),
+            Some("synthetic feedback2744 diagnostic")
+        );
+        assert!(!calls[0].meta.version.is_empty());
+        assert!(!calls[0].meta.os.is_empty());
+        assert!(calls[0].identity.reporter_name.is_empty());
+        assert_eq!(calls[0].identity.install_id, calls[1].identity.install_id);
+        assert!(calls[1].log.is_none());
     });
 }

@@ -150,16 +150,12 @@ fn placeholder(sprint: bool) -> &'static str {
     }
 }
 
-/// The report text to send, or `None` when there is nothing to send. A Sprint
-/// build sends its default line for an empty field, as the menu's one-click
-/// Sprint report always has.
-fn report_text(value: &str, sprint: bool) -> Option<String> {
-    if !value.trim().is_empty() {
-        Some(value.to_string())
-    } else if sprint {
-        Some(SPRINT_REPORT_TEXT.to_string())
+/// Empty feedback is valid; Sprint builds retain their one-click default line.
+fn report_text(value: &str, sprint: bool) -> String {
+    if value.trim().is_empty() && sprint {
+        SPRINT_REPORT_TEXT.to_string()
     } else {
-        None
+        value.to_string()
     }
 }
 
@@ -504,7 +500,12 @@ impl FeedbackView {
         let limits_path = feedback_limits_path();
         let (limits, limits_error) = match limits_path.as_ref().map(|p| model::Limits::load(p)).transpose() {
             Ok(limits) => (limits.unwrap_or_default(), None),
-            Err(error) => (model::Limits::default(), Some(format!("Couldn't read attachment limits: {error}. Review Attachment limits before sending."))),
+            Err(error) => (
+                model::Limits::default(),
+                Some(format!(
+                    "Couldn't read attachment limits: {error}. Review Attachment limits before sending."
+                )),
+            ),
         };
         let sender_limits = Arc::new(std::sync::Mutex::new(limits));
         let sending_limits = sender_limits.clone();
@@ -555,7 +556,7 @@ impl FeedbackView {
             image_generation: 0,
             video: None,
             video_error: None,
-            include_log: sprint::enabled(),
+            include_log: true,
             log_path,
             state: SendState::Compose,
             sender: Arc::new(move |report| {
@@ -911,7 +912,7 @@ impl FeedbackView {
     }
     fn report_without_log(&self, cx: &App) -> Report {
         Report {
-            text: report_text(&self.text.read(cx).value(), sprint::enabled()).unwrap_or_default(),
+            text: report_text(&self.text.read(cx).value(), sprint::enabled()),
             kind: self.kind,
             meta: self.meta.clone(),
             identity: identity::Data {
@@ -950,7 +951,6 @@ impl FeedbackView {
             && self.limit_inputs.is_none()
             && self.preflight_error.is_none()
             && self.selection_limits_error(cx).is_none()
-            && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
     }
     fn send(&mut self, cx: &mut Context<Self>) {
         if !self.can_send(cx) {
@@ -1701,7 +1701,7 @@ impl Render for FeedbackView {
                         Button::new("feedback-send")
                             .debug_selector(|| "feedback-send".into())
                             .primary()
-                            .disabled(!self.can_send(cx))
+                            .disabled(self.busy() || self.attaching)
                             .label(label)
                             .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
                     ),
@@ -1764,8 +1764,18 @@ mod recovery_mounted_tests {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(drafts.clone());
         });
+        let state = directory.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::write(
+            state.join("reader-diagnostic.log"),
+            "synthetic diagnostic\n",
+        )
+        .unwrap();
         cx.update(|cx| {
             crate::test_init(cx);
+            cx.set_global(reader_diagnostics::LaunchTrace(
+                reader_diagnostics::Trace::new(Some(state), None),
+            ));
             version_info::install(cx);
             bind_keys(cx);
             cx.set_reduce_motion(true);
@@ -1898,6 +1908,7 @@ mod recovery_mounted_tests {
             .save(&screenshot)
             .unwrap();
         let (view, mut feedback) = open(reader);
+        view.update(&mut feedback, |view, _| view.include_log = false);
         feedback.simulate_input("Keep this report while adjusting limits");
         choose(&mut feedback, &path, true);
         choose(&mut feedback, &screenshot, false);

@@ -37,3 +37,18 @@ controlled named and anonymous reports from a containing beta, stable labels,
 public payload inspection and private ledger reconciliation. Source checks and
 publication do not establish installed Mac behavior; verify that on M4 with a
 screenshot under the current installation authority.
+
+## Empty reports and default diagnostics (#2744)
+
+Ordinary feedback accepts an empty or whitespace-only message and no title or
+reporter name. Send remains available while composing; transport and attachment
+work still prevent duplicate submissions. Existing identity, attachment and
+storage failures stay visible and preserve the draft. New reports attach the
+last 250 diagnostic log lines by default on every OS; users can uncheck the
+attachment and recovered drafts keep the user's saved choice. Sprint reports
+retain their existing default message and diagnostic collector.
+
+The companion pomoi service accepts absent/empty text and generates
+`Feedback from <OS> <version>` for a report with neither a title nor a text
+first line. System metadata and the private log attachment are preserved. The
+private installation identity and optional remembered name remain unchanged.

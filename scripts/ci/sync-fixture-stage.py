@@ -4,9 +4,12 @@ import hashlib
 import io
 import os
 from pathlib import Path
-import subprocess
+import sys
 import tarfile
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pinned_download import fetch
 
 
 ARCHIVE = 'syncthing-linux-amd64-v2.1.6.tar.gz'
@@ -14,7 +17,7 @@ ARCHIVE_SHA256 = '524ef4e1df1850b719e2378c8369956f4e5f2ab9a46fdf7f45f2b925012147
 BINARY_SHA256 = 'd72663e4f9efe0b8de5e1dacb13c1c8decc82e76623cf2fa47fd306f3e1d3a3e'
 MEMBER = 'syncthing-linux-amd64-v2.1.6/syncthing'
 URL = f'https://github.com/syncthing/syncthing/releases/download/v2.1.6/{ARCHIVE}'
-ASSET_URL = 'https://api.github.com/repos/syncthing/syncthing/releases/assets/614662906'
+ASSET_API_URL = 'https://api.github.com/repos/syncthing/syncthing/releases/assets/614662906'
 
 
 def verified(data, checksum):
@@ -65,23 +68,12 @@ def stage(cache):
     try:
         data = archive.read_bytes()
     except FileNotFoundError:
-        # curl's output is private until it has passed verification. Concurrent
-        # downloads cannot share a .part file or expose a partial archive.
-        try:
-            downloaded = subprocess.check_output(['curl', '--fail', '--location', '--retry', '2', URL])
-        except subprocess.CalledProcessError:
-            # Official API route to the SAME immutable release asset. A CDN 504
-            # must not change the fixture's archive or executable checksum.
-            token = os.environ.get('GITHUB_TOKEN')
-            if token:
-                downloaded = subprocess.check_output([
-                    'gh', 'api', '--header', 'Accept: application/octet-stream', ASSET_URL,
-                ], env=dict(os.environ, GH_TOKEN=token), timeout=60)
-            else:
-                downloaded = subprocess.check_output([
-                    'curl', '--fail', '--location', '--retry', '2',
-                    '--header', 'Accept: application/octet-stream', ASSET_URL])
-        data = verified(downloaded, ARCHIVE_SHA256)
+        # Each download stays private until both the pinned fetch and existing
+        # archive verification pass. Publication/exec inodes remain unchanged.
+        with tempfile.TemporaryDirectory(prefix='okilum-sync-download-') as temporary:
+            download = Path(temporary) / ARCHIVE
+            fetch(URL, ARCHIVE_SHA256, download, ASSET_API_URL)
+            data = verified(download.read_bytes(), ARCHIVE_SHA256)
         publish(archive, data, 0o444)
     verified(data, ARCHIVE_SHA256)
     # Verify the exact snapshot we extract, and never extract into a live path.

@@ -59,16 +59,18 @@ cd dist/appimage
 # A pinned copy from an earlier local build is reused; CI always starts empty.
 fetch() {
     if ! echo "$3  tools/$1" | sha256sum -c --status - 2>/dev/null; then
-        curl --fail --location --retry 2 "$2" --output "tools/$1"
+        rm -f "tools/$1"
+        python3 ../../scripts/pinned_download.py --url "$2" --sha256 "$3" \
+            --fallback "$4" --destination "tools/$1"
     fi
     echo "$3  tools/$1" | sha256sum -c -
     chmod +x "tools/$1"
 }
-fetch linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+fetch linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d https://api.github.com/repos/linuxdeploy/linuxdeploy/releases/assets/313839329
 # Upstream release 1.9.1 publishes this SHA256 in its release asset digest:
 # https://github.com/AppImage/appimagetool/releases/expanded_assets/1.9.1
-fetch appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-fetch runtime https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46
+fetch appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 https://api.github.com/repos/AppImage/appimagetool/releases/assets/324406736
+fetch runtime https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46 https://api.github.com/repos/AppImage/type2-runtime/releases/assets/657374641
 # Prove the pinned runtime needs no host libfuse (or any other shared library).
 # Positive control: the same inspection must detect the system shell's loader.
 readelf -lW /bin/sh > evidence/runtime-positive-control.log

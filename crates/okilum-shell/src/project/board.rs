@@ -987,7 +987,7 @@ impl Reader {
                             manager.update(cx, |manager, cx| {
                                 manager.select_section(ProjectSection::Manager, cx);
                                 #[cfg(native_manager)]
-                                manager.draft_handoff_surface_visible(visible, cx);
+                                manager.manager_surface_visible(visible, cx);
                                 if matches!(action, Action::RecordDiscuss(_)) {
                                     manager.append_record_context(&owner, text.clone(), visible, window, cx)
                                 } else {
