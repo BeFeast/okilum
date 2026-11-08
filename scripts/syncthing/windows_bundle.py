@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import runpy
 import struct
@@ -102,13 +103,40 @@ def seal(destination):
     path.write_text(json.dumps(provenance, indent=2) + '\n')
 
 
+def signing_input(binary, expected_binary=BINARY_SHA, expected_body=BODY_SHA, expected_size=BODY_SIZE):
+    """The pinned signer accepts unsigned PE only; retain the complete pinned body."""
+    bundle.require(bundle.digest(binary) == expected_binary, 'Windows runtime pin mismatch before signing')
+    body = normalized_body(binary, expected_size)
+    bundle.require(bundle.digest(body) == expected_body, 'Windows runtime executable body changed before signing')
+    return body
+
+
+def prepare_signing(destination):
+    executable = destination / 'syncthing.exe'
+    body = signing_input(executable.read_bytes())
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix='.syncthing-sign-', dir=destination, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, executable.stat().st_mode & 0o777)
+        os.replace(temporary, executable)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['stage', 'seal'])
+    parser.add_argument('action', choices=['stage', 'prepare-signing', 'seal'])
     parser.add_argument('--payload', type=Path, required=True)
     parser.add_argument('--archive', type=Path)
     args = parser.parse_args()
     if args.action == 'stage':
         print(stage(args.payload, args.archive))
+    elif args.action == 'prepare-signing':
+        prepare_signing(args.payload)
     else:
         seal(args.payload)

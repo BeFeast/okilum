@@ -45,6 +45,11 @@ Syncthing, its MPL notices, source URL and provenance; the portable ZIP retains 
 existing no-helper boundary. The signer signs Syncthing alongside the app and
 supervisor. `seal` requires every byte before the certificate table to match the
 pinned upstream executable, except PE checksum and certificate-directory fields.
+Before signing, `prepare-signing` requires the exact upstream executable hash
+and body pin, then removes only its existing certificate table and clears those
+two fields. The pinned `ssign` backend refuses an already signed PE. Unsigned beta
+packaging keeps the pristine upstream file; the signing path seals and verifies
+the new publisher signature before publication.
 Native preparation independently checks that executable body and the configured
 publisher/issuer chain before selecting a staged runtime. The release build
 receives `OKILUM_WINDOWS_SIGN_SUBJECT` and `OKILUM_WINDOWS_SIGN_ISSUER_CHAIN` (a JSON

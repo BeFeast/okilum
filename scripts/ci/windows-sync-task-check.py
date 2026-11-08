@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 TEST = 'sidecar::windows::bootstrap::signed_task_tests::windows_signed_task_survives_package_move_and_owns_stop'
@@ -68,6 +69,8 @@ def check(runtime, notices):
     direct = state.with_name('SyncDirect')
     if state.exists() or direct.exists():
         raise RuntimeError('native task control refuses an existing account connection')
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'syncthing'))
+    import windows_bundle
     powershell = ['pwsh.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
                   str(Path(__file__).with_name('windows-sync-task-certificate.ps1').resolve())]
     with tempfile.TemporaryDirectory(prefix='okilum-native-task-') as temporary:
@@ -90,6 +93,9 @@ def check(runtime, notices):
             shutil.copyfile(helper, initial / 'okilum-sync-supervisor.exe')
             shutil.copyfile(runtime, initial / 'syncthing.exe')
             shutil.copytree(notices, initial / 'Syncthing')
+            # Exercise the production signing input, including the pinned
+            # upstream certificate removal required by the real ssign backend.
+            windows_bundle.prepare_signing(initial)
             for executable in ['okilum.exe', 'okilum-sync-supervisor.exe', 'syncthing.exe']:
                 subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(initial / executable)], check=True, timeout=90, stdin=subprocess.DEVNULL)
             evidence = root / 'native-task-evidence.json'

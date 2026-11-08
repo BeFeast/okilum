@@ -35,6 +35,9 @@ PY
 signed_release() {
     local programs=("$payload/okilum.exe" "$payload/okilum-sync-supervisor.exe")
     if [ -f "$payload/syncthing.exe" ]; then
+        # Pinned ssign refuses existing signatures. Strip only the verified
+        # upstream certificate table, never a section or preceding overlay.
+        python3 "$here/../syncthing/windows_bundle.py" prepare-signing --payload "$payload" || return
         programs+=("$payload/syncthing.exe")
     fi
     bash "$here/sign.sh" "${programs[@]}" &&

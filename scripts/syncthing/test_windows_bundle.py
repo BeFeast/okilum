@@ -1,6 +1,8 @@
 import hashlib
 import io
+from pathlib import Path
 import struct
+import tempfile
 import unittest
 import zipfile
 import windows_bundle as w
@@ -41,6 +43,34 @@ class WindowsBundleTests(unittest.TestCase):
         changed[1024:] = b'new signature!!!'
         self.assertEqual(w.normalized_body(original, 1024), w.normalized_body(bytes(changed), 1024))
         self.assertEqual(self.read(self.archive(original), original)['syncthing.exe'], original)
+
+    def test_signing_input_removes_only_the_exact_pinned_certificate(self):
+        original = binary()
+        expected = hashlib.sha256(w.normalized_body(original, 1024)).hexdigest()
+        body = w.signing_input(original, hashlib.sha256(original).hexdigest(), expected, 1024)
+        self.assertEqual(len(body), 1024)
+        self.assertEqual(body[216:220], bytes(4))
+        self.assertEqual(body[296:304], bytes(8), 'the pinned signer must see no existing certificate')
+        allowed = bytearray(original[:1024])
+        allowed[216:220] = bytes(4)
+        allowed[296:304] = bytes(8)
+        self.assertEqual(body, bytes(allowed))
+        with self.assertRaisesRegex(ValueError, 'pin mismatch'):
+            w.signing_input(original)
+        changed = bytearray(original)
+        changed[700] ^= 1
+        with self.assertRaisesRegex(ValueError, 'body changed'):
+            w.signing_input(changed, hashlib.sha256(changed).hexdigest(), expected, 1024)
+
+    def test_unpinned_signing_input_cannot_modify_the_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / 'syncthing.exe'
+            executable.write_bytes(binary())
+            with self.assertRaisesRegex(ValueError, 'pin mismatch'):
+                w.prepare_signing(root)
+            self.assertEqual(executable.read_bytes(), binary())
+            self.assertEqual(list(root.iterdir()), [executable])
 
     def test_executable_body_and_architecture_are_pinned(self):
         original = binary()
