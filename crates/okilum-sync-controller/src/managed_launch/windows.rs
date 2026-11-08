@@ -307,7 +307,7 @@ pub fn live_generation(home: &Path) -> Result<Generation> {
     let reference = existing(home)?;
     let binding = reference.load()?;
     ensure!(binding.home == home, "native home binding changed");
-    let lock = private::open_existing_rw(&reference.directory.join("process.lock"))?;
+    let lock = private::managed_lock(&reference.directory.join("process.lock"), false)?;
     ensure!(
         matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
         "native launch owner is absent"

@@ -50,7 +50,7 @@ mod unix_main {
         }
         #[cfg(not(feature = "dev-same-user"))]
         {
-            Ok(Arc::new(okilum_sync_controller::sidecar::windows::signature::AuthenticodePolicy::from_build()?))
+            anyhow::bail!("no signature policy is configured in this build; refusing to serve")
         }
     }
 

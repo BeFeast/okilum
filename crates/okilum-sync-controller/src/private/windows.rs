@@ -266,6 +266,34 @@ pub(crate) fn open_existing_rw(path: &Path) -> Result<Writer> {
     })
 }
 
+/// Managed launch uses separate durable gate/process file locks. Their parent
+/// identities are checked by Reference at every boundary, as on Unix. Retaining
+/// a read handle to the sidecar state ancestor would prevent WindowsStore's
+/// exclusive native transaction from ever opening that same directory.
+pub(crate) fn managed_lock(path: &Path, create: bool) -> Result<File> {
+    let writer = if create {
+        open_rw(path)?
+    } else {
+        open_existing_rw(path)?
+    };
+    let Writer {
+        file,
+        path,
+        _directory,
+    } = writer;
+    file.sync_all()?;
+    drop(file);
+    // Keep ancestors pinned until the final no-delete-sharing file is captured.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(text(&path)?)?;
+    verify_private_file(&file)?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +336,20 @@ mod tests {
         let redirected = state.join("generated-redirect");
         std::os::windows::fs::symlink_file(&generated, &redirected)?;
         assert!(public_file(&redirected).is_err());
+        let managed = state.join("managed-launch");
+        directory(&managed)?;
+        // The ordinary controller's lifetime lock owns another state root in
+        // production; release this synthetic root lock before the transaction.
+        drop(_owner);
+        let gate = managed_lock(&managed.join("gate.lock"), true)?;
+        gate.try_lock()?;
+        assert!(managed_lock(&managed.join("gate.lock"), false)?
+            .try_lock()
+            .is_err());
+        let store = crate::sidecar::store::WindowsStore::open_existing(&text(&state)?)?;
+        let _transaction =
+            store.begin(std::time::Instant::now() + std::time::Duration::from_secs(1))?;
+        assert!(fs::rename(managed.join("gate.lock"), managed.join("moved.lock")).is_err());
         Ok(())
     }
     #[test]

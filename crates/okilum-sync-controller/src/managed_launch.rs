@@ -15,6 +15,7 @@ use anyhow::{ensure, Context, Result};
 use okilum_write_authority::{Authority, DurableBinding, Phase, WriterLease};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs::File;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -26,7 +27,7 @@ use std::{
 };
 #[cfg(unix)]
 use std::{
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
 };
 use uuid::Uuid;
@@ -98,8 +99,8 @@ pub(crate) fn identity(path: &Path) -> Result<Identity> {
         let directory = okilum_core::windows_files::Directory::open(
             path.parent().context("file parent missing")?,
         )?;
-        let file = directory.open_file(path.file_name().context("file name missing")?)?;
-        okilum_write_authority::filesystem_identity::from_file(&file)
+        directory.child(path.file_name().context("file name missing")?)?;
+        okilum_write_authority::filesystem_identity::read(path)
     }
 }
 #[cfg(windows)]
@@ -123,10 +124,7 @@ pub(crate) fn digest(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-#[cfg(unix)]
 type LockFile = File;
-#[cfg(windows)]
-type LockFile = private::Writer;
 
 fn read_configuration(path: &Path) -> Result<Vec<u8>> {
     #[cfg(unix)]
@@ -199,11 +197,7 @@ fn lock_file(path: &Path, create: bool, wait: bool) -> Result<LockFile> {
 }
 #[cfg(windows)]
 fn lock_file(path: &Path, create: bool, wait: bool) -> Result<LockFile> {
-    let file = if create {
-        private::open_rw(path)?
-    } else {
-        private::open_existing_rw(path)?
-    };
+    let file = private::managed_lock(path, create)?;
     if wait {
         file.lock()?;
     } else {
