@@ -187,7 +187,7 @@ SyncDirect paths remain the identity locations; no journal is migrated into the
 rebuildable index. Windows does not expose the Unix-only `okilum sync` CLI/control
 socket. Its running desktop owns the private direct-controller lock.
 
-The native signed-task control uses only a fresh GitHub-hosted Windows account.
+The native signed-task control uses only a fresh GitHub-hosted Windows VM/account.
 A temporary fixture certificate exercises the production Authenticode policy;
 it does not enable same-user development trust or access release signing. The
 control leaves the actual scheduled helper running while its source package is
@@ -197,6 +197,15 @@ server process object from its authenticated pipe before the request, requires
 complete owned-Job shutdown, and waits for that process's kernel exit. Re-enable
 must preserve identities and produce a fresh generation. These are acceptance
 controls, not a statement that Windows beta delivery has occurred.
+
+Its temporary public root uses the disposable VM's LocalMachine store and is
+removed by exact thumbprint; the leaf private key remains in CurrentUser My and
+is deleted after Stop. Current-user root imports require an interactive trust
+confirmation even with certutil's force-overwrite option, so the hosted fixture
+uses its existing elevated token for machine-root installation. Current-user
+trust inherits machine roots as described by [Windows certificate-store
+scopes](https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/inspect-certificates-manage-certificate-stores).
+No app runtime or release signing path installs this fixture trust.
 
 The supervisor releases Task Scheduler's inherited state CWD before opening its
 journal: Windows retains a directory read/traverse handle for that CWD, which

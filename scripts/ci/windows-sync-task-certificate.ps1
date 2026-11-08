@@ -7,6 +7,10 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'Native signing fixtures run only on a disposable hosted Windows runner'
 }
+$principal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Disposable machine-root fixture requires the hosted runner elevated token'
+}
 Write-Host "Native fixture certificate phase: $Action"
 # Use PowerShell 7's .NET certificate API. Windows PowerShell's PKI/provider
 # autoload inherited from pwsh stalled before returning a fixture certificate.
@@ -74,21 +78,21 @@ if ($Action -eq 'create') {
         $mine = Open-Store 'My'
         try { $mine.Add($leaf) } finally { $mine.Close() }
         Write-Host 'Native fixture leaf stored'
-        # X509Store.Add into CurrentUser Root opens a GUI trust confirmation,
-        # even from a NonInteractive host. Use the explicit force option of the
-        # native administration CLI on this disposable hosted account only.
+        # CurrentUser Root requires a trust confirmation even with certutil -f
+        # (force overwrite). The disposable hosted VM has an elevated runner;
+        # install exactly this temporary public root in its machine store.
         $publicRoot = [System.IO.Path]::ChangeExtension($Metadata, 'root.cer')
         [System.IO.File]::WriteAllBytes($publicRoot, $root.RawData)
-        & "$env:SystemRoot\System32\certutil.exe" -user -f -addstore Root $publicRoot
+        & "$env:SystemRoot\System32\certutil.exe" -f -addstore Root $publicRoot
         if ($LASTEXITCODE -ne 0) { throw 'Installing the disposable fixture root failed' }
-        [ordered]@{ schema=1; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
+        [ordered]@{ schema=1; trust_store='LocalMachine'; root=$root.Thumbprint; leaf=$leaf.Thumbprint; subject=$leaf.Subject; issuers=@($root.Subject) } |
             ConvertTo-Json -Compress | Set-Content -LiteralPath $Metadata -Encoding UTF8
-        Write-Host 'Native fixture leaf and disposable CurrentUser trust installed'
+        Write-Host 'Native fixture user leaf and disposable machine-root trust installed'
     } finally { $rootKey.Dispose(); $leafKey.Dispose() }
     exit 0
 }
 $record = Get-Content -Raw -LiteralPath $Metadata | ConvertFrom-Json
-if ($record.schema -ne 1 -or $record.root -notmatch '^[A-F0-9]{40}$' -or $record.leaf -notmatch '^[A-F0-9]{40}$') {
+if ($record.schema -ne 1 -or $record.trust_store -ne 'LocalMachine' -or $record.root -notmatch '^[A-F0-9]{40}$' -or $record.leaf -notmatch '^[A-F0-9]{40}$') {
     throw 'Invalid fixture certificate identity'
 }
 if ($Action -eq 'sign') {
@@ -101,7 +105,7 @@ if ($Action -eq 'sign') {
     Write-Host 'Native fixture embedded signature verified'
     exit 0
 }
-& "$env:SystemRoot\System32\certutil.exe" -user -f -delstore Root $record.root
+& "$env:SystemRoot\System32\certutil.exe" -f -delstore Root $record.root
 if ($LASTEXITCODE -ne 0) { throw 'Removing the disposable fixture root failed' }
 $mine = Open-Store 'My'
 try {
