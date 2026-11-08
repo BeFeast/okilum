@@ -96,6 +96,15 @@ fn owned(image: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A previous self-install can already have duplicated a manager's image.
+/// A bound build record is required before retiring its launcher: older
+/// installers must still see the newer build and refuse to downgrade it.
+pub(crate) fn recorded_install(home: &Path, image: &Path) -> bool {
+    paths(home).is_ok_and(|(managed, _)| managed == image)
+        && owned(image).is_ok()
+        && recorded_build(image).is_some()
+}
+
 /// Publish bytes before changing the launchers; keep arbitrary downloaded copies.
 /// Only the exact legacy ~/Applications/Okilum.AppImage is removed after success.
 /// `build` is the build of `source` (the running process). An external copy
@@ -108,6 +117,10 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
         metadata.permissions().mode() & 0o111 != 0,
         "AppImage is not executable"
     );
+    if crate::desktop::external_launcher(home, source)?.is_some() {
+        crate::desktop::install(home, source)?;
+        return Ok(source.to_path_buf());
+    }
     let (image, command) = paths(home)?;
     // A symlinked install directory could redirect writes outside the user's
     // named installation. Shared XDG parent directories may themselves be user
@@ -255,6 +268,90 @@ pub fn remove(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn externally_integrated_images_stay_in_place_across_updates() {
+        for name in [
+            "gearlever_okilum.desktop",
+            "appimagekit_deadbeef-Okilum.desktop",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let source = home.path().join("Applications/Okilum managed.AppImage");
+            executable(&source, b"old manager image");
+            let applications = home.path().join(".local/share/applications");
+            fs::create_dir_all(&applications).unwrap();
+            let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nExec=env DESKTOPINTEGRATION=1 '{}' %u\nTryExec={}\nIcon=/manager/icon.svg\nStartupWMClass=okilum\nX-AppImage-Name=Okilum\n", source.display(), source.display());
+            let launcher = applications.join(name);
+            fs::write(&launcher, &entry).unwrap();
+            let (image, command) = paths(home.path()).unwrap();
+            let (desktop, icon) = crate::desktop::paths(home.path()).unwrap();
+            for (build, bytes) in [
+                (100, b"old manager image".as_slice()),
+                (101, b"updated manager image".as_slice()),
+            ] {
+                // The updater replaces the manager's exact path, as in production.
+                let stage = source.with_extension("stage");
+                executable(&stage, bytes);
+                fs::rename(stage, &source).unwrap();
+                assert_eq!(install(home.path(), &source, build).unwrap(), source);
+                crate::desktop::install(home.path(), &source).unwrap();
+                assert!(!image.exists() && !command.exists());
+                assert!(!desktop.exists() && !icon.exists());
+                assert_eq!(fs::read_to_string(&launcher).unwrap(), entry);
+                assert_eq!(fs::read(&source).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn update_of_a_previous_duplicate_retires_our_launcher_and_keeps_manager_target() {
+        let home = tempfile::tempdir().unwrap();
+        let manager_image = home.path().join("AppImages/okilum.appimage");
+        executable(&manager_image, b"old manager image");
+        // Reproduce the pre-fix self-install before Gear Lever's entry is seen.
+        let managed = install(home.path(), &manager_image, 100).unwrap();
+        let (desktop, icon) = crate::desktop::paths(home.path()).unwrap();
+        let manager = desktop.with_file_name("okilum.desktop");
+        let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nExec=env DESKTOPINTEGRATION=1 '{}' %u\nTryExec={}\nIcon=/manager/icon.svg\nX-AppImage-Name=Okilum\n", manager_image.display(), manager_image.display());
+        fs::write(&manager, &entry).unwrap();
+        // An actual update replaces the old self-installed image in place.
+        let staged = managed.with_extension("stage");
+        executable(&staged, b"updated self-installed image");
+        note_incoming(&managed, &staged, 101).unwrap();
+        fs::rename(staged, &managed).unwrap();
+        assert_eq!(install(home.path(), &managed, 101).unwrap(), managed);
+        assert!(!desktop.exists() && !icon.exists());
+        assert_eq!(fs::read_to_string(&manager).unwrap(), entry);
+        assert_eq!(fs::read(&manager_image).unwrap(), b"old manager image");
+        assert_eq!(fs::read(&managed).unwrap(), b"updated self-installed image");
+        assert_eq!(recorded_build(&managed), Some(101));
+        // Do not adopt unrelated launchers or missing manager targets by name.
+        fs::write(
+            &manager,
+            entry.replace("X-AppImage-Name=Okilum", "X-AppImage-Name=Other"),
+        )
+        .unwrap();
+        crate::desktop::install(home.path(), &managed).unwrap();
+        assert!(desktop.exists());
+        fs::write(&manager, &entry).unwrap();
+        fs::remove_file(&manager_image).unwrap();
+        crate::desktop::install(home.path(), &managed).unwrap();
+        assert!(desktop.exists());
+        executable(&manager_image, b"old manager image");
+        fs::write(build_record(&managed), b"101 stale identity").unwrap();
+        crate::desktop::install(home.path(), &managed).unwrap();
+        assert!(
+            desktop.exists(),
+            "an unbound build must not lose its launcher"
+        );
+        write_build(&managed, 101, &managed).unwrap();
+        fs::remove_file(marker(&managed)).unwrap();
+        crate::desktop::install(home.path(), &managed).unwrap();
+        assert!(
+            desktop.exists(),
+            "an unowned install must not lose its launcher"
+        );
+    }
 
     #[test]
     fn fresh_install_and_legacy_migration_publish_both_launchers_before_removal() {
