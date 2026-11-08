@@ -34,7 +34,7 @@ impl Health {
         for (path, vault) in &overview.vaults {
             if vault.available
                 && vault.state == "Up to date"
-                && (connected || vault.shared_with.is_empty())
+                && (vault.connected || vault.shared_with.is_empty())
             {
                 self.stalled.remove(path);
                 continue;
@@ -326,6 +326,43 @@ mod tests {
         health.failed();
         assert!(health.message().is_some());
     }
+    #[test]
+    fn introduced_mesh_peer_keeps_the_vault_healthy_when_the_named_computer_sleeps() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = direct::Overview::default();
+        overview.computers.insert(
+            uuid::Uuid::nil(),
+            direct::ComputerOverview {
+                connected: Some(false),
+                last_seen: Some("2000-01-01T00:00:00Z".into()),
+                ..Default::default()
+            },
+        );
+        overview.vaults.insert(
+            PathBuf::from("/synthetic"),
+            direct::VaultOverview {
+                available: true,
+                connected: true,
+                state: "Up to date".into(),
+                shared_with: vec!["Introduced computer".into()],
+                ..Default::default()
+            },
+        );
+        health.observe(&overview, now);
+        health.observe(&overview, now + STALE + Duration::from_secs(1));
+        assert!(
+            health.message().is_none(),
+            "the named inviter is not the only Sync transport"
+        );
+        overview.vaults.values_mut().next().unwrap().connected = false;
+        health.observe(&overview, now + STALE + Duration::from_secs(2));
+        assert!(
+            health.message().is_some(),
+            "negative control: losing every carrier is stale"
+        );
+    }
+
     #[test]
     fn offline_or_stalled_vault_warns_after_ten_minutes_and_progress_resets_timer() {
         let now = Instant::now();
