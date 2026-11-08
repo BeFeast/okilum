@@ -238,26 +238,76 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
     let target = format!("gui/{}/com.befeast.okilum.sync", binding.owner);
     // TERM lets the new helper flush its owned tree. -k would SIGKILL it and
     // leave an orphan runtime, which the lifetime lease correctly refuses.
-    let stopped = std::process::Command::new("/bin/launchctl")
-        .args(["kill", "SIGTERM", &target])
-        .output()?;
-    if !stopped.status.success() {
-        let started = std::process::Command::new("/bin/launchctl")
-            .args(["kickstart", &target])
-            .output()?;
-        anyhow::ensure!(
-            started.status.success(),
-            "Sync helper restart failed: {}",
-            String::from_utf8_lossy(&started.stderr)
-        );
+    let stopped = bounded_request(
+        std::process::Command::new("/bin/launchctl").args(["kill", "SIGTERM", &target]),
+        Duration::from_secs(5),
+    )?;
+    if stopped == Some(false) {
+        let started = bounded_request(
+            std::process::Command::new("/bin/launchctl").args(["kickstart", &target]),
+            Duration::from_secs(5),
+        )?;
+        anyhow::ensure!(started != Some(false), "Sync helper restart request failed");
     }
     Ok(())
+}
+
+/// launchctl can hang after the service has already started. Bound only our
+/// CLI child; never signal the helper by a guessed PID or block Sync forever.
+#[cfg(target_os = "macos")]
+fn bounded_request(
+    command: &mut std::process::Command,
+    budget: Duration,
+) -> anyhow::Result<Option<bool>> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status.success()));
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            // The service request may have succeeded. The regular authenticated
+            // recheck, rather than the launchctl exit, establishes Sync health.
+            return Ok(None);
+        }
+        std::thread::sleep(left.min(Duration::from_millis(25)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchctl_style_request_has_success_failure_and_hung_child_controls() -> anyhow::Result<()> {
+        use std::process::Command;
+        assert_eq!(
+            bounded_request(&mut Command::new("/usr/bin/true"), Duration::from_secs(3))?,
+            Some(true)
+        );
+        assert_eq!(
+            bounded_request(&mut Command::new("/usr/bin/false"), Duration::from_secs(3))?,
+            Some(false)
+        );
+        assert_eq!(
+            bounded_request(
+                Command::new("/bin/sleep").arg("60"),
+                Duration::from_millis(100)
+            )?,
+            None
+        );
+        Ok(())
+    }
+
     #[test]
     fn missing_runtime_is_immediate_and_connected_success_clears_the_alert() {
         let now = Instant::now();
