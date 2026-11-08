@@ -213,8 +213,16 @@ mod tests {
     use super::*;
     #[test]
     fn windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes() -> Result<()> {
-        let windows = std::env::var_os("SystemRoot").context("SystemRoot missing")?;
-        let signed = Path::new(&windows).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        use sha2::{Digest, Sha256};
+        let signed = std::path::PathBuf::from(
+            std::env::var_os("OKILUM_SYNC_WINDOWS_CLIENT")
+                .context("pinned embedded-signature fixture missing")?,
+        );
+        ensure!(
+            format!("{:x}", Sha256::digest(std::fs::read(&signed)?))
+                == super::super::payload::UPSTREAM_HASH,
+            "signed positive fixture differs from the pinned upstream executable"
+        );
         let names = verified_names(&signed)?;
         let text = |name: &[u8]| -> Result<String> {
             use windows::Win32::Security::Cryptography::CertNameToStrW;

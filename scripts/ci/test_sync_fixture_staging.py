@@ -256,20 +256,20 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_cdn_failure_uses_same_pinned_official_asset(self):
         (self.cache / helper.ARCHIVE).unlink()
-        with patch.object(helper.subprocess, 'check_output', side_effect=[
-            subprocess.CalledProcessError(22, ['curl']), self.archive,
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[
+            urllib.error.URLError('CDN unavailable'), io.BytesIO(self.archive),
         ]) as download:
             binary = helper.stage(self.cache)
         self.assertEqual(binary.read_bytes(), self.executable)
-        self.assertIn(helper.ASSET_URL, download.call_args_list[1].args[0])
+        self.assertEqual(download.call_args_list[1].args[0].full_url, helper.ASSET_API_URL)
         self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
 
     def test_api_fallback_still_refuses_unpinned_bytes(self):
         (self.cache / helper.ARCHIVE).unlink()
-        with patch.object(helper.subprocess, 'check_output', side_effect=[
-            subprocess.CalledProcessError(22, ['curl']), b'wrong asset',
+        with patch.object(pinned_download.urllib.request, 'urlopen', side_effect=[
+            urllib.error.URLError('CDN unavailable'), io.BytesIO(b'wrong asset'),
         ]):
-            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
                 helper.stage(self.cache)
         self.assertFalse((self.cache / helper.ARCHIVE).exists())
         self.assertFalse((self.cache / helper.BINARY_SHA256).exists())

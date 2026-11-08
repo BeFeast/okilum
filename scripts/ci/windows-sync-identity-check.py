@@ -4,6 +4,7 @@ import subprocess
 import sys
 import os
 import tempfile
+import runpy
 from pathlib import Path
 
 TESTS = {
@@ -14,6 +15,20 @@ TESTS = {
 def main():
     if sys.platform != "win32":
         raise RuntimeError("Windows Sync identity controls require Windows")
+    # A catalog-signed system file is not an embedded-signature positive control.
+    # Stage the signed upstream PE only after both pinned archive/executable
+    # checks. Never execute an unverified download or select arbitrary fixtures.
+    resources = tempfile.TemporaryDirectory(prefix="okilum-signed-fixture-")
+    resource_root = Path(resources.name)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "syncthing"))
+    import windows_bundle
+    archive = resource_root / windows_bundle.NAME
+    fetch = runpy.run_path(str(Path(__file__).resolve().parents[1] / "pinned_download.py"))["fetch"]
+    fetch(windows_bundle.bundle.BASE + "/" + windows_bundle.NAME, windows_bundle.ARCHIVE_SHA, archive,
+          "https://api.github.com/repos/syncthing/syncthing/releases/assets/614663060")
+    payload = windows_bundle.payload(archive.read_bytes())
+    client = resource_root / "syncthing.exe"
+    client.write_bytes(payload["syncthing.exe"])
     command = ["cargo", "test", "--locked", "-p", "okilum-write-authority", "filesystem_identity::tests::"]
     listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
     if {line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")} != TESTS:
@@ -41,7 +56,8 @@ def main():
             raise RuntimeError(f"Native Windows kernel control did not compile/discover: {listing}")
         with tempfile.TemporaryDirectory(prefix="okilum-first-sync-") as root:
             selected = str(Path(root).resolve())
-            env = dict(os.environ, LOCALAPPDATA=selected, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=selected)
+            env = dict(os.environ, LOCALAPPDATA=selected, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=selected,
+                       OKILUM_SYNC_WINDOWS_CLIENT=str(client.resolve()))
             subprocess.run([*command, "--", "--exact", "--include-ignored", "--nocapture"], env=env, check=True)
     command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", "sidecar::supervisor::windows::tests::"]
     listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
