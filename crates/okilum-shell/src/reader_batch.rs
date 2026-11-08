@@ -474,6 +474,10 @@ mod tests {
         let reader = reader.unwrap();
         visual.simulate_resize(size(px(1200.), px(900.)));
         visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("A.md", window, cx);
+        });
+        visual.run_until_parked();
         let toggle = Modifiers {
             control: !cfg!(target_os = "macos"),
             platform: cfg!(target_os = "macos"),
