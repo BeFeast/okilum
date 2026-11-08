@@ -359,6 +359,12 @@ class Comparison:
         common = set(a) & set(b)
         old_left = [x for k, x in a.items() if k not in common]
         new_left = [x for k, x in b.items() if k not in common]
+        if common and old_left and new_left:
+            # An unchanged branch (for example null) can hide discriminators
+            # shared by the remaining objects. Reconsider only the unmatched
+            # branches; each retry removes at least one exact semantic shape.
+            self.union(old_left, new_left, od, nd, path, used)
+            return
         if len(old_left) == len(new_left) == 1:
             self.node(old_left[0], new_left[0], od, nd, path + '[changed variant]')
         elif not old_left:
