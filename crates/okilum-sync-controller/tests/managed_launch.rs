@@ -1,10 +1,13 @@
 //! #2582: separate processes and checksum-pinned disposable runtimes only.
 #![cfg(target_os = "linux")]
 #[path = "support/direct_daemon.rs"]
+#[allow(
+    dead_code,
+    reason = "shared fixture also supplies the direct pairing suites"
+)]
 mod direct_daemon;
-#[path = "support/fixture_process.rs"]
-mod fixture_process;
 use anyhow::{ensure, Context, Result};
+use direct_daemon::fixture_process;
 use direct_daemon::{wait, Peer};
 use okilum_sync_controller::{
     daemon::{DaemonIdentity, Preparation},
@@ -18,6 +21,7 @@ use okilum_sync_controller::{
 };
 use okilum_write_authority::{Authority, Phase};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     fs,
     io::{Read, Write},
@@ -30,7 +34,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -478,6 +482,198 @@ fn add_source(source: &Peer, target: &DaemonIdentity, id: &str, path: &Path) -> 
     source.api.add_paused_folder(&json!({"id":id,"path":path,"type":"sendreceive","paused":true,
         "rescanIntervalS":0,"fsWatcherEnabled":false,"devices":[{"deviceID":source.id},{"deviceID":target.device_id}]}))?;
     source.api.patch_folder(id, &json!({"paused":false}))?;
+    Ok(())
+}
+
+fn first_sync_runtime(root: &Path, name: &str) -> Result<(Runtime<Services>, DaemonIdentity)> {
+    let services = Services::default();
+    let rest = TcpListener::bind("127.0.0.1:0")?;
+    let listen = TcpListener::bind("127.0.0.1:0")?;
+    let request = Preparation {
+        executable: binary()?,
+        rest_address: rest.local_addr()?,
+        listen_address: listen.local_addr()?,
+    };
+    drop((rest, listen));
+    let runtime = Runtime::with_services(
+        root.join(name),
+        root.join(format!("{name}-units")),
+        services.clone(),
+        launcher(),
+    );
+    let identity = runtime
+        .enable(Selection::Managed(request), &[])?
+        .identity
+        .unwrap();
+    services.remember_pid(identity.config_file.parent().unwrap())?;
+    Ok((runtime, identity))
+}
+fn first_sync_files(root: &Path) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+    fn walk(
+        root: &Path,
+        path: &Path,
+        out: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().context("fixture name")?;
+            if matches!(
+                name,
+                ".stfolder" | ".stversions" | ".stignore" | ".okilum-index"
+            ) || name.starts_with(".okilum-save-")
+            {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                walk(root, &entry.path(), out)?;
+            } else {
+                out.insert(
+                    entry
+                        .path()
+                        .strip_prefix(root)?
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                    fs::read(entry.path())?,
+                );
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeMap::new();
+    walk(root, root, &mut files)?;
+    Ok(files)
+}
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff(
+) -> Result<()> {
+    use okilum_sync_controller::merge_preview::Kind;
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let (source_runtime, source) = first_sync_runtime(root.path(), "source-runtime")?;
+    let (target_runtime, target) = first_sync_runtime(root.path(), "target-runtime")?;
+    let there = root.path().join("there");
+    let here = root.path().join("here");
+    fs::create_dir(&there)?;
+    fs::create_dir(&here)?;
+    fs::write(there.join("same.md"), b"same\r\n")?;
+    fs::write(here.join("same.md"), b"same\r\n")?;
+    fs::write(there.join("remote.md"), b"only on source")?;
+    fs::write(here.join("local.md"), b"only on destination")?;
+    fs::write(there.join("different.md"), b"source original\n")?;
+    fs::write(here.join("different.md"), b"destination original\r\n")?;
+    fs::write(there.join("binary.dat"), vec![0x93; 12_345])?;
+    fs::write(here.join("binary.dat"), vec![0xff; 12_345])?;
+    let first = Controller::open(
+        root.path().join("source-controller"),
+        vec![source.config_file.clone()],
+    )?;
+    let second = Controller::open(
+        root.path().join("target-controller"),
+        vec![target.config_file.clone()],
+    )?;
+    first.share_vault(&root.path().join("source-runtime/prepared"), &there)?;
+    let url = first
+        .begin_pairing_at(
+            "Source fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .unwrap();
+    second.redeem(&url, "Destination fixture")?;
+    first.approve(first.snapshot()?.pending.unwrap().request_id)?;
+    let peer = second.refresh()?.peers[0].id;
+    let catalog = second.catalog(peer)?;
+    assert_eq!(catalog.len(), 1);
+    let vault = &catalog[0].id;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    let a_address = a.config()?["options"]["listenAddresses"][0].clone();
+    let b_address = b.config()?["options"]["listenAddresses"][0].clone();
+    a.add_device(&json!({"deviceID":target.device_id,"addresses":[b_address]}))?;
+    b.add_device(&json!({"deviceID":source.device_id,"addresses":[a_address]}))?;
+    let before = (first_sync_files(&here)?, first_sync_files(&there)?);
+    assert!(
+        second.attach(peer, vault, &here).is_err(),
+        "ordinary non-empty attach must still require preview consent"
+    );
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    assert_eq!(plan.count(Kind::Equal), 1);
+    assert_eq!(plan.count(Kind::OnlyHere), 1);
+    assert_eq!(plan.count(Kind::OnlyThere), 1);
+    assert_eq!(plan.count(Kind::Different), 2);
+    let mut backend = second.first_sync_backend(preview);
+    assert_eq!(
+        (first_sync_files(&here)?, first_sync_files(&there)?),
+        before,
+        "preview/adapter construction must not publish"
+    );
+    // Stale local and remote revisions refuse before any merge publication.
+    fs::write(here.join("local.md"), b"changed since preview")?;
+    assert!(plan
+        .apply(plan.consent(true).unwrap(), backend.as_mut())
+        .is_err());
+    assert_eq!(first_sync_files(&there)?, before.1);
+    fs::write(here.join("local.md"), before.0.get("local.md").unwrap())?;
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    let mut backend = second.first_sync_backend(preview);
+    fs::write(there.join("remote.md"), b"remote changed since preview")?;
+    assert!(plan
+        .apply(plan.consent(true).unwrap(), backend.as_mut())
+        .is_err());
+    assert_eq!(first_sync_files(&here)?, before.0);
+    fs::write(there.join("remote.md"), before.1.get("remote.md").unwrap())?;
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    let conflicts = plan
+        .entries()
+        .iter()
+        .filter_map(|entry| entry.conflict_path.clone())
+        .collect::<Vec<_>>();
+    let mut backend = second.first_sync_backend(preview);
+    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(merged.len(), 7);
+    for bytes in before.0.values().chain(before.1.values()) {
+        let hash = sha2::Sha256::digest(bytes);
+        assert!(
+            merged
+                .values()
+                .any(|value| sha2::Sha256::digest(value) == hash),
+            "an original byte version was lost"
+        );
+    }
+    assert_eq!(conflicts.len(), 2);
+    for conflict in conflicts {
+        assert!(here.join(&conflict).is_file() && there.join(&conflict).is_file());
+    }
+    assert!(second.pending_first_sync()?.is_empty());
+    assert_eq!(b.folder(vault)?["type"], "sendreceive");
+    fs::write(here.join("later-here.md"), b"later destination edit")?;
+    wait("post-merge destination to source transfer", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("later-here.md"))
+            .is_ok_and(|bytes| bytes == b"later destination edit"))
+    })?;
+    fs::write(there.join("later-there.md"), b"later source edit")?;
+    wait("post-merge source to destination transfer", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(here.join("later-there.md")).is_ok_and(|bytes| bytes == b"later source edit"))
+    })?;
+    drop(backend);
+    drop(first);
+    drop(second);
+    source_runtime.disable()?;
+    target_runtime.disable()?;
     Ok(())
 }
 

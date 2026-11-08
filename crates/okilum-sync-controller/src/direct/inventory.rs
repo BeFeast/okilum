@@ -6,6 +6,7 @@ use std::{fs::File, time::Instant};
 
 mod tree;
 use tree::Tree;
+pub mod merge;
 
 /// Bounds are refusals, never successful truncation. Snapshots are peer-isolated.
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;

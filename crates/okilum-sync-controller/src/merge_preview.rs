@@ -45,6 +45,12 @@ pub enum Error {
 pub struct Consent(Plan);
 
 impl Plan {
+    pub(crate) fn originals(&self) -> (&Snapshot, &Snapshot) {
+        (&self.here, &self.there)
+    }
+    pub(crate) fn merged_files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.merged
+    }
     pub fn preview(here: Snapshot, there: Snapshot) -> Result<Self, Error> {
         validate(&here)?;
         validate(&there)?;

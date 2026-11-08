@@ -77,13 +77,15 @@ pub(super) fn validate_path(path: &str) -> Result<()> {
     );
     Ok(())
 }
-fn excluded(path: &str) -> bool {
+pub(super) fn excluded(path: &str) -> bool {
     path == "worktrees"
         || path == ".claude/worktrees"
         || matches!(path, ".stfolder" | ".stversions" | ".stignore")
-        || path
-            .split('/')
-            .any(|p| p == ".okilum-index" || p.starts_with(".okilum-save-"))
+        || path.split('/').any(|p| {
+            p == ".okilum-index"
+                || p.starts_with(".okilum-save-")
+                || p.starts_with(".okilum-create-")
+        })
 }
 /// This slice deliberately refuses custom glob/include/negation policies rather
 /// than approximating Syncthing's matcher and exposing excluded user content.

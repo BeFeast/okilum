@@ -27,7 +27,7 @@ use uuid::Uuid;
 use xmltree::{Element, XMLNode};
 
 mod quiescence;
-pub use quiescence::ScopedHold;
+pub use quiescence::{OrdinaryHold, ScopedHold};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -164,7 +164,10 @@ impl Reference {
         {
             return Ok(lock);
         }
-        let lock = lock_file(&self.directory.join("gate.lock"), false, true)?;
+        // A first-merge owner can retain this gate across paired requests.
+        // Refuse contention rather than wait while an RPC holds the pairing DB:
+        // the next request must remain able to finish or recover that merge.
+        let lock = lock_file(&self.directory.join("gate.lock"), false, false)?;
         ensure!(
             identity(&self.directory.join("gate.lock"))? == before.gate,
             "managed gate replaced"

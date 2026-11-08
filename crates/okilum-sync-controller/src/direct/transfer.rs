@@ -178,6 +178,175 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
     Ok(lines)
 }
 impl Controller {
+    #[cfg(target_os = "linux")]
+    pub(in crate::direct) fn attach_completed_first_sync(
+        &self,
+        receipt: &inventory::merge::CompletedMerge,
+    ) -> Result<()> {
+        self.validate_first_sync_completion(receipt, false)?;
+        self.check()?;
+        let path = &receipt.path;
+        let vault = &receipt.vault;
+        let daemon = &receipt.daemon;
+        let configs = self.configuration_paths()?;
+        let inventory = daemon::discover(&configs);
+        let folders = inventory.folders()?;
+        ensure!(
+            inventory.candidates.len() == 1 && inventory.candidates[0].identity == *daemon,
+            "first Sync handoff runtime changed"
+        );
+        let api = daemon.connect()?;
+        let (paired, existing) = {
+            let db = self.shared.db.lock().unwrap();
+            let paired = db
+                .peers
+                .get(&receipt.peer)
+                .cloned()
+                .context("paired computer missing")?;
+            let existing = db
+                .transfers
+                .iter()
+                .find(|t| t.peer == receipt.peer && t.vault == *vault)
+                .cloned();
+            (paired, existing)
+        };
+        for (id, root) in folders {
+            ensure!(
+                (existing.is_some() && id == *vault && root == *path)
+                    || (!path.starts_with(&root) && !root.starts_with(path)),
+                "first Sync handoff overlaps another enrolled folder"
+            );
+        }
+        let _admission = crate::admission::configuration(daemon, vault, path)?;
+        let mut transfer = if let Some(transfer) = existing {
+            ensure!(
+                transfer.path == *path
+                    && transfer.daemon == *daemon
+                    && transfer.owner == Some(receipt.operation),
+                "first Sync handoff ownership changed"
+            );
+            if transfer.active {
+                validate_owned(&transfer, &api.folder(vault)?)?;
+                return Ok(());
+            }
+            transfer
+        } else {
+            self.validate_first_sync_completion(receipt, true)?;
+            let transfer = Transfer {
+                history: history::Policy::default(),
+                create_ignores: create_ignores::Policy::current(),
+                peer: receipt.peer,
+                vault: vault.clone(),
+                path: path.clone(),
+                daemon: daemon.clone(),
+                connection: None,
+                active: false,
+                owner: Some(receipt.operation),
+                destination_identity: Some(DirectoryIdentity::read(path)?),
+                phase: Phase::Promoting,
+                witness: None,
+                label: None,
+            };
+            let mut db = self.shared.db.lock().unwrap();
+            db.transfers.push(transfer.clone());
+            self.save(&db)?;
+            transfer
+        };
+        let connection = if let Some(connection) = &transfer.connection {
+            connection.clone()
+        } else {
+            let response = self.call(
+                paired.endpoint,
+                receipt.peer,
+                &paired.key,
+                &paired.public,
+                Operation::Share {
+                    vault: vault.clone(),
+                    device: daemon.device_id.clone(),
+                },
+            )?;
+            let Reply::Shared { connection } = response else {
+                anyhow::bail!("completed first Sync source sharing unavailable")
+            };
+            ensure!(
+                connection.folder_id == *vault,
+                "first Sync source folder changed"
+            );
+            transfer.connection = Some(connection.clone());
+            self.save_transfer(&transfer)?;
+            connection
+        };
+        let config = api.config()?;
+        if !config["devices"]
+            .as_array()
+            .context("device inventory missing")?
+            .iter()
+            .any(|d| d["deviceID"] == connection.device_id)
+        {
+            api.add_device(&json!({"deviceID":connection.device_id,"name":PAIRED_DEVICE_NAME,
+                "addresses":super::addresses::with_dynamic(&paired.addresses),"introducer":false,"autoAcceptFolders":false}))?;
+        }
+        if !config["folders"]
+            .as_array()
+            .context("folder inventory missing")?
+            .iter()
+            .any(|f| f["id"] == *vault)
+        {
+            self.validate_first_sync_completion(receipt, true)?;
+            api.add_paused_folder(&json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
+                "type":"sendreceive","paused":true,"devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
+                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+        }
+        let folder = api.folder(vault)?;
+        if transfer.witness.is_none() {
+            ensure!(
+                folder["label"] == owned_label(&transfer)?
+                    && folder["paused"] == true
+                    && folder["type"] == "sendreceive"
+                    && folder["path"]
+                        .as_str()
+                        .is_some_and(|p| Path::new(p) == path),
+                "first Sync folder creation witness differs"
+            );
+            transfer.witness = Some(folder.clone());
+            self.save_transfer(&transfer)?;
+        }
+        validate_owned(&transfer, &folder)?;
+        if folder["paused"] == true {
+            ensure!(
+                connection.policy.is_none(),
+                "first Sync shared policy requires explicit review"
+            );
+            api.set_ignores(
+                vault,
+                &connection
+                    .ignores
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )?;
+            self.check()?;
+            api.patch_folder(vault, &json!({"paused":false}))?;
+        }
+        transfer.phase = Phase::Bidirectional;
+        transfer.active = true;
+        transfer.witness = Some(api.folder(vault)?);
+        self.save_transfer(&transfer)?;
+        self.relabel_transfer(&mut transfer)?;
+        let attached = inspect_existing(&configs, path)?;
+        let mut db = self.shared.db.lock().unwrap();
+        ensure!(
+            db.attached
+                .iter()
+                .all(|a| a.folder_id != *vault || existing::same_binding(a, &attached)),
+            "first Sync association changed"
+        );
+        if !db.attached.iter().any(|a| a.folder_id == *vault) {
+            db.attached.push(attached);
+            self.save(&db)?;
+        }
+        Ok(())
+    }
     pub fn attach(&self, peer_id: Uuid, vault_id: &str, destination: &Path) -> Result<Snapshot> {
         let guard = self.shared.transfer_lock.lock().unwrap();
         self.attach_locked(peer_id, vault_id, destination)?;

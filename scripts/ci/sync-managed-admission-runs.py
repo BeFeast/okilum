@@ -14,6 +14,7 @@ TESTS = {
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
+    'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
 }
 
 

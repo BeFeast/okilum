@@ -201,6 +201,8 @@ struct Shared {
     inventory: Mutex<inventory::Cache>,
     #[cfg(target_os = "linux")]
     inventory_key: [u8; 32],
+    #[cfg(target_os = "linux")]
+    first_sync: Mutex<BTreeMap<Uuid, Arc<Mutex<inventory::merge::Session>>>>,
     #[cfg(all(test, target_os = "linux"))]
     inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
@@ -253,6 +255,10 @@ enum Operation {
     Inspect {
         request: Box<inventory::Request>,
     },
+    #[cfg(target_os = "linux")]
+    FirstSync {
+        request: Box<inventory::merge::Request>,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -298,6 +304,10 @@ enum Reply {
     #[cfg(target_os = "linux")]
     Inspection {
         response: inventory::Response,
+    },
+    #[cfg(target_os = "linux")]
+    FirstSync {
+        response: inventory::merge::Response,
     },
     NotReady,
     Error {
@@ -365,6 +375,8 @@ impl Controller {
                 inventory: Mutex::new(Default::default()),
                 #[cfg(target_os = "linux")]
                 inventory_key: wire::random()?,
+                #[cfg(target_os = "linux")]
+                first_sync: Mutex::new(BTreeMap::new()),
                 #[cfg(all(test, target_os = "linux"))]
                 inspection_hook: Mutex::new(None),
                 _lock,
@@ -927,7 +939,8 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
-        let exchange_transport = !read_only && !operation.removal_only();
+        let exchange_transport = !read_only && !operation.removal_only() && !operation.first_sync();
+        let first_sync = operation.first_sync();
         let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
@@ -944,10 +957,14 @@ impl Controller {
         let mut stream =
             wire::connect(endpoint).map_err(|error| transfer::not_connected(endpoint, error))?;
         self.check()?;
-        if redeem {
+        if redeem || first_sync {
             // The other computer may be busy (daemon inventory, disk). A pairing
             // request waits longer than the 3 s frame bound before giving up (#2589).
-            stream.set_read_timeout(Some(PAIRING_REPLY_TIMEOUT))?;
+            stream.set_read_timeout(Some(if first_sync {
+                Duration::from_secs(90)
+            } else {
+                PAIRING_REPLY_TIMEOUT
+            }))?;
         }
         wire::write(&mut stream, &frame)?;
         let waiting_since = std::time::Instant::now();
@@ -968,6 +985,10 @@ impl Controller {
         self.check()?;
         let mut reply = response.result;
         if let Some(transport) = response.transport {
+            ensure!(
+                !first_sync,
+                "first Sync cannot exchange transport configuration"
+            );
             ensure!(
                 !read_only,
                 "inspection cannot exchange transport configuration"
@@ -1008,7 +1029,8 @@ impl Controller {
         let (message, signer): (Message, _) =
             wire::open(envelope, &credential, expected.as_deref())?;
         ensure!(
-            !message.operation.read_only() || message.transport.is_none(),
+            (!message.operation.read_only() && !message.operation.first_sync())
+                || message.transport.is_none(),
             "inspection cannot exchange transport configuration"
         );
         ensure!(
@@ -1052,6 +1074,12 @@ impl Controller {
                 drop(db);
                 self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
+            }
+            #[cfg(target_os = "linux")]
+            Operation::FirstSync { request } => {
+                drop(db);
+                self.first_sync_request(scope, &signer, *request)
+                    .map(|response| Reply::FirstSync { response })
             }
             operation => {
                 let reply = self.dispatch(&mut db, scope, operation, signer);
@@ -1246,6 +1274,8 @@ impl Controller {
             }
             #[cfg(target_os = "linux")]
             Operation::Inspect { .. } => anyhow::bail!("inspection requires lock-free dispatch"),
+            #[cfg(target_os = "linux")]
+            Operation::FirstSync { .. } => anyhow::bail!("first Sync requires lock-free dispatch"),
         }
     }
     fn save(&self, db: &Database) -> Result<()> {
@@ -1289,6 +1319,13 @@ impl Controller {
     }
 }
 impl Operation {
+    fn first_sync(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::FirstSync { .. }) {
+            return true;
+        }
+        false
+    }
     fn removal_only(&self) -> bool {
         matches!(
             self,

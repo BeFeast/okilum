@@ -67,6 +67,96 @@ fn same_generation(expected: &Generation, actual: &Generation) -> Result<()> {
     Ok(())
 }
 impl ScopedHold {
+    pub fn configuration_before_pause(&self) -> Result<Value> {
+        self.validate()?;
+        let mut config = self.daemon.connect()?.config()?;
+        let folder = config["folders"]
+            .as_array_mut()
+            .context("folder inventory missing")?
+            .iter_mut()
+            .find(|folder| folder["id"] == self.record.folder)
+            .context("held folder missing")?;
+        *folder = self.record.before.clone();
+        Ok(config)
+    }
+    pub fn runtime_started(&self) -> Option<&str> {
+        self.record.generation.rest_start_time.as_deref()
+    }
+    /// Explicit recovery after the distributed journal durably records both
+    /// publications. This resumes only the exact saved configuration; it grants
+    /// no canonical publication authority and never reruns a completed merge.
+    pub fn resume_committed(daemon: &DaemonIdentity, folder: &str, operation: &str) -> Result<()> {
+        let home = daemon
+            .config_file
+            .parent()
+            .context("managed home missing")?;
+        let reference = existing(home)?;
+        let gate = lock_file(&reference.directory.join("gate.lock"), false, false)?;
+        let binding = reference.load()?;
+        let directory = reference.directory.join("scoped-holds");
+        let path = directory.join(format!("{:x}.json", Sha256::digest(folder.as_bytes())));
+        let mut record: Record = serde_json::from_slice(&private::read(&path)?)?;
+        ensure!(
+            record.operation == operation
+                && record.folder == folder
+                && matches!(
+                    record.phase,
+                    Phase::Quiescent | Phase::ResumeAuthorized | Phase::Complete
+                ),
+            "first Sync resume has no committed transport hold"
+        );
+        if record.phase == Phase::Complete {
+            return Ok(());
+        }
+        let registered = binding
+            .folders
+            .get(folder)
+            .context("managed folder binding missing")?;
+        ensure!(
+            registered.root == record.root,
+            "committed first Sync root changed"
+        );
+        live_generation(home)?;
+        let api = daemon.connect()?;
+        let current = api.folder(folder)?;
+        ensure!(
+            current == paused(&record) || current == record.before,
+            "committed resume configuration changed"
+        );
+        record.phase = Phase::ResumeAuthorized;
+        private::write(&path, &serde_json::to_vec(&record)?)?;
+        let authority = registered.authority.open()?;
+        let observed = authority.snapshot()?;
+        if observed.phase != okilum_write_authority::Phase::Open {
+            ensure!(
+                observed.operation_id.as_deref() == Some(operation)
+                    && observed.epoch == record.epoch,
+                "another operation owns the committed first Sync root"
+            );
+            let mut hold = authority.recover(&observed)?;
+            let token = hold.token().clone();
+            ensure!(
+                hold.try_hold(&token)?,
+                "committed first Sync still drains writers"
+            );
+            let token = hold.token().clone();
+            hold.release(&token)?;
+        }
+        drop(gate);
+        let _admission = crate::admission::configuration(daemon, folder, &record.root)?;
+        if current != record.before {
+            ensure!(
+                api.folder(folder)? == current,
+                "first Sync resume changed before admission"
+            );
+            api.patch_folder(
+                folder,
+                &json!({"paused":false,"label":record.before["label"]}),
+            )?;
+        }
+        record.phase = Phase::Complete;
+        private::write(&path, &serde_json::to_vec(&record)?)
+    }
     /// Caller drains local writers first. Recovery is explicit and requires a
     /// Hold adopted through the authority's exact observed-state recovery API.
     pub fn acquire(
@@ -275,5 +365,74 @@ impl ScopedHold {
         )?;
         self.record.phase = Phase::Complete;
         private::write(&self.path, &serde_json::to_vec(&self.record)?)
+    }
+}
+
+/// An ordinary destination has no transport publisher. Hold its local writers
+/// and the managed configuration/launch gate so it cannot become enrolled while
+/// the merge publishes. Other already-configured folders keep transferring.
+pub struct OrdinaryHold {
+    hold: Hold,
+    _gate: File,
+    daemon: DaemonIdentity,
+    generation: Generation,
+    config: Value,
+}
+impl OrdinaryHold {
+    pub fn acquire(daemon: DaemonIdentity, hold: Hold) -> Result<Self> {
+        hold.validate_held(hold.token())?;
+        let home = daemon
+            .config_file
+            .parent()
+            .context("managed home missing")?;
+        let reference = existing(home)?;
+        let gate = lock_file(&reference.directory.join("gate.lock"), false, false)?;
+        let generation = live_generation(home)?;
+        let config = daemon.connect()?.config()?;
+        for folder in config["folders"]
+            .as_array()
+            .context("folder inventory missing")?
+        {
+            let root = Path::new(folder["path"].as_str().context("folder path missing")?)
+                .canonicalize()?;
+            ensure!(
+                !root.starts_with(hold.root()) && !hold.root().starts_with(root),
+                "ordinary first Sync destination overlaps a transport folder"
+            );
+        }
+        Ok(Self {
+            hold,
+            _gate: gate,
+            daemon,
+            generation,
+            config,
+        })
+    }
+    pub fn configuration(&self) -> &Value {
+        &self.config
+    }
+    pub fn runtime_started(&self) -> Option<&str> {
+        self.generation.rest_start_time.as_deref()
+    }
+    pub fn validate(&self) -> Result<()> {
+        self.hold.validate_held(self.hold.token())?;
+        same_generation(
+            &self.generation,
+            &live_generation(
+                self.daemon
+                    .config_file
+                    .parent()
+                    .context("managed home missing")?,
+            )?,
+        )?;
+        ensure!(
+            self.daemon.connect()?.config()? == self.config,
+            "ordinary destination runtime configuration changed"
+        );
+        Ok(())
+    }
+    pub fn release(self) -> Result<()> {
+        let token = self.hold.token().clone();
+        self.hold.release(&token)
     }
 }
