@@ -13,6 +13,10 @@ components; this is a conservative superset of any individual release.
 - KaTeX: MIT. Unicode-only symbols and public supported-functions test examples
   are derived from the pinned upstream source documented in tex/symbols.rs;
   KaTeX.txt retains the license. Okilum uses its own bounded native parser.
+- AppImage type2-runtime: MIT with its statically linked dependency notices in
+  AppImage-runtime.txt. Source pinned in scripts/appimage/build-runtime.sh; the
+  per-user extraction namespace modification is runtime-per-user.diff. The
+  source archive and patch remain available for rebuilding/relinking.
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
   Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
@@ -57,6 +61,47 @@ licenses. MPL-2.0 dependencies remain MPL: corresponding crate sources are
 available from crates.io by the versions listed in the generated notice.
 System libraries are provided by the operating system/package manager; their
 packages retain their own licenses. This does not change their obligations.
+
+## licenses/AppImage-runtime.txt
+
+```text
+MIT License
+
+Copyright (c) 2004-23 probonopd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The AppImage runtime executable contains statically linked code from
+the following third party libraries, which are licensed under
+the following terms:
+
+* musl libc, licensed under the terms of
+  https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
+* libfuse, licensed under the terms of
+  https://github.com/libfuse/libfuse/blob/master/LGPL2.txt
+* squashfuse, licensed under the terms of
+  https://github.com/vasi/squashfuse/blob/master/LICENSE
+* libzstd, licensed under the terms of
+  https://github.com/facebook/zstd/blob/dev/LICENSE
+* zlib, licensed under the terms of
+  https://zlib.net/zlib_license.html
+```
 
 ## licenses/Apache-2.0.txt
 

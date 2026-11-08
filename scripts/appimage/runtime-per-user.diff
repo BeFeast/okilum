@@ -1,0 +1,27 @@
+--- a/src/runtime/runtime.c
++++ b/src/runtime/runtime.c
+@@ -970,7 +970,8 @@
+     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
+     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
+     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
+-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+-
++    // musl treats a non-positive descriptor limit as a successful no-op.
++    // Give the traversal a bounded positive budget so cleanup actually runs.
++    int rv = nftw(path, &rm_recursive_callback, 16, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+     return rv == 0;
+ }
+@@ -1604,9 +1605,11 @@
+             hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
+         }
+ 
+-        char* prefix = malloc(strlen(temp_base) + 20 + strlen(hexlified_digest) + 2);
++        char* prefix = malloc(strlen(temp_base) + 20 + 32 + strlen(hexlified_digest) + 2);
+         strcpy(prefix, temp_base);
+-        strcat(prefix, "/appimage_extracted_");
++        // A content-only directory in a shared TMPDIR belongs to whichever
++        // user launched first. Never reuse or clean another user's tree.
++        sprintf(prefix + strlen(prefix), "/appimage_extracted_%lu_", (unsigned long)geteuid());
+         strcat(prefix, hexlified_digest);
+         free(hexlified_digest);
+ 
