@@ -1,6 +1,14 @@
 --- a/src/runtime/runtime.c
 +++ b/src/runtime/runtime.c
-@@ -1604,9 +1604,11 @@
+@@ -970,4 +970,6 @@
+     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
+     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
+     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
+-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
++    // musl treats a non-positive descriptor limit as a successful no-op.
++    // Give the traversal a bounded positive budget so cleanup actually runs.
++    int rv = nftw(path, &rm_recursive_callback, 16, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+@@ -1604,9 +1606,11 @@
              hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
          }
  

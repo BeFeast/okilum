@@ -71,7 +71,7 @@ def main():
         temporary.chmod(0o1777)
         old = image(args.baseline, filesystem, root / 'old.AppImage')
         # Real pre-fix failure: A's extraction is left behind, B cannot use it.
-        foreign = require_launch(launch(old, temporary, 19001), old, 19001)
+        foreign = require_launch(launch(old, temporary, 19001, retain=False), old, 19001)
         foreign.chmod(0o700)
         denied = launch(old, temporary, 19002)
         assert denied.returncode != 0 and 'Failed to extract AppImage' in denied.stderr, denied
