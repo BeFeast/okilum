@@ -442,8 +442,13 @@ impl CodePreview {
         }
     }
 
-    /// Returns true when whole-file Find owns the paged presentation.
+    /// Find targets the visible table or the whole-file paged presentation.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.show_table {
+            if let Some(table) = self.table.as_ref().filter(|table| table.read(cx).ready()) {
+                return table.update(cx, |table, cx| table.focus_filter(window, cx));
+            }
+        }
         if self
             .document
             .as_ref()
@@ -788,7 +793,10 @@ mod tests {
         let path = fixture.path().join("rows.json");
         let source = r#"[{"name":"Alpha","n":10},{"name":"Two","n":2}]"#;
         std::fs::write(&path, source).unwrap();
-        cx.update(crate::test_init);
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_delimited::bind_keys(cx);
+        });
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -809,10 +817,29 @@ mod tests {
             visual.debug_bounds("table-duckdb").is_some(),
             "JSON array opens a table"
         );
+        let preview = preview.unwrap();
+        preview.update_in(visual, |p, window, cx| {
+            assert!(
+                p.open_paged_find(window, cx),
+                "Find targets the visible JSON table"
+            );
+        });
+        visual.simulate_input("Two");
+        visual.run_until_parked();
+        let first = visual.debug_bounds("delimited-cell-1-0").unwrap();
+        visual.simulate_click(first.center(), Modifiers::default());
+        visual.simulate_keystrokes("secondary-c");
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Two",
+                "Find filters the displayed table"
+            )
+        });
         let source_button = visual.debug_bounds("json-source").unwrap();
         visual.simulate_click(source_button.center(), Modifiers::default());
         visual.run_until_parked();
-        let preview = preview.unwrap();
         preview.read_with(visual, |p, cx| {
             assert!(!p.show_table);
             assert!(p.input().is_some_and(|input| !input.read(cx).is_editable()));

@@ -178,6 +178,13 @@ impl TablePreview {
     pub(crate) fn ready(&self) -> bool {
         self.table.is_some()
     }
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) -> bool {
+        let Some(input) = &self.filter else {
+            return false;
+        };
+        input.update(cx, |input, cx| input.focus(window, cx));
+        true
+    }
     fn json(&self) -> bool {
         self.path
             .extension()

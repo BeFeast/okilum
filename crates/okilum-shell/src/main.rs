@@ -2846,6 +2846,10 @@ impl Reader {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() && self.editing.is_none() {
+            if let Some(table) = self.file_preview.as_ref().and_then(|p| p.table.as_ref()) {
+                table.update(cx, |table, cx| table.focus_filter(window, cx));
+                return;
+            }
             if self
                 .file_preview
                 .as_ref()
