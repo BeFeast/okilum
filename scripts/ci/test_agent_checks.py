@@ -33,11 +33,14 @@ def receipt():
                 "Prepare and verify pinned vendor and comrak", "Lint every workspace target offline", "Build Linux desktop offline",
                 "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
                 "Verify agent helper controls", "Stress private reveal bus (20 runs)",
-                "Run CI, releases and updater Python suites")]},
+                "Run CI, releases and updater Python suites",
+                "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
+                "Verify managed launch and configuration admission",
+                "Reject and reap surviving agent fixture daemons")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
-                "Run native Windows delta console controls")]}]}
+                "Run native Windows delta console controls", "Run native Windows Sync identity controls")]}]}
 
 
 class VerdictTests(unittest.TestCase):

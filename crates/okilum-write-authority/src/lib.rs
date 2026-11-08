@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
 #[cfg(target_os = "macos")]
@@ -29,6 +29,11 @@ pub use identity_linux as filesystem_identity;
 use identity_linux::Identity;
 #[cfg(target_os = "macos")]
 pub use native_identity as filesystem_identity;
+#[cfg(windows)]
+#[path = "identity_windows.rs"]
+pub mod filesystem_identity;
+#[cfg(windows)]
+use filesystem_identity::Identity;
 #[cfg(all(test, target_os = "linux"))]
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
@@ -70,32 +75,7 @@ fn identity(path: &Path) -> Result<Identity> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::{
-            fs::{MetadataExt, OpenOptionsExt},
-            io::AsRawHandle,
-        };
-        use windows_sys::Win32::Storage::FileSystem::*;
-        ensure!(
-            meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-            "Reparse point in writer authority"
-        );
-        let f = OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        ensure!(
-            unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } != 0,
-            "Cannot verify writer authority identity"
-        );
-        Ok(Identity(
-            info.dwVolumeSerialNumber as u64,
-            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
-            Some(
-                ((info.ftCreationTime.dwHighDateTime as u64) << 32)
-                    | info.ftCreationTime.dwLowDateTime as u64,
-            ),
-        ))
+        filesystem_identity::read(path)
     }
 }
 

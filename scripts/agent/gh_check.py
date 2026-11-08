@@ -52,7 +52,10 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
     required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
                 "Verify agent helper controls", "Stress private reveal bus (20 runs)",
-                "Run CI, releases and updater Python suites"}
+                "Run CI, releases and updater Python suites",
+                "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
+                "Verify managed launch and configuration admission",
+                "Reject and reap surviving agent fixture daemons"}
     if publication_controls:
         required.add("Compare editor publication with pinned main on this host")
     if benchmark:
@@ -70,7 +73,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
         return 0 if (required <= passed and linux.get("conclusion") == "success"
                      and windows.get("conclusion") == "success"
                      and {"Prepare and verify Windows vendor", "Run native Windows recovery controls",
-                          "Run native Windows delta console controls"} <= native) else 75
+                          "Run native Windows delta console controls", "Run native Windows Sync identity controls"} <= native) else 75
     if info.get("conclusion") != "failure":
         return 75
     failed = [s for job in jobs for s in job.get("steps", []) if s.get("conclusion") == "failure"]

@@ -84,6 +84,11 @@ jobs:
         run: |
           python scripts/ci/windows-recovery-check.py
           exit $LASTEXITCODE
+      - name: Run native Windows Sync identity controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-sync-identity-check.py
+          exit $LASTEXITCODE
       - name: Run native Windows delta console controls
         shell: pwsh
         run: |
