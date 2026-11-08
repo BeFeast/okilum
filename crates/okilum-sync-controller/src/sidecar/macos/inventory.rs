@@ -8,6 +8,26 @@ use std::{
 
 /// Bounded, output-limited read-only/offline commands. Never runs a shell or PATH lookup.
 pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> Result<Vec<u8>> {
+    let (status, bytes) = output_status(command, deadline, limit)?;
+    ensure!(
+        status.success(),
+        "inventory/offline command failed: {} {:?} ({status})",
+        command.get_program().to_string_lossy(),
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    );
+    Ok(bytes)
+}
+
+/// Same bounds, while allowing a caller to distinguish a documented absent-job
+/// exit from command execution/observation failure.
+pub(super) fn output_status(
+    command: &mut Command,
+    deadline: Instant,
+    limit: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
     use std::os::fd::AsRawFd;
     ensure!(Instant::now() < deadline, "operation deadline elapsed");
     struct Child(std::process::Child);
@@ -63,16 +83,7 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
         };
         if let Some(status) = child.0.try_wait()? {
             if eof {
-                ensure!(
-                    status.success(),
-                    "inventory/offline command failed: {} {:?} ({status})",
-                    command.get_program().to_string_lossy(),
-                    command
-                        .get_args()
-                        .map(|a| a.to_string_lossy().into_owned())
-                        .collect::<Vec<_>>()
-                );
-                return Ok(bytes);
+                return Ok((status, bytes));
             }
         }
         std::thread::sleep(Duration::from_millis(2));
