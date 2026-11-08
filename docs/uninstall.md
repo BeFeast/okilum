@@ -120,6 +120,15 @@ sudo pacman -Rns okilum     # the package
 
 ## macOS (`com.befeast.okilum`)
 
+Explicit native Sync acceptance uses `OKILUM_SYNC_QA_ROOT` with a separate
+`HOME` and absolute `OKILUM_STATE_DIR`. `initialize_native_sync_qa()` reads
+`HOME` only to validate that both Reader directories belong to the supplied
+private QA profile and do not overlap its Sync controls or synthetic vaults.
+It adds no default account root to `app_footprint::roots()`. The profile marker,
+`Sync/` and `SyncDirect/` are inside that caller-owned QA root; the acceptance
+driver stops its owned processes and retains the profile as evidence. Ordinary
+account uninstall does not discover or remove QA profiles or their vaults.
+
 Okilum → Settings → About → **Uninstall Okilum…** shows one confirmation with
 what goes and which vaults stay, then:
 
