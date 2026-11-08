@@ -171,6 +171,7 @@ fn duckdb_args(path: &Path) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn duckdb_uses_one_escaped_file_and_no_shell() {
         let fixture = tempfile::tempdir().unwrap();

@@ -2,7 +2,7 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-struct Surface(Entity<TablePreview>);
+struct Surface(AnyView);
 impl Render for Surface {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         v_flex().size_full().min_h_0().child(self.0.clone())
@@ -27,9 +27,18 @@ pub(crate) fn entry() -> bool {
             for name in ["large.csv", "large.json", "wide.csv"] {
                 let started = Instant::now();
                 let mut preview = None;
+                let mut code = None;
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
-                    let view = cx.new(|cx| TablePreview::new(directory.join(name), cx));
-                    preview = Some(view.clone());
+                    let view: AnyView = if name.ends_with("json") {
+                        let view = cx.new(|cx| reader_code_file::CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
+                        preview = view.read(cx).native_table();
+                        code = Some(view.clone());
+                        view.into()
+                    } else {
+                        let view = cx.new(|cx| TablePreview::new(directory.join(name), cx));
+                        preview = Some(view.clone());
+                        view.into()
+                    };
                     cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
                 })).unwrap();
                 let preview = preview.unwrap();
@@ -48,6 +57,7 @@ pub(crate) fn entry() -> bool {
                     let ready = cx.update(|cx| {
                         let p = preview.read(cx);
                         p.table.is_some() && !p.loading && !p.updating
+                            && code.as_ref().is_none_or(|code| code.read(cx).native_source_ready())
                     });
                     if !ready { continue; }
                     if phase == 0 {

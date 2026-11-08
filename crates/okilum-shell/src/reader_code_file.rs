@@ -147,6 +147,16 @@ enum Loaded {
 }
 
 impl CodePreview {
+    #[cfg(feature = "data-view-native-harness")]
+    pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
+        self.table.clone()
+    }
+
+    #[cfg(feature = "data-view-native-harness")]
+    pub(crate) fn native_source_ready(&self) -> bool {
+        self.document.is_some()
+    }
+
     pub(crate) fn preserve_zoom_anchor(
         &mut self,
         pointer: Option<Point<Pixels>>,

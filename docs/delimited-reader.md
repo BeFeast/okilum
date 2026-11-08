@@ -3,7 +3,8 @@
 The Reader presents CSV/TSV as a read-only table. The first record is a pinned
 header by default; **No header row** in the document ⋯ menu changes that file's
 view and survives restart. Preferences live in application state outside the
-files. Muted row numbers count data rows. There is no sorting or filtering.
+files. Muted row numbers count data rows. [CSV/JSON tables](data-file-viewer.md)
+add worker sorting/filtering over the explicitly loaded preview and Open in DuckDB.
 
 CSV detects comma, semicolon or tab from the first 32 logical records; TSV uses
 tab explicitly. UTF-8 BOM is hidden in the derived view. Quoted separators,
@@ -12,9 +13,9 @@ for display, unexpected/incomplete quotes retain the parsed values, and a quiet
 notice reports irregular rows or ambiguous separator detection. The source is
 never rewritten by parsing, selection, copying or the header preference.
 
-Rows are virtual. Initial reads are bounded to 1 MiB, 1,002 records (including
+Rows and columns are virtual. Initial reads are bounded to 1 MiB, 1,002 records (including
 header/lookahead), 64,000 cells, 256 columns and 64 KiB per decoded field. Files above 1,000 data rows
-initially show that prefix with **Show all**. That explicit action reloads on a
+initially show that prefix with **Load more rows**. That explicit action reloads on a
 worker with a 32 MiB / 100,001-record / 500,000-cell budget; the same column bound
 and field bounds remain, including for full-value tooltip shaping. Files beyond those bounds retain a usable preview with an external-open
 notice. Incomplete records at a byte boundary are omitted rather than presented

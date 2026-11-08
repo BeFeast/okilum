@@ -32,7 +32,7 @@ shell; SQL literals and file glob characters are escaped. The CLI process is
 reaped independently of the Reader. Missing/failed CLI launches display an
 inline retryable error. Installation and extension downloads belong to the
 external CLI. Okilum adds no dependency, database engine, Parquet/.duckdb
-viewer, SQL input or bundled asset; dependency/packaging size stays unchanged.
+viewer, SQL input or bundled asset; the dependency set and packaged assets are unchanged.
 
 ## Source viewing
 

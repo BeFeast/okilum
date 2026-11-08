@@ -615,12 +615,14 @@ impl Render for TablePreview {
                 .child(div().px_4().child(self.error.unwrap_or("Opening table…")))
                 .into_any_element();
         };
-        if (table.rows.is_empty() || (self.json() && table.rows.len() == 1 && !table.limited))
-            && !table.limited
-        {
+        if !table.limited && (table.rows.is_empty() || (self.json() && table.rows.len() == 1)) {
             return view
                 .child(self.toolbar(cx))
-                .child(div().px_4().child("Empty file"))
+                .child(div().px_4().child(if self.json() {
+                    "No data rows"
+                } else {
+                    "Empty file"
+                }))
                 .into_any_element();
         }
         let start = usize::from(header);
@@ -784,6 +786,14 @@ mod tests {
         visual.simulate_click(first.center(), Modifiers::default());
         preview.update(visual, |p, cx| p.copy(cx));
         visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "Two"));
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        preview.read_with(visual, |p, _| assert_eq!(p.order, [3, 1, 2]));
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        preview.read_with(visual, |p, _| {
+            assert_eq!(p.order, [1, 2, 3], "third click restores source order")
+        });
         preview.update_in(visual, |p, window, cx| {
             let input = p.filter.as_ref().unwrap().clone();
             input.update(cx, |input, cx| input.focus(window, cx));
