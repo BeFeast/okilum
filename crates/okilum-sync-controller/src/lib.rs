@@ -14,6 +14,9 @@ pub mod direct;
 pub mod pairing;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod private;
+#[cfg(windows)]
+#[path = "private/windows.rs"]
+mod private;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod enrollment;

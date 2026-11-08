@@ -206,7 +206,7 @@ struct Shared {
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
-    _lock: std::fs::File,
+    _lock: private::Lock,
 }
 struct Listener {
     stop: Arc<AtomicBool>,
