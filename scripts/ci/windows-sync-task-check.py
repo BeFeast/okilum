@@ -58,10 +58,10 @@ def check(runtime, notices):
         cleanup_client = None
         created = False
         try:
-            subprocess.run([*powershell, '-Action', 'create', '-Metadata', str(metadata)], check=True)
+            subprocess.run([*powershell, '-Action', 'create', '-Metadata', str(metadata)], check=True, timeout=90)
             created = True
             certificate = json.loads(metadata.read_text(encoding='utf-8-sig'))
-            env = dict(os.environ, OKILUM_WINDOWS_SIGN_SUBJECT=certificate['subject'],
+            env = dict(os.environ, CARGO_PROFILE_DEV_DEBUG='0', OKILUM_WINDOWS_SIGN_SUBJECT=certificate['subject'],
                        OKILUM_WINDOWS_SIGN_ISSUER_CHAIN=json.dumps(certificate['issuers']))
             helper = artifact(['cargo', 'build', '--locked', '-p', 'okilum-sync-supervisor'], env, 'okilum-sync-supervisor')
             client = artifact(['cargo', 'test', '--locked', '-p', 'okilum-sync-controller', '--lib', TEST, '--no-run'], env, 'okilum_sync_controller')
@@ -70,7 +70,7 @@ def check(runtime, notices):
             shutil.copyfile(runtime, initial / 'syncthing.exe')
             shutil.copytree(notices, initial / 'Syncthing')
             for executable in ['okilum.exe', 'okilum-sync-supervisor.exe', 'syncthing.exe']:
-                subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(initial / executable)], check=True)
+                subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(initial / executable)], check=True, timeout=90)
             evidence = root / 'native-task-evidence.json'
             cleanup_client = initial / 'okilum.exe'
             run(cleanup_client, 'initial', evidence, state, env)
@@ -89,7 +89,7 @@ def check(runtime, notices):
                 except Exception as error:
                     print(f'Native fixture cleanup remains failed: {error}', flush=True)
             if created:
-                subprocess.run([*powershell, '-Action', 'cleanup', '-Metadata', str(metadata)], check=True)
+                subprocess.run([*powershell, '-Action', 'cleanup', '-Metadata', str(metadata)], check=True, timeout=90)
 
 
 if __name__ == '__main__':

@@ -197,3 +197,12 @@ server process object from its authenticated pipe before the request, requires
 complete owned-Job shutdown, and waits for that process's kernel exit. Re-enable
 must preserve identities and produce a fresh generation. These are acceptance
 controls, not a statement that Windows beta delivery has occurred.
+
+The supervisor releases Task Scheduler's inherited state CWD before opening its
+journal: Windows retains a directory read/traverse handle for that CWD, which
+would conflict with the store's exclusive directory transaction. It selects its
+own executable directory and continues using absolute state/configuration paths.
+The historical task XML remains unchanged. A native binary test starts from the
+actual state working directory; a compiled negative control removes only that
+startup transition and requires the real store-busy refusal. No store sharing or
+ownership gate is relaxed.

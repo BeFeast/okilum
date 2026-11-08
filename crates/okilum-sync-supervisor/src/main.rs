@@ -183,6 +183,13 @@ mod windows_main {
         let state_text = state
             .to_str()
             .context("the state path must be valid UTF-8")?;
+        // Task Scheduler retains the historical state WorkingDirectory. Windows
+        // holds a read/traverse handle for the process CWD, which conflicts with
+        // the store's directory-exclusive transaction. Release only that CWD
+        // handle; all runtime/configuration paths remain explicit and absolute.
+        // Keeping the task definition intact preserves existing registrations.
+        std::env::set_current_dir(own.parent().context("helper directory missing")?)
+            .context("release inherited state working directory")?;
         let store = WindowsStore::open_existing(state_text)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         match startup::prepare(&store, &state, args.instance, &own, deadline)? {
