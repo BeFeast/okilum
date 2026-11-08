@@ -122,6 +122,31 @@ pub(crate) fn show_about_in(window: &Window, cx: &mut App) {
     show_section_from(None, Some(Section::About), Some(window.window_handle()), cx);
 }
 
+fn window_options(owner: Option<AnyWindowHandle>, cx: &mut App) -> WindowOptions {
+    let mut options = reader_owned_windows::options(
+        owner,
+        size(px(780.), px(520.)),
+        size(px(700.), px(440.)),
+        cx,
+    );
+    options.app_id = Some("okilum-settings".into());
+    options.window_background = gpui::WindowBackgroundAppearance::Opaque;
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit owns the entire caption, including the native close button.
+        // Do not overlay it with TitleBar's mouse-move-driven drag handler or
+        // the Close row's press interception (#2755). Ownership is independent
+        // of caption handling: keep the Reader's native child relationship.
+        options.titlebar = Some(TitlebarOptions {
+            title: Some("Okilum Settings".into()),
+            appears_transparent: false,
+            traffic_light_position: None,
+        });
+        options.app_owns_titlebar_drag = false;
+    }
+    options
+}
+
 fn show_section_from(
     reader: Option<WeakEntity<Reader>>,
     section: Option<Section>,
@@ -193,14 +218,7 @@ fn show_section_from(
                 return;
             }
         }
-        let mut options = reader_owned_windows::options(
-            owner,
-            size(px(780.), px(520.)),
-            size(px(700.), px(440.)),
-            cx,
-        );
-        options.app_id = Some("okilum-settings".into());
-        options.window_background = gpui::WindowBackgroundAppearance::Opaque;
+        let options = window_options(owner, cx);
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Okilum Settings");
             reader_owned_windows::attach(owner, window, cx);
@@ -605,6 +623,16 @@ struct Settings {
     vault_color_saved: Option<Option<brand::VaultColor>>,
 }
 impl Settings {
+    fn close_button(&self, cx: &Context<Self>) -> Button {
+        Button::new("settings-close")
+            .debug_selector(|| "settings-close".into())
+            .small()
+            .ghost()
+            .label("Close")
+            .accessibility_label("Close Settings")
+            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         reader_keymap::stop_recording(window, cx);
         window.blur(cx);
@@ -2109,26 +2137,35 @@ impl Render for Settings {
             }))
             // GPUI negotiates SSD through xdg-decoration and reports CSD when
             // unavailable (GNOME). TitleBar hides its controls under SSD.
-            .child(
-                TitleBar::new().child("Settings").child(
+            .when(!cfg!(target_os = "macos"), |view| {
+                view.child(
+                    TitleBar::new().child("Settings").child(
+                        h_flex()
+                            .h_full()
+                            .items_center()
+                            .pr_3()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(self.close_button(cx)),
+                    ),
+                )
+            })
+            .when(cfg!(target_os = "macos"), |view| {
+                // Keep the explicit Close action in client content. A GPUI
+                // control over the native caption would steal its drag region.
+                // Dialogs leave the first TITLE_BAR_HEIGHT client pixels
+                // interactive; a footer would be covered by the Sync backdrop.
+                view.child(
                     h_flex()
-                        .h_full()
+                        .debug_selector(|| "settings-window-actions".into())
+                        .flex_none()
+                        .h(gpui_component::TITLE_BAR_HEIGHT)
                         .items_center()
+                        .justify_end()
                         .pr_3()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            Button::new("settings-close")
-                                .debug_selector(|| "settings-close".into())
-                                .small()
-                                .ghost()
-                                .label("Close")
-                                .accessibility_label("Close Settings")
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
-                                ),
-                        ),
-                ),
-            )
+                        .child(self.close_button(cx)),
+                )
+            })
             .child(content)
             .children({
                 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -3903,6 +3940,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn issue2755_settings_caption_keeps_native_macos_drag_and_platform_ownership(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            let options = window_options(None, cx);
+            assert_eq!(options.kind, gpui::WindowKind::Floating);
+            assert!(!options.is_minimizable);
+            let caption = options.titlebar.unwrap();
+            if cfg!(target_os = "macos") {
+                assert!(!options.app_owns_titlebar_drag, "AppKit must own dragging");
+                assert!(!caption.appears_transparent, "no client caption overlay");
+                assert!(caption.traffic_light_position.is_none(), "native controls");
+                assert_eq!(caption.title.as_deref(), Some("Okilum Settings"));
+            } else {
+                let original = TitleBar::window_options();
+                assert_eq!(
+                    options.app_owns_titlebar_drag,
+                    original.app_owns_titlebar_drag
+                );
+                assert_eq!(
+                    caption.appears_transparent,
+                    original.titlebar.unwrap().appears_transparent
+                );
+            }
+        });
+    }
+
+    #[gpui::test]
     fn window_chrome_settings_about_closes_with_escape_shortcut_and_action(
         cx: &mut TestAppContext,
     ) {
@@ -3911,21 +3977,32 @@ mod tests {
             install(cx);
         });
         let owner = cx.add_window(|_, cx| Settings::new(None, cx));
-        for path in 0..3 {
+        for path in 0..4 {
             cx.update(show_about);
             cx.run_until_parked();
             let handle = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
             assert!(cx.read(|cx| cx.windows().contains(&handle.into())));
             let mut visual = VisualTestContext::from_window(handle.into(), cx);
             visual.run_until_parked();
-            assert!(
+            assert_eq!(
                 visual.debug_bounds("window-title-bar").is_some(),
-                "About must render a real move region, not only its contents"
+                !cfg!(target_os = "macos"),
+                "macOS uses AppKit's caption; Linux/Windows keep the client bar"
             );
+            if cfg!(target_os = "macos") {
+                let actions = visual.debug_bounds("settings-window-actions").unwrap();
+                let close = visual.debug_bounds("settings-close").unwrap();
+                assert!(close.top() >= actions.top());
+                assert!(close.bottom() <= gpui_component::TITLE_BAR_HEIGHT);
+            }
             match path {
                 0 => visual.simulate_keystrokes("escape"),
                 1 => visual.simulate_keystrokes("secondary-w"),
-                _ => visual.dispatch_action(CloseSettings),
+                2 => visual.dispatch_action(CloseSettings),
+                _ => {
+                    let close = visual.debug_bounds("settings-close").unwrap();
+                    visual.simulate_click(close.center(), Modifiers::default());
+                }
             }
             visual.run_until_parked();
             assert!(
