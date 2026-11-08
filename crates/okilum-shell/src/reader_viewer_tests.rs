@@ -219,7 +219,11 @@ fn cold_start_canvas_opens_its_exact_note_before_another_document(cx: &mut TestA
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert_eq!(r.selected_file(), "canvas/read-only.canvas");
-        assert!(r.vault.notes.contains(&"canvas/linked-note.md".to_owned()));
+        assert!(r
+            .vault
+            .notes
+            .iter()
+            .any(|note| note.path == "canvas/linked-note.md"));
     });
     let button = visual.debug_bounds("canvas-open-note-note").unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
