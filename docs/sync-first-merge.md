@@ -94,3 +94,28 @@ Older running supervisors without this registry retain their existing pairing
 flow but cannot grant first-merge ownership. Their explicit upgrade/recovery,
 native crash recovery and isolated installed-beta acceptance remain unresolved;
 this section is an implementation checkpoint, not a shipping claim.
+
+### Isolated native acceptance boundary
+
+The Reader profile override does not currently isolate Mac Sync: the direct
+journal and signed helper use the account-derived Application Support location.
+Acceptance must therefore add a separate, explicit Sync profile before driving
+this flow on a user's Mac. Reusing that account helper for a synthetic Reader
+profile would still reconcile the user's existing connections.
+
+The intended isolated path uses an explicitly selected, private QA root, disjoint
+from the account control plane. Reader HOME/state and all selectable vaults must
+be inside it; vaults belong under its `vaults/` child and cannot overlap control
+state. The same installed signed app verifies and starts its own signed helper
+and pinned payload against this separate journal. It performs no SMAppService
+registration or account-state migration. Its launch still consumes the existing
+one-use permission, proves the calling app's parent identity, and serves the
+same signed IPC and first-merge protocol. A normal app relaunch can reconnect to
+that retained generation; explicit authenticated Stop owns fixture cleanup.
+This is a planned acceptance path, not an implemented or verified capability.
+
+Older normal Mac connections also need a verified upgrade path for their running
+pre-registry supervisor. Missing launch ownership must never be replaced with a
+REST pause or a process-name/endpoint guess. Keep the existing paired identities,
+configuration and canonical files; do not reset the account state to make a test
+pass. Native first-merge release acceptance remains pending that implementation.
