@@ -445,7 +445,9 @@ impl SyncSettings {
                         }
                         if let Some(mut output) = pairing_poll {
                             #[cfg(all(target_os = "macos", not(test)))]
-                            output.runtime_health = health::runtime(&health::check_managed());
+                            {
+                                output.runtime_health = health::runtime(&health::check_managed());
+                            }
                             let guard = ControllerGuard {
                                 ticket: worker_epoch,
                                 controller: output.controller.clone(),
