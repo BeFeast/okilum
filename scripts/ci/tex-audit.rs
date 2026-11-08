@@ -4,10 +4,17 @@
 mod tex;
 
 fn main() {
-    let input = std::fs::read_to_string(std::env::args_os().nth(1).expect("formula input")).unwrap();
+    let input =
+        std::fs::read_to_string(std::env::args_os().nth(1).expect("formula input")).unwrap();
     for (i, formula) in input.split('\0').enumerate() {
-        match tex::linear(formula) {
-            Ok(linear) => println!("{i}\tOK\t{:?}", linear.text),
+        let (mode, formula) = formula.split_once('\t').expect("display/inline mode");
+        let result = if mode == "D" {
+            tex::parse_display(formula).map(|display| format!("{:?}", display.tag))
+        } else {
+            tex::linear(formula).map(|linear| linear.text)
+        };
+        match result {
+            Ok(text) => println!("{i}\tOK\t{text:?}"),
             Err(error) => println!("{i}\tERR\t{:?}\t{formula:?}", error.0),
         }
     }

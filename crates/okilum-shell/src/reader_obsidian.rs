@@ -98,7 +98,7 @@ pub(super) fn render_footnote(
 #[derive(Clone)]
 pub(super) struct Math {
     pub offset: usize,
-    pub parsed: Result<Vec<okilum_core::tex::Node>, okilum_core::tex::Error>,
+    pub parsed: Result<okilum_core::tex::Display, okilum_core::tex::Error>,
 }
 
 /// Parse a [`MATH_LANG`] fence into a `"math"` node.
@@ -118,7 +118,7 @@ pub(super) fn parse_math(
             "math",
             Math {
                 offset,
-                parsed: okilum_core::tex::parse(&code.value),
+                parsed: okilum_core::tex::parse_display(&code.value),
             },
         )
         .plain_part("tex", code.value.clone())
@@ -137,9 +137,23 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
     let color = cx.theme().foreground;
     let size = reader_ui_state::font_size(cx) * 1.2;
     let body = match &data.parsed {
-        Ok(nodes) => div()
+        Ok(formula) => h_flex()
+            .items_center()
+            .gap_6()
             .debug_selector(move || format!("reader-math-formula-{offset}"))
-            .child(reader_editor::math_preview::row(nodes, size, color))
+            .child(reader_editor::math_preview::row(
+                &formula.nodes,
+                size,
+                color,
+            ))
+            .when_some(formula.tag.as_ref(), |row, tag| {
+                row.child(
+                    div()
+                        .text_size(px(size))
+                        .child(tag.clone())
+                        .debug_selector(move || format!("reader-math-tag-{offset}")),
+                )
+            })
             .into_any_element(),
         Err(error) => v_flex()
             .debug_selector(move || format!("reader-math-error-{offset}"))

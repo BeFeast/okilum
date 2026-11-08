@@ -19,7 +19,7 @@ jobs:
           import json, os
           from pathlib import Path
           data = json.loads(Path('docs/evidence/math-2741/showcase-formulas.json').read_text())
-          Path(os.environ['RUNNER_TEMP'], 'formulas.txt').write_text('\0'.join(x['tex'] for x in data['formulas']))
+          Path(os.environ['RUNNER_TEMP'], 'formulas.txt').write_text('\0'.join(('D' if x['display'] else 'I') + '\t' + x['tex'] for x in data['formulas']))
           PY
           "$RUNNER_TEMP/tex-audit" "$RUNNER_TEMP/formulas.txt" | tee "$RUNNER_TEMP/math-audit.txt"
       - uses: actions/upload-artifact@v4

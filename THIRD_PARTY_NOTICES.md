@@ -10,6 +10,9 @@ Regenerate it with cargo-about 0.9.2 and `python3 scripts/third-party-notices.py
 The generator uses all workspace features and platforms, including build-time
 components; this is a conservative superset of any individual release.
 
+- KaTeX: MIT. Unicode-only symbols and public supported-functions test examples
+  are derived from the pinned upstream source documented in tex/symbols.rs;
+  KaTeX.txt retains the license. Okilum uses its own bounded native parser.
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
   Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
@@ -1280,6 +1283,32 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```
+
+## licenses/KaTeX.txt
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2013-2020 Khan Academy and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ## Rust dependencies

@@ -6,6 +6,9 @@ Regenerate it with cargo-about 0.9.2 and `python3 scripts/third-party-notices.py
 The generator uses all workspace features and platforms, including build-time
 components; this is a conservative superset of any individual release.
 
+- KaTeX: MIT. Unicode-only symbols and public supported-functions test examples
+  are derived from the pinned upstream source documented in tex/symbols.rs;
+  KaTeX.txt retains the license. Okilum uses its own bounded native parser.
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
   Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
