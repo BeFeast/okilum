@@ -189,6 +189,20 @@ mod windows_main {
         }
     }
 
+    pub fn record_failure(error: &anyhow::Error) {
+        let _ = (|| -> Result<()> {
+            let args = args::parse(std::env::args_os().skip(1))?;
+            let state = args.state.context("Windows state unavailable")?;
+            let store = WindowsStore::open_existing(
+                state.to_str().context("Windows state is not Unicode")?,
+            )?;
+            store.write_supervisor_failure(
+                &format!("{error:#}"),
+                Instant::now() + Duration::from_secs(2),
+            )
+        })();
+    }
+
     pub fn main() -> Result<ExitCode> {
         let args = args::parse(std::env::args_os().skip(1))?;
         let state = args
@@ -235,6 +249,7 @@ fn main() -> std::process::ExitCode {
     match windows_main::main() {
         Ok(code) => code,
         Err(error) => {
+            windows_main::record_failure(&error);
             eprintln!("okilum-sync-supervisor: {error:#}");
             std::process::ExitCode::from(1)
         }

@@ -405,6 +405,12 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
         message.contains("no Authenticode publisher policy"),
         "{message}"
     );
+    assert!(world
+        .store
+        .read_supervisor_failure()
+        .unwrap()
+        .unwrap()
+        .contains("no Authenticode publisher policy"));
     assert!(
         world.child_pid().is_none(),
         "nothing may start without a policy"

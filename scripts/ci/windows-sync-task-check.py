@@ -10,6 +10,26 @@ import tempfile
 TEST = 'sidecar::windows::bootstrap::signed_task_tests::windows_signed_task_survives_package_move_and_owns_stop'
 
 
+def diagnostics(state):
+    """Read only the disposable fixture's public task status and private error."""
+    system = Path(os.environ['SystemRoot']) / 'System32'
+    commands = [[str(system / 'query.exe'), 'session'],
+                [str(system / 'tasklist.exe'), '/FI', 'IMAGENAME eq okilum-sync-supervisor.exe', '/FO', 'CSV', '/NH']]
+    journal = state / 'sidecar.json'
+    if journal.exists():
+        import uuid
+        saved = json.loads(journal.read_text())
+        instance = str(uuid.UUID(saved['binding']['instance']))
+        commands.append([str(system / 'schtasks.exe'), '/Query', '/TN', 'Okilum-Sync-' + instance, '/V', '/FO', 'LIST'])
+    for command in commands:
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, timeout=15)
+        print(f'Native fixture diagnostic {Path(command[0]).name}: {result.stdout}', flush=True)
+    failure = state / 'supervisor-error.log'
+    if failure.exists():
+        print('Native fixture helper failure: ' + failure.read_text()[:8192], flush=True)
+
+
 def run(client, phase, evidence, state, env):
     selected = dict(env, OKILUM_NATIVE_TASK_FIXTURE_PHASE=phase,
                     OKILUM_NATIVE_TASK_FIXTURE_EVIDENCE=str(evidence),
@@ -18,6 +38,7 @@ def run(client, phase, evidence, state, env):
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
     print(result.stdout, flush=True)
     if result.returncode or 'test result: ok. 1 passed; 0 failed;' not in result.stdout:
+        diagnostics(state)
         raise RuntimeError(f'signed native task {phase} failed ({result.returncode})')
 
 

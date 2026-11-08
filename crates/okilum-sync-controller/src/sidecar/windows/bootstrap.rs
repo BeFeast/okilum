@@ -200,10 +200,15 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
         _ => anyhow::bail!("native task registration is not ready"),
     }
     loop {
-        ensure!(
-            Instant::now() < deadline,
-            "Sync is still starting; retry Connect to inspect the retained instance"
-        );
+        if Instant::now() >= deadline {
+            if let Some(problem) = store
+                .read_supervisor_failure()?
+                .filter(|text| !text.is_empty())
+            {
+                anyhow::bail!("Sync helper failed before readiness: {problem}");
+            }
+            anyhow::bail!("Sync is still starting; retry Connect to inspect the retained instance");
+        }
         let transaction = store.begin(deadline)?;
         let current = transaction
             .current()?

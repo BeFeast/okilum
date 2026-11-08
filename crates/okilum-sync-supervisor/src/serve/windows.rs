@@ -78,6 +78,7 @@ pub fn run(
         Instant::now() + settings.store,
         &Hint::new(generation, own_start_time()?)?,
     )?;
+    store.write_supervisor_failure("", Instant::now() + settings.store)?;
     let mut server: Server<Runtime> = Server::with_generation(
         binding.clone(),
         StoreRuntime::new(store.clone(), tree),
