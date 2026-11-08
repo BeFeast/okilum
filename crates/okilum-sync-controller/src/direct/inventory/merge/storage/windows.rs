@@ -190,6 +190,11 @@ mod tests {
         let operation = Uuid::new_v4();
         let header = fixture_header(peer)?;
         let authority = okilum_write_authority::Authority::for_root(&vault)?;
+        let observed = Tree::collect(&tree::open_root(&vault)?, &vault, true)?;
+        assert_eq!(observed.files, here.files);
+        let revision = digest(&(&observed.stamps, manifest(&observed)))?;
+        let mut here = here;
+        here.revision = revision.clone();
         let plan = merge_preview::Plan::preview(here.clone(), there.clone()).unwrap();
         let metadata = Metadata {
             operation,
@@ -232,7 +237,7 @@ mod tests {
                 source,
                 authority: authority.durable_binding()?,
                 remote_side: false,
-                revision: "here-revision".into(),
+                revision,
                 metadata_hash: wire::fingerprint(&bytes),
                 metadata_size: bytes.len(),
                 preview: header.clone(),
@@ -268,6 +273,19 @@ mod tests {
             let root = tempfile::tempdir_in(&isolated)?;
             let (mut store, plan) = prepared(root.path())?;
             let vault = store.binding.source.path.clone();
+            if mode == "normal" {
+                let revision = store.binding.revision.clone();
+                store.binding.revision = "stale fixture revision".into();
+                assert!(
+                    store.publish(|| Ok(())).is_err(),
+                    "unfired revision control"
+                );
+                assert_eq!(
+                    Tree::collect(&tree::open_root(&vault)?, &vault, true)?.files,
+                    plan.originals().0.files
+                );
+                store.binding.revision = revision;
+            }
             if mode != "normal" {
                 let directory = tree::open_root(&vault)?;
                 let old = plan.originals().0.files.get("different.md").unwrap();
@@ -296,10 +314,12 @@ mod tests {
                 }
             }
             let calls = std::cell::Cell::new(0);
-            store.publish(|| {
-                calls.set(calls.get() + 1);
-                Ok(())
-            })?;
+            store
+                .publish(|| {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                })
+                .with_context(|| format!("native publication fixture {mode}"))?;
             assert!(
                 calls.get() >= plan.merged_files().len() + 2,
                 "publication must revalidate exclusion for every file"

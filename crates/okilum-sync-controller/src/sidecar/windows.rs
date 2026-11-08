@@ -419,3 +419,6 @@ pub mod signature;
 
 #[cfg(windows)]
 pub mod payload;
+
+#[cfg(windows)]
+mod preparation;

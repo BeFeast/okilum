@@ -209,6 +209,16 @@ fn verified_names(path: &Path) -> Result<Vec<Vec<u8>>> {
 }
 
 #[cfg(test)]
+pub(super) fn fixture_policy(path: &Path) -> Result<AuthenticodePolicy> {
+    let names = verified_names(path)?;
+    ensure!(names.len() > 1, "signed fixture has no issuer chain");
+    Ok(AuthenticodePolicy {
+        subject: names[0].clone(),
+        issuers: names[1..].to_vec(),
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

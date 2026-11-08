@@ -29,6 +29,13 @@ def main():
     payload = windows_bundle.payload(archive.read_bytes())
     client = resource_root / "syncthing.exe"
     client.write_bytes(payload["syncthing.exe"])
+    notices = resource_root / "Syncthing"
+    notices.mkdir()
+    for name in ["LICENSE.txt", "AUTHORS.txt", "README.txt"]:
+        (notices / name).write_bytes(payload[name])
+    for name in ["release-key.asc", "sha256sum-v2.1.6.txt.asc"]:
+        (notices / name).write_bytes((windows_bundle.bundle.ROOT / name).read_bytes())
+    (notices / "provenance.json").write_text('{"fixture":"pinned upstream Windows runtime"}')
     command = ["cargo", "test", "--locked", "-p", "okilum-write-authority", "filesystem_identity::tests::"]
     listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
     if {line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")} != TESTS:
@@ -45,6 +52,7 @@ def main():
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     for test in (
         "sidecar::windows::signature::tests::windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes",
+        "sidecar::windows::preparation::tests::windows_offline_preparation_preserves_identity_and_refuses_uncertain_regeneration",
         "managed_launch::windows::tests::windows_listener_and_process_proofs_require_live_kernel_owners",
         "direct::lan::tests::windows_lan_selection_requires_live_physical_interfaces",
         "direct::inventory::tree::tests::windows_inventory_reads_binary_bytes_and_refuses_redirects_and_hardlinks",
@@ -57,7 +65,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix="okilum-first-sync-") as root:
             selected = str(Path(root).resolve())
             env = dict(os.environ, LOCALAPPDATA=selected, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=selected,
-                       OKILUM_SYNC_WINDOWS_CLIENT=str(client.resolve()))
+                       OKILUM_SYNC_WINDOWS_CLIENT=str(client.resolve()),
+                       OKILUM_SYNC_WINDOWS_RESOURCES=str(notices.resolve()))
             subprocess.run([*command, "--", "--exact", "--include-ignored", "--nocapture"], env=env, check=True)
     command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", "sidecar::supervisor::windows::tests::"]
     listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout

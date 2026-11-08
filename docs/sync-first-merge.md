@@ -166,3 +166,13 @@ spawn; it does not reuse macOS's SMAppService one-use registration rule. The
 runtime starts with `STMONITORED=1`, so its captured root owns the authenticated
 REST listener rather than an extra Syncthing monitor. Native Job Object controls
 exercise that fixed environment as well as complete descendant termination.
+
+Windows preparation now has its own durable offline phases before registration:
+allocation, staged signed package, in-flight identity generation, generated identity,
+configured defaults and retained launch reference. Retrying Ready verifies the same
+certificate/configuration/runtime and never reconfigures paired folders. An
+incomplete identity generation stays visible and never reruns `generate` to mint
+another identity. Signed helper/runtime and MPL provenance are retained outside
+updater `current`. The native preparation control runs the real pinned generator
+under isolated USERPROFILE/LOCALAPPDATA. Task/Connect and Settings composition
+remain pending; preparation code alone does not enable the Windows user flow.
