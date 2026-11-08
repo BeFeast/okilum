@@ -563,10 +563,8 @@ impl SyncSettings {
             self.presentation.error_details = None;
             self.presentation.details = false;
             self.presentation.retry = None;
-        } else {
-            if let Some(diagnostic) = output.diagnostic {
-                self.presentation.error_details = Some(diagnostic);
-            }
+        } else if let Some(diagnostic) = output.diagnostic {
+            self.presentation.error_details = Some(diagnostic);
         }
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
