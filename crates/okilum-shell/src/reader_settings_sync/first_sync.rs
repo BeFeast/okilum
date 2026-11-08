@@ -223,6 +223,14 @@ impl SyncSettings {
         self.first_sync.destination = Some(path);
         self.first_sync.observed = false;
         self.first_sync.changes = Some(cx.observe(&view, |this, view, cx| {
+            if !this
+                .first_sync
+                .view
+                .as_ref()
+                .is_some_and(|current| current.entity_id() == view.entity_id())
+            {
+                return;
+            }
             let Some(succeeded) = view.read(cx).outcome() else {
                 return;
             };
@@ -241,6 +249,7 @@ impl SyncSettings {
         }));
         self.first_sync.view = Some(view);
         self.presentation.wizard = Some(presentation::Step::Merge);
+        cx.notify();
     }
     pub(super) fn render_first_sync_recovery(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut body = v_flex().w_full().gap_3();

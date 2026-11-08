@@ -36,7 +36,7 @@ pub struct TaskScheduler<A>(pub A);
 pub fn task_name(binding: &Binding) -> String {
     format!("Okilum-Sync-{}", binding.instance)
 }
-pub(super) fn path(value: &str) -> Result<()> {
+pub(crate) fn path(value: &str) -> Result<()> {
     safe_text(value)?;
     let bytes = value.as_bytes();
     ensure!(
