@@ -1425,7 +1425,28 @@ fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContex
     visual.simulate_click(details.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("manager-details").is_some());
-    let copy = visual.debug_bounds("manager-copy-details").unwrap();
+    // Details now has a bounded viewport. Exercise actual wheel input rather
+    // than clicking an offscreen selector through its ancestor's content mask.
+    let reveal_control = |selector: &str, visual: &mut VisualTestContext| {
+        let viewport = visual.debug_bounds("project-connection-panel").unwrap();
+        let control = visual.debug_bounds(selector).unwrap();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(point(
+                px(0.),
+                viewport.center().y - control.center().y,
+            )),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let control = visual.debug_bounds(selector).unwrap();
+        assert!(
+            control.top() >= viewport.top() && control.bottom() <= viewport.bottom(),
+            "Details control must be visible before clicking {selector}: {control:?} in {viewport:?}"
+        );
+        control
+    };
+    let copy = reveal_control("manager-copy-details", visual);
     visual.simulate_click(copy.center(), Modifiers::default());
     visual.run_until_parked();
     visual.update(|_, cx| {
@@ -1436,7 +1457,7 @@ fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContex
             .with_timezone(&chrono::Local);
         assert!(text.contains(&local.format("%Y-%m-%d %H:%M %Z").to_string()));
     });
-    let details = visual.debug_bounds("manager-details-toggle").unwrap();
+    let details = reveal_control("manager-details-toggle", visual);
     visual.simulate_click(details.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("manager-details").is_none());
