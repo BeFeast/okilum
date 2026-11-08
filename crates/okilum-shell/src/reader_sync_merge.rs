@@ -332,7 +332,7 @@ impl SyncMergePreview {
         use okilum_sync_controller::merge_preview::{filesystem::PreparedSession, GuardedBackend};
         match prepared {
             PreparedSession::Fresh { plan, session } => {
-                Self::new_tracked(plan, Box::new(GuardedBackend(session)), completion)
+                Self::new_tracked(*plan, Box::new(GuardedBackend(session)), completion)
             }
             PreparedSession::Recovery(session) => {
                 Self::pending_recovery_tracked(session, completion, cx)

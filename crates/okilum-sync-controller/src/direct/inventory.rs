@@ -21,6 +21,22 @@ const MAX_ACTIVE: usize = 4;
 const PAUSED: &str = "paused vault cannot be inspected";
 const NOT_PROMOTED: &str = "inspection requires a promoted sendreceive vault";
 
+pub(super) fn persistent_key(state: &Path) -> Result<[u8; 32]> {
+    let path = state.join("inventory-key");
+    if !path.try_exists()? {
+        let operations = state.join("first-sync");
+        ensure!(
+            !operations.try_exists()?
+                || std::fs::read_dir(operations)?.next().transpose()?.is_none(),
+            "first Sync identity key missing; recovery required"
+        );
+        private::write(&path, &wire::random::<32>()?)?;
+    }
+    private::read(&path)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("first Sync identity key is invalid"))
+}
+
 pub(super) fn public_refusal(error: &anyhow::Error) -> Option<&'static str> {
     let message = error.to_string();
     [PAUSED, NOT_PROMOTED]
@@ -54,6 +70,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Header {
+    auth: String,
     id: Uuid,
     binding: Binding,
     revision: String,
@@ -267,7 +284,19 @@ fn manifest(tree: &Tree) -> Vec<Entry> {
         })
         .collect()
 }
-fn local(header_binding: Binding, path: PathBuf, root: Arc<File>) -> Result<Local> {
+fn header_auth(key: &[u8; 32], header: &Header) -> Result<String> {
+    let bytes = serde_json::to_vec(&(
+        header.id,
+        &header.binding,
+        &header.revision,
+        &header.manifest,
+        header.files,
+        header.bytes,
+    ))?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    Ok(wire::hex(ring::hmac::sign(&key, &bytes).as_ref()))
+}
+fn local(header_binding: Binding, path: PathBuf, root: Arc<File>, key: &[u8; 32]) -> Result<Local> {
     let tree = Tree::collect(&root, &path, true)?;
     ensure!(
         tree.policy == header_binding.policy,
@@ -275,7 +304,8 @@ fn local(header_binding: Binding, path: PathBuf, root: Arc<File>) -> Result<Loca
     );
     let entries = manifest(&tree);
     let revision = digest(&(&tree.stamps, &entries))?;
-    let header = Header {
+    let mut header = Header {
+        auth: String::new(),
         id: Uuid::new_v4(),
         binding: header_binding,
         revision,
@@ -283,6 +313,7 @@ fn local(header_binding: Binding, path: PathBuf, root: Arc<File>) -> Result<Loca
         files: entries.len(),
         bytes: entries.iter().map(|e| e.size).sum(),
     };
+    header.auth = header_auth(key, &header)?;
     Ok(Local {
         path,
         header,
@@ -364,7 +395,7 @@ impl Controller {
             &root,
             &daemon,
         )?;
-        let here = local(binding, canonical, root)?;
+        let here = local(binding, canonical, root, &self.shared.inventory_key)?;
         ensure!(
             !here.entries.is_empty(),
             "inspection requires a non-empty local directory"
@@ -683,7 +714,12 @@ impl Controller {
                 &root,
                 &source.daemon,
             )?;
-            let collected = local(binding, source.path.clone(), root)?;
+            let collected = local(
+                binding,
+                source.path.clone(),
+                root,
+                &self.shared.inventory_key,
+            )?;
             self.validate_local(&collected, &source.daemon, true)?;
             let (fresh, _) = self.inspection_authority(scope, signer, &vault)?;
             ensure!(

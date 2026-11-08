@@ -16,6 +16,7 @@ pub(in crate::direct) enum Request {
         header: Box<Header>,
         metadata_hash: String,
         metadata_size: usize,
+        recover: bool,
     },
     Chunk {
         operation: Uuid,
@@ -94,7 +95,10 @@ pub(in crate::direct) enum Response {
     Status {
         operation: Uuid,
         metadata_hash: String,
-        phase: String,
+        phase: Phase,
+    },
+    Absent {
+        operation: Uuid,
     },
 }
 pub(in crate::direct) struct Session {
@@ -190,6 +194,11 @@ impl Controller {
         let operation = request.operation();
         ensure!(!operation.is_nil(), "first Sync operation identity missing");
         let state = self.first_sync_state()?;
+        if matches!(&request, Request::Status { .. })
+            && !state.join(operation.to_string()).try_exists()?
+        {
+            return Ok(Response::Absent { operation });
+        }
         if matches!(&request, Request::Cancel { .. })
             && !state.join(operation.to_string()).try_exists()?
         {
@@ -200,11 +209,26 @@ impl Controller {
             header,
             metadata_hash,
             metadata_size,
+            recover,
             ..
         } = request
         {
             let header = *header;
-            let (source, _) = self.inspection_authority(peer, signer, &header.binding.vault)?;
+            let (source, seed) = self.inspection_authority(peer, signer, &header.binding.vault)?;
+            if state.join(operation.to_string()).try_exists()? {
+                let saved = Store::open(&state, operation)?;
+                ensure!(
+                    saved.binding.peer == peer
+                        && saved.binding.remote_side
+                        && saved.binding.preview == header
+                        && existing::same_binding(&saved.binding.source, &source)
+                        && saved.binding.metadata_hash == metadata_hash
+                        && saved.binding.metadata_size == metadata_size
+                        && !matches!(saved.binding.phase, Phase::Complete | Phase::Cancelled),
+                    "replayed first Sync staging differs"
+                );
+                return Ok(Response::Staged { operation });
+            }
             let original = {
                 let mut cache = self.shared.inventory.lock().unwrap();
                 cache.prune();
@@ -212,14 +236,55 @@ impl Controller {
                     .entries
                     .get(&(peer, header.binding.vault.clone(), header.revision.clone()))
                     .cloned()
-                    .context("preview expired; refresh before first Sync")?
             };
+            if let Some(original) = original {
+                ensure!(
+                    header == original.local.header
+                        && existing::same_binding(&source, &original.source),
+                    "preview identity changed"
+                );
+                self.validate_local(&original.local, &source.daemon, true)?;
+            } else {
+                ensure!(
+                    recover && header.auth == header_auth(&self.shared.inventory_key, &header)?,
+                    "preview expired or substituted; refresh before first Sync"
+                );
+                let root = authorized_root(&source)?;
+                ensure!(
+                    header.binding.pair == peer
+                        && header.binding.remote
+                        && header.binding.owner == wire::fingerprint(&wire::public(&seed)?)
+                        && header.binding.reader == wire::fingerprint(signer)
+                        && header.binding.device == source.daemon.device_id
+                        && header.binding.certificate == source.daemon.certificate_hash
+                        && header.binding.root_binding
+                            == opaque_root(&self.shared.inventory_key, peer, &source.path, &root)?,
+                    "recovery preview identity or authorized root differs"
+                );
+                let current = Tree::collect(&root, &source.path, true)?;
+                ensure!(
+                    digest(&(&current.stamps, manifest(&current)))? == header.revision
+                        && current.policy == header.binding.policy,
+                    "source changed before preservation; cancel and review a new preview"
+                );
+            }
+            let mut unfinished = 0;
+            for entry in std::fs::read_dir(&state)? {
+                let id = Uuid::parse_str(
+                    entry?
+                        .file_name()
+                        .to_str()
+                        .context("invalid first Sync journal name")?,
+                )?;
+                let saved = Store::open(&state, id)?;
+                if !matches!(saved.binding.phase, Phase::Complete | Phase::Cancelled) {
+                    unfinished += 1;
+                }
+            }
             ensure!(
-                header == original.local.header
-                    && existing::same_binding(&source, &original.source),
-                "preview identity changed"
+                unfinished < 4,
+                "finish or cancel pending first Sync operations before starting another"
             );
-            self.validate_local(&original.local, &source.daemon, true)?;
             let authority = Authority::for_root(&source.path)?.durable_binding()?;
             let journal = JournalBinding {
                 schema: 1,
@@ -283,7 +348,7 @@ impl Controller {
             Request::Status { .. } => Ok(Response::Status {
                 operation,
                 metadata_hash,
-                phase: format!("{:?}", session.store.binding.phase),
+                phase: session.store.binding.phase,
             }),
             Request::Seal {
                 metadata_hash: expected,
@@ -403,6 +468,9 @@ impl Controller {
                 metadata_hash: expected,
                 ..
             } => {
+                if expected == metadata_hash && session.store.binding.phase == Phase::Cancelled {
+                    return Ok(Response::Cancelled { operation });
+                }
                 ensure!(
                     expected == metadata_hash
                         && matches!(
@@ -585,6 +653,7 @@ impl Controller {
                 header: Box::new(preview.remote.clone()),
                 metadata_hash: metadata_hash.clone(),
                 metadata_size: metadata.len(),
+                recover: false,
             },
         )?;
         ensure!(
@@ -659,6 +728,24 @@ impl Controller {
                 && !matches!(store.binding.phase, Phase::Complete | Phase::Cancelled),
             "first Sync operation is terminal"
         );
+        if recover {
+            if store.binding.phase == Phase::Staging {
+                store.plan()?;
+                store.prepare()?;
+            }
+            let remote = self.restore_remote_preservation(store)?;
+            if matches!(remote, Phase::PeerComplete | Phase::Complete) {
+                ensure!(
+                    matches!(store.binding.phase, Phase::Published | Phase::PeerComplete),
+                    "remote completion has no local publication receipt"
+                );
+                if store.binding.phase == Phase::Published {
+                    store.verify_published()?;
+                    store.binding.phase = Phase::PeerComplete;
+                    store.save()?;
+                }
+            }
+        }
         let authority = store.binding.authority.open()?;
         let observed = authority.snapshot()?;
         let hold = if store.binding.phase == Phase::PeerComplete
@@ -745,6 +832,68 @@ impl Controller {
         self.attach_completed_first_sync(&receipt)?;
         store.binding.phase = Phase::Complete;
         store.save()
+    }
+    fn restore_remote_preservation(&self, store: &Store) -> Result<Phase> {
+        let operation = store.binding.operation;
+        let peer = store.binding.peer;
+        let hash = &store.binding.metadata_hash;
+        let remote = self.first_sync_call(peer, Request::Status { operation })?;
+        let phase = match remote {
+            Response::Absent { operation: id } if id == operation => {
+                let response = self.first_sync_call(
+                    peer,
+                    Request::Stage {
+                        operation,
+                        header: Box::new(store.binding.preview.clone()),
+                        metadata_hash: hash.clone(),
+                        metadata_size: store.binding.metadata_size,
+                        recover: true,
+                    },
+                )?;
+                ensure!(
+                    matches!(response,Response::Staged{operation:id} if id==operation),
+                    "recovery staging not acknowledged"
+                );
+                Phase::Staging
+            }
+            Response::Status {
+                operation: id,
+                metadata_hash: expected,
+                phase,
+            } if id == operation && expected == *hash => phase,
+            _ => anyhow::bail!("first Sync recovery identity differs"),
+        };
+        ensure!(
+            phase != Phase::Cancelled,
+            "source cancelled this unpublished merge; cancel locally before another preview"
+        );
+        if phase != Phase::Staging {
+            return Ok(phase);
+        }
+        self.upload_first_sync(peer, operation, None, &store.metadata()?.encoded()?)?;
+        let plan = store.plan()?;
+        let (here, there) = plan.originals();
+        let blobs: BTreeMap<_, _> = here
+            .files
+            .values()
+            .chain(there.files.values())
+            .map(|bytes| (wire::fingerprint(bytes), bytes))
+            .collect();
+        for (hash, bytes) in blobs {
+            self.upload_first_sync(peer, operation, Some(hash), bytes)?;
+        }
+        let response = self.first_sync_call(
+            peer,
+            Request::Seal {
+                operation,
+                metadata_hash: hash.clone(),
+            },
+        )?;
+        ensure!(
+            matches!(response,Response::Prepared{operation:id,metadata_hash:expected} if id==operation && expected==*hash),
+            "recovery preimages not acknowledged"
+        );
+        Ok(Phase::Prepared)
     }
     /// Interrupted work is never resumed by ordinary refresh/startup. The UI
     /// presents this inventory and asks for an explicit recovery/cancellation.

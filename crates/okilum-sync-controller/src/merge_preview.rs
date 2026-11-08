@@ -455,7 +455,7 @@ pub mod filesystem {
     /// supersede an interrupted operation. Neither variant publishes files.
     pub enum PreparedSession {
         Fresh {
-            plan: Plan,
+            plan: Box<Plan>,
             session: FilesystemSession,
         },
         Recovery(FilesystemSession),
@@ -466,7 +466,10 @@ pub mod filesystem {
                 RecoveryStatus::Fresh => {
                     let (here, there) = session.snapshots()?;
                     let plan = Plan::preview(here, there)?;
-                    Ok(Self::Fresh { plan, session })
+                    Ok(Self::Fresh {
+                        plan: Box::new(plan),
+                        session,
+                    })
                 }
                 RecoveryStatus::Pending => Ok(Self::Recovery(session)),
                 RecoveryStatus::Complete => Err(failure(

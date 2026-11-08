@@ -142,7 +142,7 @@ impl Metadata {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) enum Phase {
+pub(in crate::direct) enum Phase {
     Staging,
     Prepared,
     Publishing,
@@ -237,7 +237,6 @@ impl Store {
             binding.schema == 1 && binding.operation == operation,
             "first Sync journal identity changed"
         );
-        binding.authority.open()?;
         Ok(Self {
             directory,
             binding,
@@ -472,6 +471,16 @@ impl Store {
             );
         }
         Ok(current)
+    }
+    pub fn verify_published(&self) -> Result<()> {
+        self.binding.authority.open()?;
+        let root = tree::open_root(&self.binding.source.path)?;
+        ensure!(
+            Tree::collect(&root, &self.binding.source.path, true)?.files
+                == *self.plan()?.merged_files(),
+            "completed first Sync bytes changed; recovery stopped"
+        );
+        Ok(())
     }
     /// `validate` must prove local AND transport exclusion for this exact root.
     /// The retained preimages and displaced inodes survive every failure.

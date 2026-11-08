@@ -29,23 +29,15 @@ use xmltree::{Element, XMLNode};
 mod quiescence;
 pub use quiescence::{OrdinaryHold, ScopedHold};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Identity(u64, u64, Option<u64>);
+pub(crate) type Identity = okilum_write_authority::identity_linux::Identity;
 pub(crate) fn identity(path: &Path) -> Result<Identity> {
-    let m = fs::symlink_metadata(path)?;
-    ensure!(
-        !m.file_type().is_symlink(),
-        "managed path replaced by symlink"
-    );
-    Ok(Identity(
-        m.dev(),
-        m.ino(),
-        m.created()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|t| u64::try_from(t.as_nanos()).ok()),
-    ))
+    let handle = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    // Persist the same filesystem/subvolume/inode/birth witness as Reader.
+    // Boot-local btrfs device numbers must not invalidate an existing pairing.
+    okilum_write_authority::identity_linux::from_file(&handle)
 }
 pub(crate) fn digest(path: &Path) -> Result<String> {
     let mut f = OpenOptions::new()

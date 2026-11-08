@@ -355,6 +355,8 @@ impl Controller {
         };
         // Persist identity once, before creating an offer or exposing its public key.
         private::write(&file, &serde_json::to_vec(&db)?)?;
+        #[cfg(target_os = "linux")]
+        let inventory_key = inventory::persistent_key(&state)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 state,
@@ -374,7 +376,7 @@ impl Controller {
                 #[cfg(target_os = "linux")]
                 inventory: Mutex::new(Default::default()),
                 #[cfg(target_os = "linux")]
-                inventory_key: wire::random()?,
+                inventory_key,
                 #[cfg(target_os = "linux")]
                 first_sync: Mutex::new(BTreeMap::new()),
                 #[cfg(all(test, target_os = "linux"))]

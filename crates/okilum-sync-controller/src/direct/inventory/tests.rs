@@ -3,6 +3,7 @@ use std::{fs, os::unix::fs::symlink};
 
 fn header(files: usize, bytes: usize) -> Header {
     Header {
+        auth: "fixture capability".into(),
         id: Uuid::new_v4(),
         revision: "revision".into(),
         manifest: String::new(),

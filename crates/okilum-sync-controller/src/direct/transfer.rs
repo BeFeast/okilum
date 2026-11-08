@@ -2223,9 +2223,10 @@ mod tests {
         // authority. Keep this a REST component fixture, and establish its real
         // private launch registry without starting a process or service.
         assert!(controller.reconcile_transfers().is_err());
-        assert_eq!(patches(),json!([]));
+        assert_eq!(patches(), json!([]));
         crate::managed_launch::initialize(&crate::lifecycle::ManagedInstance {
-            home:home.clone(),executable:PathBuf::from("/bin/true").canonicalize()?,
+            home: home.clone(),
+            executable: PathBuf::from("/bin/true").canonicalize()?,
         })?;
         controller
             .shared
