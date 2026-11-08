@@ -62,7 +62,6 @@ mod tests {
 
     #[test]
     fn sync_new_destination_creates_only_private_leaf_and_reuses_empty() -> Result<()> {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = tempfile::tempdir()?;
         let path = root.path().join("Notes");
         assert!(!path.exists(), "new-folder precondition");
@@ -72,26 +71,30 @@ mod tests {
         );
         prepare(&path)?;
         assert_eq!(canonical_path(&path)?, path.canonicalize()?);
-        assert_eq!(std::fs::metadata(&path)?.mode() & 0o777, 0o700);
         assert!(path.read_dir()?.next().is_none());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750))?;
-        prepare(&path)?;
-        assert_eq!(std::fs::metadata(&path)?.mode() & 0o777, 0o750);
-        // Exercise the /var -> /private/var case explicitly on either Unix host.
-        let parent = root.path().join("parent");
-        std::fs::create_dir(&parent)?;
-        let alias = root.path().join("parent-alias");
-        std::os::unix::fs::symlink(&parent, &alias)?;
-        let proposed = alias.join("Notes");
-        assert!(!proposed.exists());
-        assert_eq!(
-            canonical_path(&proposed)?,
-            parent.canonicalize()?.join("Notes")
-        );
-        assert!(!proposed.exists(), "resolution must precede creation");
-        prepare(&proposed)?;
-        assert_eq!(canonical_path(&proposed)?, proposed.canonicalize()?);
-        assert_eq!(std::fs::metadata(&proposed)?.mode() & 0o777, 0o700);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            assert_eq!(std::fs::metadata(&path)?.mode() & 0o777, 0o700);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750))?;
+            prepare(&path)?;
+            assert_eq!(std::fs::metadata(&path)?.mode() & 0o777, 0o750);
+            // Exercise the /var -> /private/var case explicitly on either Unix host.
+            let parent = root.path().join("parent");
+            std::fs::create_dir(&parent)?;
+            let alias = root.path().join("parent-alias");
+            std::os::unix::fs::symlink(&parent, &alias)?;
+            let proposed = alias.join("Notes");
+            assert!(!proposed.exists());
+            assert_eq!(
+                canonical_path(&proposed)?,
+                parent.canonicalize()?.join("Notes")
+            );
+            assert!(!proposed.exists(), "resolution must precede creation");
+            prepare(&proposed)?;
+            assert_eq!(canonical_path(&proposed)?, proposed.canonicalize()?);
+            assert_eq!(std::fs::metadata(&proposed)?.mode() & 0o777, 0o700);
+        }
         let nested = root.path().join("missing/Notes");
         assert!(canonical_path(&nested).is_err());
         assert!(prepare(&nested).is_err());
@@ -114,7 +117,10 @@ mod tests {
         let empty = root.path().join("empty");
         std::fs::create_dir(&empty)?;
         let alias = root.path().join("alias");
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&empty, &alias)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&empty, &alias)?;
         assert!(prepare(&alias).is_err());
         assert!(empty.read_dir()?.next().is_none());
         Ok(())
