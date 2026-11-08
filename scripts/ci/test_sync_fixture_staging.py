@@ -226,6 +226,29 @@ class FixtureStagingTests(unittest.TestCase):
         self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
         self.assertEqual(list(self.cache.rglob('.stage-*')), [])
 
+    def test_release_download_failure_uses_official_asset_with_identical_pins(self):
+        (self.cache / helper.ARCHIVE).unlink()
+        failed = subprocess.CalledProcessError(22, ['curl', helper.URL])
+        with patch.object(helper.subprocess, 'check_output',
+                          side_effect=[failed, self.archive]) as download:
+            binary = helper.stage(self.cache)
+        self.assertEqual(download.call_args_list[0].args[0][-1], helper.URL)
+        fallback = download.call_args_list[1].args[0]
+        self.assertEqual(fallback[-1], helper.ASSET_URL)
+        self.assertIn('Accept: application/octet-stream', fallback)
+        self.assertEqual(binary.read_bytes(), self.executable)
+        self.assertEqual((self.cache / helper.ARCHIVE).read_bytes(), self.archive)
+
+    def test_corrupt_asset_fallback_is_rejected_before_publication(self):
+        (self.cache / helper.ARCHIVE).unlink()
+        failed = subprocess.CalledProcessError(22, ['curl', helper.URL])
+        with patch.object(helper.subprocess, 'check_output',
+                          side_effect=[failed, b'wrong asset']):
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                helper.stage(self.cache)
+        self.assertFalse((self.cache / helper.ARCHIVE).exists())
+        self.assertFalse((self.cache / helper.BINARY_SHA256).exists())
+
     def test_corrupt_archive_is_rejected_before_publication(self):
         (self.cache / helper.ARCHIVE).write_bytes(b'incomplete download')
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
