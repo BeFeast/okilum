@@ -12,6 +12,7 @@ def main():
         ("okilum-sync-controller", "--lib", "direct::source::tests::"),
         ("okilum-sync-controller", "--lib", "direct::inventory::tests::"),
         ("okilum-sync-controller", "--lib", "managed_launch::macos::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::macos::isolation::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_peer::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_exit::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),

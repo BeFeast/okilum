@@ -15,6 +15,8 @@ pub mod connect;
 pub mod connection;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 pub mod inventory;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod isolation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod payload;
 #[cfg(unix)]
