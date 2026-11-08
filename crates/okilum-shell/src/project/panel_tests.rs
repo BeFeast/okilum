@@ -1,6 +1,7 @@
 //! Actual Reader visibility and native Details paint, using synthetic state only.
 use super::*;
 use crate::reader_diagnostics;
+use ::core::prelude::v1::test;
 use serde_json::{json, Value};
 use std::{cell::RefCell, path::Path, time::Instant};
 
