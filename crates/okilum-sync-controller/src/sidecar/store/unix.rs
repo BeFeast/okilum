@@ -78,6 +78,55 @@ impl StateDir for UnixDir {
 
 pub type UnixStore = Store<UnixDir>;
 impl Store<UnixDir> {
+    /// A launchd restart is authorized only by a lifetime lease, never by an
+    /// absent endpoint. Old runtimes and concurrent helpers prevent this call.
+    pub fn claim_supervised_launch(
+        &self,
+        binding: &crate::sidecar::Binding,
+        lease: &crate::sidecar::supervisor::lease::Lease,
+        deadline: Instant,
+    ) -> Result<uuid::Uuid> {
+        ensure!(
+            Path::new(&binding.state_directory).canonicalize()? == lease.state(),
+            "supervisor lease belongs to another state directory"
+        );
+        self.dir.dir.check_location()?;
+        let opened = self.dir.dir.handle.metadata()?;
+        let leased = std::fs::metadata(lease.state())?;
+        use std::os::unix::fs::MetadataExt as _;
+        ensure!(
+            opened.dev() == leased.dev() && opened.ino() == leased.ino(),
+            "supervisor lease does not cover this store"
+        );
+        let mut tx = self.begin(deadline)?;
+        let saved = tx
+            .current()?
+            .ok_or_else(|| anyhow::anyhow!("missing launch journal"))?;
+        if saved.launch_registration().is_some_and(|launch| {
+            launch.phase() == crate::sidecar::authority::launch::Phase::Claimed
+        }) {
+            let next = saved.restart_claim(binding)?;
+            let generation = next.launch_registration().unwrap().generation();
+            // Dedicated recovery commit. Ordinary successor validation still
+            // refuses replacing/re-arming a launch without this lease.
+            tx.write(next)?;
+            Ok(generation)
+        } else {
+            drop(tx);
+            self.claim_launch(binding, deadline)
+        }
+    }
+    pub fn write_supervisor_failure(&self, message: &str, deadline: Instant) -> Result<()> {
+        let _lock = self.dir.lock(deadline)?;
+        let message: String = message.chars().take(8192).collect();
+        self.dir.write("supervisor-error.log", message.as_bytes())
+    }
+    pub fn read_supervisor_failure(&self) -> Result<Option<String>> {
+        Ok(self
+            .dir
+            .read("supervisor-error.log")?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
     /// No directory, journal or lock is created. Preparation supplies a private
     /// directory outside installation, vault and index, after explicit Enable.
     pub fn open_existing(path: &Path) -> Result<Self> {

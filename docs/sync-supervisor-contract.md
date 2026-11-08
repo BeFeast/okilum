@@ -82,3 +82,30 @@ Order matters, each step failing closed:
   preparation, not at Stop time); to be measured on a real Mac with a long user name.
 - The signature policy values and the development variant (compile-time `cfg` and a
   pinned digest), in the signing PR, taken from the release build configuration.
+
+
+## Helper restarts and visible failures (#2752)
+
+Enabled Sync survives a launchd helper restart without re-enrollment. Before
+renewing a consumed launch generation the helper holds a separate owner-private
+lifetime lock and verifies there are no surviving processes running the selected
+runtime. It commits a new claimed generation under the journal lock, preserving
+binding, device identity and configuration. Ordinary dispatch/claim callers still
+cannot re-arm a generation. Pending lifecycle operations prevent recovery. A
+surviving orphan runtime is reported rather than adopted or duplicated. SIGTERM
+flushes the owned runtime before helper exit so normal replacement can restart.
+
+Startup/runtime failures are retained in the private Sync state's
+`supervisor-error.log`; app diagnostic details include this reason. A healthy
+serving generation clears it. Every main window shows a persistent red alert
+when enabled configured Sync is unavailable, or when a vault has made no Sync
+progress/contact for over ten minutes. The Fix action opens Sync settings and,
+on macOS, requests a verified managed-helper restart using SIGTERM, never SIGKILL.
+Connected up-to-date observations clear the alert; ordinary idle vaults do not
+become stale simply because no file was edited. All health I/O stays off Render.
+
+Explicit `OKILUM_STATE_DIR` Reader profiles isolate their direct journal and
+external Sync configuration under `<profile>/sync`, including health observation.
+They never discover, bootstrap or restart the account-wide managed helper. This
+allows native failure QA by stopping only a disposable profile's runtime while
+leaving the user's real Sync and vault untouched.

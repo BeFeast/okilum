@@ -57,6 +57,11 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn show_sync(window: &mut Window, cx: &mut App) {
+    show_section_from(None, Some(Section::Sync), Some(window.window_handle()), cx);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn show_sync_pairing(window: &mut Window, cx: &mut App) {
     reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
     if reader_features::enabled(reader_features::Feature::Sync, cx) {

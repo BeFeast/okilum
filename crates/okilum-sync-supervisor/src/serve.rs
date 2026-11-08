@@ -37,6 +37,8 @@ pub enum Exit {
     /// The runtime exited by itself. The tree was flushed and the hint cleared; the
     /// process should exit non-zero so the OS restart policy decides what happens.
     RuntimeExited,
+    /// launchd is replacing/stopping the helper; its owned runtime was flushed.
+    RestartRequested,
 }
 
 /// Used by `main` to give the failure a readable context.
@@ -44,6 +46,7 @@ pub fn describe(exit: &Exit) -> &'static str {
     match exit {
         Exit::Stopped => "stopped by an authorized Stop",
         Exit::RuntimeExited => "the Syncthing runtime exited",
+        Exit::RestartRequested => "the Sync helper is restarting",
     }
 }
 

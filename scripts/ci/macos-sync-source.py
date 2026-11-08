@@ -13,6 +13,10 @@ def main():
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_peer::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_exit::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::supervisor::lease::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::store::tests::launch_authority::"),
+        ("okilum-sync-supervisor", "--lib", "args::tests::"),
+        ("okilum-shell", "--bin=okilum", "reader_settings_sync::health::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::tests::"),
         # #2708: compile AppKit bindings and execute normal/zoom/fullscreen controls.
         ("okilum-shell", "--bin=okilum", "window_state::"),

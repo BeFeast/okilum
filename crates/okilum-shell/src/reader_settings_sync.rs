@@ -41,7 +41,12 @@ fn serve_paired_from(
     let trace = reader_diagnostics::trace(cx);
     // Off the UI thread, and offline: reading the journal never starts Sync.
     let saved = cx.background_executor().spawn(async move {
-        state().and_then(|state| direct::has_paired_computers_or_vaults(&state))
+        state().and_then(|state| {
+            let paired = direct::has_paired_computers_or_vaults(&state)?;
+            #[cfg(all(target_os = "macos", not(test)))]
+            let paired = paired || health::managed_enabled();
+            Ok(paired)
+        })
     });
     cx.spawn(async move |cx| {
         let saved = saved.await;
@@ -124,6 +129,7 @@ pub(super) fn suspend(cx: &mut App) {
             view.busy = false;
             view.serving = false;
             view.error = None;
+            view.health = Default::default();
             view.awaiting_open = None;
             view.pending_destination = None;
             view.destination_error = None;
@@ -140,6 +146,8 @@ enum Operation {
     Remove(String),
     Retention(PathBuf, direct::RetentionDays),
     Read,
+    #[cfg(target_os = "macos")]
+    Restart,
     EnterPairing,
     #[cfg(target_os = "linux")]
     SelectConnection(PathBuf),
@@ -178,6 +186,7 @@ struct Output {
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
+    health: health::Health,
     presentation: presentation::Presentation,
     controller: Option<Controller>,
     snapshot: Option<Snapshot>,
@@ -301,6 +310,7 @@ impl SyncSettings {
     }
     fn idle() -> Self {
         Self {
+            health: Default::default(),
             presentation: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
@@ -480,6 +490,9 @@ impl SyncSettings {
                             this.publish(output, cx);
                         }
                         Err(error) => {
+                            if refresh || this.serving {
+                                this.health.failed();
+                            }
                             this.presentation.transfers.clear();
                             this.presentation.error_details = failure_details(action, &error)
                                 ["error"]
@@ -517,6 +530,7 @@ impl SyncSettings {
                         }
                     }
                     cx.notify();
+                    cx.refresh_windows();
                     if let Some(operation) = this.pending_destination.take() {
                         this.run(operation, cx);
                     } else if succeeded && !this.presentation.transfers.is_empty() {
@@ -532,6 +546,7 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        self.health.observe(&output.overview, Instant::now());
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
             if self.presentation.notified != Some(pending.request_id) {
@@ -648,7 +663,9 @@ impl SyncSettings {
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
         let interval = match &self.snapshot {
-            Some(snapshot) => sync_refresh_interval(snapshot),
+            Some(snapshot) => {
+                sync_refresh_interval(snapshot).or_else(|| self.serving.then_some(SERVE_RETRY))
+            }
             None => self.serving.then_some(SERVE_RETRY),
         };
         let Some(interval) = interval else {
@@ -843,6 +860,14 @@ fn sync_refresh_interval(snapshot: &Snapshot) -> Option<Duration> {
     }
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = reader_history::isolated_state_directory() {
+        // Explicit profiles are isolated from the account helper and all live
+        // configuration paths. Their own external connection is read-only here.
+        let config = profile.join("sync/config/config.xml");
+        let configs = config.try_exists()?.then_some(config).into_iter().collect();
+        return Ok((state_location()?, configs));
+    }
     let configs = direct::configuration_paths()?;
     #[cfg(target_os = "macos")]
     let configs = {
@@ -864,6 +889,12 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
 }
 /// This computer's direct journal folder.
 fn state_location() -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Some(profile) = reader_history::isolated_state_directory() {
+        let sync = profile.join("sync");
+        ensure_private_sync_directory(&sync)?;
+        return Ok(sync.join("direct"));
+    }
     #[cfg(target_os = "linux")]
     let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
@@ -936,7 +967,26 @@ fn perform_scoped(
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
     let _serial = serial_actions();
-    perform_with_locations(controller, operation, ticket, locations)
+    let result = perform_with_locations(controller, operation, ticket, locations);
+    #[cfg(target_os = "macos")]
+    let result = result.map_err(|error| {
+        let diagnostic = (|| -> anyhow::Result<Option<String>> {
+            if reader_history::isolated_state_directory().is_some() {
+                return Ok(None);
+            }
+            let state = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+            okilum_sync_controller::sidecar::store::UnixStore::open_existing(&state)?
+                .read_supervisor_failure()
+        })()
+        .ok()
+        .flatten()
+        .filter(|text| !text.is_empty());
+        match diagnostic {
+            Some(text) => error.context(format!("Sync helper: {text}")),
+            None => error,
+        }
+    });
+    result
 }
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
@@ -964,6 +1014,10 @@ fn perform_with_locations(
             Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
             _ => {}
         }
+        #[cfg(all(target_os = "macos", not(test)))]
+        if !matches!(operation, Operation::Restart) {
+            health::check_managed()?;
+        }
         let (state, configs) = resolve().context("resolve local Sync state and connections")?;
         // The old desktop stored service enrollment alongside `direct`, not
         // inside it. Do not bootstrap a second daemon over that saved setup.
@@ -987,6 +1041,10 @@ fn perform_with_locations(
             controller: controller.clone(),
         };
         guard.check()?;
+        #[cfg(target_os = "macos")]
+        if matches!(operation, Operation::Restart) {
+            health::restart_managed()?;
+        }
         #[cfg(target_os = "macos")]
         prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
         guard.check()?;
@@ -1093,6 +1151,8 @@ fn perform_with_locations(
         let snapshot = match operation {
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
+            #[cfg(target_os = "macos")]
+            Operation::Restart => controller.refresh()?,
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,
@@ -1172,6 +1232,10 @@ fn perform_with_locations(
 }
 #[cfg(target_os = "macos")]
 fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        reader_history::isolated_state_directory().is_none(),
+        "Managed account Sync is unavailable from an isolated Reader profile"
+    );
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
@@ -1321,3 +1385,6 @@ mod advanced;
 
 #[path = "reader_settings_sync/ignore_editor.rs"]
 mod ignore_editor;
+
+#[path = "reader_settings_sync/health.rs"]
+mod health;

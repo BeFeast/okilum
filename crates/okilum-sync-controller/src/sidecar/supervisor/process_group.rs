@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod scan;
+pub(crate) mod scan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GroupLeader {
