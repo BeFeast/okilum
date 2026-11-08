@@ -30,6 +30,26 @@ impl NativeLaunch {
             .context("native config home missing")?
             .canonicalize()?;
         let home = canonical_home.as_path();
+        let state = home.parent().context("native state missing")?;
+        if !directory(home)?.try_exists()?
+            && !state.join("preparation.json").try_exists()?
+            && !state.join("prepared-identity.json").try_exists()?
+        {
+            // A pre-first-merge sidecar remains usable under its existing
+            // signature/selection policy. A durable new marker can never fall
+            // back to that legacy path when its other metadata disappears.
+            let text = state.to_str().context("native state path is not Unicode")?;
+            let plain = text.strip_prefix(r"\\?\").unwrap_or(text);
+            let store = crate::sidecar::store::WindowsStore::open_existing(plain)?;
+            let transaction = store.begin(Instant::now() + Duration::from_secs(5))?;
+            ensure!(
+                transaction
+                    .current()?
+                    .is_some_and(|current| current.windows_launch().is_none()),
+                "native launch registry missing; recovery required"
+            );
+            return Ok(None);
+        }
         let pinned = native_launch_reference(home.parent().context("native state missing")?)?;
         if !directory(home)?.try_exists()? {
             ensure!(

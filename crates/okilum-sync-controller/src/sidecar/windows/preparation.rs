@@ -92,6 +92,7 @@ pub(super) struct Prepared {
     pub identity: DaemonIdentity,
     pub helper_hash: String,
     pub runtime_hash: String,
+    pub launch: Reference,
 }
 fn text(path: &Path) -> Result<String> {
     let raw = path.to_str().context("Sync path is not Unicode")?;
@@ -364,9 +365,14 @@ pub(super) fn prepare(state: &Path, sources: &Sources, deadline: Instant) -> Res
     }
     if record.phase == Phase::Generating {
         for name in ["config.xml", "cert.pem", "key.pem"] {
-            private::public_file(&state.join("config").join(name)).with_context(|| {
+            let path = state.join("config").join(name);
+            let bytes = private::public_file(&path).with_context(|| {
                 "interrupted identity generation requires recovery; no identity was regenerated"
             })?;
+            // Generate may run elevated while the interactive task is filtered.
+            // Preserve every byte with explicit TokenUser ownership and a
+            // protected owner DACL before any service may read these files.
+            private::write_generated(&path, &bytes)?;
         }
         record.phase = Phase::Generated;
         save(&state, &record)?;
@@ -437,7 +443,7 @@ pub(super) fn prepare(state: &Path, sources: &Sources, deadline: Instant) -> Res
         &state.join("prepared-identity.json"),
         &serde_json::to_vec(&Receipt {
             identity: identity.clone(),
-            launch,
+            launch: launch.clone(),
         })?,
     )?;
     Ok(Prepared {
@@ -452,6 +458,7 @@ pub(super) fn prepare(state: &Path, sources: &Sources, deadline: Instant) -> Res
         identity,
         helper_hash: record.helper_hash,
         runtime_hash: record.runtime_hash,
+        launch,
     })
 }
 
@@ -500,6 +507,35 @@ mod tests {
         for (index, name) in ["config.xml", "cert.pem", "key.pem"].iter().enumerate() {
             assert_eq!(original[index], fs::read(config.join(name))?);
         }
+        let saved_preparation = private::read(&state.join("preparation.json"))?;
+        WindowsStore::open_existing(&text(&state)?)?
+            .begin(Instant::now() + Duration::from_secs(5))?
+            .commit(
+                crate::sidecar::authority::Envelope::first(first.binding.clone())
+                    .bind_windows_launch(first.launch.clone())?,
+            )?;
+        let retired_directory = state.join("retained-registry-fixture");
+        fs::rename(state.join("managed-launch"), &retired_directory)?;
+        fs::remove_file(state.join("preparation.json"))?;
+        fs::remove_file(state.join("prepared-identity.json"))?;
+        let selected_runtime = WindowsStore::open_existing(&text(&state)?)?
+            .read_selection(Instant::now() + Duration::from_secs(5))?
+            .context("fixture runtime selection missing")?
+            .resolve(&state)?;
+        let refused = crate::managed_launch::NativeLaunch::if_registered(
+            &first.identity.config_file,
+            &selected_runtime,
+        )
+        .err()
+        .context("lost metadata unexpectedly restored legacy launch permission")?;
+        assert!(
+            format!("{refused:#}").contains("native launch registry missing"),
+            "{refused:#}"
+        );
+        assert!(!state.join("managed-launch").exists());
+        fs::rename(&retired_directory, state.join("managed-launch"))?;
+        private::write(&state.join("preparation.json"), &saved_preparation)?;
+        private::write(&state.join("prepared-identity.json"), &envelope)?;
         // Model a crash while the first generate was in flight: uncertainty
         // must not trigger a second invocation and mint another certificate.
         let mut interrupted: Record =

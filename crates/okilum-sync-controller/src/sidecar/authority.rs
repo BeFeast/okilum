@@ -73,6 +73,11 @@ pub struct Envelope {
     /// Missing in pre-launch-authority journals: recovery, never permission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch: Option<launch::Registration>,
+    /// Present only for newly prepared Windows instances. Legacy sidecars may
+    /// keep their existing transfers, but cannot grant first-merge ownership.
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_launch: Option<crate::managed_launch::Reference>,
 }
 
 impl Envelope {
@@ -87,8 +92,29 @@ impl Envelope {
             update: None,
             stop: None,
             launch: None,
+            #[cfg(windows)]
+            windows_launch: None,
         }
     }
+    #[cfg(windows)]
+    pub(crate) fn bind_windows_launch(
+        mut self,
+        reference: crate::managed_launch::Reference,
+    ) -> Result<Self> {
+        ensure!(
+            self.windows_launch
+                .as_ref()
+                .is_none_or(|saved| saved == &reference),
+            "Windows launch reference changed"
+        );
+        self.windows_launch = Some(reference);
+        Ok(self)
+    }
+    #[cfg(windows)]
+    pub(crate) fn windows_launch(&self) -> Option<&crate::managed_launch::Reference> {
+        self.windows_launch.as_ref()
+    }
+
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
@@ -413,6 +439,8 @@ impl Envelope {
             update,
             stop: None,
             launch: None,
+            #[cfg(windows)]
+            windows_launch: None,
         };
         envelope.validate()?;
         Ok(envelope)

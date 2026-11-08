@@ -81,7 +81,17 @@ def main():
     if native_jobs != expected_jobs:
         raise RuntimeError(f"Complete Windows Job Object controls did not compile/discover: {listing}")
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
+    command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::windows_peer::tests::"]
+    listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
+    peers = {line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")}
+    if peers != {"sidecar::supervisor::ipc::windows_peer::tests::" + name for name in (
+        "native_pipe_peer_matches_both_ends_and_rejects_wrong_sid_or_role",
+        "native_pipe_peer_rejects_other_process_and_exited_handle",
+    )}:
+        raise RuntimeError(f"Windows pipe/exit controls did not compile/discover: {listing}")
+    subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     subprocess.run(["cargo", "test", "--locked", "-p", "okilum-sync-supervisor"], check=True)
+    runpy.run_path(str(Path(__file__).with_name("windows-sync-task-check.py")))["check"](client, notices)
     return 0
 
 if __name__ == "__main__":

@@ -66,11 +66,13 @@ fn native(api: &str, error: windows::core::Error) -> io::Error {
 
 enum Operation {
     Verify,
+    CaptureExit,
     Accept,
     Read(usize),
     Write(Vec<u8>),
 }
 struct Reply {
+    exit: Option<super::windows_peer::ExitWatch>,
     bytes: Vec<u8>,
     count: usize,
 }
@@ -218,6 +220,11 @@ impl ClientIo {
     pub(super) fn verify_peer(&mut self) -> io::Result<()> {
         self.request(Operation::Verify).map(|_| ())
     }
+    pub(super) fn capture_exit(&mut self) -> io::Result<super::windows_peer::ExitWatch> {
+        self.request(Operation::CaptureExit)?
+            .exit
+            .ok_or_else(|| io::Error::other("supervisor exit witness missing"))
+    }
     pub fn new(client: PrivateClient, deadline: Instant) -> io::Result<Self> {
         Self::start(Endpoint::Client(client), deadline)
     }
@@ -292,6 +299,7 @@ impl ClientIo {
                     // if a query stalls. Admission includes such retained workers.
                     let accepting = matches!(request.operation, Operation::Accept);
                     let verifying = matches!(request.operation, Operation::Verify);
+                    let capture_exit = matches!(request.operation, Operation::CaptureExit);
                     let (limit, finish) = (request.limit, request.finish);
                     let result = endpoint
                         .as_ref()
@@ -302,8 +310,23 @@ impl ClientIo {
                             Ok(endpoint)
                         })
                         .and_then(|endpoint| {
+                            if capture_exit {
+                                let Endpoint::Client(client) = endpoint else {
+                                    return Err(io::Error::other(
+                                        "exit capture requires a client connection",
+                                    ));
+                                };
+                                let watch = client.capture_exit().map_err(io::Error::other)?;
+                                remaining(finish)?;
+                                return Ok(Reply {
+                                    exit: Some(watch),
+                                    bytes: Vec::new(),
+                                    count: 0,
+                                });
+                            }
                             if verifying {
                                 return Ok(Reply {
+                                    exit: None,
                                     bytes: Vec::new(),
                                     count: 0,
                                 });
@@ -449,7 +472,9 @@ fn perform_inner(
     let accepting = matches!(operation, Operation::Accept);
     let read = matches!(operation, Operation::Read(_));
     let mut bytes = match operation {
-        Operation::Verify => return Err(io::Error::other("verification is not a wire operation")),
+        Operation::Verify | Operation::CaptureExit => {
+            return Err(io::Error::other("verification is not a wire operation"))
+        }
         Operation::Accept => Vec::new(),
         Operation::Read(n) => vec![0; n],
         Operation::Write(bytes) => bytes,
@@ -466,7 +491,11 @@ fn perform_inner(
     if let Err(error) = submitted {
         if accepting && error.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0) {
             remaining(deadline)?;
-            return Ok(Reply { bytes, count: 0 });
+            return Ok(Reply {
+                exit: None,
+                bytes,
+                count: 0,
+            });
         }
         if error.code() != HRESULT::from_win32(ERROR_IO_PENDING.0) {
             return Err(native(
@@ -525,12 +554,17 @@ fn perform_inner(
     // ConnectNamedPipe has no byte transfer; GetOverlappedResult does not define
     // its byte count. Only ReadFile/WriteFile completion lengths are meaningful.
     if accepting {
-        return Ok(Reply { bytes, count: 0 });
+        return Ok(Reply {
+            exit: None,
+            bytes,
+            count: 0,
+        });
     }
     if count as usize > bytes.len() {
         return Err(io::Error::other("invalid pipe completion length"));
     }
     Ok(Reply {
+        exit: None,
         bytes,
         count: count as usize,
     })

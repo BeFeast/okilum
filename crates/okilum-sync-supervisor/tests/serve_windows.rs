@@ -393,7 +393,10 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
     let refused = run(&["--state", &state]);
     assert_eq!(refused.status.code(), Some(1));
     let message = String::from_utf8_lossy(&refused.stderr).into_owned();
-    assert!(message.contains("no signature policy"), "{message}");
+    assert!(
+        message.contains("no Authenticode publisher policy"),
+        "{message}"
+    );
     assert!(
         world.child_pid().is_none(),
         "nothing may start without a policy"

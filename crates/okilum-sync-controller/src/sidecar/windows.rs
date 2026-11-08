@@ -422,3 +422,9 @@ pub mod payload;
 
 #[cfg(windows)]
 mod preparation;
+
+#[cfg(windows)]
+mod connection;
+
+#[cfg(windows)]
+mod guard;

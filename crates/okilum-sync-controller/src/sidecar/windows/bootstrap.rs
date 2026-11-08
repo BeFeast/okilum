@@ -57,15 +57,34 @@ fn store(state: &Path) -> Result<WindowsStore> {
 pub(crate) fn managed_launch_reference(state: &Path) -> Result<Option<Reference>> {
     let selected = selected_state(state)?;
     let state = selected.as_path();
+    let expected = if state.join("sidecar.json").try_exists()? {
+        let store = store(state)?;
+        let transaction = store.begin(Instant::now() + Duration::from_secs(5))?;
+        transaction
+            .current()?
+            .and_then(|current| current.windows_launch())
+            .cloned()
+    } else {
+        None
+    };
     if !state.join("prepared-identity.json").try_exists()? {
         ensure!(
-            !state.join("sidecar.json").try_exists()?,
+            expected.is_none()
+                && !state.join("preparation.json").try_exists()?
+                && !state.join("managed-launch").try_exists()?,
             "managed preparation receipt missing; recovery required"
         );
+        // Exact legacy compatibility only; absence grants no first-merge fence.
         return Ok(None);
     }
     let receipt: Receipt =
         serde_json::from_slice(&private::read(&state.join("prepared-identity.json"))?)?;
+    ensure!(
+        expected
+            .as_ref()
+            .is_none_or(|saved| saved == &receipt.launch),
+        "prepared Windows launch reference differs from its journal"
+    );
     let selection = store(state)?
         .read_selection(Instant::now() + Duration::from_secs(5))?
         .context("managed runtime selection missing")?;
@@ -109,5 +128,121 @@ pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity>
 pub fn managed_source_identity(state: &Path) -> Result<DaemonIdentity> {
     let identity = managed_transport_identity(state)?;
     identity.connect()?;
+    crate::managed_launch::live_generation(
+        identity
+            .config_file
+            .parent()
+            .context("native runtime home missing")?,
+    )?;
     Ok(identity)
 }
+
+/// Explicit Connect only. Preparation is offline; the task's start occurs after
+/// releasing the state transaction so the supervisor can read its durable intent.
+/// Any uncertainty stays visible and cannot authorize source enrollment.
+pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
+    use crate::sidecar::{authority::Envelope, Platform, Registration};
+    ensure!(confirmed, "explicit Connect consent required");
+    ensure!(
+        okilum_sync::NetworkAccess::current().allowed(),
+        "Sync is disabled"
+    );
+    let sources = super::preparation::Sources::installed()?;
+    let state = active_state_directory()?;
+    let prepared =
+        super::preparation::prepare(&state, &sources, Instant::now() + Duration::from_secs(90))?;
+    let store = store(&state)?;
+    let guard = super::guard::Guard::new(&prepared, &sources, store.clone(), &state)?;
+    let mut platform = super::TaskScheduler(super::native::NativeTasks::connect(guard)?);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    {
+        let mut transaction = store.begin(deadline)?;
+        let next = match transaction.current()? {
+            None => Envelope::first(prepared.binding.clone()),
+            Some(saved) => {
+                ensure!(
+                    saved.binding() == &prepared.binding && saved.intent() != Intent::Removed,
+                    "existing native Sync identity changed or was removed; recovery required"
+                );
+                saved.enable()?
+            }
+        };
+        platform.verify_payload(&prepared.binding)?;
+        transaction.commit(next.bind_windows_launch(prepared.launch.clone())?)?;
+        if platform.inspect(&prepared.binding)? == Registration::Absent {
+            platform.register(&prepared.binding)?;
+        }
+    }
+    ensure!(
+        okilum_sync::NetworkAccess::current().allowed(),
+        "Sync was disabled before task launch"
+    );
+    match platform.inspect(&prepared.binding)? {
+        Registration::Stopped => {
+            {
+                let transaction = store.begin(deadline)?;
+                let current = transaction
+                    .current()?
+                    .context("native Sync intent disappeared")?;
+                ensure!(
+                    current.binding() == &prepared.binding
+                        && current.intent() == Intent::Enabled
+                        && current.stop().is_none()
+                        && current.update().is_none(),
+                    "native Sync launch was cancelled or changed"
+                );
+                platform.verify_payload(&prepared.binding)?;
+            }
+            // No instance lock is held across the native dispatch/readiness wait.
+            platform.start(&prepared.binding)?;
+        }
+        Registration::Running => (),
+        _ => anyhow::bail!("native task registration is not ready"),
+    }
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "Sync is still starting; retry Connect to inspect the retained instance"
+        );
+        let transaction = store.begin(deadline)?;
+        let current = transaction
+            .current()?
+            .context("native Sync intent disappeared")?;
+        ensure!(
+            current.binding() == &prepared.binding
+                && current.intent() == Intent::Enabled
+                && current.stop().is_none()
+                && current.update().is_none(),
+            "native Sync launch was cancelled or changed"
+        );
+        drop(transaction);
+        if platform.inspect(&prepared.binding)? == Registration::Running {
+            return managed_source_identity(&state);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The existing sidecar controller owns revision-bound Disable/Stop/unregister.
+/// Stop succeeds only after the signed reply and captured supervisor exit.
+pub fn disable_current_app() -> Result<()> {
+    let state = active_state_directory()?;
+    if !state.try_exists()? {
+        return Ok(());
+    }
+    let sources = super::preparation::Sources::installed()?;
+    let prepared =
+        super::preparation::prepare(&state, &sources, Instant::now() + Duration::from_secs(30))?;
+    let store = store(&state)?;
+    let guard = super::guard::Guard::new(&prepared, &sources, store.clone(), &state)?;
+    let platform = super::TaskScheduler(super::native::NativeTasks::connect(guard)?);
+    let mut controller = crate::sidecar::Controller::new(store, platform);
+    ensure!(
+        controller.disable()? == crate::sidecar::State::Disabled,
+        "Sync disable remains recovery pending"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod signed_task_tests;
