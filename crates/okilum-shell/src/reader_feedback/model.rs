@@ -1,5 +1,5 @@
 //! Feedback payloads and bounded public transport. No credentials or automatic retries.
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Cursor, Read, Seek, SeekFrom},
@@ -132,14 +132,8 @@ impl Limits {
             .video_seconds
             .map(|n| format!("{n} s maximum"))
             .unwrap_or_else(|| "no duration limit".into());
-        format!(
-            "Video up to {} ({duration}); screenshot up to {}; log up to {}; at most {} attachments, {} combined.",
-            human_size(self.video_bytes),
-            human_size(self.screenshot_bytes),
-            human_size(self.log_bytes),
-            self.max_attachments,
-            human_size(self.total_bytes)
-        )
+        format!("Video up to {} ({duration}); screenshot up to {}; log up to {}; at most {} attachments, {} combined.",
+            human_size(self.video_bytes), human_size(self.screenshot_bytes), human_size(self.log_bytes), self.max_attachments, human_size(self.total_bytes))
     }
     pub fn check_sizes(
         self,
@@ -156,28 +150,15 @@ impl Limits {
             ("Diagnostic log", log, self.log_bytes),
         ] {
             if let Some(size) = size {
-                ensure!(
-                    size <= cap,
-                    "{name} is {size} bytes; the configured limit is {cap} bytes ({}). Remove it or choose a smaller attachment before sending.",
-                    human_size(cap)
-                );
+                ensure!(size <= cap, "{name} is {size} bytes; the configured limit is {cap} bytes ({}). Remove it or choose a smaller attachment before sending.", human_size(cap));
                 count += 1;
                 total = total
                     .checked_add(size)
                     .context("Attachment sizes overflowed")?;
             }
         }
-        ensure!(
-            count <= self.max_attachments,
-            "This report has {count} attachments; the configured limit is {}. Remove an attachment before sending.",
-            self.max_attachments
-        );
-        ensure!(
-            total <= self.total_bytes,
-            "Attachments total {total} bytes; the configured combined limit is {} bytes ({}). Remove an attachment or choose smaller files before sending.",
-            self.total_bytes,
-            human_size(self.total_bytes)
-        );
+        ensure!(count <= self.max_attachments, "This report has {count} attachments; the configured limit is {}. Remove an attachment before sending.", self.max_attachments);
+        ensure!(total <= self.total_bytes, "Attachments total {total} bytes; the configured combined limit is {} bytes ({}). Remove an attachment or choose smaller files before sending.", self.total_bytes, human_size(self.total_bytes));
         Ok(())
     }
     pub fn check_video(self, video: &Video) -> Result<()> {
@@ -197,10 +178,8 @@ impl Limits {
         if let Some(maximum) = self.video_seconds {
             let duration = super::video::duration_seconds(&video.path)
                 .context("Couldn't determine this video's duration. Choose an MP4/MOV/WebM with readable timing, or clear the duration limit before sending.")?;
-            ensure!(
-                duration <= maximum as f64,
-                "Video is {duration:.2} seconds; the configured limit is {maximum} seconds. Trim it or choose another video before sending."
-            );
+            ensure!(duration <= maximum as f64,
+                "Video is {duration:.2} seconds; the configured limit is {maximum} seconds. Trim it or choose another video before sending.");
         }
         Ok(())
     }
@@ -384,7 +363,7 @@ fn video_identity(file: &mut std::fs::File) -> Result<VideoIdentity> {
     let filesystem_file = {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
         };
         let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: the File owns a live handle and information is writable.
@@ -593,8 +572,8 @@ fn send_to_cancellable(
     cancel: Option<CancelSignal>,
 ) -> Result<Receipt> {
     use futures_util::{
+        future::{select, Either},
         FutureExt,
-        future::{Either, select},
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1008,33 +987,27 @@ mod limits_tests {
             ..Limits::default()
         };
         assert!(limits.check_sizes(Some(8), Some(32), None).is_ok());
-        assert!(
-            limits
-                .check_sizes(None, Some(33), None)
-                .unwrap_err()
-                .to_string()
-                .contains("configured limit is 32 bytes")
-        );
+        assert!(limits
+            .check_sizes(None, Some(33), None)
+            .unwrap_err()
+            .to_string()
+            .contains("configured limit is 32 bytes"));
         assert!(limits.check_sizes(Some(9), None, None).is_err());
         assert!(limits.check_sizes(None, None, Some(5)).is_err());
-        assert!(
-            limits
-                .check_sizes(Some(8), Some(32), Some(1))
-                .unwrap_err()
-                .to_string()
-                .contains("3 attachments")
-        );
+        assert!(limits
+            .check_sizes(Some(8), Some(32), Some(1))
+            .unwrap_err()
+            .to_string()
+            .contains("3 attachments"));
         let combined = Limits {
             max_attachments: 3,
             ..limits
         };
-        assert!(
-            combined
-                .check_sizes(Some(8), Some(32), Some(1))
-                .unwrap_err()
-                .to_string()
-                .contains("combined limit")
-        );
+        assert!(combined
+            .check_sizes(Some(8), Some(32), Some(1))
+            .unwrap_err()
+            .to_string()
+            .contains("combined limit"));
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("clip.webm");
         std::fs::write(&path, [0; 32]).unwrap();
@@ -1080,7 +1053,7 @@ mod limits_tests {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
-    use futures_util::{FutureExt, future::AbortHandle};
+    use futures_util::{future::AbortHandle, FutureExt};
     use std::net::TcpListener;
 
     fn signal() -> (AbortHandle, CancelSignal) {
@@ -1163,11 +1136,9 @@ mod cancellation_tests {
         let report = draft();
         let error =
             send_using_cancellable(&endpoint, &alternate, &report, Some(cancel)).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("server may already have received")
-        );
+        assert!(error
+            .to_string()
+            .contains("server may already have received"));
         assert_eq!(report.text, "Keep this draft");
         assert_eq!(report.screenshot.as_deref().unwrap().as_slice(), &[1, 2, 3]);
         server.join().unwrap();

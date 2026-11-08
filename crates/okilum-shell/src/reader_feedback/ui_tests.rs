@@ -44,12 +44,11 @@ fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_
             view.reporter
                 .update(cx, |input, cx| input.set_value("", window, cx));
             assert!(view.checkpoint(cx));
-            assert!(
-                view.report_without_log(cx)
-                    .identity
-                    .reporter_name
-                    .is_empty()
-            );
+            assert!(view
+                .report_without_log(cx)
+                .identity
+                .reporter_name
+                .is_empty());
         });
         let store = identity::Store::open(path).unwrap();
         assert_eq!(store.data.install_id, install);
@@ -406,13 +405,12 @@ fn failed_send_retains_draft_on_reopen_copy_and_retry_then_shows_the_issue_link(
         );
         view.update(visual, |view, cx| view.copy(cx));
         visual.update(|_, cx| {
-            assert!(
-                cx.read_from_clipboard()
-                    .unwrap()
-                    .text()
-                    .unwrap()
-                    .contains("Keep my draft")
-            )
+            assert!(cx
+                .read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("Keep my draft"))
         });
         let calls = sent.clone();
         view.update(visual, |view, cx| {
@@ -463,13 +461,12 @@ fn copy_report_keeps_text_and_metadata_when_the_opted_in_log_is_unavailable(
         let copy = visual.debug_bounds("feedback-copy").unwrap();
         visual.simulate_click(copy.center(), Modifiers::default());
         visual.update(|_, cx| {
-            assert!(
-                cx.read_from_clipboard()
-                    .unwrap()
-                    .text()
-                    .unwrap()
-                    .contains("LOG-POSITIVE-CONTROL")
-            );
+            assert!(cx
+                .read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("LOG-POSITIVE-CONTROL"));
         });
         for path in [
             None,
@@ -583,11 +580,10 @@ fn feedback_keeps_the_main_window_interactive_and_metadata_belongs_to_its_source
         feedback.simulate_keystrokes("secondary-w");
         reader.run_until_parked();
         reader.update(|_, cx| {
-            assert!(
-                !cx.windows()
-                    .iter()
-                    .any(|window| window.window_id() == feedback_id)
-            )
+            assert!(!cx
+                .windows()
+                .iter()
+                .any(|window| window.window_id() == feedback_id))
         });
         reader.update(|window, _| window.activate_window());
         reader.dispatch_action(SendFeedback);

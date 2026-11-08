@@ -498,11 +498,7 @@ impl FeedbackView {
         let send_cancel = Arc::new(std::sync::Mutex::new(None::<model::CancelSignal>));
         let cancellation = send_cancel.clone();
         let limits_path = feedback_limits_path();
-        let (limits, limits_error) = match limits_path
-            .as_ref()
-            .map(|p| model::Limits::load(p))
-            .transpose()
-        {
+        let (limits, limits_error) = match limits_path.as_ref().map(|p| model::Limits::load(p)).transpose() {
             Ok(limits) => (limits.unwrap_or_default(), None),
             Err(error) => (
                 model::Limits::default(),
@@ -670,9 +666,7 @@ impl FeedbackView {
                 true
             }
             Err(error) => {
-                self.persistence_error = Some(format!(
-                    "Couldn't save Feedback draft: {error}. Sending is stopped; copy the report before closing."
-                ));
+                self.persistence_error = Some(format!("Couldn't save Feedback draft: {error}. Sending is stopped; copy the report before closing."));
                 false
             }
         }
@@ -698,9 +692,7 @@ impl FeedbackView {
                 self.restore_draft(index, window, cx);
             }
             Err(error) => {
-                self.persistence_error = Some(format!(
-                    "Couldn't reopen the saved revision: {error}. The current draft was kept as a separate copy."
-                ));
+                self.persistence_error = Some(format!("Couldn't reopen the saved revision: {error}. The current draft was kept as a separate copy."));
                 cx.notify();
             }
         }
@@ -766,9 +758,7 @@ impl FeedbackView {
             Ok(image) => self.image = image,
             Err(error) => {
                 self.unavailable_screenshot = saved.screenshot.clone();
-                self.image_error = Some(format!(
-                    "Couldn't restore the selected screenshot: {error}. Remove it or attach it again."
-                ));
+                self.image_error = Some(format!("Couldn't restore the selected screenshot: {error}. Remove it or attach it again."));
             }
         }
         self.video = saved.video;
@@ -1843,15 +1833,13 @@ mod recovery_mounted_tests {
             Some(vec![path.to_owned()])
         });
         draw(visual);
-        assert!(
-            visual
-                .debug_bounds(if video {
-                    "feedback-video"
-                } else {
-                    "feedback-preview"
-                })
-                .is_some()
-        );
+        assert!(visual
+            .debug_bounds(if video {
+                "feedback-video"
+            } else {
+                "feedback-preview"
+            })
+            .is_some());
     }
 
     fn hold(
@@ -2055,12 +2043,11 @@ mod recovery_mounted_tests {
         click(&mut feedback, "feedback-send");
         view.read_with(&feedback, |view, cx| {
             assert!(matches!(view.state, SendState::Compose));
-            assert!(
-                view.preflight_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("configured limit is 20 seconds")
-            );
+            assert!(view
+                .preflight_error
+                .as_ref()
+                .unwrap()
+                .contains("configured limit is 20 seconds"));
             assert_eq!(
                 view.text.read(cx).value(),
                 "Duration validation retains my report"
@@ -2124,12 +2111,10 @@ mod recovery_mounted_tests {
         started
             .try_recv()
             .expect("real Send reached worker scheduling boundary");
-        assert!(
-            saved(&view, &feedback)
-                .1
-                .status
-                .contains("Delivery is uncertain")
-        );
+        assert!(saved(&view, &feedback)
+            .1
+            .status
+            .contains("Delivery is uncertain"));
         click(&mut feedback, "feedback-cancel");
         view.read_with(&feedback, |view, cx| {
             assert!(matches!(view.state, SendState::Sending));
@@ -2148,11 +2133,9 @@ mod recovery_mounted_tests {
         let (_, recovered) = saved(&view, &feedback);
         assert_eq!(recovered.text, "Keep this feedback Ω");
         assert_eq!(recovered.video.as_ref(), Some(&selected));
-        assert!(
-            recovered
-                .status
-                .contains("server may already have received")
-        );
+        assert!(recovered
+            .status
+            .contains("server may already have received"));
         let old_id = view.entity_id();
         feedback.simulate_keystrokes("escape");
         draw(reader);
