@@ -13,7 +13,7 @@ use storage::{Binding as JournalBinding, Metadata, Phase, Store};
 pub(in crate::direct) enum Request {
     Stage {
         operation: Uuid,
-        header: Header,
+        header: Box<Header>,
         metadata_hash: String,
         metadata_size: usize,
     },
@@ -197,6 +197,7 @@ impl Controller {
             ..
         } = request
         {
+            let header = *header;
             let (source, _) = self.inspection_authority(peer, signer, &header.binding.vault)?;
             let original = {
                 let mut cache = self.shared.inventory.lock().unwrap();
@@ -351,7 +352,10 @@ impl Controller {
                 let scope = scope
                     .as_ref()
                     .context("transport ownership missing; recover first Sync")?;
-                store.publish(|| scope.validate())?;
+                store.publish(|| {
+                    self.check()?;
+                    scope.validate()
+                })?;
                 Ok(Response::Published {
                     operation,
                     metadata_hash,
@@ -412,9 +416,11 @@ impl Controller {
     }
 }
 fn decode_chunk(hex: &str) -> Result<Vec<u8>> {
-    ensure!(hex.len() % 2 == 0, "invalid first Sync chunk");
+    ensure!(hex.len().is_multiple_of(2), "invalid first Sync chunk");
     hex.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digit = |b: u8| match b {
                 b'0'..=b'9' => Ok(b - b'0'),
@@ -558,7 +564,7 @@ impl Controller {
             preview.peer,
             Request::Stage {
                 operation,
-                header: preview.remote.clone(),
+                header: Box::new(preview.remote.clone()),
                 metadata_hash: metadata_hash.clone(),
                 metadata_size: metadata.len(),
             },
@@ -688,7 +694,10 @@ impl Controller {
                 "remote first Sync completion not acknowledged"
             );
             let owner = hold.as_ref().unwrap();
-            store.publish(|| owner.validate())?;
+            store.publish(|| {
+                self.check()?;
+                owner.validate()
+            })?;
             // This is the durable acknowledgement of BOTH exact readbacks.
             store.binding.phase = Phase::PeerComplete;
             store.save()?;

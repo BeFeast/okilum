@@ -45,10 +45,12 @@ pub enum Error {
 pub struct Consent(Plan);
 
 impl Plan {
-    pub(crate) fn originals(&self) -> (&Snapshot, &Snapshot) {
+    /// Exact read-only inputs retained by this revision-bound plan.
+    pub fn originals(&self) -> (&Snapshot, &Snapshot) {
         (&self.here, &self.there)
     }
-    pub(crate) fn merged_files(&self) -> &BTreeMap<String, Vec<u8>> {
+    /// Proposed lossless union. Inspecting it grants no publication authority.
+    pub fn merged_files(&self) -> &BTreeMap<String, Vec<u8>> {
         &self.merged
     }
     pub fn preview(here: Snapshot, there: Snapshot) -> Result<Self, Error> {
