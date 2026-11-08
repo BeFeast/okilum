@@ -108,6 +108,10 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
         metadata.permissions().mode() & 0o111 != 0,
         "AppImage is not executable"
     );
+    if crate::desktop::external_launcher(home, source)?.is_some() {
+        crate::desktop::install(home, source)?;
+        return Ok(source.to_path_buf());
+    }
     let (image, command) = paths(home)?;
     // A symlinked install directory could redirect writes outside the user's
     // named installation. Shared XDG parent directories may themselves be user
@@ -255,6 +259,40 @@ pub fn remove(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn externally_integrated_images_stay_in_place_across_updates() {
+        for name in [
+            "gearlever_okilum.desktop",
+            "appimagekit_deadbeef-Okilum.desktop",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let source = home.path().join("Applications/Okilum managed.AppImage");
+            executable(&source, b"old manager image");
+            let applications = home.path().join(".local/share/applications");
+            fs::create_dir_all(&applications).unwrap();
+            let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nExec=env DESKTOPINTEGRATION=1 '{}' %u\nTryExec={}\nIcon=/manager/icon.svg\nStartupWMClass=okilum\nX-AppImage-Name=Okilum\n", source.display(), source.display());
+            let launcher = applications.join(name);
+            fs::write(&launcher, &entry).unwrap();
+            let (image, command) = paths(home.path()).unwrap();
+            let (desktop, icon) = crate::desktop::paths(home.path()).unwrap();
+            for (build, bytes) in [
+                (100, b"old manager image".as_slice()),
+                (101, b"updated manager image".as_slice()),
+            ] {
+                // The updater replaces the manager's exact path, as in production.
+                let stage = source.with_extension("stage");
+                executable(&stage, bytes);
+                fs::rename(stage, &source).unwrap();
+                assert_eq!(install(home.path(), &source, build).unwrap(), source);
+                crate::desktop::install(home.path(), &source).unwrap();
+                assert!(!image.exists() && !command.exists());
+                assert!(!desktop.exists() && !icon.exists());
+                assert_eq!(fs::read_to_string(&launcher).unwrap(), entry);
+                assert_eq!(fs::read(&source).unwrap(), bytes);
+            }
+        }
+    }
 
     #[test]
     fn fresh_install_and_legacy_migration_publish_both_launchers_before_removal() {

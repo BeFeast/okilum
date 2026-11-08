@@ -64,6 +64,7 @@ pub(crate) fn enter_managed_appimage() {
             return;
         }
     };
+    refresh_desktop_database(Path::new(&home));
     if target == source {
         return;
     }
@@ -108,7 +109,7 @@ pub(crate) fn install_appimage_desktop() {
 
 #[cfg(target_os = "linux")]
 fn refresh_desktop_database(home: &Path) {
-    let Ok((desktop, _)) = okilum_appimage::desktop::paths(home) else {
+    let Ok((desktop, icon)) = okilum_appimage::desktop::paths(home) else {
         return;
     };
     // Optional cache refresh only, never change defaults or MIME associations.
@@ -118,6 +119,24 @@ fn refresh_desktop_database(home: &Path) {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("LD_PRELOAD")
+            .status();
+    }
+    if let Some(theme) = icon
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .filter(|theme| theme.is_dir())
+    {
+        let _ = std::process::Command::new("gtk-update-icon-cache")
+            .args(["--force", "--ignore-theme-index"])
+            .arg(theme)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("LD_PRELOAD")
             .status();
     }
 }

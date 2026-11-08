@@ -60,6 +60,116 @@ fn exec_path(image: &Path) -> Result<String> {
     Ok(escaped)
 }
 
+// Desktop-entry string escaping is applied before the Exec argument grammar.
+// Do not execute a desktop file to discover its target.
+fn entry_string(value: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            result.push(ch);
+            continue;
+        }
+        result.push(match chars.next()? {
+            's' => ' ',
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            _ => return None,
+        });
+    }
+    Some(result)
+}
+
+fn executable(entry: &str) -> Option<PathBuf> {
+    let line = entry_string(entry)?;
+    let words = shell_words::split(&line).ok()?;
+    let mut arguments = words.iter();
+    let mut program = arguments.next()?;
+    if program == "env" || program == "/usr/bin/env" {
+        program = loop {
+            let arg = arguments.next()?;
+            if arg == "--" || (!arg.starts_with('-') && arg.contains('=')) {
+                continue;
+            }
+            break arg;
+        };
+    }
+    // Only %% is a literal percent. Field codes are not executable path bytes.
+    let mut path = String::new();
+    let mut chars = program.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%' && chars.next()? != '%' {
+            return None;
+        }
+        path.push(ch);
+    }
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+/// An existing visible launcher for these exact bytes owns desktop integration.
+/// Gear Lever and AppImageLauncher choose their own names and directories; a
+/// folder name or an environment flag alone never establishes that ownership.
+pub fn external_launcher(home: &Path, image: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    let (desktop, _) = paths(home)?;
+    let directory = desktop.parent().context("Missing applications directory")?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("desktop")) {
+            continue;
+        }
+        // Another installer may atomically replace/remove an unrelated entry
+        // while we scan. That race must not prevent our own first launch.
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.len() > 1_048_576
+        {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut main = false;
+        let mut fields = std::collections::BTreeMap::new();
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                main = line == "[Desktop Entry]";
+            } else if main && !line.starts_with('#') {
+                if let Some((key, value)) = line.split_once('=') {
+                    fields.insert(key.trim(), value.trim());
+                }
+            }
+        }
+        if fields.get("Type") != Some(&"Application")
+            || fields.get("Hidden") == Some(&"true")
+            || fields.get("NoDisplay") == Some(&"true")
+            || fields.get("X-Okilum-AppImage") == Some(&"true")
+        {
+            continue;
+        }
+        if fields
+            .get("Exec")
+            .and_then(|value| executable(value))
+            .as_deref()
+            == Some(image)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 /// Evidence that the exact legacy image belongs to our previous installation.
 /// A distribution or user-authored launcher never authorizes deleting its target.
 pub(crate) fn points_to(home: &Path, image: &Path) -> Result<bool> {
@@ -84,6 +194,17 @@ pub fn install(home: &Path, image: &Path) -> Result<()> {
             && metadata.permissions().mode() & 0o111 != 0,
         "AppImage must be an executable regular file owned by you"
     );
+    if external_launcher(home, image)?.is_some() {
+        // Retire our previous duplicate only. Never rewrite or remove the
+        // manager's launcher, icon, executable or update configuration.
+        let (desktop, _) = paths(home)?;
+        if fs::read_to_string(desktop)
+            .is_ok_and(|text| text.lines().any(|line| line == MARKER.trim()))
+        {
+            remove(home)?;
+        }
+        return Ok(());
+    }
     let (desktop, icon) = paths(home)?;
     if desktop.exists() {
         ensure!(
@@ -99,11 +220,21 @@ pub fn install(home: &Path, image: &Path) -> Result<()> {
             "Refusing to overwrite an unowned desktop icon"
         );
     }
+    // GNOME caches theme roots, not every nested apps directory. Installing a
+    // new SVG beneath an existing hicolor tree can leave a valid old cache
+    // without this icon. A file icon is immediately usable even before the
+    // desktop's theme cache refreshes (or without gtk-update-icon-cache).
+    let icon_value = icon.to_str().context("Desktop icon path is not UTF-8")?;
+    ensure!(
+        !icon_value.chars().any(char::is_control),
+        "Desktop icon path contains controls"
+    );
+    let icon_value = icon_value.replace('\\', "\\\\");
     // GLib validates argv[0] before expanding desktop field codes. A literal
     // percent in the image path is encoded as %% and fails that early lookup.
     // env is the fixed executable; the image stays one quoted argument and is
     // exec'd directly after field expansion, without a shell or PATH lookup.
-    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec=/usr/bin/env -- {} %u\nIcon=okilum-appimage\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;inode/directory;\nActions=OpenVault;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}\n[Desktop Action OpenVault]\nName=Open in Okilum as Vault\nExec=/usr/bin/env -- {} --vault %f\n", exec_path(image)?, exec_path(image)?);
+    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec=/usr/bin/env -- {} %u\nIcon={icon_value}\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;inode/directory;\nActions=OpenVault;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}\n[Desktop Action OpenVault]\nName=Open in Okilum as Vault\nExec=/usr/bin/env -- {} --vault %f\n", exec_path(image)?, exec_path(image)?);
     // Install the icon first so a published launcher always has its payload.
     atomic_write(&icon, ICON)?;
     atomic_write(&desktop, entry.as_bytes())
@@ -136,6 +267,107 @@ pub fn remove(home: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn gio_icon_is_the_installed_file_without_theme_lookup() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let home = sandbox.path().join("home space $percent% back\\slash");
+        fs::create_dir(&home).unwrap();
+        let image = home.join("Okilum.AppImage");
+        fs::write(&image, b"not executed").unwrap();
+        fs::set_permissions(&image, fs::Permissions::from_mode(0o755)).unwrap();
+        install(&home, &image).unwrap();
+        let (desktop, icon) = paths(&home).unwrap();
+        let result = std::process::Command::new("python3")
+            .args(["-c", r#"import ctypes, sys
+gio = ctypes.CDLL('libgio-2.0.so.0')
+obj = ctypes.CDLL('libgobject-2.0.so.0')
+gio.g_desktop_app_info_new_from_filename.argtypes = [ctypes.c_char_p]
+gio.g_desktop_app_info_new_from_filename.restype = ctypes.c_void_p
+gio.g_app_info_get_icon.argtypes = [ctypes.c_void_p]
+gio.g_app_info_get_icon.restype = ctypes.c_void_p
+gio.g_file_icon_get_type.restype = ctypes.c_size_t
+obj.g_type_check_instance_is_a.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+obj.g_type_check_instance_is_a.restype = ctypes.c_int
+gio.g_file_icon_get_file.argtypes = [ctypes.c_void_p]
+gio.g_file_icon_get_file.restype = ctypes.c_void_p
+gio.g_file_get_path.argtypes = [ctypes.c_void_p]
+gio.g_file_get_path.restype = ctypes.c_char_p
+app = gio.g_desktop_app_info_new_from_filename(sys.argv[1].encode())
+assert app, 'GLib rejected the desktop entry'
+icon = gio.g_app_info_get_icon(app)
+assert obj.g_type_check_instance_is_a(icon, gio.g_file_icon_get_type()), 'Icon still needs theme-cache lookup'
+assert gio.g_file_get_path(gio.g_file_icon_get_file(icon)) == sys.argv[2].encode(), 'Icon path changed'
+"#])
+            .arg(desktop)
+            .arg(icon)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn manager_detection_requires_the_visible_main_entry_and_exact_executable() {
+        let home = tempfile::tempdir().unwrap();
+        let image = home.path().join("Programs/Okilum % image.AppImage");
+        fs::create_dir_all(image.parent().unwrap()).unwrap();
+        fs::write(&image, b"image").unwrap();
+        fs::set_permissions(&image, fs::Permissions::from_mode(0o755)).unwrap();
+        let (desktop, _) = paths(home.path()).unwrap();
+        fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+        let manager = desktop.with_file_name("gearlever_okilum.desktop");
+        let command = format!(
+            "/usr/bin/env DESKTOPINTEGRATION=1 -- {} %u",
+            exec_path(&image).unwrap()
+        );
+        for extra in [
+            "",
+            "Hidden=true\n",
+            "NoDisplay=true\n",
+            "X-Okilum-AppImage=true\n",
+        ] {
+            fs::write(&manager, format!("[Desktop Entry]\nType=Application\nName=Okilum\nExec={command}\n{extra}[Desktop Action Other]\nExec=/unrelated\n")).unwrap();
+            assert_eq!(
+                external_launcher(home.path(), &image).unwrap().is_some(),
+                extra.is_empty()
+            );
+        }
+        for entry in [
+            "[Desktop Entry]\nType=Application\nName=Okilum\nExec=/unrelated %u\n".to_string(),
+            format!("[Desktop Entry]\nType=Application\nName=Okilum\nTryExec={}\nExec=/unrelated\n", image.display()),
+            format!("[Desktop Entry]\nType=Application\nName=Other\nExec=/unrelated\n[Desktop Action Okilum]\nExec={command}\n"),
+        ] {
+            fs::write(&manager, entry).unwrap();
+            assert!(external_launcher(home.path(), &image).unwrap().is_none());
+        }
+        // A pathname convention does not establish manager ownership.
+        install(home.path(), &image).unwrap();
+        assert!(desktop.exists());
+    }
+
+    #[test]
+    fn adopting_external_integration_retires_only_our_old_duplicate() {
+        let home = tempfile::tempdir().unwrap();
+        let image = home.path().join("Okilum.AppImage");
+        fs::write(&image, b"image").unwrap();
+        fs::set_permissions(&image, fs::Permissions::from_mode(0o755)).unwrap();
+        install(home.path(), &image).unwrap();
+        let (desktop, icon) = paths(home.path()).unwrap();
+        let manager = desktop.with_file_name("gearlever_okilum.desktop");
+        let entry = format!(
+            "[Desktop Entry]\nType=Application\nName=Okilum\nExec={} %u\nIcon=/manager/icon.svg\n",
+            exec_path(&image).unwrap()
+        );
+        fs::write(&manager, &entry).unwrap();
+        install(home.path(), &image).unwrap();
+        assert!(!desktop.exists() && !icon.exists());
+        assert_eq!(fs::read_to_string(manager).unwrap(), entry);
+        assert_eq!(fs::read(image).unwrap(), b"image");
+    }
 
     #[test]
     fn install_move_remove_preserves_other_launchers() {

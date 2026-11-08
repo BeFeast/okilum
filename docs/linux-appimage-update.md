@@ -220,6 +220,25 @@ Install atomically refreshes changed bytes, including after an AppImage move;
 unowned launchers/icons are refused. Distribution `okilum.desktop` is preserved.
 No MIME/default-handler change or system integration dependency is introduced.
 
+The launcher uses the installed SVG's absolute file path for `Icon`, so the
+first window and app grid do not depend on GNOME noticing a new icon in an
+already cached hicolor theme. The shell also refreshes the user hicolor cache
+with `gtk-update-icon-cache` when available, alongside the desktop database;
+missing cache tools do not prevent startup. Wayland app_id and StartupWMClass
+remain `okilum`, including on Hyprland/Omarchy. GNOME's window tracker matches
+StartupWMClass even though the AppImage launcher has a separate desktop id.
+
+An existing visible user launcher whose main `Exec` targets the running
+AppImage takes precedence over self-installation. This includes Gear Lever's
+`env DESKTOPINTEGRATION=1 …` entries and AppImageLauncher's generated desktop
+files. Okilum keeps that executable in place and updates that same path; it does
+not copy it to the Okilum-managed XDG installation or publish another launcher.
+The check parses desktop data without executing it and requires the exact
+executable path, rather than assuming every file in `~/Applications` belongs to
+a manager. Manager launchers/icons are preserved. A previous launcher bearing
+Okilum's own ownership marker is retired when the running image acquires such
+external integration.
+
 The UI owner must coordinate through the parent's registry before wiring the
 minimal lifecycle hook: invoke install off the GPUI thread only on ordinary
 AppImage startup (not help/build-info/QA fixture routes), silently; log an error
