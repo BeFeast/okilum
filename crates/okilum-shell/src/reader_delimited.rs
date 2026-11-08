@@ -8,6 +8,8 @@ use std::cell::RefCell;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation as _;
 mod controls;
+#[cfg(feature = "data-view-native-harness")]
+pub(crate) mod native_harness;
 
 const ROW_HEIGHT: f32 = 30.;
 const COLUMN_WIDTH: f32 = 200.;
@@ -83,6 +85,7 @@ pub(crate) struct TablePreview {
     revision: u64,
     updating: bool,
     header: bool,
+    projection_all: bool,
     visible_columns: Range<usize>,
     external_error: Option<String>,
     external_pending: bool,
@@ -107,6 +110,7 @@ impl TablePreview {
             revision: 0,
             updating: false,
             header: true,
+            projection_all: false,
             visible_columns: 0..0,
             external_error: None,
             external_pending: false,
@@ -179,6 +183,7 @@ impl TablePreview {
     }
     fn refilter(&mut self, cx: &mut Context<Self>) {
         self.revision += 1;
+        self.projection_all = self.all;
         let revision = self.revision;
         let Some(table) = self.table.clone() else {
             return;
@@ -589,7 +594,7 @@ impl Render for TablePreview {
             self.filter = Some(input);
         }
         let header = self.json() || reader_ui_state::delimited_header(&self.path, cx);
-        if self.header != header {
+        if self.header != header || self.projection_all != self.all {
             self.header = header;
             self.refilter(cx);
         }
@@ -610,8 +615,11 @@ impl Render for TablePreview {
                 .child(div().px_4().child(self.error.unwrap_or("Opening table…")))
                 .into_any_element();
         };
-        if table.rows.is_empty() && !table.limited {
+        if (table.rows.is_empty() || (self.json() && table.rows.len() == 1 && !table.limited))
+            && !table.limited
+        {
             return view
+                .child(self.toolbar(cx))
                 .child(div().px_4().child("Empty file"))
                 .into_any_element();
         }
@@ -778,8 +786,9 @@ mod tests {
         visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "Two"));
         preview.update_in(visual, |p, window, cx| {
             let input = p.filter.as_ref().unwrap().clone();
-            input.update(cx, |input, cx| input.set_value("HUND", window, cx));
+            input.update(cx, |input, cx| input.focus(window, cx));
         });
+        visual.simulate_input("HUND");
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
             assert_eq!(p.order, [3], "native filter subscription fired");

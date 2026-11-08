@@ -8539,6 +8539,10 @@ OPTIONS:
 
 fn main() {
     #[cfg(feature = "data-view-native-harness")]
+    if reader_delimited::native_harness::entry() {
+        return;
+    }
+    #[cfg(feature = "data-view-native-harness")]
     if reader_code_file::native_harness::entry() {
         return;
     }
