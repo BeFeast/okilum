@@ -31,8 +31,10 @@ Audio samples are synthetic three-second tones, not external recordings.
 
 JSON Canvas 1.0 opens as a native read-only scene with text, file, link and group
 cards, directed edges and labels. File paths name exact vault-root identities;
-note navigation retains heading/block intent through the ordinary Reader
-resolver. Missing/unsupported targets stay visible. Link cards open only http(s)
+the background scene loader checks each distinct file against the canonical
+vault root, independently of a still-loading note inventory. Note navigation
+retains heading/block intent through the ordinary Reader navigation handler.
+Missing, outside-vault and unsupported targets stay visible with disabled actions. Link cards open only http(s)
 on explicit activation. Group background images are identified but not previewed.
 
 Fit to content, zoom buttons, Ctrl/Cmd + wheel and pinch control zoom. Ordinary

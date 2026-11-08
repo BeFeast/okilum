@@ -15,6 +15,7 @@ GROUPS = {
     ]),
     "reader": ("okilum-shell", None, "reader_viewer_tests", [
         "local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_writes",
+        "cold_start_canvas_opens_its_exact_note_before_another_document",
     ]),
     "canvas": ("okilum-core", "--lib", "canvas::tests", [
         "json_canvas_sample_preserves_card_types_edges_and_negative_geometry",

@@ -9,10 +9,47 @@ pub(super) fn eligible(path: &Path) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case("canvas"))
 }
 
+// Called only by the background scene loader, never during rendering.
+fn checked_file_identity(root: &Path, file: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !Path::new(file).is_absolute(),
+        "File path must be relative to this vault"
+    );
+    let path = reader_files::checked_path(root, file)
+        .map_err(|_| anyhow::anyhow!("File is missing or unavailable in this vault"))?;
+    anyhow::ensure!(path.is_file(), "The target is not a file");
+    let root = root.canonicalize()?;
+    Ok(okilum_core::vault::note_path(path.strip_prefix(root)?))
+}
+
+fn file_target_url(path: &str, subpath: Option<&str>) -> String {
+    let note = Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    let suffix = if note {
+        subpath
+            .and_then(|value| value.strip_prefix('#'))
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("#{}", okilum_core::document_links::encode(value)))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    format!(
+        "{}{}{suffix}",
+        if note {
+            WIKI_SCHEME
+        } else {
+            "okilum://attachment/"
+        },
+        okilum_core::document_links::encode(path),
+    )
+}
+
 pub(super) struct CanvasView {
     root: PathBuf,
     rel: String,
-    vault: Arc<Vault>,
+    file_targets: HashMap<String, Result<String, String>>,
     reader: WeakEntity<Reader>,
     pub(super) scene: Option<Result<Arc<Scene>, String>>,
     pub(super) view: Viewport,
@@ -25,14 +62,13 @@ impl CanvasView {
     pub(super) fn new(
         root: PathBuf,
         rel: String,
-        vault: Arc<Vault>,
         reader: WeakEntity<Reader>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self {
             root,
             rel,
-            vault,
+            file_targets: HashMap::new(),
             reader,
             scene: None,
             view: Viewport::default(),
@@ -47,6 +83,7 @@ impl CanvasView {
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         let (root, rel) = (self.root.clone(), self.rel.clone());
         self.scene = None;
+        self.file_targets.clear();
         self._load = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -57,13 +94,38 @@ impl CanvasView {
                         std::fs::File::open(path)?
                             .take(okilum_core::canvas::MAX_BYTES as u64 + 1)
                             .read_to_end(&mut bytes)?;
-                        Scene::parse(&bytes).map(Arc::new)
+                        let scene = Arc::new(Scene::parse(&bytes)?);
+                        // JSON Canvas paths are exact vault-root identities, not
+                        // Markdown links. Startup inventory may still be partial.
+                        // Verify unique files off the UI thread with the same
+                        // canonical root boundary as ordinary file previews.
+                        let mut paths = HashMap::new();
+                        let mut targets = HashMap::new();
+                        for node in &scene.nodes {
+                            if let Content::File { file, subpath } = &node.content {
+                                let path = paths.entry(file.clone()).or_insert_with(|| {
+                                    checked_file_identity(&root, file).map_err(|e| e.to_string())
+                                });
+                                targets.insert(
+                                    node.id.clone(),
+                                    path.clone()
+                                        .map(|path| file_target_url(&path, subpath.as_deref())),
+                                );
+                            }
+                        }
+                        Ok((scene, targets))
                     })()
                     .map_err(|e| format!("Cannot open Canvas: {e}"))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.scene = Some(result);
+                this.scene = Some(match result {
+                    Ok((scene, targets)) => {
+                        this.file_targets = targets;
+                        Ok(scene)
+                    }
+                    Err(error) => Err(error),
+                });
                 cx.notify();
             });
         }));
@@ -88,12 +150,7 @@ impl CanvasView {
         );
     }
 
-    fn card(
-        &self,
-        node: &okilum_core::canvas::Node,
-        resolver: &okilum_core::document_links::IndexedResolver<'_>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn card(&self, node: &okilum_core::canvas::Node, cx: &mut Context<Self>) -> AnyElement {
         let at = self.view.point([node.x, node.y]);
         let scale = self.view.scale;
         let mut card = v_flex()
@@ -115,34 +172,25 @@ impl CanvasView {
             Content::Text { text } => {
                 card = card.child(text.clone());
             }
-            Content::File { file, subpath } => {
-                // JSON Canvas file paths name exact vault-root identities. Encoding
-                // keeps literal '#' and '%' filenames distinct from subpaths.
-                let target = format!(
-                    "/{}{}",
-                    okilum_core::document_links::encode(file),
-                    subpath.as_deref().unwrap_or("")
-                );
-                let resolved = resolver.resolve(&target, false, &self.rel);
+            Content::File { file, .. } => {
+                let target = self.file_targets.get(&node.id);
+                let url = target.and_then(|result| result.as_ref().ok()).cloned();
                 let reader = self.reader.clone();
-                let url = resolved.url;
                 let selector = format!("canvas-open-note-{}", node.id);
                 card = card.child(file.clone()).child(
                     Button::new("canvas-open-note")
                         .small()
                         .label("Open note")
+                        .disabled(url.is_none())
                         .debug_selector(move || selector.clone())
-                        .on_click(move |_, window, cx| handle_link(&reader, &url, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            if let Some(url) = &url {
+                                handle_link(&reader, url, window, cx);
+                            }
+                        }),
                 );
-                if resolved.status != "resolved" && resolved.status != "attachment" {
-                    card = card.child(format!(
-                        "{}{}",
-                        resolved.status,
-                        resolved
-                            .reason
-                            .map(|r| format!(": {r}"))
-                            .unwrap_or_default()
-                    ));
+                if let Some(Err(error)) = target {
+                    card = card.child(error.clone());
                 }
             }
             Content::Link { url } => {
@@ -326,7 +374,6 @@ impl Render for CanvasView {
                 cx.stop_propagation();
                 cx.notify();
             }));
-        let resolver = okilum_core::document_links::IndexedResolver::new(&self.vault);
         let width = f32::from(self.bounds.size.width);
         let height = f32::from(self.bounds.size.height);
         for node in &scene.nodes {
@@ -338,7 +385,7 @@ impl Render for CanvasView {
             {
                 continue;
             }
-            area = area.child(self.card(node, &resolver, cx));
+            area = area.child(self.card(node, cx));
         }
         let nodes: HashMap<_, _> = scene.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         for edge in &scene.edges {
@@ -376,5 +423,53 @@ impl Render for CanvasView {
                 .child(format!("Scroll or middle-drag to pan · Ctrl/Cmd + scroll to zoom · {} cards, {} edges{}", scene.nodes.len(), scene.edges.len(),
                     if scene.missing_edges() > 0 { format!(" · {} edges reference missing cards", scene.missing_edges()) } else { String::new() })))
             .child(area).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn exact_file_targets_preserve_delimiters_and_reject_missing_or_outside_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(root.join("canvas")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        std::fs::write(root.join("canvas/linked #%.md"), "# Acceptance C# %\n").unwrap();
+        std::fs::write(
+            root.join("other/linked #%.md"),
+            "Wrong duplicate basename\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("outside.md"), "Outside\n").unwrap();
+        let path = checked_file_identity(&root, "canvas/linked #%.md").unwrap();
+        assert_eq!(path, "canvas/linked #%.md");
+        let url = file_target_url(&path, Some("#Acceptance C# %"));
+        assert_eq!(
+            url,
+            "okilum://open/canvas/linked%20%23%25.md#Acceptance%20C%23%20%25"
+        );
+        assert_eq!(
+            split_open_url(url.strip_prefix(WIKI_SCHEME).unwrap()),
+            (path, Some("Acceptance C# %".into()))
+        );
+        assert!(checked_file_identity(&root, "canvas/missing.md").is_err());
+        assert!(checked_file_identity(&root, "../outside.md").is_err());
+        assert!(checked_file_identity(&root, "canvas").is_err());
+        assert!(
+            checked_file_identity(&root, dir.path().join("outside.md").to_str().unwrap()).is_err()
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("outside.md"), root.join("alias.md"))
+                .unwrap();
+            assert!(checked_file_identity(&root, "alias.md").is_err());
+        }
+        assert_eq!(
+            file_target_url("images/photo.jpg", None),
+            "okilum://attachment/images/photo.jpg"
+        );
     }
 }
