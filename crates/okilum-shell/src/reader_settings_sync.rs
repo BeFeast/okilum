@@ -178,6 +178,7 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 impl Global for TestWorker {}
 
 struct Output {
+    runtime_health: health::Runtime,
     overview: direct::Overview,
     connection_error: Option<String>,
     diagnostic: Option<String>,
@@ -412,6 +413,7 @@ impl SyncSettings {
                 .as_ref()
                 .zip(self.snapshot.as_ref())
                 .map(|(controller, snapshot)| Output {
+                    runtime_health: Default::default(),
                     overview: self.presentation.overview.clone(),
                     connection_error: None,
                     diagnostic: None,
@@ -443,7 +445,7 @@ impl SyncSettings {
                         }
                         if let Some(mut output) = pairing_poll {
                             #[cfg(all(target_os = "macos", not(test)))]
-                            health::check_managed()?;
+                            output.runtime_health = health::runtime(&health::check_managed());
                             let guard = ControllerGuard {
                                 ticket: worker_epoch,
                                 controller: output.controller.clone(),
@@ -497,9 +499,9 @@ impl SyncSettings {
                             this.publish(output, cx);
                         }
                         Err(error) => {
-                            if refresh || this.serving {
-                                this.health.failed();
-                            }
+                            // A controller/action error is not runtime-down evidence.
+                            // Keep its diagnostic in Settings; only runtime/folder
+                            // observations may change the main-window health alarm.
                             this.presentation.transfers.clear();
                             this.presentation.error_details = failure_details(action, &error)
                                 ["error"]
@@ -553,7 +555,8 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
-        self.health.observe(&output.overview, Instant::now());
+        self.health
+            .observe(&output.overview, output.runtime_health, Instant::now());
         if output.connection_error.is_none() {
             // A successful recheck replaces the failed attempt, including its
             // expanded diagnostic list. Never retain yesterday's REST errors.
@@ -561,7 +564,6 @@ impl SyncSettings {
             self.presentation.details = false;
             self.presentation.retry = None;
         } else {
-            self.health.failed();
             if let Some(diagnostic) = output.diagnostic {
                 self.presentation.error_details = Some(diagnostic);
             }
@@ -1168,15 +1170,18 @@ fn perform_with_locations(
         );
         let mut inspected = None;
         let mut refresh_problem = None;
+        #[cfg(all(target_os = "macos", not(test)))]
+        let managed = health::check_managed();
+        #[cfg(all(target_os = "macos", not(test)))]
+        let runtime_health = health::runtime(&managed);
+        #[cfg(not(all(target_os = "macos", not(test))))]
+        let runtime_health = health::Runtime::default();
         let snapshot = match operation {
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             #[cfg(target_os = "macos")]
             Operation::Restart => controller.refresh()?,
             Operation::Read | Operation::EnterPairing => {
-                #[cfg(all(target_os = "macos", not(test)))]
-                let observed = health::check_managed().and_then(|()| controller.refresh());
-                #[cfg(not(all(target_os = "macos", not(test))))]
                 let observed = controller.refresh();
                 match observed {
                     Ok(snapshot) => snapshot,
@@ -1242,11 +1247,16 @@ fn perform_with_locations(
         } else {
             runtime
         };
+        #[cfg(all(target_os = "macos", not(test)))]
+        if let Err(error) = managed {
+            refresh_problem.get_or_insert(error);
+        }
         let connection_error = refresh_problem.as_ref().map(user_error);
         #[cfg(target_os = "linux")]
         let connection_error =
             connection_error.or_else(|| linux_runtime::connection_error(&runtime));
         Ok(Output {
+            runtime_health,
             overview: controller.overview().unwrap_or_default(),
             diagnostic: refresh_problem.as_ref().and_then(|error| {
                 failure_details("refresh", error)["error"]

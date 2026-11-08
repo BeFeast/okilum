@@ -2,53 +2,58 @@
 use super::*;
 use std::collections::BTreeMap;
 const STALE: Duration = Duration::from_secs(10 * 60);
+const UNREACHABLE: Duration = Duration::from_secs(2 * 60);
+
+/// Runtime observation is independent of pairing/listener/replica reconciliation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Runtime {
+    pub down: bool,
+    pub unreachable: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Health {
     down: bool,
-    stalled: BTreeMap<PathBuf, (Instant, u64)>,
+    unavailable_since: Option<Instant>,
+    unavailable_vaults: BTreeMap<PathBuf, Instant>,
+    disconnected: BTreeMap<PathBuf, Instant>,
     stale: bool,
 }
 impl Health {
-    pub(super) fn failed(&mut self) {
-        self.down = true;
+    pub(super) fn failed(&mut self, now: Instant) {
+        let since = self.unavailable_since.get_or_insert(now);
+        self.down |= now.saturating_duration_since(*since) > UNREACHABLE;
     }
-    pub(super) fn observe(&mut self, overview: &direct::Overview, now: Instant) {
-        self.down = overview.vaults.values().any(|vault| !vault.available);
-        let connected = overview
-            .computers
-            .values()
-            .any(|computer| computer.connected == Some(true));
-        self.stalled
+    pub(super) fn observe(&mut self, overview: &direct::Overview, runtime: Runtime, now: Instant) {
+        self.down = false;
+        if runtime.unreachable {
+            self.failed(now);
+        } else {
+            self.unavailable_since = None;
+        }
+        self.down |= runtime.down;
+        self.unavailable_vaults
+            .retain(|path, _| overview.vaults.contains_key(path));
+        self.disconnected
             .retain(|path, _| overview.vaults.contains_key(path));
         self.stale = false;
-        let old_contact = !connected
-            && overview
-                .computers
-                .values()
-                .filter_map(|computer| computer.last_seen.as_deref())
-                .filter_map(|seen| chrono::DateTime::parse_from_rfc3339(seen).ok())
-                .any(|seen| {
-                    chrono::Utc::now().signed_duration_since(seen).num_seconds()
-                        > STALE.as_secs() as i64
-                });
         for (path, vault) in &overview.vaults {
-            if vault.available
-                && vault.state == "Up to date"
-                && (vault.connected || vault.shared_with.is_empty())
-            {
-                self.stalled.remove(path);
+            if !vault.available {
+                let since = self.unavailable_vaults.entry(path.clone()).or_insert(now);
+                self.down |= now.saturating_duration_since(*since) > UNREACHABLE;
+                self.disconnected.remove(path);
                 continue;
             }
-            let entry = self
-                .stalled
-                .entry(path.clone())
-                .or_insert((now, vault.needed_bytes));
-            if vault.needed_bytes < entry.1 {
-                entry.0 = now;
+            self.unavailable_vaults.remove(path);
+            self.down |= vault.errors;
+            // Idle folders, sleeping peers, scans and active transfers are normal.
+            // Count items as well as bytes: deletions/empty files need no bytes.
+            if vault.connected || vault.needed_items == 0 || vault.shared_with.is_empty() {
+                self.disconnected.remove(path);
+            } else {
+                let since = self.disconnected.entry(path.clone()).or_insert(now);
+                self.stale |= now.saturating_duration_since(*since) > STALE;
             }
-            entry.1 = vault.needed_bytes;
-            self.stale |= now.saturating_duration_since(entry.0) > STALE
-                || old_contact && !vault.shared_with.is_empty();
         }
     }
     pub(super) fn message(&self) -> Option<&'static str> {
@@ -114,6 +119,33 @@ pub(super) fn managed_enabled() -> bool {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+#[derive(Debug)]
+struct HelperDown;
+#[cfg(all(target_os = "macos", not(test)))]
+impl std::fmt::Display for HelperDown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Sync helper is not responding")
+    }
+}
+#[cfg(all(target_os = "macos", not(test)))]
+impl std::error::Error for HelperDown {}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(super) fn runtime(result: &anyhow::Result<()>) -> Runtime {
+    match result {
+        Ok(()) => Runtime::default(),
+        Err(error) if error.is::<HelperDown>() => Runtime {
+            down: true,
+            unreachable: false,
+        },
+        Err(_) => Runtime {
+            down: false,
+            unreachable: true,
+        },
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 pub(super) fn check_managed() -> anyhow::Result<()> {
     if !managed_enabled() {
         return Ok(());
@@ -125,7 +157,7 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
     // REST alone can be an orphan runtime: also authenticate the helper.
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
-        macos::connection::NativeSupervisor, store::UnixStore,
+        macos::connection::NativeConnection, store::UnixStore,
         supervisor::ipc::code_requirement::CodeRequirement,
     };
     let state = account_state_directory()?;
@@ -145,7 +177,7 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
         .context("app bundle unavailable")?;
     let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
     let identifier = option_env!("OKILUM_BUNDLE_ID").context("Sync signing policy unavailable")?;
-    let supervisor = NativeSupervisor::open(
+    let supervisor = NativeConnection::open(
         app,
         "okilum",
         binding,
@@ -153,10 +185,13 @@ pub(super) fn check_managed() -> anyhow::Result<()> {
         CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         Duration::from_secs(2),
     )?;
-    anyhow::ensure!(
-        matches!(supervisor.inspect()?, discovery::Discovered::Live(_)),
-        "Sync helper is not responding"
-    );
+    match supervisor.inspect()? {
+        discovery::Discovered::Live(_) => {}
+        discovery::Discovered::Absent => return Err(HelperDown.into()),
+        discovery::Discovered::Unreachable(reason) => {
+            anyhow::bail!("Sync helper inspection unavailable: {reason}");
+        }
+    }
     let config = discovery::managed_configuration_path(&state)?
         .ok_or_else(|| anyhow::anyhow!("enabled Sync has no managed configuration"))?;
     let discovered = daemon::discover(&[config]);
@@ -326,29 +361,27 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn missing_runtime_is_immediate_and_connected_success_clears_the_alert() {
-        let now = Instant::now();
-        let mut health = Health::default();
+    fn healthy() -> direct::Overview {
         let mut overview = direct::Overview::default();
+        overview.vaults.insert(
+            PathBuf::from("/synthetic"),
+            direct::VaultOverview {
+                available: true,
+                connected: true,
+                state: "Up to date".into(),
+                shared_with: vec!["Other computer".into()],
+                ..Default::default()
+            },
+        );
         overview
-            .vaults
-            .insert(PathBuf::from("/synthetic"), Default::default());
-        health.observe(&overview, now);
-        assert!(health.message().unwrap().contains("needs attention"));
-        let vault = overview.vaults.values_mut().next().unwrap();
-        vault.available = true;
-        vault.state = "Up to date".into();
-        health.observe(&overview, now);
-        assert!(health.message().is_none());
-        health.failed();
-        assert!(health.message().is_some());
     }
+
     #[test]
-    fn introduced_mesh_peer_keeps_the_vault_healthy_when_the_named_computer_sleeps() {
+    fn idle_up_to_date_is_healthy_even_with_old_contact_and_every_peer_asleep() {
         let now = Instant::now();
         let mut health = Health::default();
-        let mut overview = direct::Overview::default();
+        let mut overview = healthy();
+        overview.vaults.values_mut().next().unwrap().connected = false;
         overview.computers.insert(
             uuid::Uuid::nil(),
             direct::ComputerOverview {
@@ -357,52 +390,148 @@ mod tests {
                 ..Default::default()
             },
         );
-        overview.vaults.insert(
-            PathBuf::from("/synthetic"),
-            direct::VaultOverview {
-                available: true,
-                connected: true,
-                state: "Up to date".into(),
-                shared_with: vec!["Introduced computer".into()],
-                ..Default::default()
-            },
-        );
-        health.observe(&overview, now);
-        health.observe(&overview, now + STALE + Duration::from_secs(1));
+        health.observe(&overview, Runtime::default(), now);
+        health.observe(&overview, Runtime::default(), now + STALE * 10);
         assert!(
             health.message().is_none(),
-            "the named inviter is not the only Sync transport"
-        );
-        overview.vaults.values_mut().next().unwrap().connected = false;
-        health.observe(&overview, now + STALE + Duration::from_secs(2));
-        assert!(
-            health.message().is_some(),
-            "negative control: losing every carrier is stale"
+            "no pending items means no stalled sync"
         );
     }
 
     #[test]
-    fn offline_or_stalled_vault_warns_after_ten_minutes_and_progress_resets_timer() {
+    fn helper_down_warns_immediately_and_healthy_observation_clears_it() {
         let now = Instant::now();
         let mut health = Health::default();
-        let mut overview = direct::Overview::default();
-        overview.vaults.insert(
-            PathBuf::from("/synthetic"),
-            direct::VaultOverview {
-                available: true,
-                state: "Syncing".into(),
-                needed_bytes: 100,
-                ..Default::default()
+        let overview = healthy();
+        health.observe(
+            &overview,
+            Runtime {
+                down: true,
+                unreachable: false,
             },
+            now,
         );
-        health.observe(&overview, now);
+        assert!(health.message().unwrap().contains("needs attention"));
+        health.observe(&overview, Runtime::default(), now + Duration::from_secs(1));
         assert!(health.message().is_none());
-        health.observe(&overview, now + STALE);
+    }
+
+    #[test]
+    fn rest_unreachable_requires_two_continuous_minutes_and_recovery_resets_it() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = healthy();
+        overview.vaults.values_mut().next().unwrap().available = false;
+        health.observe(&overview, Runtime::default(), now);
+        health.observe(&overview, Runtime::default(), now + UNREACHABLE);
+        assert!(
+            health.message().is_none(),
+            "startup/update races have a grace period"
+        );
+        health.observe(
+            &overview,
+            Runtime::default(),
+            now + UNREACHABLE + Duration::from_secs(1),
+        );
+        assert!(
+            health.message().is_some(),
+            "persistent REST outage must warn"
+        );
+        overview.vaults.values_mut().next().unwrap().available = true;
+        health.observe(
+            &overview,
+            Runtime::default(),
+            now + UNREACHABLE + Duration::from_secs(2),
+        );
         assert!(health.message().is_none());
-        health.observe(&overview, now + STALE + Duration::from_secs(1));
+        overview.vaults.values_mut().next().unwrap().available = false;
+        health.observe(&overview, Runtime::default(), now + UNREACHABLE * 2);
+        assert!(health.message().is_none(), "new outage gets its own timer");
+    }
+
+    #[test]
+    fn unavailable_runtime_without_attached_vaults_has_the_same_grace_period() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let overview = direct::Overview::default();
+        let unavailable = Runtime {
+            down: false,
+            unreachable: true,
+        };
+        health.observe(&overview, unavailable, now);
+        assert!(health.message().is_none());
+        health.observe(
+            &overview,
+            unavailable,
+            now + UNREACHABLE + Duration::from_secs(1),
+        );
+        assert!(health.message().is_some());
+        health.observe(
+            &overview,
+            Runtime::default(),
+            now + UNREACHABLE + Duration::from_secs(2),
+        );
+        assert!(health.message().is_none());
+    }
+
+    #[test]
+    fn only_disconnected_folders_with_pending_items_warn_after_ten_minutes() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = healthy();
+        let vault = overview.vaults.values_mut().next().unwrap();
+        vault.state = "Syncing".into();
+        vault.needed_items = 1; // A deletion can need zero bytes.
+        health.observe(&overview, Runtime::default(), now);
+        health.observe(&overview, Runtime::default(), now + STALE * 2);
+        assert!(
+            health.message().is_none(),
+            "connected transfer is not an outage"
+        );
+        overview.vaults.values_mut().next().unwrap().connected = false;
+        health.observe(&overview, Runtime::default(), now + STALE * 2);
+        health.observe(&overview, Runtime::default(), now + STALE * 3);
+        assert!(health.message().is_none());
+        health.observe(
+            &overview,
+            Runtime::default(),
+            now + STALE * 3 + Duration::from_secs(1),
+        );
         assert!(health.message().unwrap().contains("10 minutes"));
-        overview.vaults.values_mut().next().unwrap().needed_bytes = 50;
-        health.observe(&overview, now + STALE + Duration::from_secs(2));
+        overview.vaults.values_mut().next().unwrap().connected = true;
+        health.observe(
+            &overview,
+            Runtime::default(),
+            now + STALE * 3 + Duration::from_secs(2),
+        );
+        assert!(
+            health.message().is_none(),
+            "reconnection clears without waiting for transfer"
+        );
+        overview.vaults.values_mut().next().unwrap().connected = false;
+        health.observe(&overview, Runtime::default(), now + STALE * 4);
+        assert!(
+            health.message().is_none(),
+            "reconnection resets the disconnect timer"
+        );
+        overview.vaults.values_mut().next().unwrap().needed_items = 0;
+        health.observe(&overview, Runtime::default(), now + STALE * 6);
+        assert!(
+            health.message().is_none(),
+            "completed folder clears while peers sleep"
+        );
+    }
+
+    #[test]
+    fn folder_errors_warn_immediately_and_clear_automatically() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = healthy();
+        overview.vaults.values_mut().next().unwrap().errors = true;
+        health.observe(&overview, Runtime::default(), now);
+        assert!(health.message().is_some());
+        overview.vaults.values_mut().next().unwrap().errors = false;
+        health.observe(&overview, Runtime::default(), now + Duration::from_secs(1));
         assert!(health.message().is_none());
     }
 }

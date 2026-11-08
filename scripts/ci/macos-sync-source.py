@@ -12,6 +12,7 @@ def main():
         ("okilum-sync", "--lib", "tests::issue2752_"),
         ("okilum-write-authority", "--lib", "identity_macos_tests::"),
         ("okilum-sync-controller", "--lib", "direct::source::tests::"),
+        ("okilum-sync-controller", "--lib", "direct::overview::tests::"),
         ("okilum-sync-controller", "--lib", "direct::existing::tests::issue2752_"),
         ("okilum-sync-controller", "--lib", "direct::transfer::tests::issue2752_"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::ipc::macos_peer::tests::"),

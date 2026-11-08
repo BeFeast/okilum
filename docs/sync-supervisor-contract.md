@@ -98,10 +98,14 @@ flushes the owned runtime before helper exit so normal replacement can restart.
 Startup/runtime failures are retained in the private Sync state's
 `supervisor-error.log`; app diagnostic details include this reason. A healthy
 serving generation clears it. Every main window shows a persistent red alert
-when enabled configured Sync is unavailable, or when a vault has made no Sync
-progress/contact for over ten minutes. The Fix action opens Sync settings and,
+when its enabled helper is down, authenticated REST has been continuously
+unreachable for over two minutes, a folder reports errors, or every carrier for
+a folder with pending items has been disconnected for over ten minutes.
+Controller reconciliation/pairing errors remain in Settings and do not override
+an independently healthy runtime. Read-only health uses authenticated Status,
+without the process-exit watch reserved for lifecycle Stop. The Fix action opens Sync settings and,
 on macOS, requests a verified managed-helper restart using SIGTERM, never SIGKILL.
-Connected up-to-date observations clear the alert; ordinary idle vaults do not
+Healthy observations clear the alert; ordinary idle vaults with no pending items do not
 become stale simply because no file was edited. All health I/O stays off Render.
 
 Explicit `OKILUM_STATE_DIR` Reader profiles isolate their direct journal and
