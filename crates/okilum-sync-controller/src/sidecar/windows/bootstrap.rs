@@ -1,6 +1,6 @@
 //! Read-only verification of a retained Windows managed preparation. Launch,
 //! installation and explicit Connect never infer authority from a config path.
-use crate::sidecar::{authority::launch::Phase, store::WindowsStore, Intent};
+use crate::sidecar::{store::WindowsStore, Intent};
 use crate::{
     daemon::DaemonIdentity,
     managed_launch::{ManagedInstance, Reference},
@@ -22,27 +22,41 @@ pub(crate) struct Receipt {
 pub fn active_state_directory() -> Result<PathBuf> {
     Ok(
         PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA unavailable")?)
-            .join("Okilum/Sync"),
+            .join("Okilum")
+            .join("Sync"),
     )
 }
+fn selected_state(state: &Path) -> Result<PathBuf> {
+    let text = state.to_str().context("Sync state path is not Unicode")?;
+    let normal = text.strip_prefix(r"\\?\").unwrap_or(text);
+    super::path(normal)?;
+    let selected = active_state_directory()?;
+    let selected_text = selected
+        .to_str()
+        .context("Sync state path is not Unicode")?;
+    super::path(selected_text)?;
+    if !normal.eq_ignore_ascii_case(selected_text) {
+        ensure!(
+            okilum_write_authority::filesystem_identity::read(Path::new(normal))?
+                == okilum_write_authority::filesystem_identity::read(&selected)?,
+            "Windows source requires its account-owned Sync state"
+        );
+    }
+    Ok(selected)
+}
+
 fn store(state: &Path) -> Result<WindowsStore> {
-    let normal = |path: &Path| {
-        path.to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .to_lowercase()
-    };
-    ensure!(
-        normal(state) == normal(&active_state_directory()?),
-        "Windows source requires its account-owned Sync state"
-    );
+    let selected = selected_state(state)?;
     WindowsStore::open_existing(
-        state
+        selected
             .to_str()
-            .context("Sync state path is not Unicode")?
-            .trim_start_matches(r"\\?\"),
+            .context("Sync state path is not Unicode")?,
     )
 }
+
 pub(crate) fn managed_launch_reference(state: &Path) -> Result<Option<Reference>> {
+    let selected = selected_state(state)?;
+    let state = selected.as_path();
     if !state.join("prepared-identity.json").try_exists()? {
         ensure!(
             !state.join("sidecar.json").try_exists()?,
@@ -62,11 +76,13 @@ pub(crate) fn managed_launch_reference(state: &Path) -> Result<Option<Reference>
     )?;
     receipt.launch.validate(&ManagedInstance {
         home: state.join("config").canonicalize()?,
-        executable,
+        executable: executable.canonicalize()?,
     })?;
     Ok(Some(receipt.launch))
 }
 pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity> {
+    let selected = selected_state(state)?;
+    let state = selected.as_path();
     let store = store(state)?;
     let saved = store
         .begin(Instant::now() + Duration::from_secs(5))?
@@ -74,13 +90,8 @@ pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity>
         .context("Windows source launch receipt missing")?
         .clone();
     ensure!(
-        saved.intent() == Intent::Enabled
-            && saved.stop().is_none()
-            && saved.update().is_none()
-            && saved
-                .launch_registration()
-                .is_some_and(|launch| launch.phase() == Phase::Claimed),
-        "Windows source requires a ready claimed Sync connection"
+        saved.intent() == Intent::Enabled && saved.stop().is_none() && saved.update().is_none(),
+        "Windows source requires an enabled Sync connection without pending stop/update"
     );
     let receipt: Receipt =
         serde_json::from_slice(&private::read(&state.join("prepared-identity.json"))?)?;

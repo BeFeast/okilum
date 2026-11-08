@@ -25,7 +25,11 @@ pub struct NativeLaunch {
 }
 impl NativeLaunch {
     pub fn if_registered(config: &Path, executable: &Path) -> Result<Option<Self>> {
-        let home = config.parent().context("native config home missing")?;
+        let canonical_home = config
+            .parent()
+            .context("native config home missing")?
+            .canonicalize()?;
+        let home = canonical_home.as_path();
         let pinned = native_launch_reference(home.parent().context("native state missing")?)?;
         if !directory(home)?.try_exists()? {
             ensure!(
@@ -45,7 +49,7 @@ impl NativeLaunch {
         let gate = reference.gate()?;
         reference.validate(&ManagedInstance {
             home: home.to_owned(),
-            executable: executable.to_owned(),
+            executable: executable.canonicalize()?,
         })?;
         let binding = reference.load()?;
         let folders = fence_folders(&reference, &binding)?;

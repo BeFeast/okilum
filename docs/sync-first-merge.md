@@ -159,3 +159,10 @@ a different chain, an unsigned image and changed executable bytes. The release
 packager still verifies every shipped PE against its configured signing key.
 The pinned Syncthing executable body is checked independently of its replacement
 Authenticode certificate table, so re-signing cannot substitute another program.
+
+Windows retains the documented Task Scheduler restart policy. Each captured Job
+Object generation takes the process lock and fences closed folders offline before
+spawn; it does not reuse macOS's SMAppService one-use registration rule. The
+runtime starts with `STMONITORED=1`, so its captured root owns the authenticated
+REST listener rather than an extra Syncthing monitor. Native Job Object controls
+exercise that fixed environment as well as complete descendant termination.

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import os
 import tempfile
+from pathlib import Path
 
 TESTS = {
     "filesystem_identity::tests::windows_open_handle_identity_preserves_the_existing_serialized_shape_and_detects_replacement",
@@ -39,8 +40,22 @@ def main():
         if f"{test}: test" not in listing or "1 test" not in listing:
             raise RuntimeError(f"Native Windows kernel control did not compile/discover: {listing}")
         with tempfile.TemporaryDirectory(prefix="okilum-first-sync-") as root:
-            env = dict(os.environ, LOCALAPPDATA=root, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=root)
+            selected = str(Path(root).resolve())
+            env = dict(os.environ, LOCALAPPDATA=selected, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=selected)
             subprocess.run([*command, "--", "--exact", "--include-ignored", "--nocapture"], env=env, check=True)
+    command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", "sidecar::supervisor::windows::tests::"]
+    listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
+    native_jobs = {line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")}
+    expected_jobs = {"sidecar::supervisor::windows::tests::" + name for name in (
+        "native_job_stop_and_drop_terminate_confirmed_descendant",
+        "native_job_reports_live_descendant_after_root_exit",
+        "native_job_expired_deadline_refuses_termination_with_stop_positive_control",
+        "native_job_tree_reports_stopped_only_for_the_whole_tree_and_stopping_on_timeout",
+        "native_job_uncaptured_exit_cannot_authorize_stopped",
+    )}
+    if native_jobs != expected_jobs:
+        raise RuntimeError(f"Complete Windows Job Object controls did not compile/discover: {listing}")
+    subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     subprocess.run(["cargo", "test", "--locked", "-p", "okilum-sync-supervisor"], check=True)
     return 0
 
