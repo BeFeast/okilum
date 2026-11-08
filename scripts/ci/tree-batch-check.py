@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real native selection/batch inventory with a compiled click-dispatch control."""
 from pathlib import Path
+import re
 import subprocess
 
 QA = Path("qa/tree-batch-2681")
@@ -24,8 +25,11 @@ def main():
     assert len(cases) >= 4 and REGRESSION in cases, "require the complete new inventory"
     complete = run("complete", "issue2681_", "--", "--nocapture", "--test-threads=1")
     assert complete.returncode == 0 and "0 failed" in complete.stdout
+    verdict = re.search(r"test result: ok\. (\d+) passed; 0 failed; 0 ignored;", complete.stdout)
+    assert verdict and int(verdict[1]) == len(cases), "every inventoried case must pass without ignores"
     for case in cases:
-        assert f"test {case} ... ok" in complete.stdout, f"case did not execute: {case}"
+        # --nocapture diagnostics may separate a test's name from its final ok.
+        assert f"test {case} ..." in complete.stdout, f"case did not execute: {case}"
     source = Path("crates/okilum-shell/src/main.rs")
     original = source.read_bytes()
     condition = b"if modifiers.control || modifiers.platform || modifiers.shift {"
