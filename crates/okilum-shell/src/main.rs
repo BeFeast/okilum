@@ -179,6 +179,7 @@ mod reader_file_access_notice;
 mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
+mod reader_batch;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
@@ -1758,6 +1759,7 @@ struct Reader {
     renaming: Option<reader_move::Renaming>,
     #[cfg(any(unix, windows))]
     move_picker: reader_move_picker::PickerState,
+    batch: reader_batch::State,
     #[cfg(any(unix, windows))]
     note_move_pending: bool,
     #[cfg(any(unix, windows))]
@@ -2181,6 +2183,7 @@ impl Reader {
             renaming: None,
             #[cfg(any(unix, windows))]
             move_picker: Default::default(),
+            batch: Default::default(),
             #[cfg(any(unix, windows))]
             note_move_pending: false,
             #[cfg(any(unix, windows))]
@@ -3128,6 +3131,7 @@ impl Reader {
         if self.project_navigation.active.is_some() {
             self.show_vault_files(window, cx);
         }
+        self.tree.clear_selection();
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
         self.save_sidebar(cx);
@@ -3745,6 +3749,7 @@ impl Reader {
     /// Breadcrumb target (#366): show the tree and select
     /// `path`; a folder is also expanded, the current note is revealed.
     fn reveal_in_tree(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree.clear_selection();
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
         self.save_sidebar(cx);
@@ -3780,6 +3785,7 @@ impl Reader {
     }
 
     fn tree_key(&mut self, key: TreeKey, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree.clear_selection();
         let lazy_folder =
             if self.single_file && matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
                 self.tree.cursor_folder()
@@ -3847,6 +3853,7 @@ impl Reader {
     /// the root (Esc in the tree, a click on its empty space; #1512). The
     /// open note keeps its highlight.
     fn clear_tree_selection(&mut self, cx: &mut Context<Self>) {
+        self.tree.clear_selection();
         if self.tree.cursor.take().is_some() {
             self.tree_revealed = self.selected_file().to_owned();
             cx.notify();
@@ -4884,6 +4891,7 @@ impl Reader {
         // New folder go next to it, so it must never be invisible (#1512).
         let tree_focused = self.tree_focus.is_focused(window);
         let cursor = tree.cursor.clone();
+        let selection = tree.selected_paths();
         let published_root = self.vault_root.clone();
         let published_generation = self.watcher_generation;
         let rules_root = self.vault_root.clone();
@@ -5184,7 +5192,9 @@ impl Reader {
                 }
                 SideItem::Tree(row) => {
                     let directory = row.kind == EntryKind::Directory;
-                    let is_current = row.path == tree_current;
+                    let is_selected = selection.contains(&row.path);
+                    let is_current =
+                        is_selected || (selection.len() < 2 && row.path == tree_current);
                     let is_cursor = cursor.as_ref() == Some(&row.path);
                     let label = row.label.clone();
                     let icon = match row.kind {
@@ -5206,7 +5216,9 @@ impl Reader {
                             #[cfg(any(unix, windows))]
                             let d = {
                                 let root = drag_root.clone();
-                                let d = if directory || row.kind == EntryKind::Markdown {
+                                let d = if selection.len() < 2
+                                    && (directory || row.kind == EntryKind::Markdown)
+                                {
                                     reader_move_picker::draggable(
                                         d,
                                         root.clone(),
@@ -5331,6 +5343,18 @@ impl Reader {
                                 // subfolders, as in Finder (#410).
                                 let deep = directory && event.modifiers().alt;
                                 act(&entity, window, cx, &|this, window, cx| {
+                                    let modifiers = event.modifiers();
+                                    if modifiers.control || modifiers.platform || modifiers.shift {
+                                        this.tree.select_click(
+                                            &row.path,
+                                            modifiers.control || modifiers.platform,
+                                            modifiers.shift,
+                                        );
+                                        this.tree_focus.focus(window, cx);
+                                        cx.notify();
+                                        return;
+                                    }
+                                    this.tree.select_click(&row.path, false, false);
                                     if deep {
                                         this.set_folder_subtree(
                                             &row.path,
@@ -5602,6 +5626,7 @@ impl Reader {
             .h_full()
             .flex_none()
             .child(self.render_tree_header(cx))
+            .children(self.render_batch_selection(cx))
             .child(
                 v_flex()
                     .flex_1()
@@ -8007,7 +8032,13 @@ impl Render for Reader {
                 #[cfg(any(unix, windows))]
                 let view = view.on_action(cx.listener(
                     |this, _: &reader_move_picker::MoveToFolder, window, cx| {
-                        this.choose_move_folder(this.selected_file().to_owned(), window, cx);
+                        if this.tree_focus.contains_focused(window, cx)
+                            && this.tree.selected_paths().len() > 1
+                        {
+                            this.open_batch_dialog(reader_batch::Kind::Move, window, cx);
+                        } else {
+                            this.choose_move_folder(this.selected_file().to_owned(), window, cx);
+                        }
                     },
                 ));
                 view
@@ -12922,6 +12953,24 @@ fn reader_item_menu(
     window: &mut Window,
     cx: &mut Context<gpui_component::menu::PopupMenu>,
 ) -> gpui_component::menu::PopupMenu {
+    let selection = reader.read(cx).tree.selected_paths();
+    if selection.len() > 1 && selection.contains(&relative) {
+        let mut menu = menu;
+        for (label, kind) in [
+            ("Move selected…", reader_batch::Kind::Move),
+            ("Rename selected…", reader_batch::Kind::Rename),
+            ("Trash selected…", reader_batch::Kind::Trash),
+        ] {
+            let reader = reader.downgrade();
+            menu = menu.item(gpui_component::menu::PopupMenuItem::new(label).on_click(
+                move |_, window, cx| {
+                    let _ =
+                        reader.update(cx, |reader, cx| reader.open_batch_dialog(kind, window, cx));
+                },
+            ));
+        }
+        return menu;
+    }
     let root = reader.read(cx).vault_root.clone();
     let menu = reader_files::menu(menu, root, relative.clone(), window, cx);
     #[cfg(any(unix, windows))]

@@ -103,6 +103,7 @@ impl Reader {
     }
 
     fn rename_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.complete_batch_item(Err(message.clone()));
         let operation = if self.renaming.is_some() {
             "rename"
         } else {
@@ -244,6 +245,10 @@ impl Reader {
     }
 
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tree.selected_paths().len() > 1 {
+            self.open_batch_dialog(reader_batch::Kind::Rename, window, cx);
+            return;
+        }
         if let Some(path) = self.tree.cursor.clone() {
             self.begin_rename(path, window, cx);
         } else {
@@ -271,7 +276,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.note_move_pending || self.trash_pending {
+        if self.note_move_pending || self.trash_pending || self.batch.running {
             self.file_operation_blocked(
                 "rename",
                 &path,
@@ -467,6 +472,10 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
+            !self.batch.running || self.batch.dispatching,
+            "A batch is running. Stop it before another file operation."
+        );
+        anyhow::ensure!(
             !self.loading.as_ref().is_some_and(|l| l.active),
             "Wait for loading to finish"
         );
@@ -562,6 +571,7 @@ impl Reader {
                 .update_in_own_window(cx, |this, window, cx| {
                     window.remove_notification::<MoveProgress>(cx);
                     if cancel.check().is_err() {
+                        this.complete_batch_item(Err("Move cancelled.".into()));
                         this.note_move_pending = false;
                         this.enable_rename(cx);
                         cx.notify();
@@ -612,6 +622,7 @@ impl Reader {
                     if let Some(update) = confirmed {
                         this.finish_move(pending, update, window, cx);
                     } else {
+                        this.complete_batch_item(Err("Move cancelled.".into()));
                         this.enable_rename(cx);
                     }
                     cx.notify();
@@ -836,6 +847,7 @@ impl Reader {
                 self.rename_error(format!("{error:#}"), cx);
             }
             Ok(moved) => {
+                self.complete_batch_item(Ok(()));
                 self.trace_file_operation("move", "finished", &pending.to, None, cx);
                 self.renaming = None;
                 let journal = moved.journal.clone();
@@ -1298,6 +1310,10 @@ mod tests {
 
     #[gpui::test]
     fn native_preview_cancel_move_and_recovery_guard(cx: &mut TestAppContext) {
+        let directory = std::env::temp_dir().join(format!("okilum-move-{}", uuid::Uuid::new_v4()));
+        let mut fixture = cx.new_app();
+        let parent = cx;
+        let cx = &mut fixture;
         cx.update(|cx| {
             // Modal animations use wall time, not the test executor clock. Keep
             // pointer hit targets stable while testing the move/recovery flow.
@@ -1305,7 +1321,7 @@ mod tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let dir = std::env::temp_dir().join(format!("okilum-move-{}", uuid::Uuid::new_v4()));
+        let dir = directory.clone();
         std::fs::create_dir_all(dir.join("notes/Folder")).unwrap();
         let root = dir.join("notes").canonicalize().unwrap();
         std::fs::write(root.join("start.md"), "# Source\r\n[[target]]\r\n").unwrap();
@@ -1662,7 +1678,37 @@ mod tests {
             std::fs::read_to_string(root.join("Many 0.md")).unwrap(),
             "External edit"
         );
-        std::fs::remove_dir_all(dir).unwrap();
+        // Windows keeps the editor's draft handle open for the Reader lifetime.
+        // Close the fixture window and release its entity before deleting files.
+        let released = reader.downgrade();
+        visual.update(|window, _| window.remove_window());
+        drop(reader);
+        cx.run_until_parked();
+        assert!(
+            released.upgrade().is_none(),
+            "fixture Reader must release its file handles"
+        );
+        // The fixture app can own resources beyond the last Reader window.
+        cx.quit();
+        drop(fixture);
+        parent.run_until_parked();
+        let cleanup = std::fs::remove_dir_all(&directory);
+        if let Err(error) = &cleanup {
+            eprintln!("fixture app stopped but cleanup failed: {error}; root={directory:?}");
+            let mut pending = vec![directory.clone()];
+            for _ in 0..100 {
+                let Some(path) = pending.pop() else { break };
+                eprintln!("remaining fixture path: {path:?}");
+                if let Ok(entries) = std::fs::read_dir(&path) {
+                    pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+                }
+            }
+        }
+        cleanup.unwrap();
+        assert!(
+            !directory.exists(),
+            "fixture cleanup must actually complete"
+        );
     }
     #[gpui::test]
     fn folder_keys_rename_without_toggling_and_move_updates_descendant_links(

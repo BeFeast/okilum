@@ -56,6 +56,8 @@ pub struct Tree {
     expanded: BTreeSet<String>,
     pub rows: Rc<Vec<Row>>,
     pub cursor: Option<String>,
+    selected: BTreeSet<String>,
+    selection_anchor: Option<String>,
     /// Show `_`/`.` items (per-vault preference, #395).
     show_hidden: bool,
     agent_shims: BTreeSet<String>,
@@ -69,6 +71,84 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Selection is window-local and contains only visible inventory identities.
+    /// Modified clicks select without opening documents or expanding folders.
+    pub(crate) fn select_click(&mut self, path: &str, toggle: bool, range: bool) {
+        let Some(end) = self.rows.iter().position(|row| row.path == path) else {
+            return;
+        };
+        if range {
+            let start = self
+                .selection_anchor
+                .as_ref()
+                .or(self.cursor.as_ref())
+                .and_then(|anchor| self.rows.iter().position(|row| &row.path == anchor))
+                .unwrap_or(end);
+            if !toggle {
+                self.selected.clear();
+            }
+            self.selected.extend(
+                self.rows[start.min(end)..=start.max(end)]
+                    .iter()
+                    .map(|row| row.path.clone()),
+            );
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.rows[start].path.clone());
+            }
+            self.cursor = Some(path.to_owned());
+        } else if toggle {
+            if self.selected.is_empty() {
+                self.selected.extend(self.cursor.clone());
+            }
+            if !self.selected.remove(path) {
+                self.selected.insert(path.to_owned());
+            }
+            self.selection_anchor = Some(path.to_owned());
+            self.cursor = if self.selected.contains(path) {
+                Some(path.to_owned())
+            } else {
+                self.selected.iter().next_back().cloned()
+            };
+        } else {
+            self.selected = BTreeSet::from([path.to_owned()]);
+            self.selection_anchor = Some(path.to_owned());
+            self.cursor = Some(path.to_owned());
+        }
+    }
+
+    pub(crate) fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.selection_anchor = None;
+    }
+
+    pub(crate) fn selected_paths(&self) -> Vec<String> {
+        if self.selected.is_empty() {
+            self.cursor.iter().cloned().collect()
+        } else {
+            self.rows
+                .iter()
+                .filter(|row| self.selected.contains(&row.path))
+                .map(|row| row.path.clone())
+                .collect()
+        }
+    }
+
+    /// A selected folder owns its selected descendants exactly once.
+    pub(crate) fn operation_paths(&self) -> Vec<String> {
+        let paths = self.selected_paths();
+        paths
+            .iter()
+            .filter(|path| {
+                !paths.iter().any(|ancestor| {
+                    ancestor != *path
+                        && self.is_directory(ancestor)
+                        && Path::new(path).starts_with(ancestor)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Inventory membership includes folded/hidden rows, limited to the current scope.
     pub(crate) fn can_reveal(&self, path: &str) -> bool {
         self.kinds.contains_key(path)
@@ -132,6 +212,14 @@ impl Tree {
             .collect();
         if let Some(cursor) = &mut self.cursor {
             *cursor = okilum_core::link_rewrite::moved_path(cursor, from, to);
+        }
+        self.selected = self
+            .selected
+            .iter()
+            .map(|p| okilum_core::link_rewrite::moved_path(p, from, to))
+            .collect();
+        if let Some(anchor) = &mut self.selection_anchor {
+            *anchor = okilum_core::link_rewrite::moved_path(anchor, from, to);
         }
         let root = self.root.clone();
         self.refresh(&root, &entries);
@@ -258,6 +346,9 @@ impl Tree {
     }
 
     pub(crate) fn scope_to(&mut self, path: &str) {
+        if self.scope != path {
+            self.clear_selection();
+        }
         self.scope = path.to_owned();
         self.flatten();
     }
@@ -338,6 +429,15 @@ impl Tree {
             }
         }
         self.rows = Rc::new(rows);
+        self.selected
+            .retain(|p| self.rows.iter().any(|row| &row.path == p));
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_some_and(|p| !self.rows.iter().any(|row| &row.path == p))
+        {
+            self.selection_anchor = None;
+        }
         // Never fall back to a neighbour: a cursor that is not shown is
         // cleared rather than moved to an unrelated row (#395).
         if self
@@ -755,6 +855,69 @@ fn parent(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue2681_toggle_range_refresh_scope_and_parent_selection() {
+        let mut tree = Tree::default();
+        let root = Path::new("synthetic-vault");
+        let entries: Vec<_> = [
+            ("Folder", EntryKind::Directory),
+            ("Folder/Child.md", EntryKind::Markdown),
+            ("A.md", EntryKind::Markdown),
+            ("B.md", EntryKind::Markdown),
+            ("C.md", EntryKind::Markdown),
+        ]
+        .into_iter()
+        .map(|(path, kind)| VaultEntry {
+            path: path.into(),
+            kind,
+        })
+        .collect();
+        tree.refresh(root, &entries);
+        tree.select_click("A.md", false, false);
+        tree.select_click("C.md", true, false);
+        assert_eq!(tree.selected_paths(), ["A.md", "C.md"]);
+        tree.select_click("C.md", true, false);
+        assert_eq!(tree.selected_paths(), ["A.md"]);
+        tree.select_click("A.md", false, false);
+        tree.select_click("C.md", false, true);
+        assert_eq!(tree.selected_paths(), ["A.md", "B.md", "C.md"]);
+        tree.select_click("B.md", false, true);
+        assert_eq!(
+            tree.selected_paths(),
+            ["A.md", "B.md"],
+            "Shift retains its original anchor"
+        );
+        tree.toggle("Folder");
+        tree.select_click("Folder", false, false);
+        tree.select_click("Folder/Child.md", true, false);
+        assert_eq!(tree.selected_paths(), ["Folder", "Folder/Child.md"]);
+        assert_eq!(tree.operation_paths(), ["Folder"]);
+        tree.toggle("Folder");
+        assert_eq!(
+            tree.selected_paths(),
+            ["Folder"],
+            "folded descendants cannot be invisible mutation targets"
+        );
+        tree.select_click("Folder", true, false);
+        assert!(tree.selected_paths().is_empty());
+        tree.select_click("A.md", false, false);
+        tree.select_click("B.md", true, false);
+        tree.refresh(
+            root,
+            &entries
+                .iter()
+                .filter(|e| e.path != "B.md")
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(tree.selected_paths(), ["A.md"]);
+        tree.refresh(Path::new("another-vault"), &entries);
+        assert!(
+            tree.selected_paths().is_empty(),
+            "another vault must never inherit selection"
+        );
+    }
 
     #[test]
     fn issue1587_agent_folders_and_files_follow_the_existing_toggle() {
