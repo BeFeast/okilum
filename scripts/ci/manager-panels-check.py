@@ -54,8 +54,10 @@ def main():
              'project.manager_surface_visible(visible, cx)',
              'project.draft_handoff_surface_visible(visible, cx)', WARM)
     negative('unbounded-details', 'crates/okilum-shell/src/project/native.rs',
-             '            .flex_none()\n            .min_h_0()\n'
-             '            .max_h(relative(0.4))\n            .overflow_y_scroll()\n', '', DETAILS)
+             '            .when(self.connection_details, |view| {\n'
+             '                view.flex_none()\n                    .min_h_0()\n'
+             '                    .max_h(relative(0.4))\n                    .overflow_y_scroll()\n'
+             '            })\n', '', DETAILS)
     inventory('restored-inventory', 'project::panel_tests::', 3)
     assert run('restored', 'project::panel_tests::', '--nocapture', '--test-threads=1').returncode == 0
     inventory('retained-ttfm-inventory', 'manager_ttfm_', 3)

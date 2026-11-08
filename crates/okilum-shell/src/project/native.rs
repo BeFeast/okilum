@@ -741,10 +741,12 @@ impl ProjectView {
             .min_w_0()
             // Technical details scroll in their own bounded region. They must
             // not shrink to a smaller layout box while painting into history.
-            .flex_none()
-            .min_h_0()
-            .max_h(relative(0.4))
-            .overflow_y_scroll()
+            .when(self.connection_details, |view| {
+                view.flex_none()
+                    .min_h_0()
+                    .max_h(relative(0.4))
+                    .overflow_y_scroll()
+            })
             .gap_2()
             .child(self.render_manager_onboarding(window, cx));
         if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
