@@ -207,7 +207,6 @@ impl Controller {
             addresses.sort();
             addresses.dedup();
             if json!(addresses) != current["addresses"] {
-                #[cfg(target_os = "linux")]
                 let _admission = crate::managed_launch::runtime_configuration(&identity)?;
                 api.set_device_addresses(device, &addresses)?;
             }

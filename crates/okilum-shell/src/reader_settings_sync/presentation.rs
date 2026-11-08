@@ -12,7 +12,6 @@ pub(super) enum Step {
     Progress,
     Expired,
     Existing,
-    #[cfg(target_os = "linux")]
     Merge,
 }
 
@@ -95,7 +94,6 @@ impl Render for Wizard {
                                     view.presentation.wizard = None;
                                     view.presentation.managing = None;
                                     view.presentation.dialog_open = false;
-                                    #[cfg(target_os = "linux")]
                                     view.close_first_sync_preview(cx);
                                     window.close_dialog(cx);
                                     cx.notify();
@@ -289,7 +287,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stable_root_identity: None,
             }],
             shared: vec![],

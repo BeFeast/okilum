@@ -3,33 +3,49 @@
 //! The runtime gate serializes only launch/enrollment/configuration operations;
 //! it is never a substitute for the durable per-vault authority or a transport
 //! quiescence receipt. Closed folders are fenced on disk BEFORE spawning.
-use crate::{daemon::DaemonIdentity, lifecycle::ManagedInstance, private};
+#[cfg(target_os = "linux")]
+use crate::lifecycle::ManagedInstance;
+use crate::{daemon::DaemonIdentity, private};
+#[cfg(target_os = "macos")]
+pub(crate) struct ManagedInstance {
+    pub home: PathBuf,
+    pub executable: PathBuf,
+}
 use anyhow::{ensure, Context, Result};
 use okilum_write_authority::{Authority, DurableBinding, Phase, WriterLease};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
     io::Read,
-    net::{IpAddr, SocketAddr},
-    os::unix::{
-        fs::{MetadataExt, OpenOptionsExt},
-        process::CommandExt,
-    },
+    net::SocketAddr,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 use uuid::Uuid;
 use xmltree::{Element, XMLNode};
 
+#[cfg(target_os = "linux")]
+use std::{
+    collections::BTreeSet,
+    fs,
+    net::IpAddr,
+    os::unix::process::CommandExt,
+    process::{Command, Stdio},
+};
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{live_generation, NativeLaunch};
+
 mod quiescence;
 pub use quiescence::{OrdinaryHold, ScopedHold};
 
-pub(crate) type Identity = okilum_write_authority::identity_linux::Identity;
+pub(crate) type Identity = okilum_write_authority::filesystem_identity::Identity;
 pub(crate) fn identity(path: &Path) -> Result<Identity> {
     let handle = OpenOptions::new()
         .read(true)
@@ -37,7 +53,7 @@ pub(crate) fn identity(path: &Path) -> Result<Identity> {
         .open(path)?;
     // Persist the same filesystem/subvolume/inode/birth witness as Reader.
     // Boot-local btrfs device numbers must not invalidate an existing pairing.
-    okilum_write_authority::identity_linux::from_file(&handle)
+    okilum_write_authority::filesystem_identity::from_file(&handle)
 }
 pub(crate) fn digest(path: &Path) -> Result<String> {
     let mut f = OpenOptions::new()
@@ -184,6 +200,7 @@ impl Reference {
     }
     /// Only the lifecycle's verified, stopped upgrade may repin package bytes.
     /// Retain the registry, folder authorities and reference identity unchanged.
+    #[cfg(target_os = "linux")]
     pub(crate) fn upgrade_package(&self, instance: &ManagedInstance) -> Result<()> {
         let _gate = self.gate()?;
         let mut b = self.load()?;
@@ -301,6 +318,7 @@ pub(crate) fn configuration(
     if !dir.try_exists()? {
         // External instances have no managed launch/hold ownership. Still use
         // local admission; an unfinished hold refuses any configuration effect.
+        #[cfg(target_os = "linux")]
         ensure!(
             !home
                 .parent()
@@ -361,10 +379,29 @@ pub(crate) fn configuration(
 /// vault refuses the shared effect without stopping the running daemon.
 pub(crate) struct RuntimeConfiguration {
     _operations: Vec<okilum_write_authority::OperationGuard>,
-    _gate: Arc<File>,
+    _gate: Option<Arc<File>>,
 }
 pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeConfiguration> {
     let home = daemon.config_file.parent().context("daemon home missing")?;
+    #[cfg(target_os = "macos")]
+    if !directory(home)?.try_exists()? {
+        // Legacy supervisors keep their existing pairing capabilities. They
+        // have no first-merge fence and cannot grant publication ownership.
+        let config = daemon.connect()?.config()?;
+        let mut operations = Vec::new();
+        for folder in config["folders"]
+            .as_array()
+            .context("folder inventory missing")?
+        {
+            operations.push(okilum_write_authority::operation(Path::new(
+                folder["path"].as_str().context("folder root missing")?,
+            ))?);
+        }
+        return Ok(RuntimeConfiguration {
+            _operations: operations,
+            _gate: None,
+        });
+    }
     let reference = existing(home).context("external runtime has no managed hold ownership")?;
     let gate = reference.gate()?;
     ensure!(
@@ -398,7 +435,7 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     }
     Ok(RuntimeConfiguration {
         _operations: operations,
-        _gate: gate,
+        _gate: Some(gate),
     })
 }
 
@@ -422,6 +459,7 @@ pub struct Generation {
 /// Bind authenticated REST to the exact kernel process, not merely to another
 /// process with the same certificate/home. /proc/net alone is insufficient:
 /// require that this child actually owns the listening socket inode.
+#[cfg(target_os = "linux")]
 fn owns_rest(pid: u32, address: SocketAddr) -> Result<()> {
     let sockets = fs::read_dir(format!("/proc/{pid}/fd"))?
         .map(|entry| -> Result<Option<String>> {
@@ -447,6 +485,7 @@ fn owns_rest(pid: u32, address: SocketAddr) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(target_os = "linux")]
 fn rest_listener(pid: u32, address: SocketAddr) -> Result<Option<String>> {
     let (table, ip) = match address.ip() {
         IpAddr::V4(ip) => ("tcp", format!("{:08X}", u32::from_le_bytes(ip.octets()))),
@@ -468,6 +507,7 @@ fn rest_listener(pid: u32, address: SocketAddr) -> Result<Option<String>> {
     }))
 }
 
+#[cfg(target_os = "linux")]
 fn process_start(pid: u32) -> Result<String> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     Ok(stat
@@ -479,6 +519,7 @@ fn process_start(pid: u32) -> Result<String> {
         .context("process start time missing")?
         .into())
 }
+#[cfg(target_os = "linux")]
 fn process_parent(pid: u32) -> Result<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     Ok(stat
@@ -492,27 +533,12 @@ fn process_parent(pid: u32) -> Result<u32> {
 }
 /// Invoked only by the dedicated autonomous command after lifecycle verification.
 /// Returns the child's exit status; the service manager owns retry policy.
-pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
-    let _process = lock_file(&r.directory.join("process.lock"), false, false)?;
-    let gate = r.gate()?;
-    r.validate(instance)?;
-    let b = r.load()?;
-    ensure!(
-        b.executable_hash == crate::linux_bootstrap::BINARY_SHA,
-        "managed launch requires the checksum-pinned Linux package"
-    );
-    let daemon =
-        crate::daemon::managed_transport_identity(b.home.parent().context("preparation missing")?)?;
-    ensure!(
-        daemon.config_file == b.home.join("config.xml")
-            && daemon.certificate_hash == b.certificate_hash,
-        "managed preparation binding changed"
-    );
-    let rest_address = daemon.rest_address()?;
-    ensure!(
-        rest_listener(std::process::id(), rest_address)?.is_none(),
-        "an external or previous runtime still owns the managed REST endpoint"
-    );
+struct FencedFolders {
+    leases: Vec<WriterLease>,
+    closed: Vec<String>,
+    paused_at_start: Vec<String>,
+}
+fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut xml = Element::parse(private::read(&b.home.join("config.xml"))?.as_slice())?;
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
@@ -559,6 +585,39 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
     let mut bytes = Vec::new();
     xml.write(&mut bytes)?;
     private::write(&b.home.join("config.xml"), &bytes)?;
+    Ok(FencedFolders {
+        leases,
+        closed,
+        paused_at_start,
+    })
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
+    let _process = lock_file(&r.directory.join("process.lock"), false, false)?;
+    let gate = r.gate()?;
+    r.validate(instance)?;
+    let b = r.load()?;
+    ensure!(
+        b.executable_hash == crate::linux_bootstrap::BINARY_SHA,
+        "managed launch requires the checksum-pinned Linux package"
+    );
+    let daemon =
+        crate::daemon::managed_transport_identity(b.home.parent().context("preparation missing")?)?;
+    ensure!(
+        daemon.config_file == b.home.join("config.xml")
+            && daemon.certificate_hash == b.certificate_hash,
+        "managed preparation binding changed"
+    );
+    let rest_address = daemon.rest_address()?;
+    ensure!(
+        rest_listener(std::process::id(), rest_address)?.is_none(),
+        "an external or previous runtime still owns the managed REST endpoint"
+    );
+    let FencedFolders {
+        leases,
+        closed,
+        paused_at_start,
+    } = fence_folders(r, &b)?;
     // Never restore an old paused=false value, even after authority release.
     // Explicit admitted resume/reconciliation owns the later configuration.
     let mut command = Command::new(&b.executable);
@@ -677,6 +736,7 @@ fn set_paused(folder: &mut Element) {
 /// Observe a live authenticated launch generation. A stale file/PID, helper
 /// crash, replaced package or reused process identity never yields a generation.
 /// This is identity evidence only; it grants no folder-quiescence receipt.
+#[cfg(target_os = "linux")]
 pub fn live_generation(home: &Path) -> Result<Generation> {
     let r = existing(home)?;
     let b = r.load()?;

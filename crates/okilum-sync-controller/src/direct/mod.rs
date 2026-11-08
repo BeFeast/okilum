@@ -14,7 +14,7 @@ pub struct PolicyWarning {
     pub message: String,
 }
 pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod inventory;
 mod lan;
 mod origin;
@@ -174,7 +174,7 @@ struct Database {
     #[serde(default)]
     sources: Vec<source::Source>,
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 struct Shared {
@@ -197,13 +197,13 @@ struct Shared {
     /// Invitation whose approval reply this process has written to the joiner.
     /// In memory only; a headless inviter waits on it before exiting.
     delivered_approval: Mutex<Option<Uuid>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     inventory: Mutex<inventory::Cache>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     inventory_key: [u8; 32],
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     first_sync: Mutex<BTreeMap<Uuid, Arc<Mutex<inventory::merge::Session>>>>,
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
@@ -251,11 +251,11 @@ enum Operation {
         vault: String,
         device: String,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Inspect {
         request: Box<inventory::Request>,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     FirstSync {
         request: Box<inventory::merge::Request>,
     },
@@ -301,11 +301,11 @@ enum Reply {
     Observed {
         observation: transfer::Observation,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Inspection {
         response: inventory::Response,
     },
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     FirstSync {
         response: inventory::merge::Response,
     },
@@ -355,7 +355,7 @@ impl Controller {
         };
         // Persist identity once, before creating an offer or exposing its public key.
         private::write(&file, &serde_json::to_vec(&db)?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let inventory_key = inventory::persistent_key(&state)?;
         Ok(Self {
             shared: Arc::new(Shared {
@@ -373,13 +373,13 @@ impl Controller {
                 history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
                 delivered_approval: Mutex::new(None),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 inventory: Mutex::new(Default::default()),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 inventory_key,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 first_sync: Mutex::new(BTreeMap::new()),
-                #[cfg(all(test, target_os = "linux"))]
+                #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
                 inspection_hook: Mutex::new(None),
                 _lock,
             }),
@@ -471,7 +471,7 @@ impl Controller {
             "operational state must be outside the vault"
         );
         let mut db = self.shared.db.lock().unwrap();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let upgraded_grants = {
             let mut grants = db.share_grants.clone();
             for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
@@ -494,7 +494,7 @@ impl Controller {
         } else {
             db.attached.push(fresh.clone());
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             db.share_grants = upgraded_grants;
         }
@@ -670,7 +670,7 @@ impl Controller {
                     if shared.stopped.load(Ordering::Acquire) || !shared.access.allowed() {
                         break;
                     }
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     shared.inventory.lock().unwrap().prune();
                     drop(shared);
                     match listener.accept() {
@@ -1072,13 +1072,13 @@ impl Controller {
                 drop(db);
                 self.receive_removal(scope, id, device, vaults, None)
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Operation::Inspect { request } => {
                 drop(db);
                 self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Operation::FirstSync { request } => {
                 drop(db);
                 self.first_sync_request(scope, &signer, *request)
@@ -1099,7 +1099,7 @@ impl Controller {
                     message: message.into(),
                 };
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             if let Some(message) = inventory::public_refusal(&error) {
                 return Reply::Error {
                     message: message.into(),
@@ -1275,9 +1275,9 @@ impl Controller {
                     Err(error) => Err(error),
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Operation::Inspect { .. } => anyhow::bail!("inspection requires lock-free dispatch"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Operation::FirstSync { .. } => anyhow::bail!("first Sync requires lock-free dispatch"),
         }
     }
@@ -1293,7 +1293,7 @@ impl Controller {
         let configs = self.shared.configs.lock().unwrap().clone();
         let mut db = self.shared.db.lock().unwrap();
         let mut attached = db.attached.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let mut grants = db.share_grants.clone();
         let mut changed = false;
         for attached in &mut attached {
@@ -1302,7 +1302,7 @@ impl Controller {
                     existing::same_binding(attached, &fresh),
                     "attached replica identity changed"
                 );
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
                     changed |= grant.refresh_source(&fresh, false)?;
                 }
@@ -1312,7 +1312,7 @@ impl Controller {
         }
         if changed {
             db.attached = attached;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 db.share_grants = grants;
             }
@@ -1323,7 +1323,7 @@ impl Controller {
 }
 impl Operation {
     fn first_sync(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if matches!(self, Self::FirstSync { .. }) {
             return true;
         }
@@ -1336,7 +1336,7 @@ impl Operation {
         )
     }
     fn read_only(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if matches!(self, Self::Inspect { .. }) {
             return true;
         }
@@ -1794,7 +1794,7 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stable_root_identity: None,
             });
         let url = offer(&source)?;

@@ -87,6 +87,7 @@ mod tests {
                     snapshot: controller.snapshot()?,
                     inspected: None,
                     selected_destination: None,
+                    #[cfg(target_os = "linux")]
                     runtimes: vec![],
                     vaults: vec![],
                 })

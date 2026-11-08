@@ -47,8 +47,17 @@ pub fn run<C: PeerCheck>(
     // The digest is checked right before the spawn and again right after it. On a
     // mismatch after the spawn the tree is dropped (killed) as the error unwinds.
     selection.verify_file(state)?;
+    #[cfg(target_os = "macos")]
+    let launch_owner = okilum_sync_controller::managed_launch::NativeLaunch::if_registered(
+        Path::new(&launch.config).join("config.xml").as_path(),
+        Path::new(&launch.executable),
+    )?;
     let tree = ProcessGroupTree::spawn(&launch, settings.stop)?;
     selection.verify_file(state)?;
+    #[cfg(target_os = "macos")]
+    let _launch_owner = launch_owner
+        .map(|owner| owner.ready(tree.root_pid()?, generation))
+        .transpose()?;
     let started = process_start_time(std::process::id())?;
     store.publish_hint(
         Instant::now() + settings.store,

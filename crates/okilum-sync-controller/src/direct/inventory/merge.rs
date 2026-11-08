@@ -239,6 +239,9 @@ impl Controller {
             ..
         } = request
         {
+            // Serialize first creation with all competing Stage requests. An
+            // authenticated replay cannot replace a journal before insertion.
+            let mut sessions = self.shared.first_sync.lock().unwrap();
             let header = *header;
             let (source, seed) = self.inspection_authority(peer, signer, &header.binding.vault)?;
             if state.join(operation.to_string()).try_exists()? {
@@ -327,7 +330,7 @@ impl Controller {
                 phase: Phase::Staging,
             };
             let store = Store::create(&state, journal)?;
-            self.shared.first_sync.lock().unwrap().insert(
+            sessions.insert(
                 operation,
                 Arc::new(Mutex::new(Session { store, scope: None })),
             );
@@ -473,6 +476,7 @@ impl Controller {
                     "first Sync has no completed publication"
                 );
                 if session.store.binding.phase != Phase::Complete {
+                    session.store.verify_published()?;
                     session.store.binding.phase = Phase::PeerComplete;
                     session.store.save()?;
                     if let Some(scope) = session.scope.take() {
@@ -642,7 +646,7 @@ impl Controller {
             folder_type: "ordinary".into(),
             peers: vec![],
             root_identity: Some(tree::identity(&preview.local.root)?),
-            stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(
+            stable_root_identity: Some(okilum_write_authority::filesystem_identity::from_file(
                 &preview.local.root,
             )?),
         };

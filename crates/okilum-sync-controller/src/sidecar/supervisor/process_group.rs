@@ -126,6 +126,14 @@ pub struct ProcessGroupTree {
     budget: Duration,
 }
 impl ProcessGroupTree {
+    /// The actual unreaped child captured by this owner, never a rediscovered PID.
+    #[cfg(target_os = "macos")]
+    pub fn root_pid(&self) -> Result<u32> {
+        self.root
+            .as_ref()
+            .map(Child::id)
+            .context("owned runtime already reaped")
+    }
     /// The caller has verified the staged payload and private config/data.
     /// `budget` bounds one Stop and should sit inside the exchange deadline.
     /// Child reaping must remain exclusive to this tree; inventory checks cannot

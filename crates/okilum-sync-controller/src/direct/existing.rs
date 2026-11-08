@@ -60,10 +60,10 @@ pub struct ExistingVault {
     /// Persisted inspection witness. Legacy records need explicit fresh consent.
     #[serde(default)]
     pub root_identity: Option<(u64, u64)>,
-    /// Linux schema-2 witness. The raw pair remains an in-process descriptor guard.
-    #[cfg(target_os = "linux")]
+    /// Native schema-2 witness. The raw pair remains an in-process descriptor guard.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stable_root_identity: Option<okilum_write_authority::identity_linux::Identity>,
+    pub stable_root_identity: Option<okilum_write_authority::filesystem_identity::Identity>,
 }
 
 /// No state is created, no daemon is started, and every REST operation is GET.
@@ -122,8 +122,10 @@ pub fn inspect_existing(configs: &[PathBuf], vault: &Path) -> Result<ExistingVau
     let metadata = root.0.metadata()?;
     Ok(ExistingVault {
         root_identity: Some((metadata.dev(), metadata.ino())),
-        #[cfg(target_os = "linux")]
-        stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(&root.0)?),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        stable_root_identity: Some(okilum_write_authority::filesystem_identity::from_file(
+            &root.0,
+        )?),
         daemon: candidate.identity.clone(),
         version: candidate.version.clone(),
         folder_id: id.clone(),
@@ -147,7 +149,7 @@ pub(super) fn same_binding(a: &ExistingVault, b: &ExistingVault) -> bool {
     if !same_replica(a, b) {
         return false;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let (Some(a), Some(b)) = (&a.stable_root_identity, &b.stable_root_identity) {
         return a == b;
     }
@@ -162,11 +164,11 @@ pub(super) fn same_binding_with_consent(saved: &ExistingVault, fresh: &ExistingV
     if same_binding(saved, fresh) {
         return true;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if saved.stable_root_identity.is_some() {
         return false;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if saved.stable_root_identity.is_none()
         && fresh.stable_root_identity.is_some()
         && same_replica(saved, fresh)
@@ -234,7 +236,7 @@ impl AttachedVault {
             same_binding(&saved, &fresh),
             "saved replica association changed"
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if saved.stable_root_identity.is_none() && fresh.stable_root_identity.is_some() {
             let _lock = private::lock(&self.state)?;
             let file = self.state.join("existing.json");
@@ -301,7 +303,9 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: Some(root.identity()?),
-            stable_root_identity: Some(okilum_write_authority::identity_linux::from_file(&root.0)?),
+            stable_root_identity: Some(okilum_write_authority::filesystem_identity::from_file(
+                &root.0,
+            )?),
         })
     }
 
@@ -416,7 +420,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: Some((metadata.dev(), metadata.ino())),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         assert!(same_binding(&inspected, &inspected));

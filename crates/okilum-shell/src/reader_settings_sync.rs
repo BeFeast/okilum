@@ -159,11 +159,8 @@ enum Operation {
     Consent(Box<ExistingVault>),
     Attach(uuid::Uuid, String, PathBuf),
     AttachNew(uuid::Uuid, String, PathBuf),
-    #[cfg(target_os = "linux")]
     ReviewDestination(uuid::Uuid, String, PathBuf),
-    #[cfg(target_os = "linux")]
     RecoverFirstSync(uuid::Uuid),
-    #[cfg(target_os = "linux")]
     CancelFirstSync(uuid::Uuid),
 }
 #[cfg(test)]
@@ -173,7 +170,6 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 impl Global for TestWorker {}
 
 struct Output {
-    #[cfg(target_os = "linux")]
     first_sync: first_sync::Output,
     overview: direct::Overview,
     connection_error: Option<String>,
@@ -186,7 +182,6 @@ struct Output {
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
-    #[cfg(target_os = "linux")]
     first_sync: first_sync::State,
     presentation: presentation::Presentation,
     controller: Option<Controller>,
@@ -312,7 +307,6 @@ impl SyncSettings {
     fn idle() -> Self {
         Self {
             presentation: Default::default(),
-            #[cfg(target_os = "linux")]
             first_sync: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
@@ -362,7 +356,6 @@ impl SyncSettings {
         (name, invitation)
     }
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
-        #[cfg(target_os = "linux")]
         if self.first_sync_applying(cx) {
             return;
         }
@@ -370,7 +363,6 @@ impl SyncSettings {
             return;
         }
         let destination_vault = match &operation {
-            #[cfg(target_os = "linux")]
             Operation::ReviewDestination(_, vault, _) => Some(vault.clone()),
             Operation::Attach(_, vault, _) | Operation::AttachNew(_, vault, _) => {
                 self.destination_error = None;
@@ -422,7 +414,6 @@ impl SyncSettings {
                     snapshot: snapshot.clone(),
                     inspected: None,
                     selected_destination: None,
-                    #[cfg(target_os = "linux")]
                     first_sync: first_sync::Output {
                         preview: None,
                         pending: self.first_sync.pending.clone(),
@@ -558,7 +549,6 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
-        #[cfg(target_os = "linux")]
         self.publish_first_sync(output.first_sync, cx);
         self.presentation.overview = output.overview;
         if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
@@ -1017,7 +1007,6 @@ fn perform_with_locations(
         guard.check()?;
         #[cfg(target_os = "macos")]
         prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
-        #[cfg(target_os = "linux")]
         let first_sync_recovery_read =
             matches!(&operation, Operation::Read | Operation::EnterPairing)
                 && !controller.pending_first_sync()?.is_empty();
@@ -1111,14 +1100,12 @@ fn perform_with_locations(
             destination::prepare(path)?;
         }
         let selected_destination = match &operation {
-            #[cfg(target_os = "linux")]
             Operation::ReviewDestination(_, _, path) => Some(path.canonicalize()?),
             Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) => {
                 Some(path.canonicalize()?)
             }
             _ => None,
         };
-        #[cfg(target_os = "linux")]
         let mut selected_destination = selected_destination;
         #[cfg(target_os = "linux")]
         let refresh_inventory_after_action = !matches!(
@@ -1132,10 +1119,8 @@ fn perform_with_locations(
                 | Operation::Catalog(_)
         );
         let mut inspected = None;
-        #[cfg(target_os = "linux")]
         let mut first_sync = first_sync::Output::default();
         let snapshot = match operation {
-            #[cfg(target_os = "linux")]
             Operation::ReviewDestination(peer, vault, path) => {
                 if std::fs::read_dir(&path)?.next().transpose()?.is_some() {
                     selected_destination = None;
@@ -1152,12 +1137,10 @@ fn perform_with_locations(
                     controller.attach(peer, &vault, &path)?
                 }
             }
-            #[cfg(target_os = "linux")]
             Operation::RecoverFirstSync(operation) => {
                 controller.recover_first_sync(operation)?;
                 controller.refresh()?
             }
-            #[cfg(target_os = "linux")]
             Operation::CancelFirstSync(operation) => {
                 controller.cancel_first_sync(operation)?;
                 controller.refresh()?
@@ -1165,16 +1148,9 @@ fn perform_with_locations(
             Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             Operation::Read | Operation::EnterPairing => {
-                #[cfg(target_os = "linux")]
-                {
-                    if first_sync_recovery_read {
-                        controller.refresh_pairing()?
-                    } else {
-                        controller.refresh()?
-                    }
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
+                if first_sync_recovery_read {
+                    controller.refresh_pairing()?
+                } else {
                     controller.refresh()?
                 }
             }
@@ -1223,7 +1199,6 @@ fn perform_with_locations(
             }
         };
         guard.check()?;
-        #[cfg(target_os = "linux")]
         {
             first_sync.pending = controller.pending_first_sync()?;
         }
@@ -1235,7 +1210,6 @@ fn perform_with_locations(
             runtime
         };
         Ok(Output {
-            #[cfg(target_os = "linux")]
             first_sync,
             overview: controller.overview().unwrap_or_default(),
             #[cfg(target_os = "linux")]
@@ -1368,7 +1342,10 @@ fn prepare_mac_runtime(
     }
     if matches!(
         operation,
-        Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)
+        Operation::Redeem(..)
+            | Operation::Attach(..)
+            | Operation::AttachNew(..)
+            | Operation::ReviewDestination(..)
     ) && controller.configuration_paths()?.is_empty()
     {
         connect(controller)?;
@@ -1389,23 +1366,12 @@ pub(crate) mod cli;
 mod control;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
-#[cfg(target_os = "linux")]
 mod first_sync;
 #[cfg(test)]
 #[path = "reader_settings_sync/tests.rs"]
 mod tests;
 #[path = "reader_settings_sync/view.rs"]
 mod view;
-
-#[cfg(not(target_os = "linux"))]
-impl SyncSettings {
-    fn has_first_sync_preview(&self) -> bool {
-        false
-    }
-    fn start_destination(&mut self, operation: Operation, cx: &mut Context<Self>) {
-        self.run(operation, cx);
-    }
-}
 
 #[cfg(target_os = "linux")]
 #[path = "reader_settings_sync/linux_runtime.rs"]

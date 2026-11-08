@@ -18,13 +18,17 @@ use std::{
 struct Identity(u64, u64, #[serde(default)] Option<u64>);
 #[cfg(target_os = "macos")]
 #[path = "identity_macos.rs"]
-mod native_identity;
+pub mod native_identity;
 #[cfg(target_os = "macos")]
 use native_identity::Identity;
 #[cfg(target_os = "linux")]
 pub mod identity_linux;
 #[cfg(target_os = "linux")]
+pub use identity_linux as filesystem_identity;
+#[cfg(target_os = "linux")]
 use identity_linux::Identity;
+#[cfg(target_os = "macos")]
+pub use native_identity as filesystem_identity;
 #[cfg(all(test, target_os = "linux"))]
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]

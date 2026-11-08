@@ -3,7 +3,7 @@
 mod admission;
 #[cfg(target_os = "linux")]
 pub mod lifecycle;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod managed_launch;
 pub mod merge_preview;
 

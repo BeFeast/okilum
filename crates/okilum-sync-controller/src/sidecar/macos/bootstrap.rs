@@ -181,6 +181,12 @@ pub fn connect_current_app(
     );
     let payload = Payload::new(binding.clone(), selection, identity.clone());
     payload.verify(&binding)?;
+    if fresh {
+        crate::managed_launch::initialize(&crate::managed_launch::ManagedInstance {
+            home: state.join("config"),
+            executable: payload.verify(&binding)?.executable.into(),
+        })?;
+    }
     let ready_to_dispatch = {
         let tx = store.begin(deadline)?;
         tx.current()?
@@ -217,6 +223,12 @@ pub fn connect_current_app(
 /// Source enrollment after explicit signed Connect. This does not launch,
 /// register, repair or select a runtime; it verifies the same claimed receipt.
 pub fn managed_source_identity(state: &Path) -> Result<DaemonIdentity> {
+    let identity = managed_transport_identity(state)?;
+    identity.connect()?;
+    Ok(identity)
+}
+
+pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity> {
     use crate::sidecar::{authority::launch::Phase, Intent};
     ensure!(
         state == super::account_state_directory()?,
@@ -249,7 +261,6 @@ pub fn managed_source_identity(state: &Path) -> Result<DaemonIdentity> {
         "Mac source identity binding changed"
     );
     receipt.identity.verify_local()?;
-    receipt.identity.connect()?;
     Ok(receipt.identity)
 }
 

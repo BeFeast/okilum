@@ -22,6 +22,11 @@ pub(crate) use linux::managed_transport_identity;
 #[cfg(target_os = "linux")]
 pub use linux::{configuration_paths, managed_identity, prepare, prepare_lan, Preparation};
 
+#[cfg(target_os = "macos")]
+pub use crate::sidecar::macos::bootstrap::managed_source_identity as managed_identity;
+#[cfg(target_os = "macos")]
+pub(crate) use crate::sidecar::macos::bootstrap::managed_transport_identity;
+
 pub const CLIENT_VERSION: &str = "v2.1.6";
 
 /// External compatibility is independent of the checksum-pinned bundled runtime.
@@ -38,7 +43,6 @@ pub struct DaemonIdentity {
     pub certificate_hash: String,
 }
 impl DaemonIdentity {
-    #[cfg(target_os = "linux")]
     pub(crate) fn rest_address(&self) -> Result<SocketAddr> {
         Ok(self.checked_config()?.address)
     }

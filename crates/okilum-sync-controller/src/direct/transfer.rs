@@ -178,7 +178,7 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
     Ok(lines)
 }
 impl Controller {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(in crate::direct) fn attach_completed_first_sync(
         &self,
         receipt: &inventory::merge::CompletedMerge,
@@ -813,7 +813,7 @@ impl ShareGrant {
         );
         Ok(())
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn refresh_source(&mut self, fresh: &ExistingVault, consent: bool) -> Result<bool> {
         ensure!(
             existing::same_binding(&self.source, fresh)
@@ -1866,7 +1866,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
@@ -1944,7 +1944,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             stable_root_identity: None,
         };
         let controller = Controller::open(root.path().join("order-controller"), vec![])?;

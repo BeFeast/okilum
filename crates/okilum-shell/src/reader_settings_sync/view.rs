@@ -34,7 +34,6 @@ impl Render for SyncSettings {
                                 view.presentation.dialog_open = false;
                                 view.presentation.wizard = None;
                                 view.presentation.managing = None;
-                                #[cfg(target_os = "linux")]
                                 view.close_first_sync_preview(cx);
                                 cx.notify();
                             });
@@ -85,7 +84,6 @@ impl Render for SyncSettings {
                 ),
         );
         let header = header.child(self.render_status(cx));
-        #[cfg(target_os = "linux")]
         let header = header.child(self.render_first_sync_recovery(cx));
         let mut content = v_flex().gap_6().w_full().min_w_0();
         let empty = self
@@ -768,7 +766,6 @@ impl SyncSettings {
             Step::Link=>("Copy this link to your other computer".into(),format!("Copy the link. On the other computer open Settings → Sync → Add computer → I have a link. Return to {local} to approve its request.")),
             Step::Waiting=>(format!("Waiting for {remote} to approve"),format!("{local} has requested a connection. On {remote}, approve “{local} wants to connect”. This window keeps waiting; you do not need to retry.")),
             Step::Vaults=>("Choose vaults".into(),if cfg!(target_os="linux") {"Choose a vault and a local folder. If both folders have files, review what is new, the same or conflicting before confirming a merge. Every version is kept.".into()} else {"Choose a vault from the approved computer and a new or empty local folder. If the folder already has files, Okilum leaves them untouched and asks you to choose an empty folder.".into()}),
-            #[cfg(target_os = "linux")]
             Step::Merge => ("Review files before first sync".into(),"No merge starts until you confirm. Different versions are kept on both computers.".into()),
             Step::Computer=>(remote.clone(),format!("Vaults shared between {local} and {remote}.")),
             Step::Progress if complete => ("Your first sync is complete".into(), "Your vaults are up to date. Saved changes now sync in both directions.".into()),
@@ -810,7 +807,6 @@ impl SyncSettings {
             body = body.child(self.render_status(cx));
         }
         match step {
-            #[cfg(target_os = "linux")]
             Step::Merge => {
                 if let Some(view) = &self.first_sync.view {
                     body = body.child(view.clone());

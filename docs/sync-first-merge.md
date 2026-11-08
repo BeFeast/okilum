@@ -78,3 +78,19 @@ This document describes the Linux implementation in progress. Hosted
 verification of Settings and interruption controls, Mac/Windows implementation
 and native beta acceptance remain part of #2043. No source merge or passing component
 test alone closes its completion issue.
+
+
+## Native Mac integration under verification
+
+Fresh signed Mac preparations now create the same durable folder/launch registry
+before native registration. The existing supervisor takes its process lock and
+configuration gate, fences held folders offline, and records the captured child's
+Darwin birth/parent/executable and exact REST-listener ownership. A small C shim
+uses the SDK's `libproc` structures; no copied ABI layout or process-name matching
+supplies authority. Shared inventory, merge and layout-A review now compile on
+Mac as well. APFS UUID/inode/birth witnesses persist root identities across boots.
+
+Older running supervisors without this registry retain their existing pairing
+flow but cannot grant first-merge ownership. Their explicit upgrade/recovery,
+native crash recovery and isolated installed-beta acceptance remain unresolved;
+this section is an implementation checkpoint, not a shipping claim.
