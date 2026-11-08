@@ -3,6 +3,55 @@ use std::{
     io::{self, Read},
     ops::Range,
 };
+mod json;
+
+/// Stable row identities in display order; filtering/sorting run on a worker.
+pub fn view_rows(
+    table: &Table,
+    start: usize,
+    count: usize,
+    filter: &str,
+    sort: Option<(usize, bool)>,
+) -> Vec<usize> {
+    let query = filter.to_lowercase();
+    let mut rows: Vec<_> = (start..table.rows.len().min(start.saturating_add(count)))
+        .filter(|&row| {
+            query.is_empty()
+                || table.rows[row]
+                    .iter()
+                    .any(|v| v.to_lowercase().contains(&query))
+        })
+        .collect();
+    if let Some((column, descending)) = sort {
+        let numeric = rows.iter().all(|&row| {
+            table.cell(row, column).is_empty()
+                || table
+                    .cell(row, column)
+                    .parse::<f64>()
+                    .is_ok_and(f64::is_finite)
+        });
+        rows.sort_by(|&a, &b| {
+            let (a, b) = (table.cell(a, column), table.cell(b, column));
+            let order = if numeric {
+                match (a.parse::<i128>(), b.parse::<i128>()) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    _ => match (a.parse::<f64>(), b.parse::<f64>()) {
+                        (Ok(a), Ok(b)) => a.total_cmp(&b),
+                        _ => a.cmp(b),
+                    },
+                }
+            } else {
+                a.cmp(b)
+            };
+            if descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+    }
+    rows
+}
 
 /// Resource bounds for an attachment projection, including pathological rows
 /// with many empty fields. These never apply to canonical source editing.
@@ -118,25 +167,31 @@ impl Table {
     /// Clipboard projection only: a single cell stays plain; a rectangle is
     /// TSV with quoted tabs/newlines, including empty cells in ragged rows.
     pub fn copy(&self, rows: Range<usize>, columns: Range<usize>) -> String {
+        self.copy_rows(&rows.collect::<Vec<_>>(), columns)
+    }
+
+    /// Copy in projected display order, including quoted single-column ranges.
+    pub fn copy_rows(&self, rows: &[usize], columns: Range<usize>) -> String {
         if rows.len() == 1 && columns.len() == 1 {
-            return self.cell(rows.start, columns.start).into();
+            return self.cell(rows[0], columns.start).into();
         }
-        rows.map(|row| {
-            columns
-                .clone()
-                .map(|col| {
-                    let value = self.cell(row, col);
-                    if value.contains(['\t', '\r', '\n', '"']) {
-                        format!("\"{}\"", value.replace('"', "\"\""))
-                    } else {
-                        value.into()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\t")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        rows.iter()
+            .map(|&row| {
+                columns
+                    .clone()
+                    .map(|col| {
+                        let value = self.cell(row, col);
+                        if value.contains(['\t', '\r', '\n', '"']) {
+                            format!("\"{}\"", value.replace('"', "\"\""))
+                        } else {
+                            value.into()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -228,6 +283,25 @@ fn append(field: &mut String, ch: char, limit: usize) -> bool {
 mod tests {
     use super::*;
     use std::{cell::Cell, io::Cursor, rc::Rc};
+
+    #[test]
+    fn data_table_numeric_sort_filter_reset_and_copy_follow_display_order() {
+        let table = Table::parse(
+            "name,n\nשלום,10\nAlpha,2\nalpha,100\n\"line\nnext\",3\n",
+            false,
+        );
+        assert_eq!(
+            view_rows(&table, 1, 100, "", Some((1, false))),
+            [2, 4, 1, 3]
+        );
+        assert_eq!(view_rows(&table, 1, 100, "ALPHA", Some((1, true))), [3, 2]);
+        assert_eq!(view_rows(&table, 1, 100, "", None), [1, 2, 3, 4]);
+        assert_eq!(view_rows(&table, 1, 2, "", Some((1, true))), [1, 2]);
+        assert!(view_rows(&table, 1, 100, "absent", None).is_empty());
+        assert_eq!(table.copy_rows(&[4, 1], 0..1), "\"line\nnext\"\nשלום");
+        let large = Table::parse("n\n9007199254740993\n9007199254740992\n", false);
+        assert_eq!(view_rows(&large, 1, 10, "", Some((0, false))), [2, 1]);
+    }
 
     struct CountingReader {
         input: Cursor<Vec<u8>>,

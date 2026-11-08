@@ -1,5 +1,41 @@
 # Read-only data files (#2669)
 
+## CSV and JSON tables (#2735, decision #1532)
+
+CSV/TSV and JSON arrays open as read-only tables. JSON retains its Source view
+(Pretty/Raw, Find, folding and exact Copy); JSON objects/configuration files
+continue to open as source. JSONC and JSONL/log routing remain unchanged.
+Objects in an array use the union of their top-level keys, nested values stay
+compact JSON, missing fields stay empty and explicit null displays `null`.
+Arrays of arrays use numbered columns; scalar arrays use a Value column.
+
+Click a column heading for ascending, descending, then source order. Numeric
+columns sort numerically; other columns use case-sensitive text order. Filter
+loaded rows is a case-insensitive substring across every cell. Sorting and
+filtering run on workers; obsolete results cannot replace newer queries. Copy
+uses displayed row order and clears the selection when the projection changes.
+Both rows and columns are virtualized. The no-header CSV option retains every
+source row and provides numbered sortable column headings.
+
+The first preview is bounded by 1 MiB, 1,000 displayed rows, 64,000 cells,
+256 columns and 64 KiB per field. Load more rows explicitly re-reads up to
+32 MiB, 100,000 rows and 500,000 cells with the same column/field bounds.
+Counts identify the loaded scope and partial files. Filters and sorts cover
+only that scope; the limit notice never claims the whole file was searched.
+Cut records are omitted rather than displayed as complete values. Oversized,
+malformed or unsupported JSON still has the Source view.
+
+Open in DuckDB starts an installed DuckDB CLI using its documented
+`-cmd "CREATE VIEW ..." -ui` interface, exposing the full canonical file as
+`okilum_data` in an independent in-memory database. CLI arguments bypass the
+shell; SQL literals and file glob characters are escaped. The CLI process is
+reaped independently of the Reader. Missing/failed CLI launches display an
+inline retryable error. Installation and extension downloads belong to the
+external CLI. Okilum adds no dependency, database engine, Parquet/.duckdb
+viewer, SQL input or bundled asset; the dependency set and packaged assets are unchanged.
+
+## Source viewing
+
 JSON/JSONC, XML/XSD/XSL, TOML, YAML and TXT use the Reader's code viewer.
 XML uses the pinned MIT tree-sitter-xml 0.7.0 grammar; no network resolution or
 DTD/entity expansion occurs. Existing source-format editors stay explicit; XML
