@@ -647,8 +647,14 @@ fn first_sync_fixture(root: &Path) -> Result<FirstSyncFixture> {
     let b = target.connect()?;
     let a_address = a.config()?["options"]["listenAddresses"][0].clone();
     let b_address = b.config()?["options"]["listenAddresses"][0].clone();
-    a.add_device(&json!({"deviceID":target.device_id,"addresses":[b_address]}))?;
-    b.add_device(&json!({"deviceID":source.device_id,"addresses":[a_address]}))?;
+    // Match production enrollment's explicit device name. A blank name is
+    // asynchronously filled from Hello and legitimately invalidates a preview.
+    a.add_device(
+        &json!({"deviceID":target.device_id,"name":"Destination fixture","addresses":[b_address]}),
+    )?;
+    b.add_device(
+        &json!({"deviceID":source.device_id,"name":"Source fixture","addresses":[a_address]}),
+    )?;
     Ok(FirstSyncFixture {
         source_runtime,
         target_runtime,
@@ -721,6 +727,29 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         .is_err());
     assert_eq!(first_sync_files(&here)?, before.0);
     fs::write(there.join("remote.md"), before.1.get("remote.md").unwrap())?;
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    let mut backend = second.first_sync_backend(preview);
+    let addresses: Vec<String> = a.device(&target.device_id)?["addresses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect();
+    let mut changed = addresses.clone();
+    changed.push("tcp://127.0.0.1:1".into());
+    a.set_device_addresses(&target.device_id, &changed)?;
+    assert!(
+        plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+            .is_err(),
+        "a real runtime configuration change must invalidate preview consent"
+    );
+    assert_eq!(
+        (first_sync_files(&here)?, first_sync_files(&there)?),
+        before,
+        "stale runtime configuration must publish zero merge bytes"
+    );
+    a.set_device_addresses(&target.device_id, &addresses)?;
     let preview = second.preview_remote_vault(peer, vault, &here)?;
     let plan = preview.plan().clone();
     let conflicts = plan
