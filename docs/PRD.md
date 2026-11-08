@@ -29,6 +29,11 @@ explicit system-player video cards and read-only JSON Canvas cards, edges,
 pan/zoom and note navigation. Canvas viewing is now in scope; editing remains
 separate. Source files are never modified by these viewers.
 
+**CSV/JSON tables (#2735, decision #1532, 2026-11-06):**
+[Read-only data files](data-file-viewer.md) adds virtualized CSV/JSON array tables,
+worker sorting/filtering with explicit preview limits, and Open in DuckDB through
+an external CLI. No embedded engine, Parquet/.duckdb support or SQL input is added.
+
 **Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
 **Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.
