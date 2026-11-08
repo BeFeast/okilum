@@ -95,54 +95,6 @@ impl SyncSettings {
             .into_any_element()
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-    #[test]
-    fn missing_runtime_is_immediate_and_connected_success_clears_the_alert() {
-        let now = Instant::now();
-        let mut health = Health::default();
-        let mut overview = direct::Overview::default();
-        overview
-            .vaults
-            .insert(PathBuf::from("/synthetic"), Default::default());
-        health.observe(&overview, now);
-        assert!(health.message().unwrap().contains("needs attention"));
-        let vault = overview.vaults.values_mut().next().unwrap();
-        vault.available = true;
-        vault.state = "Up to date".into();
-        health.observe(&overview, now);
-        assert!(health.message().is_none());
-        health.failed();
-        assert!(health.message().is_some());
-    }
-    #[test]
-    fn offline_or_stalled_vault_warns_after_ten_minutes_and_progress_resets_timer() {
-        let now = Instant::now();
-        let mut health = Health::default();
-        let mut overview = direct::Overview::default();
-        overview.vaults.insert(
-            PathBuf::from("/synthetic"),
-            direct::VaultOverview {
-                available: true,
-                state: "Syncing".into(),
-                needed_bytes: 100,
-                ..Default::default()
-            },
-        );
-        health.observe(&overview, now);
-        assert!(health.message().is_none());
-        health.observe(&overview, now + STALE);
-        assert!(health.message().is_none());
-        health.observe(&overview, now + STALE + Duration::from_secs(1));
-        assert!(health.message().unwrap().contains("10 minutes"));
-        overview.vaults.values_mut().next().unwrap().needed_bytes = 50;
-        health.observe(&overview, now + STALE + Duration::from_secs(2));
-        assert!(health.message().is_none());
-    }
-}
-
 #[cfg(all(target_os = "macos", not(test)))]
 pub(super) fn managed_enabled() -> bool {
     use okilum_sync_controller::sidecar::{
@@ -231,6 +183,7 @@ pub(super) fn repair_or_restart(controller: &Controller) -> anyhow::Result<()> {
             for vault in inspected {
                 controller.attach_existing(&vault, true)?;
             }
+            controller.repair_transfer_identities(true)?;
             return Ok(());
         }
     }
@@ -299,4 +252,52 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn missing_runtime_is_immediate_and_connected_success_clears_the_alert() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = direct::Overview::default();
+        overview
+            .vaults
+            .insert(PathBuf::from("/synthetic"), Default::default());
+        health.observe(&overview, now);
+        assert!(health.message().unwrap().contains("needs attention"));
+        let vault = overview.vaults.values_mut().next().unwrap();
+        vault.available = true;
+        vault.state = "Up to date".into();
+        health.observe(&overview, now);
+        assert!(health.message().is_none());
+        health.failed();
+        assert!(health.message().is_some());
+    }
+    #[test]
+    fn offline_or_stalled_vault_warns_after_ten_minutes_and_progress_resets_timer() {
+        let now = Instant::now();
+        let mut health = Health::default();
+        let mut overview = direct::Overview::default();
+        overview.vaults.insert(
+            PathBuf::from("/synthetic"),
+            direct::VaultOverview {
+                available: true,
+                state: "Syncing".into(),
+                needed_bytes: 100,
+                ..Default::default()
+            },
+        );
+        health.observe(&overview, now);
+        assert!(health.message().is_none());
+        health.observe(&overview, now + STALE);
+        assert!(health.message().is_none());
+        health.observe(&overview, now + STALE + Duration::from_secs(1));
+        assert!(health.message().unwrap().contains("10 minutes"));
+        overview.vaults.values_mut().next().unwrap().needed_bytes = 50;
+        health.observe(&overview, now + STALE + Duration::from_secs(2));
+        assert!(health.message().is_none());
+    }
 }

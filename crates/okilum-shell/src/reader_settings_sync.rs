@@ -989,25 +989,28 @@ fn perform_scoped(
     let _serial = serial_actions();
     let result = perform_with_locations(controller, operation, ticket, locations);
     #[cfg(target_os = "macos")]
-    let result = result.map_err(|error| {
-        let diagnostic = (|| -> anyhow::Result<Option<String>> {
-            if reader_history::isolated_state_directory().is_some() {
-                return Ok(None);
-            }
-            let state = okilum_sync_controller::sidecar::macos::account_state_directory()?;
-            okilum_sync_controller::sidecar::store::UnixStore::open_existing(&state)?
-                .read_supervisor_failure()
-        })()
-        .ok()
-        .flatten()
-        .filter(|text| !text.is_empty());
-        match diagnostic {
-            Some(text) => error.context(format!("Sync helper: {text}")),
-            None => error,
-        }
-    });
+    let result = result.map_err(with_helper_failure);
     result
 }
+#[cfg(target_os = "macos")]
+fn with_helper_failure(error: anyhow::Error) -> anyhow::Error {
+    let diagnostic = (|| -> anyhow::Result<Option<String>> {
+        if reader_history::isolated_state_directory().is_some() {
+            return Ok(None);
+        }
+        let state = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+        okilum_sync_controller::sidecar::store::UnixStore::open_existing(&state)?
+            .read_supervisor_failure()
+    })()
+    .ok()
+    .flatten()
+    .filter(|text| !text.is_empty());
+    match diagnostic {
+        Some(text) => error.context(format!("Sync helper: {text}")),
+        None => error,
+    }
+}
+
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
 fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
@@ -1171,14 +1174,15 @@ fn perform_with_locations(
             #[cfg(target_os = "macos")]
             Operation::Restart => controller.refresh()?,
             Operation::Read | Operation::EnterPairing => {
-                let observed = (|| {
-                    #[cfg(all(target_os = "macos", not(test)))]
-                    health::check_managed()?;
-                    controller.refresh()
-                })();
+                #[cfg(all(target_os = "macos", not(test)))]
+                let observed = health::check_managed().and_then(|()| controller.refresh());
+                #[cfg(not(all(target_os = "macos", not(test))))]
+                let observed = controller.refresh();
                 match observed {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
+                        #[cfg(target_os = "macos")]
+                        let error = with_helper_failure(error);
                         refresh_problem = Some(error);
                         // Saved enrollment is not first-run state. Keep known
                         // computers/vaults visible while presenting the failure.

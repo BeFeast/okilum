@@ -126,3 +126,11 @@ inode and birthtime identity, read from the held directory descriptor. The
 device hint already changed is upgraded only by an explicit Fix/attach-existing
 consent after fresh authenticated inspection; ordinary refresh does not infer
 continuity from an inode alone. Fix keeps existing vault membership and peers.
+
+
+The destination ownership witness on completed receive transfers uses the same
+APFS stable identity. Refresh upgrades same-boot legacy witnesses and refreshes
+diagnostic device hints only after the complete authenticated folder/membership
+witness validates. Fix consent can upgrade a legacy destination whose inode is
+unchanged; a replaced root or changed stable volume is refused. This also keeps
+receiver history/ignore reconciliation from using a previous boot's device hint.
