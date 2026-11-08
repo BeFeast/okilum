@@ -24,7 +24,7 @@ to that display's visible work area. They cannot be minimized independently.
   It is excluded from the Window menu; the app retains its single Dock identity.
   Settings/About use an opaque native AppKit title bar with standard traffic
   lights, native dragging and the system double-click preference (#2755).
-  Their explicit Close button is in a footer, outside the caption. Reader and
+  Their explicit Close button is in a client toolbar, below the caption. Reader and
   Feedback retain their existing chrome; owner lookup and lifecycle are unchanged.
 - Linux: GPUI Floating requests `WM_TRANSIENT_FOR` on X11 or an xdg-toplevel
   parent on Wayland. GPUI chooses the focused window as the transient parent;
@@ -70,6 +70,13 @@ Regression checks cover the macOS window options, absence of a custom caption,
 Close via pointer/Esc/shortcut/action, per-Reader About reuse, and owner closure.
 TestPlatform cannot simulate AppKit window dragging. Manual Mac verification must
 still cover repeated slow/fast drags across the full caption (active/inactive
-window, every Settings pane and About), native close, footer Close, and movement
+window, every Settings pane and About), native close, client Close, and movement
 of the owning Reader. Source inspection identifies the dead input strip above;
 it does not substitute for reproducing the reported jumps on the tester's Mac.
+
+The explicit Close action stays in the first 34 client pixels, below the native
+caption. `Dialog` reserves that client strip for window actions even while its
+backdrop occludes the rest of the viewport. Moving Close to a footer covers it
+during the Sync wizard: native CI caught both existing #2487 typed-field/Close
+regressions. Keeping this client toolbar preserves one-click close and input
+Blur/commit with the wizard open; it has no window-drag handler or caption overlay.

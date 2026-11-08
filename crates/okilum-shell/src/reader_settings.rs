@@ -2144,18 +2144,24 @@ impl Render for Settings {
                     ),
                 )
             })
-            .child(content)
             .when(cfg!(target_os = "macos"), |view| {
                 // Keep the explicit Close action in client content. A GPUI
                 // control over the native caption would steal its drag region.
+                // Dialogs leave the first TITLE_BAR_HEIGHT client pixels
+                // interactive; a footer would be covered by the Sync backdrop.
                 view.child(
                     h_flex()
+                        .debug_selector(|| "settings-window-actions".into())
                         .flex_none()
+                        .h(gpui_component::TITLE_BAR_HEIGHT)
+                        .items_center()
                         .justify_end()
-                        .p_3()
+                        .pr_3()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(self.close_button(cx)),
                 )
             })
+            .child(content)
             .children({
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
@@ -3978,6 +3984,12 @@ mod tests {
                 !cfg!(target_os = "macos"),
                 "macOS uses AppKit's caption; Linux/Windows keep the client bar"
             );
+            if cfg!(target_os = "macos") {
+                let actions = visual.debug_bounds("settings-window-actions").unwrap();
+                let close = visual.debug_bounds("settings-close").unwrap();
+                assert!(close.top() >= actions.top());
+                assert!(close.bottom() <= gpui_component::TITLE_BAR_HEIGHT);
+            }
             match path {
                 0 => visual.simulate_keystrokes("escape"),
                 1 => visual.simulate_keystrokes("secondary-w"),
