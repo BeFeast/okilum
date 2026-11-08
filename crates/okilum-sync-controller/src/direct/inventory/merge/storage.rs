@@ -604,7 +604,7 @@ impl Store {
                 &parent,
                 stage.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
-                Mode::from_raw_mode(mode),
+                Mode::from_raw_mode(0o600),
             )?);
             f.write_all(bytes)?;
             f.set_permissions(std::fs::Permissions::from_mode(mode))?;
