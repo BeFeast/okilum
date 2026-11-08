@@ -1310,6 +1310,10 @@ mod tests {
 
     #[gpui::test]
     fn native_preview_cancel_move_and_recovery_guard(cx: &mut TestAppContext) {
+        let directory = std::env::temp_dir().join(format!("okilum-move-{}", uuid::Uuid::new_v4()));
+        let mut fixture = cx.new_app();
+        let parent = cx;
+        let cx = &mut fixture;
         cx.update(|cx| {
             // Modal animations use wall time, not the test executor clock. Keep
             // pointer hit targets stable while testing the move/recovery flow.
@@ -1317,7 +1321,7 @@ mod tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let dir = std::env::temp_dir().join(format!("okilum-move-{}", uuid::Uuid::new_v4()));
+        let dir = directory.clone();
         std::fs::create_dir_all(dir.join("notes/Folder")).unwrap();
         let root = dir.join("notes").canonicalize().unwrap();
         std::fs::write(root.join("start.md"), "# Source\r\n[[target]]\r\n").unwrap();
@@ -1684,8 +1688,27 @@ mod tests {
             released.upgrade().is_none(),
             "fixture Reader must release its file handles"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(!dir.exists(), "fixture cleanup must actually complete");
+        // The fixture app can own resources beyond the last Reader window.
+        cx.quit();
+        drop(fixture);
+        parent.run_until_parked();
+        let cleanup = std::fs::remove_dir_all(&directory);
+        if let Err(error) = &cleanup {
+            eprintln!("fixture app stopped but cleanup failed: {error}; root={directory:?}");
+            let mut pending = vec![directory.clone()];
+            for _ in 0..100 {
+                let Some(path) = pending.pop() else { break };
+                eprintln!("remaining fixture path: {path:?}");
+                if let Ok(entries) = std::fs::read_dir(&path) {
+                    pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+                }
+            }
+        }
+        cleanup.unwrap();
+        assert!(
+            !directory.exists(),
+            "fixture cleanup must actually complete"
+        );
     }
     #[gpui::test]
     fn folder_keys_rename_without_toggling_and_move_updates_descendant_links(
