@@ -241,6 +241,7 @@ mod tests {
         let (mut receiver, _) = listener.accept()?;
         receiver.set_nonblocking(true)?;
         limits(&receiver)?;
+        #[cfg(unix)]
         assert!(!rustix::fs::fcntl_getfl(&receiver)?.contains(rustix::fs::OFlags::NONBLOCK));
         receiver.set_read_timeout(Some(Duration::from_millis(20)))?;
         // Positive control: the same socket and frame reader receive data.

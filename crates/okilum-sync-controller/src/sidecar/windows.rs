@@ -410,3 +410,6 @@ mod scheduler_roundtrip_tests {
         .is_err());
     }
 }
+
+#[cfg(windows)]
+pub mod bootstrap;

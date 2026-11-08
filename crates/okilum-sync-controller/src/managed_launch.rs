@@ -6,7 +6,7 @@
 #[cfg(target_os = "linux")]
 use crate::lifecycle::ManagedInstance;
 use crate::{daemon::DaemonIdentity, private};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) struct ManagedInstance {
     pub home: PathBuf,
     pub executable: PathBuf,
@@ -18,13 +18,16 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    fs::{File, OpenOptions},
     io::Read,
     net::SocketAddr,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Weak},
     time::{Duration, Instant},
+};
+#[cfg(unix)]
+use std::{
+    fs::{File, OpenOptions},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
 };
 use uuid::Uuid;
 use xmltree::{Element, XMLNode};
@@ -42,10 +45,16 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{live_generation, NativeLaunch};
 
+#[cfg(target_os = "macos")]
+use crate::sidecar::macos::bootstrap::managed_launch_reference as native_launch_reference;
+#[cfg(windows)]
+use crate::sidecar::windows::bootstrap::managed_launch_reference as native_launch_reference;
+
 mod quiescence;
 pub use quiescence::{OrdinaryHold, ScopedHold};
 
 pub(crate) type Identity = okilum_write_authority::filesystem_identity::Identity;
+#[cfg(unix)]
 pub(crate) fn identity(path: &Path) -> Result<Identity> {
     let handle = OpenOptions::new()
         .read(true)
@@ -55,6 +64,7 @@ pub(crate) fn identity(path: &Path) -> Result<Identity> {
     // Boot-local btrfs device numbers must not invalidate an existing pairing.
     okilum_write_authority::filesystem_identity::from_file(&handle)
 }
+#[cfg(unix)]
 pub(crate) fn digest(path: &Path) -> Result<String> {
     let mut f = OpenOptions::new()
         .read(true)
@@ -76,6 +86,48 @@ pub(crate) fn digest(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", h.finalize()))
 }
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{live_generation, NativeLaunch};
+#[cfg(windows)]
+pub(crate) fn identity(path: &Path) -> Result<Identity> {
+    if path.is_dir() {
+        okilum_core::windows_files::Directory::open(path)?.filesystem_identity()
+    } else {
+        let directory = okilum_core::windows_files::Directory::open(
+            path.parent().context("file parent missing")?,
+        )?;
+        let file = directory.open_file(path.file_name().context("file name missing")?)?;
+        okilum_write_authority::filesystem_identity::from_file(&file)
+    }
+}
+#[cfg(windows)]
+pub(crate) fn digest(path: &Path) -> Result<String> {
+    let directory = okilum_core::windows_files::Directory::open(
+        path.parent().context("executable parent missing")?,
+    )?;
+    let mut file = directory.open_file(path.file_name().context("executable name missing")?)?;
+    ensure!(
+        file.metadata()?.len() <= 100_000_000,
+        "unsafe managed executable"
+    );
+    let mut hash = Sha256::new();
+    let mut block = [0; 65536];
+    loop {
+        let n = file.read(&mut block)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&block[..n]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+#[cfg(unix)]
+type LockFile = File;
+#[cfg(windows)]
+type LockFile = private::Writer;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Folder {
@@ -111,7 +163,8 @@ fn directory(home: &Path) -> Result<PathBuf> {
         .context("managed home has no parent")?
         .join("managed-launch"))
 }
-fn lock_file(path: &Path, create: bool, wait: bool) -> Result<File> {
+#[cfg(unix)]
+fn lock_file(path: &Path, create: bool, wait: bool) -> Result<LockFile> {
     let f = OpenOptions::new()
         .read(true)
         .write(true)
@@ -133,7 +186,23 @@ fn lock_file(path: &Path, create: bool, wait: bool) -> Result<File> {
     }
     Ok(f)
 }
-thread_local! { static GATES: RefCell<BTreeMap<PathBuf, Weak<File>>> = const { RefCell::new(BTreeMap::new()) }; }
+#[cfg(windows)]
+fn lock_file(path: &Path, create: bool, wait: bool) -> Result<LockFile> {
+    let file = if create {
+        private::open_rw(path)?
+    } else {
+        private::open_existing_rw(path)?
+    };
+    if wait {
+        file.lock()?;
+    } else {
+        file.try_lock()
+            .context("managed runtime is already running or busy")?;
+    }
+    Ok(file)
+}
+
+thread_local! { static GATES: RefCell<BTreeMap<PathBuf, Weak<LockFile>>> = const { RefCell::new(BTreeMap::new()) }; }
 impl Reference {
     fn load(&self) -> Result<Binding> {
         ensure!(
@@ -166,7 +235,7 @@ impl Reference {
         );
         Ok(b)
     }
-    fn gate(&self) -> Result<Arc<File>> {
+    fn gate(&self) -> Result<Arc<LockFile>> {
         let before = self.load()?;
         if let Some(lock) = GATES.with(|g| g.borrow().get(&self.directory).and_then(Weak::upgrade))
         {
@@ -306,7 +375,7 @@ pub(crate) fn existing(home: &Path) -> Result<Reference> {
 /// lease is acquired by admission.rs AFTER this gate and before registration.
 pub(crate) struct Configuration {
     _operation: okilum_write_authority::OperationGuard,
-    _gate: Arc<File>,
+    _gate: Arc<LockFile>,
 }
 pub(crate) fn configuration(
     daemon: &DaemonIdentity,
@@ -327,12 +396,9 @@ pub(crate) fn configuration(
                 .try_exists()?,
             "managed launch binding missing; recovery required"
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         ensure!(
-            crate::sidecar::macos::bootstrap::managed_launch_reference(
-                home.parent().context("preparation missing")?,
-            )?
-            .is_none(),
+            native_launch_reference(home.parent().context("preparation missing")?,)?.is_none(),
             "managed launch binding missing; recovery required"
         );
         return Ok(None);
@@ -387,19 +453,16 @@ pub(crate) fn configuration(
 /// vault refuses the shared effect without stopping the running daemon.
 pub(crate) struct RuntimeConfiguration {
     _operations: Vec<okilum_write_authority::OperationGuard>,
-    _gate: Option<Arc<File>>,
+    _gate: Option<Arc<LockFile>>,
 }
 pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeConfiguration> {
     let home = daemon.config_file.parent().context("daemon home missing")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if !directory(home)?.try_exists()? {
         // Legacy supervisors keep their existing pairing capabilities. They
         // have no first-merge fence and cannot grant publication ownership.
         ensure!(
-            crate::sidecar::macos::bootstrap::managed_launch_reference(
-                home.parent().context("preparation missing")?,
-            )?
-            .is_none(),
+            native_launch_reference(home.parent().context("preparation missing")?,)?.is_none(),
             "managed launch binding missing; recovery required"
         );
         let config = daemon.connect()?.config()?;

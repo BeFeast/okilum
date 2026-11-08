@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub(crate) struct Configuration {
     _operation: Option<okilum_write_authority::OperationGuard>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     _runtime: Option<crate::managed_launch::Configuration>,
 }
 pub(crate) fn configuration(
@@ -15,11 +15,11 @@ pub(crate) fn configuration(
     folder: &str,
     root: &Path,
 ) -> Result<Configuration> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let runtime = crate::managed_launch::configuration(daemon, folder, root)?;
     // Acquire after the runtime gate, just like launch. The operation remains
     // admitted if begin_drain closes admission during effects/readback.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let operation = if runtime.is_none() {
         Some(okilum_write_authority::operation(root)?)
     } else {
@@ -27,7 +27,7 @@ pub(crate) fn configuration(
     };
     Ok(Configuration {
         _operation: operation,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         _runtime: runtime,
     })
 }

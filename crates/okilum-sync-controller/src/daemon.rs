@@ -27,6 +27,11 @@ pub use crate::sidecar::macos::bootstrap::managed_source_identity as managed_ide
 #[cfg(target_os = "macos")]
 pub(crate) use crate::sidecar::macos::bootstrap::managed_transport_identity;
 
+#[cfg(windows)]
+pub use crate::sidecar::windows::bootstrap::managed_source_identity as managed_identity;
+#[cfg(windows)]
+pub(crate) use crate::sidecar::windows::bootstrap::managed_transport_identity;
+
 pub const CLIENT_VERSION: &str = "v2.1.6";
 
 /// External compatibility is independent of the checksum-pinned bundled runtime.

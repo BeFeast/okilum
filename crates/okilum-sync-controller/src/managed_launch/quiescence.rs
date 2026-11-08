@@ -34,7 +34,7 @@ pub struct ScopedHold {
     hold: Hold,
     daemon: DaemonIdentity,
     reference: Reference,
-    gate: Arc<File>,
+    gate: Arc<LockFile>,
     path: PathBuf,
     record: Record,
 }
@@ -425,7 +425,7 @@ impl ScopedHold {
 /// the merge publishes. Other already-configured folders keep transferring.
 pub struct OrdinaryHold {
     hold: Hold,
-    _gate: File,
+    _gate: LockFile,
     daemon: DaemonIdentity,
     generation: Generation,
     config: Value,

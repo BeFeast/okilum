@@ -131,3 +131,21 @@ native exit proof is committed remains recovery pending; a missing endpoint or
 process name never reconstructs it. Existing paired identities, configuration
 and canonical files must remain intact. Installed-beta upgrade and first-merge
 release acceptance remain pending.
+
+### Windows integration under verification
+
+The shared direct controller now compiles on Windows through retained NTFS
+root handles, protected journal/blob staging, revision-aware ignore publication,
+and no-replace first-merge capture/publication. Native launch ownership uses
+process creation times, captured parent/image identity and the kernel TCP owner
+tables for the exact authenticated REST endpoint. The supervisor must retain its
+Job Object before publishing that generation. Runtime preparation, production
+Authenticode policy, pinned Windows payload packaging and Settings integration
+remain unshipped until their native acceptance passes; this is not a beta claim.
+
+The 600-second hosted managed-acceptance deadline remains unchanged. Thirteen
+independent crash checkpoints were taking roughly 40–57 seconds each on the
+hosted runner, exhausting that deadline before the remaining controls ran. The
+runner now uses two independent test processes and private state roots, requires
+every compiled parent test and all thirteen ordered checkpoint acknowledgements,
+and still rejects and reaps survivors. No scenario or negative control is removed.

@@ -24,7 +24,17 @@ def main():
     listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
     if {line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")} != expected:
         raise RuntimeError(f"Native Windows private Sync controls did not compile/discover: {listing}")
-    return subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=False).returncode
+    subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
+    for test in (
+        "managed_launch::windows::tests::windows_listener_and_process_proofs_require_live_kernel_owners",
+        "direct::lan::tests::windows_lan_selection_requires_live_physical_interfaces",
+    ):
+        command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", test]
+        listing = subprocess.run([*command, "--", "--exact", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
+        if f"{test}: test" not in listing or "1 test" not in listing:
+            raise RuntimeError(f"Native Windows kernel control did not compile/discover: {listing}")
+        subprocess.run([*command, "--", "--exact", "--nocapture"], check=True)
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())

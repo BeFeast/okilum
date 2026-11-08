@@ -1,10 +1,16 @@
 //! Durable content-addressed preimages and create/capture publication. Journals
 //! live in private application state, never in a vault or its deletable index.
 use super::*;
+#[cfg(unix)]
 use crate::direct::inventory::tree::Stamp;
+#[cfg(unix)]
 use rustix::fs::{mkdirat, openat, renameat_with, Mode, OFlags, RenameFlags};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+#[path = "storage/windows.rs"]
+mod windows;
 
 const MAX_METADATA: usize = 32 * 1024 * 1024;
 const MAX_TOTAL: usize = 2 * MAX_BYTES;
@@ -184,23 +190,31 @@ fn valid_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 fn read(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let m = f.metadata()?;
-    ensure!(
-        m.is_file() && m.nlink() == 1 && m.mode() & 0o077 == 0 && m.len() <= limit as u64,
-        "unsafe first Sync journal file"
-    );
-    let mut bytes = Vec::new();
-    (&mut f).take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= limit && Stamp::from(m) == Stamp::from(f.metadata()?),
-        "journal changed during read"
-    );
-    Ok(bytes)
+    #[cfg(windows)]
+    {
+        private::read_limit(path, limit)
+    }
+    #[cfg(unix)]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let m = f.metadata()?;
+        ensure!(
+            m.is_file() && m.nlink() == 1 && m.mode() & 0o077 == 0 && m.len() <= limit as u64,
+            "unsafe first Sync journal file"
+        );
+        let mut bytes = Vec::new();
+        (&mut f).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= limit && Stamp::from(m) == Stamp::from(f.metadata()?),
+            "journal changed during read"
+        );
+        Ok(bytes)
+    }
 }
+
 impl Store {
     pub fn create(state: &Path, binding: Binding) -> Result<Self> {
         ensure!(
@@ -314,6 +328,7 @@ impl Store {
             return Ok(expected_size);
         }
         let partial = path.with_extension("partial");
+        #[cfg(unix)]
         let mut f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -322,12 +337,16 @@ impl Store {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&partial)?;
+        #[cfg(windows)]
+        let mut f = private::open_rw(&partial)?;
         let m = f.metadata()?;
         ensure!(
-            m.is_file()
-                && m.nlink() == 1
-                && m.mode() & 0o077 == 0
-                && m.len() <= expected_size as u64,
+            m.is_file() && m.len() <= expected_size as u64,
+            "unsafe partial first Sync blob"
+        );
+        #[cfg(unix)]
+        ensure!(
+            m.nlink() == 1 && m.mode() & 0o077 == 0,
             "unsafe partial first Sync blob"
         );
         let length = usize::try_from(m.len())?;
@@ -355,14 +374,19 @@ impl Store {
                 wire::fingerprint(&complete) == expected_hash,
                 "first Sync staged content checksum differs"
             );
-            renameat_with(
-                rustix::fs::CWD,
-                &partial,
-                rustix::fs::CWD,
-                &path,
-                RenameFlags::NOREPLACE,
-            )?;
-            File::open(path.parent().context("blob parent missing")?)?.sync_all()?;
+            #[cfg(unix)]
+            {
+                renameat_with(
+                    rustix::fs::CWD,
+                    &partial,
+                    rustix::fs::CWD,
+                    &path,
+                    RenameFlags::NOREPLACE,
+                )?;
+                File::open(path.parent().context("blob parent missing")?)?.sync_all()?;
+            }
+            #[cfg(windows)]
+            f.publish_noreplace(&path)?;
         }
         Ok(length)
     }
@@ -430,23 +454,7 @@ impl Store {
         if recovering {
             for (path, bytes) in &original.files {
                 if !current.files.contains_key(path) {
-                    let (parent, _) = parent(&root, path, false)?;
-                    let retained = self.retained(path);
-                    let mut file = File::from(openat(
-                        &parent,
-                        retained.as_str(),
-                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                        Mode::empty(),
-                    )?);
-                    let m = file.metadata()?;
-                    ensure!(
-                        m.is_file() && m.nlink() == 1 && m.len() <= MAX_BYTES as u64,
-                        "unsafe retained first Sync preimage"
-                    );
-                    let mut captured = Vec::new();
-                    (&mut file)
-                        .take(MAX_BYTES as u64 + 1)
-                        .read_to_end(&mut captured)?;
+                    let captured = read_retained(&root, path, &self.retained(path))?;
                     ensure!(
                         captured == *bytes,
                         "third version in retained first Sync preimage; recovery stopped"
@@ -484,6 +492,7 @@ impl Store {
     }
     /// `validate` must prove local AND transport exclusion for this exact root.
     /// The retained preimages and displaced inodes survive every failure.
+    #[cfg(unix)]
     pub fn publish(&mut self, validate: impl Fn() -> Result<()>) -> Result<()> {
         ensure!(
             matches!(
@@ -644,6 +653,7 @@ impl Store {
         )
     }
 }
+#[cfg(unix)]
 fn parent(root: &File, path: &str, create: bool) -> Result<(File, String)> {
     tree::validate_path(path)?;
     let mut parts = path.split('/').peekable();
@@ -665,4 +675,29 @@ fn parent(root: &File, path: &str, create: bool) -> Result<(File, String)> {
         directory = File::from(fd);
     }
     anyhow::bail!("empty merge file path")
+}
+
+#[cfg(unix)]
+fn read_retained(root: &tree::Root, path: &str, retained: &str) -> Result<Vec<u8>> {
+    let (parent, _) = parent(root, path, false)?;
+    let mut file = File::from(openat(
+        &parent,
+        retained,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?);
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.nlink() == 1 && metadata.len() <= MAX_BYTES as u64,
+        "unsafe retained first Sync preimage"
+    );
+    let mut bytes = vec![];
+    (&mut file)
+        .take(MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+#[cfg(windows)]
+fn read_retained(root: &tree::Root, path: &str, retained: &str) -> Result<Vec<u8>> {
+    windows::read_retained(root, path, retained)
 }

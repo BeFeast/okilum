@@ -3,7 +3,9 @@
 use super::*;
 use crate::daemon::{self, DaemonIdentity};
 use serde_json::{json, Value};
-use std::{fs, io::Write, os::unix::fs::OpenOptionsExt};
+use std::fs;
+#[cfg(unix)]
+use std::{io::Write, os::unix::fs::OpenOptionsExt};
 
 // The Reader's canonical per-machine exclusions, plus the approved worktree
 // exclusions from sync-enrollment.md. Never use FIXTURE_IGNORES as live policy.
@@ -75,7 +77,7 @@ impl Controller {
                 anyhow::bail!("existing Syncthing vault requires Choose existing synced vault");
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         let daemon = daemon::managed_identity(prepared);
         #[cfg(target_os = "macos")]
         let daemon = crate::sidecar::macos::bootstrap::managed_source_identity(prepared);
@@ -310,6 +312,7 @@ fn policy(path: &Path) -> Result<Vec<u8>> {
         }
     }
 }
+#[cfg(unix)]
 fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
     let file = path.join(".stignore");
     match fs::OpenOptions::new()
@@ -338,6 +341,31 @@ fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
         Err(e) => {
             return Err(e).with_context(|| format!("create ignore policy {}", file.display()))
         }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
+    let directory = okilum_core::windows_files::Directory::open(path)?;
+    let name = std::ffi::OsStr::new(".stignore");
+    match directory.open_file(name) {
+        Ok(_) => ensure!(
+            policy(path)? == expected,
+            "ignore policy changed; explicit review required"
+        ),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            directory.create(name, expected)?;
+            ensure!(
+                policy(path)? == expected,
+                "ignore policy changed; explicit review required"
+            );
+        }
+        Err(error) => return Err(error),
     }
     Ok(())
 }
@@ -534,7 +562,7 @@ pub(super) fn record_removed_membership(db: &mut Database, vault: &ExistingVault
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

@@ -933,5 +933,5 @@ fn append_chunk(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

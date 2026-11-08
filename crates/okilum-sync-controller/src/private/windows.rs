@@ -38,17 +38,25 @@ pub(crate) fn directory(path: &Path) -> Result<()> {
     Ok(())
 }
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {
+    read_limit(path, 4 * 1024 * 1024)
+}
+pub(crate) fn read_limit(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let _parent = parent(path)?;
     let file = open_private_file(&text(path)?)?.context("private Sync state file missing")?;
     verify_private_file(&file)?;
     ensure!(
-        file.metadata()?.len() <= 4 * 1024 * 1024,
+        file.metadata()?.len() <= limit as u64,
         "private Sync state file exceeds bound"
     );
     let mut bytes = vec![];
-    file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    file.take(
+        u64::try_from(limit)?
+            .checked_add(1)
+            .context("journal size overflow")?,
+    )
+    .read_to_end(&mut bytes)?;
     ensure!(
-        bytes.len() <= 4 * 1024 * 1024,
+        bytes.len() <= limit,
         "private Sync state file exceeds bound"
     );
     Ok(bytes)
@@ -126,6 +134,116 @@ pub(crate) fn lock(path: &Path) -> Result<Lock> {
     })
 }
 
+/// Staged private blob with retained ancestor ownership. Publication closes its
+/// writable descriptor first, then uses a same-directory no-replace rename.
+pub(crate) struct Writer {
+    file: File,
+    path: std::path::PathBuf,
+    _directory: PrivateDirectory,
+}
+impl std::ops::Deref for Writer {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+impl std::ops::DerefMut for Writer {
+    fn deref_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+impl Read for Writer {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(bytes)
+    }
+}
+impl Write for Writer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.file.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+impl std::io::Seek for Writer {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.file, position)
+    }
+}
+impl Writer {
+    pub(crate) fn publish_noreplace(self, destination: &Path) -> Result<()> {
+        ensure!(
+            text(self.path.parent().context("staging parent missing")?)?
+                == text(destination.parent().context("publication parent missing")?)?,
+            "private publication must stay in its pinned directory"
+        );
+        verify_private_file(&self.file)?;
+        self.file.sync_all()?;
+        let Self {
+            file,
+            path,
+            _directory,
+        } = self;
+        drop(file);
+        let from: Vec<_> = text(&path)?.encode_utf16().chain(Some(0)).collect();
+        let to: Vec<_> = text(destination)?.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            MoveFileExW(
+                PCWSTR(from.as_ptr()),
+                PCWSTR(to.as_ptr()),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        }?;
+        Ok(())
+    }
+}
+pub(crate) fn open_rw(path: &Path) -> Result<Writer> {
+    let directory = parent(path)?;
+    let location = text(path)?;
+    let file = match create_private_file(&location) {
+        Ok(file) => file,
+        Err(error)
+            if error
+                .downcast_ref::<windows::core::Error>()
+                .is_some_and(|error| {
+                    [ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS]
+                        .iter()
+                        .any(|code| error.code() == windows::core::HRESULT::from_win32(code.0))
+                }) =>
+        {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+                .open(&location)?
+        }
+        Err(error) => return Err(error),
+    };
+    verify_private_file(&file)?;
+    Ok(Writer {
+        file,
+        path: path.to_owned(),
+        _directory: directory,
+    })
+}
+
+pub(crate) fn open_existing_rw(path: &Path) -> Result<Writer> {
+    let directory = parent(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(text(path)?)?;
+    verify_private_file(&file)?;
+    Ok(Writer {
+        file,
+        path: path.to_owned(),
+        _directory: directory,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +262,17 @@ mod tests {
         drop(owner);
         let _owner = lock(&state)?;
         assert_eq!(public_file(&file)?, b"replacement");
+        let partial = state.join("staged.partial");
+        let mut writer = open_rw(&partial)?;
+        writer.write_all(b"staged blob")?;
+        assert!(writer.publish_noreplace(&file).is_err());
+        assert_eq!(read(&file)?, b"replacement");
+        assert_eq!(read_limit(&partial, 11)?, b"staged blob");
+        assert!(read_limit(&partial, 3).is_err());
+        let complete = state.join("complete");
+        open_rw(&partial)?.publish_noreplace(&complete)?;
+        assert_eq!(read(&complete)?, b"staged blob");
+        assert!(!partial.exists());
         Ok(())
     }
     #[test]

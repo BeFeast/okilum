@@ -121,6 +121,21 @@ pub(super) fn owned_runtime(_configs: &[PathBuf], daemon: &DaemonIdentity) -> Re
     )
 }
 
+#[cfg(windows)]
+pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
+    let [config] = configs else { return Ok(None) };
+    let state = crate::sidecar::windows::bootstrap::active_state_directory()?;
+    let owned = state.join("config/config.xml");
+    if !owned.try_exists()? || config.canonicalize()? != owned.canonicalize()? {
+        return Ok(None);
+    }
+    Ok(crate::daemon::managed_identity(&state).ok())
+}
+#[cfg(windows)]
+pub(super) fn owned_runtime(configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
+    Ok(managed(configs)?.is_some_and(|managed| managed == *daemon))
+}
+
 pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
     ensure!(
         transport.addresses.len() <= MAX_ADDRESSES,

@@ -178,7 +178,7 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
     Ok(lines)
 }
 impl Controller {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(in crate::direct) fn attach_completed_first_sync(
         &self,
         receipt: &inventory::merge::CompletedMerge,
@@ -573,16 +573,9 @@ struct DirectoryIdentity {
 }
 impl DirectoryIdentity {
     fn read(path: &Path) -> Result<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::symlink_metadata(path)?;
-        ensure!(
-            metadata.is_dir() && !metadata.file_type().is_symlink(),
-            "destination must remain a real directory"
-        );
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
+        let root = existing::VaultRoot::open(path)?;
+        let (device, inode) = root.identity()?;
+        Ok(Self { device, inode })
     }
 }
 
@@ -818,7 +811,7 @@ impl ShareGrant {
         );
         Ok(())
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(super) fn refresh_source(&mut self, fresh: &ExistingVault, consent: bool) -> Result<bool> {
         ensure!(
             existing::same_binding(&self.source, fresh)
@@ -1056,12 +1049,20 @@ pub(super) fn offline(error: &anyhow::Error) -> bool {
 /// failure, and it is not a firewall problem (#2589). macOS reports a sleeping
 /// LAN host as EHOSTDOWN, which std leaves uncategorized.
 pub(super) fn host_down(error: &std::io::Error) -> bool {
-    matches!(
+    let common = matches!(
         error.kind(),
         std::io::ErrorKind::HostUnreachable
             | std::io::ErrorKind::NetworkUnreachable
             | std::io::ErrorKind::NetworkDown
-    ) || error.raw_os_error() == Some(libc::EHOSTDOWN)
+    );
+    #[cfg(unix)]
+    {
+        common || error.raw_os_error() == Some(libc::EHOSTDOWN)
+    }
+    #[cfg(windows)]
+    {
+        common || error.raw_os_error() == Some(windows::Win32::Networking::WinSock::WSAEHOSTDOWN.0)
+    }
 }
 /// The paired channel's connect error, with a hint that matches the cause.
 pub(super) fn not_connected(endpoint: SocketAddr, error: anyhow::Error) -> anyhow::Error {
@@ -1653,7 +1654,7 @@ pub(super) fn record_removed_membership(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn fixture() -> Result<(tempfile::TempDir, Transfer, Value, Observation, Value)> {
@@ -1871,7 +1872,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             stable_root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
@@ -1949,7 +1950,7 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             stable_root_identity: None,
         };
         let controller = Controller::open(root.path().join("order-controller"), vec![])?;

@@ -6,7 +6,7 @@ use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 struct Starting {
     reference: Reference,
     binding: Binding,
-    gate: Arc<File>,
+    gate: Arc<LockFile>,
     folders: FencedFolders,
 }
 

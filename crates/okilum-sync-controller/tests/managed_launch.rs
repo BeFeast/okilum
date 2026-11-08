@@ -1307,7 +1307,9 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
         "handoff-folder-created",
         "third-version",
     ] {
-        if std::env::var("OKILUM_FIRST_SYNC_CRASH_CASE").is_ok_and(|selected| selected != stage) {
+        if std::env::var("OKILUM_FIRST_SYNC_CRASH_CASE")
+            .is_ok_and(|selected| !selected.split(',').any(|case| case == stage))
+        {
             continue;
         }
         let started = std::time::Instant::now();
