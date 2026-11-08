@@ -108,6 +108,15 @@ struct ProcessList {
     ids: [usize; MAX_JOB_PROCESSES],
 }
 impl JobChild {
+    /// The root process object is captured before its first instruction runs.
+    /// This identity is for readiness only; termination always uses the job.
+    pub fn root_pid(&self) -> Result<u32> {
+        ensure!(self.root_running()?, "captured runtime root has exited");
+        let pid = unsafe { GetProcessId(raw(&self.process)) };
+        ensure!(pid != 0, "captured runtime root identity is unavailable");
+        Ok(pid)
+    }
+
     /// The caller must first verify the immutable staged payload signature/hash
     /// and private config/data ownership. Creation is an explicit Enable effect.
     pub fn spawn(launch: &Launch) -> Result<Self> {

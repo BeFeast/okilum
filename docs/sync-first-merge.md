@@ -149,3 +149,13 @@ hosted runner, exhausting that deadline before the remaining controls ran. The
 runner now uses two independent test processes and private state roots, requires
 every compiled parent test and all thirteen ordered checkpoint acknowledgements,
 and still rejects and reaps survivors. No scenario or negative control is removed.
+
+Windows production trust follows `sync-sidecar-discovery.md`: the compiled
+publisher subject and complete native issuer chain come from release variables,
+not a renewable leaf-certificate thumbprint. WinVerifyTrust supplies the trust and
+timestamp verdict; the same retained file is compared with that policy. Native
+controls require a trusted signed positive image and refuse a different publisher,
+a different chain, an unsigned image and changed executable bytes. The release
+packager still verifies every shipped PE against its configured signing key.
+The pinned Syncthing executable body is checked independently of its replacement
+Authenticode certificate table, so re-signing cannot substitute another program.

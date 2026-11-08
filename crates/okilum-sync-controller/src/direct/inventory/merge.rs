@@ -658,9 +658,7 @@ impl Controller {
             folder_type: "ordinary".into(),
             peers: vec![],
             root_identity: Some(tree::identity(&preview.local.root)?),
-            stable_root_identity: Some(okilum_write_authority::filesystem_identity::from_file(
-                &preview.local.root,
-            )?),
+            stable_root_identity: Some(tree::stable_identity(&preview.local.root)?),
         };
         let mut store = Store::create(
             &state,

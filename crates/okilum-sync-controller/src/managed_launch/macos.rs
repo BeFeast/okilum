@@ -24,6 +24,10 @@ impl NativeLaunch {
             home.parent().context("native state missing")?,
         )?;
         if !directory(home)?.try_exists()? {
+            ensure!(
+                pinned.is_none(),
+                "native launch registry missing; recovery required"
+            );
             return Ok(None);
         }
         let reference = existing(home)?;

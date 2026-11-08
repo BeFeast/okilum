@@ -38,3 +38,15 @@ signing operation. Native `check-supervisor-bundle.sh` exercises arm64 staging a
 ad-hoc nested signing; release Developer ID/notarization and complete Enable
 require separate native delivery receipts. Ad-hoc QA is never accepted by the
 production `bundled_runtime` lookup (`signed=false`).
+
+Windows uses `windows_bundle.py`: the archive and executable are pinned to the
+same signed v2.1.6 upstream checksum list. The installed payload includes
+Syncthing, its MPL notices, source URL and provenance; the portable ZIP retains its
+existing no-helper boundary. The signer signs Syncthing alongside the app and
+supervisor. `seal` requires every byte before the certificate table to match the
+pinned upstream executable, except PE checksum and certificate-directory fields.
+Native preparation independently checks that executable body and the configured
+publisher/issuer chain before selecting a staged runtime. The release build
+receives `OKILUM_WINDOWS_SIGN_SUBJECT` and `OKILUM_WINDOWS_SIGN_ISSUER_CHAIN` (a JSON
+array of RFC2253 intermediate/root subjects, leaf issuer first). Those identities
+come from the release configuration; annual leaf renewal does not change policy.

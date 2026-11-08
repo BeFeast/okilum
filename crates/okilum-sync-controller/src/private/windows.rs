@@ -1,7 +1,8 @@
 //! Owner-protected Windows controller state. Ancestor handles pin every lookup;
 //! private state never repairs a shared DACL or follows a reparse point.
 use crate::sidecar::windows::private::{
-    create_private_file, open_private_file, verify_private_file, PrivateDirectory,
+    create_private_file, open_private_file, verify_generated_file, verify_private_file,
+    PrivateDirectory,
 };
 use anyhow::{ensure, Context, Result};
 use std::{
@@ -62,15 +63,36 @@ pub(crate) fn read_limit(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub(crate) fn public_file(path: &Path) -> Result<Vec<u8>> {
-    // Generated identity files and staged runtime provenance are created in the
-    // same protected controller root, including the non-secret certificate.
-    read(path)
+    let _parent = parent(path)?;
+    let file = open_private_file(&text(path)?)?.context("generated Sync state file missing")?;
+    verify_generated_file(&file)?;
+    ensure!(
+        file.metadata()?.len() <= 4 * 1024 * 1024,
+        "generated Sync state exceeds bound"
+    );
+    let mut bytes = vec![];
+    file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 4 * 1024 * 1024,
+        "generated Sync state exceeds bound"
+    );
+    Ok(bytes)
 }
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_file(path, bytes, false)
+}
+pub(crate) fn write_generated(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_file(path, bytes, true)
+}
+fn write_file(path: &Path, bytes: &[u8], generated: bool) -> Result<()> {
     let _parent = parent(path)?;
     let destination = text(path)?;
     if let Some(file) = open_private_file(&destination)? {
-        verify_private_file(&file)?;
+        if generated {
+            verify_generated_file(&file)?;
+        } else {
+            verify_private_file(&file)?;
+        }
     }
     let temporary = path.with_file_name(format!(".sync-{}.tmp", Uuid::new_v4()));
     let result = (|| -> Result<()> {
@@ -273,6 +295,19 @@ mod tests {
         open_rw(&partial)?.publish_noreplace(&complete)?;
         assert_eq!(read(&complete)?, b"staged blob");
         assert!(!partial.exists());
+        let generated = state.join("config.xml");
+        fs::write(&generated, b"generated configuration")?;
+        assert!(
+            read(&generated).is_err(),
+            "an inherited file is not a private journal"
+        );
+        assert_eq!(public_file(&generated)?, b"generated configuration");
+        assert!(write(&generated, b"must remain a generated file").is_err());
+        write_generated(&generated, b"updated configuration")?;
+        assert_eq!(public_file(&generated)?, b"updated configuration");
+        let redirected = state.join("generated-redirect");
+        std::os::windows::fs::symlink_file(&generated, &redirected)?;
+        assert!(public_file(&redirected).is_err());
         Ok(())
     }
     #[test]

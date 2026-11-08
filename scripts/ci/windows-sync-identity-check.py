@@ -2,6 +2,8 @@
 """Require nonempty native Windows Sync identity and retained-schema controls."""
 import subprocess
 import sys
+import os
+import tempfile
 
 TESTS = {
     "filesystem_identity::tests::windows_open_handle_identity_preserves_the_existing_serialized_shape_and_detects_replacement",
@@ -26,14 +28,20 @@ def main():
         raise RuntimeError(f"Native Windows private Sync controls did not compile/discover: {listing}")
     subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     for test in (
+        "sidecar::windows::signature::tests::windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes",
         "managed_launch::windows::tests::windows_listener_and_process_proofs_require_live_kernel_owners",
         "direct::lan::tests::windows_lan_selection_requires_live_physical_interfaces",
+        "direct::inventory::tree::tests::windows_inventory_reads_binary_bytes_and_refuses_redirects_and_hardlinks",
+        "direct::inventory::merge::storage::windows::tests::windows_native_publication_recovers_capture_gap_and_preserves_every_original",
     ):
         command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", test]
-        listing = subprocess.run([*command, "--", "--exact", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
+        listing = subprocess.run([*command, "--", "--exact", "--include-ignored", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
         if f"{test}: test" not in listing or "1 test" not in listing:
             raise RuntimeError(f"Native Windows kernel control did not compile/discover: {listing}")
-        subprocess.run([*command, "--", "--exact", "--nocapture"], check=True)
+        with tempfile.TemporaryDirectory(prefix="okilum-first-sync-") as root:
+            env = dict(os.environ, LOCALAPPDATA=root, OKILUM_WINDOWS_FIRST_SYNC_FIXTURE=root)
+            subprocess.run([*command, "--", "--exact", "--include-ignored", "--nocapture"], env=env, check=True)
+    subprocess.run(["cargo", "test", "--locked", "-p", "okilum-sync-supervisor"], check=True)
     return 0
 
 if __name__ == "__main__":

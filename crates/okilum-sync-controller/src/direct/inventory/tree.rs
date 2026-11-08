@@ -57,6 +57,11 @@ pub(super) fn identity(root: &File) -> Result<(u64, u64)> {
     let m = root.metadata()?;
     Ok((m.dev(), m.ino()))
 }
+pub(super) fn stable_identity(
+    root: &Root,
+) -> Result<okilum_write_authority::filesystem_identity::Identity> {
+    okilum_write_authority::filesystem_identity::from_file(root)
+}
 pub(super) fn verify_root(root: &File, path: &Path) -> Result<()> {
     let current = open_root(path)?;
     ensure!(

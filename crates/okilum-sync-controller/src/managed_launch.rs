@@ -128,6 +128,17 @@ type LockFile = File;
 #[cfg(windows)]
 type LockFile = private::Writer;
 
+fn read_configuration(path: &Path) -> Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        private::read(path)
+    }
+    #[cfg(windows)]
+    {
+        private::public_file(path)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Folder {
@@ -327,7 +338,7 @@ pub(crate) fn initialize(instance: &ManagedInstance) -> Result<Reference> {
     };
     // Existing folders enter only during explicit migration. Bind their actual
     // roots, including a closed authority; launch will fence those offline.
-    let xml = Element::parse(private::read(&instance.home.join("config.xml"))?.as_slice())?;
+    let xml = Element::parse(read_configuration(&instance.home.join("config.xml"))?.as_slice())?;
     for e in xml
         .children
         .iter()
@@ -617,7 +628,7 @@ struct FencedFolders {
     paused_at_start: Vec<String>,
 }
 fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
-    let mut xml = Element::parse(private::read(&b.home.join("config.xml"))?.as_slice())?;
+    let mut xml = Element::parse(read_configuration(&b.home.join("config.xml"))?.as_slice())?;
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
     let mut paused_at_start = Vec::new();
@@ -662,7 +673,10 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     }
     let mut bytes = Vec::new();
     xml.write(&mut bytes)?;
+    #[cfg(unix)]
     private::write(&b.home.join("config.xml"), &bytes)?;
+    #[cfg(windows)]
+    private::write_generated(&b.home.join("config.xml"), &bytes)?;
     Ok(FencedFolders {
         leases,
         closed,

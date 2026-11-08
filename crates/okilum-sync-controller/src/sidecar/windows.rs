@@ -413,3 +413,9 @@ mod scheduler_roundtrip_tests {
 
 #[cfg(windows)]
 pub mod bootstrap;
+
+#[cfg(windows)]
+pub mod signature;
+
+#[cfg(windows)]
+pub mod payload;

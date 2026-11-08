@@ -1,13 +1,13 @@
 //! Captured Job Object launch and kernel process/REST ownership on Windows.
 use super::*;
-use std::net::IpAddr;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use windows::Win32::{
+use ::windows::Win32::{
     Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, WAIT_TIMEOUT},
     NetworkManagement::IpHelper::*,
     Networking::WinSock::{AF_INET, AF_INET6},
     System::{Diagnostics::ToolHelp::*, Threading::*},
 };
+use std::net::IpAddr;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
 struct Starting {
     reference: Reference,
@@ -195,7 +195,7 @@ fn process_parent(pid: u32) -> Result<u32> {
         match unsafe { Process32NextW(HANDLE(snapshot.as_raw_handle()), &mut entry) } {
             Ok(()) => (),
             Err(error)
-                if error.code() == windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) =>
+                if error.code() == ::windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) =>
             {
                 break
             }

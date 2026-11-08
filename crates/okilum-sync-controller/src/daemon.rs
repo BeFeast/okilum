@@ -180,7 +180,11 @@ struct RestConfig {
     key: String,
 }
 fn read_config(path: &Path) -> Result<RestConfig> {
-    let xml = Element::parse(private::read(path)?.as_slice())?;
+    #[cfg(unix)]
+    let bytes = private::read(path)?;
+    #[cfg(windows)]
+    let bytes = private::public_file(path)?;
+    let xml = Element::parse(bytes.as_slice())?;
     let gui = xml.get_child("gui").context("GUI configuration missing")?;
     ensure!(
         gui.attributes.get("tls").is_none_or(|s| s == "false"),

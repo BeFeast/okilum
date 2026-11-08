@@ -62,8 +62,17 @@ pub fn run(
     // Checked right before the spawn and again right after it; on a mismatch after the
     // spawn the job is closed (every process in it killed) as the error unwinds.
     selection.verify_file(state)?;
+    policy.verify_image(Path::new(&launch.executable))?;
+    let launch_owner = okilum_sync_controller::managed_launch::NativeLaunch::if_registered(
+        Path::new(&launch.config).join("config.xml").as_path(),
+        Path::new(&launch.executable),
+    )?;
     let child = JobChild::spawn(&launch)?;
     selection.verify_file(state)?;
+    policy.verify_image(Path::new(&launch.executable))?;
+    let _launch_owner = launch_owner
+        .map(|owner| owner.ready(child.root_pid()?, generation))
+        .transpose()?;
     let tree = JobTree::new(child, settings.stop);
     store.publish_hint(
         Instant::now() + settings.store,

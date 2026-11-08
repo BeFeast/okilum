@@ -55,9 +55,14 @@ pub(crate) fn managed_launch_reference(state: &Path) -> Result<Option<Reference>
     let selection = store(state)?
         .read_selection(Instant::now() + Duration::from_secs(5))?
         .context("managed runtime selection missing")?;
+    let executable = selection.verify_file(state)?;
+    super::payload::verify(
+        &executable,
+        &super::signature::AuthenticodePolicy::from_build()?,
+    )?;
     receipt.launch.validate(&ManagedInstance {
         home: state.join("config").canonicalize()?,
-        executable: selection.verify_file(state)?,
+        executable,
     })?;
     Ok(Some(receipt.launch))
 }

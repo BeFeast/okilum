@@ -62,6 +62,11 @@ pub(super) fn identity(root: &Root) -> Result<(u64, u64)> {
         ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
     ))
 }
+pub(super) fn stable_identity(
+    root: &Root,
+) -> Result<okilum_write_authority::filesystem_identity::Identity> {
+    root.filesystem_identity()
+}
 pub(super) fn verify_root(root: &Root, path: &Path) -> Result<()> {
     let current = open_root(path)?;
     ensure!(
@@ -252,6 +257,38 @@ impl Scan {
             before == Stamp::directory(directory)?,
             "directory changed during collection"
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn windows_inventory_reads_binary_bytes_and_refuses_redirects_and_hardlinks() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let vault = temporary.path().join("vault");
+        std::fs::create_dir(&vault)?;
+        std::fs::write(vault.join("note.md"), b"original\r\n")?;
+        std::fs::write(vault.join("binary.dat"), [0, 255, 42])?;
+        let root = open_root(&vault)?;
+        let original = Tree::collect(&root, &vault, true)?;
+        assert_eq!(original.files.len(), 2);
+        assert_eq!(original.files["binary.dat"], [0, 255, 42]);
+        assert!(std::fs::rename(&vault, temporary.path().join("moved")).is_err());
+        let target = temporary.path().join("outside");
+        std::fs::write(&target, b"must not follow")?;
+        let link = vault.join("redirect");
+        std::os::windows::fs::symlink_file(&target, &link)?;
+        assert!(Tree::collect(&root, &vault, true).is_err());
+        std::fs::remove_file(&link)?;
+        std::fs::hard_link(&target, &link)?;
+        assert!(Tree::collect(&root, &vault, true).is_err());
+        std::fs::remove_file(&link)?;
+        std::fs::write(vault.join("note.md"), b"new revision")?;
+        let changed = Tree::collect(&root, &vault, true)?;
+        assert_ne!(original.stamps, changed.stamps);
+        assert_eq!(changed.files["note.md"], b"new revision");
         Ok(())
     }
 }
