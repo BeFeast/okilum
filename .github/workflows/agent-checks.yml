@@ -40,6 +40,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
+          cache-on-failure: true
       - name: Prepare and verify Mac Sync vendor
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -51,7 +52,7 @@ jobs:
           python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
           printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
       - name: Lint native Mac Sync targets
-        run: cargo clippy --locked -p okilum-sync-controller -p okilum-shell --all-targets -- -D warnings
+        run: cargo clippy --locked -p okilum-sync-controller -p okilum-sync-supervisor -p okilum-shell --all-targets -- -D warnings
       - name: Run native Mac Sync controls
         run: python3 scripts/ci/macos-sync-source.py
   windows-recovery:
