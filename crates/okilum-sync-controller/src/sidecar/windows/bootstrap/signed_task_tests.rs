@@ -78,7 +78,9 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         );
         assert!(connect_current_app(false).is_err());
         assert!(!state.exists(), "refused consent created native state");
+        eprintln!("WINDOWS_TASK_PHASE initial Connect");
         let identity = connect_current_app(true)?;
+        eprintln!("WINDOWS_TASK_PHASE initial Connect ready");
         let controller = Controller::open(direct, vec![])?;
         let other_root = tempfile::tempdir()?;
         let other = Controller::open(other_root.path().join("other"), vec![])?;
@@ -107,7 +109,9 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
     }
     ensure!(phase == "resumed", "unknown native fixture phase");
     let before: Evidence = serde_json::from_slice(&std::fs::read(evidence)?)?;
+    eprintln!("WINDOWS_TASK_PHASE retained Connect");
     let identity = connect_current_app(true)?;
+    eprintln!("WINDOWS_TASK_PHASE retained Connect ready");
     let controller = Controller::open(direct, vec![])?;
     let resumed = observed(identity, &controller)?;
     same_identity(&before, &resumed);
@@ -115,16 +119,22 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         before.generation, resumed.generation,
         "package update restarted the retained native task"
     );
+    eprintln!("WINDOWS_TASK_PHASE retained Disable");
     disable_current_app()?;
+    eprintln!("WINDOWS_TASK_PHASE retained Disable complete");
     assert!(
         crate::managed_launch::live_generation(before.identity.config_file.parent().unwrap())
             .is_err()
     );
+    eprintln!("WINDOWS_TASK_PHASE reenable Connect");
     let identity = connect_current_app(true)?;
+    eprintln!("WINDOWS_TASK_PHASE reenable Connect ready");
     let restarted = observed(identity, &controller)?;
     same_identity(&before, &restarted);
     assert_ne!(before.generation.id, restarted.generation.id);
+    eprintln!("WINDOWS_TASK_PHASE final Disable");
     disable_current_app()?;
+    eprintln!("WINDOWS_TASK_PHASE final Disable complete");
     assert!(
         crate::managed_launch::live_generation(before.identity.config_file.parent().unwrap())
             .is_err()

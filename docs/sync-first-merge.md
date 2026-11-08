@@ -224,3 +224,14 @@ before the final intent check. Its compiled negative restores a transaction befo
 observation and must fail as busy; an intervening Disable must still refuse
 readiness. The signed Task lifecycle remains the end-to-end acceptance of this
 ordering, independently of that contention control.
+
+Native run `42503328352` reached the signed package-update control but refused
+an endpoint hint read with Windows sharing violation `0x80070020`. Discovery
+now retries only that typed native error within its existing absolute budget.
+It still requires a private, single-link, valid hint and authenticated process/
+generation reply; timeout and all other errors remain recovery pending. Store
+directory locks and file sharing modes are unchanged. A native test retains an
+incompatible hint File through the deadline, then exercises concurrent release
+and exact readback; hard-linked and malformed hints remain refused. The hosted
+compiled one-shot negative must fail the real deadline assertion. Signed Task
+phase markers identify retained Connect, Disable and re-enable independently.

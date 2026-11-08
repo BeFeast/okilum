@@ -19,7 +19,7 @@ pub(super) fn stop_and_wait(
     deadline: Instant,
 ) -> Result<()> {
     let hint = store
-        .peek_hint()?
+        .peek_hint_until(deadline)?
         .context("no authenticated supervisor generation; recovery pending")?;
     let scope = token.operation.scope.clone();
     ensure!(

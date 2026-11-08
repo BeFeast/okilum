@@ -5,6 +5,32 @@ import os
 import subprocess
 
 
+def hint_contention():
+    source = Path("crates/okilum-sync-controller/src/sidecar/store/hint.rs")
+    original = source.read_bytes()
+    boundary = b"hint_sharing_violation(&error) && Instant::now() < deadline"
+    if original.count(boundary) != 1:
+        raise RuntimeError("Hint control must select the native contention retry")
+    command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib",
+               "sidecar::store::windows_tests::windows_hint_discovery_retries_only_native_contention_within_its_deadline",
+               "--", "--exact", "--nocapture"]
+    positive = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+    print(positive.stdout, flush=True)
+    positive.check_returncode()
+    if "test result: ok. 1 passed;" not in positive.stdout:
+        raise RuntimeError("The native hint contention positive did not fire")
+    try:
+        source.write_bytes(original.replace(boundary,
+            b"hint_sharing_violation(&error) && false && Instant::now() < deadline"))
+        negative = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+        print(negative.stdout, flush=True)
+        if negative.returncode == 0 or "hint contention returned before the discovery deadline" not in negative.stdout:
+            raise RuntimeError("One-shot discovery did not fail the actual native contention control")
+    finally:
+        source.write_bytes(original)
+    print("WINDOWS_HINT_CONTENTION_PASS: native incompatible hint handle, bounded retry, release/read positive and structural refusals; compiled one-shot control failed", flush=True)
+
+
 def check():
     if os.name != "nt":
         raise RuntimeError("Readiness sharing control requires native Windows")
@@ -32,6 +58,7 @@ def check():
     finally:
         source.write_bytes(original)
     print("WINDOWS_TASK_READINESS_PASS: native directory contention reproduced; authenticated readiness precedes intent locking; concurrent Disable remains refused", flush=True)
+    hint_contention()
 
 
 if __name__ == "__main__":

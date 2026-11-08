@@ -63,7 +63,7 @@ fn discover_detailed_until<D: StateDir, C: Connector>(
     connector: &C,
     deadline: Instant,
 ) -> Discovered {
-    let hint = match store.peek_hint() {
+    let hint = match store.peek_hint_until(deadline) {
         Ok(Some(hint)) => hint,
         Ok(None) => return Discovered::Absent,
         Err(error) => return Discovered::Unreachable(format!("unreadable hint: {error:#}")),
