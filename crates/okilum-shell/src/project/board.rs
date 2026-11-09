@@ -101,6 +101,8 @@ impl Board {
         self.local_generation = self.local_generation.wrapping_add(1);
         self.binding_loading = false;
         self.local_loading = false;
+        self.notes_loading = false;
+        self.delivery_loading = false;
         self.snapshot.invalidate();
         self.binding_error = Some("Service metadata changed; refreshing…".into());
         self.local_cards.error = Some("Service metadata changed; refreshing…".into());

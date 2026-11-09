@@ -209,6 +209,13 @@ impl Project {
     }
 
     pub fn read(folder: &Path) -> Result<Self> {
+        Self::read_at_boundary(folder, || Ok(()))
+    }
+
+    fn read_at_boundary(
+        folder: &Path,
+        after_manifest: impl FnOnce() -> Result<()>,
+    ) -> Result<Self> {
         let layout = crate::service_layout::ServiceLayout::resolve(folder)?;
         if let Ok(metadata) = std::fs::symlink_metadata(layout.path("thread-ids.md")?) {
             ensure!(
@@ -216,9 +223,10 @@ impl Project {
                 "Manager registry must be a regular file, not a symlink"
             );
         }
-        let doc = crate::area_files::read(folder, "project")?
-            .context("Area has no project.toml or project.yaml")?
-            .value;
+        let document = crate::area_files::read(folder, "project")?
+            .context("Area has no project.toml or project.yaml")?;
+        let doc = &document.value;
+        after_manifest()?;
         let text = |value: &serde_yaml::Value| value.as_str().map(str::to_owned);
         let kind = match doc.get("kind") {
             Some(value @ serde_yaml::Value::String(kind)) => {
@@ -237,17 +245,30 @@ impl Project {
         let manifest_manager = &doc["t3"]["manager"];
         // A present role registry is authoritative, including explicit not-started.
         let registry_path = layout.path("thread-ids.md")?;
-        let manager = match std::fs::read_to_string(&registry_path) {
-            Ok(registry) => manager_role(&registry)
-                .with_context(|| format!("Check Manager registry {}", registry_path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match manifest_manager.get("thread_id").and_then(|v| v.as_str()) {
-                    Some(id) => Manager::Thread(thread_id(id)?),
-                    None => Manager::NotStarted,
-                }
-            }
+        let registry_source = match std::fs::read_to_string(&registry_path) {
+            Ok(source) => Some(source),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e).context("cannot read manager registry"),
         };
+        let manager = match &registry_source {
+            Some(registry) => manager_role(registry)
+                .with_context(|| format!("Check Manager registry {}", registry_path.display()))?,
+            None => match manifest_manager.get("thread_id").and_then(|v| v.as_str()) {
+                Some(id) => Manager::Thread(thread_id(id)?),
+                None => Manager::NotStarted,
+            },
+        };
+        layout.check_current()?;
+        ensure!(
+            document.layout == layout
+                && crate::service_layout::regular_bytes(&document.path)?
+                    == document.source.as_bytes(),
+            "Project manifest changed while reading; reload"
+        );
+        ensure!(
+            std::fs::read_to_string(&registry_path).ok() == registry_source,
+            "Manager registry changed while reading; reload"
+        );
         Ok(Self {
             folder: folder.to_owned(),
             name: text(&doc["name"])
@@ -461,6 +482,42 @@ pub fn manager_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service2772_registry_read_refuses_location_switch_instead_of_manifest_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = temp.path();
+        std::fs::create_dir(context.join("ops")).unwrap();
+        std::fs::write(
+            context.join("ops/project.yaml"),
+            "name: Synthetic\nkind: knowledge\nt3:\n  manager: {thread_id: 'mcp:manifest'}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            context.join("ops/thread-ids.md"),
+            "| Manager | `mcp:authoritative` |\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Project::read(context).unwrap().manager,
+            Manager::Thread("mcp:authoritative".into())
+        );
+        let mut fired = false;
+        let result = Project::read_at_boundary(context, || {
+            fired = true;
+            crate::service_layout::migration::Plan::preview(context)?.apply(true)?;
+            Ok(())
+        });
+        assert!(fired);
+        assert!(
+            result.is_err(),
+            "a location switch cannot downgrade registry authority"
+        );
+        assert_eq!(
+            Project::read(context).unwrap().manager,
+            Manager::Thread("mcp:authoritative".into())
+        );
+    }
 
     const LAUNCHED_MANAGER: &str =
         "mcp:launch:13099777befea3a4729bea16bc252db454294b4b5da5e221eec148a17a4ba965";

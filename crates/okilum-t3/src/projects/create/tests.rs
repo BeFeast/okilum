@@ -211,7 +211,7 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
     assert!(!notes.join("ops/project.yaml").exists());
 }
 
-/// An `_index.md` that cannot be written takes the manifest (and the `ops/`
+/// An `_index.md` that cannot be written takes the manifest (and the `.okilum/`
 /// folder create made) back, so a retry is not refused as «already a project».
 #[cfg(unix)]
 #[test]
@@ -220,9 +220,9 @@ fn a_failed_index_write_leaves_the_folder_as_it_was() {
     let vault = Vault::new();
     let folder = vault.folder("HomeLab");
     let draft = Draft::for_folder(&folder);
-    // `ops/` exists and is writable; the folder itself is not, so the
+    // `.okilum/` exists and is writable; the folder itself is not, so the
     // manifest lands and the index cannot.
-    let ops = folder.join("ops");
+    let ops = folder.join(".okilum");
     std::fs::create_dir(&ops).unwrap();
     let mode = |path: &Path, mode: u32| {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
@@ -239,7 +239,7 @@ fn a_failed_index_write_leaves_the_folder_as_it_was() {
     assert!(format!("{error:#}").contains(INDEX), "{error:#}");
     assert!(!folder.join(MANIFEST).exists());
     assert!(!is_project(&folder));
-    // The `ops/` folder was already there, so it stays.
+    // The `.okilum/` folder was already there, so it stays.
     assert!(ops.is_dir());
 
     mode(&folder, 0o755);
@@ -548,7 +548,7 @@ fn the_connection_most_projects_use_is_picked() {
     let b = vault.folder("B");
     let c = vault.folder("C");
     for (folder, env) in [(&a, "maestro"), (&b, "maestro"), (&c, "lan")] {
-        std::fs::create_dir_all(folder.join("ops")).unwrap();
+        std::fs::create_dir_all(folder.join(".okilum")).unwrap();
         std::fs::write(
             folder.join(MANIFEST),
             format!("name = \"x\"\nkind = \"knowledge\"\n[t3]\nenvironment = \"{env}\"\n"),

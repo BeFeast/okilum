@@ -109,6 +109,35 @@ fn new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all()?;
     sync(path.parent().context("Missing service parent")?)
 }
+fn sync_file(path: &Path) -> Result<()> {
+    // Windows FlushFileBuffers requires a writable handle. Unix permits fsync
+    // on read-only descriptors, including metadata with read-only permissions.
+    #[cfg(windows)]
+    let file = fs::OpenOptions::new().write(true).open(path)?;
+    #[cfg(not(windows))]
+    let file = File::open(path)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn publish_marker(
+    context: &Path,
+    id: &str,
+    boundary: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    let temporary = context
+        .join(".okilum")
+        .join(format!(".service-marker-{id}.tmp"));
+    new_file(&temporary, id.as_bytes())?;
+    boundary("marker-ready")?;
+    // No reader can observe a partially written UUID. No-clobber also refuses
+    // an unexpected transaction rather than replacing its recovery authority.
+    fs::hard_link(&temporary, marker(context))?;
+    sync(&context.join(".okilum"))?;
+    fs::remove_file(temporary)?;
+    Ok(())
+}
+
 fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     new_file(&temp, &serde_json::to_vec_pretty(value)?)?;
@@ -239,7 +268,7 @@ impl Plan {
         if !regular_directory(&hidden)? {
             fs::create_dir(&hidden)?;
         }
-        new_file(&marker(&self.source.context), receipt.id.as_bytes())?;
+        publish_marker(&self.source.context, &receipt.id, &mut boundary)?;
         sync(&self.source.context)?;
         boundary("prepared")?;
         finish(receipt, boundary)
@@ -365,7 +394,7 @@ fn finish(mut receipt: Receipt, mut boundary: impl FnMut(&str) -> Result<()>) ->
             );
             fs::hard_link(&staged, &target)
                 .context("Service locations must support same-filesystem no-clobber relocation")?;
-            File::open(&target)?.sync_all()?;
+            sync_file(&target)?;
             sync(&to)?;
         }
         boundary("published")?;
@@ -466,7 +495,13 @@ pub fn cancel_pending(context: &Path, writers_paused: bool) -> Result<Receipt> {
     restore(receipt)
 }
 
-fn restore(mut receipt: Receipt) -> Result<Receipt> {
+fn restore(receipt: Receipt) -> Result<Receipt> {
+    restore_internal(receipt, |_| Ok(()))
+}
+fn restore_internal(
+    mut receipt: Receipt,
+    mut boundary: impl FnMut(&str) -> Result<()>,
+) -> Result<Receipt> {
     let context = &receipt.plan.source.context;
     let source = receipt.plan.source.directory();
     let target = context.join(receipt.plan.target.directory());
@@ -504,18 +539,28 @@ fn restore(mut receipt: Receipt) -> Result<Receipt> {
             }
             sync(&source)?;
         }
-        if exists(&moved)? {
-            let quarantine = target.join(format!(".rollback-{}-{}", receipt.id, entry.name));
+        boundary("restored")?;
+        let quarantine = target.join(format!(".rollback-{}-{}", receipt.id, entry.name));
+        if exists(&quarantine)? {
+            same_revision(&quarantine, entry)?;
             ensure!(
-                !exists(&quarantine)?,
-                "Rollback capture already exists; reconcile explicitly"
+                !exists(&moved)?,
+                "Competing rollback copies; reconcile explicitly"
             );
+        } else if exists(&moved)? {
             fs::rename(&moved, &quarantine)?;
+            sync(&target)?;
+            boundary("captured")?;
+        }
+        if exists(&quarantine)? {
             same_revision(&quarantine, entry)?;
             fs::remove_file(quarantine)?;
+            sync(&target)?;
         }
+        boundary("removed")?;
     }
     cleanup(&receipt)?;
+    boundary("rollback-cleaned")?;
     for directory in [&source, &target] {
         persist(
             &directory.join(GENERATION),
@@ -524,6 +569,7 @@ fn restore(mut receipt: Receipt) -> Result<Receipt> {
     }
     receipt.phase = Phase::RolledBack;
     persist(&local.join("journal.json"), &receipt)?;
+    boundary("rolled-back")?;
     fs::remove_file(marker(context))?;
     sync(&context.join(".okilum"))?;
     Ok(receipt)

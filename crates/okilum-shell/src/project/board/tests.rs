@@ -1747,3 +1747,41 @@ fn compact_pull_badge_opens_its_bound_pull_without_selecting_the_card(cx: &mut T
     assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
     board.read_with(visual, |board, _| assert_eq!(board.selected, None));
 }
+
+#[gpui::test]
+fn service2772_metadata_invalidates_all_pending_board_sources(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(reader_features::enable_test_modules);
+    let area = tempfile::tempdir().unwrap();
+    std::fs::create_dir(area.path().join("ops")).unwrap();
+    std::fs::write(
+        area.path().join("ops/project.yaml"),
+        "name: Synthetic\nkind: knowledge\n",
+    )
+    .unwrap();
+    let (board, visual) = cx.add_window_view(|window, cx| {
+        Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx)
+    });
+    board.update_in(visual, |board, window, cx| {
+        let old = board.snapshot.begin().unwrap();
+        board.notes_loading = true;
+        board.delivery_loading = true;
+        board.service_metadata_changed(window, cx);
+        assert!(
+            !board.snapshot.matches(&old),
+            "old completion must be rejected"
+        );
+        assert!(
+            !board.notes_loading && !board.delivery_loading,
+            "rejected old tickets cannot latch loading forever"
+        );
+        let current = board.snapshot.begin().unwrap();
+        assert!(board.snapshot.matches(&current));
+        board.refresh_project_notes(current, window, cx);
+        assert!(
+            board.notes_loading,
+            "replacement note read must actually start"
+        );
+    });
+    visual.run_until_parked();
+}

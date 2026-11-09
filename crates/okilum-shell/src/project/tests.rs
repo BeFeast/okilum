@@ -1802,3 +1802,60 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
         }
     }
 }
+
+#[gpui::test]
+fn service2772_stale_connection_cannot_clear_metadata_failure(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(".okilum")).unwrap();
+    std::fs::write(
+        temp.path().join(".okilum/service-migration.json"),
+        "fixture-pending",
+    )
+    .unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    let (view, visual) = cx.add_window_view(|window, cx| {
+        let mut view = fixture::view(temp.path().to_owned(), gateway.clone(), window, cx);
+        view.area = Some(temp.path().to_owned());
+        view.active = false;
+        view
+    });
+    let old_generation = view.read_with(visual, |view, _| view.service_generation);
+    view.update_in(visual, |view, window, cx| {
+        view.service_metadata_changed(window, cx)
+    });
+    visual.run_until_parked();
+    view.update_in(visual, |view, window, cx| {
+        assert!(view
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("migration")));
+        assert!(view.gateway.is_none());
+        let environment = Environment::new("example", "https://t3.example.test").unwrap();
+        view.finish_service_connection(
+            old_generation,
+            Ok((environment.clone(), gateway.clone())),
+            window,
+            cx,
+        );
+        assert!(
+            view.gateway.is_none(),
+            "delayed gateway must not restore a blocked context"
+        );
+        assert!(view
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("migration")));
+        view.finish_service_connection(
+            view.service_generation,
+            Err(anyhow::anyhow!("current control")),
+            window,
+            cx,
+        );
+        assert_eq!(
+            view.error.as_deref(),
+            Some("current control"),
+            "current-generation completion control must run"
+        );
+    });
+}

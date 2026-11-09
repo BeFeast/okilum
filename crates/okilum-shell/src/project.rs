@@ -205,6 +205,7 @@ impl ProjectView {
             view.threads.enabled = true;
             view.ttfm_open(opened, cx);
         }
+        let service_generation = view.service_generation;
         let area_copy = area.clone();
         view.area = Some(area);
         let state_copy = state.clone();
@@ -241,29 +242,35 @@ impl ProjectView {
                 })
                 .await;
             let env = this
-                .update_in(cx, |this, window, cx| match result {
-                    Ok((binding, env, project_override)) => {
-                        this.project_override = project_override;
-                        this.reason = match &binding {
-                            None => Some("This area is not connected to T3.".into()),
-                            Some(binding) if binding.manager.thread_id.is_none() => {
-                                Some("This area has no linked manager yet.".into())
-                            }
-                            _ => None,
-                        };
-                        this.binding = binding;
-                        if let Some(env) = &env {
-                            this.origin
-                                .update(cx, |input, cx| input.set_value(env.origin(), window, cx));
-                        }
-                        cx.notify();
-                        env
+                .update_in(cx, |this, window, cx| {
+                    if this.service_generation != service_generation {
+                        return None;
                     }
-                    Err(error) => {
-                        this.reason = None;
-                        this.error = Some(format!("{error:#}"));
-                        cx.notify();
-                        None
+                    match result {
+                        Ok((binding, env, project_override)) => {
+                            this.project_override = project_override;
+                            this.reason = match &binding {
+                                None => Some("This area is not connected to T3.".into()),
+                                Some(binding) if binding.manager.thread_id.is_none() => {
+                                    Some("This area has no linked manager yet.".into())
+                                }
+                                _ => None,
+                            };
+                            this.binding = binding;
+                            if let Some(env) = &env {
+                                this.origin.update(cx, |input, cx| {
+                                    input.set_value(env.origin(), window, cx)
+                                });
+                            }
+                            cx.notify();
+                            env
+                        }
+                        Err(error) => {
+                            this.reason = None;
+                            this.error = Some(format!("{error:#}"));
+                            cx.notify();
+                            None
+                        }
                     }
                 })
                 .ok()
@@ -280,7 +287,7 @@ impl ProjectView {
             };
             let result = task.await.map(|gateway| (env, gateway));
             let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_connection(result, window, cx)
+                this.finish_service_connection(service_generation, result, window, cx)
             });
         })
         .detach();
@@ -1006,6 +1013,19 @@ impl ProjectView {
         }
     }
 
+    fn finish_service_connection(
+        &mut self,
+        generation: u64,
+        result: anyhow::Result<(Environment, Arc<dyn ManagerGateway>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.service_generation != generation {
+            return;
+        }
+        self.finish_connection(result, window, cx);
+    }
+
     fn finish_connection(
         &mut self,
         result: anyhow::Result<(Environment, Arc<dyn ManagerGateway>)>,
@@ -1272,6 +1292,7 @@ impl ProjectView {
                 return;
             }
         };
+        let service_generation = self.service_generation;
         #[cfg(native_manager)]
         if self.threads.enabled {
             self.invalidate_rotation(cx);
@@ -1293,7 +1314,9 @@ impl ProjectView {
                     })
                     .await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    if this.generation != generation {
+                    if this.generation != generation
+                        || this.service_generation != service_generation
+                    {
                         return;
                     }
                     this.busy = false;
@@ -1336,7 +1359,7 @@ impl ProjectView {
                 Err(error) => Err(error),
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_connection(result, window, cx)
+                this.finish_service_connection(service_generation, result, window, cx)
             });
         })
         .detach();

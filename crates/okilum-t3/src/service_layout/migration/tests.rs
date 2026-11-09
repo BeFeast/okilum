@@ -266,3 +266,111 @@ fn relocated_first_writes_and_edits_use_selected_directory_and_keep_all_card_ids
     assert!(f.context.join(".okilum/board-local.toml").is_file());
     assert!(!f.context.join("ops/board-local.toml").exists());
 }
+
+#[test]
+fn atomic_marker_is_absent_until_complete_and_every_file_boundary_resumes() {
+    let f = Fixture::new();
+    let mut fired = false;
+    assert!(Plan::preview(&f.context)
+        .unwrap()
+        .apply_internal(true, |step| {
+            if step == "marker-ready" {
+                fired = true;
+                anyhow::bail!("crash before marker publication");
+            }
+            Ok(())
+        })
+        .is_err());
+    assert!(fired);
+    assert!(pending(&f.context).unwrap().is_none());
+    assert_eq!(
+        ServiceLayout::resolve(&f.context).unwrap().kind,
+        Kind::Legacy
+    );
+    Plan::preview(&f.context).unwrap().apply(true).unwrap();
+    for step in ["staged", "published"] {
+        for at in 1..=3 {
+            let f = Fixture::new();
+            let plan = Plan::preview(&f.context).unwrap();
+            assert_eq!(plan.files.len(), 3);
+            let mut count = 0;
+            assert!(plan
+                .apply_internal(true, |boundary| {
+                    if boundary == step {
+                        count += 1;
+                        if count == at {
+                            anyhow::bail!("crash at {step} file {at}");
+                        }
+                    }
+                    Ok(())
+                })
+                .is_err());
+            assert_eq!(
+                count, at,
+                "every file must exercise its own interruption boundary"
+            );
+            resume(&f.context, true).unwrap();
+            f.assert_hidden(&plan);
+        }
+    }
+}
+
+#[test]
+fn interrupted_rollback_resumes_at_every_restore_capture_remove_and_journal_boundary() {
+    for step in [
+        "restored",
+        "captured",
+        "removed",
+        "rollback-cleaned",
+        "rolled-back",
+    ] {
+        let occurrences = if matches!(step, "restored" | "captured" | "removed") {
+            3
+        } else {
+            1
+        };
+        for at in 1..=occurrences {
+            let f = Fixture::new();
+            let plan = Plan::preview(&f.context).unwrap();
+            assert!(plan
+                .apply_internal(true, |boundary| {
+                    if boundary == "committed" {
+                        anyhow::bail!("retain marker for rollback test");
+                    }
+                    Ok(())
+                })
+                .is_err());
+            let mut receipt = pending(&f.context).unwrap().unwrap();
+            receipt.phase = Phase::RollingBack;
+            persist(
+                &transaction(&f.context, &receipt.id)
+                    .unwrap()
+                    .join("journal.json"),
+                &receipt,
+            )
+            .unwrap();
+            let mut count = 0;
+            assert!(restore_internal(receipt, |boundary| {
+                if boundary == step {
+                    count += 1;
+                    if count == at {
+                        anyhow::bail!("rollback crash at {step} file {at}");
+                    }
+                }
+                Ok(())
+            })
+            .is_err());
+            assert_eq!(count, at, "rollback interruption must fire");
+            assert!(ServiceLayout::resolve(&f.context).is_err());
+            assert_eq!(resume(&f.context, true).unwrap().phase, Phase::RolledBack);
+            assert_eq!(
+                ServiceLayout::resolve(&f.context).unwrap().kind,
+                Kind::Legacy
+            );
+            for entry in &plan.files {
+                same_revision(&f.context.join("ops").join(&entry.name), entry).unwrap();
+            }
+            assert!(!f.context.join(".okilum/project.yaml").exists());
+        }
+    }
+}
