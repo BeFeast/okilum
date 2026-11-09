@@ -1858,4 +1858,18 @@ fn service2772_stale_connection_cannot_clear_metadata_failure(cx: &mut TestAppCo
             "current-generation completion control must run"
         );
     });
+    std::fs::remove_file(temp.path().join(".okilum/service-migration.json")).unwrap();
+    std::fs::write(temp.path().join(".okilum/project.yaml"), "name: Synthetic\nkind: knowledge\nt3:\n  schema_version: 1\n  environment: example\n  manager: {project_id: fixture-managers, thread_id: 'mcp:changed-manager', workspace_mode: local}\n  executor: {project_id: fixture-executors}\n  default_models:\n    manager: {instanceId: codex, model: synthetic}\n    executor: {instanceId: codex, model: synthetic}\n").unwrap();
+    view.update_in(visual, |view, window, cx| {
+        view.service_metadata_changed(window, cx)
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert_eq!(
+            view.binding.as_ref().unwrap().manager.thread_id.as_deref(),
+            Some("mcp:changed-manager"),
+            "explicit reconnect must use the refreshed authoritative binding"
+        );
+        assert!(view.gateway.is_none());
+    });
 }

@@ -104,6 +104,8 @@ impl Board {
         self.notes_loading = false;
         self.delivery_loading = false;
         self.snapshot.invalidate();
+        self.project_notes.config.error = Some("Service metadata changed; refreshing…".into());
+        self.delivery.config.error = Some("Service metadata changed; refreshing…".into());
         self.binding_error = Some("Service metadata changed; refreshing…".into());
         self.local_cards.error = Some("Service metadata changed; refreshing…".into());
         self.reload_binding(window, cx);

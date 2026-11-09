@@ -788,7 +788,7 @@ impl ProjectView {
                     Ok::<_, anyhow::Error>((binding, origin))
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.service_generation != generation {
                     return;
                 }
@@ -798,8 +798,13 @@ impl ProjectView {
                             && origin.as_deref()
                                 == this.environment.as_ref().map(|env| env.origin()).as_deref() => {
                     }
-                    Ok(_) => {
+                    Ok((binding, origin)) => {
                         this.clear_connection(cx);
+                        this.binding = binding;
+                        this.environment = None;
+                        this.origin.update(cx, |input, cx| {
+                            input.set_value(origin.unwrap_or_default(), window, cx)
+                        });
                         this.error = Some(
                             "Project service binding changed; reconnect to the existing Manager"
                                 .into(),
@@ -807,6 +812,8 @@ impl ProjectView {
                     }
                     Err(error) => {
                         this.clear_connection(cx);
+                        this.binding = None;
+                        this.environment = None;
                         this.error = Some(format!("Project service metadata: {error:#}"));
                     }
                 }
