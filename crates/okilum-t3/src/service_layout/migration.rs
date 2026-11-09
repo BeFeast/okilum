@@ -138,6 +138,25 @@ fn publish_marker(
     Ok(())
 }
 
+fn check_publication(from: &Path, to: &Path) -> Result<()> {
+    // Apply-time capability probe, before any marker or service-file move.
+    // An unsupported filesystem must leave all original sources actionable.
+    let name = format!(".service-probe-{}", uuid::Uuid::new_v4());
+    let source = from.join(&name);
+    let target = to.join(&name);
+    new_file(&source, b"service relocation publication control")?;
+    let result = fs::hard_link(&source, &target)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| sync_file(&target));
+    if exists(&target)? {
+        fs::remove_file(&target)?;
+    }
+    fs::remove_file(&source)?;
+    sync(from)?;
+    sync(to)?;
+    result.context("Service directories do not support safe same-filesystem relocation; no service files moved")
+}
+
 fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     new_file(&temp, &serde_json::to_vec_pretty(value)?)?;
@@ -192,12 +211,16 @@ impl Plan {
     }
 
     pub fn description(&self) -> String {
-        let mut text = format!("Owning context: {}\n{} → {}\nNo format conversion; notes, credentials and workspace stay in place.\n",
+        let backup = super::state_directory(&self.source.context)
+            .map(|path| format!("{}/<transaction UUID>", path.display()))
+            .unwrap_or_else(|error| format!("Unavailable: {error:#}"));
+        let mut text = format!("Owning context: {}\n{} → {}\nBackup/journal on Apply: {backup}\nNo format conversion; notes, credentials and workspace stay in place.\n",
             self.source.context.display(), self.source.kind.directory(), self.target.directory());
         for file in &self.files {
             text.push_str(&format!(
-                "{} · {} bytes · SHA256 {}\n",
-                file.name, file.bytes, file.sha256
+                "{}/{} → {}/{}\n{} bytes · SHA256 {}\nmtime {}.{:09} · mode {:?} · readonly {} · identity {}\n",
+                self.source.kind.directory(), file.name, self.target.directory(), file.name,
+                file.bytes, file.sha256, file.modified_seconds, file.modified_nanos, file.unix_mode, file.readonly, file.identity
             ));
         }
         text
@@ -245,6 +268,7 @@ impl Plan {
         if !regular_directory(&target)? {
             fs::create_dir(&target)?;
         }
+        check_publication(&self.source.directory(), &target)?;
         let receipt = Receipt {
             id: uuid::Uuid::new_v4().to_string(),
             plan: self.clone(),

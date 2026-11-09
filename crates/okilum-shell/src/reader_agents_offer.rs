@@ -459,7 +459,7 @@ mod tests {
                 accept
             );
             if accept {
-                assert!(root.join("ops/board.toml").is_file());
+                assert!(root.join(".okilum/board.toml").is_file());
                 assert!(
                     reader.read_with(visual, |reader, _| reader.project_navigation.board_visible)
                 );
