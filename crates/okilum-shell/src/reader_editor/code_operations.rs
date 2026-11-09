@@ -18,6 +18,15 @@ pub(super) struct State {
     status: Option<(SourceStamp, Range<usize>, String, String)>,
     notice: Option<String>,
     preview: Option<Preview>,
+    inventory: Option<Inventory>,
+    inventory_requested: Option<SourceStamp>,
+    inventory_task: Option<Task<()>>,
+}
+
+struct Inventory {
+    stamp: SourceStamp,
+    blocks: Vec<code_comforts::Block>,
+    line_ending: model::LineEnding,
 }
 
 impl State {
@@ -27,6 +36,7 @@ impl State {
         *self = Self {
             generation: self.generation.wrapping_add(1),
             language: self.language.take(),
+            inventory: self.inventory.take(),
             ..Default::default()
         };
     }
@@ -50,6 +60,14 @@ struct Target {
     text: String,
     stamp: SourceStamp,
     line_ending: model::LineEnding,
+}
+
+#[derive(Clone)]
+struct Scope {
+    range: Range<usize>,
+    language: String,
+    stamp: SourceStamp,
+    line_ending: Option<model::LineEnding>,
 }
 
 struct Preview {
@@ -155,19 +173,98 @@ fn file_language(rel: &str) -> String {
 }
 
 impl Reader {
-    fn code_target(&self, cx: &App) -> Option<Target> {
+    pub(super) fn schedule_code_inventory(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_mut().filter(|e| e.markdown) else {
+            return;
+        };
+        let input = editing.input.clone();
+        let stamp = input.read(cx).source_stamp();
+        if editing.operations.inventory_requested == Some(stamp)
+            || editing
+                .operations
+                .inventory
+                .as_ref()
+                .is_some_and(|i| i.stamp == stamp)
+        {
+            return;
+        }
+        editing.operations.inventory_requested = Some(stamp);
+        // Debounce revisions and cancel superseded requests before taking a
+        // snapshot. No source materialization/scanning belongs on the UI path.
+        editing.operations.inventory_task = Some(cx.spawn(async move |reader, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            let snapshot = reader
+                .update(cx, |reader, cx| {
+                    let editing = reader.editing.as_ref().filter(|e| e.input == input)?;
+                    let state = input.read(cx);
+                    (state.source_stamp() == stamp
+                        && editing.operations.inventory_requested == Some(stamp))
+                    .then(|| state.source_snapshot())
+                })
+                .ok()
+                .flatten();
+            let Some(snapshot) = snapshot else {
+                return;
+            };
+            let inventory = cx
+                .background_executor()
+                .spawn(async move {
+                    let text = snapshot.text.rope().to_string();
+                    Inventory {
+                        stamp,
+                        blocks: code_comforts::blocks(&text),
+                        line_ending: model::line_ending(&text),
+                    }
+                })
+                .await;
+            let _ = reader.update(cx, |reader, cx| {
+                let before = reader.code_operation_target_key(cx);
+                let Some(editing) = reader.editing.as_mut().filter(|e| e.input == input) else {
+                    return;
+                };
+                if input.read(cx).source_stamp() != stamp
+                    || editing.operations.inventory_requested != Some(stamp)
+                {
+                    return;
+                }
+                editing.operations.inventory = Some(inventory);
+                if before != reader.code_operation_target_key(cx) {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn code_scope(&self, cx: &App) -> Option<Scope> {
         let editing = self.editing.as_ref()?;
         let input = editing.input.read(cx);
-        let source = input.value().to_string();
-        let (range, language) = if editing.markdown {
+        let stamp = input.source_stamp();
+        let (range, language, line_ending) = if editing.markdown {
             let selection = input.selected_range();
-            let block = code_comforts::block_at(&source, selection.start)?;
-            if selection.end > block.body.end {
-                return None;
-            }
-            (block.body, block.language.unwrap_or_else(|| "text".into()))
+            let inventory = editing
+                .operations
+                .inventory
+                .as_ref()
+                .filter(|i| i.stamp == stamp)?;
+            let at = inventory
+                .blocks
+                .partition_point(|block| block.body.end < selection.start);
+            let block = inventory.blocks.get(at).filter(|block| {
+                block.body.start <= selection.start && selection.end <= block.body.end
+            })?;
+            (
+                block.body.clone(),
+                block.language.clone().unwrap_or_else(|| "text".into()),
+                Some(inventory.line_ending),
+            )
         } else {
-            (0..source.len(), file_language(self.selected_file()))
+            (
+                0..input.text().len(),
+                file_language(self.selected_file()),
+                None,
+            )
         };
         let language = editing
             .operations
@@ -176,12 +273,31 @@ impl Reader {
             .filter(|(start, _)| *start == range.start)
             .map(|(_, name)| name.clone())
             .unwrap_or(language);
-        Some(Target {
-            line_ending: model::line_ending(&source),
-            text: source[range.clone()].into(),
+        Some(Scope {
+            line_ending,
             range,
             language,
-            stamp: input.source_stamp(),
+            stamp,
+        })
+    }
+
+    fn code_target(&self, cx: &App) -> Option<Target> {
+        let scope = self.code_scope(cx)?;
+        let input = self.editing.as_ref()?.input.read(cx);
+        let text = input
+            .source_snapshot()
+            .text
+            .rope()
+            .slice(scope.range.clone())
+            .to_string();
+        Some(Target {
+            line_ending: scope
+                .line_ending
+                .unwrap_or_else(|| model::line_ending(&text)),
+            range: scope.range,
+            language: scope.language,
+            stamp: scope.stamp,
+            text,
         })
     }
 
@@ -338,7 +454,7 @@ impl Reader {
     }
 
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let target = self.code_target(cx)?;
+        let target = self.code_scope(cx)?;
         let editing = self.editing.as_ref()?;
         let state = &editing.operations;
         let owner = cx.entity().downgrade();
@@ -481,10 +597,10 @@ impl Reader {
         Some(view.into_any_element())
     }
 
-    fn select_code_language(&mut self, target: &Target, name: &str, cx: &mut Context<Self>) {
+    fn select_code_language(&mut self, target: &Scope, name: &str, cx: &mut Context<Self>) {
         // A menu can outlive its originating caret location or revision.
         // Never let an old item assign a language to a different code body.
-        if self.code_target(cx).is_none_or(|current| {
+        if self.code_scope(cx).is_none_or(|current| {
             current.stamp != target.stamp
                 || current.range != target.range
                 || current.language != target.language
@@ -498,13 +614,16 @@ impl Reader {
         editing.operations = State {
             language: Some((target.range.start, name.into())),
             generation,
+            inventory: editing.operations.inventory.take(),
+            inventory_requested: editing.operations.inventory_requested,
+            inventory_task: editing.operations.inventory_task.take(),
             ..Default::default()
         };
         cx.notify();
     }
 
     pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(Range<usize>, String)> {
-        self.code_target(cx)
+        self.code_scope(cx)
             .map(|target| (target.range, target.language))
     }
 
@@ -589,7 +708,7 @@ mod tests {
         input.update(visual, |state, cx| {
             state.set_selected_range(start..start, cx)
         });
-        visual.run_until_parked();
+        settle(visual);
         (
             Fixture {
                 reader,
@@ -604,7 +723,14 @@ mod tests {
         f.input.read(cx).value().to_string()
     }
 
+    fn settle(visual: &mut VisualTestContext) {
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(101));
+        visual.run_until_parked();
+    }
+
     fn click(visual: &mut VisualTestContext, selector: &'static str) {
+        settle(visual);
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = visual
             .debug_bounds(selector)
@@ -694,7 +820,7 @@ mod tests {
             );
         });
         visual.dispatch_action(Undo);
-        visual.run_until_parked();
+        settle(visual);
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
     }
@@ -735,7 +861,7 @@ mod tests {
             assert_eq!(value(&f, cx), "```json\n{\n  \"a\": 1\n}\n```\n");
         });
         visual.dispatch_action(Undo);
-        visual.run_until_parked();
+        settle(visual);
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
         // Queue the same real replacement, then advance the native revision
@@ -768,7 +894,7 @@ mod tests {
             );
         });
         visual.dispatch_action(Undo);
-        visual.run_until_parked();
+        settle(visual);
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
     }
@@ -807,7 +933,7 @@ mod tests {
         assert!(visual.debug_bounds("source-code-language").is_some());
         let old = f
             .reader
-            .read_with(visual, |reader, cx| reader.code_target(cx).unwrap());
+            .read_with(visual, |reader, cx| reader.code_scope(cx).unwrap());
         let at = original.find("Between").unwrap();
         f.input
             .update(visual, |state, cx| state.set_selected_range(at..at, cx));
@@ -831,10 +957,79 @@ mod tests {
                 .operations
                 .language
                 .is_none());
-            let current = reader.code_target(cx).unwrap();
+            let current = reader.code_scope(cx).unwrap();
             reader.select_code_language(&current, "text", cx);
             assert_eq!(reader.code_target(cx).unwrap().language, "text");
         });
+    }
+
+    #[gpui::test]
+    fn code2771_toolbar_paint_and_caret_reuse_background_metadata_without_source_work(
+        cx: &mut TestAppContext,
+    ) {
+        let original = format!(
+            "{}\n```json\n{{\"a\":1}}\n```\nAfter\n",
+            "Ordinary prose.\n".repeat(1000)
+        );
+        let (f, visual) = open(cx, &original);
+        let at = original.find('{').unwrap();
+        let key = f.reader.read_with(visual, |reader, cx| {
+            reader.code_operation_target_key(cx).unwrap()
+        });
+        super::super::block_entry::take_source_work_bytes();
+        for offset in [at + 1, at + 3, at] {
+            f.input.update(visual, |input, cx| {
+                input.set_selected_range(offset..offset, cx)
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            f.reader.read_with(visual, |reader, cx| {
+                assert_eq!(reader.code_operation_target_key(cx).as_ref(), Some(&key))
+            });
+        }
+        assert_eq!(
+            super::super::block_entry::take_source_work_bytes(),
+            0,
+            "toolbar render and in-body caret movement share metadata, never flatten the note"
+        );
+        f.reader.update_in(visual, |reader, window, cx| {
+            let at = original.find("json").unwrap();
+            f.input.update(cx, |input, cx| {
+                input.replace_source_range(at..at + 4, "python", window, cx);
+                let body = original.find('{').unwrap() + 2;
+                input.set_selected_range(body..body, cx);
+            });
+            assert!(
+                reader.code_scope(cx).is_none(),
+                "old inventory cannot authorize a new revision"
+            );
+        });
+        settle(visual);
+        f.reader.read_with(visual, |reader, cx| {
+            let scope = reader.code_scope(cx).unwrap();
+            assert_eq!(scope.language, "python");
+            assert_eq!(scope.stamp, f.input.read(cx).source_stamp());
+        });
+    }
+
+    #[test]
+    fn code2771_background_inventory_matches_fenced_body_target_rules() {
+        for source in [
+            "---\ntitle: '```json'\n---\nBefore\n```json\n{\"a\":1}\n```\nAfter\n",
+            "```json\r\n{\"a\":1}\r\n```\r\n~~~python\r\nprint({})\r\n~~~\r\n",
+            "> ```json\n> {}\n> ```\n\n```unknown\nvalue",
+            "```\n```\n```json\n{}\n```\n```python\n[]\n",
+        ] {
+            let blocks = code_comforts::blocks(source);
+            assert!(!blocks.is_empty());
+            for block in blocks {
+                assert_eq!(
+                    code_comforts::block_at(source, block.body.start),
+                    Some(block.clone())
+                );
+                assert_eq!(code_comforts::block_at(source, block.body.end), Some(block));
+            }
+        }
     }
 
     #[gpui::test]
@@ -861,7 +1056,7 @@ mod tests {
             );
         });
         visual.dispatch_action(Undo);
-        visual.run_until_parked();
+        settle(visual);
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
         f.reader.update(visual, |reader, cx| {

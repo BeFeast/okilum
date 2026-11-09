@@ -50,6 +50,11 @@ comments and string content remain byte-for-byte unchanged.
 Single-line fenced bodies inherit the owning Markdown document's newline
 convention. Caret movement refreshes controls on code-target transitions;
 language menu items recheck their original target and revision before acting.
+Fence ranges and newline context are collected on a debounced background task
+from an immutable native revision. Toolbar paint and caret movement query only
+the matching metadata; they never flatten or rescan the document. A changed
+revision hides stale controls until current metadata is ready, and superseded
+workers cannot publish targets for a newer source.
 
 A Repair preview pins the exact native source revision, target body and chosen
 language. Preview and Cancel do not mutate source or create source Undo entries.

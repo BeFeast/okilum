@@ -21,12 +21,33 @@ fn formatting_is_only_offered_in_writable_markdown() {
             _ => None,
         })
         .collect();
-    assert_eq!(actions.len(), 12);
+    assert_eq!(actions.len(), 15);
     assert_eq!(actions[0], ("Bold", format::ToggleBold.name()));
     assert_eq!(actions[3], ("Inline Code", format::ToggleInlineCode.name()));
     assert_eq!(actions[4], ("Quote", format::ToggleQuote.name()));
     assert_eq!(actions[5], ("Heading 1", format::Heading1.name()));
     assert_eq!(actions[11], ("Paragraph", format::Paragraph.name()));
+    assert_eq!(
+        actions[12],
+        (
+            "Format code",
+            super::super::code_operations::FormatCode.name()
+        )
+    );
+    assert_eq!(
+        actions[13],
+        (
+            "Validate code",
+            super::super::code_operations::ValidateCode.name()
+        )
+    );
+    assert_eq!(
+        actions[14],
+        (
+            "Repair code…",
+            super::super::code_operations::RepairCode.name()
+        )
+    );
 }
 
 // The real right-click builder and native-menu fallback, not a direct call to

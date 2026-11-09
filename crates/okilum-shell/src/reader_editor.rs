@@ -929,6 +929,7 @@ impl Reader {
             );
             if last_code_selection.as_ref() != Some(&selection) {
                 last_code_selection = Some(selection);
+                this.schedule_code_inventory(cx);
                 let target = this.code_operation_target_key(cx);
                 if target != last_code_target {
                     last_code_target = target;
@@ -1339,6 +1340,7 @@ impl Reader {
                 pasted,
             ],
         });
+        self.schedule_code_inventory(cx);
         // Back from the Reader to unchanged text: Undo continues (#1095).
         if let Some((file, history)) = self.retained_edit.take() {
             if file == self.selected_file() {

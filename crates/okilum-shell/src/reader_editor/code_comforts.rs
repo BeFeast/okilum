@@ -161,6 +161,47 @@ pub(super) fn block_at(text: &str, offset: usize) -> Option<Block> {
     })
 }
 
+/// Ordinary fence inventory for background code-operation metadata. Unlike
+/// repeated block_at calls this walks the document once; it never runs from
+/// the foreground caret/render path.
+pub(super) fn blocks(text: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut start = front_matter_end(text);
+    let mut open: Option<(char, usize, usize, Option<String>)> = None;
+    loop {
+        let end = lists::line_end(text, start);
+        let line = &text[start..end];
+        let next = text[end..].find('\n').map(|at| end + at + 1);
+        if let Some((ch, len, body, language)) = &open {
+            if fence(line).is_some_and(|(c, run, info)| c == *ch && run >= *len && info.is_empty())
+            {
+                if *body < start {
+                    blocks.push(Block {
+                        body: *body..lists::line_end(text, lists::line_start(text, start - 1)),
+                        language: language.clone(),
+                    });
+                }
+                open = None;
+            }
+        } else if let Some((ch, len, info)) = fence(line) {
+            if !(ch == '`' && info.contains('`')) {
+                open = Some((ch, len, next.unwrap_or(text.len() + 1), language(info)));
+            }
+        }
+        match next {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    if let Some((_, _, body, language)) = open.filter(|(_, _, body, _)| *body <= text.len()) {
+        blocks.push(Block {
+            body: body..text.len(),
+            language,
+        });
+    }
+    blocks
+}
+
 /// The line comment of a language Okilum highlights, if it has one. Unknown
 /// and comment-less languages (JSON, CSS, HTML, plain text) get none.
 fn line_comment(language: &str) -> Option<&'static str> {
