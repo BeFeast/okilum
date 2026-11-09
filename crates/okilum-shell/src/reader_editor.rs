@@ -2,6 +2,7 @@
 mod block_context;
 mod block_entry;
 mod code_comforts;
+mod code_operations;
 mod context_menu;
 mod external_edit;
 pub(crate) mod format;
@@ -164,6 +165,7 @@ fn take_source_status_bytes() -> usize {
 }
 
 pub(super) struct Editing {
+    operations: code_operations::State,
     store: FileEditor,
     source_status: std::cell::Cell<Option<SourceStatus>>,
     live_preview: live_preview::LivePreview,
@@ -966,6 +968,9 @@ impl Reader {
             };
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
+            if editing.operations.source_changed(source_stamp) {
+                cx.notify();
+            }
             if editing.conflict_detected
                 && editing
                     .conflict_copy
@@ -1268,6 +1273,7 @@ impl Reader {
         let save_status = cx.new(|cx| status::SaveStatus::new(reader.clone(), &input, cx));
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         self.editing = Some(Editing {
+            operations: Default::default(),
             store,
             source_status: Default::default(),
             live_preview,
@@ -2588,8 +2594,10 @@ impl Reader {
         // #1993: the caret's code block in an external editor.
         let column = self.external_block_actions(column, cx);
         let column = self.format_actions(column, cx);
+        let column = self.code_operation_actions(column, cx);
         let column = self.table_actions(column, cx);
         self.list_actions(column, cx)
+            .children(self.render_code_operations(cx))
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
             .on_action(cx.listener(

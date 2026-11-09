@@ -493,7 +493,9 @@ impl CodePreview {
                                     "Pretty"
                                 })
                                 .selected(json.showing_pretty)
-                                .disabled(matches!(json.pretty, Some(Err(_))))
+                                // Invalid is a diagnostic, not an action gate.
+                                // The strict formatter refuses safely and keeps Raw.
+                                .disabled(json.formatting)
                                 .debug_selector(|| "json-pretty".into())
                                 .on_click(move |_, window, cx| {
                                     let _ = entity

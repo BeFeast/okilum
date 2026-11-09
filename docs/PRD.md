@@ -1,5 +1,11 @@
 # Okilum — Product Requirements
 
+**Code operations (#2771, Oleg 2026-11-09):**
+[Format, validation and explicit Repair](code-format-repair.md) separates
+language-selected source formatting from validation and revision-bound syntax
+repair preview/Apply. Invalid never disables Format; unavailable safe operations
+retain the exact source and explain why. Reader/MCP stays read-only.
+
 **Context service storage (#2772, Oleg 2026-11-09):**
 [Service-file storage](service-file-storage.md) separates an owning Project/Area,
 its hidden `.okilum` metadata and its existing T3 workspace. Legacy layouts stay

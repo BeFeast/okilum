@@ -2,6 +2,48 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
+fn code2771_invalid_json_pretty_is_callable_and_never_writes_source(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("invalid.json");
+    let source = "{ a: 1 }";
+    std::fs::write(&path, source).unwrap();
+    cx.update(crate::test_init);
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            CodePreview::new(
+                fixture.path().to_owned(),
+                "invalid.json".into(),
+                path.clone(),
+                window,
+                cx,
+            )
+        });
+        preview = Some(view.clone());
+        Root::new(cx.new(|_| Surface(view)), window, cx)
+    });
+    let preview = preview.unwrap();
+    visual.run_until_parked();
+    let before = preview.read_with(visual, |p, _| p.document_revision);
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let pretty = visual
+        .debug_bounds("json-pretty")
+        .expect("invalid still has Pretty");
+    visual.simulate_click(pretty.center(), Modifiers::default());
+    visual.run_until_parked();
+    preview.read_with(visual, |p, cx| {
+        assert!(
+            p.document_revision > before,
+            "positive control: invalid Pretty click reaches formatter"
+        );
+        let json = p.json.as_ref().unwrap();
+        assert!(!json.showing_pretty && matches!(json.pretty, Some(Err(_))));
+        assert_eq!(p.input().unwrap().read(cx).value().as_ref(), source);
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[gpui::test]
 fn data_view_2669_native_xml_and_text_are_admitted_without_new_write_authority(
     cx: &mut TestAppContext,
 ) {
