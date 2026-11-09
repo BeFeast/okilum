@@ -39,6 +39,7 @@ struct Target {
     language: String,
     text: String,
     stamp: SourceStamp,
+    line_ending: model::LineEnding,
 }
 
 struct Preview {
@@ -166,6 +167,7 @@ impl Reader {
             .map(|(_, name)| name.clone())
             .unwrap_or(language);
         Some(Target {
+            line_ending: model::line_ending(&source),
             text: source[range.clone()].into(),
             range,
             language,
@@ -197,8 +199,9 @@ impl Reader {
         let work = target.clone();
         let task = cx.background_executor().spawn(async move {
             let status = validation(&work.language, &work.text);
-            let format =
-                matches!(action, Action::Format).then(|| model::format(&work.language, &work.text));
+            let format = matches!(action, Action::Format).then(|| {
+                model::format_with_line_ending(&work.language, &work.text, work.line_ending)
+            });
             let repair =
                 matches!(action, Action::Repair).then(|| model::repair(&work.language, &work.text));
             (status, format, repair)
@@ -330,7 +333,7 @@ impl Reader {
         let state = &editing.operations;
         let owner = cx.entity().downgrade();
         let language = target.language.clone();
-        let start = target.range.start;
+        let menu_target = target.clone();
         let disabled = state.busy
             || editing.conflict_detected
             || editing.save_failed
@@ -347,19 +350,11 @@ impl Reader {
                     .chain(["jsx", "scss"])
                     .fold(menu, |menu, name| {
                         let owner = owner.clone();
+                        let target = menu_target.clone();
                         menu.item(PopupMenuItem::new(name).checked(name == language).on_click(
                             move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
-                                    if let Some(editing) = this.editing.as_mut() {
-                                        let generation =
-                                            editing.operations.generation.wrapping_add(1);
-                                        editing.operations = State {
-                                            language: Some((start, name.into())),
-                                            generation,
-                                            ..Default::default()
-                                        };
-                                    }
-                                    cx.notify();
+                                    this.select_code_language(&target, name, cx);
                                 });
                             },
                         ))
@@ -476,6 +471,33 @@ impl Reader {
         Some(view.into_any_element())
     }
 
+    fn select_code_language(&mut self, target: &Target, name: &str, cx: &mut Context<Self>) {
+        // A menu can outlive its originating caret location or revision.
+        // Never let an old item assign a language to a different code body.
+        if self.code_target(cx).is_none_or(|current| {
+            current.stamp != target.stamp
+                || current.range != target.range
+                || current.language != target.language
+        }) {
+            return;
+        }
+        let Some(editing) = self.editing.as_mut() else {
+            return;
+        };
+        let generation = editing.operations.generation.wrapping_add(1);
+        editing.operations = State {
+            language: Some((target.range.start, name.into())),
+            generation,
+            ..Default::default()
+        };
+        cx.notify();
+    }
+
+    pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(Range<usize>, String)> {
+        self.code_target(cx)
+            .map(|target| (target.range, target.language))
+    }
+
     pub(super) fn code_operation_actions(&self, column: Div, cx: &mut Context<Self>) -> Div {
         column
             .on_action(cx.listener(|this, _: &FormatCode, window, cx| {
@@ -557,7 +579,6 @@ mod tests {
         input.update(visual, |state, cx| {
             state.set_selected_range(start..start, cx)
         });
-        reader.update(visual, |_, cx| cx.notify());
         visual.run_until_parked();
         (
             Fixture {
@@ -669,9 +690,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn code2771_stale_repair_and_late_formatter_never_replace_newer_source(
-        cx: &mut TestAppContext,
-    ) {
+    fn code2771_stale_repair_never_replaces_newer_source(cx: &mut TestAppContext) {
         let original = "```json\n{ a: 1 }\n```\n";
         let (f, visual) = open(cx, original);
         click(visual, "source-code-repair");
@@ -694,17 +713,92 @@ mod tests {
                 .unwrap()
                 .contains("stale"));
         });
+    }
+
+    #[gpui::test]
+    fn code2771_late_valid_formatter_has_positive_replacement_control(cx: &mut TestAppContext) {
+        let original = "```json\n{\"a\":1}\n```\n";
+        let (f, visual) = open(cx, original);
+        // Positive control: this exact formatter produces a replacement.
+        click(visual, "source-code-format");
+        f.reader.read_with(visual, |_, cx| {
+            assert_eq!(value(&f, cx), "```json\n{\n  \"a\": 1\n}\n```\n");
+        });
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        f.reader
+            .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
+        // Queue the same real replacement, then advance the native revision
+        // before any completion can be delivered to the UI executor.
         f.reader.update_in(visual, |reader, window, cx| {
             reader.code_operation(Action::Format, window, cx)
         });
         f.input.update_in(visual, |input, window, cx| {
-            let at = newer.find('2').unwrap();
+            let at = original.find('1').unwrap();
             input.replace_source_range(at..at + 1, "3", window, cx);
         });
         visual.run_until_parked();
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original.replace('1', "3"));
-            assert!(!reader.editing.as_ref().unwrap().operations.busy);
+            let state = &reader.editing.as_ref().unwrap().operations;
+            assert!(!state.busy);
+            assert!(state.notice.as_ref().unwrap().contains("Source changed"));
+        });
+    }
+
+    #[gpui::test]
+    fn code2771_single_line_crlf_fence_formats_without_mixed_endings(cx: &mut TestAppContext) {
+        let original = "Before\r\n```json\r\n{\"a\":1}\r\n```\r\nAfter\r\n";
+        let (f, visual) = open(cx, original);
+        click(visual, "source-code-format");
+        f.reader.read_with(visual, |_, cx| {
+            assert_eq!(
+                value(&f, cx),
+                original.replace("{\"a\":1}", "{\r\n  \"a\": 1\r\n}")
+            );
+        });
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        f.reader
+            .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
+    }
+
+    #[gpui::test]
+    fn code2771_caret_crosses_targets_without_forced_reader_notification(cx: &mut TestAppContext) {
+        let original =
+            "Before\n```json\n{\"a\":1}\n```\nBetween\n```python\nprint({})\n```\nAfter\n";
+        let (f, visual) = open(cx, original);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("source-code-language").is_some());
+        let old = f
+            .reader
+            .read_with(visual, |reader, cx| reader.code_target(cx).unwrap());
+        let at = original.find("Between").unwrap();
+        f.input
+            .update(visual, |state, cx| state.set_selected_range(at..at, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("source-code-language").is_none());
+        let at = original.find("print").unwrap();
+        f.input
+            .update(visual, |state, cx| state.set_selected_range(at..at, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("source-code-language").is_some());
+        f.reader.update(visual, |reader, cx| {
+            assert_eq!(reader.code_target(cx).unwrap().language, "python");
+            reader.select_code_language(&old, "jsonc", cx);
+            assert_eq!(reader.code_target(cx).unwrap().language, "python");
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .operations
+                .language
+                .is_none());
+            let current = reader.code_target(cx).unwrap();
+            reader.select_code_language(&current, "text", cx);
+            assert_eq!(reader.code_target(cx).unwrap().language, "text");
         });
     }
 

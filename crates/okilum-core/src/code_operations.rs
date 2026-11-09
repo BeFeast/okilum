@@ -71,9 +71,37 @@ pub enum Formatted {
     Unchanged(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    Crlf,
+    Mixed,
+}
+
+pub fn line_ending(source: &str) -> LineEnding {
+    let crlf = source.contains("\r\n");
+    if crlf
+        && source
+            .split_inclusive('\n')
+            .any(|line| line.ends_with('\n') && !line.ends_with("\r\n"))
+    {
+        LineEnding::Mixed
+    } else if crlf {
+        LineEnding::Crlf
+    } else {
+        LineEnding::Lf
+    }
+}
+
 /// Refusal is a successful no-change result, with a reason suitable for the UI.
 /// No generic indentation/whitespace pass is used for unsupported languages.
 pub fn format(language: &str, source: &str) -> Formatted {
+    format_with_line_ending(language, source, line_ending(source))
+}
+
+/// A fenced body may have no newline of its own. Inherit the owning document's
+/// newline convention without changing the body's final-newline choice.
+pub fn format_with_line_ending(language: &str, source: &str, ending: LineEnding) -> Formatted {
     if source.len() > MAX_BYTES {
         return Formatted::Unchanged(
             "Formatting exceeds the 256 KiB safety limit; source unchanged.".into(),
@@ -84,14 +112,18 @@ pub fn format(language: &str, source: &str) -> Formatted {
             "No safe built-in formatter for {language}; source unchanged. Its whitespace, comments and strings are not rewritten using another language's rules."
         ));
     }
+    if !crate::json_view::within_pretty_budget(source) {
+        return Formatted::Unchanged(
+            "JSON formatting exceeds the depth or output safety limit; source unchanged.".into(),
+        );
+    }
     if let Err(error) = json_validation(source) {
         return Formatted::Unchanged(format!(
             "JSON is invalid at {}:{}; this formatter cannot safely recover its structure. Source unchanged. Use Repair separately to review a syntax correction.",
             error.line, error.column
         ));
     }
-    let crlf = source.contains("\r\n");
-    if crlf && source.replace("\r\n", "").contains('\n') {
+    if ending == LineEnding::Mixed || line_ending(source) == LineEnding::Mixed {
         return Formatted::Unchanged("Mixed line endings; source unchanged.".into());
     }
     let Ok(mut result) = crate::json_view::pretty(source) else {
@@ -100,7 +132,7 @@ pub fn format(language: &str, source: &str) -> Formatted {
     if !source.ends_with('\n') {
         result.pop();
     }
-    if crlf {
+    if ending == LineEnding::Crlf {
         result = result.replace('\n', "\r\n");
     }
     if source.starts_with('\u{feff}') {
@@ -226,6 +258,30 @@ pub fn repair(language: &str, source: &str) -> Result<Repair, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formatting_bounds_expansion_and_inherits_single_line_fence_newlines() {
+        let deep = format!("{}0{}", "[".repeat(100_000), "]".repeat(100_000));
+        assert!(
+            matches!(format("json", &deep), Formatted::Unchanged(reason) if reason.contains("safety limit"))
+        );
+        let wide = format!(
+            "{}{}0{}",
+            "[".repeat(96),
+            "0,".repeat(80_000),
+            "]".repeat(96)
+        );
+        assert!(
+            matches!(format("json", &wide), Formatted::Unchanged(reason) if reason.contains("safety limit"))
+        );
+        assert_eq!(
+            format_with_line_ending("json", "{\"a\":1}", LineEnding::Crlf),
+            Formatted::Changed("{\r\n  \"a\": 1\r\n}".into())
+        );
+        assert_eq!(line_ending("\n{}\r\n"), LineEnding::Mixed);
+        assert_eq!(line_ending("{}\r\n[]\n"), LineEnding::Mixed);
+        assert_eq!(line_ending("{}\r\n"), LineEnding::Crlf);
+    }
 
     #[test]
     fn invalid_json_format_never_quotes_keys_or_completes_syntax() {

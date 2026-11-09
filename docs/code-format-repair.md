@@ -24,6 +24,9 @@ Highlighting support is not a claim of a safe formatter. No generic whitespace
 normalizer or another language's formatter is substituted for missing support.
 Operations above 256 KiB refuse without changing the buffer. Grammar syntax
 checks run on a worker with a budget and do not claim semantic validity.
+JSON indentation also checks a conservative output bound before allocating:
+at most 128 container levels and 1 MiB of LF output (at most 2 MiB after CRLF
+conversion). The read-only Pretty surface shares these bounds.
 
 | Explicit language | Validation | Format: valid / invalid / incomplete | Automatic Repair |
 | --- | --- | --- | --- |
@@ -44,6 +47,9 @@ Formatting preserves key order, duplicate keys, number spellings and string
 escapes. It retains BOM, uniform CRLF/LF and the authored final-newline choice;
 mixed line endings are refused. Whitespace-sensitive unsupported languages,
 comments and string content remain byte-for-byte unchanged.
+Single-line fenced bodies inherit the owning Markdown document's newline
+convention. Caret movement refreshes controls on code-target transitions;
+language menu items recheck their original target and revision before acting.
 
 A Repair preview pins the exact native source revision, target body and chosen
 language. Preview and Cancel do not mutate source or create source Undo entries.

@@ -901,6 +901,8 @@ impl Reader {
         });
         let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
         let mut last_embed_hover = None;
+        let mut last_code_selection = None;
+        let mut last_code_target = None;
         let highlighting = cx.observe_in(&input, window, move |this, input, window, cx| {
             // Editor/Input are RenderOnce wrappers owned by Reader. Native
             // hover state alone redraws the text engine, not its overlay host.
@@ -913,6 +915,22 @@ impl Reader {
             if last_embed_hover != hover {
                 last_embed_hover = hover;
                 cx.notify();
+            }
+
+            // Only crossing a code-body/language boundary rebuilds its toolbar.
+            // Native caret movement must not leave stale rendered menu targets,
+            // while movements within one body keep the ordinary editor hot path.
+            let selection = (
+                input.read(cx).source_stamp(),
+                input.read(cx).selected_range(),
+            );
+            if last_code_selection.as_ref() != Some(&selection) {
+                last_code_selection = Some(selection);
+                let target = this.code_operation_target_key(cx);
+                if target != last_code_target {
+                    last_code_target = target;
+                    cx.notify();
+                }
             }
 
             if this.editing.as_ref().is_some_and(|editing| {
