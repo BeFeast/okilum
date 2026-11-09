@@ -5,6 +5,7 @@ impl Area {
         let path =
             std::env::temp_dir().join(format!("okilum-board-notes-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(path.join("ops")).unwrap();
+        std::fs::write(path.join("ops/project.toml"), "kind='knowledge'\n").unwrap();
         Self(path)
     }
     fn write(&self, path: &str, text: &str) {

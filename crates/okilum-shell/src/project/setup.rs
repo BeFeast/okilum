@@ -45,12 +45,16 @@ impl ProjectView {
             .unwrap_or_default();
         self.busy = true;
         self.error = None;
+        let service_generation = self.service_generation;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { model::Session::load(&area) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.service_generation != service_generation {
+                    return;
+                }
                 this.busy = false;
                 match result {
                     Ok(session) => this.local_setup = Some(Form::new(session, origin, window, cx)),
@@ -97,6 +101,7 @@ impl ProjectView {
         self.error = None;
         self.busy = true;
         let access = reader_features::access(reader_features::Feature::Agents, cx);
+        let service_generation = self.service_generation;
         cx.spawn_in(window, async move |this, cx| {
             let result = async {
                 let task = this.update_in(cx, |_, _, cx| {
@@ -116,6 +121,9 @@ impl ProjectView {
             }
             .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.service_generation != service_generation {
+                    return;
+                }
                 this.busy = false;
                 match result {
                     Ok((binding, env, gateway)) => {

@@ -33,6 +33,7 @@ pub(crate) struct Board {
     binding_error: Option<String>,
     binding_read: Option<u64>,
     binding_loading: bool,
+    metadata_generation: u64,
     snapshot: Snapshot,
     manager: Option<Entity<ProjectView>>,
     _manager_observer: Option<Subscription>,
@@ -95,6 +96,22 @@ pub(crate) enum Action {
 }
 impl EventEmitter<Action> for Board {}
 impl Board {
+    pub(crate) fn service_metadata_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.local_generation = self.local_generation.wrapping_add(1);
+        self.binding_loading = false;
+        self.local_loading = false;
+        self.notes_loading = false;
+        self.delivery_loading = false;
+        self.snapshot.invalidate();
+        self.project_notes.config.error = Some("Service metadata changed; refreshing…".into());
+        self.delivery.config.error = Some("Service metadata changed; refreshing…".into());
+        self.binding_error = Some("Service metadata changed; refreshing…".into());
+        self.local_cards.error = Some("Service metadata changed; refreshing…".into());
+        self.reload_binding(window, cx);
+        cx.notify();
+    }
+
     fn card_rendered(&self) {
         #[cfg(test)]
         {
@@ -206,6 +223,7 @@ impl Board {
             binding_error: None,
             binding_read: None,
             binding_loading: false,
+            metadata_generation: 0,
             snapshot: Snapshot::new(owner),
             manager: None,
             _manager_observer: None,
@@ -270,6 +288,7 @@ impl Board {
             return;
         }
         self.binding_loading = true;
+        let generation = self.metadata_generation;
         let area = self.area.clone();
         cx.spawn_in(window, {
             let module_access =
@@ -283,6 +302,9 @@ impl Board {
                         }))
                         .await;
                     let _ = this.update_in(cx, |this, window, cx| {
+                        if this.metadata_generation != generation {
+                            return;
+                        }
                         this.binding_loading = false;
                         this.list.invalidate();
                         match result {

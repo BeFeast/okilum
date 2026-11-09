@@ -225,7 +225,10 @@ impl Snapshot {
 fn text(area: &Path, path: &str, total: &mut usize) -> Result<String> {
     ensure!(*total < MAX_TOTAL, "Project-note refresh exceeds 2 MiB");
     ensure!(
-        relative_note(path) || path == "ops/board-context.toml",
+        relative_note(path)
+            || path
+                == crate::service_layout::ServiceLayout::resolve(area)?
+                    .relative("board-context.toml")?,
         "Expected a project-relative Markdown note"
     );
     let root = area.canonicalize()?;
@@ -359,13 +362,15 @@ fn resolution(source: &str) -> Result<Resolution> {
     Ok(value)
 }
 fn config(area: &Path, total: &mut usize) -> Result<Option<Config>> {
-    match std::fs::symlink_metadata(area.join("ops/board-context.toml")) {
+    let layout = crate::service_layout::ServiceLayout::resolve(area)?;
+    match std::fs::symlink_metadata(layout.path("board-context.toml")?) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         result => {
             result?;
         }
     }
-    let config: Config = toml::from_str(&text(area, "ops/board-context.toml", total)?)?;
+    let config: Config =
+        toml::from_str(&text(area, &layout.relative("board-context.toml")?, total)?)?;
     ensure!(
         config.version == 1 && config.notes.len() <= 64,
         "Unsupported context version or too many notes"
@@ -386,7 +391,7 @@ fn config(area: &Path, total: &mut usize) -> Result<Option<Config>> {
 }
 pub fn refresh(area: &Path) -> Update {
     let mut total = 0;
-    let config = config(area, &mut total).map_err(|e| format!("ops/board-context.toml: {e:#}"));
+    let config = config(area, &mut total).map_err(|e| format!("Board context metadata: {e:#}"));
     let mut update = Update {
         config,
         notes: Vec::new(),

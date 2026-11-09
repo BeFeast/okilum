@@ -3,10 +3,11 @@ use anyhow::Result;
 use std::path::Path;
 
 pub fn project_folder(root: &Path) -> bool {
+    if okilum_t3::projects::create::is_project(root) {
+        return true;
+    }
     if [
         ".git",
-        "ops/project.toml",
-        "ops/project.yaml",
         "Cargo.toml",
         "package.json",
         "pyproject.toml",
@@ -132,7 +133,7 @@ mod tests {
         assert!(session.details().stage_note.is_empty());
         let manifest =
             std::fs::read(temp.path().join(okilum_t3::projects::create::MANIFEST)).unwrap();
-        let board = std::fs::read(temp.path().join("ops/board.toml")).unwrap();
+        let board = std::fs::read(temp.path().join(".okilum/board.toml")).unwrap();
         open_local_board(temp.path()).unwrap();
         assert_eq!(std::fs::read(&note).unwrap(), original);
         assert_eq!(
@@ -140,7 +141,7 @@ mod tests {
             manifest
         );
         assert_eq!(
-            std::fs::read(temp.path().join("ops/board.toml")).unwrap(),
+            std::fs::read(temp.path().join(".okilum/board.toml")).unwrap(),
             board
         );
     }

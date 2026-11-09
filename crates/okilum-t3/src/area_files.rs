@@ -19,37 +19,15 @@ pub struct Document {
     pub format: Format,
     pub source: String,
     pub value: Value,
+    pub layout: crate::service_layout::ServiceLayout,
 }
 
 pub fn preferred_path(area: &Path, name: &str) -> Result<Option<PathBuf>> {
-    ensure!(
-        matches!(name, "project" | "board" | "board-local"),
-        "Unknown Area manifest"
-    );
-    match std::fs::symlink_metadata(area.join("ops")) {
-        Ok(meta) => ensure!(meta.is_dir(), "Area ops must be a directory, not a symlink"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context("Cannot read Area ops"),
-    }
-    for extension in ["toml", "yaml"] {
-        let path = area.join("ops").join(format!("{name}.{extension}"));
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                ensure!(
-                    meta.is_file(),
-                    "{} must be a regular file, not a symlink",
-                    path.display()
-                );
-                return Ok(Some(path));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("Cannot read {}", path.display())),
-        }
-    }
-    Ok(None)
+    crate::service_layout::ServiceLayout::resolve(area)?.preferred(name)
 }
 pub fn read(area: &Path, name: &str) -> Result<Option<Document>> {
-    let Some(path) = preferred_path(area, name)? else {
+    let layout = crate::service_layout::ServiceLayout::resolve(area)?;
+    let Some(path) = layout.preferred(name)? else {
         return Ok(None);
     };
     let mut bytes = Vec::new();
@@ -68,11 +46,17 @@ pub fn read(area: &Path, name: &str) -> Result<Option<Document>> {
         Format::Yaml
     };
     let value = parse(&source, format).with_context(|| path.display().to_string())?;
+    layout.check_current()?;
+    ensure!(
+        layout.preferred(name)?.as_ref() == Some(&path),
+        "Manifest selection changed while reading; reload"
+    );
     Ok(Some(Document {
         path,
         format,
         source,
         value,
+        layout,
     }))
 }
 pub fn parse(source: &str, format: Format) -> Result<Value> {
@@ -187,6 +171,12 @@ impl Document {
             .and_then(Path::parent)
             .context("Manifest has no Area")?;
         let _admission = okilum_write_authority::operation(scope)?;
+        let _layout_lock = crate::service_layout::ServiceLayout::lock(scope)?;
+        self.layout.check_current()?;
+        ensure!(
+            crate::service_layout::regular_bytes(&self.path)? == self.source.as_bytes(),
+            "Manifest changed; reload before saving"
+        );
         if updated == self.source {
             return Ok(());
         }

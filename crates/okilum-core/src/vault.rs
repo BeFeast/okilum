@@ -264,9 +264,35 @@ pub fn windows_preimage_name(name: &std::ffi::OsStr) -> bool {
 /// Service directories are excluded from every inventory consumer. Visibility
 /// of ordinary dot/underscore paths belongs only to the browsing tree.
 pub fn service_path(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "project.toml"
+                    | "project.yaml"
+                    | "board.toml"
+                    | "board.yaml"
+                    | "board-local.toml"
+                    | "board-local.yaml"
+                    | "board-context.toml"
+                    | "board-delivery.toml"
+                    | "thread-ids.md"
+                    | ".service-layout-generation"
+            )
+        })
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "ops")
+    {
+        return true;
+    }
     path.components().any(|component| {
         let name = component.as_os_str();
         name.as_encoded_bytes().starts_with(b".okilum-save-")
+            || name.as_encoded_bytes().starts_with(b".service-relocate-")
             || name.as_encoded_bytes().starts_with(b".okilum-create-")
             || name.as_encoded_bytes().starts_with(b"._")
             || name.to_str().is_some_and(|name| SKIP_DIRS.contains(&name))

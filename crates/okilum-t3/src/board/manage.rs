@@ -173,7 +173,7 @@ impl Session {
             }
         };
         let inactive_legacy = document.as_ref().is_some_and(|d| d.format == Format::Toml)
-            && std::fs::symlink_metadata(area.join("ops/board.yaml")).is_ok();
+            && std::fs::symlink_metadata(project.layout.path("board.yaml")?).is_ok();
         Ok(Self {
             area: area.into(),
             document,
@@ -533,7 +533,10 @@ impl Session {
                 area_files::preferred_path(&self.area, "board")?.is_none(),
                 "Board appeared; reload before saving"
             );
-            let ops = self.area.join("ops");
+            let _layout_lock = crate::service_layout::ServiceLayout::lock(&self.area)?;
+            self.project.layout.check_current()?;
+            self.check_project()?;
+            let ops = self.project.layout.directory();
             let temporary = ops.join(format!(".board.{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> Result<()> {
                 let mut file = std::fs::OpenOptions::new()

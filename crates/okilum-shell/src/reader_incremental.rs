@@ -10,6 +10,9 @@ impl Reader {
         changes: okilum_core::Changes,
         cx: &mut Context<Self>,
     ) {
+        self.deferred_vault_changes
+            .metadata
+            .extend(changes.metadata);
         self.deferred_vault_changes.changed.extend(changes.changed);
         self.deferred_vault_changes.removed.extend(changes.removed);
         self.deferred_vault_changes
@@ -53,6 +56,9 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         if self.incremental_active || self.incremental_initializing {
+            self.deferred_vault_changes
+                .metadata
+                .extend(changes.metadata);
             self.deferred_vault_changes.rescan |= changes.rescan;
             self.deferred_vault_changes
                 .directories

@@ -35,6 +35,7 @@ pub mod projects;
 pub mod reconnect;
 pub mod records;
 pub mod rotation;
+pub mod service_layout;
 mod session;
 pub mod stream;
 mod token;

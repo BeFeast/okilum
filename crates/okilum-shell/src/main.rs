@@ -128,6 +128,7 @@ mod reader_reading_controls;
 mod reader_recovery;
 mod reader_replay;
 mod reader_right_panel;
+mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
 #[cfg(test)]
@@ -1794,6 +1795,7 @@ struct Reader {
     content_status: Option<bool>,
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
+    shared_service_version: u64,
     usable_document: bool,
     /// When the current note was requested, for the `note_open_*` phases (#1003).
     open_started: Option<std::time::Instant>,
@@ -2122,6 +2124,7 @@ impl Reader {
             content_status: None,
             shared_session: None,
             shared_version: 0,
+            shared_service_version: 0,
             vault_publication_revision: (0, 0),
             source_publication_epoch: 0,
             usable_document: false,
@@ -2449,6 +2452,9 @@ impl Reader {
                 }
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
+                        this.deferred_vault_changes
+                            .metadata
+                            .extend(changes.metadata);
                         this.deferred_vault_changes.rescan |= changes.rescan;
                         this.deferred_vault_changes
                             .directories
@@ -2466,10 +2472,17 @@ impl Reader {
 
     fn apply_vault_changes(
         &mut self,
-        changes: okilum_core::Changes,
+        mut changes: okilum_core::Changes,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !changes.metadata.is_empty() && self.shared_session.is_none() {
+            self.refresh_service_metadata(window, cx);
+            changes.metadata.clear();
+            if changes.is_empty() {
+                return;
+            }
+        }
         if !changes.is_empty() {
             self.invalidate_links();
             // A newer source hint revokes an older document reconciliation,
@@ -2478,6 +2491,9 @@ impl Reader {
                 self.navigation.reconciliation_generation.wrapping_add(1);
         }
         if self.shared_session.is_some() {
+            self.deferred_vault_changes
+                .metadata
+                .extend(changes.metadata);
             self.deferred_vault_changes.rescan |= changes.rescan;
             self.deferred_vault_changes.changed.extend(changes.changed);
             self.deferred_vault_changes.removed.extend(changes.removed);
@@ -2493,6 +2509,9 @@ impl Reader {
             viewer.update(cx, |viewer, cx| viewer.check_revision(cx));
         }
         if self.incremental_active || self.incremental_initializing {
+            self.deferred_vault_changes
+                .metadata
+                .extend(changes.metadata);
             self.deferred_vault_changes.rescan |= changes.rescan;
             self.deferred_vault_changes
                 .directories
@@ -7261,6 +7280,10 @@ fn reader_more_menu(
                         reader_settings::show(Some(settings_reader.clone()), cx);
                     }),
             )
+            .menu(
+                "Project service storage…",
+                Box::new(reader_service_storage::OpenServiceStorage),
+            )
             .map(|menu| {
                 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 let menu = menu.item(reader_settings::share_sync_menu_item(
@@ -8166,6 +8189,12 @@ impl Render for Reader {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(
+                |this, _: &reader_service_storage::OpenServiceStorage, window, cx| {
+                    this.open_service_storage(window, cx);
+                    cx.stop_propagation();
+                },
+            ))
             .on_action(
                 cx.listener(|this, _: &project_terminal::OpenTerminal, window, cx| {
                     this.open_project_terminal(window, cx);
@@ -8540,6 +8569,9 @@ OPTIONS:
 ";
 
 fn main() {
+    if let Some(code) = reader_service_storage::command_line() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "macos")]
     if let Err(error) = initialize_native_sync_qa() {
         eprintln!("Native Sync isolation: {error:#}");

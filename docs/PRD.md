@@ -1,5 +1,13 @@
 # Okilum — Product Requirements
 
+**Context service storage (#2772, Oleg 2026-11-09):**
+[Service-file storage](service-file-storage.md) separates an owning Project/Area,
+its hidden `.okilum` metadata and its existing T3 workspace. Legacy layouts stay
+supported; one shared resolver and metadata notifications preserve source and
+identity. Migration is an explicit reviewed plan/Apply with local backup,
+journalled recovery and guarded rollback. Live contexts require separate user
+Apply; neither installation nor a read performs migration.
+
 Approved at the promotion interview on 2026-09-02. This file is the canonical product
 contract for the code. It supersedes the intake idea note, which stays as the origin
 record and decision history.

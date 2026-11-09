@@ -381,7 +381,7 @@ pub(super) fn read_ci(
     Ok(ci)
 }
 pub fn refresh(area: &Path, binding: &Binding) -> Update {
-    let config = config(area).map_err(|e| format!("ops/board-delivery.toml: {e:#}"));
+    let config = config(area).map_err(|e| format!("Board delivery metadata: {e:#}"));
     let mut out = Update {
         config,
         feeds: Vec::new(),

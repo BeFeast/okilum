@@ -104,6 +104,15 @@ impl AreaBinding {
     /// Reads this area only. Missing manifests are an unconnected area;
     /// unreadable files and malformed data remain visible errors.
     pub fn read(area: &Path) -> Result<Option<Self>> {
+        // An optional lookup of a context that does not exist is unconnected.
+        // Existing directories still go through the strict shared resolver;
+        // conflicts, orphan sidecars and unreadable metadata remain errors.
+        match std::fs::symlink_metadata(area) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            result => {
+                result?;
+            }
+        }
         let Some(document) = crate::area_files::read(area, "project")? else {
             return Ok(None);
         };
