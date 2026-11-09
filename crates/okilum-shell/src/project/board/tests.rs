@@ -1187,6 +1187,11 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
     let area = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(area.path().join("ops")).unwrap();
     std::fs::write(
+        area.path().join("ops/project.yaml"),
+        "name: Synthetic context\nkind: knowledge\n",
+    )
+    .unwrap();
+    std::fs::write(
         area.path().join("ops/board-context.toml"),
         "version=1\nnotes=['try.md']\n",
     )

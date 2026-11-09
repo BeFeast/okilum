@@ -295,7 +295,7 @@ impl VaultWatcher {
                 let Some(relative) = p.strip_prefix(&self.root).ok() else {
                     continue;
                 };
-                if let Some(context) = metadata_context(relative) {
+                if let Some(context) = metadata_context(relative, ev.kind) {
                     self.pending.metadata.insert(context);
                     relevant = true;
                 }
@@ -437,7 +437,7 @@ impl VaultWatcher {
 
 /// Only service-set changes, never ordinary ops notes/runbooks. Directory
 /// endpoints cover whole-layout rename/delete and absent-directory creation.
-fn metadata_context(path: &Path) -> Option<String> {
+fn metadata_context(path: &Path, kind: EventKind) -> Option<String> {
     let components: Vec<_> = path.components().collect();
     for (index, component) in components.iter().enumerate() {
         let name = component.as_os_str();
@@ -447,7 +447,19 @@ fn metadata_context(path: &Path) -> Option<String> {
         let service = components
             .get(index + 1)
             .map(|v| v.as_os_str().to_string_lossy());
-        let relevant = service.as_deref().is_none_or(|name| {
+        // An ops directory mtime also changes for ordinary knowledge writes.
+        // Only topology/unknown events can replace the whole service layout;
+        // exact service-file events remain relevant for every write kind.
+        let topology = !matches!(
+            kind,
+            EventKind::Access(_)
+                | EventKind::Modify(
+                    notify::event::ModifyKind::Any
+                        | notify::event::ModifyKind::Data(_)
+                        | notify::event::ModifyKind::Metadata(_)
+                )
+        );
+        let relevant = service.as_deref().map_or(topology, |name| {
             matches!(
                 name,
                 "project.toml"
@@ -527,6 +539,34 @@ mod service_metadata_tests {
     }
 
     #[test]
+    fn parent_mtime_is_not_a_service_edit_but_directory_replacement_is() {
+        for kind in [
+            EventKind::Modify(notify::event::ModifyKind::Any),
+            EventKind::Modify(notify::event::ModifyKind::Metadata(
+                notify::event::MetadataKind::WriteTime,
+            )),
+        ] {
+            assert!(metadata_context(Path::new("Areas/App/ops"), kind).is_none());
+            assert_eq!(
+                metadata_context(Path::new("Areas/App/ops/board-context.toml"), kind).as_deref(),
+                Some("Areas/App")
+            );
+        }
+        for kind in [
+            EventKind::Create(notify::event::CreateKind::Folder),
+            EventKind::Remove(notify::event::RemoveKind::Folder),
+            EventKind::Modify(notify::event::ModifyKind::Name(
+                notify::event::RenameMode::Both,
+            )),
+        ] {
+            assert_eq!(
+                metadata_context(Path::new("Areas/App/ops"), kind).as_deref(),
+                Some("Areas/App")
+            );
+        }
+    }
+
+    #[test]
     fn directory_location_switch_and_conflict_names_invalidate_the_owning_context() {
         for path in [
             "Areas/App/.okilum",
@@ -535,12 +575,20 @@ mod service_metadata_tests {
             "Areas/App/.okilum/service-migration.json",
         ] {
             assert_eq!(
-                metadata_context(Path::new(path)).as_deref(),
+                metadata_context(
+                    Path::new(path),
+                    EventKind::Create(notify::event::CreateKind::Folder)
+                )
+                .as_deref(),
                 Some("Areas/App")
             );
         }
-        assert!(metadata_context(Path::new("Areas/App/ops/daily/2026-01-01.md")).is_none());
-        assert!(metadata_context(Path::new("Areas/App/ops/runbook.md")).is_none());
+        assert!(metadata_context(
+            Path::new("Areas/App/ops/daily/2026-01-01.md"),
+            EventKind::Any
+        )
+        .is_none());
+        assert!(metadata_context(Path::new("Areas/App/ops/runbook.md"), EventKind::Any).is_none());
     }
 }
 

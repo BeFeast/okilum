@@ -6,6 +6,11 @@ pub(in crate::project::board) fn populate(board: &mut Board) {
     let at = now();
     std::fs::create_dir_all(board.area.join("ops")).unwrap();
     std::fs::write(
+        board.area.join("ops/project.yaml"),
+        "name: Synthetic waiting fixture\nkind: knowledge\n",
+    )
+    .unwrap();
+    std::fs::write(
         board.area.join("ops/board-context.toml"),
         "version=1\nquestions_note='ops/questions.md'\nnotes=['try.md']\n",
     )

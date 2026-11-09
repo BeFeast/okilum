@@ -1075,6 +1075,11 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     let files = tempfile::tempdir().unwrap();
     let area = files.path().join("area");
     std::fs::create_dir_all(area.join("ops")).unwrap();
+    std::fs::write(
+        area.join("ops/project.yaml"),
+        "name: Synthetic registry\nkind: knowledge\n",
+    )
+    .unwrap();
     let registry = "## Current threads\n\n| Role | Thread |\n|---|---|\n| Manager | `mcp:fixture-manager` |\n| UI | `mcp:ui` |\n| Missing | `mcp:missing` |\n";
     std::fs::write(area.join("ops/thread-ids.md"), registry).unwrap();
     let summary = |id: &str| {
