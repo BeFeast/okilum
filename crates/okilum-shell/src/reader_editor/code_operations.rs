@@ -177,8 +177,8 @@ impl Reader {
         let Some(editing) = self.editing.as_mut().filter(|e| e.markdown) else {
             return;
         };
-        let input = editing.input.clone();
-        let stamp = input.read(cx).source_stamp();
+        let input_id = editing.input.entity_id();
+        let stamp = editing.input.read(cx).source_stamp();
         if editing.operations.inventory_requested == Some(stamp)
             || editing
                 .operations
@@ -191,14 +191,19 @@ impl Reader {
         editing.operations.inventory_requested = Some(stamp);
         // Debounce revisions and cancel superseded requests before taking a
         // snapshot. No source materialization/scanning belongs on the UI path.
+        // Keep only an EntityId across waits: a closed app must not retain its
+        // native input while cancellation of a pending timer is being drained.
         editing.operations.inventory_task = Some(cx.spawn(async move |reader, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
             let snapshot = reader
                 .update(cx, |reader, cx| {
-                    let editing = reader.editing.as_ref().filter(|e| e.input == input)?;
-                    let state = input.read(cx);
+                    let editing = reader
+                        .editing
+                        .as_ref()
+                        .filter(|e| e.input.entity_id() == input_id)?;
+                    let state = editing.input.read(cx);
                     (state.source_stamp() == stamp
                         && editing.operations.inventory_requested == Some(stamp))
                     .then(|| state.source_snapshot())
@@ -221,10 +226,14 @@ impl Reader {
                 .await;
             let _ = reader.update(cx, |reader, cx| {
                 let before = reader.code_operation_target_key(cx);
-                let Some(editing) = reader.editing.as_mut().filter(|e| e.input == input) else {
+                let Some(editing) = reader
+                    .editing
+                    .as_mut()
+                    .filter(|e| e.input.entity_id() == input_id)
+                else {
                     return;
                 };
-                if input.read(cx).source_stamp() != stamp
+                if editing.input.read(cx).source_stamp() != stamp
                     || editing.operations.inventory_requested != Some(stamp)
                 {
                     return;
@@ -1010,6 +1019,48 @@ mod tests {
             assert_eq!(scope.language, "python");
             assert_eq!(scope.stamp, f.input.read(cx).source_stamp());
         });
+    }
+
+    #[gpui::test]
+    fn code2771_app_teardown_does_not_retain_input_during_metadata_debounce(
+        cx: &mut TestAppContext,
+    ) {
+        let mut app = cx.new_app();
+        let (fixture, visual) = open(&mut app, "```json\n{\"a\":1}\n```\n");
+        fixture.reader.update(visual, |reader, cx| {
+            let state = &mut reader.editing.as_mut().unwrap().operations;
+            state.inventory = None;
+            state.inventory_requested = None;
+            reader.schedule_code_inventory(cx);
+        });
+        visual.run_until_parked();
+        fixture.reader.read_with(visual, |reader, cx| {
+            let editing = reader.editing.as_ref().unwrap();
+            assert_eq!(
+                editing.operations.inventory_requested,
+                Some(editing.input.read(cx).source_stamp())
+            );
+            assert!(editing.operations.inventory_task.is_some());
+            assert!(
+                editing.operations.inventory.is_none(),
+                "positive control: timer has not fired"
+            );
+        });
+        visual.update(|window, _| window.remove_window());
+        let Fixture {
+            reader,
+            input,
+            directory,
+        } = fixture;
+        drop(reader);
+        drop(input);
+        app.run_until_parked();
+        // Exercise the actual leak-checking teardown while debounce is pending,
+        // rather than advancing time to let its captured handles disappear.
+        app.quit();
+        drop(app);
+        cx.run_until_parked();
+        drop(directory);
     }
 
     #[test]
