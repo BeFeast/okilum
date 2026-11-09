@@ -19,6 +19,10 @@ pub(crate) fn help_menu() -> Menu {
     let mut items = vec![
         MenuItem::action("Send feedback…", crate::reader_feedback::SendFeedback),
         MenuItem::action("Copy Version Info", CopyVersionInfo),
+        MenuItem::action(
+            "Project service storage…",
+            crate::reader_service_storage::OpenServiceStorage,
+        ),
     ];
     if crate::reader_feedback::sprint::enabled() {
         items.insert(

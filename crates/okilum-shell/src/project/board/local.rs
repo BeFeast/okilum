@@ -92,7 +92,13 @@ impl Board {
                         .background_executor()
                         .spawn(okilum_t3::scope_current_network(async move {
                             model::read(&area).map_err(|e| {
-                                format!("{}: {e:#}", area.join("ops/board-local.toml").display())
+                                format!(
+                                    "{}: {e:#}",
+                                    okilum_t3::service_layout::display_path(
+                                        &area,
+                                        "board-local.toml"
+                                    )
+                                )
                             })
                         }))
                         .await;
@@ -258,7 +264,7 @@ impl Board {
                     .child(card.title.clone()),
             )
             .child(format!("Local · {}", card.state.label()));
-        let draft=format!("Project: {}\nLocal card: {}\nTitle: {}\nDetails: {}\nManual task state: {}\nSource: {}\n\nQuestion for Manager: ", self.area.display(),id,card.title,card.details,card.state.label(),self.area.join("ops/board-local.toml").display());
+        let draft=format!("Project: {}\nLocal card: {}\nTitle: {}\nDetails: {}\nManual task state: {}\nSource: {}\n\nQuestion for Manager: ", self.area.display(),id,card.title,card.details,card.state.label(),okilum_t3::service_layout::display_path(&self.area,"board-local.toml"));
         view = view
             .child(
                 div()
@@ -357,7 +363,10 @@ impl Board {
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child(self.area.join("ops/board-local.toml").display().to_string()),
+                    .child(okilum_t3::service_layout::display_path(
+                        &self.area,
+                        "board-local.toml",
+                    )),
             );
         if let Some(error) = &editor.error {
             view = view.child(

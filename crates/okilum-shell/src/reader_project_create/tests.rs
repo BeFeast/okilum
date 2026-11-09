@@ -245,7 +245,7 @@ fn issue1859_make_this_a_project_writes_toml_and_lists_the_project(cx: &mut Test
     assert!(!drawn(visual, "new-project-dialog"), "the dialog closes");
 
     let folder = root.join("HomeLab");
-    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let manifest = std::fs::read_to_string(folder.join(".okilum/project.toml")).unwrap();
     let document =
         okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
     assert_eq!(document["name"].as_str(), Some("HomeLab"));
@@ -287,7 +287,8 @@ fn new_project_starts_with_the_selected_folder_and_keeps_its_index(cx: &mut Test
         std::fs::read_to_string(root.join("Dev/Areas/tool/_index.md")).unwrap(),
         "# Tool notes\n"
     );
-    let manifest = std::fs::read_to_string(root.join("Dev/Areas/tool/ops/project.toml")).unwrap();
+    let manifest =
+        std::fs::read_to_string(root.join("Dev/Areas/tool/.okilum/project.toml")).unwrap();
     let document =
         okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
     assert_eq!(document["name"].as_str(), Some("tool"));
@@ -337,7 +338,7 @@ fn t3_creates_the_project_with_its_icon_and_the_manifest_binds_it(cx: &mut TestA
         *t3.icons.lock().unwrap(),
         [("new-1".to_owned(), Some(icon.clone()))]
     );
-    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let manifest = std::fs::read_to_string(folder.join(".okilum/project.toml")).unwrap();
     let document =
         okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
     assert_eq!(
@@ -396,7 +397,7 @@ fn a_t3_failure_is_a_toast_and_the_manifest_stays(cx: &mut TestAppContext) {
     });
     visual.run_until_parked();
     assert_eq!(t3.creates.lock().unwrap().len(), 1);
-    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let manifest = std::fs::read_to_string(folder.join(".okilum/project.toml")).unwrap();
     let document =
         okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
     assert_eq!(document["kind"].as_str(), Some("code"));
@@ -430,12 +431,12 @@ fn root_code_project_starts_locally_and_does_not_call_a_saved_remote_gateway(
         r.create_project(dialog.downgrade(), root.clone(), draft, window, cx);
     });
     visual.run_until_parked();
-    assert!(root.join("ops/project.toml").is_file());
+    assert!(root.join(".okilum/project.toml").is_file());
     assert!(
         t3.creates.lock().unwrap().is_empty(),
         "local creation must not dispatch remote project.create"
     );
-    let manifest = std::fs::read_to_string(root.join("ops/project.toml")).unwrap();
+    let manifest = std::fs::read_to_string(root.join(".okilum/project.toml")).unwrap();
     let document =
         okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
     assert!(document.get("t3").is_none());

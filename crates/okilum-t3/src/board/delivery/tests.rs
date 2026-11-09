@@ -284,6 +284,7 @@ impl Area {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("okilum-delivery-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(path.join("ops")).unwrap();
+        std::fs::write(path.join("ops/project.toml"), "kind='knowledge'\n").unwrap();
         Self(path)
     }
 }

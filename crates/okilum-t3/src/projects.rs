@@ -209,11 +209,8 @@ impl Project {
     }
 
     pub fn read(folder: &Path) -> Result<Self> {
-        ensure!(
-            std::fs::symlink_metadata(folder.join("ops"))?.is_dir(),
-            "Project ops must not be a symlink"
-        );
-        if let Ok(metadata) = std::fs::symlink_metadata(folder.join("ops/thread-ids.md")) {
+        let layout = crate::service_layout::ServiceLayout::resolve(folder)?;
+        if let Ok(metadata) = std::fs::symlink_metadata(layout.path("thread-ids.md")?) {
             ensure!(
                 metadata.is_file(),
                 "Manager registry must be a regular file, not a symlink"
@@ -239,7 +236,7 @@ impl Project {
         };
         let manifest_manager = &doc["t3"]["manager"];
         // A present role registry is authoritative, including explicit not-started.
-        let registry_path = folder.join("ops/thread-ids.md");
+        let registry_path = layout.path("thread-ids.md")?;
         let manager = match std::fs::read_to_string(&registry_path) {
             Ok(registry) => manager_role(&registry)
                 .with_context(|| format!("Check Manager registry {}", registry_path.display()))?,
@@ -370,9 +367,13 @@ pub fn discover(vault: &Path) -> Discovery {
     let mut result = Discovery::default();
     let mut pending = vec![vault.to_owned()];
     while let Some(folder) = pending.pop() {
-        let present = ["project.toml", "project.yaml"]
-            .iter()
-            .any(|name| std::fs::symlink_metadata(folder.join("ops").join(name)).is_ok());
+        let present = match crate::service_layout::ServiceLayout::resolve(&folder) {
+            Ok(layout) => layout.preferred("project").is_ok_and(|path| path.is_some()),
+            Err(error) => {
+                result.errors.push((folder.clone(), format!("{error:#}")));
+                false
+            }
+        };
         if present {
             let read = Project::read(&folder);
             match read {

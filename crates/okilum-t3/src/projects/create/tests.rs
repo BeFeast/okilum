@@ -124,7 +124,7 @@ fn issue1859_new_project_toml_preserves_identity_icon_and_source() {
     let mut draft = Draft::for_folder(Path::new("/vault/HomeLab"));
     draft.icon = Some(server());
     let document: toml::Value = toml::from_str(&manifest(&draft, "HomeLab")).unwrap();
-    assert_eq!(MANIFEST, "ops/project.toml");
+    assert_eq!(MANIFEST, ".okilum/project.toml");
     assert_eq!(document["name"].as_str(), Some("HomeLab"));
     assert_eq!(document["schema_version"].as_integer(), Some(1));
     assert_eq!(document["kind"].as_str(), Some("knowledge"));

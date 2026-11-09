@@ -193,12 +193,7 @@ pub fn collect(
 /// True unless the manifest is known to be gone; an unreadable folder keeps
 /// its entry.
 fn has_manifest(folder: &Path) -> bool {
-    ["project.toml", "project.yaml"].iter().any(|name| {
-        !matches!(
-            std::fs::symlink_metadata(folder.join("ops").join(name)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound
-        )
-    })
+    super::super::create::is_project(folder)
 }
 
 #[cfg(test)]

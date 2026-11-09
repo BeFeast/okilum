@@ -32,6 +32,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 /// One coalesced batch of changes, as vault-relative note paths.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
+    /// Owning contexts whose service metadata changed. Never note/index input.
+    pub metadata: BTreeSet<String>,
     /// Notes that were written or created and still exist on disk.
     pub changed: BTreeSet<String>,
     /// Notes that no longer exist on disk.
@@ -44,6 +46,10 @@ pub struct Changes {
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
+        self.metadata.is_empty() && self.notes_empty()
+    }
+
+    pub fn notes_empty(&self) -> bool {
         !self.rescan
             && self.changed.is_empty()
             && self.removed.is_empty()
@@ -289,6 +295,10 @@ impl VaultWatcher {
                 let Some(relative) = p.strip_prefix(&self.root).ok() else {
                     continue;
                 };
+                if let Some(context) = metadata_context(relative) {
+                    self.pending.metadata.insert(context);
+                    relevant = true;
+                }
                 if crate::vault::service_path(relative)
                     || p.file_name()
                         .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))
@@ -422,6 +432,105 @@ impl VaultWatcher {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+/// Only service-set changes, never ordinary ops notes/runbooks. Directory
+/// endpoints cover whole-layout rename/delete and absent-directory creation.
+fn metadata_context(path: &Path) -> Option<String> {
+    let components: Vec<_> = path.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let name = component.as_os_str();
+        if name != ".okilum" && name != "ops" {
+            continue;
+        }
+        let service = components
+            .get(index + 1)
+            .map(|v| v.as_os_str().to_string_lossy());
+        let relevant = service.as_deref().is_none_or(|name| {
+            matches!(
+                name,
+                "project.toml"
+                    | "project.yaml"
+                    | "board.toml"
+                    | "board.yaml"
+                    | "board-local.toml"
+                    | "board-local.yaml"
+                    | "board-context.toml"
+                    | "board-delivery.toml"
+                    | "thread-ids.md"
+                    | "service-migration.json"
+                    | ".service-layout-generation"
+            ) || name.contains(".sync-conflict-")
+        });
+        if relevant {
+            let context: PathBuf = components[..index].iter().map(|c| c.as_os_str()).collect();
+            return Some(crate::vault::note_path(&context));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod service_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_metadata_and_legacy_registry_notify_without_becoming_notes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("Areas/App/.okilum")).unwrap();
+        std::fs::create_dir_all(root.join("Areas/Legacy/ops")).unwrap();
+        let mut watcher = VaultWatcher::new(&root).unwrap();
+        for path in [
+            "Areas/App/.okilum/project.yaml",
+            "Areas/App/.okilum/board-local.toml",
+            "Areas/Legacy/ops/thread-ids.md",
+        ] {
+            std::fs::write(root.join(path), "synthetic metadata").unwrap();
+            let changes = watcher
+                .wait(Duration::from_secs(5))
+                .expect("real metadata write must fire");
+            assert!(
+                changes.notes_empty(),
+                "metadata is not note/index input: {changes:?}"
+            );
+            assert_eq!(changes.metadata.len(), 1);
+            assert!(!changes.is_empty());
+        }
+        std::fs::remove_file(root.join("Areas/App/.okilum/project.yaml")).unwrap();
+        let changes = watcher.wait(Duration::from_secs(5)).unwrap();
+        assert!(changes.metadata.contains("Areas/App") && changes.notes_empty());
+        std::fs::write(
+            root.join("Areas/Legacy/ops/runbook.md"),
+            "# ordinary knowledge",
+        )
+        .unwrap();
+        let changes = watcher
+            .wait(Duration::from_secs(5))
+            .expect("ordinary ops note control must fire");
+        assert!(changes.changed.contains("Areas/Legacy/ops/runbook.md"));
+        assert!(
+            changes.metadata.is_empty(),
+            "never classify the whole ops folder as application metadata"
+        );
+    }
+
+    #[test]
+    fn directory_location_switch_and_conflict_names_invalidate_the_owning_context() {
+        for path in [
+            "Areas/App/.okilum",
+            "Areas/App/ops",
+            "Areas/App/.okilum/project.sync-conflict-peer.yaml",
+            "Areas/App/.okilum/service-migration.json",
+        ] {
+            assert_eq!(
+                metadata_context(Path::new(path)).as_deref(),
+                Some("Areas/App")
+            );
+        }
+        assert!(metadata_context(Path::new("Areas/App/ops/daily/2026-01-01.md")).is_none());
+        assert!(metadata_context(Path::new("Areas/App/ops/runbook.md")).is_none());
     }
 }
 

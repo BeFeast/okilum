@@ -87,7 +87,11 @@ fn check_project_repository(project: &serde_yaml::Value, url: &url::Url) -> Resu
     let name = project["repo"]["full_name"]
         .as_str()
         .filter(|s| !s.trim().is_empty());
-    ensure!((host.is_none() && name.is_none()) || (host==url.host_str() && name==Some(url.path().trim_matches('/'))),"Board Repository must match repo.host and repo.full_name in the project's ops/project manifest");
+    ensure!(
+        (host.is_none() && name.is_none())
+            || (host == url.host_str() && name == Some(url.path().trim_matches('/'))),
+        "Board Repository must match repo.host and repo.full_name in the selected project manifest"
+    );
     Ok(())
 }
 /// Human-owned next actions. No issue/thread state creates these entries.

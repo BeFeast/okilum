@@ -16,6 +16,7 @@ struct Published {
     candidates: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
     titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
+    service_version: u64,
     sources: Arc<reader_publication::Sources>,
     reconciled: bool,
     warnings: Vec<okilum_core::vault::UnreadableEntry>,
@@ -54,6 +55,7 @@ pub(crate) fn with_worker_baseline_detached(session: &Shared, f: impl FnOnce()) 
 }
 
 fn merge(into: &mut okilum_core::Changes, changes: okilum_core::Changes) {
+    into.metadata.extend(changes.metadata);
     into.changed.extend(changes.changed);
     into.removed.extend(changes.removed);
     into.directories.extend(changes.directories);
@@ -90,6 +92,7 @@ impl Reader {
                 candidates: self.move_index.clone(),
                 titles: self.backlink_titles.clone(),
                 version: 1,
+                service_version: 0,
                 sources: Arc::default(),
                 reconciled: false,
                 warnings: self
@@ -155,6 +158,10 @@ impl Reader {
             shared.published.clone()
         };
         let publish_started = std::time::Instant::now();
+        if self.shared_service_version != published.service_version {
+            self.shared_service_version = published.service_version;
+            self.refresh_service_metadata(window, cx);
+        }
         #[cfg(test)]
         let _work = reader_editor::work::scope();
         if self.loading.is_none() {
@@ -261,6 +268,7 @@ impl Reader {
             candidates: self.move_index.clone(),
             titles: self.backlink_titles.clone(),
             version: shared.published.version.wrapping_add(1),
+            service_version: shared.published.service_version,
             sources,
             reconciled: true,
             warnings: self
@@ -327,6 +335,10 @@ impl Reader {
         if shared.reload || shared.pending.rescan {
             shared.busy = true;
             shared.reload_owner = Some(cx.entity().downgrade());
+            if !shared.pending.metadata.is_empty() {
+                shared.published.service_version = shared.published.service_version.wrapping_add(1);
+                shared.published.version = shared.published.version.wrapping_add(1);
+            }
             shared.pending = Default::default();
             let force_source_read = std::mem::take(&mut shared.force_source_read);
             drop(shared);
@@ -395,7 +407,15 @@ fn update(
     changes: &okilum_core::Changes,
     index: Option<&Path>,
 ) -> anyhow::Result<Published> {
-    let batch = state.apply(changes, &mut |_, _| Ok(()))?;
+    if !changes.metadata.is_empty() {
+        published.service_version = published.service_version.wrapping_add(1);
+        if changes.notes_empty() {
+            return Ok(published);
+        }
+    }
+    let mut note_changes = changes.clone();
+    note_changes.metadata.clear();
+    let batch = state.apply(&note_changes, &mut |_, _| Ok(()))?;
     published.reconciled = false;
     let mut tasks = (*published.tasks).clone();
     for path in &batch.removed {

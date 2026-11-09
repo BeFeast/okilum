@@ -318,6 +318,24 @@ pub(super) struct Saved {
 }
 
 impl Reader {
+    /// Metadata notifications invalidate project models, never the note index.
+    pub(super) fn refresh_service_metadata(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+            return;
+        }
+        self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
+        let generation = self.project_navigation.generation;
+        for board in self.project_navigation.boards.values() {
+            board.update(cx, |board, cx| board.service_metadata_changed(window, cx));
+        }
+        if let Some(project) = self.project.clone() {
+            project.update(cx, |project, cx| {
+                project.service_metadata_changed(window, cx)
+            });
+        }
+        self.discover_projects(generation, window, cx);
+    }
+
     /// Project workspace never allocates a second folder browser, even if an
     /// older layout or another command leaves Notes enabled in raw panel state.
     pub(super) fn workspace_panels(&self) -> reader_layout::Panels {

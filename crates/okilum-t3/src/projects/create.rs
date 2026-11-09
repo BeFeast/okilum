@@ -2,7 +2,7 @@
 //! folder in the tree and «+ New project…» under the Projects list.
 //!
 //! The dialog's state is a [`Draft`]: name, kind, icon and, for a code or
-//! hybrid project, where its code is. [`create`] writes `ops/project.toml`
+//! hybrid project, where its code is. [`create`] writes `.okilum/project.toml`
 //! (and `_index.md` when the folder has none), the manifest the Projects
 //! list reads. Creating the T3 project is a separate, optional step
 //! ([`create_in_t3`]); when it succeeds, [`link_t3`] adds the T3 binding to
@@ -15,7 +15,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 /// The manifest, relative to the project folder.
-pub const MANIFEST: &str = "ops/project.toml";
+pub const MANIFEST: &str = ".okilum/project.toml";
 /// The folder's entry note.
 pub const INDEX: &str = "_index.md";
 /// The kinds in the dialog's order.
@@ -173,12 +173,14 @@ pub fn folder_name(folder: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// A folder that already has `ops/project.toml` is a project: the tree
+/// A folder that already has `.okilum/project.toml` is a project: the tree
 /// does not offer «Make this a project…» for it.
 pub fn is_project(folder: &Path) -> bool {
-    ["project.toml", "project.yaml"]
-        .iter()
-        .any(|name| std::fs::symlink_metadata(folder.join("ops").join(name)).is_ok())
+    folder.is_dir()
+        && crate::service_layout::ServiceLayout::resolve(folder)
+            .and_then(|layout| layout.preferred("project"))
+            .map(|path| path.is_some())
+            .unwrap_or(true)
 }
 
 /// `HomeLab Mesh` → `homelab-mesh`: lowercase ASCII letters and digits,
@@ -262,11 +264,13 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     written
 }
 
-/// Turn `folder` (inside `vault`) into a project: `ops/project.toml`, and
+/// Turn `folder` (inside `vault`) into a project: `.okilum/project.toml`, and
 /// `_index.md` with the name as its H1 when the folder has none. A folder
 /// that already is a project is refused and nothing is written.
 pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
     let _admission = okilum_write_authority::operation(vault)?;
+    let _layout_lock = crate::service_layout::ServiceLayout::lock(folder)?;
+    let layout = crate::service_layout::ServiceLayout::resolve(folder)?;
     if let Some(problem) = draft.problem() {
         bail!(problem);
     }
@@ -287,7 +291,7 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
         !is_project(folder),
         "{relative} is already a project: it has {MANIFEST}"
     );
-    let ops = folder.join("ops");
+    let ops = layout.directory();
     let created_ops = match std::fs::symlink_metadata(&ops) {
         Ok(metadata) => {
             ensure!(
@@ -308,7 +312,7 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
             let _ = std::fs::remove_dir(&ops);
         }
     };
-    let manifest_path = folder.join(MANIFEST);
+    let manifest_path = layout.path("project.toml")?;
     write_new(&manifest_path, &manifest(draft, &relative)).map_err(|error| {
         rollback_ops();
         if error.kind() == std::io::ErrorKind::AlreadyExists {

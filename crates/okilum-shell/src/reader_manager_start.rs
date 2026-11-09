@@ -67,10 +67,14 @@ pub(super) fn start(
 }
 
 fn manager_brief(project: &Project, context: &str) -> Result<(String, String)> {
+    let layout = okilum_t3::service_layout::ServiceLayout::resolve(&project.folder)?;
+    let manifest = layout
+        .preferred("project")?
+        .context("Project service manifest disappeared")?;
     if let Some(workspace) = okilum_t3::projects::local_manager::workspace(&project.folder)? {
         let path =
             |p: &Path| serde_json::to_string(&p.to_string_lossy()).expect("string serialization");
-        let mut message = format!("You are this project's Manager. Work in the local T3 workspace {}. Project notes live in {}. Read the project's ops/project manifest and its existing entry note before proposing work. Do not require a repository, executor, goal or stage to discuss local work.", path(Path::new(&workspace.root)), path(&project.folder));
+        let mut message = format!("You are this project's Manager. Work in the local T3 workspace {}. Project notes live in {}. Read the service manifest {} and its existing entry note before proposing work. Service metadata is in {}; do not recreate another metadata directory. Ordinary notes/runbooks remain in their existing locations. Do not require a repository, executor, goal or stage to discuss local work.", path(Path::new(&workspace.root)), path(&project.folder), path(&manifest), path(&layout.directory()));
         for note in ["AGENTS.md", "ops/manager-state.md", "_index.md"] {
             let note = project.folder.join(note);
             if note.is_file() {
@@ -94,8 +98,9 @@ fn manager_brief(project: &Project, context: &str) -> Result<(String, String)> {
     } else {
         format!("{context}/")
     };
+    let service = manifest.strip_prefix(&project.folder)?.to_string_lossy();
     let message = format!(
-        "прочитай `{prefix}ops/manager-state.md` и `{prefix}AGENTS.md`, ты manager.\n{workflow}"
+        "прочитай `{prefix}{service}`, `{prefix}ops/manager-state.md` и `{prefix}AGENTS.md`, ты manager.\nUse the selected service directory {}; never recreate ops after relocation. Ordinary notes stay in place.\n{workflow}", layout.kind.directory()
     );
     Ok((format!("[{}] Manager", project.name), message))
 }
@@ -120,7 +125,9 @@ fn start_inner(
         "Project binding changed before launch"
     );
     let (title, message) = manager_brief(project, context)?;
-    let registry = area.join("ops/thread-ids.md");
+    let _layout_lock = okilum_t3::service_layout::ServiceLayout::lock(area)?;
+    let layout = okilum_t3::service_layout::ServiceLayout::resolve(area)?;
+    let registry = layout.path("thread-ids.md")?;
     if !registry.exists() {
         let mut file = std::fs::OpenOptions::new()
             .write(true)

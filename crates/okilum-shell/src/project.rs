@@ -143,6 +143,7 @@ pub(crate) struct ProjectView {
     model_busy: bool,
     model_open: bool,
     opening_t3: bool,
+    service_generation: u64,
     launch: launch::Form,
     local_setup: Option<setup::Form>,
     origin: Entity<InputState>,
@@ -483,6 +484,7 @@ impl ProjectView {
             model_busy: false,
             model_open: false,
             opening_t3: false,
+            service_generation: 0,
             launch: launch::Form::new(window, cx),
             local_setup: None,
             origin,
@@ -755,6 +757,58 @@ impl ProjectView {
     }
 
     /// Also usable by the owner's immediate watcher callback before reconciliation.
+    pub(super) fn service_metadata_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(area) = self.area.clone() else {
+            return;
+        };
+        self.service_generation = self.service_generation.wrapping_add(1);
+        let generation = self.service_generation;
+        let state = self.state.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let layout = okilum_t3::service_layout::ServiceLayout::resolve(&area)?;
+                    let project = okilum_t3::projects::Project::read(&area)?;
+                    let binding = project.native_binding()?;
+                    let origin = project
+                        .environment
+                        .as_deref()
+                        .map(|alias| prefill_browser_origin(&area, alias, state.as_deref()))
+                        .transpose()?
+                        .flatten();
+                    layout.check_current()?;
+                    Ok::<_, anyhow::Error>((binding, origin))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.service_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok((binding, origin))
+                        if binding == this.binding
+                            && origin.as_deref()
+                                == this.environment.as_ref().map(|env| env.origin()).as_deref() => {
+                    }
+                    Ok(_) => {
+                        this.clear_connection(cx);
+                        this.error = Some(
+                            "Project service binding changed; reconnect to the existing Manager"
+                                .into(),
+                        );
+                    }
+                    Err(error) => {
+                        this.clear_connection(cx);
+                        this.error = Some(format!("Project service metadata: {error:#}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn resources_changed(&mut self, changes: &okilum_core::Changes, cx: &mut Context<Self>) {
         if !self.active
             || changes.is_empty()

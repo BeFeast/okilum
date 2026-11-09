@@ -401,7 +401,10 @@ fn bounded(reader: impl Read) -> Result<Vec<u8>> {
 }
 fn local(area: &Path, note: &str) -> Result<Vec<u8>> {
     ensure!(
-        relative_note(note) || note == "ops/board-delivery.toml",
+        relative_note(note)
+            || note
+                == crate::service_layout::ServiceLayout::resolve(area)?
+                    .relative("board-delivery.toml")?,
         "Invalid evidence note path"
     );
     let canonical = area.canonicalize()?;
@@ -410,14 +413,15 @@ fn local(area: &Path, note: &str) -> Result<Vec<u8>> {
     bounded(std::fs::File::open(path)?)
 }
 pub fn config(area: &Path) -> Result<Option<Config>> {
-    let path = area.join("ops/board-delivery.toml");
+    let layout = crate::service_layout::ServiceLayout::resolve(area)?;
+    let path = layout.path("board-delivery.toml")?;
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         result => {
             result?;
         }
     }
-    let bytes = local(area, "ops/board-delivery.toml")?;
+    let bytes = local(area, &layout.relative("board-delivery.toml")?)?;
     let value: Config = toml::from_str(std::str::from_utf8(&bytes)?)?;
     ensure!(value.version == 1, "Unsupported delivery binding version");
     ensure!(

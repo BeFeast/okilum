@@ -28,13 +28,15 @@ pub struct Registry {
 
 impl Registry {
     pub fn read(area: &Path) -> Result<Self> {
-        Self::read_optional(area)?.context("This area has no ops/thread-ids.md executor registry")
+        Self::read_optional(area)?
+            .context("This context has no executor registry in its selected service directory")
     }
 
     /// Absence is a normal project state; a present invalid/unreadable registry
     /// remains an error and cannot establish live executor ownership.
     pub fn read_optional(area: &Path) -> Result<Option<Self>> {
-        let path = area.join("ops/thread-ids.md");
+        let layout = crate::service_layout::ServiceLayout::resolve(area)?;
+        let path = layout.path("thread-ids.md")?;
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             Err(error)
@@ -45,13 +47,13 @@ impl Registry {
                 return Ok(None);
             }
             Err(error) => {
-                return Err(error)
-                    .context("Cannot read this area's ops/thread-ids.md executor registry");
+                return Err(error).with_context(|| format!("Cannot read {}", path.display()));
             }
         };
         let mut source = String::new();
         file.take((MAX_REGISTRY_BYTES + 1) as u64)
             .read_to_string(&mut source)?;
+        layout.check_current()?;
         Self::parse_at(&source, &path.display().to_string()).map(Some)
     }
 
@@ -244,7 +246,7 @@ impl Snapshot {
         ensure!(
             Some(&registry.manager) == binding.manager.thread_id.as_ref(),
             "{}:{}: Manager row uses `{}` but this project is bound to `{}`. Set the Thread cell to the bound Manager ID in backticks, `mcp:<id>`, or correct the project manifest; executor rows were not replaced",
-            area.join("ops/thread-ids.md").display(), registry.manager_line,
+            crate::service_layout::ServiceLayout::resolve(area)?.path("thread-ids.md")?.display(), registry.manager_line,
             registry.manager, binding.manager.thread_id.as_deref().unwrap_or("no Manager")
         );
         Self::refresh(gateway, registry, &binding.executor.project_id)

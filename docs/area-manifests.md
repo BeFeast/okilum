@@ -1,6 +1,9 @@
 # Area manifests: TOML with a compatible transition (#1859)
 
-An Area may contain `ops/project.toml` and its optional `ops/board.toml`.
+An Area may contain a project manifest and its optional Board manifest in its
+selected [service directory](service-file-storage.md): `.okilum` for new projects,
+or the existing `ops` for a legacy layout. Directory selection is coherent for
+the entire set; location migration never converts YAML/TOML.
 Each is preferred independently over the corresponding `.yaml` file. Only an
 absent TOML file permits fallback. Invalid syntax, unreadable files and symlinks
 remain visible errors; they cannot select a stale YAML copy. Discovery and
@@ -31,7 +34,7 @@ TOML has no null: nullable mapping entries are omitted. In `t3.manager`, omitted
 validation. Existing icon and T3-link edits update the selected format only;
 TOML comments and unrelated values are preserved, with revision checks and
 same-directory atomic replacement. Creating a new project writes only
-`ops/project.toml`, including its icon/source and optional later T3 binding.
+`.okilum/project.toml`, including its icon/source and optional later T3 binding.
 Existing YAML projects remain discoverable. No read converts or deletes a file
 and no normal app operation rewrites both copies.
 

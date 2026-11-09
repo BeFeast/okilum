@@ -112,7 +112,7 @@ fn parse(source: &str) -> Result<(File, Projection)> {
             Ok(card) => projection.cards.push(card),
             Err(e) => projection
                 .problems
-                .push(format!("ops/board-local.toml: cards[{index}]: {e:#}")),
+                .push(format!("board-local.toml: cards[{index}]: {e:#}")),
         }
     }
     Ok((file, projection))
@@ -121,7 +121,7 @@ fn document(area: &Path) -> Result<Option<Document>> {
     let doc = area_files::read(area, "board-local")?;
     ensure!(
         doc.as_ref().is_none_or(|d| d.format == Format::Toml),
-        "Local cards use ops/board-local.toml; legacy YAML is not converted"
+        "Local cards use board-local.toml in the selected service directory; legacy YAML is not converted"
     );
     Ok(doc)
 }
@@ -312,7 +312,10 @@ impl Session {
                 document(&self.area)?.is_none(),
                 "Local Board appeared; reload before saving"
             );
-            let ops = self.area.join("ops");
+            let _layout_lock = crate::service_layout::ServiceLayout::lock(&self.area)?;
+            self.project.layout.check_current()?;
+            self.check_sources()?;
+            let ops = self.project.layout.directory();
             let temporary = ops.join(format!(".board-local.{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> Result<()> {
                 let mut file = std::fs::OpenOptions::new()
