@@ -11,6 +11,15 @@ tags, hard-linked sources and readonly notes fail closed. Resident CLOUD-family
 files are accepted because their tags do not redirect names; offline/recall
 sources require an external download. Real OneDrive save behavior still needs
 owner QA.
+
+Oleg's 2026-11-09 decision for #2761 retains ReFS (including Windows Dev Drive)
+as read-only. The desktop editing refusal names that restriction, explains that
+reading/search remain available, and directs in-app editing/paste to a **local
+NTFS** folder. The existing **Open with default app** action offers external
+editing. Copying the vault
+to another folder on ReFS does not enable editing. This disposition changes the
+explanation, not filesystem admission, source identity or save/recovery behavior.
+
 Ancestor handles request `FILE_LIST_DIRECTORY` as well as attributes: a
 metadata-only handle does not participate in Windows sharing checks. Native
 controls require sharing violation (32) for renaming both the folder and its
