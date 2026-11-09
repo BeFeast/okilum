@@ -21,6 +21,16 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn park(&mut self) {
+        // A completion may arrive while the editor is temporarily removed or
+        // after it is reassembled. Retire that request in either case.
+        *self = Self {
+            generation: self.generation.wrapping_add(1),
+            language: self.language.take(),
+            ..Default::default()
+        };
+    }
+
     pub(super) fn source_changed(&mut self, stamp: SourceStamp) -> bool {
         let stale = self
             .status
@@ -761,6 +771,31 @@ mod tests {
         visual.run_until_parked();
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
+    }
+
+    #[gpui::test]
+    fn code2771_parking_source_retires_late_jobs_and_preserves_operations(cx: &mut TestAppContext) {
+        let original = "```json\n{\"a\":1}\n```\n";
+        let (f, visual) = open(cx, original);
+        f.reader.update_in(visual, |reader, window, cx| {
+            reader.code_operation(Action::Format, window, cx);
+            assert!(reader.editing.as_ref().unwrap().operations.busy);
+            let editing = reader.editing.take().unwrap();
+            let (store, restore) = editing.park(cx);
+            reader.editing = Some(restore(store));
+            f.input
+                .update(cx, |input, cx| input.set_disabled(false, cx));
+        });
+        visual.run_until_parked();
+        f.reader.read_with(visual, |reader, cx| {
+            assert_eq!(value(&f, cx), original);
+            assert!(!reader.editing.as_ref().unwrap().operations.busy);
+        });
+        // The reassembled editor accepts a fresh operation normally.
+        click(visual, "source-code-format");
+        f.reader.read_with(visual, |_, cx| {
+            assert_eq!(value(&f, cx), "```json\n{\n  \"a\": 1\n}\n```\n");
+        });
     }
 
     #[gpui::test]

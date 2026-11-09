@@ -475,12 +475,14 @@ impl Editing {
     // store crosses to the worker. Reassembly preserves undo/input state.
     fn park(mut self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
         self.recovery_pending = None;
+        self.operations.park();
         // A second window can still hold its painted input until the next frame.
         // Freeze it synchronously, before moving the store off the UI thread.
         self.live_preview.suspend();
         self.input
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
+            operations,
             store,
             source_status: _,
             live_preview,
@@ -518,6 +520,7 @@ impl Editing {
             _subscriptions,
         } = self;
         (store, move |store| Self {
+            operations,
             store,
             source_status: Default::default(),
             live_preview,
