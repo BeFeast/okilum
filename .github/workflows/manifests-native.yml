@@ -2,7 +2,7 @@
 name: manifests-native
 on:
   push:
-    branches: ['manifests-native/**', 'service-layout-native/**', 'code-operations-native/**']
+    branches: ['manifests-native/**', 'service-layout-native/**', 'code-operations-native/**', 'settings-caption-native/**']
 permissions:
   contents: read
 env:
@@ -100,7 +100,7 @@ jobs:
             grep -q ': test$' "$RUNNER_TEMP/code-core-tests.txt"
             cargo test --locked -p okilum-core "$filter" -- --nocapture --test-threads=1
           done
-          filters=(reader_project_create::tests:: reader_service_storage::tests:: service2772_ code2771_)
+          filters=(reader_project_create::tests:: reader_service_storage::tests:: service2772_ code2771_ issue2755_ issue2770_ window_chrome_settings_about_ about_keeps_each_reader_owner_and_reuses_only_its_own_window owned_settings_center_reuse_escape_and_close_with_owner settings_2487_)
           for filter in "${filters[@]}"; do
             cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list | tee "$RUNNER_TEMP/updater-tests.txt"
             grep -q ': test$' "$RUNNER_TEMP/updater-tests.txt"

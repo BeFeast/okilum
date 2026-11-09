@@ -22,10 +22,11 @@ to that display's visible work area. They cannot be minimized independently.
 - macOS: a native child-window relationship, at the owner's normal level, keeps
   the tool above its owner without application-wide floating/topmost behavior.
   It is excluded from the Window menu; the app retains its single Dock identity.
-  Settings/About use an opaque native AppKit title bar with standard traffic
-  lights, native dragging and the system double-click preference (#2755).
-  Their explicit Close button is in a client toolbar, below the caption. Reader and
-  Feedback retain their existing chrome; owner lookup and lifecycle are unchanged.
+  Settings/About use one transparent client caption with standard native traffic
+  lights and the explicit Close action (#2755/#2770). A left press on blank
+  caption content synchronously starts AppKit movement with the original event;
+  a double press delegates the system preference. Reader and Feedback retain
+  their existing chrome; owner lookup and lifecycle are unchanged.
 - Linux: GPUI Floating requests `WM_TRANSIENT_FOR` on X11 or an xdg-toplevel
   parent on Wayland. GPUI chooses the focused window as the transient parent;
   when invoked from another tool that may be a sibling in the same family.
@@ -59,24 +60,41 @@ where the next pointer event lands instead of handing the original press to
 AppKit. The main Reader uses the same custom handler, with a taller header and
 different controls, so its working drag does not establish Settings correctness.
 
-On macOS Settings now delegates the whole native caption to AppKit without a
-GPUI overlay or mouse-move handler. Linux and Windows keep their original title
-bar and Close placement. The owner-scoping commits in #1957 (`2e94124f0`,
-`718e0f01b`, `ce6ac797b`, `56f3fe6b4`) change routing/reuse, not caption input;
-the native macOS child attachment predates them (`a7b1a9c50`). These relationships
-are retained, including the Windows HWND owner from #1917.
+PR2756 used an opaque native caption above a separate client Close toolbar.
+The tester rejected that grey strip and reported continued jumping in #2770 on
+a build containing the change. Historical manual evidence included ten drags,
+but two reverse WindowServer samples and no inactive-first-press coverage;
+it did not establish smooth native motion.
 
-Regression checks cover the macOS window options, absence of a custom caption,
-Close via pointer/Esc/shortcut/action, per-Reader About reuse, and owner closure.
-TestPlatform cannot simulate AppKit window dragging. Manual Mac verification must
-still cover repeated slow/fast drags across the full caption (active/inactive
-window, every Settings pane and About), native close, client Close, and movement
-of the owning Reader. Source inspection identifies the dead input strip above;
-it does not substitute for reproducing the reported jumps on the tester's Mac.
+Settings/About now use a single 34-pixel client caption over a transparent native
+titlebar. Native traffic lights retain their standard positions. Blank content
+and padding start native movement synchronously on left mouse-down, including
+an inactive first press. No flag waits for another mouse-move, no synthetic
+position or frame updates implement movement, and GPUI core remains unpatched.
+The pinned GPUI macOS backend synchronously dispatches this input and its public
+`start_window_move` hands `NSApplication.currentEvent` to
+`performWindowDragWithEvent:`; invoking it inside the press callback preserves
+the original event. A second press delegates `titlebar_double_click` once.
 
-The explicit Close action stays in the first 34 client pixels, below the native
-caption. `Dialog` reserves that client strip for window actions even while its
-backdrop occludes the rest of the viewport. Moving Close to a footer covers it
-during the Sync wizard: native CI caught both existing #2487 typed-field/Close
-regressions. Keeping this client toolbar preserves one-click close and input
-Blur/commit with the wizard open; it has no window-drag handler or caption overlay.
+Only the exact Close-button hit region stops the press from bubbling to the
+caption. The surrounding padding remains draggable. Close stays in the first
+34 client pixels that Dialog reserves for window actions, including the Sync
+wizard backdrop; it still uses the normal blur/commit/close path. The original
+per-Reader native child relationship, ownership routing, About reuse, Esc and
+other platforms' chrome stay intact.
+
+Regression checks assert transparent/client-owned caption options, immediate
+move dispatch before any mouse-move, inactive-first-press routing, blank padding
+and tight Close hit regions, a real Close click with no move dispatch, single
+double-click delegation and actual Settings/About/Sync modal Close/ownership
+behavior. TestPlatform has no AppKit window: a test-only recorder at the native
+dispatch boundary observes requests instead of calling its unimplemented move
+method. These controls do not certify native motion or reproduce a jump.
+
+Actual containing-beta Mac acceptance must record repeated slow/fast real-input
+drags across caption positions, including inactive-first-press, simultaneous
+pointer/window-frame traces and scoped screenshots/video. Check native traffic
+lights, client Close/Esc, modal typed-field commit, About reuse and owner closure.
+A static screenshot, hosted request-routing controls or asynchronous geometry
+sampling alone cannot establish smooth movement; retain any observed reversals
+or untested paths explicitly until the reported behavior is verified.
