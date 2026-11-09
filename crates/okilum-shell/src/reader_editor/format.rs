@@ -91,6 +91,10 @@ pub(crate) fn format_menu() -> Menu {
             MenuItem::action("Heading 5", Heading5),
             MenuItem::action("Heading 6", Heading6),
             MenuItem::action("Paragraph", Paragraph),
+            MenuItem::separator(),
+            MenuItem::action("Format code", super::code_operations::FormatCode),
+            MenuItem::action("Validate code", super::code_operations::ValidateCode),
+            MenuItem::action("Repair code…", super::code_operations::RepairCode),
         ],
     }
 }

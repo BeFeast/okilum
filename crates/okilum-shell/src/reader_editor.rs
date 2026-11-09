@@ -2,6 +2,7 @@
 mod block_context;
 mod block_entry;
 mod code_comforts;
+mod code_operations;
 mod context_menu;
 mod external_edit;
 pub(crate) mod format;
@@ -164,6 +165,7 @@ fn take_source_status_bytes() -> usize {
 }
 
 pub(super) struct Editing {
+    operations: code_operations::State,
     store: FileEditor,
     source_status: std::cell::Cell<Option<SourceStatus>>,
     live_preview: live_preview::LivePreview,
@@ -473,12 +475,14 @@ impl Editing {
     // store crosses to the worker. Reassembly preserves undo/input state.
     fn park(mut self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
         self.recovery_pending = None;
+        self.operations.park();
         // A second window can still hold its painted input until the next frame.
         // Freeze it synchronously, before moving the store off the UI thread.
         self.live_preview.suspend();
         self.input
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
+            operations,
             store,
             source_status: _,
             live_preview,
@@ -516,6 +520,7 @@ impl Editing {
             _subscriptions,
         } = self;
         (store, move |store| Self {
+            operations,
             store,
             source_status: Default::default(),
             live_preview,
@@ -899,6 +904,8 @@ impl Reader {
         });
         let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
         let mut last_embed_hover = None;
+        let mut last_code_selection = None;
+        let mut last_code_target = None;
         let highlighting = cx.observe_in(&input, window, move |this, input, window, cx| {
             // Editor/Input are RenderOnce wrappers owned by Reader. Native
             // hover state alone redraws the text engine, not its overlay host.
@@ -911,6 +918,23 @@ impl Reader {
             if last_embed_hover != hover {
                 last_embed_hover = hover;
                 cx.notify();
+            }
+
+            // Only crossing a code-body/language boundary rebuilds its toolbar.
+            // Native caret movement must not leave stale rendered menu targets,
+            // while movements within one body keep the ordinary editor hot path.
+            let selection = (
+                input.read(cx).source_stamp(),
+                input.read(cx).selected_range(),
+            );
+            if last_code_selection.as_ref() != Some(&selection) {
+                last_code_selection = Some(selection);
+                this.schedule_code_inventory(cx);
+                let target = this.code_operation_target_key(cx);
+                if target != last_code_target {
+                    last_code_target = target;
+                    cx.notify();
+                }
             }
 
             if this.editing.as_ref().is_some_and(|editing| {
@@ -966,6 +990,9 @@ impl Reader {
             };
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
+            if editing.operations.source_changed(source_stamp) {
+                cx.notify();
+            }
             if editing.conflict_detected
                 && editing
                     .conflict_copy
@@ -1268,6 +1295,7 @@ impl Reader {
         let save_status = cx.new(|cx| status::SaveStatus::new(reader.clone(), &input, cx));
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         self.editing = Some(Editing {
+            operations: Default::default(),
             store,
             source_status: Default::default(),
             live_preview,
@@ -1312,6 +1340,7 @@ impl Reader {
                 pasted,
             ],
         });
+        self.schedule_code_inventory(cx);
         // Back from the Reader to unchanged text: Undo continues (#1095).
         if let Some((file, history)) = self.retained_edit.take() {
             if file == self.selected_file() {
@@ -2588,8 +2617,10 @@ impl Reader {
         // #1993: the caret's code block in an external editor.
         let column = self.external_block_actions(column, cx);
         let column = self.format_actions(column, cx);
+        let column = self.code_operation_actions(column, cx);
         let column = self.table_actions(column, cx);
         self.list_actions(column, cx)
+            .children(self.render_code_operations(cx))
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
             .on_action(cx.listener(

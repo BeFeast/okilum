@@ -11,9 +11,59 @@ pub struct Invalid {
     pub column: usize,
 }
 
+pub const MAX_PRETTY_DEPTH: usize = 128;
+pub const MAX_PRETTY_BYTES: usize = 1024 * 1024;
+
+/// Conservative bound on indentation expansion, checked before parsing or
+/// allocating output. Brackets inside strings (including escaped quotes) do
+/// not count as nesting. The input bytes already bound verbatim token copies;
+/// each structural token adds at most one newline and its indentation.
+pub fn within_pretty_budget(text: &str) -> bool {
+    let mut bound = text.len().saturating_add(1);
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for byte in text.bytes() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_PRETTY_DEPTH {
+                    return false;
+                }
+                bound = bound.saturating_add(1 + depth * 2);
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                bound = bound.saturating_add(1 + depth * 2);
+            }
+            b',' => bound = bound.saturating_add(1 + depth * 2),
+            b':' => bound = bound.saturating_add(1),
+            _ => {}
+        }
+        if bound > MAX_PRETTY_BYTES {
+            return false;
+        }
+    }
+    bound <= MAX_PRETTY_BYTES
+}
+
 /// Two-space indent, one member per line, `"key": value`. Empty objects and
 /// arrays stay `{}` / `[]`. A leading byte order mark is not shown.
 pub fn pretty(text: &str) -> Result<String, Invalid> {
+    if !within_pretty_budget(text) {
+        return Err(Invalid { line: 1, column: 1 });
+    }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if let Err(error) = serde_json::from_str::<serde::de::IgnoredAny>(text) {
         return Err(Invalid {
@@ -89,6 +139,25 @@ fn newline(out: &mut String, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indentation_budget_refuses_deep_and_wide_expansion_before_allocation() {
+        let deep = format!("{}0{}", "[".repeat(100_000), "]".repeat(100_000));
+        assert!(!within_pretty_budget(&deep));
+        assert!(pretty(&deep).is_err());
+        let wide = format!(
+            "{}{}0{}",
+            "[".repeat(96),
+            "0,".repeat(80_000),
+            "]".repeat(96)
+        );
+        assert!(wide.len() < 256 * 1024);
+        assert!(!within_pretty_budget(&wide));
+        assert!(pretty(&wide).is_err());
+        // Actual nested formatting and literal brackets remain supported.
+        assert!(pretty(&format!("{}0{}", "[".repeat(32), "]".repeat(32))).is_ok());
+        assert!(pretty(&format!("\"{}\"", "[".repeat(100_000))).is_ok());
+    }
 
     #[test]
     fn one_line_json_becomes_indented_with_order_and_spelling_kept() {
