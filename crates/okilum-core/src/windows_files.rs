@@ -55,9 +55,10 @@ impl std::fmt::Display for UnsupportedLocation {
                  to a folder on this computer."
             }
             Self::NotLocalNtfs => {
-                "Okilum saves notes only on this computer's NTFS drives, so this \
-                 vault opens read-only. To edit a note, use ⋯ → Open with default \
-                 app, or copy the vault to a folder on this computer."
+                "This vault opens read-only in Okilum. Editing and pasting notes \
+                 require a local NTFS drive; ReFS (including Dev Drive) is read-only. \
+                 Reading and search still work. To edit in Okilum, copy the vault \
+                 to a local NTFS folder, or use ⋯ → Open with default app."
             }
         })
     }
