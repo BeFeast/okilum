@@ -482,6 +482,16 @@ mod service_metadata_tests {
         std::fs::create_dir_all(root.join("Areas/App/.okilum")).unwrap();
         std::fs::create_dir_all(root.join("Areas/Legacy/ops")).unwrap();
         let mut watcher = VaultWatcher::new(&root).unwrap();
+        // FSEvents can deliver the fixture's already-created directory events
+        // after registration. Establish a quiet startup baseline before
+        // measuring a metadata-only write; topology hints must stay enabled.
+        let baseline_deadline = Instant::now() + Duration::from_secs(8);
+        while watcher.wait(Duration::from_secs(2)).is_some() {
+            assert!(
+                Instant::now() < baseline_deadline,
+                "fixture startup must become quiet"
+            );
+        }
         for path in [
             "Areas/App/.okilum/project.yaml",
             "Areas/App/.okilum/board-local.toml",
