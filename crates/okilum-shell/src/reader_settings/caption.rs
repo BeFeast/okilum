@@ -1,6 +1,17 @@
 //! Settings-only caption. AppKit receives the original press synchronously;
-//! there is no pending drag state or later mouse-move event to substitute.
+//! macOS 27.2 uses a scoped native-event workaround for its drag handoff.
 use super::*;
+
+#[cfg(any(target_os = "macos", test))]
+mod manual;
+
+#[derive(Default)]
+pub(super) struct Caption {
+    #[cfg(target_os = "macos")]
+    native: Option<manual::NativeDrag>,
+    #[cfg(target_os = "macos")]
+    native_initialized: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NativeAction {
@@ -24,37 +35,57 @@ fn native_action(action: NativeAction, window: &mut Window, cx: &mut App) {
     }
 }
 
-pub(super) fn render(close: Button) -> Div {
-    h_flex()
-        .debug_selector(|| "settings-window-actions".into())
-        .flex_none()
-        .h(gpui_component::TITLE_BAR_HEIGHT)
-        .items_center()
-        // Match the standard native traffic-light inset. They retain their
-        // AppKit hit targets; the client caption starts to their right.
-        .pl(px(80.))
-        .pr_3()
-        .on_mouse_down(MouseButton::Left, |event, window, cx| {
-            let action = if event.click_count == 2 {
-                NativeAction::DoubleClick
-            } else {
-                NativeAction::Move
-            };
-            // This callback runs inside GPUI's synchronous native input
-            // dispatch, so NSApplication.currentEvent is still this press.
-            // Inactive first presses are accepted, without a focus-only click.
-            native_action(action, window, cx);
-            cx.stop_propagation();
-        })
-        .child(div().flex_1().child("Settings"))
-        .child(
-            div()
-                .debug_selector(|| "settings-caption-close-hit".into())
-                // Stop only the button's exact area. Caption padding on either
-                // side still bubbles to the original-press drag handler.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(close),
-        )
+impl Caption {
+    pub(super) fn render(&mut self, close: Button, window: &mut Window, _: &mut App) -> Div {
+        #[cfg(not(target_os = "macos"))]
+        let _ = window;
+        #[cfg(target_os = "macos")]
+        let native = {
+            if !self.native_initialized {
+                self.native_initialized = true;
+                self.native = manual::NativeDrag::install(window);
+            }
+            self.native.clone()
+        };
+        h_flex()
+            .debug_selector(|| "settings-window-actions".into())
+            .flex_none()
+            .h(gpui_component::TITLE_BAR_HEIGHT)
+            .items_center()
+            // Match the standard native traffic-light inset. They retain their
+            // AppKit hit targets; the client caption starts to their right.
+            .pl(px(80.))
+            .pr_3()
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                let action = if event.click_count == 2 {
+                    NativeAction::DoubleClick
+                } else {
+                    NativeAction::Move
+                };
+                #[cfg(target_os = "macos")]
+                if action == NativeAction::Move && native.as_ref().is_some_and(|drag| drag.begin())
+                {
+                    gpui_base::TextSelection::end(window, cx);
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                    return;
+                }
+                // This callback runs inside GPUI's synchronous native input
+                // dispatch, so NSApplication.currentEvent is still this press.
+                // Inactive first presses are accepted, without a focus-only click.
+                native_action(action, window, cx);
+                cx.stop_propagation();
+            })
+            .child(div().flex_1().child("Settings"))
+            .child(
+                div()
+                    .debug_selector(|| "settings-caption-close-hit".into())
+                    // Stop only the button's exact area. Caption padding on either
+                    // side still bubbles to the original-press drag handler.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(close),
+            )
+    }
 }
 
 #[cfg(test)]
@@ -73,19 +104,22 @@ mod tests {
     use ::core::prelude::v1::test;
     use std::{cell::Cell, rc::Rc};
 
-    struct Surface(Rc<Cell<usize>>);
+    struct Surface(Rc<Cell<usize>>, Caption);
     impl Render for Surface {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let closed = self.0.clone();
-            render(
-                Button::new("fixture-close")
-                    .debug_selector(|| "fixture-caption-close".into())
-                    .small()
-                    .ghost()
-                    .label("Close")
-                    .on_click(move |_, _, _| closed.set(closed.get() + 1)),
-            )
-            .w(px(780.))
+            self.1
+                .render(
+                    Button::new("fixture-close")
+                        .debug_selector(|| "fixture-caption-close".into())
+                        .small()
+                        .ghost()
+                        .label("Close")
+                        .on_click(move |_, _, _| closed.set(closed.get() + 1)),
+                    window,
+                    cx,
+                )
+                .w(px(780.))
         }
     }
 
@@ -100,7 +134,7 @@ mod tests {
         cx.update(crate::test_init);
         let closed = Rc::new(Cell::new(0));
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| Surface(closed.clone()));
+            let view = cx.new(|_| Surface(closed.clone(), Caption::default()));
             Root::new(view, window, cx)
         });
         visual.run_until_parked();
@@ -143,7 +177,7 @@ mod tests {
         cx.update(crate::test_init);
         let closed = Rc::new(Cell::new(0));
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| Surface(closed));
+            let view = cx.new(|_| Surface(closed, Caption::default()));
             Root::new(view, window, cx)
         });
         visual.run_until_parked();

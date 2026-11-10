@@ -24,8 +24,9 @@ to that display's visible work area. They cannot be minimized independently.
   It is excluded from the Window menu; the app retains its single Dock identity.
   Settings/About use one transparent client caption with standard native traffic
   lights and the explicit Close action (#2755/#2770). A left press on blank
-  caption content synchronously starts AppKit movement with the original event;
-  a double press delegates the system preference. Reader and Feedback retain
+  caption content synchronously starts AppKit movement with the original event,
+  with the macOS 27.2 mitigation described below. A double press delegates the
+  system preference. Reader and Feedback retain
   their existing chrome; owner lookup and lifecycle are unchanged.
 - Linux: GPUI Floating requests `WM_TRANSIENT_FOR` on X11 or an xdg-toplevel
   parent on Wayland. GPUI chooses the focused window as the transient parent;
@@ -69,8 +70,7 @@ it did not establish smooth native motion.
 Settings/About now use a single 34-pixel client caption over a transparent native
 titlebar. Native traffic lights retain their standard positions. Blank content
 and padding start native movement synchronously on left mouse-down, including
-an inactive first press. No flag waits for another mouse-move, no synthetic
-position or frame updates implement movement, and GPUI core remains unpatched.
+an inactive first press. GPUI core remains unpatched.
 The pinned GPUI macOS backend synchronously dispatches this input and its public
 `start_window_move` hands `NSApplication.currentEvent` to
 `performWindowDragWithEvent:`; invoking it inside the press callback preserves
@@ -98,3 +98,46 @@ lights, client Close/Esc, modal typed-field commit, About reuse and owner closur
 A static screenshot, hosted request-routing controls or asynchronous geometry
 sampling alone cannot establish smooth movement; retain any observed reversals
 or untested paths explicitly until the reported behavior is verified.
+
+### macOS 27.2 drag handoff mitigation
+
+Installed beta30561 verified the integrated caption and lifecycle on the tester's
+macOS 27.2, but a fast input control retained one reverse WindowServer frame
+sample (453 to438 points while the actual pointer moved843 to858). AX remained
+stationary. Sixteen slower cases and an inactive-window control did not reverse.
+These observations do not establish continuous perceptual smoothness or attribute
+the sample to a specific cause. The original fast labels were not trusted: input
+guards made them about1.6 seconds; separate controls measured about0.3 seconds.
+
+A separate [Warp report](https://github.com/warpdotdev/warp/issues/16508) describes
+intermittent `performWindowDragWithEvent:` failure on macOS27.2 beta4, including
+A/B data for native handoff versus application movement. This is supporting
+evidence, not proof of Okilum's exact failure. Apple documents that this handoff
+returns immediately; the pinned backend's brief lock scope is not evidence of a
+blocking native event loop.
+
+On macOS27.2 only, Settings uses an app-local native event monitor for a drag
+that began in its own blank caption. The original press records the native
+window frame and screen point. Subsequent events use that fixed anchor plus
+the latest absolute Cocoa screen pointer to set the same window's origin.
+Window-local coordinates and accumulated deltas are never used. Native callbacks
+run before GPUI event dispatch, avoiding native geometry callbacks while the
+caption entity is borrowed. Close and other controls cannot start this path;
+double-click still delegates the system preference. Other OS versions retain
+the native WindowServer handoff.
+
+Each monitor belongs to one live Settings window, uses a weak Rust capture and
+is removed on teardown. A new press, release, wrong event window, inactive or
+hidden target, lost left button, changed window size, missing display or invalid
+geometry retires the drag. Movement uses the display under the pointer, keeps
+the caption below its menu bar and retains a reachable caption segment at the
+other edges. It changes no global monitor, input permission, preference, Reader,
+Feedback, ownership relationship or live vault.
+
+The scoped workaround does not participate in WindowServer edge tiling or
+dragging through Mission Control/Spaces. Native double-click zoom and explicit
+window actions remain available; ordinary movement across display coordinates
+uses the pointer's target display. These limits must remain visible in delivery
+notes until a native handoff fix allows removal of the workaround. Fresh beta
+motion/video acceptance is required; coordinate and cancellation regressions
+do not themselves establish runtime smoothness.
