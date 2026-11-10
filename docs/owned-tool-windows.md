@@ -127,7 +127,7 @@ double-click still delegates the system preference. Other OS versions retain
 the native WindowServer handoff.
 
 Each monitor belongs to one live Settings window, uses a weak Rust capture and
-is removed on teardown. A new press, release, wrong event window, inactive or
+is removed on teardown. A new press, release, wrong event window,
 hidden target, lost left button, changed window size, missing display or invalid
 geometry retires the drag. Movement uses the display under the pointer, keeps
 the caption below its menu bar and retains a reachable caption segment at the
@@ -141,3 +141,23 @@ uses the pointer's target display. These limits must remain visible in delivery
 notes until a native handoff fix allows removal of the workaround. Fresh beta
 motion/video acceptance is required; coordinate and cancellation regressions
 do not themselves establish runtime smoothness.
+
+### First mouse during application activation
+
+An original press accepted by this window can precede its key-window or app
+activation transition. The Settings-local monitor therefore checks the native
+event's window identity and visibility, rather than requiring `isKeyWindow`.
+Keeping a key-window prerequisite would retire an accepted first drag before
+activation settles. The pressed button and geometry/teardown controls still
+apply; no activation request or foreground override is added.
+
+Installed30605 recorded a complete different-process inactive input trajectory
+with zero Settings movement, while same-process inactive movement worked. This
+is the runtime regression control for the correction. It does not by itself
+prove which native callback rejected the event or equate injected and physical
+input. Its original trace and the failed30561 fast sample remain evidence.
+Eight ordinary30605 traces also ended before mouse-up; they cannot establish
+whole-drag behavior. Retesting must start recording before mouse-down, continue
+through mouse-up and settling, and confirm the actual sampled pointer and both
+geometry endpoints. Current Close/Esc/About/owner checks must not be inherited
+from older builds after a native run stops early.
