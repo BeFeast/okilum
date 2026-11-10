@@ -76,6 +76,15 @@ diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/
                  search.replace_mode,
                  state.search_activation_revision(),
                  search.clone(),
+@@ -356,7 +356,7 @@
+                             window,
+                             cx,
+                         );
+-                    } else {
++                    } else if !search_session.external_presentation {
+                         panel.hide_with_focus(!cfg!(test), window, cx);
+                     }
+                 });
 @@ -395,7 +395,7 @@
      M::install_action_handler(state, cx);
      let has_overlay = {
