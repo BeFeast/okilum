@@ -41,7 +41,7 @@ enum Original {
         path: PathBuf,
         revision: Revision,
         #[cfg(windows)]
-        identity: (u64, u64),
+        identity: okilum_core::windows_files::Identity,
     },
     Remote(String),
 }

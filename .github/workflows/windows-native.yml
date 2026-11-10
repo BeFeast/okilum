@@ -60,6 +60,20 @@ jobs:
         run: |
           Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
+      - name: NTFS and ReFS mutation and recovery controls
+        if: inputs.package == 'okilum-core'
+        shell: pwsh
+        run: ./scripts/ci/windows-filesystems.ps1
+      - name: Archive exact-source native core test executables
+        if: always() && inputs.package == 'okilum-core'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-filesystem-tests-${{ github.sha }}
+          path: |
+            target/debug/deps/okilum_core-*.exe
+            target/debug/deps/okilum_write_authority-*.exe
+          retention-days: 3
+          if-no-files-found: error
       - name: Build the Windows network regression companion
         if: inputs.package == 'okilum-http'
         shell: pwsh

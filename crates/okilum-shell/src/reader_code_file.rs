@@ -6,7 +6,7 @@ use gpui_component::button::ButtonGroup;
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, WrappingIndent};
 use std::time::Instant;
 
-mod document;
+pub(crate) mod document;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
 mod structure;
@@ -101,12 +101,15 @@ pub(crate) struct CodePreview {
     page: usize,
     structure: structure::Structure,
     structure_view: bool,
+    requested_tree: Option<bool>,
+    paged: bool,
     document_revision: u64,
     find: Entity<InputState>,
     matches: Vec<std::ops::Range<usize>>,
     match_index: usize,
     search_revision: u64,
     searching: bool,
+    focus: FocusHandle,
     _find_subscription: Subscription,
 }
 
@@ -283,12 +286,15 @@ impl CodePreview {
             page: 0,
             structure: structure::Structure::default(),
             structure_view: false,
+            requested_tree: None,
+            paged: false,
             document_revision: 0,
             find,
             matches: Vec::new(),
             match_index: 0,
             search_revision: 0,
             searching: false,
+            focus: cx.focus_handle(),
             _find_subscription: find_subscription,
         }
     }
@@ -346,6 +352,7 @@ impl CodePreview {
 
     fn prepare_document(&mut self, shown: String, window: &mut Window, cx: &mut Context<Self>) {
         self.page = 0;
+        self.paged = document::first_page(&shown).end < shown.len();
         self.document = None;
         self.structure_view = false;
         self.matches.clear();
@@ -354,9 +361,10 @@ impl CodePreview {
         self.searching = false;
         let revision = self.document_revision;
         let language = language(&self.rel).unwrap_or("text");
+        let json = self.json.is_some();
         let task = cx
             .background_executor()
-            .spawn(async move { Arc::new(Document::new(shown, language)) });
+            .spawn(async move { Arc::new(Document::for_file(shown, language, json)) });
         cx.spawn_in(window, async move |this, cx| {
             let document = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -364,7 +372,8 @@ impl CodePreview {
                     return;
                 }
                 this.structure.reset(&document);
-                this.structure_view = !document.structure.is_empty();
+                this.structure_view = this.requested_tree.unwrap_or(document.pages.len() > 1)
+                    && !document.structure.is_empty();
                 this.document = Some(document);
                 this.search(window, cx);
                 cx.notify();
@@ -378,6 +387,7 @@ impl CodePreview {
             return;
         };
         self.structure_view = false;
+        self.requested_tree = Some(false);
         self.page = page.min(doc.pages.len() - 1);
         let text = doc.text[doc.pages[self.page].clone()].to_owned();
         if let State::Content(input) = &self.state {
@@ -392,11 +402,16 @@ impl CodePreview {
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_revision += 1;
         let revision = self.search_revision;
-        let Some(doc) = self.document.clone().filter(|doc| doc.pages.len() > 1) else {
+        let Some(doc) = self
+            .document
+            .clone()
+            .filter(|doc| doc.json_tree || doc.pages.len() > 1)
+        else {
             return;
         };
         let query = self.find.read(cx).value().to_string();
         self.matches.clear();
+        self.structure.match_node = None;
         self.searching = !query.is_empty();
         let task = cx
             .background_executor()
@@ -425,6 +440,11 @@ impl CodePreview {
         let Some(doc) = &self.document else {
             return;
         };
+        if self.structure_view {
+            self.structure.reveal(&range, doc);
+            cx.notify();
+            return;
+        }
         let page = doc.page_at(range.start);
         self.show_page(page, window, cx);
         let doc = self.document.as_ref().unwrap();
@@ -465,11 +485,7 @@ impl CodePreview {
                 return table.update(cx, |table, cx| table.focus_filter(window, cx));
             }
         }
-        if self
-            .document
-            .as_ref()
-            .is_some_and(|doc| doc.pages.len() > 1)
-        {
+        if self.structure_view || self.paged {
             self.find.update(cx, |input, cx| input.focus(window, cx));
             true
         } else {
@@ -566,9 +582,17 @@ impl CodePreview {
         matches!(self.state, State::Loading)
     }
 
+    /// Shared immutable whole-file parse for Contents (#2795). Node indices,
+    /// parent links, byte ranges and labels belong to this exact snapshot;
+    /// retaining the Arc never reparses or copies the source/tree.
+    pub(crate) fn document_snapshot(&self) -> Option<Arc<Document>> {
+        self.document.clone()
+    }
+
     /// The right-panel outline must never parse a source page as a document.
     pub(crate) fn outline_input(&self) -> Option<Entity<EditorState>> {
-        self.document.as_ref().filter(|doc| doc.pages.len() == 1)?;
+        self.document_snapshot()
+            .filter(|doc| doc.pages.len() == 1)?;
         self.input()
     }
 
@@ -703,7 +727,18 @@ impl Render for CodePreview {
             .children(modes)
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CopyNode, _, cx| this.copy_node(cx)))
+            .on_action(cx.listener(|this, _: &FindInNote, window, cx| {
+                if !this.open_paged_find(window, cx) {
+                    if let Some(input) = this.input() {
+                        input.update(cx, |state, cx| {
+                            state.open_search(false, cx);
+                            state.focus(window, cx);
+                        });
+                    }
+                }
+            }))
             .debug_selector(|| "reader-code-file".into())
             .w_full()
             .max_w(px(reader_ui_state::note_column_width(cx)))

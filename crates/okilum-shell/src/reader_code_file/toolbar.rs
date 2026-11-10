@@ -9,10 +9,11 @@ impl CodePreview {
         native_trace("toolbar.begin");
         let tools = self.tools(cx);
         let mut view = v_flex().gap_1().pb_2().child(tools);
-        if self
-            .document
-            .as_ref()
-            .is_some_and(|doc| doc.pages.len() > 1)
+        if self.paged
+            || self
+                .document
+                .as_ref()
+                .is_some_and(|doc| !doc.structure.is_empty())
         {
             view = view.child(self.paged_toolbar(cx));
         }
@@ -70,7 +71,12 @@ impl CodePreview {
             .label(if folded { "Fold all" } else { "Unfold all" })
             .disabled(self.document.is_none())
             .debug_selector(move || id.into())
-            .on_click(cx.listener(move |this, _, _, cx| this.fold_all(folded, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.fold_all(folded, cx);
+                if this.structure_view {
+                    this.focus.focus(window, cx);
+                }
+            }))
             .into_any_element()
     }
 
@@ -126,13 +132,18 @@ impl CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("paged-toolbar.begin");
         let modes = self.mode_row(cx);
-        let pages = self.page_row(cx);
-        let search = self.search_row(cx);
         #[cfg(feature = "data-view-native-harness")]
         native_trace("paged-toolbar.end");
         v_flex()
             .gap_1()
-            .children([modes, pages, search])
+            .child(modes)
+            .when(
+                !self.structure_view && self.paged && self.document.is_some(),
+                |view| view.child(self.page_row(cx)),
+            )
+            .when(self.structure_view || self.paged, |view| {
+                view.child(self.search_row(cx))
+            })
             .into_any_element()
     }
 
@@ -156,7 +167,7 @@ impl CodePreview {
         Button::new(id)
             .small()
             .ghost()
-            .label(if structure { "Structure" } else { "Source" })
+            .label(if structure { "Tree" } else { "Source" })
             .selected(self.structure_view == structure)
             .disabled(
                 structure
@@ -166,8 +177,11 @@ impl CodePreview {
                         .is_none_or(|doc| doc.structure.is_empty()),
             )
             .debug_selector(move || id.into())
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.requested_tree = Some(structure);
                 this.structure_view = structure;
+                this.show_match(window, cx);
+                this.focus.focus(window, cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -178,6 +192,7 @@ impl CodePreview {
         let doc = self.document.as_ref().unwrap();
         let range = &doc.pages[self.page];
         let label = div()
+            .debug_selector(|| "data-page-range".into())
             .text_sm()
             .child(format!(
                 "Long-line view · page {}/{} · bytes {}–{} of {}",
@@ -232,6 +247,7 @@ impl CodePreview {
     fn search_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let input = div()
             .w_64()
+            .debug_selector(|| "data-whole-file-find".into())
             .child(Input::new(&self.find).small())
             .into_any_element();
         let label = div()

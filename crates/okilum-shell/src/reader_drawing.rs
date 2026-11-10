@@ -88,10 +88,13 @@ pub(super) fn invalidate(root: &Path, cx: &mut App) {
         .collect::<Vec<_>>();
     cache.sources.retain(|s| s.root != root);
     // Rasters are content-addressed and bounded; unchanged drawings can reuse them.
+    let invalidated = !sources.is_empty();
     for source in sources {
         cx.remove_asset::<DrawingAsset>(&source);
     }
-    cx.refresh_windows();
+    if invalidated {
+        cx.refresh_windows();
+    }
 }
 
 fn fonts() -> Arc<resvg::usvg::fontdb::Database> {

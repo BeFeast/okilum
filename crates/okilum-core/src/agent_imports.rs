@@ -286,6 +286,9 @@ mod windows_policy {
     use std::io::Read;
     // Win32 REPARSE_POINT, OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
     pub(super) const DENIED_ATTRIBUTES: u32 = 0x400 | 0x1000 | 0x40000 | 0x400000;
+    #[cfg(windows)]
+    pub(super) type Identity = crate::windows_files::Identity;
+    #[cfg(not(windows))]
     pub(super) type Identity = (u32, u32, u32);
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(super) struct Revision {
@@ -1028,9 +1031,25 @@ mod windows_policy_tests {
         cell::Cell,
         io::{self, Read},
     };
+    fn id(volume: u32, high: u32, low: u32) -> windows_policy::Identity {
+        #[cfg(windows)]
+        {
+            let mut file = [0; 16];
+            file[..4].copy_from_slice(&low.to_le_bytes());
+            file[8..12].copy_from_slice(&high.to_le_bytes());
+            crate::windows_files::Identity::Full {
+                volume: volume.into(),
+                file,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            (volume, high, low)
+        }
+    }
     fn stable() -> Revision {
         Revision {
-            identity: (1, 2, 3),
+            identity: id(1, 2, 3),
             length: 4,
             write_time: 10,
             change_time: 20,
@@ -1156,7 +1175,7 @@ mod windows_policy_tests {
         let before = stable();
         let mut variants = Vec::new();
         let mut after = before.clone();
-        after.identity.2 += 1;
+        after.identity = id(1, 2, 4);
         variants.push(after);
         let mut after = before.clone();
         after.length += 1;
@@ -1210,17 +1229,17 @@ mod windows_policy_tests {
             windows_policy::read(&[0xff; 4][..], 4, || Ok(stable()), || Ok(())),
             Err(Failure::Unreadable)
         );
-        let root = [(1, 2, 3), (1, 2, 4)];
+        let root = [id(1, 2, 3), id(1, 2, 4)];
         assert_eq!(
-            windows_policy::ancestry(&root, &[(1, 2, 3), (1, 2, 4), (1, 2, 5)]),
+            windows_policy::ancestry(&root, &[id(1, 2, 3), id(1, 2, 4), id(1, 2, 5)]),
             Ok(())
         );
         assert_eq!(
-            windows_policy::ancestry(&root, &[(1, 2, 3), (1, 9, 9)]),
+            windows_policy::ancestry(&root, &[id(1, 2, 3), id(1, 9, 9)]),
             Err(Failure::Changed)
         );
         assert_eq!(
-            windows_policy::ancestry(&root, &[(1, 2, 3)]),
+            windows_policy::ancestry(&root, &[id(1, 2, 3)]),
             Err(Failure::Changed)
         );
     }

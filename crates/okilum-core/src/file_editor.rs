@@ -2147,6 +2147,10 @@ mod windows_editor_tests {
             editor
                 .save_before_exchange(|| {
                     fs::write(root.join("external.md"), "external").unwrap();
+                    // ReFS can refuse REPLACE_EXISTING over an open destination.
+                    // A racing publisher can still rename the old inode away
+                    // and publish a new inode into the vacant canonical name.
+                    fs::rename(&note, root.join("external-old.md")).unwrap();
                     fs::rename(root.join("external.md"), &note).unwrap();
                 })
                 .unwrap(),

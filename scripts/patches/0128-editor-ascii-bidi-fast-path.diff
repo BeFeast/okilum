@@ -1,0 +1,47 @@
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -847,7 +847,7 @@
+             .max()
+             .unwrap_or_default();
+         self.longest_width = width;
+-        let has_rtl = wrapped_lines.iter().any(|line| unicode_bidi::BidiInfo::new(&line.text, None).has_rtl());
++        let has_rtl = wrapped_lines.iter().any(|line| needs_bidi_geometry(&line.text));
+         self.bidi = wrapped_lines.iter().map(|line| has_rtl.then(|| Geometry::new(line))).collect();
+         self.wrapped_lines = wrapped_lines;
+     }
+@@ -1202,6 +1202,12 @@
+             }
+         }
+     }
++}
++
++/// ASCII has no RTL characters or directional controls. Avoid allocating bidi
++/// levels for every byte of a minified source line on each native layout.
++fn needs_bidi_geometry(text: &str) -> bool {
++    !text.is_ascii() && unicode_bidi::BidiInfo::new(text, None).has_rtl()
+ }
+ 
+ /// Whether `line` holds right-to-left script (Hebrew, Arabic, Syriac, Thaana,
+@@ -2032,3 +2038,22 @@
+         )
+     }
+ }
++
++#[cfg(test)]
++mod edit2803_tests {
++    use super::*;
++
++    #[test]
++    fn large_ascii_layout_does_not_allocate_full_bidi_levels() {
++        for text in ["abc 123", "a\t!= ->", "עברית", "abc مرحبا", "a\u{202e}123\u{202c}"] {
++            assert_eq!(needs_bidi_geometry(text), unicode_bidi::BidiInfo::new(text, None).has_rtl());
++        }
++        let text = "{\"key\":\"value\"} ".repeat(256 * 1024);
++        let started = std::time::Instant::now();
++        for _ in 0..8 {
++            assert!(!needs_bidi_geometry(std::hint::black_box(&text)));
++        }
++        assert!(started.elapsed() < std::time::Duration::from_millis(250),
++            "ASCII layout must skip full Unicode bidi analysis: {:?}", started.elapsed());
++    }
++}

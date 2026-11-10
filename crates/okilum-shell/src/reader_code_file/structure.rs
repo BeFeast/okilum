@@ -8,6 +8,7 @@ pub(super) struct Structure {
     collapsed: bool,
     exceptions: HashSet<usize>,
     pub selected: Option<usize>,
+    pub match_node: Option<usize>,
     pub visible: Vec<usize>,
     scroll: UniformListScrollHandle,
 }
@@ -18,10 +19,11 @@ impl Structure {
         self.exceptions.clear();
         self.exceptions.insert(0); // Show the root and its direct children.
         self.selected = (!doc.structure.is_empty()).then_some(0);
+        self.match_node = None;
         self.rebuild(doc);
     }
 
-    fn folded(&self, index: usize) -> bool {
+    pub(super) fn folded(&self, index: usize) -> bool {
         self.collapsed != self.exceptions.contains(&index)
     }
 
@@ -51,6 +53,28 @@ impl Structure {
         self.selected = Some(index);
         self.rebuild(doc);
     }
+
+    pub fn reveal(&mut self, range: &std::ops::Range<usize>, doc: &Document) {
+        let Some(index) = doc.row_at(range) else {
+            return;
+        };
+        let mut parent = doc.structure[index].parent;
+        while let Some(index) = parent {
+            if self.collapsed {
+                self.exceptions.insert(index);
+            } else {
+                self.exceptions.remove(&index);
+            }
+            parent = doc.structure[index].parent;
+        }
+        self.selected = Some(index);
+        self.match_node = Some(index);
+        self.rebuild(doc);
+        if let Some(visible) = self.visible.iter().position(|&row| row == index) {
+            self.scroll
+                .scroll_to_item_strict(visible, ScrollStrategy::Center);
+        }
+    }
 }
 
 impl CodePreview {
@@ -58,9 +82,10 @@ impl CodePreview {
         if let Some(doc) = self
             .document
             .as_ref()
-            .filter(|doc| !doc.structure.is_empty())
+            .filter(|doc| !doc.structure.is_empty() && (self.structure_view || doc.pages.len() > 1))
         {
             self.structure_view = true;
+            self.requested_tree = Some(true);
             self.structure.all(folded, doc);
         } else if let Some(input) = self.input() {
             input.update(cx, |s, cx| s.set_all_folded(folded, cx));
@@ -71,6 +96,10 @@ impl CodePreview {
     pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .debug_selector(|| "data-structure-viewport".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus.focus(window, cx)),
+            )
             .flex_1()
             .min_h_0()
             .w_full()
@@ -96,16 +125,23 @@ impl CodePreview {
         let index = self.structure.visible[visible];
         let row = &doc.structure[index];
         let branch = row.subtree_end > index + 1;
-        let label: String = doc.text[row.range.clone()]
-            .chars()
-            .take(96)
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        let label = if row.range.len() > label.len() {
-            format!("{label}…")
-        } else {
-            label
-        };
+        let hit = self
+            .matches
+            .get(self.match_index)
+            .filter(|_| self.structure.match_node == Some(index));
+        let label = hit.map_or_else(|| doc.row_label(index), |hit| doc.row_hit_label(index, hit));
+        let highlights = hit.and_then(|hit| {
+            let needle = &doc.text[hit.clone()];
+            label.find(needle).map(|start| {
+                (
+                    start..start + needle.len(),
+                    HighlightStyle {
+                        background_color: Some(cx.theme().warning),
+                        ..Default::default()
+                    },
+                )
+            })
+        });
         let range = row.range.clone();
         let source_offset = range.start;
         let node_source = doc.text.clone();
@@ -154,12 +190,15 @@ impl CodePreview {
                 div()
                     .id(("data-node-label", index))
                     .debug_selector(move || format!("data-node-label-{index}"))
+                    .when(hit.is_some(), |label| {
+                        label.debug_selector(|| "data-tree-match-label".into())
+                    })
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_sm()
                     .font_family(reader_fonts::code(cx))
-                    .child(label)
+                    .child(StyledText::new(label).with_highlights(highlights))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -190,6 +229,7 @@ impl CodePreview {
                             return;
                         };
                         let page = doc.page_at(source_offset);
+                        this.requested_tree = Some(false);
                         this.show_page(page, window, cx);
                     })),
             )
@@ -219,13 +259,13 @@ mod tests {
         assert_eq!(view.visible.len(), 3);
         view.all(false, &doc);
         assert_eq!(view.visible.len(), doc.structure.len());
-        assert!(view.visible.len() >= 7);
+        assert_eq!(view.visible.len(), 6);
         let nested = doc
             .structure
             .iter()
-            .position(|r| &doc.text[r.range.clone()] == "{\"answer\":42}")
+            .position(|r| &doc.text[r.range.clone()] == "\"inner\":{\"answer\":42}")
             .unwrap();
-        assert_eq!(doc.structure[nested].depth, 4);
+        assert_eq!(doc.structure[nested].depth, 2);
         view.toggle(nested, &doc);
         assert!(!view.visible.contains(&(nested + 1)));
         assert!(

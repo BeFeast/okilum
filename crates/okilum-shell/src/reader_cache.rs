@@ -303,13 +303,43 @@ fn persisted_references(base: &Path) -> Result<Option<References>> {
         let path = base.join(file);
         let before = hint_revision(&path)?;
         if before.is_some() {
-            let reader = std::io::BufReader::new(fs::File::open(&path)?);
-            let hint: Hint = serde_json::from_reader(reader)
-                .with_context(|| format!("Decode search generation hint {file}"))?;
-            names.extend(hint.search_generation);
+            // Source banks contain the whole inventory and encoded sources.
+            // Retention needs only their generation hint. Reuse a decoded hint
+            // while its verified file revision is unchanged, rather than parse
+            // the whole source bank after every small save.
+            type Cached = std::collections::HashMap<
+                PathBuf,
+                (okilum_core::vault::warm::SourceRevision, Option<String>),
+            >;
+            static HINT_CACHE: std::sync::OnceLock<std::sync::Mutex<Cached>> =
+                std::sync::OnceLock::new();
+            let cache = HINT_CACHE.get_or_init(Default::default);
+            let cached = cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&path)
+                .filter(|(revision, _)| Some(revision) == before.as_ref())
+                .map(|(_, generation)| generation.clone());
+            let generation = match cached {
+                Some(generation) => generation,
+                None => {
+                    let reader = std::io::BufReader::new(fs::File::open(&path)?);
+                    let hint: Hint = serde_json::from_reader(reader)
+                        .with_context(|| format!("Decode search generation hint {file}"))?;
+                    hint.search_generation
+                }
+            };
             if hint_revision(&path)? != before {
                 return Ok(None);
             }
+            if let Some(revision) = before.clone() {
+                let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
+                cache.insert(path.clone(), (revision, generation.clone()));
+            }
+            names.extend(generation);
         }
         revisions.push(before);
     }
