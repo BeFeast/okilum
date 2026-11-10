@@ -29,8 +29,45 @@ function Suites($label, $root) {
     if ($LASTEXITCODE -ne 0) { throw "$label writer authority failed ($LASTEXITCODE)" }
     Log "PASS $label native mutation/recovery/identity controls"
 }
+function ReadOnlyInventory {
+    $controlVhd = Join-Path $owned 'exfat.vhdx'
+    $controlAttached = $false
+    $controlTemp = $env:TEMP; $controlTmp = $env:TMP
+    try {
+        $letter = @('R','S','T','U','V','W','X','Y','Z') | Where-Object { !(Test-Path "${_}:\") } | Select-Object -First 1
+        if (!$letter) { Log 'SKIP exFAT inventory: no unused drive letter is available'; return }
+        $create = Join-Path $owned 'exfat-create.txt'
+        @("create vdisk file=`"$controlVhd`" maximum=256 type=expandable", "select vdisk file=`"$controlVhd`"", 'attach vdisk', 'create partition primary', "assign letter=$letter", 'exit') | Set-Content $create
+        try {
+            & diskpart /s $create | Out-Host
+            $controlAttached = Test-Path $controlVhd
+            Format-Volume -DriveLetter $letter -FileSystem exFAT -NewFileSystemLabel OkilumReadOnlyTests -Confirm:$false -ErrorAction Stop | Out-Host
+            if ((Get-Volume -DriveLetter $letter).FileSystem -ne 'exFAT') { throw 'Formatted volume is not exFAT' }
+        } catch {
+            Log "SKIP exFAT inventory: runner cannot create/format the owned VHDX: $($_.Exception.Message)"
+            return
+        }
+        $env:TEMP = "${letter}:\inventory-tests"; $env:TMP = $env:TEMP
+        New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+        $filter = 'windows_read_only_inventory_does_not_require_mutation_identity'
+        $discovered = & cargo test --locked -p okilum-core --lib $filter -- --list
+        if ($LASTEXITCODE -ne 0 -or !($discovered -match ': test$')) { throw 'exFAT inventory control discovered no tests' }
+        & cargo test --locked -p okilum-core --lib $filter -- --nocapture --test-threads=1
+        if ($LASTEXITCODE -ne 0) { throw 'exFAT read-only inventory regression failed' }
+        Log 'PASS exFAT inventory while full mutation identity remains required'
+    } finally {
+        $env:TEMP = $controlTemp; $env:TMP = $controlTmp
+        if ($controlAttached) {
+            $detach = Join-Path $owned 'exfat-detach.txt'
+            @("select vdisk file=`"$controlVhd`"", 'detach vdisk', 'exit') | Set-Content $detach
+            & diskpart /s $detach | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Owned exFAT VHDX detach failed' }
+        }
+    }
+}
 try {
     Suites 'NTFS' (Join-Path $owned 'ntfs')
+    ReadOnlyInventory
     if ($ExistingReFS) {
         if (!$ReFSRoot -or (Get-Volume -FilePath $ReFSRoot).FileSystem -ne 'ReFS') { throw 'A real ReFS path is required' }
         Suites 'ReFS' (Join-Path $ReFSRoot ('okilum-tests-' + [guid]::NewGuid()))
