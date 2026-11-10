@@ -364,6 +364,11 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     )
     .unwrap();
     std::fs::write(root.path().join("plain.txt"), "Ordinary text\n").unwrap();
+    std::fs::write(
+        root.path().join("big.json"),
+        format!("{{\"head\":\"{}\",\"tail\":1}}", "x".repeat(300_000)),
+    )
+    .unwrap();
     let mut reader = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -439,6 +444,22 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
             "navigation clears the prior current entry"
         );
     });
+    reader.update_in(visual, |reader, window, cx| {
+        reader.open_note("big.json", None, window, cx)
+    });
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(130));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("json-raw").is_some(),
+        "positive control: the paged JSON opened"
+    );
+    assert!(visual.debug_bounds("file-linked-from-heading").is_some());
+    assert!(
+        visual.debug_bounds("file-contents-heading").is_none(),
+        "Contents must not describe a 32 KiB fragment"
+    );
+    outline.read_with(visual, |view, _| assert!(!view.has_entries()));
 }
 
 #[test]

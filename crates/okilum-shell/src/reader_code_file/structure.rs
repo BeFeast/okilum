@@ -111,8 +111,13 @@ impl CodePreview {
         let node_source = doc.text.clone();
         h_flex()
             .id(("data-structure-row", index))
+            .debug_selector(move || format!("data-structure-row-{index}"))
             .w_full()
             .h(px(32.))
+            .min_h(px(32.))
+            .max_h(px(32.))
+            .flex_none()
+            .overflow_hidden()
             .items_center()
             .gap_2()
             .pl(px(row.depth.min(16) as f32 * 16.))
@@ -148,9 +153,10 @@ impl CodePreview {
             .child(
                 div()
                     .id(("data-node-label", index))
+                    .debug_selector(move || format!("data-node-label-{index}"))
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
+                    .truncate()
                     .text_sm()
                     .font_family(reader_fonts::code(cx))
                     .child(label)
@@ -232,5 +238,67 @@ mod tests {
             .map(|r| &doc.text[r.clone()])
             .collect::<String>();
         assert_eq!(restored, text);
+    }
+    #[gpui::test]
+    fn json2787_structure_labels_stay_inside_fixed_rows_at_every_width(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("__test2.json");
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"info\":{{\"description\":\"{}\"}},\"paths\":{{\"long\":true}}}}",
+                "wide label ".repeat(20_000)
+            ),
+        )
+        .unwrap();
+        cx.update(crate::test_init);
+        let mut preview = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                CodePreview::new(
+                    fixture.path().to_owned(),
+                    "__test2.json".into(),
+                    path.clone(),
+                    window,
+                    cx,
+                )
+            });
+            preview = Some(view.clone());
+            Root::new(cx.new(|_| Surface(view)), window, cx)
+        });
+        let preview = preview.unwrap();
+        visual.run_until_parked();
+        preview.update_in(visual, |p, window, cx| p.show_json(false, window, cx));
+        visual.run_until_parked();
+        for width in [360., 640., 1200.] {
+            visual.simulate_resize(size(px(width), px(600.)));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let visible = preview.read_with(visual, |p, _| {
+                assert!(p.structure_view);
+                assert!(
+                    p.outline_input().is_none(),
+                    "a page is not an outline document"
+                );
+                p.structure.visible.clone()
+            });
+            assert!(
+                visible.len() >= 3,
+                "positive control: multiple structure rows are drawn"
+            );
+            for index in visible {
+                let row = visual
+                    .debug_bounds(&format!("data-structure-row-{index}"))
+                    .unwrap();
+                let label = visual
+                    .debug_bounds(&format!("data-node-label-{index}"))
+                    .unwrap();
+                assert_eq!(row.size.height, px(32.));
+                assert!(
+                    label.top() >= row.top() && label.bottom() <= row.bottom(),
+                    "label overlaps a neighbouring row at width {width}: {label:?} outside {row:?}"
+                );
+            }
+        }
     }
 }

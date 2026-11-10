@@ -6144,6 +6144,7 @@ dependencies = [
  "hayro",
  "image",
  "libc",
+ "log",
  "lsp-types",
  "merman",
  "mimalloc",

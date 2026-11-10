@@ -399,7 +399,7 @@ impl Tree {
                     rows.push(Row {
                         hidden: (self.agent_file(&path)
                             || self.agent_folder(&path)
-                            || hidden(&path) && !self.template_branch(&path))
+                            || self.hidden_item(&path) && !self.template_branch(&path))
                             && !self.shown_index(&path),
                         index,
                         agent_rules: (kind == EntryKind::Directory)
@@ -488,6 +488,15 @@ impl Tree {
             })
     }
 
+    /// Underscores are a vault-note/folder convention, not a data-file flag.
+    fn hidden_item(&self, path: &str) -> bool {
+        if self.kinds.get(path) != Some(&EntryKind::Attachment) {
+            return hidden(path);
+        }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.starts_with('.') || parent(path).is_some_and(hidden)
+    }
+
     fn agent_file(&self, path: &str) -> bool {
         self.kinds.get(path) != Some(&EntryKind::Directory)
             && okilum_core::quick_open::is_agent_file(path)
@@ -541,7 +550,7 @@ impl Tree {
         !self.show_hidden
             && (self.agent_file(path)
                 || self.agent_folder(path)
-                || hidden(path) && !self.template_branch(path))
+                || self.hidden_item(path) && !self.template_branch(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -1603,6 +1612,46 @@ mod tests {
                 .unwrap()
                 .archived
         );
+    }
+
+    #[test]
+    fn json2787_underscore_data_files_are_visible_and_not_muted() {
+        use EntryKind::*;
+        let entries = [
+            entry("__test2.json", Attachment),
+            entry("_some1.txt", Attachment),
+            entry("test1.json", Attachment),
+            entry("some2.txt", Attachment),
+            entry("_private.md", Markdown),
+            entry("_System", Directory),
+            entry("_System/_nested.json", Attachment),
+            entry(".private.json", Attachment),
+        ];
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/synthetic"), &entries);
+        for name in ["__test2.json", "_some1.txt", "test1.json", "some2.txt"] {
+            let row = tree.rows.iter().find(|row| row.path == name).expect(name);
+            assert!(!row.hidden, "{name}");
+            assert!(!tree.hidden_by_preference(name));
+            assert!(tree.reveal(name).is_some());
+        }
+        for name in [
+            "_private.md",
+            "_System",
+            "_System/_nested.json",
+            ".private.json",
+        ] {
+            assert!(tree.hidden_by_preference(name), "{name}");
+        }
+        tree.set_show_hidden(true);
+        assert!(tree
+            .rows
+            .iter()
+            .any(|row| row.path == "_private.md" && row.hidden));
+        assert!(tree
+            .rows
+            .iter()
+            .any(|row| row.path == "__test2.json" && !row.hidden));
     }
 
     #[test]

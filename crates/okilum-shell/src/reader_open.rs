@@ -1376,6 +1376,11 @@ pub(crate) fn create_window(
         }
         let weak = reader.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
+            super::reader_diagnostics::window_close_requested(
+                window,
+                cx,
+                "native platform request",
+            );
             super::window_state::record_window(window, cx);
             weak.update(cx, |reader, cx| reader.prepare_window_close(window, cx))
                 .unwrap_or(true)

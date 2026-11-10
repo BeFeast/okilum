@@ -55,7 +55,7 @@ impl View {
         let input = language.and_then(|_| {
             reader
                 .source_input()
-                .or_else(|| code.as_ref().and_then(|code| code.read(cx).input()))
+                .or_else(|| code.as_ref().and_then(|code| code.read(cx).outline_input()))
         });
         view.update(cx, |this, cx| {
             if this.code != code || this.language != language {
@@ -63,9 +63,10 @@ impl View {
                 this.language = language;
                 this.code_observer = code.as_ref().filter(|_| language.is_some()).map(|code| {
                     cx.observe(code, |this, code, cx| {
-                        let input = code.read(cx).input();
+                        let preview_input = code.read(cx).input();
+                        let input = code.read(cx).outline_input();
                         // A visible writable editor owns its own text and observer.
-                        if this.input.is_none() || this.input == input {
+                        if this.input.is_none() || this.input == preview_input {
                             this.attach(input, true, cx);
                         }
                     })
