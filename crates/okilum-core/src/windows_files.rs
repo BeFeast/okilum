@@ -97,7 +97,7 @@ impl std::ops::Deref for Information {
         &self.metadata
     }
 }
-pub fn information(file: &File) -> Result<Information> {
+fn metadata(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // File owns the handle for the complete call; info has the required layout.
     ensure!(
@@ -105,8 +105,11 @@ pub fn information(file: &File) -> Result<Information> {
         "Read native file identity: {}",
         std::io::Error::last_os_error()
     );
+    Ok(info)
+}
+pub fn information(file: &File) -> Result<Information> {
     Ok(Information {
-        metadata: info,
+        metadata: metadata(file)?,
         identity: file_identity(file)?,
     })
 }
@@ -336,7 +339,8 @@ impl Directory {
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(path)
         })?;
-        plain(&information(&file)?, true, &file)?;
+        // Filesystem admission must precede FileIdInfo (exFAT may reject it).
+        plain(&metadata(&file)?, true, &file)?;
         Ok(file)
     }
     pub fn child(&self, name: &OsStr) -> Result<PathBuf> {
