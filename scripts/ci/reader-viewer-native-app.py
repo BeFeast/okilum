@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Mount every viewer in a real Reader on the native debug main stack."""
-import base64
 import hashlib
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import struct
 import zipfile
+import zlib
 
 
 def pdf():
@@ -34,16 +35,19 @@ def main():
         vault = directory / 'vault'
         vault.mkdir()
         text = {'data.json': '{"service":"gateway","rows":[1,2,3]}\n',
+                'array.json': '[{"id":"first","amount":2100},{"id":"second","amount":4870}]\n',
                 'data.csv': 'name,value\nfirst,1\nsecond,2\n',
                 'gateway.log': '2026-11-10T12:00:00Z INFO ready\n',
-                'scene.canvas': '{"nodes":[],"edges":[]}',
-                'drawing.excalidraw': '{"type":"excalidraw","version":2,"source":"fixture","elements":[],"appState":{},"files":{}}',
+                'scene.canvas': '{"nodes":[{"id":"first","type":"text","x":0,"y":0,"width":320,"height":200,"text":"Reader fixture"}],"edges":[]}',
+                'drawing.excalidraw': '{"type":"excalidraw","version":2,"source":"fixture","elements":[{"id":"first","type":"rectangle","x":0,"y":0,"width":100,"height":100,"strokeColor":"transparent","backgroundColor":"#0969e8","fillStyle":"solid","seed":42,"roughness":0}],"appState":{},"files":{}}',
                 'source.rs': 'fn main() { println!("Reader fixture"); }\n',
                 'note.md': '# Reader fixture\n\nA synthetic note.\n'}
         for name, value in text.items():
             (vault / name).write_bytes(value.encode())
         (vault / 'document.pdf').write_bytes(pdf())
-        (vault / 'image.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1kAAAAASUVORK5CYII='))
+        def chunk(tag, payload):
+            return struct.pack('>I', len(payload)) + tag + payload + struct.pack('>I', zlib.crc32(tag + payload) & 0xffffffff)
+        (vault / 'image.png').write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(b'\x00\xff\x00\x00\xff')) + chunk(b'IEND', b''))
         with zipfile.ZipFile(vault / 'archive.zip', 'w') as archive:
             archive.writestr('package.json', '{"name":"reader-fixture"}')
         names = list(text) + ['document.pdf', 'image.png', 'archive.zip']
@@ -56,7 +60,7 @@ def main():
                 output = log_path.read_text(encoding='utf-8')
                 for name in names:
                     assert f'file={name} mode=read mounted=Reader' in output, name
-                for name in ['data.json', 'data.csv', 'source.rs', 'note.md']:
+                for name in ['data.json', 'array.json', 'data.csv', 'source.rs', 'note.md']:
                     assert f'file={name} mode=edit mounted=Reader' in output, name
                 assert before == {n: hashlib.sha256((vault / n).read_bytes()).hexdigest() for n in names}
                 print(output, flush=True)

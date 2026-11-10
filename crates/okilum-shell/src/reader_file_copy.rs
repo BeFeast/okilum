@@ -18,7 +18,7 @@ fn read_text(root: &Path, rel: &str) -> anyhow::Result<String> {
         bytes.len() as u64 <= LIMIT,
         "File content exceeds the 64 MB copy limit"
     );
-    Ok(String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("File content is not UTF-8 text"))?)
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("File content is not UTF-8 text"))
 }
 
 fn copy(text: String, window: &mut Window, cx: &mut App) {

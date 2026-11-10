@@ -24,6 +24,7 @@ pub(crate) fn entry() -> bool {
                 let mut windows = Vec::new();
                 for name in [
                     "data.json",
+                    "array.json",
                     "data.csv",
                     "gateway.log",
                     "document.pdf",
