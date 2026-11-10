@@ -44,9 +44,6 @@ pub fn file_identity(file: &File) -> Result<FileIdentity> {
     })
 }
 impl Identity {
-    pub fn same_volume(&self, other: &Self) -> bool {
-        matches!((self.3, other.3), (Some(FileIdentity::Full {volume: a, ..}), Some(FileIdentity::Full {volume: b, ..})) if a == b)
-    }
     pub(super) fn legacy_candidate(&self, current: &Self) -> bool {
         // A possible collision fences admission; it never proves an upgrade.
         self.3.is_none()

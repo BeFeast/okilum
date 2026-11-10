@@ -486,10 +486,15 @@ impl Directory {
             bytes == expected,
             "The note changed; refresh the rename preview"
         );
+        // The pinned directory already passed the resident-cloud tag policy.
+        // Do not apply the stricter authority-root reparse policy to a volume
+        // comparison; compare the complete native volume serials directly.
         ensure!(
-            destination
-                .filesystem_identity()?
-                .same_volume(&self.filesystem_identity()?),
+            matches!(
+                (identity(&destination.information()?), identity(&info)),
+                (Identity::Full { volume: target, .. }, Identity::Full { volume: source, .. })
+                    if target == source
+            ),
             "Cross-volume moves are not supported"
         );
         move_no_replace(&source, &target)?;
