@@ -532,11 +532,19 @@ impl State {
                         .sources
                         .get(&path)
                         .is_some_and(|previous| previous.bytes == source.bytes);
+                    let stamp_changed = self
+                        .snapshot
+                        .sources
+                        .get(&path)
+                        .is_none_or(|previous| previous.stamp != source.stamp);
                     self.snapshot.sources.insert(path.clone(), source.clone());
                     if unchanged && !topology_changed && available_before {
                         // Read and verify the bytes, never trust watcher timing or
                         // a timestamp. Own-save echoes need no search/graph work.
                         affected.remove(&path);
+                        if stamp_changed {
+                            changed.insert(path);
+                        }
                         continue;
                     }
                     std::sync::Arc::make_mut(&mut self.candidates).update(
@@ -905,6 +913,21 @@ mod tests {
                 .same_metadata(&revision));
             assert!(delta.len() < 16 * 1024);
         }
+        let path = state.vault.root.join("A.md");
+        let previous = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(previous + std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
+        let touched = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+        assert!(touched.affected.is_empty(), "identical bytes never reindex");
+        assert!(
+            touched.changed.contains("A.md"),
+            "mtime refreshes Now/project recency"
+        );
+        let echo = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+        assert!(echo.changed.is_empty() && echo.affected.is_empty());
         compare(&state);
     }
 

@@ -51,7 +51,7 @@ pub(crate) struct ShapedLineCache {
     shaper: Arc<dyn PlatformTextSystem>,
     hasher: RandomState,
     lines: Mutex<Lines>,
-    large: Mutex<Option<large::LargeLine>>,
+    large: Mutex<large::LargeLines>,
 }
 
 #[derive(Default)]
@@ -90,7 +90,7 @@ impl ShapedLineCache {
         Self {
             shaper,
             hasher: RandomState::new(),
-            large: Mutex::new(None),
+            large: Mutex::new(Default::default()),
             lines: Mutex::new(Lines {
                 max_bytes,
                 ..Lines::default()
@@ -136,7 +136,7 @@ impl ShapedLineCache {
         lines.order.clear();
         lines.bytes = 0;
         drop(lines);
-        let retired = self.large.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let retired = std::mem::take(&mut *self.large.lock().unwrap_or_else(|e| e.into_inner()));
         drop(retired);
     }
 
@@ -309,14 +309,18 @@ impl PlatformTextSystem for ShapedLineCache {
     }
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         let _timing = text_diagnostics::time(Work::LineLayout);
-        if large::eligible(text, runs) {
-            let previous = self.large.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some(previous) = previous
-                .as_ref()
-                .filter(|p| p.matches(text, font_size, runs))
-            {
-                return previous.copy_layout();
+        if text.len() >= large::CACHE_MIN_TEXT {
+            let eligible = large::eligible(text, runs);
+            let mut lines = self.large.lock().unwrap_or_else(|e| e.into_inner());
+            if !text.is_ascii() {
+                lines.retire_incremental_for(text);
             }
+            if let Some(exact) = lines.exact(text, font_size, runs) {
+                drop(lines);
+                return exact.copy_layout();
+            }
+            let previous = eligible.then(|| lines.candidate(font_size, runs)).flatten();
+            drop(lines);
             let incremental = previous
                 .as_ref()
                 .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()));
@@ -326,19 +330,11 @@ impl PlatformTextSystem for ShapedLineCache {
                 self.shaper.layout_line(text, font_size, runs)
             });
             let next = large::LargeLine::new(text, font_size, runs, &layout, verified_order);
-            let retired = std::mem::replace(
-                &mut *self.large.lock().unwrap_or_else(|e| e.into_inner()),
-                next,
-            );
-            drop(retired);
+            self.large
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(next);
             return layout;
-        }
-        if text.len() >= large::MIN_TEXT {
-            // A long source line may just have acquired RTL, combining marks,
-            // emoji or multiple font runs. Retire its ASCII revision before
-            // taking the complete native shaping path.
-            let retired = self.large.lock().unwrap_or_else(|e| e.into_inner()).take();
-            drop(retired);
         }
         let hash = self.key_hash(text, font_size, runs);
         let cached = self
@@ -582,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn edit2803_incremental_ascii_geometry_matches_the_real_platform_shaper() {
+    fn edit2803_incremental_ascii_preserves_native_glyphs_and_local_geometry() {
         let shaper = platform_shaper();
         let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
         let mono = cache
@@ -592,25 +588,62 @@ mod tests {
                 FontStyle::Normal,
             ))
             .unwrap();
-        let mut text = "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(2000);
-        let runs = |text: &str| {
-            vec![FontRun {
-                len: text.len(),
-                font_id: mono,
-            }]
-        };
-        cache.layout_line(&text, px(16.), &runs(&text));
-        for at in [14, text.len() / 2, text.len() - 14] {
-            text.insert(at, 'x');
-            let actual = cache.layout_line(&text, px(16.), &runs(&text));
-            let direct = shaper.layout_line(&text, px(16.), &runs(&text));
-            assert!((actual.width - direct.width).abs() < px(1.));
-            let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
-            let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(&b) {
-                assert_eq!((a.index, a.id), (b.index, b.id));
-                assert!((a.position.x - b.position.x).abs() < px(1.));
+        for count in [2000, 60000] {
+            let mut text = "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(count);
+            let runs = |text: &str| {
+                vec![FontRun {
+                    len: text.len(),
+                    font_id: mono,
+                }]
+            };
+            cache.layout_line(&text, px(16.), &runs(&text));
+            for (edit, at) in [14, text.len() / 2, text.len() - 14]
+                .into_iter()
+                .enumerate()
+            {
+                text.insert(at, 'x');
+                let actual = cache.layout_line(&text, px(16.), &runs(&text));
+                let direct = shaper.layout_line(&text, px(16.), &runs(&text));
+                // Whole-line coordinates exceed 2^24px for this fixture: a
+                // native f32 step is already 2px. Each edit adds/subtracts two
+                // such coordinates; verify that numerical error stays bounded,
+                // then compare local viewport geometry independently below.
+                let width = f32::from(direct.width);
+                let step = px((width.next_up() - width).max(1.));
+                let tolerance = if count == 2000 {
+                    px(1.)
+                } else {
+                    step * (2 * (edit + 1)) as f32
+                };
+                assert!(
+                    (actual.width - direct.width).abs() <= tolerance,
+                    "width actual={:?} direct={:?} tolerance={tolerance:?}",
+                    actual.width,
+                    direct.width
+                );
+                let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
+                let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
+                assert_eq!(a.len(), b.len());
+                let actual_origin = actual.x_for_index(at);
+                let direct_origin = direct.x_for_index(at);
+                for (a, b) in a.iter().zip(&b) {
+                    assert_eq!((a.index, a.id), (b.index, b.id));
+                    if (at..at + 64).contains(&a.index) {
+                        assert!(
+                            ((a.position.x - actual_origin) - (b.position.x - direct_origin)).abs()
+                                <= step * 2.,
+                            "local geometry at byte {}",
+                            a.index
+                        );
+                    }
+                    assert!(
+                        (a.position.x - b.position.x).abs() <= tolerance,
+                        "glyph {} actual={:?} direct={:?} tolerance={tolerance:?}",
+                        a.index,
+                        a.position,
+                        b.position
+                    );
+                }
             }
         }
     }
@@ -641,7 +674,7 @@ mod tests {
             {
                 assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
             }
-            assert!(cache.large.lock().unwrap().as_ref().unwrap().bytes <= large::MAX_BYTES);
+            assert!(cache.large.lock().unwrap().bytes <= large::MAX_BYTES);
         }
         for replacement in ["short", "a longer replacement", "gamma"] {
             text.replace_range(400..405, replacement);
@@ -656,10 +689,42 @@ mod tests {
             }
         }
         cache.clear();
-        assert!(cache.large.lock().unwrap().is_none());
+        assert!(cache.large.lock().unwrap().entries.is_empty());
         // Other scripts retain their complete contextual platform shaping.
         let rtl = format!("{}שלום", original);
         assert!(!large::eligible(&rtl, &run(&rtl)));
+    }
+
+    #[test]
+    fn edit2803_multiple_large_rows_survive_frames_that_do_no_shaping() {
+        let shaper = Arc::new(CountingShaper::default());
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let lines = [
+            "alpha ".repeat(32 * 1024),
+            "beta ".repeat(32 * 1024),
+            "слово ".repeat(16 * 1024),
+            "word\t".repeat(16 * 1024),
+            "x".repeat(48 * 1024),
+        ];
+        for line in &lines {
+            cache.layout_line(line, px(16.), &run(line));
+        }
+        for n in 0..4 {
+            // A retained popup/caret frame bypasses GPUI's per-frame cache.
+            // Editing an unrelated short row must still retain every long row.
+            let short = format!("short edit {n}");
+            cache.layout_line(&short, px(16.), &run(&short));
+            let before = shaper.1.load(Ordering::Relaxed);
+            for line in &lines {
+                cache.layout_line(line, px(16.), &run(line));
+            }
+            assert_eq!(
+                shaper.1.load(Ordering::Relaxed),
+                before,
+                "an unchanged large row must not reach the native shaper"
+            );
+            assert!(cache.large.lock().unwrap().bytes <= large::MAX_BYTES);
+        }
     }
 
     #[test]
@@ -676,7 +741,7 @@ mod tests {
         };
         let mut text = "alpha beta gamma ".repeat(128 * 1024);
         cache.layout_line(&text, px(16.), &runs(&text));
-        assert!(cache.large.lock().unwrap().is_some());
+        assert!(!cache.large.lock().unwrap().entries.is_empty());
         let at = text.len() / 2;
         for non_ascii in ["שלום", "русский", "\u{202e}", "👩\u{200d}💻", "e\u{301}"]
         {
@@ -686,7 +751,13 @@ mod tests {
         }
         text.insert_str(at, "שלום ");
         let actual = cache.layout_line(&text, px(16.), &runs(&text));
-        assert!(cache.large.lock().unwrap().is_none());
+        assert!(cache
+            .large
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|e| !e.incremental));
         let direct = shaper.layout_line(&text, px(16.), &runs(&text));
         assert_eq!(
             (actual.len, actual.width, actual.ascent, actual.descent),

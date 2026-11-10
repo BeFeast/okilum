@@ -10,6 +10,31 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Typing coalesces canonical saves after one second idle, with a two-second ceiling
+for continuous input. Recovery keeps its separate 300 ms pause. Focus loss
+immediately hands pending recovery to a worker and requests canonical publication;
+conflict, deletion, a move or IME may defer publication, but never that recovery
+request. A request during an in-flight save follows its completion without another
+idle delay, including failure/conflict outcomes. An unfocused IME commit resumes
+publication. Quit/navigation retain synchronous latest-revision protection. File
+publication remains serialized, revision-checked and atomic for external readers.
+
+Large unwrapped editor layouts retain exact native shapes across popup/caret
+frames in a separate 160 MiB cache (at most 128 entries), shared by all scripts.
+Only printable ASCII lines use incremental native word-context shaping; any
+Unicode insertion retires the matching ASCII edit state and uses a full native
+reshape. A changed word context above 64 KiB without a space also takes that full
+path (for example a minified numeric array or base64 value). This remains a typing
+latency limitation, separate from exact reuse of unchanged rows and menu frames.
+The native f32 geometry has multi-pixel resolution past 2^24 px: tests preserve
+native glyph identities, verify local geometry, and bound accumulated coordinate
+rounding separately from exact Unicode fallback.
+
+Latency diagnostics observe a second frame callback after the mutation frame's
+draw, rate-limit detailed observations above 32 ms to one per second, and record
+periodic aggregates. They include process-wide Reader render counts and contain
+no authored text; they measure native submission, not physical display latency.
+
 Incoming changes to an open note (#2486) are observed through a shallow parent
 watch independently of vault indexing, including Syncthing's rename over the
 original file. Clean Source and Live Preview buffers reload in place while

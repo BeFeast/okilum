@@ -5,8 +5,10 @@ mod code_comforts;
 mod code_operations;
 mod context_menu;
 mod external_edit;
+mod focus_save;
 pub(crate) mod format;
 mod ime_guard;
+mod latency;
 mod link_complete;
 mod lists;
 mod live_preview;
@@ -200,6 +202,8 @@ pub(super) struct Editing {
     /// The text an autosave is writing on a worker (#1353).
     autosaving: Option<DraftText>,
     autosave_schedule: AutosaveSchedule,
+    focus_save_pending: bool,
+    focus_save_requests: u64,
     /// A disk refresh came while that autosave was writing; it runs once the
     /// save is back (#1376).
     refresh_deferred: bool,
@@ -515,6 +519,8 @@ impl Editing {
             save_pending,
             autosaving,
             autosave_schedule,
+            focus_save_pending,
+            focus_save_requests,
             refresh_deferred,
             kept_preference,
             saves,
@@ -554,6 +560,8 @@ impl Editing {
             save_pending,
             autosaving,
             autosave_schedule,
+            focus_save_pending,
+            focus_save_requests,
             refresh_deferred,
             kept_preference,
             saves,
@@ -724,8 +732,11 @@ impl Reader {
                 ));
             editing.draft_stamp = snapshot.stamp;
         }
+        editing.focus_save_pending = true;
+        editing.focus_save_requests = editing.focus_save_requests.wrapping_add(1);
         let input = editing.input.entity_id();
         let epoch = editing.recovery_epoch;
+        self.flush_focus_recovery(cx);
         self.autosave(input, epoch, window, cx);
     }
 
@@ -1006,6 +1017,9 @@ impl Reader {
             {
                 this.refresh_link_complete(window, cx);
             }
+            if this.focus_save_ready(window, cx) {
+                this.save_source_in_background(window, cx);
+            }
         });
         let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {
             #[cfg(test)]
@@ -1017,17 +1031,15 @@ impl Reader {
                     let stamp = input.read(cx).source_stamp();
                     let bytes = input.read(cx).text().len();
                     let handle = this.reader_window;
-                    trace.event("source_mutation", serde_json::json!({
-                        "bytes":bytes, "document":stamp.document, "generation":stamp.generation
-                    }));
                     cx.spawn(async move |_, cx| {
                         let _ = handle.update(cx, |_, window, _| {
-                            window.on_next_frame(move |_, _| {
-                                trace.event("source_mutation_frame", serde_json::json!({
-                                    "duration_ms":started.elapsed().as_secs_f64()*1000.,
-                                    "document":stamp.document, "generation":stamp.generation,
-                                    "reader_renders": SOURCE_READER_RENDERS.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(renders)
-                                }));
+                            // The first callback is before the draw. The second
+                            // observes completion of that draw, including stalls.
+                            window.on_next_frame(move |window, _| {
+                                window.on_next_frame(move |_, _| {
+                                    latency::record(&trace, stamp, bytes, started.elapsed(),
+                                        SOURCE_READER_RENDERS.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(renders));
+                                });
                             });
                         });
                     }).detach();
@@ -1385,6 +1397,8 @@ impl Reader {
             save_pending: false,
             autosaving: None,
             autosave_schedule: Default::default(),
+            focus_save_pending: false,
+            focus_save_requests: 0,
             refresh_deferred: false,
             kept_preference: None,
             saves: 0,
@@ -2055,8 +2069,10 @@ impl Reader {
             return;
         }
         if !editing.store.has_pending_revision() {
+            editing.focus_save_pending = false;
             return;
         }
+        editing.focus_save_pending = false;
         editing.autosave_schedule.deadline = None;
         let text = editing.store.snapshot();
         #[cfg(test)]
@@ -2143,6 +2159,7 @@ impl Reader {
             return;
         }
         editing.autosaving = None;
+        let focus_followup = std::mem::take(&mut editing.focus_save_pending);
         if std::mem::take(&mut editing.refresh_deferred) {
             self.refresh_after_autosave(cx);
         }
@@ -2223,6 +2240,9 @@ impl Reader {
                 diagnostic_error!("Autosave failed: {error:#}");
                 self.link_notice = Some(file_access_notice(&error).into());
             }
+        }
+        if focus_followup {
+            self.queue_focus_save_followup(input_id, cx);
         }
         self.describe_source_conflict(cx);
         cx.notify();
@@ -7241,6 +7261,100 @@ mod autosave_tests {
             on_disk(&f),
             "baoriginal",
             "the edit made during the save is saved"
+        );
+    }
+
+    #[gpui::test]
+    fn edit2803_focus_loss_during_save_follows_up_without_an_idle_delay(cx: &mut TestAppContext) {
+        for outcome in 0..3 {
+            let (f, visual) = open(cx, "original");
+            type_at_start(&f, visual, "a");
+            let input_id = input(&f, visual).entity_id();
+            let saves = f.reader.update(visual, |r, _| {
+                let e = r.editing.as_mut().unwrap();
+                e.autosaving = Some("aoriginal".into());
+                e.saves
+            });
+            type_at_start(&f, visual, "b");
+            f.reader.update_in(visual, |r, window, cx| {
+                r.save_source_in_background(window, cx)
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                on_disk(&f),
+                "original",
+                "the in-flight save remains serialized"
+            );
+            let result = match outcome {
+                0 => {
+                    std::fs::write(&f.file, "aoriginal").unwrap();
+                    Ok(Save::Saved)
+                }
+                1 => Err(anyhow::anyhow!("injected failed in-flight save")),
+                _ => {
+                    std::fs::write(&f.file, "remote").unwrap();
+                    Ok(Save::Conflict)
+                }
+            };
+            f.reader.update(visual, |r, cx| {
+                r.autosaved(input_id, saves, "aoriginal".into(), result, None, cx)
+            });
+            visual.run_until_parked();
+            if outcome < 2 {
+                assert_eq!(
+                    on_disk(&f),
+                    "baoriginal",
+                    "focus request follows Saved/Err immediately"
+                );
+            } else {
+                assert_eq!(
+                    on_disk(&f),
+                    "remote",
+                    "a conflict never overwrites remote bytes"
+                );
+            }
+            f.reader.update(visual, |r, _| r.editing = None);
+            visual.run_until_parked();
+            let recovered =
+                FileEditor::open(&f.file, &f._temp.path().join("state/editor-drafts")).unwrap();
+            assert_eq!(
+                recovered.text(),
+                "baoriginal",
+                "latest focus-loss text is durable for every outcome"
+            );
+            drop(recovered);
+            visual.update(|window, _| window.remove_window());
+        }
+    }
+
+    #[gpui::test]
+    fn edit2803_unfocused_ime_commit_saves_without_an_idle_delay(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        let entity = input(&f, visual);
+        f.reader.update_in(visual, |_, window, cx| {
+            entity.focus_handle(cx).focus(window, cx);
+            entity.update(cx, |i, cx| {
+                i.replace_and_mark_text_in_range(Some(0..0), "か", Some(1..1), window, cx)
+            });
+        });
+        visual.run_until_parked();
+        f.reader.update_in(visual, |r, window, cx| {
+            r.tree_focus.focus(window, cx);
+            r.save_source_in_background(window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(on_disk(&f), "original", "composition is not published");
+        f.reader.update_in(visual, |_, window, cx| {
+            entity.update(cx, |i, cx| {
+                let marked = i.marked_text_range(window, cx);
+                i.replace_text_in_range(marked, "漢", window, cx)
+            });
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            on_disk(&f),
+            "漢original",
+            "unfocused commit publishes without a timer advance"
         );
     }
 
