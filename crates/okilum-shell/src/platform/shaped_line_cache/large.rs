@@ -30,17 +30,20 @@ impl LargeLine {
         font_size: Pixels,
         runs: &[FontRun],
         layout: &LineLayout,
+        verified_order: bool,
     ) -> Option<Self> {
         let bytes = entry_bytes(text, runs, layout);
         if bytes > MAX_BYTES || layout.runs.iter().any(|run| run.font_id != runs[0].font_id) {
             return None;
         }
-        let mut previous = None;
-        for glyph in layout.runs.iter().flat_map(|run| &run.glyphs) {
-            if previous.is_some_and(|index| index > glyph.index) {
-                return None;
+        if !verified_order {
+            let mut previous = None;
+            for glyph in layout.runs.iter().flat_map(|run| &run.glyphs) {
+                if previous.is_some_and(|index| index > glyph.index) {
+                    return None;
+                }
+                previous = Some(glyph.index);
             }
-            previous = Some(glyph.index);
         }
         Some(Self {
             text: text.into(),
@@ -50,6 +53,14 @@ impl LargeLine {
             #[cfg(test)]
             bytes,
         })
+    }
+
+    pub(super) fn matches(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> bool {
+        self.font_size == font_size && self.font == runs[0].font_id && self.text.as_ref() == text
+    }
+
+    pub(super) fn copy_layout(&self) -> LineLayout {
+        super::copy_layout(&self.layout)
     }
 
     pub(super) fn reshape(
@@ -120,14 +131,9 @@ impl LargeLine {
                     .map(|r| r.glyphs.len())
                     .sum::<usize>(),
         );
-        for glyph in self
-            .layout
-            .runs
-            .iter()
-            .flat_map(|run| &run.glyphs)
-            .filter(|g| g.index < left)
-        {
-            glyphs.push(glyph.clone());
+        for run in &self.layout.runs {
+            let end = run.glyphs.partition_point(|glyph| glyph.index < left);
+            glyphs.extend_from_slice(&run.glyphs[..end]);
         }
         for glyph in middle_layout.runs.iter().flat_map(|run| &run.glyphs) {
             let mut glyph = glyph.clone();
@@ -135,17 +141,14 @@ impl LargeLine {
             glyph.position.x += x_left;
             glyphs.push(glyph);
         }
-        for glyph in self
-            .layout
-            .runs
-            .iter()
-            .flat_map(|run| &run.glyphs)
-            .filter(|g| g.index >= right)
-        {
-            let mut glyph = glyph.clone();
-            glyph.index = new_right + (glyph.index - right);
-            glyph.position.x += dx;
-            glyphs.push(glyph);
+        for run in &self.layout.runs {
+            let start = run.glyphs.partition_point(|glyph| glyph.index < right);
+            let appended = glyphs.len();
+            glyphs.extend_from_slice(&run.glyphs[start..]);
+            for glyph in &mut glyphs[appended..] {
+                glyph.index = new_right + (glyph.index - right);
+                glyph.position.x += dx;
+            }
         }
         Some(LineLayout {
             font_size,

@@ -311,14 +311,21 @@ impl PlatformTextSystem for ShapedLineCache {
         let _timing = text_diagnostics::time(Work::LineLayout);
         if large::eligible(text, runs) {
             let previous = self.large.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let layout = previous
+            if let Some(previous) = previous
                 .as_ref()
-                .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()))
-                .unwrap_or_else(|| {
-                    let _timing = text_diagnostics::time(Work::PlatformShape);
-                    self.shaper.layout_line(text, font_size, runs)
-                });
-            let next = large::LargeLine::new(text, font_size, runs, &layout);
+                .filter(|p| p.matches(text, font_size, runs))
+            {
+                return previous.copy_layout();
+            }
+            let incremental = previous
+                .as_ref()
+                .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()));
+            let verified_order = incremental.is_some();
+            let layout = incremental.unwrap_or_else(|| {
+                let _timing = text_diagnostics::time(Work::PlatformShape);
+                self.shaper.layout_line(text, font_size, runs)
+            });
+            let next = large::LargeLine::new(text, font_size, runs, &layout, verified_order);
             let retired = std::mem::replace(
                 &mut *self.large.lock().unwrap_or_else(|e| e.into_inner()),
                 next,
@@ -628,6 +635,18 @@ mod tests {
                 assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
             }
             assert!(cache.large.lock().unwrap().as_ref().unwrap().bytes <= large::MAX_BYTES);
+        }
+        for replacement in ["short", "a longer replacement", "gamma"] {
+            text.replace_range(400..405, replacement);
+            let bytes = shaper.1.load(Ordering::Relaxed);
+            let actual = cache.layout_line(&text, px(16.), &run(&text));
+            assert!(shaper.1.load(Ordering::Relaxed) - bytes < 128);
+            let direct = CountingShaper::default().layout_line(&text, px(16.), &run(&text));
+            assert_eq!(actual.width, direct.width);
+            assert_eq!(actual.runs[0].glyphs.len(), direct.runs[0].glyphs.len());
+            for (a, b) in actual.runs[0].glyphs.iter().zip(&direct.runs[0].glyphs) {
+                assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
+            }
         }
         cache.clear();
         assert!(cache.large.lock().unwrap().is_none());
