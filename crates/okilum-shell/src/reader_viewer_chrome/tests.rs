@@ -323,3 +323,29 @@ fn open_with_button_opens_and_dismisses_the_same_header_menu(cx: &mut TestAppCon
     visual.run_until_parked();
     assert_eq!(visual.debug_bounds("viewer-open-with").unwrap(), button);
 }
+
+#[gpui::test]
+fn header_observes_viewer_notifications_without_a_vault_event(cx: &mut TestAppContext) {
+    struct Observer {
+        _subscription: Subscription,
+    }
+    let (reader, visual, _temp) = fixture(cx, "source.rs");
+    let code = reader.read_with(visual, |r, _| {
+        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+    let receipt = notifications.clone();
+    let _observer = visual.update(|_, cx| {
+        cx.new(|cx| Observer {
+            _subscription: cx.observe(&reader, move |_, _, _| receipt.set(receipt.get() + 1)),
+        })
+    });
+    visual.run_until_parked();
+    notifications.set(0);
+    code.update(visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    assert!(
+        notifications.get() > 0,
+        "viewer state invalidates the Reader-owned header"
+    );
+}
