@@ -1,61 +1,8 @@
-diff --git a/crates/base/src/input/editor/search.rs b/crates/base/src/input/editor/search.rs
---- a/crates/base/src/input/editor/search.rs
-+++ b/crates/base/src/input/editor/search.rs
-@@ -19,6 +19,8 @@
- #[derive(Debug, Clone)]
- pub struct SearchSession {
-     pub open: bool,
-+    /// The host paints Find outside the toolkit search strip.
-+    pub external_presentation: bool,
-     pub replace_mode: bool,
-     pub case_insensitive: bool,
-     pub query: String,
-@@ -31,6 +33,7 @@
-     fn default() -> Self {
-         Self {
-             open: false,
-+            external_presentation: false,
-             replace_mode: false,
-             case_insensitive: true,
-             query: String::new(),
-@@ -48,6 +51,7 @@
-     }
- 
-     pub(crate) fn close(&mut self) {
-+        self.external_presentation = false;
-         self.open = false;
-     }
- 
-@@ -92,6 +96,16 @@
-             self.search_session.matcher.update_cursor_by_offset(anchor);
-         }
-         cx.notify();
-+    }
-+
-+    /// Keep matches and stepping available while the host owns the Find UI.
-+    /// This changes presentation only; it never edits the source or caret.
-+    /// `close_search` ends both internal and external presentations.
-+    pub fn set_external_search_presentation(&mut self, external: bool, cx: &mut Context<Self>) {
-+        if self.search_session.external_presentation != external {
-+            self.search_session.external_presentation = external;
-+            cx.notify();
-+        }
-     }
- 
-     pub fn search_session(&self) -> &SearchSession {
-@@ -152,7 +166,7 @@
-     }
- 
-     pub fn close_search(&mut self, cx: &mut Context<Self>) {
--        if self.search_session.open {
-+        if self.search_session.open || self.search_session.external_presentation {
-             self.search_return = Some((self.source_stamp(), self.selected_range()));
-         }
-         self.search_session.close();
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 854fc4db..80cab895 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -1052,7 +1052,7 @@
+@@ -1052,7 +1052,7 @@ impl<M: InputModeKind> TextElement<M> {
          cx: &mut App,
      ) -> Vec<(Path<Pixels>, bool)> {
          let state = self.state.read(cx);
@@ -64,10 +11,117 @@ diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/
              return vec![];
          }
          let ranges = state.search_session.matcher.matched_ranges();
+@@ -3466,6 +3466,50 @@ fn split_runs_by_bg_segments(
+ mod tests {
+     use super::*;
+
++    #[gpui::test]
++    fn external_search_paints_real_match_paths_without_an_open_strip(cx: &mut gpui::TestAppContext) {
++        use gpui::{Context, Render, VisualTestContext};
++        use crate::input::EditorState;
++        struct Fixture(Entity<EditorState>);
++        impl Render for Fixture {
++            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++                gpui::div().size_full().child(self.0.clone())
++            }
++        }
++        let mut input = None;
++        let handle = cx.update(|cx| {
++            cx.set_global(crate::theme::Theme::default());
++            crate::input::init(cx);
++            cx.open_window(Default::default(), |window, cx| {
++                let state = cx.new(|cx| {
++                    let mut state = EditorState::new(window, cx).language("text");
++                    state.set_value("target one target two", window, cx);
++                    state.set_search_query("target", false, cx);
++                    state
++                });
++                input = Some(state.clone());
++                cx.new(|_| Fixture(state))
++            }).unwrap()
++        });
++        let input = input.unwrap();
++        let mut visual = VisualTestContext::from_window(handle.into(), cx);
++        visual.run_until_parked();
++        for (external, expected) in [(false, 0), (true, 2), (false, 0)] {
++            input.update(&mut visual, |state, cx| state.set_external_search_presentation(external, cx));
++            visual.run_until_parked();
++            visual.update(|window, cx| {
++                window.draw(cx).clear(cx);
++                let state = input.read(cx);
++                assert!(!state.search_session().open, "host never opens the toolkit strip");
++                assert_eq!(state.search_session().matcher.matched_ranges().len(), 2, "positive control: actual query matches");
++                let layout = state.last_layout.as_ref().expect("real editor layout").clone();
++                let bounds = state.input_bounds;
++                let element = TextElement::new(input.clone());
++                assert_eq!(element.layout_search_matches(&layout, &bounds, cx).len(), expected);
++            });
++        }
++    }
++
+     #[test]
+     fn presentation_anchor_tail_is_bounded_and_retires_on_adoption() {
+         let (raw, tail) = anchored_scroll_y(px(0.), px(-192.), px(600.), px(624.));
+diff --git a/crates/base/src/input/editor/search.rs b/crates/base/src/input/editor/search.rs
+index 03c117e0..65035e34 100644
+--- a/crates/base/src/input/editor/search.rs
++++ b/crates/base/src/input/editor/search.rs
+@@ -19,6 +19,8 @@ pub struct SearchMatcher {
+ #[derive(Debug, Clone)]
+ pub struct SearchSession {
+     pub open: bool,
++    /// The host paints Find outside the toolkit search strip.
++    pub external_presentation: bool,
+     pub replace_mode: bool,
+     pub case_insensitive: bool,
+     pub query: String,
+@@ -31,6 +33,7 @@ impl Default for SearchSession {
+     fn default() -> Self {
+         Self {
+             open: false,
++            external_presentation: false,
+             replace_mode: false,
+             case_insensitive: true,
+             query: String::new(),
+@@ -48,6 +51,7 @@ impl SearchSession {
+     }
+
+     pub(crate) fn close(&mut self) {
++        self.external_presentation = false;
+         self.open = false;
+     }
+
+@@ -94,6 +98,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify();
+     }
+
++    /// Keep matches and stepping available while the host owns the Find UI.
++    /// This changes presentation only; it never edits the source or caret.
++    /// `close_search` ends both internal and external presentations.
++    pub fn set_external_search_presentation(&mut self, external: bool, cx: &mut Context<Self>) {
++        if self.search_session.external_presentation != external {
++            self.search_session.external_presentation = external;
++            cx.notify();
++        }
++    }
++
+     pub fn search_session(&self) -> &SearchSession {
+         &self.search_session
+     }
+@@ -152,7 +166,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+
+     pub fn close_search(&mut self, cx: &mut Context<Self>) {
+-        if self.search_session.open {
++        if self.search_session.open || self.search_session.external_presentation {
+             self.search_return = Some((self.source_stamp(), self.selected_range()));
+         }
+         self.search_session.close();
 diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/overlay.rs
+index d1a45fef..cdad152d 100644
 --- a/crates/component/src/input/overlay.rs
 +++ b/crates/component/src/input/overlay.rs
-@@ -312,7 +312,7 @@
+@@ -312,7 +312,7 @@ impl<M: OverlayMode> InputOverlayHost<M> {
              let state = state.read(cx);
              let search = state.search_session();
              (
@@ -76,7 +130,7 @@ diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/
                  search.replace_mode,
                  state.search_activation_revision(),
                  search.clone(),
-@@ -356,7 +356,7 @@
+@@ -356,7 +356,7 @@ impl<M: OverlayMode> InputOverlayHost<M> {
                              window,
                              cx,
                          );
@@ -85,7 +139,7 @@ diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/
                          panel.hide_with_focus(!cfg!(test), window, cx);
                      }
                  });
-@@ -395,7 +395,7 @@
+@@ -395,7 +395,7 @@ pub(super) fn render_overlays<M: OverlayMode>(
      M::install_action_handler(state, cx);
      let has_overlay = {
          let state = state.read(cx);
@@ -94,3 +148,48 @@ diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/
              || M::lsp_snapshot(state, cx).is_some_and(|lsp| lsp.has_overlay())
      };
      if !has_overlay {
+@@ -430,7 +430,7 @@ pub(super) fn render_overlays<M: OverlayMode>(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use gpui::{AppContext as _, Render, SharedString, div};
++    use gpui::{AppContext as _, Focusable as _, Render, SharedString, div};
+     use gpui_base::input::CodeActionItem;
+     use gpui_base::input::DiagnosticEntry;
+     use lsp_types::{CodeAction, CompletionItem, Hover, HoverContents, MarkedString};
+@@ -449,6 +449,35 @@ mod tests {
+         }
+     }
+
++    #[gpui::test]
++    fn external_search_keeps_its_session_and_host_focus_when_lsp_mounts(cx: &mut gpui::TestAppContext) {
++        cx.update(crate::init);
++        let (probe, visual) = cx.add_window_view(|window, cx| OverlayProbe {
++            state: cx.new(|cx| crate::input::EditorState::new(window, cx).language("sql").searchable(true)),
++        });
++        let state = probe.read_with(visual, |probe, _| probe.state.clone());
++        let query = visual.update(|window, cx| cx.new(|cx| crate::input::InputState::new(window, cx)));
++        visual.update(|window, cx| {
++            state.update(cx, |state, cx| {
++                state.set_value("foo bar foo", window, cx);
++                state.set_search_query("foo", false, cx);
++                state.set_external_search_presentation(true, cx);
++                state.present_completion_items(0, "f", vec![CompletionItem { label: "foo".into(), ..Default::default() }], cx);
++            });
++            query.update(cx, |query, cx| query.focus(window, cx));
++            let mut host = InputOverlayHost::new(state.clone(), window, cx);
++            let overlays = host.sync(&state, window, cx);
++            assert!(overlays.search.is_none());
++            assert_eq!(overlays.floating.len(), 1, "positive control: the LSP overlay is actually mounted");
++        });
++        visual.run_until_parked();
++        visual.update(|window, cx| {
++            assert!(state.read(cx).search_session().external_presentation);
++            assert_eq!(state.read(cx).search_session().matcher.matched_ranges().len(), 2);
++            assert!(query.read(cx).focus_handle(cx).is_focused(window));
++        });
++    }
++
+     /// Asking for search again, while it is already open, must re-select the query.
+     ///
+     /// Re-invoking search leaves every other part of the session identical, so a

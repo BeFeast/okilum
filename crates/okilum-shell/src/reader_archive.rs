@@ -65,16 +65,26 @@ pub(crate) struct ArchivePreview {
     extracting: bool,
     scroll: UniformListScrollHandle,
     entry_split: reader_split::Split,
+    list_focus: FocusHandle,
+    entry_focus: FocusHandle,
     _filter: Subscription,
 }
 
 impl ArchivePreview {
     pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter entries…"));
-        let subscription = cx.subscribe(&filter, |this, _, _: &InputEvent, cx| {
-            this.refresh_rows(cx);
-            cx.notify();
-        });
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find in entries"));
+        let subscription = cx.subscribe_in(
+            &filter,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                match event {
+                    InputEvent::Change => this.refresh_rows(cx),
+                    InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
+                    _ => {}
+                }
+                cx.notify();
+            },
+        );
         let source = path.clone();
         let task = cx
             .background_executor()
@@ -112,7 +122,92 @@ impl ArchivePreview {
                 ENTRY_MIN_HEIGHT,
                 ROW_HEIGHT * LIST_MIN_ROWS,
             ),
+            list_focus: cx.focus_handle(),
+            entry_focus: cx.focus_handle(),
             _filter: subscription,
+        }
+    }
+
+    fn status_line(&self) -> reader_status_line::StatusLine {
+        let text = self
+            .listing
+            .as_ref()
+            .map(|listing| {
+                format!(
+                    "{} files, {} folders · {} unpacked, {} packed",
+                    listing.files,
+                    listing.directories,
+                    size(listing.size, Kind::File),
+                    size(listing.packed, Kind::File)
+                )
+            })
+            .unwrap_or_default();
+        reader_status_line::StatusLine {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    fn entry_bar(&self, cx: &App) -> AnyElement {
+        let Some(listing) = &self.listing else {
+            return div().into_any_element();
+        };
+        let Some(index) = self.focused else {
+            return div().into_any_element();
+        };
+        let crumb = format!(
+            "{} › {}",
+            self.path.file_name().unwrap_or_default().to_string_lossy(),
+            listing.entries[index].name
+        );
+        h_flex()
+            .flex_none()
+            .h(px(36.))
+            .px_3()
+            .gap_1()
+            .min_w_0()
+            .debug_selector(|| "archive-entry-bar".into())
+            .border_b_1()
+            .border_color(brand::palette(cx).border_subtle)
+            .child(div().flex_1().min_w_0().truncate().child(crumb))
+            .when(matches!(&self.entry, Some(EntryView::Text(_))), |row| {
+                if let Some(EntryView::Text(text)) = &self.entry {
+                    row.child(text.read(cx).open_button(cx))
+                } else {
+                    row
+                }
+            })
+            .children(match &self.entry {
+                Some(EntryView::Pdf(pdf)) => reader_pdf::chrome(pdf, cx)
+                    .actions
+                    .into_iter()
+                    .map(|a| a.button(true))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .into_any_element()
+    }
+
+    fn focus_find(&self, window: &mut Window, cx: &mut App) {
+        if self.entry_focus.contains_focused(window, cx) {
+            match &self.entry {
+                Some(EntryView::Code(code)) => code.update(cx, |code, cx| {
+                    if !code.open_paged_find(window, cx) {
+                        if let Some(input) = code.input() {
+                            input.update(cx, |input, cx| {
+                                input.open_search(false, cx);
+                                input.focus(window, cx);
+                            });
+                        }
+                    }
+                }),
+                Some(EntryView::Table(table)) => {
+                    table.update(cx, |table, cx| table.focus_filter(window, cx));
+                }
+                _ => {}
+            }
+        } else {
+            self.filter.update(cx, |input, cx| input.focus(window, cx));
         }
     }
 
@@ -347,6 +442,7 @@ impl ArchivePreview {
             } else {
                 div()
                     .id(("archive-mark", index))
+                    .debug_selector(move || format!("archive-mark-{index}"))
                     .flex_none()
                     .w(px(MARK_WIDTH))
                     .text_center()
@@ -419,6 +515,93 @@ impl ArchivePreview {
     }
 }
 
+pub(crate) fn chrome(
+    viewer: &Entity<ArchivePreview>,
+    cx: &App,
+) -> reader_viewer_chrome::ViewerChrome {
+    use reader_viewer_chrome::{ViewerAction, ViewerChrome};
+    let state = viewer.read(cx);
+    let close = viewer.clone();
+    let focus = viewer.clone();
+    let target = reader_find_field::Target {
+        input: state.filter.clone(),
+        scope: "Find in entries".into(),
+        count: None,
+        match_case: None,
+        step: None,
+        steps_visible: false,
+        large_file: false,
+        focus_override: Some(std::rc::Rc::new(move |window, cx| {
+            focus.update(cx, |this, cx| this.focus_find(window, cx))
+        })),
+        close: std::rc::Rc::new(move |window, cx| {
+            close.update(cx, |this, cx| {
+                this.filter
+                    .update(cx, |filter, cx| filter.set_value("", window, cx));
+                this.refresh_rows(cx);
+                this.list_focus.focus(window, cx);
+                cx.notify();
+            })
+        }),
+    };
+    let mut actions = Vec::new();
+    for selected in [true, false] {
+        let target = viewer.clone();
+        let marked = state.marked.len();
+        let label = if selected {
+            if marked == 0 {
+                "Extract selected…".to_string()
+            } else {
+                format!("Extract {marked} selected…")
+            }
+        } else if state.extracting {
+            "Extracting…".to_string()
+        } else {
+            "Extract all…".to_string()
+        };
+        let mut action = ViewerAction::new(
+            if selected {
+                "archive-extract-selected"
+            } else {
+                "archive-extract-all"
+            },
+            Icon::new(IconName::Download),
+            label,
+            std::rc::Rc::new(move |window, cx| {
+                target.update(cx, |this, cx| this.extract(selected, window, cx))
+            }),
+        );
+        action = if selected {
+            action.with_action(ArchiveExtractSelected, cx)
+        } else {
+            action.with_action(ArchiveExtractAll, cx)
+        };
+        action.enabled = state.listing.is_some() && !state.extracting && (!selected || marked > 0);
+        action.disabled_reason = (!action.enabled).then(|| {
+            if state.extracting {
+                "Extraction in progress"
+            } else if selected && marked == 0 {
+                "Select entries to extract"
+            } else {
+                "Reading archive…"
+            }
+            .into()
+        });
+        action.labelled = true;
+        action.label_by_default = true;
+        action.never_dropped = !selected;
+        action.filled = !selected;
+        action.collapse_priority = if selected { 0 } else { 55 };
+        actions.push(action);
+    }
+    ViewerChrome {
+        find: Some(target),
+        actions,
+        status: Some(state.status_line()),
+        ..Default::default()
+    }
+}
+
 /// The viewer for an entry written to a scratch file; `name` decides the type.
 fn viewer(path: PathBuf, name: &str, window: &mut Window, cx: &mut App) -> EntryView {
     let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -439,9 +622,9 @@ fn viewer(path: PathBuf, name: &str, window: &mut Window, cx: &mut App) -> Entry
         )
     } else {
         // Markdown, logs and anything else readable are shown as text; binary files say so.
-        EntryView::Text(
-            cx.new(|cx| reader_plain_text::PlainTextPreview::new(root, name.into(), path, cx)),
-        )
+        EntryView::Text(cx.new(|cx| {
+            reader_plain_text::PlainTextPreview::new(root, name.into(), path, cx).without_header()
+        }))
     }
 }
 
@@ -507,45 +690,6 @@ impl Render for ArchivePreview {
                     .child("Reading archive…"),
             );
         };
-        let summary = format!(
-            "{} files, {} folders · {} unpacked, {} packed",
-            listing.files,
-            listing.directories,
-            size(listing.size, Kind::File),
-            size(listing.packed, Kind::File),
-        );
-        let marked = self.marked.len();
-        let toolbar = h_flex()
-            .px_6()
-            .gap_2()
-            .items_center()
-            .child(div().text_color(palette.text_muted).child(summary))
-            .child(div().flex_1())
-            .child(
-                Button::new("archive-extract-selected")
-                    .debug_selector(|| "archive-extract-selected".into())
-                    .ghost()
-                    .small()
-                    .disabled(marked == 0 || self.extracting)
-                    .label(if marked == 0 {
-                        "Extract selected…".to_string()
-                    } else {
-                        format!("Extract {marked} selected…")
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.extract(true, window, cx))),
-            )
-            .child(
-                Button::new("archive-extract-all")
-                    .debug_selector(|| "archive-extract-all".into())
-                    .small()
-                    .disabled(self.extracting)
-                    .label(if self.extracting {
-                        "Extracting…"
-                    } else {
-                        "Extract all…"
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.extract(false, window, cx))),
-            );
         let header = h_flex()
             .h(px(ROW_HEIGHT))
             .w_full()
@@ -581,6 +725,11 @@ impl Render for ArchivePreview {
         let count = self.rows.len();
         let table = v_flex()
             .debug_selector(|| "archive-table".into())
+            .track_focus(&self.list_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.list_focus.focus(window, cx)),
+            )
             .mx_6()
             .border_1()
             .border_color(palette.border_subtle)
@@ -601,14 +750,12 @@ impl Render for ArchivePreview {
         let note = self
             .unsafe_note(&listing)
             .map(|note| div().px_6().text_color(palette.text_muted).child(note));
-        let view = view
-            .child(toolbar)
-            .child(div().px_6().child(Input::new(&self.filter)));
         let Some(entry) = self.render_entry(cx) else {
             // No entry open: at most 40% of the pane (#1149).
             return view
                 .child(table.h(px(ROW_HEIGHT * 12.)).max_h(relative(0.4)))
-                .children(note);
+                .children(note)
+                .child(div().flex_1());
         };
         let list = v_flex()
             .flex_1()
@@ -621,10 +768,15 @@ impl Render for ArchivePreview {
         // `flex_1` fill it (#1079) instead of collapsing to a line (#1149).
         let slot = div()
             .debug_selector(|| "archive-entry".into())
+            .track_focus(&self.entry_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.entry_focus.focus(window, cx)),
+            )
             .flex_1()
             .min_h_0()
             .w_full()
-            .child(v_flex().size_full().child(entry));
+            .child(v_flex().size_full().child(self.entry_bar(cx)).child(entry));
         view.child(reader_split::vertical(
             &self.entry_split,
             |view: &mut Self| &mut view.entry_split,
@@ -729,9 +881,17 @@ mod tests {
             f32::from(code.size.height) > 300.,
             "the code preview collapsed: {code:?} in {slot:?}"
         );
+        let bar = visual
+            .debug_bounds("archive-entry-bar")
+            .expect("entry compact bar");
+        assert_eq!(bar.size.height, px(36.));
         assert!(
-            f32::from(code.size.height) >= f32::from(slot.size.height) - 1.,
-            "the code preview fills its slot: {code:?} in {slot:?}"
+            (code.top() - bar.bottom()).abs() <= px(1.),
+            "code starts directly below its compact bar"
+        );
+        assert!(
+            (code.bottom() - slot.bottom()).abs() <= px(1.),
+            "code still fills the remaining pane"
         );
 
         // The list starts at 40% of the split, the preview at 60%.

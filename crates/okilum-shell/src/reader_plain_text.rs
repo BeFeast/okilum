@@ -26,6 +26,7 @@ pub(crate) struct PlainTextPreview {
     root: PathBuf,
     rel: String,
     state: State,
+    compact_header: bool,
 }
 
 impl PlainTextPreview {
@@ -73,19 +74,25 @@ impl PlainTextPreview {
             root,
             rel,
             state: State::Loading,
+            compact_header: true,
         }
     }
 
-    fn open_button(&self, cx: &App) -> impl IntoElement {
+    pub(crate) fn without_header(mut self) -> Self {
+        self.compact_header = false;
+        self
+    }
+
+    pub(crate) fn open_button(&self, cx: &App) -> impl IntoElement {
         let root = self.root.clone();
         let rel = self.rel.clone();
         reader_icon_button(
             "plain-file-open",
             IconName::ExternalLink,
-            "Open externally",
+            "Open with default app",
             cx,
         )
-        .accessibility_label("Open externally")
+        .accessibility_label("Open with default app")
         .on_click(move |_, window, cx| {
             reader_files::run(reader_files::FileAction::Open, &root, &rel, window, cx);
         })
@@ -105,7 +112,10 @@ impl Render for PlainTextPreview {
             .min_h_0()
             .px(px(READER_SIDE_PADDING))
             .pb_6()
-            .gap_3();
+            .gap_3()
+            .when(self.compact_header, |view| {
+                view.child(h_flex().flex_none().h(px(36.)).child(self.open_button(cx)))
+            });
         match &self.state {
             State::Loading => view.child(
                 div()
@@ -113,16 +123,12 @@ impl Render for PlainTextPreview {
                     .child("Opening file…"),
             ),
             State::Message(message) => view.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(font_size)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(*message),
-                    )
-                    .child(self.open_button(cx)),
+                h_flex().gap_2().items_center().child(
+                    div()
+                        .text_size(font_size)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(*message),
+                ),
             ),
             State::Content { content, partial } => view
                 .child(
@@ -145,18 +151,15 @@ impl Render for PlainTextPreview {
                         ),
                 )
                 .when(*partial, |view| {
-                    view.child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Showing the beginning of this file"),
-                            )
-                            .child(self.open_button(cx)),
-                    )
+                    view.child(reader_status_line::render(
+                        &reader_status_line::StatusLine {
+                            text: "Showing the beginning of this file".into(),
+                            ..Default::default()
+                        },
+                        "plain-file-status",
+                        None,
+                        cx,
+                    ))
                 }),
         }
     }

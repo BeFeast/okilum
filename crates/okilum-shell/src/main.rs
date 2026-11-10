@@ -83,6 +83,7 @@ mod reader_external_changes;
 mod reader_feedback;
 mod reader_file_copy;
 mod reader_files;
+mod reader_find_field;
 mod reader_fonts;
 #[cfg(target_os = "linux")]
 mod reader_header_cache;
@@ -414,6 +415,15 @@ actions!(
         ToggleHiddenFiles,
         ToggleSoftWrap,
         CopyFileContent,
+        CopyViewerImage,
+        CanvasFit,
+        CanvasZoomIn,
+        CanvasZoomOut,
+        ArchiveExtractSelected,
+        ArchiveExtractAll,
+        ExpandDrawing,
+        OpenDrawingExternally,
+        CopyDrawingDetails,
         CopyFilePath,
         CopyFileWikilink,
         OpenFileDefault,
@@ -632,6 +642,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", PaletteNext, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
+        KeyBinding::new("escape", Dismiss, Some("Reader > ViewerFind > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
         KeyBinding::new("escape", Dismiss, Some("LogSaving > Input")),
         #[cfg(any(unix, windows))]
@@ -2893,6 +2904,12 @@ impl Reader {
     // --- find in note (#48) ---
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_none() {
+            if let Some(target) = self.viewer_chrome(cx).find {
+                target.focus(window, cx);
+                return;
+            }
+        }
         if self.file_preview.is_some() && self.editing.is_none() {
             if let Some(table) = self.file_preview.as_ref().and_then(|p| p.table.as_ref()) {
                 table.update(cx, |table, cx| table.focus_filter(window, cx));
@@ -4776,8 +4793,6 @@ impl Reader {
     }
 
     fn render_find_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let border = cx.theme().border;
-        let muted = cx.theme().muted_foreground;
         let native = self.typed_navigation.active.get();
         let (current, total) = self.content.read(cx).search_status();
         let count = if native {
@@ -4791,91 +4806,34 @@ impl Reader {
         } else {
             format!("{} of {}", current + 1, total)
         };
-        // docs/design/reader.md §Find: floats over the document's top-right
-        // corner so opening it never reflows the text.
-        h_flex()
-            .id("find-bar")
-            .absolute()
-            .top(px(10.))
-            .right(px(18.))
-            .gap_1()
-            .pl_2()
-            .pr_1()
-            .py_1()
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(border)
-            .rounded(px(8.))
-            .shadow_md()
-            .child(
-                div().w(px(220.)).child(
-                    Input::new(&self.find_input)
-                        .appearance(false)
-                        .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).small().text_color(muted)),
-                ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .min_w(px(56.))
-                    .child(count),
-            )
-            .child(
-                Button::new("find-case-sensitive")
-                    .ghost()
-                    .small()
-                    .icon(IconName::CaseSensitive)
-                    .selected(reader_ui_state::find_case_sensitive(cx))
-                    .tooltip("Match case")
-                    .on_click(cx.listener(|this, _, window, cx| {
+        let weak = cx.entity().downgrade();
+        let case = weak.clone();
+        let step = weak.clone();
+        let target = reader_find_field::Target {
+            input: self.find_input.clone(),
+            focus_override: None,
+            scope: "Find in note…".into(),
+            count: Some(count.into()),
+            match_case: Some((
+                reader_ui_state::find_case_sensitive(cx),
+                std::rc::Rc::new(move |window, cx| {
+                    let _ = case.update(cx, |this, cx| {
                         let sensitive = !reader_ui_state::find_case_sensitive(cx);
                         reader_ui_state::set_find_case_sensitive(sensitive, cx);
                         this.run_find(window, cx);
-                    })),
-            )
-            .child(
-                Button::new("find-prev")
-                    .when(native, |button| button.invisible())
-                    .ghost()
-                    .small()
-                    .icon(IconName::ChevronUp)
-                    .tooltip(reader_shortcuts::hint(
-                        "Previous match",
-                        &gpui_component::input::Enter {
-                            secondary: false,
-                            shift: true,
-                        },
-                        cx,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| this.find_step(-1, cx))),
-            )
-            .child(
-                Button::new("find-next")
-                    .when(native, |button| button.invisible())
-                    .ghost()
-                    .small()
-                    .icon(IconName::ChevronDown)
-                    .tooltip(reader_shortcuts::hint(
-                        "Next match",
-                        &gpui_component::input::Enter {
-                            secondary: false,
-                            shift: false,
-                        },
-                        cx,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| this.find_step(1, cx))),
-            )
-            .child(
-                Button::new("find-close")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Close)
-                    .tooltip(reader_shortcuts::hint("Close", &Dismiss, cx))
-                    .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
-            )
-            .into_any_element()
+                    });
+                }),
+            )),
+            step: Some(std::rc::Rc::new(move |direction, _, cx| {
+                let _ = step.update(cx, |this, cx| this.find_step(direction, cx));
+            })),
+            steps_visible: !native,
+            close: std::rc::Rc::new(move |window, cx| {
+                let _ = weak.update(cx, |this, cx| this.close_find(window, cx));
+            }),
+            large_file: false,
+        };
+        reader_find_field::render(&target, reader_find_field::Presentation::Floating, cx)
     }
 
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
@@ -8166,6 +8124,33 @@ impl Render for Reader {
             }))
             .on_action(cx.listener(|this, _: &QuickLookFile, window, cx| {
                 this.file_action(reader_files::FileAction::QuickLook, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CanvasFit, window, cx| {
+                this.invoke_viewer_action("canvas-fit", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CanvasZoomIn, window, cx| {
+                this.invoke_viewer_action("canvas-plus", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CanvasZoomOut, window, cx| {
+                this.invoke_viewer_action("canvas-minus", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ArchiveExtractSelected, window, cx| {
+                this.invoke_viewer_action("archive-extract-selected", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ArchiveExtractAll, window, cx| {
+                this.invoke_viewer_action("archive-extract-all", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExpandDrawing, window, cx| {
+                this.invoke_viewer_action("drawing-expand", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenDrawingExternally, window, cx| {
+                this.invoke_viewer_action("drawing-open", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyDrawingDetails, window, cx| {
+                this.invoke_viewer_action("drawing-copy-details", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyViewerImage, window, cx| {
+                this.copy_preview_image(window, cx)
             }))
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &ReaderScrollDown, window, cx| {

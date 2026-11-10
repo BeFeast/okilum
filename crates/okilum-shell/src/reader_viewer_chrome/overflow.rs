@@ -64,12 +64,22 @@ impl LayoutItem {
 /// `fixed` includes padding, navigation and separators. Each shown control has
 /// a 4 px gap; menu items take no row space. Steps are stable at equal priority.
 /// Impossible widths preserve mandatory items rather than silently dropping one.
+#[cfg(test)]
 pub(crate) fn layout(
     available: f32,
     fixed: f32,
     title_minimum: f32,
     items: &[LayoutItem],
 ) -> Vec<Disposition> {
+    layout_with_widths(available, fixed, title_minimum, items).0
+}
+
+pub(crate) fn layout_with_widths(
+    available: f32,
+    fixed: f32,
+    title_minimum: f32,
+    items: &[LayoutItem],
+) -> (Vec<Disposition>, Vec<f32>) {
     let mut states = vec![Disposition::Shown; items.len()];
     let mut widths: Vec<_> = items.iter().map(|i| i.width).collect();
     let mut steps: Vec<_> = items
@@ -103,7 +113,7 @@ pub(crate) fn layout(
         };
         states[index] = step.disposition;
     }
-    states
+    (states, widths)
 }
 
 #[cfg(test)]
@@ -164,6 +174,34 @@ mod tests {
         }
         items.push(LayoutItem::pinned("more", 28., 28.));
         items
+    }
+
+    #[test]
+    fn field_width_distinguishes_narrow_from_icon_and_large_files_keep_the_field() {
+        for large in [false, true] {
+            let mut find = LayoutItem::pinned("find", 200., if large { 128. } else { 28. });
+            find.steps = vec![OverflowStep {
+                priority: 60,
+                width: 128.,
+                disposition: Disposition::Collapsed,
+            }];
+            if !large {
+                find.steps.push(OverflowStep {
+                    priority: 61,
+                    width: 28.,
+                    disposition: Disposition::Collapsed,
+                });
+            }
+            for (available, expected) in [
+                (500., 200.),
+                (400., 128.),
+                (300., if large { 128. } else { 28. }),
+            ] {
+                let (state, widths) = layout_with_widths(available, 128., 120., &[find.clone()]);
+                assert_ne!(state[0], Disposition::Menu);
+                assert_eq!(widths[0], expected);
+            }
+        }
     }
 
     #[test]

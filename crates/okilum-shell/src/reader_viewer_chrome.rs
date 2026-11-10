@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 mod overflow;
 #[cfg(test)]
-mod tests;
-pub(crate) use overflow::{layout, Disposition, LayoutItem};
+pub(crate) mod tests;
+pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -237,6 +237,38 @@ pub(crate) struct ViewerAction {
 }
 
 impl ViewerAction {
+    pub(crate) fn new(
+        id: &'static str,
+        icon: Icon,
+        label: impl Into<SharedString>,
+        invoke: Invoke,
+    ) -> Self {
+        let label = label.into();
+        Self {
+            id,
+            icon,
+            tooltip: label.clone(),
+            label,
+            enabled: true,
+            disabled_reason: None,
+            toggled: false,
+            priority: 30,
+            labelled: false,
+            label_by_default: false,
+            collapse_priority: 0,
+            filled: false,
+            never_dropped: false,
+            shortcut: None,
+            invoke,
+        }
+    }
+
+    pub(crate) fn with_action<A: Action>(mut self, action: A, cx: &App) -> Self {
+        self.tooltip = reader_shortcuts::hint(&self.label, &action, cx);
+        self.shortcut = Some(Rc::new(action));
+        self
+    }
+
     pub(crate) fn button(&self, collapsed: bool) -> Button {
         let invoke = self.invoke.clone();
         Button::new(self.id)
@@ -282,20 +314,16 @@ pub(crate) struct ViewerView {
     pub active: bool,
 }
 
-/// Viewers opt into Find through a description, never through header routing.
-/// The shared field and adapters fill this contract in the next step.
-#[derive(Clone)]
-pub(crate) struct ViewerFindTarget {
-    pub scope: SharedString,
-    pub focus: Invoke,
-    pub large_file: bool,
-}
+pub(crate) use crate::reader_find_field::Target as ViewerFindTarget;
 
 #[derive(Clone, Default)]
 pub(crate) struct ViewerChrome {
     pub views: Vec<ViewerView>,
     pub find: Option<ViewerFindTarget>,
     pub actions: Vec<ViewerAction>,
+    pub action_text: Option<SharedString>,
+    pub copy_actions: Vec<ViewerAction>,
+    pub open_actions: Vec<ViewerAction>,
     pub status: Option<reader_status_line::StatusLine>,
     pub state: Option<ViewerAction>,
 }
@@ -303,6 +331,7 @@ pub(crate) struct ViewerChrome {
 struct HeaderLayout {
     items: Vec<LayoutItem>,
     states: Vec<Disposition>,
+    widths: Vec<f32>,
     labels: bool,
     editable: bool,
     editing: bool,
@@ -317,6 +346,13 @@ impl HeaderLayout {
             .zip(&self.states)
             .any(|(item, state)| item.id == id && *state != Disposition::Menu)
     }
+    fn width(&self, id: &str) -> f32 {
+        self.items
+            .iter()
+            .zip(&self.widths)
+            .find(|(item, _)| item.id == id)
+            .map_or(0., |(_, width)| *width)
+    }
     fn collapsed(&self, id: &str) -> bool {
         self.items
             .iter()
@@ -326,6 +362,24 @@ impl HeaderLayout {
 }
 
 impl Reader {
+    pub(crate) fn invoke_viewer_action(
+        &self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chrome = self.viewer_chrome(cx);
+        if let Some(action) = chrome
+            .actions
+            .into_iter()
+            .chain(chrome.copy_actions)
+            .chain(chrome.open_actions)
+            .find(|action| action.id == id && action.enabled)
+        {
+            (action.invoke)(window, cx);
+        }
+    }
+
     #[inline(never)]
     pub(crate) fn render_file_header_viewport(
         &self,
@@ -393,11 +447,35 @@ impl Reader {
     /// Only this adapter knows where the active viewer lives. Slot builders
     /// render the resulting description without matching on a viewer kind.
     pub(crate) fn viewer_chrome(&self, cx: &App) -> ViewerChrome {
-        self.file_preview
-            .as_ref()
-            .and_then(|p| p.pdf.as_ref())
-            .map(|pdf| reader_pdf::chrome(pdf, cx))
-            .unwrap_or_default()
+        let Some(preview) = &self.file_preview else {
+            return ViewerChrome::default();
+        };
+        if let Some(pdf) = &preview.pdf {
+            return reader_pdf::chrome(pdf, cx);
+        }
+        if let Some(archive) = &preview.archive {
+            return reader_archive::chrome(archive, cx);
+        }
+        if let Some(canvas) = &preview.canvas {
+            return reader_canvas::chrome(canvas, cx);
+        }
+        if let Some(drawing) = &preview.drawing {
+            return reader_drawing::chrome(drawing, cx);
+        }
+        if preview.image {
+            let mut action = ViewerAction::new(
+                "copy-viewer-image",
+                Icon::new(IconName::Copy),
+                "Copy image",
+                Rc::new(|window, cx| window.dispatch_action(Box::new(CopyViewerImage), cx)),
+            );
+            action.shortcut = Some(Rc::new(CopyViewerImage));
+            return ViewerChrome {
+                copy_actions: vec![action],
+                ..Default::default()
+            };
+        }
+        ViewerChrome::default()
     }
 
     #[inline(never)]
@@ -450,6 +528,26 @@ impl Reader {
             }
             items.push(item);
         }
+        if chrome.action_text.is_some() {
+            items.push(LayoutItem::optional("viewer-action-text", 44., 44., 0));
+        }
+        if let Some(find) = &chrome.find {
+            let mut item =
+                LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
+            item.steps = vec![overflow::OverflowStep {
+                priority: 60,
+                width: 128.,
+                disposition: Disposition::Collapsed,
+            }];
+            if !find.large_file {
+                item.steps.push(overflow::OverflowStep {
+                    priority: 61,
+                    width: 28.,
+                    disposition: Disposition::Collapsed,
+                });
+            }
+            items.push(item);
+        }
         items.push(LayoutItem::optional(
             "copy",
             if labels { 90. } else { 40. },
@@ -493,7 +591,7 @@ impl Reader {
         let title_budget = title_minimum
             + (toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window) - 120.)
                 .max(0.);
-        let states = layout(width, 128., title_budget, &items);
+        let (states, widths) = layout_with_widths(width, 128., title_budget, &items);
         let parent_width = self
             .selected_file()
             .rsplit_once('/')
@@ -533,6 +631,7 @@ impl Reader {
         let plan = HeaderLayout {
             items,
             states,
+            widths,
             labels,
             editable,
             editing,
@@ -551,7 +650,7 @@ impl Reader {
             .overflow_hidden()
             .child(navigation_slot(self, &plan, cx))
             .child(name_slot(self, &chrome, &plan, cx))
-            .child(find_slot(&chrome))
+            .child(find_slot(&chrome, &plan, window, cx))
             .child(views_slot(&chrome))
             .child(viewer_actions_slot(&chrome, &plan, cx))
             .child(file_actions_slot(self, &plan, cx))
@@ -647,24 +746,18 @@ fn name_slot(
 }
 
 #[inline(never)]
-fn find_slot(chrome: &ViewerChrome) -> AnyElement {
+fn find_slot(chrome: &ViewerChrome, plan: &HeaderLayout, window: &Window, cx: &App) -> AnyElement {
     let Some(target) = &chrome.find else {
         return div().into_any_element();
     };
-    let focus = target.focus.clone();
-    h_flex()
-        .flex_none()
-        .min_w(px(if target.large_file { 128. } else { 28. }))
-        .child(
-            Button::new("viewer-find")
-                .ghost()
-                .icon(IconName::Search)
-                .h(px(28.))
-                .label(target.scope.clone())
-                .tooltip(target.scope.clone())
-                .on_click(move |_, w, cx| focus(w, cx)),
-        )
-        .into_any_element()
+    reader_find_field::render(
+        target,
+        reader_find_field::Presentation::Header {
+            width: plan.width("find"),
+            focused: target.input.read(cx).focus_handle(cx).is_focused(window),
+        },
+        cx,
+    )
 }
 
 #[inline(never)]
@@ -702,6 +795,14 @@ fn viewer_actions_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> 
                 .into_iter()
                 .map(|a| a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id))),
         )
+        .when(plan.shows("viewer-action-text"), |row| {
+            row.children(chrome.action_text.clone().map(|text| {
+                div()
+                    .text_xs()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(text)
+            }))
+        })
         .into_any_element()
 }
 
@@ -741,8 +842,8 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
                 plan.labels && !plan.collapsed("copy"),
                 cx,
             )
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |m, _, _| {
-                copy_menu(m, copy_weak.clone(), text)
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |m, _, cx| {
+                copy_menu(m, copy_weak.clone(), text, cx)
             }),
         );
     }
@@ -820,7 +921,12 @@ pub(crate) fn copy_content_available(reader: &Reader) -> bool {
     })
 }
 
-fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool) -> PopupMenu {
+fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool, cx: &App) -> PopupMenu {
+    if let Some(target) = reader.upgrade() {
+        for action in target.read(cx).viewer_chrome(cx).copy_actions {
+            menu = menu.item(action.menu_item());
+        }
+    }
     if text {
         let target = reader.clone();
         menu = menu
@@ -893,6 +999,13 @@ fn open_menu(
 ) -> PopupMenu {
     #[cfg(test)]
     let mut rendered_labels = Vec::new();
+    if let Some(target) = reader.upgrade() {
+        for action in target.read(cx).viewer_chrome(cx).open_actions {
+            #[cfg(test)]
+            rendered_labels.push(action.label.clone());
+            menu = menu.item(action.menu_item());
+        }
+    }
     for (index, (label, action, command)) in open_commands().into_iter().enumerate() {
         if index == 1 {
             menu = open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
@@ -1022,8 +1135,8 @@ fn window_slot(
                 }
                 if hidden_copy {
                     let target = weak.clone();
-                    m = m.submenu("Copy", w, cx, move |m, _, _| {
-                        copy_menu(m, target.clone(), text)
+                    m = m.submenu("Copy", w, cx, move |m, _, cx| {
+                        copy_menu(m, target.clone(), text, cx)
                     });
                 }
                 if hidden_open {

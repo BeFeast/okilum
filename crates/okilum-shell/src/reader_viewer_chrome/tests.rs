@@ -2,7 +2,7 @@ use super::*;
 use ::core::prelude::v1::test;
 use gpui_component::WindowExt as _;
 
-fn fixture<'a>(
+pub(crate) fn fixture<'a>(
     cx: &'a mut TestAppContext,
     name: &str,
 ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {

@@ -50,7 +50,7 @@ pub(super) fn video_card(root: &Path, path: &Path, cx: &App) -> AnyElement {
         let root = root.to_path_buf();
         card = card.child(
             Button::new("video-open-system")
-                .label("Open in system player")
+                .label("Open with default app")
                 .debug_selector(|| "video-open-system".into())
                 .on_click(move |_, window, cx| {
                     reader_files::run(reader_files::FileAction::Open, &root, &rel, window, cx);
