@@ -124,7 +124,11 @@ mod tests {
             _ => vec!["fold", "unfold"],
         };
         for id in actions {
-            items.push(LayoutItem::action(id, 72., 28., 30, id == "extract-all"));
+            let mut action = LayoutItem::action(id, 72., 28., 30, id == "extract-all");
+            if id == "extract-all" {
+                action.steps[0].priority = 55;
+            }
+            items.push(action);
         }
         items.push(LayoutItem::optional("open-with", 120., 40., 40));
         items.push(LayoutItem::optional("copy", 90., 40., 50));

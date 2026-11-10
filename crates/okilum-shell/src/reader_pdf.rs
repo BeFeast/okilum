@@ -926,6 +926,8 @@ pub(crate) fn chrome(viewer: &Entity<PdfViewer>, cx: &App) -> reader_viewer_chro
             toggled: false,
             priority: 30,
             labelled: false,
+            collapse_priority: 0,
+            filled: false,
             never_dropped: false,
             shortcut: Some(match zoom {
                 Zoom::Out => std::rc::Rc::new(PdfZoomOut) as std::rc::Rc<dyn Action>,

@@ -22,6 +22,10 @@ pub(crate) struct ViewerAction {
     pub toggled: bool,
     pub priority: u16,
     pub labelled: bool,
+    /// Most labels yield first; mandatory actions such as ZIP Extract all may
+    /// keep theirs until the menu-collapse stage of their supplied order table.
+    pub collapse_priority: u16,
+    pub filled: bool,
     pub never_dropped: bool,
     pub shortcut: Option<Rc<dyn Action>>,
     pub invoke: Invoke,
@@ -32,6 +36,7 @@ impl ViewerAction {
         let invoke = self.invoke.clone();
         Button::new(self.id)
             .ghost()
+            .when(self.filled, |b| b.primary())
             .icon(self.icon.clone())
             .h(px(28.))
             .rounded(px(6.))
@@ -178,13 +183,14 @@ impl Reader {
             } else {
                 28.
             };
-            items.push(LayoutItem::action(
-                action.id,
-                wide,
-                28.,
-                action.priority,
-                action.never_dropped,
-            ));
+            let mut item =
+                LayoutItem::action(action.id, wide, 28., action.priority, action.never_dropped);
+            for step in &mut item.steps {
+                if step.disposition == Disposition::Collapsed {
+                    step.priority = action.collapse_priority;
+                }
+            }
+            items.push(item);
         }
         items.push(LayoutItem::optional(
             "copy",
