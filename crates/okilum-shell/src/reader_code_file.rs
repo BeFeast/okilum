@@ -440,6 +440,7 @@ impl CodePreview {
         };
         if self.structure_view {
             self.structure.reveal(&range, doc);
+            cx.notify();
             return;
         }
         let page = doc.page_at(range.start);
