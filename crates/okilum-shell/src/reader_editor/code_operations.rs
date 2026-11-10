@@ -941,6 +941,14 @@ mod tests {
         cx: &'a mut TestAppContext,
         source: &str,
     ) -> (Fixture, &'a mut VisualTestContext) {
+        open_file(cx, source, "note.md")
+    }
+
+    pub(super) fn open_file<'a>(
+        cx: &'a mut TestAppContext,
+        source: &str,
+        relative: &str,
+    ) -> (Fixture, &'a mut VisualTestContext) {
         cx.update(|cx| {
             crate::test_init(cx);
             crate::bind_keys(cx);
@@ -948,14 +956,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("vault");
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("note.md"), source).unwrap();
+        std::fs::write(root.join(relative), source).unwrap();
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
                 Reader::new(
                     Opts {
                         vault: Some(root.clone()),
-                        open_path: Some(root.join("note.md")),
+                        open_path: Some(root.join(relative)),
                         index_dir: Some(directory.path().join("index")),
                         session_directory: Some(directory.path().join("state")),
                         ..Default::default()

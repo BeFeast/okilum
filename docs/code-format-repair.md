@@ -29,6 +29,11 @@ validator, which never builds a value tree. Unsupported formatters/repairs remai
 explicitly unavailable. A size/depth/output refusal is one message containing the
 limit and source size, never a syntax verdict.
 
+The explicit Edit entry for `.json` files (case-insensitive) also uses that
+64 MiB input budget, including after Format grows a file beyond 4 MiB. The
+read-only viewer, its pagination, tree, Find and wrapping thresholds retain
+their existing behavior; other source formats keep their existing edit limits.
+
 Button dispatch pins an immutable native source revision. Target flattening,
 newline detection, validation, formatting and repair construction all run on the
 background executor. A visible operation label and **Cancel** share the existing

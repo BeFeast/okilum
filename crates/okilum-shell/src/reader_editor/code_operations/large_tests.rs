@@ -1,4 +1,4 @@
-use super::tests::{click, open, settle, value};
+use super::tests::{click, open, open_file, settle, value};
 use super::*;
 use ::core::prelude::v1::test;
 use gpui_component::input::Undo;
@@ -10,6 +10,78 @@ fn document(valid: bool) -> String {
         if valid { "\"payload\"" } else { "payload" },
         "value ".repeat(600_000)
     )
+}
+
+#[gpui::test]
+fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestAppContext) {
+    let source = format!(
+        "{{\"values\":[\n{}\"tail\"]}}",
+        format!("\"{}\",\n", "x".repeat(2048)).repeat(3000)
+    );
+    assert!(source.len() > 5 * 1024 * 1024);
+    let (f, visual) = open_file(cx, &source, "large.JSON");
+    assert_eq!(
+        f.input.read_with(visual, |input, _| input.value().len()),
+        source.len()
+    );
+    click(visual, "source-code-validate");
+    f.reader.read_with(visual, |reader, _| {
+        assert_eq!(
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .operations
+                .status
+                .as_ref()
+                .unwrap()
+                .3,
+            "Valid strict JSON"
+        );
+    });
+    click(visual, "source-code-format");
+    let formatted = f
+        .input
+        .read_with(visual, |input, _| input.value().to_string());
+    assert_ne!(formatted, source);
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(reader.editing.is_none());
+        assert!(
+            reader.code_file_editable(cx),
+            "formatted large JSON can reopen in Edit"
+        );
+        assert!(
+            !reader.code_view_input(cx).unwrap().read(cx).is_editable(),
+            "the viewer itself stays read-only"
+        );
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.directory.path().join("vault/large.JSON")).unwrap(),
+        formatted
+    );
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    visual.dispatch_action(Undo);
+    settle(visual);
+    f.reader.read_with(visual, |reader, cx| {
+        assert_eq!(
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .value()
+                .as_ref(),
+            source
+        );
+    });
 }
 
 #[gpui::test]
