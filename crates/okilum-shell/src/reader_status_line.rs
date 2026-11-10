@@ -70,6 +70,7 @@ pub(crate) fn render(
                         div()
                             .flex_none()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text)
                             .child(status.label.clone()),
                     )
                 })
