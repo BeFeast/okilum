@@ -551,7 +551,7 @@ impl Reader {
                 self.reopen_chosen_source(tree_had_focus, window, cx);
             }
             Err(error) => {
-                eprintln!("Cannot preview file {rel}: {error:#}");
+                diagnostic_error!("Cannot preview file {rel}: {error:#}");
                 reader_toast::error(preview_error_text(&error), window, cx)
             }
         }

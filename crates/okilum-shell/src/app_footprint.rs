@@ -60,7 +60,7 @@ pub(crate) fn enter_managed_appimage() {
     let target = match okilum_appimage::installation::install(Path::new(&home), &source, build) {
         Ok(target) => target,
         Err(error) => {
-            eprintln!("AppImage installation: {error:#}");
+            diagnostic_error!("AppImage installation: {error:#}");
             return;
         }
     };
@@ -75,7 +75,7 @@ pub(crate) fn enter_managed_appimage() {
         .env_remove("LD_LIBRARY_PATH")
         .env("APPIMAGE_EXTRACT_AND_RUN", "1")
         .exec();
-    eprintln!("Cannot launch installed AppImage: {error}");
+    diagnostic_error!("Cannot launch installed AppImage: {error}");
     std::process::exit(1);
 }
 
@@ -100,7 +100,7 @@ pub(crate) fn install_appimage_desktop() {
         .name("appimage-desktop".into())
         .spawn(move || {
             if let Err(error) = okilum_appimage::desktop::install(&home, &image) {
-                eprintln!("AppImage desktop integration: {error:#}");
+                diagnostic_error!("AppImage desktop integration: {error:#}");
                 return;
             }
             refresh_desktop_database(&home);
@@ -389,7 +389,7 @@ pub(crate) fn uninstall() {
     );
     windows::remove_crash_dumps();
     windows::remove_leftovers_after_exit();
-    eprintln!("Okilum uninstall: {report:?}");
+    diagnostic_error!("Okilum uninstall: {report:?}");
 }
 
 /// `windows_uninstall_cleanup.ps1` with its install root and local app data.
@@ -480,14 +480,14 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
 #[cfg(target_os = "linux")]
 pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
     if crate::linux_sprint::enabled() {
-        eprintln!("Remove Linux Sprint through its dedicated installer; ordinary Okilum cleanup is disabled.");
+        diagnostic_error!("Remove Linux Sprint through its dedicated installer; ordinary Okilum cleanup is disabled.");
         return 2;
     }
     use std::io::{BufRead, Write};
     let state = crate::reader_history::state_directory().ok();
     let units = crate::reader_settings_sync::managed_service_directory().ok();
     if let Some(reason) = blocked(state.as_deref(), units.as_deref()) {
-        eprintln!("{reason}\nNothing was removed.");
+        diagnostic_error!("{reason}\nNothing was removed.");
         return 2;
     }
     let temp = std::env::temp_dir();
@@ -506,18 +506,22 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         .into_iter()
         .collect();
     if targets.is_empty() {
-        println!("No Okilum data was found for this user. Nothing to remove.");
+        diagnostic_println!("No Okilum data was found for this user. Nothing to remove.");
         return 0;
     }
-    println!("This removes Okilum's settings, history, caches and search index for this user:");
+    diagnostic_println!(
+        "This removes Okilum's settings, history, caches and search index for this user:"
+    );
     for target in &targets {
-        println!("  {}", target.display());
+        diagnostic_println!("  {}", target.display());
     }
-    println!("Your notes stay where they are. Unsaved drafts are saved to Documents first.");
+    diagnostic_println!(
+        "Your notes stay where they are. Unsaved drafts are saved to Documents first."
+    );
     if !vaults.is_empty() {
-        println!("Vaults Okilum knew about (not touched):");
+        diagnostic_println!("Vaults Okilum knew about (not touched):");
         for vault in &vaults {
-            println!("  {}", vault.display());
+            diagnostic_println!("  {}", vault.display());
         }
     }
     if !assume_yes {
@@ -526,7 +530,7 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         let mut answer = String::new();
         let _ = std::io::stdin().lock().read_line(&mut answer);
         if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
-            println!("Nothing was removed.");
+            diagnostic_println!("Nothing was removed.");
             return 1;
         }
     }
@@ -539,7 +543,7 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         .unwrap_or_else(|| home.join("Documents"));
     // Okilum or Sync may have started while the question was open.
     if let Some(reason) = blocked(state.as_deref(), units.as_deref()) {
-        eprintln!("{reason}\nNothing was removed.");
+        diagnostic_error!("{reason}\nNothing was removed.");
         return 2;
     }
     let mut report = purge(&roots(), state.as_deref(), &temp, &documents);
@@ -553,16 +557,16 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         }
     }
     for path in &report.removed {
-        println!("Removed {}", path.display());
+        diagnostic_println!("Removed {}", path.display());
     }
     for path in &report.exported_drafts {
-        println!("Saved unsaved draft to {}", path.display());
+        diagnostic_println!("Saved unsaved draft to {}", path.display());
     }
     for path in &report.kept_holding_vault {
-        println!("Kept {} because it contains notes", path.display());
+        diagnostic_println!("Kept {} because it contains notes", path.display());
     }
     for (path, error) in &report.failed {
-        eprintln!("Could not remove {}: {error}", path.display());
+        diagnostic_error!("Could not remove {}: {error}", path.display());
     }
     if report.failed.is_empty() {
         0
@@ -662,7 +666,7 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
                 &std::env::temp_dir(),
                 &home.join("Documents"),
             );
-            eprintln!("Okilum uninstall: {report:?}");
+            diagnostic_error!("Okilum uninstall: {report:?}");
             let app = std::env::current_exe()
                 .ok()
                 .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))

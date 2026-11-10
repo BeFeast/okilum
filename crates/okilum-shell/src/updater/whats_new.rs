@@ -30,7 +30,7 @@ pub(super) fn install(cx: &mut App) {
                 cx.refresh_windows();
             }),
             Ok(None) => {}
-            Err(error) => eprintln!("What's new state unavailable: {error}"),
+            Err(error) => diagnostic_error!("What's new state unavailable: {error}"),
         }
     })
     .detach();

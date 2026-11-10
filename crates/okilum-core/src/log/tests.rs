@@ -281,7 +281,7 @@ fn throughput_100mb_with_known_counts() {
     assert_eq!(&single, index, "thread count does not change the index");
 
     let mb = index.bytes() as f64 / (1024.0 * 1024.0);
-    println!(
+    diagnostic_println!(
         "indexed {mb:.1} MiB, {} records ({} errors, {} frames joined): {:.3} s parallel ({:.0} MiB/s), {:.3} s one thread ({:.0} MiB/s), index {:.1} MiB",
         index.len(),
         errors,

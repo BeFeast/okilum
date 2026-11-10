@@ -1037,11 +1037,11 @@ fn prepare_rest_with_io_and_snapshot(
             match warm::save_provisional(&snapshot, &vault, &base, opts.note.as_deref()) {
                 Ok(()) => {
                     if let Err(error) = replay.save(&snapshot.id) {
-                        eprintln!("Cannot save replay cursor: {error}");
+                        diagnostic_error!("Cannot save replay cursor: {error}");
                     }
                 }
                 Err(error) => {
-                    eprintln!("Cannot save warm Reader snapshot: {error}");
+                    diagnostic_error!("Cannot save warm Reader snapshot: {error}");
                     if let Some(trace) = &opts.diagnostics {
                         trace.event(
                             "snapshot_persist_failed",
@@ -2126,7 +2126,7 @@ impl Reader {
                                     }));
                                 }
                                 if let Err(error) = cached {
-                                    eprintln!("Cannot cache last Reader document: {error:#}");
+                                    diagnostic_error!("Cannot cache last Reader document: {error:#}");
                                 }
                             }
                         }
@@ -3781,7 +3781,7 @@ mod tests {
                     "no predecessor-root results"
                 );
             });
-            eprintln!(
+            diagnostic_error!(
                 "{count}-note warm switch to vault {index}: first_usable={first:?}; background held; native timing NOT_RUN"
             );
             release.try_send(()).unwrap();
@@ -6047,7 +6047,7 @@ mod tests {
                 });
                 visual.update(|window, _| window.remove_window());
                 visual.run_until_parked();
-                eprintln!(
+                diagnostic_error!(
                     "WARM_FRAME_PROFILE sample={sample} notes={total_notes} links={links} filesystem_delay={filesystem_delay} paragraphs={paragraphs} unreadable={unreadable} first_document_ms={first_document_ms:.2} first_tree_frame_ms={tree_ms:.2} tree_before_reconcile={early_tree}; GPUI test renderer, OS-warm fixture, controlled {delay_ms}ms preferences hold, native timing NOT_RUN"
                 );
             }
@@ -6400,7 +6400,7 @@ mod tests {
             assert_eq!(v.find_input.read(cx).value().as_ref(), "Uncached");
         });
         assert_eq!(std::fs::read_to_string(root.join(deep)).unwrap(), source);
-        eprintln!(
+        diagnostic_error!(
             "338 uncached deep >4KiB selected after publication, 5002 synthetic notes: readable={readable:?}; inventory held; no native timing claim"
         );
     }
@@ -6487,7 +6487,7 @@ mod tests {
             assert_eq!(v.current_rel, "first.md");
             assert_eq!(v.loading.as_ref().unwrap().phase, "Preparation cancelled");
         });
-        eprintln!(
+        diagnostic_error!(
             "progressive GPUI harness, 5001 synthetic notes: first_frame={first_frame:?}, first_document={first:?}, input_scroll={input:?}, cancel_ack={cancelled:?}, worker_teardown={teardown:?}; all input before >3s inventory release; whole_ready=cancelled; native timing NOT_RUN"
         );
         assert_eq!(
@@ -6980,7 +6980,7 @@ mod tests {
                     "bounded graph refresh budget"
                 );
             }
-            eprintln!(
+            diagnostic_error!(
                 "CHANGED_RELAUNCH graph_ms={} search_ms={}",
                 graph["details"]["duration_ms"],
                 events
@@ -7021,12 +7021,12 @@ mod tests {
         }
         #[cfg(target_os = "linux")]
         if let Some(count) = calls {
-            eprintln!(
+            diagnostic_error!(
                 "ACTUAL_FS_CALLS launch={launch} {:?}",
                 (0..4).map(|i| unsafe { count(i) }).collect::<Vec<_>>()
             );
         }
-        eprintln!(
+        diagnostic_error!(
             "UNCHANGED_RELAUNCH launch={launch} first_ms={first_ms:.2} ready_ms={ready_ms:.2} stats={} replay={replay}",
             serde_json::to_string(&stats).unwrap()
         );
@@ -7278,7 +7278,7 @@ mod tests {
         let bytes = std::fs::metadata(cache.join("reader-snapshot.json"))
             .unwrap()
             .len();
-        eprintln!(
+        diagnostic_error!(
             "WARM_TAIL cold rest_ms={:.2} bank_bytes={bytes} notes={}",
             cold.rest_ms,
             cold.sources.len()
@@ -7319,7 +7319,7 @@ mod tests {
                 }
                 line.push_str(&format!(" {phase}={:.2}", ms.unwrap_or(f64::NAN)));
             }
-            eprintln!("{line} tail_ms={tail:.2}");
+            diagnostic_error!("{line} tail_ms={tail:.2}");
             if !cfg!(debug_assertions) {
                 assert!(
                     tail < budget_ms,
@@ -7377,7 +7377,7 @@ mod tests {
             before,
             "all source names/bytes unchanged by cold and warm preparation"
         );
-        eprintln!(
+        diagnostic_error!(
             "5001 nested synthetic notes: cold_whole_ready={cold_ready:?}, warm_whole_ready={warm_ready:?}; same host/session, external cache"
         );
         assert!(matches!(warm, Event::Ready { .. }));

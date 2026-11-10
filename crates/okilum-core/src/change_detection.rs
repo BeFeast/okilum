@@ -167,13 +167,13 @@ pub(crate) fn native_ctime_changes(root: &Path) -> bool {
             let observed = step != 0;
             minimum_step = minimum_step.min(step.abs());
             if !observed {
-                eprintln!("SKIP native ctime test: same-size write with restored mtime is unobservable in this filesystem tick (ctime={}.{:09}); content-fallback tests still run", before.ctime(), before.ctime_nsec());
+                diagnostic_error!("SKIP native ctime test: same-size write with restored mtime is unobservable in this filesystem tick (ctime={}.{:09}); content-fallback tests still run", before.ctime(), before.ctime_nsec());
             }
             if !observed {
                 return false;
             }
         }
-        eprintln!("CTIME_PROBE: 32/32 same-size restored-mtime writes observed; minimum ctime step={minimum_step}ns");
+        diagnostic_error!("CTIME_PROBE: 32/32 same-size restored-mtime writes observed; minimum ctime step={minimum_step}ns");
         true
     }
     #[cfg(not(unix))]

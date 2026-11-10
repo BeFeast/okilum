@@ -105,7 +105,9 @@ fn detect(code: &str) -> Option<&'static str> {
     }
     if lines.iter().any(|l| {
         (l.starts_with("fn ") || l.starts_with("pub fn ")) && l.contains('(') && l.ends_with('{')
-    }) && (code.contains("println!(") || code.contains("use std::") || code.contains("let mut "))
+    }) && (code.contains("diagnostic_println!(")
+        || code.contains("use std::")
+        || code.contains("let mut "))
     {
         candidates.push(("rust", 98));
     }
@@ -173,7 +175,10 @@ mod tests {
             ("[1, 2, 3]", Some("json")),
             ("enabled: true\nname: demo", Some("yaml")),
             ("[package]\nname = \"demo\"\nversion = 1", Some("toml")),
-            ("fn main() {\n println!(\"hi\");\n}", Some("rust")),
+            (
+                "fn main() {\n diagnostic_println!(\"hi\");\n}",
+                Some("rust"),
+            ),
             (
                 "import os\ndef run():\n    return os.getcwd()",
                 Some("python"),
@@ -190,7 +195,7 @@ mod tests {
             ("$ git status", None),
             ("#!/usr/bin/env unknown\nx", None),
             (
-                "fn main() {\nprintln!(\"hi\");\n}\nfunction show() { console.log(1); }",
+                "fn main() {\ndiagnostic_println!(\"hi\");\n}\nfunction show() { console.log(1); }",
                 None,
             ),
         ] {

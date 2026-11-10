@@ -387,7 +387,7 @@ pub(super) mod tests {
             {
                 Ok(child) => child,
                 Err(_) => {
-                    eprintln!("#2006: Xvfb is not installed; X11 clipboard test skipped");
+                    diagnostic_error!("#2006: Xvfb is not installed; X11 clipboard test skipped");
                     return None;
                 }
             };
@@ -653,7 +653,7 @@ pub(super) mod tests {
             .stdin(Stdio::piped())
             .spawn()
         else {
-            eprintln!("#2006: xclip is not installed; foreign-process check skipped");
+            diagnostic_error!("#2006: xclip is not installed; foreign-process check skipped");
             return;
         };
         xclip

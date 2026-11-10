@@ -1902,8 +1902,8 @@ mod tests {
     fn lock_probe_process() {
         let file = File::open(std::env::var_os("SOURCE_LOCK_PROBE").unwrap()).unwrap();
         match file.try_lock() {
-            Ok(()) => println!("LOCK_ACQUIRED"),
-            Err(std::fs::TryLockError::WouldBlock) => println!("LOCK_BLOCKED"),
+            Ok(()) => diagnostic_println!("LOCK_ACQUIRED"),
+            Err(std::fs::TryLockError::WouldBlock) => diagnostic_println!("LOCK_BLOCKED"),
             Err(e) => panic!("unexpected lock error: {e}"),
         }
     }

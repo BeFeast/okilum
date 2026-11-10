@@ -173,13 +173,13 @@ fn corporate_feedback_control() {
                 assert!(error.to_string().contains(expected), "{error:#}");
                 assert!(error.to_string().contains("Your feedback is kept"));
                 assert!(error.to_string().contains("reader-diagnostic.log"));
-                println!("visible_error={}\nfull_chain={error:#}", error);
+                diagnostic_println!("visible_error={}\nfull_chain={error:#}", error);
             }
             _ => panic!("unknown fixture mode: {mode}"),
         }
     }
     assert_eq!(draft.text, report().text);
-    println!("CONTROL PASS mode={mode} endpoint={endpoint} draft=retained");
+    diagnostic_println!("CONTROL PASS mode={mode} endpoint={endpoint} draft=retained");
 }
 
 #[test]

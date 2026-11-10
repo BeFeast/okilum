@@ -121,7 +121,7 @@ fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
 impl Reader {
     fn trace_trash(&self, phase: &'static str, path: &str, reason: Option<&str>, cx: &App) {
         #[cfg(test)]
-        eprintln!("Trash diagnostic: phase={phase}, path={path:?}, reason={reason:?}");
+        diagnostic_error!("Trash diagnostic: phase={phase}, path={path:?}, reason={reason:?}");
         if let Some(trace) = self
             .loading
             .as_ref()

@@ -2103,7 +2103,7 @@ mod tests {
                     ),
                 )
             });
-            eprintln!("typing probe {stage}: history(anchor,rows,renders)={history:?}; requests(revision,observations[cached,current,pinned,notify])={requests:?}; notifications={:?}; panel={:?}; history_bounds={:?}",
+            diagnostic_error!("typing probe {stage}: history(anchor,rows,renders)={history:?}; requests(revision,observations[cached,current,pinned,notify])={requests:?}; notifications={:?}; panel={:?}; history_bounds={:?}",
                 counts.iter().map(Cell::get).collect::<Vec<_>>(),
                 visual.debug_bounds("project-native-actions"),
                 visual.debug_bounds("project-history"));

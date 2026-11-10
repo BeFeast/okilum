@@ -113,7 +113,7 @@ impl Board {
                         this.local_loading = false;
                         if this.local_cards.error != previous {
                             if let Some(error) = &this.local_cards.error {
-                                eprintln!("Board local cards: {error}");
+                                diagnostic_error!("Board local cards: {error}");
                             }
                         }
                         cx.notify();
@@ -235,7 +235,7 @@ impl Board {
                                 }
                                 Err(error) => {
                                     let detail = format!("{error:#}");
-                                    eprintln!("Board local card write refused: {detail}");
+                                    diagnostic_error!("Board local card write refused: {detail}");
                                     editor.error = Some(detail);
                                 }
                             }

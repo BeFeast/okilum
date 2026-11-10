@@ -218,7 +218,7 @@ pub(crate) fn install(cx: &mut App) {
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    eprintln!("Native QA command failed: {error:#}");
+                    diagnostic_error!("Native QA command failed: {error:#}");
                     cx.quit();
                 }
             });

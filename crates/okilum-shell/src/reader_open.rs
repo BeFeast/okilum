@@ -1805,7 +1805,7 @@ fn open_error_text(error: &anyhow::Error) -> String {
 }
 
 pub(crate) fn show_error(error: anyhow::Error, cx: &mut App) {
-    eprintln!("Cannot open document: {error:#}");
+    diagnostic_error!("Cannot open document: {error:#}");
     let message = open_error_text(&error);
     let (options, frame_key) = super::window_state::prepare(window_options(cx), "open-error", cx);
     let result = cx.open_window(options, |window, cx| {
@@ -1816,7 +1816,7 @@ pub(crate) fn show_error(error: anyhow::Error, cx: &mut App) {
         root
     });
     if let Err(error) = result {
-        eprintln!("Cannot show open failure: {error:#}");
+        diagnostic_error!("Cannot show open failure: {error:#}");
     }
 }
 

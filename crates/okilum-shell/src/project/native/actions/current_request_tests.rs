@@ -269,7 +269,7 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
     show(&view, visual, 1000, vec![question]);
     let logical_after =
         view.read_with(visual, |view, cx| view.feed.read(cx).test_scroll_anchor(cx));
-    eprintln!("request arrival: logical_before={logical_before:?}; logical_after={logical_after:?}; topmost_full_source={position}; pixel_offset={before:?}");
+    diagnostic_error!("request arrival: logical_before={logical_before:?}; logical_after={logical_after:?}; topmost_full_source={position}; pixel_offset={before:?}");
     assert_eq!(
         Some(logical_before.clone()),
         logical_after,
@@ -391,7 +391,7 @@ fn a_long_unconfirmed_message_cannot_bury_the_current_request(cx: &mut TestAppCo
     );
     let panel = visual.debug_bounds("project-native-actions").unwrap();
     let form = visual.debug_bounds("project-current-request").unwrap();
-    eprintln!("short current form vs retained recovery: panel={panel:?}; form={form:?}");
+    diagnostic_error!("short current form vs retained recovery: panel={panel:?}; form={form:?}");
     assert!(
         form.origin.y >= panel.origin.y && form.bottom() <= panel.bottom(),
         "the current form is visible before long recovery details"

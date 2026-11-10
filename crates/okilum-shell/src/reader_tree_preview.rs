@@ -114,7 +114,7 @@ impl Reader {
         });
         if let Err(error) = result {
             self.tree_preview.close();
-            eprintln!("Cannot preview file {}: {error:#}", row.path);
+            diagnostic_error!("Cannot preview file {}: {error:#}", row.path);
             reader_toast::error(reader_files::preview_error_text(&error), window, cx);
             return;
         }

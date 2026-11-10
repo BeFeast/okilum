@@ -226,7 +226,7 @@ fn append_report(root: Option<&Path>, state: Option<&Path>, report: &serde_json:
         Ok(())
     })();
     if let Err(error) = result {
-        eprintln!("Cannot save Reader diagnostic: {error:#}");
+        diagnostic_error!("Cannot save Reader diagnostic: {error:#}");
     }
 }
 
@@ -274,7 +274,7 @@ pub(super) fn record_scan_with_warnings(
         return;
     }
     for item in vault.unreadable.iter().chain(warnings) {
-        eprintln!(
+        diagnostic_error!(
             "Skipping {} during {}: {}",
             item.path.display(),
             item.operation,
@@ -306,7 +306,7 @@ pub(super) fn record_move_preview(
 }
 
 pub(super) fn record_failure(root: &Path, state: Option<&Path>, error: &anyhow::Error) {
-    eprintln!(
+    diagnostic_error!(
         "Reader preparation failed for {}: {error:#}",
         root.display()
     );

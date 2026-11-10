@@ -312,7 +312,7 @@ impl Reader {
                         None
                     }
                     Err(error) => {
-                        eprintln!("Could not check returned note: {error:#}");
+                        diagnostic_error!("Could not check returned note: {error:#}");
                         return;
                     }
                 };
@@ -475,7 +475,7 @@ impl Reader {
                 );
             }
             Err(error) => {
-                eprintln!("Could not restore the deleted note: {error:#}");
+                diagnostic_error!("Could not restore the deleted note: {error:#}");
                 reader_toast::error(
                     "The note couldn’t be restored. Use Save As… to keep its contents elsewhere.",
                     window,
@@ -510,7 +510,7 @@ impl Reader {
                 self.reconcile_document_source(Some(raw.into()), window, cx);
             }
             Err(error) => {
-                eprintln!("Could not reload the returned note: {error:#}");
+                diagnostic_error!("Could not reload the returned note: {error:#}");
                 reader_toast::error("The note on disk couldn’t be read.", window, cx);
             }
         }
@@ -572,7 +572,7 @@ impl Reader {
                 }
                 let written = save_new_copy(&path, &contents);
                 if let Err(error) = written {
-                    eprintln!("Could not save the deleted note: {error:#}");
+                    diagnostic_error!("Could not save the deleted note: {error:#}");
                     reader_toast::error(
                         "The note couldn’t be saved there. Choose a new filename; existing files are never overwritten.",
                         window,

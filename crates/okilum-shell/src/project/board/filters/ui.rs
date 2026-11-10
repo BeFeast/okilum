@@ -69,7 +69,7 @@ impl Board {
                 cx.background_executor()
                     .spawn(async move {
                         if let Err(error) = model.save(&directory, &area) {
-                            eprintln!("Board filter preferences: {error:#}");
+                            diagnostic_error!("Board filter preferences: {error:#}");
                         }
                     })
                     .await;

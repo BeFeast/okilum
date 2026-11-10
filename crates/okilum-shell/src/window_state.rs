@@ -349,7 +349,7 @@ fn flush(cx: &mut App) {
         Ok(())
     })();
     if let Err(error) = result {
-        eprintln!("Cannot save window geometry: {error:#}");
+        diagnostic_error!("Cannot save window geometry: {error:#}");
     }
 }
 

@@ -170,7 +170,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     let started = Instant::now();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let draw = started.elapsed();
-    eprintln!(
+    diagnostic_error!(
         "DATA_VIEW_2669 minified_bytes={} first_draw_ms={}",
         source.len(),
         draw.as_millis()
@@ -281,7 +281,7 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
     let started = Instant::now();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let draw = started.elapsed();
-    eprintln!(
+    diagnostic_error!(
         "DATA_VIEW_2669 multiline_bytes={} first_draw_ms={}",
         source.len(),
         draw.as_millis()
@@ -396,6 +396,10 @@ fn json2787_multi_megabyte_pretty_raw_toggles_keep_complete_valid_snapshot(
         });
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
+            assert!(
+                p.table.is_none(),
+                "object JSON must never start an array table reader"
+            );
             let json = p.json.as_ref().unwrap();
             assert!(matches!(json.pretty, Some(Ok(_))));
             assert_eq!(json.showing_pretty, round % 2 == 0);

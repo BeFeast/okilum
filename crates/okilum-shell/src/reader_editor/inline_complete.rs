@@ -514,7 +514,7 @@ mod tests {
                 samples[variant].push(start.elapsed().as_secs_f64() * 1000.0);
             }
         }
-        println!(
+        diagnostic_println!(
             "COMPLETION_RANK_AB {}",
             serde_json::json!({
                 "notes": paths.len(), "queries": queries, "boundary": "rank-score-only",

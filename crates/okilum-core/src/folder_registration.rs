@@ -48,7 +48,7 @@ fn registry(args: &[String]) {
         .status()
     {
         Ok(status) if status.success() => {}
-        result => eprintln!("Folder verb registration: {result:?}"),
+        result => diagnostic_error!("Folder verb registration: {result:?}"),
     }
 }
 
@@ -65,7 +65,7 @@ pub fn install(executable: &std::path::Path) {
 pub fn install_current() {
     match std::env::current_exe() {
         Ok(executable) => install(&executable),
-        Err(error) => eprintln!("Folder verb executable resolution failed: {error}"),
+        Err(error) => diagnostic_error!("Folder verb executable resolution failed: {error}"),
     }
 }
 

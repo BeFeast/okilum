@@ -54,7 +54,7 @@ fn install_termination(cx: &mut App) {
     let signals = match TerminationSignals::install() {
         Ok(signals) => signals,
         Err(error) => {
-            eprintln!("Cannot install graceful termination handlers: {error}");
+            diagnostic_error!("Cannot install graceful termination handlers: {error}");
             return;
         }
     };
@@ -204,7 +204,7 @@ pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mu
             }
             Err(error) => {
                 recovering = true;
-                eprintln!("Cannot record Reader launch: {error}");
+                diagnostic_error!("Cannot record Reader launch: {error}");
             }
         }
     }
@@ -221,7 +221,7 @@ pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mu
             }
             for run in runs.iter() {
                 if let Err(error) = run.clean() {
-                    eprintln!("Cannot finish Reader launch marker: {error}");
+                    diagnostic_error!("Cannot finish Reader launch marker: {error}");
                 }
             }
         }
@@ -265,7 +265,7 @@ mod tests {
         let signals = TerminationSignals::install().unwrap();
         let run = Run::begin(&directory).unwrap();
         use std::io::Write;
-        println!("SIGNALS_READY");
+        diagnostic_println!("SIGNALS_READY");
         std::io::stdout().flush().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !signals.requested() {

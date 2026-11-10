@@ -336,7 +336,7 @@ fn open(reader: &WeakEntity<Reader>, root: &Path, cx: &mut App) {
     reader_open::focused(reader.clone(), cx);
     reader_startup::supersede(cx);
     if let Err(error) = reader_open::open_window(opts, cx) {
-        eprintln!("Cannot open known vault: {error:#}");
+        diagnostic_error!("Cannot open known vault: {error:#}");
     }
 }
 

@@ -1019,7 +1019,7 @@ mod tests {
         let baseline_startup_ms = startup.elapsed().as_secs_f64() * 1000.;
         let index_started = std::time::Instant::now();
         let index = CandidateIndex::from_snapshot(&snapshot);
-        eprintln!("MOVE_INDEX_STARTUP read_delay_ms={delay_ms} baseline_ms={baseline_startup_ms:.2} index_build_ms={:.2} with_index_ms={:.2}",
+        diagnostic_error!("MOVE_INDEX_STARTUP read_delay_ms={delay_ms} baseline_ms={baseline_startup_ms:.2} index_build_ms={:.2} with_index_ms={:.2}",
             index_started.elapsed().as_secs_f64()*1000., startup.elapsed().as_secs_f64()*1000.);
         let mut read = |path: &Path| {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -1037,7 +1037,7 @@ mod tests {
             .unwrap();
             assert_eq!(preview.changed_notes(), 4);
             assert_eq!(preview.changes.len(), 12);
-            eprintln!(
+            diagnostic_error!(
                 "MOVE_PREVIEW_BASELINE sample={sample} notes=5001 {:?}",
                 preview.timings
             );
@@ -1055,7 +1055,7 @@ mod tests {
                 serde_json::to_value(&preview.changes).unwrap()
             );
             assert_eq!(fast.timings.files_read, 5);
-            eprintln!(
+            diagnostic_error!(
                 "MOVE_PREVIEW_INDEXED sample={sample} notes=5001 {:?}",
                 fast.timings
             );

@@ -57,7 +57,7 @@ impl Board {
                         let current = this.delivery.problems(now(), binding_refresh(this));
                         if current != old {
                             for problem in current {
-                                eprintln!("Board delivery: {problem}");
+                                diagnostic_error!("Board delivery: {problem}");
                             }
                         }
                         cx.notify();

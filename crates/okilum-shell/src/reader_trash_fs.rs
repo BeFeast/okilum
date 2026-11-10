@@ -546,7 +546,7 @@ fn system_trash(
         );
         let domain = error.domain().to_string();
         let code = error.code() as i64;
-        eprintln!("Native Trash refused domain={domain} code={code}: {error}");
+        diagnostic_error!("Native Trash refused domain={domain} code={code}: {error}");
         if no_volume_trash(&domain, code) {
             return Err(TrashUnavailable.into());
         }

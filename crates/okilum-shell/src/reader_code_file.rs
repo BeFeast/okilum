@@ -177,11 +177,7 @@ impl CodePreview {
     ) -> Self {
         let started = Instant::now();
         let json = is_json(&rel);
-        let table =
-            json.then(|| cx.new(|cx| reader_delimited::TablePreview::new(path.clone(), cx)));
-        if let Some(table) = &table {
-            cx.observe(table, |_, _, cx| cx.notify()).detach();
-        }
+        let table_path = path.clone();
         let task = cx.background_executor().spawn(async move {
             if std::fs::metadata(&path)?.len() > MAX_BYTES {
                 return anyhow::Ok(Loaded::TooLarge);
@@ -217,6 +213,18 @@ impl CodePreview {
                 this.state = match result {
                     Ok(Loaded::Text(text, pretty)) => {
                         this.source_bytes = Some(text.len());
+                        if json
+                            && text
+                                .trim_start_matches('\u{feff}')
+                                .trim_start()
+                                .starts_with('[')
+                        {
+                            let table = cx.new(|cx| {
+                                reader_delimited::TablePreview::new(table_path.clone(), cx)
+                            });
+                            cx.observe(&table, |_, _, cx| cx.notify()).detach();
+                            this.table = Some(table);
+                        }
                         let shown = if json {
                             let showing_pretty =
                                 !reader_ui_state::json_raw(cx) && matches!(pretty, Some(Ok(_)));
@@ -235,7 +243,7 @@ impl CodePreview {
                         let apply_started = Instant::now();
                         let input = cx.new(|cx| editor(language, &shown[range], window, cx));
                         if shown.len() > EDIT_BYTES {
-                            eprintln!(
+                            diagnostic_error!(
                                 "DATA_VIEW_2669 bytes={} editor_apply_ms={}",
                                 shown.len(),
                                 apply_started.elapsed().as_millis()
@@ -269,7 +277,7 @@ impl CodePreview {
             state: State::Loading,
             source_bytes: None,
             json: None,
-            table,
+            table: None,
             show_table: true,
             document: None,
             page: 0,
@@ -617,7 +625,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     if std::env::var("OKILUM_CODE_TIMING").as_deref() != Ok("1") {
         return;
     }
-    eprintln!(
+    diagnostic_error!(
         "code_preview text_ready_ms={}",
         started.elapsed().as_millis()
     );
@@ -625,7 +633,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     cx.observe(input, move |_, input, cx| {
         if !reported && !input.read(cx).highlighting_pending() {
             reported = true;
-            eprintln!(
+            diagnostic_error!(
                 "code_preview highlighted_ms={}",
                 started.elapsed().as_millis()
             );
@@ -940,6 +948,6 @@ mod native_tests;
 #[cfg(feature = "data-view-native-harness")]
 fn native_trace(phase: &str) {
     if std::env::var_os("OKILUM_DATA_VIEW_NATIVE_FIXTURE").is_some() {
-        eprintln!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
+        diagnostic_error!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
     }
 }

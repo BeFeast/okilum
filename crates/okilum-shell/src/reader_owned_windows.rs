@@ -102,7 +102,7 @@ pub(crate) fn attach(owner: Option<AnyWindowHandle>, tool: &Window, cx: &mut App
         .update(cx, |_, owner, _| native::attach(owner, tool))
         .and_then(|r| r)
     {
-        eprintln!("Could not attach tool window to its owner: {error:#}");
+        diagnostic_error!("Could not attach tool window to its owner: {error:#}");
     }
     #[cfg(windows)]
     // GPUI 0.3.3 WindowsWindow::activate first applies the initial placement

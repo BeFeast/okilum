@@ -190,7 +190,7 @@ impl Reader {
                     }
                 };
                 if delivered.is_err() {
-                    eprintln!("New project: the window that asked is gone");
+                    diagnostic_error!("New project: the window that asked is gone");
                 }
             })
         });
@@ -301,7 +301,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         let vault = self.vault_root.clone();
-        eprintln!(
+        diagnostic_error!(
             "New project: creating name={:?} kind={:?} folder={} t3={}",
             draft.name,
             draft.kind,
@@ -322,7 +322,7 @@ impl Reader {
                 }
             });
             if let Err(error) = delivered {
-                eprintln!("New project: the result did not reach the window: {error:#}");
+                diagnostic_error!("New project: the result did not reach the window: {error:#}");
             }
         })
         .detach();
@@ -341,14 +341,14 @@ impl Reader {
         let created = match written {
             Ok(created) => created,
             Err(error) => {
-                eprintln!("New project: not created: {error:#}");
+                diagnostic_error!("New project: not created: {error:#}");
                 let _ = dialog.update(cx, |dialog, cx| {
                     dialog.set_error(Some(format!("{error:#}")), cx)
                 });
                 return;
             }
         };
-        eprintln!(
+        diagnostic_error!(
             "New project: wrote {} index={}",
             created.project.folder.join(create::MANIFEST).display(),
             created.wrote_index
@@ -640,7 +640,7 @@ impl Reader {
                 }
             });
             if let Err(error) = delivered {
-                eprintln!("New project: the T3 result did not reach the window: {error:#}");
+                diagnostic_error!("New project: the T3 result did not reach the window: {error:#}");
             }
         })
         .detach();
@@ -656,7 +656,7 @@ impl Reader {
         let (alias, created, linked) = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                eprintln!(
+                diagnostic_error!(
                     "New project: T3 did not create {:?}: {error:#}",
                     project.name
                 );
@@ -671,9 +671,11 @@ impl Reader {
                 return;
             }
         };
-        eprintln!(
+        diagnostic_error!(
             "New project: t3={alias} project={} root={} reused={}",
-            created.project.id, created.project.workspace_root, created.reused
+            created.project.id,
+            created.project.workspace_root,
+            created.reused
         );
         let folder = project.folder.clone();
         match linked {

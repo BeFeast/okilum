@@ -745,7 +745,7 @@ mod tests {
         i.refresh(now, now - 1000, now - DAY);
         let batch = start.elapsed();
         assert_eq!(i.rows().count(), 5420);
-        println!(
+        diagnostic_println!(
             "WORKBENCH_BENCH full_ms={:.3} batch20_ms={:.3}",
             full.as_secs_f64() * 1000.,
             batch.as_secs_f64() * 1000.

@@ -191,7 +191,7 @@ impl RenderOnce for MermaidView {
                     s.last_fallback.replace(request.key.clone()).as_ref() != Some(&request.key)
                 });
                 if first {
-                    eprintln!("Mermaid fallback: {}", render::fallback_reason(&error));
+                    diagnostic_error!("Mermaid fallback: {}", render::fallback_reason(&error));
                 }
                 None
             }

@@ -159,7 +159,7 @@ impl TablePreview {
                         this.refilter(cx);
                     }
                     Err(error) => {
-                        eprintln!("Cannot read delimited file: {error:#}");
+                        diagnostic_error!("Cannot read delimited file: {error:#}");
                         this.error = Some(if this.json() {
                             "This JSON couldn’t be shown as a table. Use Source to inspect it."
                         } else if error.kind() == std::io::ErrorKind::InvalidData {

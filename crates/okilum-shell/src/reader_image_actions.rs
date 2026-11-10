@@ -50,7 +50,7 @@ pub(super) struct ImageCommand {
 /// Opt-in native QA diagnostics; never include paths or source text.
 fn diagnostics(message: impl std::fmt::Display) {
     if std::env::var_os("OKILUM_EMBED_DIAGNOSTICS").is_some() {
-        eprintln!("embed-actions: {message}");
+        diagnostic_error!("embed-actions: {message}");
     }
 }
 

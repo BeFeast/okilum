@@ -390,7 +390,7 @@ impl Reader {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        eprintln!("Shared vault needs reconciliation: {error:#}");
+                        diagnostic_error!("Shared vault needs reconciliation: {error:#}");
                         shared.reload = true;
                         merge(&mut shared.pending, changes);
                     }
@@ -470,7 +470,7 @@ fn update(
             index,
             !batch.affected.is_empty(),
         ) {
-            eprintln!("Shared vault cache checkpoint failed: {error:#}");
+            diagnostic_error!("Shared vault cache checkpoint failed: {error:#}");
         }
     }
     if !published.vault.publish_semantics(&state.vault) {

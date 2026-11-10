@@ -48,8 +48,8 @@ fn install_opaque_settings_rule(cx: &App) {
             .output();
         match result {
             Ok(output) if output.status.success() && output.stdout == b"ok\n" => {}
-            Ok(output) => eprintln!("Could not request opaque Settings: {}", String::from_utf8_lossy(&output.stdout).trim()),
-            Err(error) => eprintln!("Could not request opaque Settings: {error}"),
+            Ok(output) => diagnostic_error!("Could not request opaque Settings: {}", String::from_utf8_lossy(&output.stdout).trim()),
+            Err(error) => diagnostic_error!("Could not request opaque Settings: {error}"),
         }
     }).detach();
 }
@@ -237,7 +237,7 @@ fn show_section_from(
                 cx.global_mut::<SettingsOwners>().0.insert(owner_id, handle);
                 cx.set_global(SettingsWindow(Some(handle)));
             }
-            Err(error) => eprintln!("Could not open Settings: {error}"),
+            Err(error) => diagnostic_error!("Could not open Settings: {error}"),
         }
     });
 }

@@ -279,7 +279,7 @@ impl Fixture {
         );
         assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_OWNER as i32));
         assert!(!path.exists(), "failed creation must publish no file");
-        eprintln!("Windows owner fixture: restricted token active; CreateFileW rejected Administrators owner with ERROR_INVALID_OWNER (1307)");
+        diagnostic_error!("Windows owner fixture: restricted token active; CreateFileW rejected Administrators owner with ERROR_INVALID_OWNER (1307)");
         guard
     }
 }
@@ -424,7 +424,7 @@ fn windows_save_owner_fallback_repairs_replacefile_administrators_acl_drift() {
                 .any(|ace| ace[1] == 0 && ace.ends_with(&fixture.admin)),
             "raw ReplaceFileW must add the explicit Administrators ACE"
         );
-        println!("Windows DACL fixture: raw ReplaceFileW added explicit Administrators grant; restricted-token positive control");
+        diagnostic_println!("Windows DACL fixture: raw ReplaceFileW added explicit Administrators grant; restricted-token positive control");
         // Put the original source back; the raw-control replacement is our
         // fixture, not a product save or any user's note.
         fs::remove_file(&path).unwrap();
@@ -852,7 +852,7 @@ fn windows_save_administrators_owner_preserves_inherited_and_explicit_dacl() {
         aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 == 0),
         "explicit ACE positive control"
     );
-    println!("Windows inheritance fixture: parent OI/CI grants verified; child has inherited and explicit ACEs with unprotected DACL");
+    diagnostic_println!("Windows inheritance fixture: parent OI/CI grants verified; child has inherited and explicit ACEs with unprotected DACL");
     let _limited = fixture.impersonate();
     assert_access_and_dacl(&path, &before);
     let directory = Directory::open(&parent).unwrap();

@@ -118,7 +118,9 @@ pub(super) fn app_owns(controller: &Controller) {
             })
         })
         // One attempt until Sync is turned off; commands then refuse as before.
-        .map_err(|error| eprintln!("okilum: `okilum sync` cannot reach this app: {error:#}"))
+        .map_err(|error| {
+            diagnostic_error!("okilum: `okilum sync` cannot reach this app: {error:#}")
+        })
         .ok();
     *app = Some((current, host));
 }

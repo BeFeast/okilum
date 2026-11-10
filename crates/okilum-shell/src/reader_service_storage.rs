@@ -21,7 +21,7 @@ pub(crate) fn command_line() -> Option<i32> {
         return None;
     }
     if arguments.len() != 3 {
-        eprintln!("Usage: okilum service-path <owning-context> <project|board|board-local|service-filename> (JSON; read-only)");
+        diagnostic_error!("Usage: okilum service-path <owning-context> <project|board|board-local|service-filename> (JSON; read-only)");
         return Some(64);
     }
     let result = (|| -> Result<serde_json::Value> {
@@ -49,11 +49,11 @@ pub(crate) fn command_line() -> Option<i32> {
     })();
     Some(match result {
         Ok(value) => {
-            println!("{value}");
+            diagnostic_println!("{value}");
             0
         }
         Err(error) => {
-            eprintln!("Service storage: {error:#}");
+            diagnostic_error!("Service storage: {error:#}");
             1
         }
     })

@@ -1028,8 +1028,13 @@ mod tests {
         poll(visual);
         assert_eq!(value(&note, visual), NOTE);
 
-        save(visual, &path, "fn main() {\n    println!(\"hi\");\n}\n");
-        let edited = "# Plan\n\n```rs\nfn main() {\n    println!(\"hi\");\n}\n```\n\nAfter.\n";
+        save(
+            visual,
+            &path,
+            "fn main() {\n    diagnostic_println!(\"hi\");\n}\n",
+        );
+        let edited =
+            "# Plan\n\n```rs\nfn main() {\n    diagnostic_println!(\"hi\");\n}\n```\n\nAfter.\n";
         assert_eq!(value(&note, visual), edited);
         assert!(
             visual.debug_bounds("external-block-undo").is_some(),

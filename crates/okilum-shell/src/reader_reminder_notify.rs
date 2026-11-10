@@ -75,12 +75,12 @@ fn load(path: &Path) -> Ledger {
     match std::fs::read_to_string(path) {
         Ok(json) => Ledger::from_json(&json).unwrap_or_else(|error| {
             // Rebuilt silently by the next evaluation: never replay old reminders.
-            eprintln!("Reminder ledger ignored: {error:#}");
+            diagnostic_error!("Reminder ledger ignored: {error:#}");
             Ledger::default()
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ledger::default(),
         Err(error) => {
-            eprintln!("Reminder ledger unreadable: {error:#}");
+            diagnostic_error!("Reminder ledger unreadable: {error:#}");
             Ledger::default()
         }
     }
@@ -213,7 +213,9 @@ impl Reader {
                         }
                     }
                     Err(error) => {
-                        eprintln!("Reminder ledger not saved, nothing was shown: {error:#}");
+                        diagnostic_error!(
+                            "Reminder ledger not saved, nothing was shown: {error:#}"
+                        );
                         this.arm_reminder_wake(Some(now + time::Duration::minutes(5)), now, cx);
                     }
                 }

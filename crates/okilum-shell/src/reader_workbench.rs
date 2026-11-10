@@ -1352,10 +1352,10 @@ mod tests {
         }
         batch.refresh(now, midnight, yesterday);
         let cost = start.elapsed();
-        println!("WORKBENCH_LIVE notes={} active7={} older14={} today={} places={} full_ms={:.3} batch20_ms={:.3}", sources.len(), index.view.active.len(), index.view.older,
+        diagnostic_println!("WORKBENCH_LIVE notes={} active7={} older14={} today={} places={} full_ms={:.3} batch20_ms={:.3}", sources.len(), index.view.active.len(), index.view.older,
             index.view.days[0].count, index.view.days[0].places.len(), full.as_secs_f64()*1000., cost.as_secs_f64()*1000.);
         for activity in &index.view.active {
-            println!("ACTIVE {}", activity.unit.path);
+            diagnostic_println!("ACTIVE {}", activity.unit.path);
         }
     }
 }

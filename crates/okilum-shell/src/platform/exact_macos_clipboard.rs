@@ -89,15 +89,15 @@ fn read_text(board: &impl Pasteboard) -> Result<Option<String>, OfferError> {
     match offer::read_offer_with(board, false)? {
         PasteOffer::Text(text) => Ok(Some(text)),
         PasteOffer::Image(_) => {
-            eprintln!("Paste: the clipboard holds an image; this field takes text only");
+            diagnostic_error!("Paste: the clipboard holds an image; this field takes text only");
             Ok(None)
         }
         PasteOffer::Files(_) => {
-            eprintln!("Paste: the clipboard holds files; this field takes text only");
+            diagnostic_error!("Paste: the clipboard holds files; this field takes text only");
             Ok(None)
         }
         PasteOffer::Nothing { types } => {
-            eprintln!("Paste: no text on the clipboard; types: {types:?}");
+            diagnostic_error!("Paste: no text on the clipboard; types: {types:?}");
             Ok(None)
         }
     }

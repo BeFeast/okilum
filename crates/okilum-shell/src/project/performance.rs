@@ -19,7 +19,7 @@ pub(super) fn populate(project: &Entity<ProjectView>, cx: &mut App) {
             runs.push(json!({"id":run,"threadId":"mcp:fixture-manager","ordinal":turn,"status":"completed"}));
             for (part, kind) in ["user_message", "command_execution", "file_search", "command_execution", "assistant_message", "assistant_message"].into_iter().enumerate() {
                 let id = format!("item-{turn}-{part}");
-                let text = format!("## Synthetic message {turn}/{part}\n\nRetain **source identity**, [documentation](https://example.test) and tool output.\n\n- Verify the local fixture.\n- Keep the next delivery available.\n\n```rust\nfn example() {{ println!(\"fixture\"); }}\n```\n\n{}", "A realistic paragraph wraps within the Manager reading column. ".repeat(8));
+                let text = format!("## Synthetic message {turn}/{part}\n\nRetain **source identity**, [documentation](https://example.test) and tool output.\n\n- Verify the local fixture.\n- Keep the next delivery available.\n\n```rust\nfn example() {{ diagnostic_println!(\"fixture\"); }}\n```\n\n{}", "A realistic paragraph wraps within the Manager reading column. ".repeat(8));
                 rows.push(Arc::new(TurnRow {
                     key: RowKey { thread:"mcp:fixture-manager".into(), item:id.clone() },
                     local:true,
@@ -46,15 +46,15 @@ pub(super) fn collect(cx: &mut App) {
         loop {
             _cx.background_executor().timer(Duration::from_millis(250)).await;
             let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 31]);
-            eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2],"stages":&work[3..15],"composer":{"build":work[27],"phases":&work[15..19]},"manager_chrome":{"build":work[28],"phases":&work[19..23]},"reader_header":{"build":work[29],"phases":&work[23..27]},"reader_build":work[30]}));
+            diagnostic_error!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2],"stages":&work[3..15],"composer":{"build":work[27],"phases":&work[15..19]},"manager_chrome":{"build":work[28],"phases":&work[19..23]},"reader_header":{"build":work[29],"phases":&work[23..27]},"reader_build":work[30]}));
             for event in collector.collect_unseen() {
                 if let gpui::profiler::FrameEvent::Present(frame) = event {
                     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() - frame.present_end.elapsed().as_secs_f64();
-                    eprintln!("PRESENT {}", json!({"unix":unix,"present_ms":frame.present_duration().as_secs_f64()*1000.}));
+                    diagnostic_error!("PRESENT {}", json!({"unix":unix,"present_ms":frame.present_duration().as_secs_f64()*1000.}));
                 }
                 if let gpui::profiler::FrameEvent::Draw(frame) = event {
                     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() - frame.draw_end.elapsed().as_secs_f64();
-                    eprintln!("PERF {}", json!({"unix":unix,"draw_ms":frame.draw_duration().as_secs_f64()*1000.,"invalidations":frame.invalidations}));
+                    diagnostic_error!("PERF {}", json!({"unix":unix,"draw_ms":frame.draw_duration().as_secs_f64()*1000.,"invalidations":frame.invalidations}));
                 }
             }
         }

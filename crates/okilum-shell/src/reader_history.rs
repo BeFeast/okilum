@@ -121,7 +121,7 @@ struct HistoryLock(fs::File);
 impl Drop for HistoryLock {
     fn drop(&mut self) {
         if let Err(error) = self.0.unlock() {
-            eprintln!("Cannot release Reader history lock: {error}");
+            diagnostic_error!("Cannot release Reader history lock: {error}");
         }
     }
 }
@@ -441,7 +441,7 @@ impl ReadingHistory {
                 // failure must not turn successful recovery into a failed open.
                 #[cfg(unix)]
                 if let Err(error) = fs::File::open(directory).and_then(|file| file.sync_all()) {
-                    eprintln!("Cannot sync recovered reading history directory: {error}");
+                    diagnostic_error!("Cannot sync recovered reading history directory: {error}");
                 }
                 Ok((
                     None,

@@ -11,7 +11,7 @@ fn registry(args: &[&str]) {
         .status()
     {
         Ok(status) if status.success() => {}
-        result => eprintln!("Markdown handler registration: {result:?}"),
+        result => diagnostic_error!("Markdown handler registration: {result:?}"),
     }
 }
 

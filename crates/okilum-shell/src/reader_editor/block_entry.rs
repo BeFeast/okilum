@@ -522,7 +522,7 @@ mod tests {
                 "raw fallback is not evidence"
             );
             for frame in frames {
-                eprintln!(
+                diagnostic_error!(
                     "OK38 bytes={} raw={} projection_composes={} prepaint_ms={} reshape_ms={}",
                     note.len(),
                     frame.raw,
