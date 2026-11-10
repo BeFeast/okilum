@@ -588,6 +588,14 @@ fn open_menu(
     menu
 }
 
+fn file_width_label(cx: &App) -> &'static str {
+    if reader_ui_state::full_note_width(cx) {
+        "Normal width"
+    } else {
+        "Full width"
+    }
+}
+
 #[inline(never)]
 fn window_slot(
     reader: &Reader,
@@ -605,7 +613,7 @@ fn window_slot(
                 } else {
                     brand::NOTE_WIDTH_FULL_ICON
                 }),
-                reader_shortcuts::hint(note_width_label(cx), &ToggleNoteWidth, cx),
+                reader_shortcuts::hint(file_width_label(cx), &ToggleNoteWidth, cx),
                 cx,
             )
             .debug_selector(|| "note-width".into())
@@ -623,7 +631,7 @@ fn window_slot(
                     if reader.panels.maximized() {
                         "Restore panels"
                     } else {
-                        "Maximize note"
+                        "Maximize"
                     },
                     &MaximizeNote,
                     cx,
@@ -665,7 +673,7 @@ fn window_slot(
                     Box::new(FocusCurrentFolder),
                 );
                 if hidden_width {
-                    m = m.menu(note_width_label(cx), Box::new(ToggleNoteWidth));
+                    m = m.menu(file_width_label(cx), Box::new(ToggleNoteWidth));
                 }
                 if hidden_maximize {
                     m = m.menu("Maximize / restore", Box::new(MaximizeNote));
