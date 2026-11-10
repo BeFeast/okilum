@@ -757,6 +757,7 @@ impl Reader {
                 .into_any_element();
         }
         let mut view = v_flex()
+            .debug_selector(|| "reader-file-content".into())
             .flex_none()
             .px_6()
             .pb_6()

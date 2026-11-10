@@ -23,7 +23,7 @@ fn fixture<'a>(
         ("scene.canvas", "{\"nodes\":[],\"edges\":[]}"),
         (
             "drawing.excalidraw",
-            "{\"type\":\"excalidraw\",\"version\":2,\"elements\":[],\"appState\":{},\"files\":{}}",
+            r##"{"type":"excalidraw","version":2,"elements":[{"id":"tall","type":"rectangle","x":0,"y":0,"width":600,"height":4000,"strokeColor":"#000000","backgroundColor":"#0969e8","fillStyle":"solid","seed":42,"roughness":0}],"appState":{},"files":{}}"##,
         ),
     ] {
         std::fs::write(root.join(name), value).unwrap();
@@ -225,12 +225,24 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
         reader.update_in(visual, |r, w, cx| r.preview_file(name, w, cx));
         visual.run_until_parked();
         let before = visual.debug_bounds("document-header-viewport").unwrap();
+        let marker = if name == "image.svg" {
+            "reader-file-content"
+        } else {
+            "drawing-canvas-content"
+        };
+        let content_before = visual
+            .debug_bounds(marker)
+            .expect("scrollable content mounted");
         visual.simulate_event(ScrollWheelEvent {
             position: point(before.center().x, before.bottom() + px(100.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(-800.))),
             ..Default::default()
         });
         visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(marker).unwrap().top() < content_before.top(),
+            "positive control: {name} content actually scrolled"
+        );
         assert_eq!(
             visual.debug_bounds("document-header-viewport").unwrap(),
             before
