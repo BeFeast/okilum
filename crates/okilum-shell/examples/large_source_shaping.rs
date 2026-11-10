@@ -23,6 +23,9 @@ mod text_platform {
 }
 #[path = "../src/platform/shaped_line_cache.rs"]
 mod shaped_line_cache;
+#[cfg(test)]
+#[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
+mod vendor_bidi_geometry;
 fn main() -> anyhow::Result<()> {
     use gpui::{px, FontRun, PlatformTextSystem};
     use std::{borrow::Cow, io::Write as _, time::Instant};

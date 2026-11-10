@@ -2,7 +2,7 @@
 //! Context ends at spaces, so shaping never cuts a word/ligature or bidi run.
 use super::*;
 
-const MIN_TEXT: usize = 64 * 1024;
+pub(super) const MIN_TEXT: usize = 64 * 1024;
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 pub(super) const MAX_BYTES: usize = 160 * 1024 * 1024;
 const MAX_RESHAPE: usize = 64 * 1024;

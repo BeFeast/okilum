@@ -333,6 +333,13 @@ impl PlatformTextSystem for ShapedLineCache {
             drop(retired);
             return layout;
         }
+        if text.len() >= large::MIN_TEXT {
+            // A long source line may just have acquired RTL, combining marks,
+            // emoji or multiple font runs. Retire its ASCII revision before
+            // taking the complete native shaping path.
+            let retired = self.large.lock().unwrap_or_else(|e| e.into_inner()).take();
+            drop(retired);
+        }
         let hash = self.key_hash(text, font_size, runs);
         let cached = self
             .lines
@@ -653,6 +660,96 @@ mod tests {
         // Other scripts retain their complete contextual platform shaping.
         let rtl = format!("{}שלום", original);
         assert!(!large::eligible(&rtl, &run(&rtl)));
+    }
+
+    #[test]
+    fn edit2803_hebrew_insert_into_multi_mb_ascii_retires_incremental_state() {
+        use crate::vendor_bidi_geometry::{Affinity, Caret, Geometry};
+        let shaper = platform_shaper();
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let font = cache.font_id(&gpui::font("Cascadia Code")).unwrap();
+        let runs = |text: &str| {
+            vec![FontRun {
+                len: text.len(),
+                font_id: font,
+            }]
+        };
+        let mut text = "alpha beta gamma ".repeat(128 * 1024);
+        cache.layout_line(&text, px(16.), &runs(&text));
+        assert!(cache.large.lock().unwrap().is_some());
+        let at = text.len() / 2;
+        for non_ascii in ["שלום", "русский", "\u{202e}", "👩\u{200d}💻", "e\u{301}"]
+        {
+            let mut next = text.clone();
+            next.insert_str(at, non_ascii);
+            assert!(!large::eligible(&next, &runs(&next)));
+        }
+        text.insert_str(at, "שלום ");
+        let actual = cache.layout_line(&text, px(16.), &runs(&text));
+        assert!(cache.large.lock().unwrap().is_none());
+        let direct = shaper.layout_line(&text, px(16.), &runs(&text));
+        assert_eq!(
+            (actual.len, actual.width, actual.ascent, actual.descent),
+            (direct.len, direct.width, direct.ascent, direct.descent)
+        );
+        let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
+        let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.into_iter().zip(b) {
+            assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
+        }
+        // Use the editor's native bidi geometry on the affected word and its
+        // neighbours, extracted from each complete multi-MB shaped result.
+        // This avoids building millions of unrelated selection cells twice.
+        let start = at - 6;
+        let end = at + "שלום ".len() + 11;
+        let geometry = |layout: &LineLayout| {
+            let origin = layout.x_for_index(start);
+            let clipped = LineLayout {
+                font_size: layout.font_size,
+                width: layout.x_for_index(end) - origin,
+                ascent: layout.ascent,
+                descent: layout.descent,
+                len: end - start,
+                runs: layout
+                    .runs
+                    .iter()
+                    .map(|run| ShapedRun {
+                        font_id: run.font_id,
+                        glyphs: run
+                            .glyphs
+                            .iter()
+                            .filter(|g| (start..end).contains(&g.index))
+                            .map(|g| {
+                                let mut g = g.clone();
+                                g.index -= start;
+                                g.position.x -= origin;
+                                g
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            };
+            Geometry::from_layout(&text[start..end], &clipped)
+        };
+        let a = geometry(&actual);
+        let b = geometry(&direct);
+        for (index, _) in text[start..end].char_indices() {
+            for affinity in [Affinity::Before, Affinity::After] {
+                assert_eq!(
+                    a.position(Caret { index, affinity }),
+                    b.position(Caret { index, affinity })
+                );
+            }
+        }
+        for cell in &a.cells {
+            let x = (cell.left + cell.right) / 2.;
+            assert_eq!(a.hit(x), b.hit(x));
+        }
+        assert_eq!(
+            a.selection(at - start..at - start + "שלום".len()),
+            b.selection(at - start..at - start + "שלום".len())
+        );
     }
 
     /// #1312: a line shaped once is not sent to the shaper again, whatever
