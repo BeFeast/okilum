@@ -448,6 +448,19 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
     input.update_in(visual, |input, window, cx| input.focus(window, cx));
     visual.run_until_parked();
     let before = input.read_with(visual, |input, _| input.source_stamp());
+    // Complete the editor's deferred opening/layout work before measuring
+    // subsequent input frames. No text or cursor changes happen in this phase.
+    for _ in 0..4 {
+        visual.executor().advance_clock(Duration::from_millis(101));
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        input.read_with(visual, |input, _| input.source_stamp()),
+        before
+    );
+    let header_identity = reader.read_with(visual, |reader, _| {
+        reader.viewer_header.borrow().as_ref().unwrap().entity_id()
+    });
     let header_renders = || {
         HEADER_RENDERS.with(|counts| {
             counts
@@ -464,6 +477,16 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(101));
         visual.run_until_parked();
+        assert_eq!(
+            reader.read_with(visual, |reader, _| reader
+                .viewer_header
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .entity_id()),
+            header_identity,
+            "typing preserves the header presentation identity"
+        );
         assert_eq!(
             header_renders(),
             initial,
