@@ -384,6 +384,7 @@ fn menu_button(
     cx: &App,
 ) -> Button {
     reader_icon_button(id, icon, label, cx)
+        .small()
         .w_auto()
         .min_w(px(40.))
         .px_1()
@@ -434,6 +435,7 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
                 reader_shortcuts::hint(label, &ToggleSource, cx),
                 cx,
             )
+            .small()
             .when(plan.labels && !plan.collapsed("edit"), |b| {
                 b.w_auto().label(label)
             })
