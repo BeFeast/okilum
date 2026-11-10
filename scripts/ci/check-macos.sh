@@ -74,8 +74,9 @@ cargo "${cargo_args[@]}" --workspace --no-run
 
 # #2708: persist native Zoom separately from the normal frame.
 run_tests okilum-shell --bins window_state::
-# #2755: native caption options, the real Close button and Reader ownership.
+# #2755/#2770: integrated caption, original-press dispatch, Close and ownership.
 run_tests okilum-shell --bins reader_settings::tests::issue2755_
+run_tests okilum-shell --bins issue2770_
 run_tests okilum-shell --bins reader_settings::tests::window_chrome_settings_about_
 run_tests okilum-shell --bins reader_settings::tests::about_keeps_each_reader_owner_and_reuses_only_its_own_window
 run_tests okilum-shell --bins reader_settings::tests::owned_settings_center_reuse_escape_and_close_with_owner

@@ -8,6 +8,8 @@ use gpui_component::{
 };
 use okilum_core::log::source_link;
 
+mod caption;
+
 gpui::actions!(okilum_settings, [OpenSettings, CloseSettings]);
 
 #[derive(Default)]
@@ -133,16 +135,11 @@ fn window_options(owner: Option<AnyWindowHandle>, cx: &mut App) -> WindowOptions
     options.window_background = gpui::WindowBackgroundAppearance::Opaque;
     #[cfg(target_os = "macos")]
     {
-        // AppKit owns the entire caption, including the native close button.
-        // Do not overlay it with TitleBar's mouse-move-driven drag handler or
-        // the Close row's press interception (#2755). Ownership is independent
-        // of caption handling: keep the Reader's native child relationship.
-        options.titlebar = Some(TitlebarOptions {
-            title: Some("Okilum Settings".into()),
-            appears_transparent: false,
-            traffic_light_position: None,
-        });
-        options.app_owns_titlebar_drag = false;
+        // A single client caption replaces the rejected grey native strip.
+        // Keep standard traffic lights, while the caption hands the original
+        // press to AppKit instead of waiting for a later mouse-move (#2770).
+        options.titlebar.as_mut().unwrap().title = Some("Okilum Settings".into());
+        options.app_owns_titlebar_drag = true;
     }
     options
 }
@@ -2150,21 +2147,9 @@ impl Render for Settings {
                 )
             })
             .when(cfg!(target_os = "macos"), |view| {
-                // Keep the explicit Close action in client content. A GPUI
-                // control over the native caption would steal its drag region.
-                // Dialogs leave the first TITLE_BAR_HEIGHT client pixels
-                // interactive; a footer would be covered by the Sync backdrop.
-                view.child(
-                    h_flex()
-                        .debug_selector(|| "settings-window-actions".into())
-                        .flex_none()
-                        .h(gpui_component::TITLE_BAR_HEIGHT)
-                        .items_center()
-                        .justify_end()
-                        .pr_3()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(self.close_button(cx)),
-                )
+                // Dialog reserves this first client strip for window actions,
+                // so Close remains usable over the Sync wizard backdrop.
+                view.child(caption::render(self.close_button(cx)))
             })
             .child(content)
             .children({
@@ -3940,7 +3925,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn issue2755_settings_caption_keeps_native_macos_drag_and_platform_ownership(
+    fn issue2755_settings_caption_keeps_original_press_drag_and_platform_ownership(
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
@@ -3950,9 +3935,15 @@ mod tests {
             assert!(!options.is_minimizable);
             let caption = options.titlebar.unwrap();
             if cfg!(target_os = "macos") {
-                assert!(!options.app_owns_titlebar_drag, "AppKit must own dragging");
-                assert!(!caption.appears_transparent, "no client caption overlay");
-                assert!(caption.traffic_light_position.is_none(), "native controls");
+                assert!(
+                    options.app_owns_titlebar_drag,
+                    "client dispatches the original press"
+                );
+                assert!(caption.appears_transparent, "no grey native strip");
+                assert_eq!(
+                    caption.traffic_light_position,
+                    TitleBar::title_bar_options().traffic_light_position
+                );
                 assert_eq!(caption.title.as_deref(), Some("Okilum Settings"));
             } else {
                 let original = TitleBar::window_options();
@@ -3966,6 +3957,40 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn issue2770_actual_settings_caption_moves_on_first_press_and_close_stays_interactive(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+        });
+        cx.update(show_about);
+        cx.run_until_parked();
+        let handle = cx.read(|cx| cx.global::<SettingsWindow>().0.unwrap());
+        let mut visual = VisualTestContext::from_window(handle.into(), cx);
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let row = visual.debug_bounds("settings-window-actions").unwrap();
+        let close = visual.debug_bounds("settings-close").unwrap();
+        caption::take_requests();
+        let position = point(row.right() - px(3.), row.center().y);
+        visual.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: true,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(caption::take_requests(), [caption::NativeAction::Move]);
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_click(close.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(caption::take_requests().is_empty());
+        assert!(!cx.read(|cx| cx.windows().contains(&handle.into())));
     }
 
     #[gpui::test]
@@ -3987,7 +4012,7 @@ mod tests {
             assert_eq!(
                 visual.debug_bounds("window-title-bar").is_some(),
                 !cfg!(target_os = "macos"),
-                "macOS uses AppKit's caption; Linux/Windows keep the client bar"
+                "macOS uses its original-press caption; Linux/Windows keep TitleBar"
             );
             if cfg!(target_os = "macos") {
                 let actions = visual.debug_bounds("settings-window-actions").unwrap();
