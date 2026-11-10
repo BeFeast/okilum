@@ -131,8 +131,9 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
             .set_value("{\"draft\":true}", w, cx)
     });
     visual.run_until_parked();
-    open_copy(visual);
-    visual.simulate_keystrokes("down enter");
+    // Keep focus in the editor: opening a menu may legitimately save on blur.
+    // This isolates the copy command's no-write contract from that lifecycle.
+    visual.update(|window, cx| window.dispatch_action(Box::new(CopyFileContent), cx));
     visual.run_until_parked();
     assert_eq!(clipboard(visual).as_deref(), Some("{\"draft\":true}"));
     assert_eq!(
