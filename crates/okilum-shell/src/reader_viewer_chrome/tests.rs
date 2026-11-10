@@ -119,10 +119,12 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
             original
         );
     }
-    reader.update_in(visual, |r, w, cx| {
-        r.preview_file("data.json", w, cx);
-        r.toggle_source(w, cx);
-    });
+    reader.update_in(visual, |r, w, cx| r.preview_file("data.json", w, cx));
+    visual.run_until_parked();
+    let edit = visual
+        .debug_bounds("reader-edit")
+        .expect("loaded JSON can be edited");
+    visual.simulate_click(edit.center(), Modifiers::default());
     visual.run_until_parked();
     reader.update_in(visual, |r, w, cx| {
         r.editing
@@ -144,6 +146,8 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
 
 #[gpui::test]
 fn binary_viewers_omit_content_and_path_items_act_on_the_open_file(cx: &mut TestAppContext) {
+    // PDF has a real worker thread, as in the existing native PDF tests.
+    cx.executor().allow_parking();
     let (reader, visual, temp) = fixture(cx, "image.png");
     for name in ["image.png", "document.pdf"] {
         reader.update_in(visual, |r, w, cx| {
@@ -230,9 +234,26 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
         } else {
             "drawing-canvas-content"
         };
+        // Asset loading starts from draw, not from Reader construction. Keep
+        // the scroll control meaningful by waiting for the tall content itself.
+        for _ in 0..20 {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+            if visual.debug_bounds(marker).is_some_and(|bounds| {
+                bounds.size.height
+                    > visual
+                        .debug_bounds("document-header-viewport")
+                        .unwrap()
+                        .size
+                        .height
+                        + px(800.)
+            }) {
+                break;
+            }
+        }
         let content_before = visual
             .debug_bounds(marker)
-            .expect("scrollable content mounted");
+            .unwrap_or_else(|| panic!("scrollable content mounted for {name}: {marker}"));
         visual.simulate_event(ScrollWheelEvent {
             position: point(before.center().x, before.bottom() + px(100.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(-800.))),

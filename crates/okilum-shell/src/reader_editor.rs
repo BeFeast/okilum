@@ -1469,7 +1469,7 @@ impl Reader {
         .detach();
     }
 
-    pub(super) fn render_save_status(&self, _cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_save_status(&self, _cx: &App) -> AnyElement {
         self.editing
             .as_ref()
             .map(|e| e.save_status.clone().into_any_element())

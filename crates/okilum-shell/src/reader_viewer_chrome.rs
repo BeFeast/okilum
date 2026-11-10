@@ -50,7 +50,7 @@ impl Render for SaveControls {
             .when(self.dirty, |row| {
                 let status = reader
                     .upgrade()
-                    .map(|reader| reader.update(cx, |reader, cx| reader.render_save_status(cx)));
+                    .map(|reader| reader.read(cx).render_save_status(cx));
                 row.children(status).child(
                     reader_icon_button(
                         "source-save",
