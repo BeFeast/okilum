@@ -845,3 +845,26 @@ open a level. Parsing is limited to 64 KiB snippets and a 20 ms budget, only
 when Enter follows a Python colon. Unavailable/uncertain syntax keeps the
 current indentation. Source and Live Preview use the same source transaction
 and preserve authored LF/CRLF and one-step Undo/Redo.
+
+## Explicit source hints and derived views
+
+Identical canonical bytes can skip graph/search updates and checkpoint persistence.
+They do not imply that each Reader already owns complete derived views: after a
+Reader is rebound, Tasks, Projects or Now can need their per-path state restored.
+The incremental worker therefore reconciles explicitly hinted paths from its
+verified snapshot into those three indexes even when `batch.changed` is empty.
+This work remains proportional to the hinted paths; it neither rewrites the
+source bank nor creates another search generation.
+
+The existing publication notifies the Reader, and its cached side panels observe
+that notification. Task completion also notifies on a stale-owner rejection.
+Now's prepared labels notify their owner on completion; Board metadata and project
+records have their own notification paths. A global drawing refresh cannot repair
+missing derived data and is not used for this reconciliation.
+
+The unmodified held-snooze/rebound test exercises the actual calendar selection,
+worker cancellation and current-owner retry. Independent regression controls also
+retire Tasks, Projects and Now in turn, reconcile unchanged source, and require
+restoration without changing source bytes or the committed search generation.
+Their setup first requires a fully initialized incremental baseline and populated
+views, so an unfired path cannot pass as a successful reconciliation.
