@@ -288,10 +288,10 @@ mod tests {
             );
             for index in visible {
                 let row = visual
-                    .debug_bounds(&format!("data-structure-row-{index}"))
+                    .debug_bounds(format!("data-structure-row-{index}"))
                     .unwrap();
                 let label = visual
-                    .debug_bounds(&format!("data-node-label-{index}"))
+                    .debug_bounds(format!("data-node-label-{index}"))
                     .unwrap();
                 assert_eq!(row.size.height, px(32.));
                 assert!(
