@@ -81,7 +81,7 @@ pub(crate) fn measured_bounds(
         window.refresh();
         window.draw(cx).clear(cx);
     });
-    visual.debug_bounds(selector)
+    visual.debug_bounds(selector.to_owned())
 }
 
 fn clipboard(visual: &mut VisualTestContext) -> Option<String> {
