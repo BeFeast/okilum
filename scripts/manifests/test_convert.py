@@ -1,6 +1,7 @@
 """Conversion is explicit, loss-checked and never rewrites legacy files."""
 import datetime
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,6 +19,70 @@ spec.loader.exec_module(converter)
 
 
 class ConvertTests(unittest.TestCase):
+    def test_cli_converts_hidden_and_legacy_layouts_without_relocating_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = []
+            for area, layout in [('Hidden', '.okilum'), ('Legacy', 'ops')]:
+                services = root / area / layout
+                services.mkdir(parents=True)
+                for name, text in [('project', f'# preserved\nname: {area}\n'),
+                                   ('board', 'version: 1\nissues: []\n')]:
+                    source = services / (name + '.yaml')
+                    source.write_text(text)
+                    sources.append((source, source.read_bytes(), source.stat().st_mtime_ns))
+            # Settings alone do not override the legacy service-file location.
+            (root / 'Legacy' / '.okilum').mkdir()
+            (root / 'Legacy' / '.okilum' / 'vault.json').write_text('{}')
+            for flags in [[], ['--write']]:
+                result = subprocess.run([sys.executable, str(SCRIPT), str(root), *flags],
+                                        capture_output=True, text=True, check=True)
+                rows = json.loads(result.stdout)['files']
+                self.assertEqual({r['source'] for r in rows},
+                                 {str(p.relative_to(root)) for p, _, _ in sources})
+                for source, original, mtime in sources:
+                    self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), (original, mtime))
+                    self.assertEqual(source.with_suffix('.toml').exists(), bool(flags))
+            self.assertIn('preserved', (root / 'Hidden/.okilum/project.toml').read_text())
+            self.assertFalse((root / 'Hidden/ops').exists())
+
+    def test_split_or_unfinished_layout_refuses_before_any_conversion(self):
+        for blocker in ['project.toml', 'board-local.toml', 'thread-ids.md',
+                        'board.sync-conflict-fixture.yaml', 'service-migration.json']:
+            with self.subTest(blocker=blocker), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for area in ['A-Valid', 'Z-Blocked']:
+                    services = root / area / 'ops'
+                    services.mkdir(parents=True)
+                    (services / 'project.yaml').write_text('name: Example\n')
+                hidden = root / 'Z-Blocked' / '.okilum'
+                hidden.mkdir()
+                (hidden / blocker).write_text('name = "Conflicting"\n')
+                before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                result = subprocess.run([sys.executable, str(SCRIPT), str(root), '--write'],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Z-Blocked', result.stdout + result.stderr)
+                self.assertEqual(before, {str(p.relative_to(root)): p.read_bytes()
+                                          for p in root.rglob('*') if p.is_file()})
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix symlink semantics')
+    def test_symlinked_hidden_layout_does_not_fall_back_to_legacy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            area = root / 'Area'
+            (area / 'ops').mkdir(parents=True)
+            (area / 'ops/project.yaml').write_text('name: Example\n')
+            outside = root / 'outside'
+            outside.mkdir()
+            (area / '.okilum').symlink_to(outside, target_is_directory=True)
+            result = subprocess.run([sys.executable, str(SCRIPT), str(area), '--write'],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('symlink', result.stdout + result.stderr)
+            self.assertFalse((area / 'ops/project.toml').exists())
+            self.assertEqual(list(outside.iterdir()), [])
+
     def test_remove_yaml_requires_explicit_write_and_external_backup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -245,6 +310,9 @@ day: 2026-10-29
             source.with_suffix('.toml').symlink_to(outside)
             with self.assertRaisesRegex(ValueError, 'symlink'):
                 converter.convert_file(source, True)
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                list(converter.manifests(Path(root)))
+            source.with_suffix('.toml').unlink()
             (Path(root) / 'linked').symlink_to(area, target_is_directory=True)
             self.assertEqual(list(converter.manifests(Path(root))), [source])
 

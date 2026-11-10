@@ -78,6 +78,12 @@ literal `#` text in descriptions remains data. Unsupported null array elements,
 cycles, duplicate/colliding keys and nonfinite numbers fail explicitly.
 
 The converter checks parsed TOML against the normalized original before writing.
-It skips symlinked directories and service/cache folders. The report lists every
-selected manifest and its result; an error yields a nonzero exit code. The
-shared CI gate runs the converter regressions with pinned Python dependencies.
+Run it on a quiescent copy, with no concurrent metadata editor or location
+migration. Discovery selects each owning context's existing `.okilum` or legacy
+`ops` service directory as a complete set, without relocating files. Settings
+alone in `.okilum` do not override a legacy `ops` project. Split layouts,
+unfinished migration markers, conflict copies, orphan service files and symlinked
+service directories/files refuse discovery before any conversion is written.
+Unrelated symlinked subtrees and cache folders are skipped. The report lists
+every selected manifest and its result; an error yields a nonzero exit code.
+The shared CI gate runs the converter regressions with pinned dependencies.
