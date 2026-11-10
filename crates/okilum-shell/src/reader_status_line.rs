@@ -93,6 +93,7 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     struct Gallery;
     impl Render for Gallery {
