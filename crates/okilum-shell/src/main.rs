@@ -703,6 +703,10 @@ fn bind_keys(cx: &mut App) {
         // Reader commands outrank toolkit editing aliases only inside Reader inputs.
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, Some("Reader > Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-f", FindInNote, Some(reader_code_file::KEY_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-f", FindInNote, Some("ReaderCode > Input")),
         KeyBinding::new("ctrl-k", QuickOpen, Some("Reader > Input")),
         KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels > Input")),
         KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels")),
@@ -712,6 +716,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f", FindInNote, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", FindInNote, Some("Reader > Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInNote, Some(reader_code_file::KEY_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInNote, Some("ReaderCode > Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-k", QuickOpen, ctx),
         #[cfg(target_os = "macos")]
