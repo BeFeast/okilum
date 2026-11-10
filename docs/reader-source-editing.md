@@ -10,6 +10,34 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Typing coalesces canonical saves after one second idle, with a two-second ceiling
+for continuous input. Recovery keeps its separate 300 ms pause. Focus loss
+immediately hands pending recovery to a worker and requests canonical publication;
+conflict, deletion, a move or IME may defer publication, but never that recovery
+request. A request during an in-flight save follows its completion without another
+idle delay, including failure/conflict outcomes. An unfocused IME commit resumes
+publication. Quit/navigation retain synchronous latest-revision protection. File
+publication remains serialized, revision-checked and atomic for external readers.
+
+Large unwrapped editor layouts retain exact native shapes across popup/caret
+frames in a separate 160 MiB cache (at most 128 entries), shared by all scripts.
+Only printable ASCII lines use incremental native word-context shaping. Admission
+requires reproducing the complete native layout exactly from font advances and
+native word boundaries; each changed context is checked too. Replaying the pen
+and word-width additions in native order preserves exact global geometry even
+past 2^24 px. Tests compare every glyph, width, caret and far-end hit/selection
+position; deliberately shifted/dropped glyphs fail the same acceptance check.
+Any Unicode insertion retires the matching ASCII edit state and uses a full
+native reshape. A native word context above 64 KiB still takes the full path
+(for example a numeric array/base64 value without a safe break). This remains a
+typing latency limitation, separate from exact reuse of unchanged rows and menu
+frames. Backends/fonts that fail exact admission retain their full native path.
+
+Latency diagnostics observe a second frame callback after the mutation frame's
+draw, rate-limit detailed observations above 32 ms to one per second, and record
+periodic aggregates. They include process-wide Reader render counts and contain
+no authored text; they measure native submission, not physical display latency.
+
 Incoming changes to an open note (#2486) are observed through a shallow parent
 watch independently of vault indexing, including Syncthing's rename over the
 original file. Clean Source and Live Preview buffers reload in place while
@@ -817,3 +845,26 @@ open a level. Parsing is limited to 64 KiB snippets and a 20 ms budget, only
 when Enter follows a Python colon. Unavailable/uncertain syntax keeps the
 current indentation. Source and Live Preview use the same source transaction
 and preserve authored LF/CRLF and one-step Undo/Redo.
+
+## Explicit source hints and derived views
+
+Identical canonical bytes can skip graph/search updates and checkpoint persistence.
+They do not imply that each Reader already owns complete derived views: after a
+Reader is rebound, Tasks, Projects or Now can need their per-path state restored.
+The incremental worker therefore reconciles explicitly hinted paths from its
+verified snapshot into those three indexes even when `batch.changed` is empty.
+This work remains proportional to the hinted paths; it neither rewrites the
+source bank nor creates another search generation.
+
+The existing publication notifies the Reader, and its cached side panels observe
+that notification. Task completion also notifies on a stale-owner rejection.
+Now's prepared labels notify their owner on completion; Board metadata and project
+records have their own notification paths. A global drawing refresh cannot repair
+missing derived data and is not used for this reconciliation.
+
+The unmodified held-snooze/rebound test exercises the actual calendar selection,
+worker cancellation and current-owner retry. Independent regression controls also
+retire Tasks, Projects and Now in turn, reconcile unchanged source, and require
+restoration without changing source bytes or the committed search generation.
+Their setup first requires a fully initialized incremental baseline and populated
+views, so an unfired path cannot pass as a successful reconciliation.

@@ -1,0 +1,80 @@
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1167,8 +1167,16 @@
+         let rows = self.rows(rows);
+         for (ix, line) in self.wrapped_lines.iter().enumerate() {
+             let (x, text_align, align_width) = self.row_paint(ix, text_align, align_width);
+-            _ = line.paint(
+-                pos + point(x, rows.row_top(ix)),
++            let origin = pos + point(x, rows.row_top(ix));
++            let visible = if text_align == TextAlign::Left && self.wrapped_lines.len() == 1
++                && line.runs.len() == 1 && line.len() >= 64 * 1024 && line.text.is_ascii() {
++                let bounds = window.content_mask().bounds;
++                let glyph_bounds = window.text_system().bounding_box(line.runs[0].font_id, line.font_size);
++                viewport_paint_line(line, bounds.left() - origin.x - glyph_bounds.right(),
++                    bounds.right() - origin.x - glyph_bounds.left())
++            } else { None };
++            _ = visible.as_ref().unwrap_or(line).paint(
++                origin,
+                 rows.row_height(ix),
+                 text_align,
+                 align_width,
+@@ -1202,6 +1210,26 @@
+             }
+         }
+     }
++}
++
++/// Retain exact source geometry for caret/selection, but submit only glyphs
++/// intersecting the horizontal paint mask. GPUI otherwise visits millions of
++/// clipped glyphs even on a popup-hover frame. Non-ASCII keeps its full path.
++fn viewport_paint_line(line: &ShapedLine, left: Pixels, right: Pixels) -> Option<ShapedLine> {
++    if line.len() < 64 * 1024 || !line.text.is_ascii() || line.runs.len() != 1 {
++        return None;
++    }
++    let run = &line.runs[0];
++    let start = run.glyphs.partition_point(|g| g.position.x < left).saturating_sub(1);
++    let end = (run.glyphs.partition_point(|g| g.position.x <= right) + 1).min(run.glyphs.len());
++    let mut visible = line.clone();
++    *visible = std::sync::Arc::new(gpui::LineLayout {
++        font_size: line.font_size, width: line.width, ascent: line.ascent,
++        descent: line.descent, len: line.len(),
++        runs: vec![gpui::ShapedRun { font_id: run.font_id,
++            glyphs: run.glyphs[start.min(end)..end].to_vec() }],
++    });
++    Some(visible)
+ }
+ 
+ /// ASCII has no RTL characters or directional controls. Avoid allocating bidi
+@@ -2056,4 +2084,31 @@
+         assert!(started.elapsed() < std::time::Duration::from_millis(250),
+             "ASCII layout must skip full Unicode bidi analysis: {:?}", started.elapsed());
+     }
++    #[test]
++    fn large_ascii_paint_submits_only_visible_unchanged_glyphs() {
++        let mut line = ShapedLine::default();
++        line.text = "a".repeat(256 * 1024).into();
++        *line = std::sync::Arc::new(gpui::LineLayout {
++            len: line.text.len(), width: px(8. * line.text.len() as f32),
++            runs: vec![gpui::ShapedRun { font_id: gpui::FontId(0),
++                glyphs: (0..line.text.len()).map(|index| gpui::ShapedGlyph {
++                    index, id: gpui::GlyphId(1), position: point(px(index as f32 * 8.), px(0.)),
++                    is_emoji: false,
++                }).collect() }],
++            ..Default::default()
++        });
++        for left in [px(0.), px(8000.), line.width - px(160.)] {
++            let visible = viewport_paint_line(&line, left - px(16.), left + px(176.)).unwrap();
++            assert!(visible.runs[0].glyphs.len() < 30);
++            assert_eq!((visible.len(), visible.width), (line.len(), line.width));
++            for glyph in &visible.runs[0].glyphs {
++                let original = &line.runs[0].glyphs[glyph.index];
++                assert_eq!((glyph.id, glyph.position), (original.id, original.position));
++            }
++        }
++        assert_eq!(line.runs[0].glyphs.len(), 256 * 1024);
++        line.text = format!("{}שלום", line.text).into();
++        assert!(viewport_paint_line(&line, px(0.), px(160.)).is_none());
++    }
++
+ }

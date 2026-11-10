@@ -1,0 +1,115 @@
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -428,6 +428,29 @@
+     pub(super) content_width: Pixels,
+ }
+ 
++/// One retained layout, sharing shaped lines with the last painted frame. No
++/// duplicate source string. Popup hover/caret blink must not shape a multi-MB
++/// unwrapped line again when source and paint inputs are unchanged.
++pub(super) struct SourceShapeCache {
++    pub layout: LastLayout,
++    pub runs: Vec<gpui::TextRun>,
++    pub longest_width: Pixels,
++}
++impl SourceShapeCache {
++    pub(super) fn matches(&self, next: &LastLayout, runs: &[gpui::TextRun]) -> bool {
++        let old = &self.layout;
++        old.source_stamp == next.source_stamp
++            && old.presentation_epoch == next.presentation_epoch
++            && old.font == next.font && old.font_size == next.font_size
++            && old.scale_factor == next.scale_factor
++            && old.visible_buffer_lines == next.visible_buffer_lines
++            && old.rows == next.rows && old.wrap_width == next.wrap_width
++            && old.wrapping_indent == next.wrapping_indent
++            && old.text_align == next.text_align && old.content_width == next.content_width
++            && self.runs == runs
++    }
++}
++
+ impl LastLayout {
+     /// The height of the row holding content y.
+     pub(super) fn row_height_at(&self, y: Pixels) -> Pixels {
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -6,6 +6,7 @@
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+ pub struct LayoutDiagnostics {
+     pub layout_calls: u64,
++    pub source_shape_cache_hits: u64,
+     pub metric_changes: u64,
+     pub provider_applies: u64,
+     pub projection_composes: u64,
+@@ -501,6 +502,7 @@
+     /// Backspace while both are unchanged takes back only the autoformat.
+     typed_autoformat: Option<(SourceStamp, Range<usize>)>,
+     pub(super) last_layout: Option<LastLayout>,
++    pub(super) source_shape_cache: std::cell::RefCell<Option<super::layout::SourceShapeCache>>,
+     // Previous painted geometry for anchoring only; never used for hit testing.
+     pub(super) projection_anchor_layout: Option<LastLayout>,
+     pub(super) zoom_anchor: Option<(usize, Pixels, bool)>,
+@@ -956,6 +958,7 @@
+             number_max: None,
+             mode: LayoutMode::default(),
+             last_layout: None,
++            source_shape_cache: Default::default(),
+             projection_anchor_layout: None,
+             zoom_anchor: None,
+             projection_anchor_tail: px(0.),
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2490,6 +2490,19 @@
+         let whitespace_indicators =
+             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
+ 
++        let cacheable = !state.soft_wrap && !state.is_single_line()
++            && state.text.len() > 256 * 1024 && last_layout.projection.is_none()
++            && state.ime_marked_range.is_none() && document_colors.is_empty()
++            && whitespace_indicators.is_none();
++        let cached = cacheable.then(|| {
++            state.source_shape_cache.borrow().as_ref()
++                .filter(|cache| cache.matches(&last_layout, &runs))
++                .map(|cache| (cache.layout.lines.clone(), cache.longest_width))
++        }).flatten();
++        let (lines, longest_line_width) = if let Some(cached) = cached {
++            state.record_layout_diagnostic(|d| d.source_shape_cache_hits += 1);
++            cached
++        } else {
+         let lines = Self::layout_lines(
+             &state,
+             &display_text,
+@@ -2506,6 +2519,13 @@
+         // 2. Multi-line with soft wrap disabled.
+         if state.is_single_line() || !state.soft_wrap {
+             let longest_row = state.display_map.longest_row();
++            if let Some(visible) = cacheable.then(|| last_layout.visible_buffer_lines.iter()
++                .position(|row| *row == longest_row)).flatten() {
++                // layout_lines already shaped this exact unwrapped source row.
++                // Reuse its geometry instead of cloning/hashing the line twice
++                // on every edit (the minified-JSON case).
++                longest_line_width = lines[visible].longest_width;
++            } else {
+             let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
+             longest_line_width = window
+                 .text_system()
+@@ -2523,8 +2543,20 @@
+                     wrap_width,
+                 )
+                 .width;
++            }
+         }
+         last_layout.lines = Rc::new(lines);
++        (last_layout.lines.clone(), longest_line_width)
++
++        };
++        last_layout.lines = lines;
++        if cacheable {
++            *state.source_shape_cache.borrow_mut() = Some(super::layout::SourceShapeCache {
++                layout: last_layout.clone(), runs: runs.clone(), longest_width: longest_line_width,
++            });
++        } else {
++            state.source_shape_cache.borrow_mut().take();
++        }
+ 
+         let (ghost_first_line, ghost_lines) = Self::layout_inline_completion(
+             state,

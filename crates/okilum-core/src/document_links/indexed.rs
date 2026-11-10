@@ -5,32 +5,42 @@ use std::{borrow::Cow, collections::HashMap, path::Path};
 
 pub struct IndexedResolver<'a> {
     vault: &'a Vault,
-    assets: HashMap<String, Vec<String>>,
+    assets: std::sync::OnceLock<HashMap<String, Vec<String>>>,
 }
 impl<'a> IndexedResolver<'a> {
     pub fn new(vault: &'a Vault) -> Self {
-        let _phase = crate::open_diagnostics::phase("link_index_build");
-        let mut assets: HashMap<String, Vec<String>> = HashMap::new();
-        for entry in &vault.entries {
-            if entry.kind != crate::vault::EntryKind::Attachment
-                || vault.graph_alias_path(Path::new(&entry.path))
-            {
-                continue;
-            }
-            let key = entry.path.to_lowercase();
-            let parts: Vec<_> = key.split('/').collect();
-            for i in 0..parts.len() {
-                assets
-                    .entry(parts[i..].join("/"))
-                    .or_default()
-                    .push(entry.path.clone());
-            }
+        Self {
+            vault,
+            assets: Default::default(),
         }
-        for paths in assets.values_mut() {
-            paths.sort();
-            paths.dedup();
-        }
-        Self { vault, assets }
+    }
+
+    fn assets(&self) -> &HashMap<String, Vec<String>> {
+        self.assets.get_or_init(|| {
+            let vault = self.vault;
+            let _phase = crate::open_diagnostics::phase("link_index_build");
+            let mut assets: HashMap<String, Vec<String>> = HashMap::new();
+            for entry in &vault.entries {
+                if entry.kind != crate::vault::EntryKind::Attachment
+                    || vault.graph_alias_path(Path::new(&entry.path))
+                {
+                    continue;
+                }
+                let key = entry.path.to_lowercase();
+                let parts: Vec<_> = key.split('/').collect();
+                for i in 0..parts.len() {
+                    assets
+                        .entry(parts[i..].join("/"))
+                        .or_default()
+                        .push(entry.path.clone());
+                }
+            }
+            for paths in assets.values_mut() {
+                paths.sort();
+                paths.dedup();
+            }
+            assets
+        })
     }
 
     pub(crate) fn vault_root(&self) -> &Path {
@@ -81,7 +91,7 @@ impl<'a> IndexedResolver<'a> {
         };
         let exact = |key: &str| {
             let matches: Vec<_> = self
-                .assets
+                .assets()
                 .get(key)
                 .into_iter()
                 .flatten()
@@ -114,7 +124,12 @@ impl<'a> IndexedResolver<'a> {
         if self.vault.indexed_occupied(&key) {
             return Resolution::Unresolved;
         }
-        match self.assets.get(&key).map(Vec::as_slice).unwrap_or_default() {
+        match self
+            .assets()
+            .get(&key)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
             [path] => Resolution::Resolved { path: path.clone() },
             [] => Resolution::Unresolved,
             paths => Resolution::Ambiguous {
@@ -257,5 +272,37 @@ fn outside_file(path: &str, heading: Option<String>) -> ResolvedLink {
         candidates: vec![],
         heading,
         reason: Some("File verification is deferred."),
+    }
+}
+
+#[cfg(test)]
+mod edit2803_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_note_links_never_build_a_project_attachment_index() {
+        let mut vault = Vault::from_note_paths(["note.md".into(), "target.md".into()]);
+        vault
+            .entries
+            .extend((0..4000).map(|i| crate::vault::VaultEntry {
+                path: format!("src/package/module_{i}.rs"),
+                kind: crate::vault::EntryKind::Attachment,
+            }));
+        let resolver = IndexedResolver::new(&vault);
+        for _ in 0..10 {
+            let links = resolver.parse("# Small\n\n[[target]]\n", "note.md");
+            assert_eq!(links.len(), 1);
+            assert!(resolver.assets.get().is_none());
+        }
+        assert_eq!(
+            resolver
+                .resolve("src/package/module_42.rs", true, "note.md")
+                .status,
+            "attachment"
+        );
+        assert!(
+            resolver.assets.get().is_some(),
+            "asset links still use the complete inventory"
+        );
     }
 }

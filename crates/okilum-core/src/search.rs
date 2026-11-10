@@ -640,8 +640,16 @@ impl Searcher {
             }
             // atomic_read preserves the segment footer; open_read strips it.
             let target = destination.join(path);
-            std::fs::write(&target, managed.atomic_read(path)?)
-                .with_context(|| format!("Write search file {}", target.display()))?;
+            // Committed segment files are immutable. Link them from the private
+            // session so a checkpoint writes only new/changed segments. Metadata
+            // is still copied below; no mutable index file is ever shared.
+            let linked = self.session.as_ref().is_some_and(|session| {
+                std::fs::hard_link(session.dir.path().join(path), &target).is_ok()
+            });
+            if !linked {
+                std::fs::write(&target, managed.atomic_read(path)?)
+                    .with_context(|| format!("Write search file {}", target.display()))?;
+            }
         }
         let meta = destination.join("meta.json");
         std::fs::write(&meta, managed.atomic_read(Path::new("meta.json"))?)

@@ -124,17 +124,22 @@ impl Reader {
             worker_cancel.check()?;
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
+            // Equal source-bank bytes suppress graph/search work, but a rebound
+            // Reader may own newly retired derived views. Explicit hints still
+            // reconcile those paths from the verified snapshot, off thread.
+            let mut view_paths = batch.changed.clone();
+            view_paths.extend(worker_changes.changed.iter().cloned());
             let mut next_tasks = (*tasks).clone();
             for path in &batch.removed { projects.remove(path); }
-            for path in &batch.changed { projects.replace_snapshot(&state.snapshot, path); }
+            for path in &view_paths { projects.replace_snapshot(&state.snapshot, path); }
             projects.refresh();
             let projects = Arc::new(projects);
             let mut workbench = (*workbench).clone();
-            reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &batch.changed);
+            reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &view_paths);
             let workbench = Arc::new(workbench);
             let mut tasks_changed = false;
             for path in &batch.removed { tasks_changed |= next_tasks.remove(path); }
-            for path in &batch.changed {
+            for path in &view_paths {
                 tasks_changed |= if let Some(raw) = state.snapshot.source(path) { next_tasks.replace(path, &raw) }
                     else { next_tasks.remove(path) };
             }
@@ -828,3 +833,6 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, unix))]
+mod reconcile_tests;

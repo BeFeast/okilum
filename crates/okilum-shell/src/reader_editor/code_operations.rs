@@ -49,7 +49,15 @@ impl State {
         if stale {
             self.status = None;
         }
-        stale
+        let preview_stale = self
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.target.stamp != stamp);
+        if preview_stale {
+            self.preview = None;
+            self.notice = Some("Repair preview is stale after editing; run Repair again.".into());
+        }
+        stale || preview_stale
     }
 }
 
@@ -247,6 +255,12 @@ impl Reader {
     }
 
     fn code_scope(&self, cx: &App) -> Option<Scope> {
+        self.code_scope_for_display(cx, false)
+    }
+
+    // Keep the last toolbar while the debounced fence inventory catches up.
+    // Actions still require the exact current revision through code_scope().
+    fn code_scope_for_display(&self, cx: &App, retain_inventory: bool) -> Option<Scope> {
         let editing = self.editing.as_ref()?;
         let input = editing.input.read(cx);
         let stamp = input.source_stamp();
@@ -256,7 +270,7 @@ impl Reader {
                 .operations
                 .inventory
                 .as_ref()
-                .filter(|i| i.stamp == stamp)?;
+                .filter(|i| retain_inventory || i.stamp == stamp)?;
             let at = inventory
                 .blocks
                 .partition_point(|block| block.body.end < selection.start);
@@ -463,12 +477,11 @@ impl Reader {
     }
 
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let target = self.code_scope(cx)?;
+        let target = self.code_scope_for_display(cx, true)?;
         let editing = self.editing.as_ref()?;
         let state = &editing.operations;
         let owner = cx.entity().downgrade();
         let language = target.language.clone();
-        let menu_target = target.clone();
         let disabled = state.busy
             || editing.conflict_detected
             || editing.save_failed
@@ -478,7 +491,15 @@ impl Reader {
             .ghost()
             .label(language.clone())
             .debug_selector(|| "source-code-language".into())
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, _, cx| {
+                // Snapshot the current scope when the popup opens, not on the
+                // last Reader render. Ordinary typing need not rebuild Reader.
+                let Some(menu_target) = owner
+                    .upgrade()
+                    .and_then(|reader| reader.read(cx).code_scope(cx))
+                else {
+                    return menu;
+                };
                 model::LANGUAGES
                     .iter()
                     .copied()
@@ -631,9 +652,10 @@ impl Reader {
         cx.notify();
     }
 
-    pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(Range<usize>, String)> {
-        self.code_scope(cx)
-            .map(|target| (target.range, target.language))
+    pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(usize, String)> {
+        // Body length changes on every key; it is not a toolbar boundary.
+        self.code_scope_for_display(cx, true)
+            .map(|target| (target.range.start, target.language))
     }
 
     pub(super) fn code_operation_actions(&self, column: Div, cx: &mut Context<Self>) -> Div {
@@ -749,6 +771,169 @@ mod tests {
     }
 
     #[gpui::test]
+    fn edit2803_continuous_typing_has_one_timer_and_a_two_second_save_ceiling(
+        cx: &mut TestAppContext,
+    ) {
+        let original = "Before\n```json\n{\"a\":1}\n```\nAfter\n";
+        let (f, visual) = open(cx, original);
+        for i in 0..9 {
+            visual.simulate_input(" ");
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(250));
+            visual.run_until_parked();
+            if i < 6 {
+                assert_eq!(
+                    std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
+                    original,
+                    "the idle debounce must coalesce quick keys"
+                );
+            }
+        }
+        let saved = std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap();
+        assert_ne!(
+            saved, original,
+            "continuous input still publishes within two seconds"
+        );
+        let newest = f.reader.read_with(visual, |_, cx| value(&f, cx));
+        visual.executor().advance_clock(Duration::from_millis(1100));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
+            newest
+        );
+    }
+
+    #[gpui::test]
+    fn edit2803_blur_saves_off_thread_and_quit_keeps_the_newest_revision(cx: &mut TestAppContext) {
+        let original = "Before\n```json\n{\"a\":1}\n```\nAfter\n";
+        let (f, visual) = open(cx, original);
+        let changed = original.replace("1", "2");
+        f.input.update_in(visual, |input, window, cx| {
+            input.set_value(&changed, window, cx)
+        });
+        f.reader.update_in(visual, |reader, window, cx| {
+            reader.save_source_in_background(window, cx);
+            assert!(reader.editing.as_ref().unwrap().autosaving.is_some());
+            assert_eq!(
+                std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
+                original,
+                "blur queues work; no canonical write on the foreground executor"
+            );
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
+            changed
+        );
+        let newest = original.replace("1", "3");
+        f.input.update_in(visual, |input, window, cx| {
+            input.set_value(&newest, window, cx)
+        });
+        f.reader.update_in(visual, |reader, window, cx| {
+            reader.save_source_in_background(window, cx);
+            assert!(
+                reader.save_source_for_close(cx),
+                "quit still waits for durable latest bytes"
+            );
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
+            newest
+        );
+    }
+
+    #[gpui::test]
+    fn edit2803_unwrapped_popup_frames_reuse_shapes_and_invalidate_on_edit(
+        cx: &mut TestAppContext,
+    ) {
+        let original = format!("{{\"padding\":\"{}\"}}", "a".repeat(512 * 1024));
+        let (f, visual) = open(cx, &original);
+        f.input.update_in(visual, |input, window, cx| {
+            input.set_soft_wrap(false, window, cx);
+            input.enable_layout_diagnostics();
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let before = f
+            .input
+            .read_with(visual, |input, _| input.layout_diagnostics().unwrap());
+        let started = Instant::now();
+        for _ in 0..10 {
+            // The same native layout work caused by popup hover/caret blink.
+            f.input.update(visual, |_, cx| cx.notify());
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let elapsed = started.elapsed();
+        let after = f
+            .input
+            .read_with(visual, |input, _| input.layout_diagnostics().unwrap());
+        assert!(after.source_shape_cache_hits >= before.source_shape_cache_hits + 10);
+        assert_eq!(
+            after.layout_calls, before.layout_calls,
+            "no whole-buffer shaping on hover"
+        );
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "ten cached native frames: {elapsed:?}"
+        );
+        f.input.update_in(visual, |input, window, cx| {
+            input.replace_source_range(12..12, "x", window, cx);
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let edited = f
+            .input
+            .read_with(visual, |input, _| input.layout_diagnostics().unwrap());
+        assert!(
+            edited.layout_calls > after.layout_calls,
+            "changed bytes must invalidate shapes"
+        );
+        f.reader.read_with(visual, |_, cx| {
+            assert_eq!(value(&f, cx), original.replacen("aaa", "xaaa", 1));
+        });
+    }
+
+    #[gpui::test]
+    fn edit2803_typing_inside_a_code_body_keeps_the_toolbar_identity(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "Before\n```json\n{ a: 1 }\n```\nAfter\n");
+        let key = f
+            .reader
+            .read_with(visual, |reader, cx| reader.code_operation_target_key(cx));
+        for _ in 0..8 {
+            visual.simulate_input(" ");
+            visual.run_until_parked();
+            f.reader.read_with(visual, |reader, cx| {
+                assert_eq!(
+                    reader.code_operation_target_key(cx),
+                    key,
+                    "pending fence classification must not hide the toolbar on each key"
+                );
+            });
+            settle(visual);
+            f.reader.read_with(visual, |reader, cx| {
+                assert_eq!(
+                    reader.code_operation_target_key(cx),
+                    key,
+                    "a key changes the body length, not its toolbar identity"
+                );
+            });
+        }
+        click(visual, "source-code-repair");
+        click(visual, "source-code-repair-cancel");
+        visual.simulate_input(" ");
+        settle(visual);
+        f.reader.read_with(visual, |reader, cx| {
+            assert_eq!(reader.code_operation_target_key(cx), key);
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .operations
+                .preview
+                .is_none());
+        });
+    }
+
+    #[gpui::test]
     fn code2771_invalid_format_is_callable_and_repair_preview_cancel_apply_is_explicit(
         cx: &mut TestAppContext,
     ) {
@@ -845,8 +1030,16 @@ mod tests {
         });
         let newer = original.replace('1', "2");
         visual.run_until_parked();
-        click(visual, "source-code-repair-apply");
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("source-code-repair-apply").is_none());
         f.reader.read_with(visual, |reader, cx| {
+            assert!(reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .operations
+                .preview
+                .is_none());
             assert_eq!(value(&f, cx), newer);
             assert!(reader
                 .editing

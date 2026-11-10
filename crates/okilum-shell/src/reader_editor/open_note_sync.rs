@@ -802,7 +802,10 @@ mod tests {
                         input(r).focus_handle(cx).focus(window, cx)
                     });
                     visual.run_until_parked();
-                    let saves = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().saves);
+                    let saves = reader.read_with(visual, |r, _| {
+                        let e = r.editing.as_ref().unwrap();
+                        e.saves + e.focus_save_requests
+                    });
                     let latest = reader.update_in(visual, |r, window, cx| {
                         // Lifecycle flush must sample even before recovery debounce.
                         input(r).update(cx, |i, cx| {
@@ -834,7 +837,7 @@ mod tests {
                     reader.read_with(visual, |r, cx| {
                         let e = r.editing.as_ref().unwrap();
                         assert!(
-                            e.saves > saves,
+                            e.saves + e.focus_save_requests > saves,
                             "positive control: lifecycle save actually fired (signal {signal})"
                         );
                         assert!(e.conflict_detected);

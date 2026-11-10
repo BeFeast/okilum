@@ -486,6 +486,16 @@ impl State {
         topology_changed |= before_pending != self.vault.cloud_placeholders.len();
         for (path, present, placeholder) in identities {
             checkpoint("Reading changed notes", reads)?;
+            let available_before = !self
+                .vault
+                .unreadable
+                .iter()
+                .any(|entry| entry.path == self.vault.root.join(&path))
+                && !self
+                    .vault
+                    .cloud_placeholders
+                    .iter()
+                    .any(|pending| *pending == self.vault.root.join(&path));
             self.vault
                 .unreadable
                 .retain(|entry| entry.path != self.vault.root.join(&path));
@@ -517,12 +527,31 @@ impl State {
                 if let Some(source) = checked.source {
                     let raw =
                         String::from_utf8_lossy(&STANDARD.decode(&source.bytes)?).into_owned();
+                    let unchanged = self
+                        .snapshot
+                        .sources
+                        .get(&path)
+                        .is_some_and(|previous| previous.bytes == source.bytes);
+                    let stamp_changed = self
+                        .snapshot
+                        .sources
+                        .get(&path)
+                        .is_none_or(|previous| previous.stamp != source.stamp);
+                    self.snapshot.sources.insert(path.clone(), source.clone());
+                    if unchanged && !topology_changed && available_before {
+                        // Read and verify the bytes, never trust watcher timing or
+                        // a timestamp. Own-save echoes need no search/graph work.
+                        affected.remove(&path);
+                        if stamp_changed {
+                            changed.insert(path);
+                        }
+                        continue;
+                    }
                     std::sync::Arc::make_mut(&mut self.candidates).update(
                         &path,
                         &raw,
                         source.stamp.clone(),
                     );
-                    self.snapshot.sources.insert(path.clone(), source);
                 }
                 changed.insert(path);
             } else {
@@ -530,6 +559,15 @@ impl State {
                 self.snapshot.sources.remove(&path);
                 removed.insert(path);
             }
+        }
+        if affected.is_empty() && !topology_changed {
+            return Ok(Batch {
+                affected,
+                changed,
+                removed,
+                read: reads,
+                topology_changed,
+            });
         }
         // Alias edits change the destinations of otherwise unchanged referrers.
         // Reparse those sources from the source bank; never reread the vault.
@@ -835,6 +873,62 @@ mod tests {
             serde_json::to_value(&state.vault.backlink_map).unwrap(),
             serde_json::to_value(full.backlink_map).unwrap()
         );
+    }
+
+    #[test]
+    fn edit2803_saves_and_verified_echoes_never_rewrite_the_source_bank() {
+        let (temp, mut state) = fixture();
+        let cache = temp.path().join("cache");
+        save_provisional(&state.snapshot, &state.vault, &cache, Some("A.md")).unwrap();
+        let bank = cache.join("reader-snapshot.json");
+        let original = std::fs::read(&bank).unwrap();
+        let revision = SourceRevision::read(&bank).unwrap();
+        let changes = crate::Changes {
+            changed: BTreeSet::from(["A.md".into()]),
+            ..Default::default()
+        };
+        for n in 0..8 {
+            std::fs::write(
+                state.vault.root.join("A.md"),
+                format!("# Edit {n}\n[[Target]]\n"),
+            )
+            .unwrap();
+            let batch = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+            assert_eq!(batch.read, 1);
+            assert_eq!(
+                batch.changed.len(),
+                1,
+                "real edits must still update search"
+            );
+            state.persist_delta(&cache).unwrap();
+            let delta = std::fs::read(cache.join("reader-delta.json")).unwrap();
+            // Native watcher can report the same atomic save again. Verify bytes
+            // once, but never commit/search/checkpoint the same source again.
+            let echo = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+            assert_eq!(echo.read, 1, "do not suppress hints using timestamps alone");
+            assert!(echo.affected.is_empty() && echo.changed.is_empty());
+            assert_eq!(std::fs::read(&bank).unwrap(), original);
+            assert!(SourceRevision::read(&bank)
+                .unwrap()
+                .same_metadata(&revision));
+            assert!(delta.len() < 16 * 1024);
+        }
+        let path = state.vault.root.join("A.md");
+        let previous = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(previous + std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
+        let touched = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+        assert!(touched.affected.is_empty(), "identical bytes never reindex");
+        assert!(
+            touched.changed.contains("A.md"),
+            "mtime refreshes Now/project recency"
+        );
+        let echo = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+        assert!(echo.changed.is_empty() && echo.affected.is_empty());
+        compare(&state);
     }
 
     #[test]
