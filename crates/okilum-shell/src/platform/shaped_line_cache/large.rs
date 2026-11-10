@@ -1,5 +1,5 @@
 //! A byte-bounded set of exact native layouts, with ASCII-only incremental work.
-//! Context ends at spaces, so shaping never cuts a word/ligature or bidi run.
+//! Native word boundaries retain complete ligature/shaping context.
 use super::*;
 
 pub(super) const MIN_TEXT: usize = 64 * 1024;
@@ -15,6 +15,7 @@ pub(super) struct LargeLine {
     font: FontId,
     runs: Arc<[FontRun]>,
     layout: Arc<LineLayout>,
+    native: Option<Arc<native_ascii::NativeAscii>>,
     pub(super) incremental: bool,
     pub(super) bytes: usize,
 }
@@ -32,7 +33,8 @@ impl LargeLine {
         font_size: Pixels,
         runs: &[FontRun],
         layout: &LineLayout,
-        verified_order: bool,
+        native: Option<Arc<native_ascii::NativeAscii>>,
+        shaper: &dyn PlatformTextSystem,
     ) -> Option<Self> {
         let bytes = entry_bytes(text, runs, layout)
             + size_of::<Self>()
@@ -41,24 +43,31 @@ impl LargeLine {
         if bytes > MAX_BYTES {
             return None;
         }
-        let mut incremental =
-            eligible(text, runs) && layout.runs.iter().all(|run| run.font_id == runs[0].font_id);
-        if incremental && !verified_order {
-            let mut previous = None;
-            for glyph in layout.runs.iter().flat_map(|run| &run.glyphs) {
-                if previous.is_some_and(|index| index > glyph.index) {
-                    incremental = false;
-                    break;
-                }
-                previous = Some(glyph.index);
-            }
-        }
+        let native = native.or_else(|| {
+            (eligible(text, runs) && layout.runs.iter().all(|run| run.font_id == runs[0].font_id))
+                .then(|| {
+                    native_ascii::NativeAscii::prepare(
+                        text,
+                        font_size,
+                        runs[0].font_id,
+                        layout,
+                        None,
+                        shaper,
+                    )
+                    .map(Arc::new)
+                })
+                .flatten()
+        });
+        let native = native.filter(|data| bytes + data.bytes() <= MAX_BYTES);
+        let bytes = bytes + native.as_ref().map_or(0, |data| data.bytes());
+        let incremental = native.is_some();
         Some(Self {
             text: text.into(),
             font_size,
             font: runs.first().map_or(FontId(0), |r| r.font_id),
             runs: runs.into(),
             layout: Arc::new(copy_layout(layout)),
+            native,
             incremental,
             bytes,
         })
@@ -78,12 +87,13 @@ impl LargeLine {
         font_size: Pixels,
         runs: &[FontRun],
         shaper: &dyn PlatformTextSystem,
-    ) -> Option<LineLayout> {
+    ) -> Option<(LineLayout, Arc<native_ascii::NativeAscii>)> {
         if !self.incremental || self.font_size != font_size || self.font != runs[0].font_id {
             return None;
         }
+        let native = self.native.as_ref()?;
         if self.text.as_ref() == text {
-            return Some(copy_layout(&self.layout));
+            return Some((copy_layout(&self.layout), native.clone()));
         }
         let old = self.text.as_bytes();
         let new = text.as_bytes();
@@ -94,15 +104,15 @@ impl LargeLine {
             .zip(new[prefix..].iter().rev())
             .take_while(|(a, b)| a == b)
             .count();
-        let left = old[..prefix]
-            .iter()
-            .rposition(|byte| *byte == b' ')
-            .map_or(0, |i| i + 1);
+        let left_at = native
+            .boundaries
+            .partition_point(|end| *end <= prefix)
+            .saturating_sub(2);
+        let left = native.boundaries[left_at];
         let old_end = old.len() - suffix;
-        let right = old[old_end..]
-            .iter()
-            .position(|byte| *byte == b' ')
-            .map_or(old.len(), |i| old_end + i + 1);
+        let right_at = (native.boundaries.partition_point(|end| *end < old_end) + 1)
+            .min(native.boundaries.len() - 1);
+        let right = native.boundaries[right_at];
         let new_right = new.len().checked_sub(old.len() - right)?;
         let middle = text.get(left..new_right)?;
         if middle.len() > MAX_RESHAPE {
@@ -125,19 +135,14 @@ impl LargeLine {
         {
             return None;
         }
-        // Subtract local native advances, not two multi-million-pixel f32
-        // coordinates whose subtraction can lose several pixels per edit.
-        let old_middle = &self.text[left..right];
-        let old_layout = shaper.layout_line(
-            old_middle,
+        let middle_native = native_ascii::NativeAscii::prepare(
+            middle,
             font_size,
-            &[FontRun {
-                len: old_middle.len(),
-                font_id: self.font,
-            }],
-        );
-        let x_left = self.layout.x_for_index(left);
-        let dx = middle_layout.width - old_layout.width;
+            self.font,
+            &middle_layout,
+            Some(native),
+            shaper,
+        )?;
         let mut glyphs = Vec::with_capacity(
             self.layout
                 .runs
@@ -157,7 +162,6 @@ impl LargeLine {
         for glyph in middle_layout.runs.iter().flat_map(|run| &run.glyphs) {
             let mut glyph = glyph.clone();
             glyph.index += left;
-            glyph.position.x += x_left;
             glyphs.push(glyph);
         }
         for run in &self.layout.runs {
@@ -166,12 +170,11 @@ impl LargeLine {
             glyphs.extend_from_slice(&run.glyphs[start..]);
             for glyph in &mut glyphs[appended..] {
                 glyph.index = new_right + (glyph.index - right);
-                glyph.position.x += dx;
             }
         }
-        Some(LineLayout {
+        let mut layout = LineLayout {
             font_size,
-            width: self.layout.width + dx,
+            width: self.layout.width,
             ascent: self.layout.ascent,
             descent: self.layout.descent,
             runs: vec![ShapedRun {
@@ -179,7 +182,17 @@ impl LargeLine {
                 glyphs,
             }],
             len: text.len(),
-        })
+        };
+        let next = native_ascii::NativeAscii::for_glyphs(
+            text,
+            font_size,
+            self.font,
+            layout.runs.iter().flat_map(|run| &run.glyphs),
+            Some(&middle_native),
+            shaper,
+        )?;
+        next.reflow(&mut layout);
+        Some((layout, Arc::new(next)))
     }
 }
 

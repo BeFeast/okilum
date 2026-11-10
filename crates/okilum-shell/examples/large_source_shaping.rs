@@ -33,6 +33,11 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("Pass a synthetic ASCII source file"))?;
     let mut text = std::fs::read_to_string(file)?;
+    let size = std::env::args()
+        .nth(2)
+        .map(|s| s.parse::<f32>())
+        .transpose()?
+        .unwrap_or(16.);
     let platform = gpui_platform::current_platform(true);
     let shaper = text_platform::shaper(platform.text_system());
     shaper.add_fonts(vec![Cow::Borrowed(include_bytes!(
@@ -45,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         let started = Instant::now();
         let layout = cache.layout_line(
             &text,
-            px(16.),
+            px(size),
             &[FontRun {
                 len: text.len(),
                 font_id: font,

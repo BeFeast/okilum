@@ -21,14 +21,17 @@ publication remains serialized, revision-checked and atomic for external readers
 
 Large unwrapped editor layouts retain exact native shapes across popup/caret
 frames in a separate 160 MiB cache (at most 128 entries), shared by all scripts.
-Only printable ASCII lines use incremental native word-context shaping; any
-Unicode insertion retires the matching ASCII edit state and uses a full native
-reshape. A changed word context above 64 KiB without a space also takes that full
-path (for example a minified numeric array or base64 value). This remains a typing
-latency limitation, separate from exact reuse of unchanged rows and menu frames.
-The native f32 geometry has multi-pixel resolution past 2^24 px: tests preserve
-native glyph identities, verify local geometry, and bound accumulated coordinate
-rounding separately from exact Unicode fallback.
+Only printable ASCII lines use incremental native word-context shaping. Admission
+requires reproducing the complete native layout exactly from font advances and
+native word boundaries; each changed context is checked too. Replaying the pen
+and word-width additions in native order preserves exact global geometry even
+past 2^24 px. Tests compare every glyph, width, caret and far-end hit/selection
+position; deliberately shifted/dropped glyphs fail the same acceptance check.
+Any Unicode insertion retires the matching ASCII edit state and uses a full
+native reshape. A native word context above 64 KiB still takes the full path
+(for example a numeric array/base64 value without a safe break). This remains a
+typing latency limitation, separate from exact reuse of unchanged rows and menu
+frames. Backends/fonts that fail exact admission retain their full native path.
 
 Latency diagnostics observe a second frame callback after the mutation frame's
 draw, rate-limit detailed observations above 32 ms to one per second, and record

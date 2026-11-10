@@ -44,6 +44,8 @@ const LARGEST_LINE_SHARE: usize = 8;
 
 #[path = "shaped_line_cache/large.rs"]
 mod large;
+#[path = "shaped_line_cache/native_ascii.rs"]
+mod native_ascii;
 
 static INSTALLED: OnceLock<Arc<ShapedLineCache>> = OnceLock::new();
 
@@ -52,6 +54,8 @@ pub(crate) struct ShapedLineCache {
     hasher: RandomState,
     lines: Mutex<Lines>,
     large: Mutex<large::LargeLines>,
+    #[cfg(test)]
+    full_large_shapes: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
@@ -91,6 +95,8 @@ impl ShapedLineCache {
             shaper,
             hasher: RandomState::new(),
             large: Mutex::new(Default::default()),
+            #[cfg(test)]
+            full_large_shapes: Default::default(),
             lines: Mutex::new(Lines {
                 max_bytes,
                 ..Lines::default()
@@ -324,12 +330,18 @@ impl PlatformTextSystem for ShapedLineCache {
             let incremental = previous
                 .as_ref()
                 .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()));
-            let verified_order = incremental.is_some();
-            let layout = incremental.unwrap_or_else(|| {
-                let _timing = text_diagnostics::time(Work::PlatformShape);
-                self.shaper.layout_line(text, font_size, runs)
-            });
-            let next = large::LargeLine::new(text, font_size, runs, &layout, verified_order);
+            let (layout, native) = match incremental {
+                Some((layout, native)) => (layout, Some(native)),
+                None => {
+                    #[cfg(test)]
+                    self.full_large_shapes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let _timing = text_diagnostics::time(Work::PlatformShape);
+                    (self.shaper.layout_line(text, font_size, runs), None)
+                }
+            };
+            let next =
+                large::LargeLine::new(text, font_size, runs, &layout, native, self.shaper.as_ref());
             self.large
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -504,16 +516,26 @@ mod tests {
             Ok(FontId(0))
         }
         fn font_metrics(&self, _: FontId) -> FontMetrics {
-            unimplemented!()
+            FontMetrics {
+                units_per_em: 16,
+                ascent: 0.,
+                descent: 0.,
+                line_gap: 0.,
+                underline_position: 0.,
+                underline_thickness: 0.,
+                cap_height: 0.,
+                x_height: 0.,
+                bounding_box: Default::default(),
+            }
         }
         fn typographic_bounds(&self, _: FontId, _: GlyphId) -> Result<gpui::Bounds<f32>> {
             unimplemented!()
         }
         fn advance(&self, _: FontId, _: GlyphId) -> Result<Size<f32>> {
-            unimplemented!()
+            Ok(gpui::size(1., 1.))
         }
-        fn glyph_for_char(&self, _: FontId, _: char) -> Option<GlyphId> {
-            None
+        fn glyph_for_char(&self, _: FontId, ch: char) -> Option<GlyphId> {
+            Some(GlyphId(ch as u32))
         }
         fn glyph_raster_bounds(&self, _: &RenderGlyphParams) -> Result<gpui::Bounds<DevicePixels>> {
             unimplemented!()
@@ -578,72 +600,98 @@ mod tests {
     }
 
     #[test]
-    fn edit2803_incremental_ascii_preserves_native_glyphs_and_local_geometry() {
+    fn edit2803_incremental_ascii_geometry_matches_the_real_platform_shaper() {
         let shaper = platform_shaper();
         let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
-        let mono = cache
-            .font_id(&font(
-                "Cascadia Code",
-                FontWeight::NORMAL,
-                FontStyle::Normal,
-            ))
-            .unwrap();
-        for count in [2000, 60000] {
-            let mut text = "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(count);
-            let runs = |text: &str| {
-                vec![FontRun {
-                    len: text.len(),
-                    font_id: mono,
-                }]
-            };
+        let mono = cache.font_id(&gpui::font("Cascadia Code")).unwrap();
+        let runs = |text: &str| {
+            vec![FontRun {
+                len: text.len(),
+                font_id: mono,
+            }]
+        };
+        let sources = [
+            "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(2000),
+            "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(60000),
+            format!(
+                "[{}]",
+                (0..800000)
+                    .map(|i| (i % 100).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ];
+        for mut text in sources {
+            let bounded_context = text.contains(' ');
             cache.layout_line(&text, px(16.), &runs(&text));
-            for (edit, at) in [14, text.len() / 2, text.len() - 14]
-                .into_iter()
-                .enumerate()
-            {
+            let full_shapes = cache.full_large_shapes.load(Ordering::Relaxed);
+            if cfg!(target_os = "linux") {
+                assert!(
+                    cache
+                        .large
+                        .lock()
+                        .unwrap()
+                        .entries
+                        .back()
+                        .unwrap()
+                        .incremental,
+                    "positive control: exact native replay must be admitted"
+                );
+            }
+            for at in [14, text.len() / 2, text.len() - 14] {
                 text.insert(at, 'x');
                 let actual = cache.layout_line(&text, px(16.), &runs(&text));
                 let direct = shaper.layout_line(&text, px(16.), &runs(&text));
-                // Whole-line coordinates exceed 2^24px for this fixture: a
-                // native f32 step is already 2px. Each edit adds/subtracts two
-                // such coordinates; verify that numerical error stays bounded,
-                // then compare local viewport geometry independently below.
-                let width = f32::from(direct.width);
-                let step = px((width.next_up() - width).max(1.));
-                let tolerance = if count == 2000 {
-                    px(1.)
-                } else {
-                    step * (2 * (edit + 1)) as f32
-                };
                 assert!(
-                    (actual.width - direct.width).abs() <= tolerance,
-                    "width actual={:?} direct={:?} tolerance={tolerance:?}",
-                    actual.width,
-                    direct.width
+                    native_ascii::exact_geometry(&actual, &direct),
+                    "all native coordinates, widths, glyphs and indices must match exactly"
                 );
-                let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
-                let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
-                assert_eq!(a.len(), b.len());
-                let actual_origin = actual.x_for_index(at);
-                let direct_origin = direct.x_for_index(at);
-                for (a, b) in a.iter().zip(&b) {
-                    assert_eq!((a.index, a.id), (b.index, b.id));
-                    if (at..at + 64).contains(&a.index) {
-                        assert!(
-                            ((a.position.x - actual_origin) - (b.position.x - direct_origin)).abs()
-                                <= step * 2.,
-                            "local geometry at byte {}",
-                            a.index
-                        );
-                    }
+                if cfg!(target_os = "linux") && bounded_context {
+                    assert_eq!(cache.full_large_shapes.load(Ordering::Relaxed), full_shapes,
+                        "positive control: bounded edits must not fall back to whole-line native shaping");
+                } else if !bounded_context {
                     assert!(
-                        (a.position.x - b.position.x).abs() <= tolerance,
-                        "glyph {} actual={:?} direct={:?} tolerance={tolerance:?}",
-                        a.index,
-                        a.position,
-                        b.position
+                        cache.full_large_shapes.load(Ordering::Relaxed) > full_shapes,
+                        "numeric context above 64 KiB deliberately takes the complete native path"
                     );
                 }
+                for index in [0, at, text.len() / 2, text.len() - 12, text.len()] {
+                    assert_eq!(actual.x_for_index(index), direct.x_for_index(index));
+                    let x = direct.x_for_index(index);
+                    for offset in [-3., 0., 3.] {
+                        assert_eq!(
+                            actual.closest_index_for_x(x + px(offset)),
+                            direct.closest_index_for_x(x + px(offset)),
+                            "far-end hit-testing"
+                        );
+                    }
+                }
+                for selection in [at..at + 8, text.len() - 64..text.len()] {
+                    assert_eq!(
+                        (
+                            actual.x_for_index(selection.start),
+                            actual.x_for_index(selection.end)
+                        ),
+                        (
+                            direct.x_for_index(selection.start),
+                            direct.x_for_index(selection.end)
+                        ),
+                        "far-end selection endpoints"
+                    );
+                }
+                // Negative controls use the exact same acceptance predicate.
+                let mut wrong = copy_layout(&actual);
+                wrong.runs[0].glyphs.last_mut().unwrap().position.x += px(16.);
+                assert!(
+                    !native_ascii::exact_geometry(&wrong, &direct),
+                    "shifted far-end glyph must fail"
+                );
+                let mut dropped = copy_layout(&actual);
+                dropped.runs[0].glyphs.pop();
+                assert!(
+                    !native_ascii::exact_geometry(&dropped, &direct),
+                    "a lost glyph must fail"
+                );
             }
         }
     }
