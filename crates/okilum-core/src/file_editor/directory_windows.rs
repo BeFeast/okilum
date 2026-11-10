@@ -7,7 +7,7 @@ use std::{
 #[derive(Clone)]
 pub(super) struct Directory {
     path: PathBuf,
-    identities: Vec<(u32, u32, u32)>,
+    identities: Vec<crate::windows_files::Identity>,
 }
 impl Directory {
     pub fn try_clone(&self) -> Result<Self> {
@@ -38,14 +38,14 @@ impl Directory {
         self.pin()?;
         Ok(())
     }
-    pub fn read(&self, name: &OsStr) -> Result<(String, (u32, u32, u32))> {
+    pub fn read(&self, name: &OsStr) -> Result<(String, crate::windows_files::Identity)> {
         let (bytes, identity) = self.read_bytes(name)?;
         Ok((
             String::from_utf8(bytes).context("Only lossless UTF-8 source editing is supported")?,
             identity,
         ))
     }
-    pub fn read_bytes(&self, name: &OsStr) -> Result<(Vec<u8>, (u32, u32, u32))> {
+    pub fn read_bytes(&self, name: &OsStr) -> Result<(Vec<u8>, crate::windows_files::Identity)> {
         let native = self.pin()?;
         let (_, bytes, info) = native.read(name)?;
         Ok((bytes, crate::windows_files::identity(&info)))

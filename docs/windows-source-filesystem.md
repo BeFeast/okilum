@@ -1,24 +1,32 @@
 # Native Windows source filesystem (#765)
 
-The backend slice (#776) added NTFS primitives in `okilum_core::windows_files`.
+The backend slice (#776) added native Windows primitives in `okilum_core::windows_files`.
 The desktop integration (#765) adapts the shared editor, drafts/history,
 conflicts, creation and rename flows to those primitives. The Reader/MCP
 protocol remains read-only.
 
 A `Directory` pins every ancestor without DELETE sharing and refuses UNC,
-mapped network drives and non-NTFS volumes. Symlinks, junctions, unknown reparse
+mapped network drives and local filesystems other than NTFS/ReFS. Symlinks, junctions, unknown reparse
 tags, hard-linked sources and readonly notes fail closed. Resident CLOUD-family
 files are accepted because their tags do not redirect names; offline/recall
 sources require an external download. Real OneDrive save behavior still needs
 owner QA.
 
-Oleg's 2026-11-09 decision for #2761 retains ReFS (including Windows Dev Drive)
-as read-only. The desktop editing refusal names that restriction, explains that
-reading/search remain available, and directs in-app editing/paste to a **local
-NTFS** folder. The existing **Open with default app** action offers external
-editing. Copying the vault
-to another folder on ReFS does not enable editing. This disposition changes the
-explanation, not filesystem admission, source identity or save/recovery behavior.
+Oleg's 2026-11-10 decision for #2761 supersedes the earlier read-only
+restriction: local ReFS, including Dev Drive, supports ordinary editing, paste,
+save, moves, and Recycle Bin Undo. Network volumes remain read-only (#516).
+Other local filesystems (including exFAT/FAT32) remain read-only, with a refusal
+that directs editing to a local NTFS or ReFS folder.
+
+All mutation/ancestry/recovery/attachment identities use the complete 64-bit
+volume serial and 128-bit `FILE_ID_INFO` from the same open handle. Legacy
+`BY_HANDLE_FILE_INFORMATION` remains only for attributes, links, size and time.
+Legacy recovery JSON pairs still parse but cannot authorize cleanup against a
+full identity; the snapshot and native recovery are retained. Windows writer
+bindings upgrade under the existing registry/admission/writer/owner locks,
+without changing epochs or releasing durable holds. Automatic schema-1 upgrade
+requires the complete current ID to fit the former index; an ambiguous legacy
+ReFS binding fails closed for explicit authority recovery.
 
 Ancestor handles request `FILE_LIST_DIRECTORY` as well as attributes: a
 metadata-only handle does not participate in Windows sharing checks. Native
@@ -83,7 +91,7 @@ on Unix; portable search-update assertions also compile on Windows.
 
 Windows uses the shared Edit source / Live Preview input, Ctrl+S, Ctrl+F,
 New note/folder and reviewed link-rewriting rename flows. Editing is restricted
-to the local NTFS backend; network and unsupported filesystems fail closed.
+to the local NTFS/ReFS backend; network and unsupported filesystems fail closed.
 A source editor records the original ancestry identities and pins and checks
 all ancestors for each operation. Pins are released between operations so an
 explicit folder move is possible; the next read/save refuses a replaced parent.
@@ -174,3 +182,39 @@ Native contracts use filesystem joins and `set_file_name` in nested folders,
 round-trip create/template/tree identities, rewrite both wikilinks and the sibling
 Markdown link, and check unrelated-edit/new-referrer controls for indexed and
 full-scan previews.
+
+## ReFS API audit (#2761)
+
+Sources checked 2026-11-10; supported API behavior is not a substitute for native
+execution. The checked main uses `MoveFileExW`, not `FileRenameInfoEx`.
+
+| Primitive / caller | ReFS behavior and safety decision |
+| --- | --- |
+| Create/write-through/flush (`windows_files`) | ReFS supports `CreateFileW` and `FlushFileBuffers`. Prepared bytes are flushed before publication; canonical bytes are checked and flushed before Saved. No unsupported `REPLACEFILE_WRITE_THROUGH` flag. |
+| Replace/save/recovery | `ReplaceFileW` keeps a same-volume preimage. Exact displaced bytes and full ID are checked; race reversal also retains displaced bytes. No ignore-merge flags. |
+| NOREPLACE move / `note_move_windows` | `MoveFileExW(MOVEFILE_WRITE_THROUGH)` without REPLACE_EXISTING/COPY_ALLOWED. Same-volume rename never overwrites. `SetFileInformationByHandle(FileDispositionInfo)` deletes only the validated open object. ReFS also supports handle rename APIs; no new rename backend is needed. |
+| DACL / security descriptor | ReFS supports Windows ACLs. Copy protected DACL before draft bytes; retain owner fallback/effective-access checks and exact post-publish DACL repair. |
+| Identity / writer authority / history | Microsoft explicitly warns that the old 64-bit index is not unique on ReFS. `GetFileInformationByHandleEx(FileIdInfo)` is mandatory; no truncation or hash surrogate. |
+| Reparse / cloud | Retain no-follow opens, pinned ancestors, tag allowlist and resident-only cloud checks. No claim that ReFS implies OneDrive compatibility. |
+| ADS / names | ReFS supports named streams on current versions. Replace merges streams. `:` remains invalid in user names. Unicode/Win32 device and trailing-dot/space rules stay; no operation depends on 8.3 short names. |
+| EFS / compression / object IDs | Older ReFS versions lack these NTFS features. No caller requires them. EFS is copied only when the actual source is encrypted; unsupported creation fails before draft bytes. No object-ID or short-name lookup. |
+| Block cloning | Not used. Copies and pasted image attachments flush complete ordinary bytes and use the same create-only publication. |
+| Integrity streams | ReFS policy can differ per file from its parent. Capture and apply checksum algorithm/enforcement flags to the prepared file before writing; preserve enabled and disabled policy. No global integrity setting changes. |
+| Recycle Bin | Shell owns `$Recycle.Bin/<SID>/$I…/$R…` creation. Existing parser finds the original path; full ID verifies the `$R` object. Restore refuses occupied destinations. A real ReFS recycle/restore control is required, since the private layout is not a documented filesystem guarantee. |
+
+Microsoft references:
+
+- [BY_HANDLE_FILE_INFORMATION and ReFS 128-bit IDs](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)
+- [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+- [ReFS feature comparison](https://learn.microsoft.com/en-us/windows-server/storage/refs/refs-overview)
+- [ReplaceFileW merge, backup, failure behavior and file ID](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+- [MoveFileExW flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+- [FlushFileBuffers support](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+- [SetFileInformationByHandle support](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+- [ReFS integrity streams](https://learn.microsoft.com/en-us/windows-server/storage/refs/integrity-streams)
+
+`scripts/ci/windows-filesystems.ps1` runs the save/recovery regressions, note
+move/copy/history suites and writer authority tests with TEMP/TMP on NTFS, then
+on an owned ReFS VHDX. ReFS creation/formatting inability is an explicit logged
+SKIP with the reason; any test failure is fatal. The VHDX is detached in finally.
+The native workflow archives exact-source test executables for VM replay.

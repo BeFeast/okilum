@@ -143,7 +143,7 @@ impl PreparedCopy {
         #[cfg(windows)]
         {
             // Directory pins every ancestor and retains the ordinary local
-            // NTFS gate. Use the same write-through NOREPLACE rename as notes.
+            // NTFS/ReFS gate. Use the same write-through NOREPLACE rename as notes.
             // keep() removes Windows' temporary-file attribute before the
             // native write-through rename. Publication errors retain the full
             // prepared copy and report its location for inspection.

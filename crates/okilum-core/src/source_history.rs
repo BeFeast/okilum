@@ -14,6 +14,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+type HistoryIdentity = crate::windows_files::Identity;
+#[cfg(not(windows))]
+type HistoryIdentity = (u64, u64);
+
 const MAX_AGE: u64 = 30 * 24 * 60 * 60 * 1_000_000;
 const MAX_VERSIONS: usize = 20;
 const MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -30,7 +35,7 @@ pub struct Preimage {
     // EXDEV keeps the identified inode beside the vault. Its completed JSON
     // snapshot still participates in retention; unexpected inode/bytes pin both.
     #[serde(default)]
-    external_inode: Option<(u64, u64)>,
+    external_inode: Option<HistoryIdentity>,
     #[serde(default)]
     prepared: Option<PathBuf>,
     // Proposed bytes are durable outside the vault before native publication.
@@ -38,7 +43,7 @@ pub struct Preimage {
     #[serde(default)]
     prepared_snapshot: Option<String>,
     #[serde(default)]
-    prepared_identity: Option<(u64, u64)>,
+    prepared_identity: Option<HistoryIdentity>,
     // A completed Windows record owns a durable full-text snapshot in app state.
     // external_inode remains set only while checked vault-side cleanup is pending.
     #[serde(default)]
@@ -146,7 +151,7 @@ impl Preimage {
         );
         let (_, bytes, info) = prepared_directory.read(prepared.file_name().unwrap())?;
         let snapshot = String::from_utf8(bytes).context("Prepared source is not UTF-8")?;
-        let (volume, high, low) = crate::windows_files::identity(&info);
+        let identity = crate::windows_files::identity(&info);
         let path = directory(drafts).join(format!("{}.json", uuid::Uuid::new_v4()));
         let entry = Self {
             note: note.to_owned(),
@@ -157,7 +162,7 @@ impl Preimage {
             external_inode: None,
             prepared: Some(prepared),
             prepared_snapshot: Some(snapshot),
-            prepared_identity: Some((u64::from(volume), u64::from(high) << 32 | u64::from(low))),
+            prepared_identity: Some(identity),
             snapshot_only: false,
         };
         persist(&path, &entry)?;
@@ -200,7 +205,7 @@ impl Preimage {
     pub(crate) fn finish_windows(
         path: &Path,
         directory: &crate::windows_files::Directory,
-        expected_identity: (u64, u64),
+        expected_identity: HistoryIdentity,
     ) -> Result<()> {
         let mut entry = Self::load(path)?;
         let (_, bytes, info) = directory.read(
@@ -215,9 +220,9 @@ impl Preimage {
         );
         // The JSON already contains the complete preimage. Persist acknowledgement
         // and the checked cleanup identity before removing any native recovery bytes.
-        let (volume, high, low) = crate::windows_files::identity(&info);
+        let identity = crate::windows_files::identity(&info);
         ensure!(
-            (u64::from(volume), u64::from(high) << 32 | u64::from(low)) == expected_identity,
+            identity == expected_identity,
             "Displaced source was replaced; recovery is protected"
         );
         entry.external_inode = Some(expected_identity);
@@ -259,10 +264,9 @@ impl Preimage {
         )?;
         match parent.read(entry.displaced.file_name().unwrap()) {
             Ok((guard, bytes, info)) => {
-                let (volume, high, low) = crate::windows_files::identity(&info);
+                let identity = crate::windows_files::identity(&info);
                 ensure!(
-                    bytes == entry.text.as_bytes()
-                        && (u64::from(volume), u64::from(high) << 32 | u64::from(low)) == expected,
+                    bytes == entry.text.as_bytes() && identity == expected,
                     "Changed recovery is protected"
                 );
                 entry.snapshot_only = true;
@@ -426,11 +430,11 @@ fn protected(entry: &Preimage) -> bool {
     {
         entry.pending
             || crate::windows_files::read_file(&entry.displaced).map_or(true, |(_, bytes, info)| {
-                let (volume, high, low) = crate::windows_files::identity(&info);
+                let identity = crate::windows_files::identity(&info);
                 bytes != entry.text.as_bytes()
-                    || entry.external_inode.is_some_and(|expected| {
-                        expected != (u64::from(volume), u64::from(high) << 32 | u64::from(low))
-                    })
+                    || entry
+                        .external_inode
+                        .is_some_and(|expected| expected != identity)
             })
     }
 }
@@ -1569,13 +1573,13 @@ mod windows_cleanup_tests {
         assert!(matches!(plan.commit().unwrap(), Replacement::Saved { .. }));
         if completed {
             let (_, _, info) = dir.read(backup.file_name().unwrap()).unwrap();
-            let (v, h, l) = crate::windows_files::identity(&info);
+            let identity = crate::windows_files::identity(&info);
             let mut entry = Preimage::load(&record).unwrap();
             entry.pending = false;
             entry.prepared = None;
             entry.prepared_snapshot = None;
             entry.prepared_identity = None;
-            entry.external_inode = Some((u64::from(v), u64::from(h) << 32 | u64::from(l)));
+            entry.external_inode = Some(identity);
             entry.snapshot_only = snapshot;
             persist(&record, &entry).unwrap();
         }
@@ -1614,8 +1618,8 @@ mod windows_cleanup_tests {
         let created = root.join("Created.md");
         fs::write(&created, b"created").unwrap();
         let (_, _, info) = crate::windows_files::read_file(&created).unwrap();
-        let (volume, high, low) = crate::windows_files::identity(&info);
-        let expected = (u64::from(volume), u64::from(high) << 32 | u64::from(low));
+        let identity = crate::windows_files::identity(&info);
+        let expected = identity;
         let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
         let mut hold = authority.begin_drain("windows-cleanup").unwrap();
         let token = hold.token().clone();
@@ -1825,8 +1829,8 @@ mod windows_cleanup_tests {
         let (record, backup) = staged(&root, &drafts, "Note.md", false, false);
         let dir = Directory::open(&root).unwrap();
         let (_, _, info) = dir.read(backup.file_name().unwrap()).unwrap();
-        let (v, h, l) = crate::windows_files::identity(&info);
-        let expected = (u64::from(v), u64::from(h) << 32 | u64::from(l));
+        let identity = crate::windows_files::identity(&info);
+        let expected = identity;
         let replacement = root.join("another.tmp");
         fs::write(&replacement, "preimage שלום\r\n").unwrap();
         fs::rename(&replacement, &backup).unwrap();
