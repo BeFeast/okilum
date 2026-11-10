@@ -7743,6 +7743,9 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.editing.is_some() {
+            reader_editor::SOURCE_READER_RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
         let _work = project::performance::Work::start(30);
         #[cfg(target_os = "linux")]

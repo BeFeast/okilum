@@ -139,3 +139,52 @@ fn rebuilding_a_live_writer_is_rejected_before_any_index_is_removed() -> Result<
     Searcher::build_documents(&documents, root.path())?.finish_build()?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn edit2803_search_checkpoints_share_immutable_segments_and_keep_independent_metadata() -> Result<()>
+{
+    use std::os::unix::fs::MetadataExt;
+    let root = tempfile::tempdir()?;
+    let index = root.path().join("index");
+    std::fs::create_dir(&index)?;
+    let base = Searcher::build_documents(
+        &[SearchDocument {
+            path: "note.md".into(),
+            title: "Note".into(),
+            text: "originalword ".repeat(10000),
+        }],
+        &index,
+    )?;
+    base.finish_build()?;
+    let base = Searcher::open(&index)?;
+    let session = base.fork_session_in(root.path())?;
+    let session_path = session.session.as_ref().unwrap().dir.path();
+    let checkpoint = root.path().join("checkpoint");
+    std::fs::create_dir(&checkpoint)?;
+    session.copy_committed_to(&checkpoint)?;
+    let mut shared = 0;
+    for entry in std::fs::read_dir(&checkpoint)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "meta.json" || name == ".managed.json" {
+            continue;
+        }
+        assert_eq!(
+            entry.metadata()?.ino(),
+            std::fs::metadata(session_path.join(&name))?.ino()
+        );
+        shared += 1;
+    }
+    assert!(
+        shared > 0,
+        "positive control: real segments were checkpointed"
+    );
+    assert_ne!(
+        std::fs::metadata(checkpoint.join("meta.json"))?.ino(),
+        std::fs::metadata(session_path.join("meta.json"))?.ino()
+    );
+    let reopened = Searcher::open(&checkpoint)?;
+    assert_eq!(reopened.search("originalword", 10)?.len(), 1);
+    Ok(())
+}
