@@ -99,14 +99,14 @@ impl Drag {
     }
     fn step(
         &self,
-        owned_and_active: bool,
+        owned_visible_target: bool,
         left_pressed: bool,
         frame: Rect,
         mouse: Point,
         visible: Option<Rect>,
     ) -> Option<Point> {
         let anchor = self.anchor.get()?;
-        let origin = (owned_and_active
+        let origin = (owned_visible_target
             && left_pressed
             && self.last_origin.get() == Some(frame.origin)
             && frame.width == anchor.frame.width
@@ -238,11 +238,13 @@ mod native {
                 }
                 let owner: *mut AnyObject = msg_send![event, window];
                 let visible: Bool = msg_send![&*self.window, isVisible];
-                let key: Bool = msg_send![&*self.window, isKeyWindow];
                 let buttons: usize = msg_send![class!(NSEvent), pressedMouseButtons];
+                // An accepted first mouse belongs to this exact window even
+                // before AppKit has made its panel key or activated the app.
+                // Focus is not an input ownership test. The local event's
+                // window identity, visibility and button state are the guard.
                 if owner != Retained::as_ptr(&self.window).cast_mut()
                     || !visible.as_bool()
-                    || !key.as_bool()
                     || buttons & 1 == 0
                 {
                     self.drag.cancel();
