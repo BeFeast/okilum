@@ -485,12 +485,7 @@ impl Reader {
             .ghost()
             .label(language.clone())
             .debug_selector(|| "source-code-language".into())
-            .dropdown_menu(move |menu, window, cx| {
-                if std::env::var_os("OKILUM_CODE_TIMING").is_some() {
-                    if let Some(trace) = reader_diagnostics::trace(cx) {
-                        trace_language_frames(window, trace, 120);
-                    }
-                }
+            .dropdown_menu(move |menu, _, cx| {
                 // Snapshot the current scope when the popup opens, not on the
                 // last Reader render. Ordinary typing need not rebuild Reader.
                 let Some(menu_target) = owner
@@ -669,25 +664,6 @@ impl Reader {
                 this.code_operation(Action::Repair, window, cx)
             }))
     }
-}
-
-// Opt-in native frame timing also covers popup hover without retaining source
-// snapshots or a Reader. A bounded run stops even if the popup stays open.
-fn trace_language_frames(window: &mut Window, trace: reader_diagnostics::Trace, remaining: usize) {
-    if remaining == 0 {
-        return;
-    }
-    let started = Instant::now();
-    window.request_animation_frame();
-    window.on_next_frame(move |window, _| {
-        trace.event(
-            "source_language_menu_frame",
-            serde_json::json!({
-                "duration_ms":started.elapsed().as_secs_f64()*1000.
-            }),
-        );
-        trace_language_frames(window, trace, remaining - 1);
-    });
 }
 
 fn preview_editor(

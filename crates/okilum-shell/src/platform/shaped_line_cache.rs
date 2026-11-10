@@ -42,12 +42,16 @@ pub(crate) const SHAPED_LINES_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// stored, so one huge line cannot empty the cache.
 const LARGEST_LINE_SHARE: usize = 8;
 
+#[path = "shaped_line_cache/large.rs"]
+mod large;
+
 static INSTALLED: OnceLock<Arc<ShapedLineCache>> = OnceLock::new();
 
 pub(crate) struct ShapedLineCache {
     shaper: Arc<dyn PlatformTextSystem>,
     hasher: RandomState,
     lines: Mutex<Lines>,
+    large: Mutex<Option<large::LargeLine>>,
 }
 
 #[derive(Default)]
@@ -86,6 +90,7 @@ impl ShapedLineCache {
         Self {
             shaper,
             hasher: RandomState::new(),
+            large: Mutex::new(None),
             lines: Mutex::new(Lines {
                 max_bytes,
                 ..Lines::default()
@@ -130,6 +135,9 @@ impl ShapedLineCache {
         lines.entries.clear();
         lines.order.clear();
         lines.bytes = 0;
+        drop(lines);
+        let retired = self.large.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(retired);
     }
 
     #[cfg(test)]
@@ -301,6 +309,23 @@ impl PlatformTextSystem for ShapedLineCache {
     }
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         let _timing = text_diagnostics::time(Work::LineLayout);
+        if large::eligible(text, runs) {
+            let previous = self.large.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let layout = previous
+                .as_ref()
+                .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()))
+                .unwrap_or_else(|| {
+                    let _timing = text_diagnostics::time(Work::PlatformShape);
+                    self.shaper.layout_line(text, font_size, runs)
+                });
+            let next = large::LargeLine::new(text, font_size, runs, &layout);
+            let retired = std::mem::replace(
+                &mut *self.large.lock().unwrap_or_else(|e| e.into_inner()),
+                next,
+            );
+            drop(retired);
+            return layout;
+        }
         let hash = self.key_hash(text, font_size, runs);
         let cached = self
             .lines
@@ -456,7 +481,7 @@ mod tests {
 
     /// Counts the lines it shapes; every line is one glyph per byte.
     #[derive(Default)]
-    struct CountingShaper(AtomicUsize);
+    struct CountingShaper(AtomicUsize, AtomicUsize);
 
     impl PlatformTextSystem for CountingShaper {
         fn add_fonts(&self, _: Vec<Cow<'static, [u8]>>) -> Result<()> {
@@ -492,14 +517,16 @@ mod tests {
         }
         fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
             self.0.fetch_add(1, Ordering::Relaxed);
+            self.1.fetch_add(text.len(), Ordering::Relaxed);
             let font_id = runs.first().map_or(FontId(0), |r| r.font_id);
             LineLayout {
                 font_size,
+                width: gpui::px(text.len() as f32),
                 runs: vec![ShapedRun {
                     font_id,
                     glyphs: (0..text.len())
                         .map(|index| ShapedGlyph {
-                            id: GlyphId(index as u32),
+                            id: GlyphId(text.as_bytes()[index] as u32),
                             position: gpui::point(px(index as f32), px(0.)),
                             index,
                             is_emoji: false,
@@ -538,6 +565,75 @@ mod tests {
         assert!(report["work"]["line_layout"]["calls"].as_u64().unwrap() >= 2);
         assert!(report["work"]["platform_shape"]["calls"].as_u64().unwrap() >= 1);
         assert!(!report.to_string().contains("abc"));
+    }
+
+    #[test]
+    fn edit2803_incremental_ascii_geometry_matches_the_real_platform_shaper() {
+        let shaper = platform_shaper();
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let mono = cache
+            .font_id(&font(
+                "Cascadia Code",
+                FontWeight::NORMAL,
+                FontStyle::Normal,
+            ))
+            .unwrap();
+        let mut text = "{\"key\":\"alpha beta gamma 123 ffi != ->\"} ".repeat(2000);
+        let runs = |text: &str| {
+            vec![FontRun {
+                len: text.len(),
+                font_id: mono,
+            }]
+        };
+        cache.layout_line(&text, px(16.), &runs(&text));
+        for at in [14, text.len() / 2, text.len() - 14] {
+            text.insert(at, 'x');
+            let actual = cache.layout_line(&text, px(16.), &runs(&text));
+            let direct = shaper.layout_line(&text, px(16.), &runs(&text));
+            assert!((actual.width - direct.width).abs() < px(1.));
+            let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
+            let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(&b) {
+                assert_eq!((a.index, a.id), (b.index, b.id));
+                assert!((a.position.x - b.position.x).abs() < px(1.));
+            }
+        }
+    }
+
+    #[test]
+    fn edit2803_large_line_reshapes_only_changed_word_context_with_a_bounded_cache() {
+        let shaper = Arc::new(CountingShaper::default());
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let original = "alpha beta gamma ".repeat(128 * 1024);
+        let mut text = original.clone();
+        cache.layout_line(&text, px(16.), &run(&text));
+        for at in [7, text.len() / 2, text.len() - 7] {
+            text.insert(at, 'x');
+            let bytes = shaper.1.load(Ordering::Relaxed);
+            let actual = cache.layout_line(&text, px(16.), &run(&text));
+            assert!(
+                shaper.1.load(Ordering::Relaxed) - bytes < 128,
+                "a small edit must not resubmit the full line to the native shaper"
+            );
+            let direct = CountingShaper::default().layout_line(&text, px(16.), &run(&text));
+            assert_eq!(actual.len, direct.len);
+            assert_eq!(actual.width, direct.width);
+            for (a, b) in actual
+                .runs
+                .iter()
+                .flat_map(|r| &r.glyphs)
+                .zip(direct.runs.iter().flat_map(|r| &r.glyphs))
+            {
+                assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
+            }
+            assert!(cache.large.lock().unwrap().as_ref().unwrap().bytes <= large::MAX_BYTES);
+        }
+        cache.clear();
+        assert!(cache.large.lock().unwrap().is_none());
+        // Other scripts retain their complete contextual platform shaping.
+        let rtl = format!("{}שלום", original);
+        assert!(!large::eligible(&rtl, &run(&rtl)));
     }
 
     /// #1312: a line shaped once is not sent to the shaper again, whatever
@@ -619,8 +715,8 @@ mod tests {
         cache.layout_line(&huge, px(16.), &run(&huge));
         assert_eq!(
             shaper.0.load(Ordering::Relaxed),
-            shaped + 3,
-            "a huge line is shaped each time"
+            shaped + 2,
+            "one large line uses its separate bounded cache"
         );
         assert!(cache.bytes() <= cap);
 
