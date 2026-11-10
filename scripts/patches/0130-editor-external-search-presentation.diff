@@ -1,0 +1,87 @@
+diff --git a/crates/base/src/input/editor/search.rs b/crates/base/src/input/editor/search.rs
+--- a/crates/base/src/input/editor/search.rs
++++ b/crates/base/src/input/editor/search.rs
+@@ -19,6 +19,8 @@
+ #[derive(Debug, Clone)]
+ pub struct SearchSession {
+     pub open: bool,
++    /// The host paints Find outside the toolkit search strip.
++    pub external_presentation: bool,
+     pub replace_mode: bool,
+     pub case_insensitive: bool,
+     pub query: String,
+@@ -31,6 +33,7 @@
+     fn default() -> Self {
+         Self {
+             open: false,
++            external_presentation: false,
+             replace_mode: false,
+             case_insensitive: true,
+             query: String::new(),
+@@ -48,6 +51,7 @@
+     }
+ 
+     pub(crate) fn close(&mut self) {
++        self.external_presentation = false;
+         self.open = false;
+     }
+ 
+@@ -92,6 +96,16 @@
+             self.search_session.matcher.update_cursor_by_offset(anchor);
+         }
+         cx.notify();
++    }
++
++    /// Keep matches and stepping available while the host owns the Find UI.
++    /// This changes presentation only; it never edits the source or caret.
++    /// `close_search` ends both internal and external presentations.
++    pub fn set_external_search_presentation(&mut self, external: bool, cx: &mut Context<Self>) {
++        if self.search_session.external_presentation != external {
++            self.search_session.external_presentation = external;
++            cx.notify();
++        }
+     }
+ 
+     pub fn search_session(&self) -> &SearchSession {
+@@ -152,7 +166,7 @@
+     }
+ 
+     pub fn close_search(&mut self, cx: &mut Context<Self>) {
+-        if self.search_session.open {
++        if self.search_session.open || self.search_session.external_presentation {
+             self.search_return = Some((self.source_stamp(), self.selected_range()));
+         }
+         self.search_session.close();
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1052,7 +1052,7 @@
+         cx: &mut App,
+     ) -> Vec<(Path<Pixels>, bool)> {
+         let state = self.state.read(cx);
+-        if !state.search_session.open {
++        if !state.search_session.open && !state.search_session.external_presentation {
+             return vec![];
+         }
+         let ranges = state.search_session.matcher.matched_ranges();
+diff --git a/crates/component/src/input/overlay.rs b/crates/component/src/input/overlay.rs
+--- a/crates/component/src/input/overlay.rs
++++ b/crates/component/src/input/overlay.rs
+@@ -312,7 +312,7 @@
+             let state = state.read(cx);
+             let search = state.search_session();
+             (
+-                search.open,
++                search.open && !search.external_presentation,
+                 search.replace_mode,
+                 state.search_activation_revision(),
+                 search.clone(),
+@@ -395,7 +395,7 @@
+     M::install_action_handler(state, cx);
+     let has_overlay = {
+         let state = state.read(cx);
+-        state.search_session().open
++        (state.search_session().open && !state.search_session().external_presentation)
+             || M::lsp_snapshot(state, cx).is_some_and(|lsp| lsp.has_overlay())
+     };
+     if !has_overlay {
