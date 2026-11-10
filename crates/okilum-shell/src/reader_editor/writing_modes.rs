@@ -582,7 +582,7 @@ mod tests {
                     > 1),
                 "the real Reader published replacement classification"
             );
-            eprintln!(
+            diagnostic_error!(
                 "WRITING_PROJECTED bytes={} frames={} projection_composes={} max_prepaint_ms={:.3}",
                 note.len(),
                 frames.len(),

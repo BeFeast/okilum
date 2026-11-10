@@ -67,7 +67,7 @@ impl State {
             .and_then(|p| match Preferences::load(p, project.clone()) {
                 Ok(prefs) => Some(prefs),
                 Err(error) => {
-                    eprintln!("Board presentation: {error:#}");
+                    diagnostic_error!("Board presentation: {error:#}");
                     None
                 }
             })

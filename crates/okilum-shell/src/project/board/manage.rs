@@ -140,7 +140,7 @@ impl Board {
                         match result {
                             Ok(session) => this.editor = Some(Editor::new(session, window, cx)),
                             Err(error) => {
-                                eprintln!("Board management: {error:#}");
+                                diagnostic_error!("Board management: {error:#}");
                                 reader_toast::error(
                                     format!("Cannot manage Board: {error:#}"),
                                     window,
@@ -221,7 +221,7 @@ impl Board {
                                     );
                                 }
                                 Err(error) => {
-                                    eprintln!("Board write refused: {error:#}");
+                                    diagnostic_error!("Board write refused: {error:#}");
                                     editor.errors = error
                                         .downcast_ref::<Problems>()
                                         .map(|p| p.0.clone())

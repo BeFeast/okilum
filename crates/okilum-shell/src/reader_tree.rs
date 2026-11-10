@@ -261,7 +261,7 @@ impl Tree {
             .get(..rejected.len().min(3))
             .filter(|e| !e.is_empty())
         {
-            eprintln!(
+            diagnostic_error!(
                 "File tree ignored {} entries with invalid vault paths, e.g. {examples:?}",
                 rejected.len()
             );
@@ -1864,7 +1864,7 @@ mod tests {
         assert_eq!(t.rows.len(), 1 + 2500 * 21);
         let started = std::time::Instant::now();
         t.set_subtree("Big", false);
-        eprintln!(
+        diagnostic_error!(
             "52 501-row subtree: expand {expanded:?}, collapse {:?}",
             started.elapsed()
         );

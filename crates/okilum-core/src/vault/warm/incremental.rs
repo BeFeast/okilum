@@ -1863,7 +1863,7 @@ mod tests {
                 calls[0], 1,
                 "one canonical source open; positive control proved detector"
             );
-            eprintln!("INCREMENTAL_SAVE_PROFILE sample={sample} notes=5001 baseline_ms={full_ms:.2} baseline_reconcile_ms={reconcile_ms:.2} baseline_read={} baseline_reused={} baseline_calls={baseline_calls:?} save_ms={save_ms:.2} source_graph_ms={graph_ms:.2} fork_ms={fork_ms:.2} commit_ms={commit_ms:.2} save_to_committed_ms={publication_ms:.2} persist_ms={persist_ms:.2} total_ms={total_ms:.2} read={} affected={} calls={calls:?}; same host/session; watcher debounce/UI scheduling/native save excluded",stats.read,stats.reused,batch.read,batch.affected.len());
+            diagnostic_error!("INCREMENTAL_SAVE_PROFILE sample={sample} notes=5001 baseline_ms={full_ms:.2} baseline_reconcile_ms={reconcile_ms:.2} baseline_read={} baseline_reused={} baseline_calls={baseline_calls:?} save_ms={save_ms:.2} source_graph_ms={graph_ms:.2} fork_ms={fork_ms:.2} commit_ms={commit_ms:.2} save_to_committed_ms={publication_ms:.2} persist_ms={persist_ms:.2} total_ms={total_ms:.2} read={} affected={} calls={calls:?}; same host/session; watcher debounce/UI scheduling/native save excluded",stats.read,stats.reused,batch.read,batch.affected.len());
         }
     }
     #[cfg(target_os = "linux")]
@@ -2101,7 +2101,7 @@ mod tests {
                         "root hint must not walk unchanged subtree: {calls:?}"
                     );
                 }
-                eprintln!("INCREMENTAL_TOPOLOGY_PROFILE sample={sample} operation={operation} notes=5001 baseline_ms={baseline_ms:.2} baseline_reconcile_ms={reconcile_ms:.2} baseline_read={} baseline_reused={} baseline_calls={baseline_calls:?} source_graph_ms={graph_ms:.2} to_committed_ms={publication_ms:.2} read={} affected={} calls={calls:?}; same host/session; 2ms canonical open/read,100us metadata; native UI scheduling, mutation syscall and watcher debounce excluded",stats.read,stats.reused,batch.read,batch.affected.len());
+                diagnostic_error!("INCREMENTAL_TOPOLOGY_PROFILE sample={sample} operation={operation} notes=5001 baseline_ms={baseline_ms:.2} baseline_reconcile_ms={reconcile_ms:.2} baseline_read={} baseline_reused={} baseline_calls={baseline_calls:?} source_graph_ms={graph_ms:.2} to_committed_ms={publication_ms:.2} read={} affected={} calls={calls:?}; same host/session; 2ms canonical open/read,100us metadata; native UI scheduling, mutation syscall and watcher debounce excluded",stats.read,stats.reused,batch.read,batch.affected.len());
             }
             std::fs::remove_file(root.join("New.md")).unwrap();
             state

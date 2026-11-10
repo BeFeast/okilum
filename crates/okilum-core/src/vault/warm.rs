@@ -2007,7 +2007,7 @@ mod tests {
                 } else {
                     serial = Some((vault.clone(), snapshot.clone()));
                 }
-                eprintln!(
+                diagnostic_error!(
                     "SOURCE_LATENCY_PROFILE sample={sample} parallel={parallel} notes=5001 read={} total_ms={ms:.2} phases={} actual_calls={calls:?}; open/read delay {read_ms}ms, stat delay {metadata_us}us; same host/session, search/persist/native SMB excluded",
                     stats.read,
                     serde_json::to_string(&phases).unwrap()
@@ -2029,7 +2029,7 @@ mod tests {
                     set(c"setup");
                     assert_eq!((warm_stats.read, warm_stats.reused), (0, 5001));
                     assert!(warm_stats.graph_reused);
-                    eprintln!(
+                    diagnostic_error!(
                         "SOURCE_LATENCY_WARM sample={sample} read=0 reused=5001 graph_reused=true reconcile_ms={warm_ms:.2}"
                     );
                 }
@@ -2108,7 +2108,7 @@ mod tests {
                 "absolute and suffix references preserved"
             );
             assert_eq!(stats.read, 5001);
-            eprintln!(
+            diagnostic_error!(
                 "CLOUD_GRAPH_PROFILE sample={sample} notes=5001 links=10000 preparing_backlinks_ms={ms:.2}; actual vault filesystem delay, native Mac NOT_RUN"
             );
         }
@@ -2171,7 +2171,7 @@ mod tests {
             std::fs::read(control.path()).unwrap(),
             std::fs::read(buffered.path()).unwrap()
         );
-        eprintln!(
+        diagnostic_error!(
             "CACHE_WRITE_PROFILE bytes={} unbuffered_ms={unbuffered_ms:.2} buffered_ms={buffered_ms:.2}; same JSON bytes, same host/session",
             control.as_file().metadata().unwrap().len()
         );
@@ -2214,7 +2214,7 @@ mod tests {
                 "every authored link was processed"
             );
             assert_eq!(document.original_body, primary);
-            eprintln!(
+            diagnostic_error!(
                 "CLOUD_PRIMARY_PROFILE sample={sample} notes=5001 links=5000 delay_ms={delay} primary_source_and_render_ms={elapsed_ms:.2}; cached source, injected actual filesystem calls, native Mac NOT_RUN"
             );
         }
@@ -2926,7 +2926,7 @@ mod tests {
                 1,
                 "reused graph positive control"
             );
-            eprintln!(
+            diagnostic_error!(
                 "IMPORTED_MTIME_PROFILE sample={sample} notes=5092 read={} reused={} graph_built={graph} reconcile_ms={ms:.2}; source opens/reads {read_ms}ms, metadata {metadata_us}us, actual filesystem injection; cache load/persist and search excluded, native Mac NOT_RUN",
                 stats.read, stats.reused
             );
@@ -2999,7 +2999,7 @@ mod tests {
         let start = std::time::Instant::now();
         save_provisional(&snapshot, &vault, &cache, Some("Note 0.md")).unwrap();
         let persist_ms = start.elapsed().as_secs_f64() * 1000.;
-        eprintln!(
+        diagnostic_error!(
             "IMPORTED_MTIME_RELAUNCH launch={launch} read={} reused={} graph_reused={} cache_load_ms={cache_load_ms:.2} reconcile_ms={reconcile_ms:.2} persist_ms={persist_ms:.2}; fresh process, actual syscall delay inherited, no canonical source writes, search/native GUI excluded",
             stats.read, stats.reused, stats.graph_reused
         );
@@ -3038,14 +3038,15 @@ mod tests {
             warm_times.push(start.elapsed().as_millis());
             assert_eq!(published.notes.len(), 5000);
             assert_eq!((stats.read, stats.reused), (0, 5000));
-            println!(
+            diagnostic_println!(
                 "warm publish {publish_ms}ms; warm sources read {}, reused {}",
-                stats.read, stats.reused
+                stats.read,
+                stats.reused
             );
         }
         cold_times.sort();
         warm_times.sort();
-        println!(
+        diagnostic_println!(
             "5000 notes, inventory+graph (search excluded), same-process OS-warm files: cold {cold_times:?}ms p50={}ms; snapshot-load+reconcile warm {warm_times:?}ms p50={}ms",
             cold_times[2], warm_times[2]
         );

@@ -255,7 +255,7 @@ mod tests {
                 );
                 assert_eq!(stats.graph_reused, !legacy);
                 assert_eq!(vault.backlinks("Note 0.md")[0].path, "Note 5000.md");
-                eprintln!("DIRECTORY_REPLAY_PROFILE sample={sample} legacy_root_invalidation={legacy} read={} reused={} graph_reused={} reconcile_ms={milliseconds:.2}; source I/O {source_ms}ms, metadata {metadata_us}us, same fixture/session; cache load/persist/search and native FileProvider excluded", stats.read, stats.reused, stats.graph_reused);
+                diagnostic_error!("DIRECTORY_REPLAY_PROFILE sample={sample} legacy_root_invalidation={legacy} read={} reused={} graph_reused={} reconcile_ms={milliseconds:.2}; source I/O {source_ms}ms, metadata {metadata_us}us, same fixture/session; cache load/persist/search and native FileProvider excluded", stats.read, stats.reused, stats.graph_reused);
             }
         }
     }

@@ -45,7 +45,7 @@ fn collect_project_icons(state: Option<&Path>, vault: &Path, projects: &[Project
     let cache = state.join("project-logos");
     if let Err(error) = okilum_t3::projects::icon::cache::collect(&cache, vault, projects, &origins)
     {
-        eprintln!("Project icon cache: {error:#}");
+        diagnostic_error!("Project icon cache: {error:#}");
     }
 }
 
@@ -62,7 +62,7 @@ fn store_project_icons(
         &origins,
         refresh,
     ) {
-        eprintln!("Project icon cache: {error:#}");
+        diagnostic_error!("Project icon cache: {error:#}");
     }
 }
 
@@ -179,7 +179,9 @@ pub(super) async fn t3_gateways(
                 Ok(gateway) => {
                     gateways.insert(alias, gateway);
                 }
-                Err(error) => eprintln!("okilum: T3 connection {alias} unusable: {error:#}"),
+                Err(error) => {
+                    diagnostic_error!("okilum: T3 connection {alias} unusable: {error:#}")
+                }
             }
         }
     }
@@ -775,7 +777,7 @@ impl Reader {
                     })
                     .is_err()
                 {
-                    eprintln!("Project icon: the window that asked for the icon is gone");
+                    diagnostic_error!("Project icon: the window that asked for the icon is gone");
                 }
             })
         });
@@ -818,7 +820,7 @@ impl Reader {
             Some(alias) => format!("t3:{alias}"),
             None => "project manifest".into(),
         };
-        eprintln!(
+        diagnostic_error!(
             "Project icon: saving project={:?} folder={} kind={kind} target={target}",
             project.name,
             project.folder.display()
@@ -882,7 +884,7 @@ impl Reader {
                 Ok(IconSaved::Manifest(_)) => "ok project manifest".into(),
                 Err(error) => format!("error: {error:#}"),
             };
-            eprintln!(
+            diagnostic_error!(
                 "Project icon: saved project={:?} kind={kind} result={result}",
                 project.name
             );
@@ -892,7 +894,7 @@ impl Reader {
                 }
             });
             if let Err(error) = delivered {
-                eprintln!("Project icon: the result did not reach the window: {error:#}");
+                diagnostic_error!("Project icon: the result did not reach the window: {error:#}");
             }
         })
         .detach();
@@ -2472,7 +2474,7 @@ mod local_reader_without_t3_tests {
         let (reader, visual, blocked) =
             fresh_local_run(cx, &temp.path().join("blocked"), &probe, &t3);
         let bound = baseline + baseline.max(MARGIN);
-        eprintln!(
+        diagnostic_error!(
             "#1521 same-host timing: baseline {baseline:?}, blocking T3 {blocked:?}, bound {bound:?}"
         );
         assert!(

@@ -55,7 +55,7 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
     let state = match reader_ui_state::state_directory(cx) {
         Ok(state) => state,
         Err(error) => {
-            eprintln!("Cannot open remote logs: {error}");
+            diagnostic_error!("Cannot open remote logs: {error}");
             return;
         }
     };

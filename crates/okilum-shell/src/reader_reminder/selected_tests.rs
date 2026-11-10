@@ -132,7 +132,7 @@ async fn added(
             "actual menu/action reached the writer with current retained source authority"
         );
     });
-    eprintln!("Reminder test waiting for {note}: completions={count}, tasks={tasks}");
+    diagnostic_error!("Reminder test waiting for {note}: completions={count}, tasks={tasks}");
     visual
         .condition(reader, |reader, cx| {
             completed(cx, root, count)

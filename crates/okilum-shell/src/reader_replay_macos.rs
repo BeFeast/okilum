@@ -151,7 +151,7 @@ pub fn prepare(root: &Path, state: Option<&Path>, snapshot: Option<&str>) -> Rep
         Ok(())
     })();
     if let Err(error) = attempt {
-        eprintln!("FSEvents replay unavailable; reconciling vault: {error}");
+        diagnostic_error!("FSEvents replay unavailable; reconciling vault: {error}");
     }
     result
 }

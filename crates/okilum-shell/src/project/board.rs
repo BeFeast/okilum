@@ -301,75 +301,77 @@ impl Board {
                             Binding::read(&area)
                         }))
                         .await;
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        if this.metadata_generation != generation {
-                            return;
-                        }
-                        this.binding_loading = false;
-                        this.list.invalidate();
-                        match result {
-                            Ok(binding) => {
-                                let same_source = this
-                                    .binding
-                                    .as_ref()
-                                    .zip(binding.as_ref())
-                                    .is_some_and(|(old, new)| old.same_issue_source(new));
-                                if this.binding != binding && !same_source {
-                                    this.columns.invalidate();
-                                    this.snapshot.invalidate();
-                                    this.snapshot.forgejo = Source::default();
-                                    this.selected = None;
-                                    this.close_peek(cx);
-                                    this.delivery = Default::default();
-                                    this.delivery_loading = false;
-                                    this.project_notes = Default::default();
-                                    this.notes_loading = false;
-                                    this.notes_expanded = false;
-                                    this.next_stage_open = false;
-                                }
-                                if let Some(next) = &binding {
-                                    if next.registry_error.as_ref()
-                                        != this
-                                            .binding
-                                            .as_ref()
-                                            .and_then(|old| old.registry_error.as_ref())
-                                    {
-                                        if let Some(detail) = &next.registry_error {
-                                            eprintln!("Board executor registry error: {detail}");
-                                        }
-                                    }
-                                    if this
+                    let _ =
+                        this.update_in(cx, |this, window, cx| {
+                            if this.metadata_generation != generation {
+                                return;
+                            }
+                            this.binding_loading = false;
+                            this.list.invalidate();
+                            match result {
+                                Ok(binding) => {
+                                    let same_source = this
                                         .binding
                                         .as_ref()
-                                        .is_none_or(|old| old.card_problems != next.card_problems)
-                                    {
-                                        for problem in &next.card_problems {
-                                            eprintln!(
-                                                "Board card problem: {}: {}",
-                                                problem.field, problem.detail
-                                            );
+                                        .zip(binding.as_ref())
+                                        .is_some_and(|(old, new)| old.same_issue_source(new));
+                                    if this.binding != binding && !same_source {
+                                        this.columns.invalidate();
+                                        this.snapshot.invalidate();
+                                        this.snapshot.forgejo = Source::default();
+                                        this.selected = None;
+                                        this.close_peek(cx);
+                                        this.delivery = Default::default();
+                                        this.delivery_loading = false;
+                                        this.project_notes = Default::default();
+                                        this.notes_loading = false;
+                                        this.notes_expanded = false;
+                                        this.next_stage_open = false;
+                                    }
+                                    if let Some(next) = &binding {
+                                        if next.registry_error.as_ref()
+                                            != this
+                                                .binding
+                                                .as_ref()
+                                                .and_then(|old| old.registry_error.as_ref())
+                                        {
+                                            if let Some(detail) = &next.registry_error {
+                                                diagnostic_error!(
+                                                    "Board executor registry error: {detail}"
+                                                );
+                                            }
+                                        }
+                                        if this.binding.as_ref().is_none_or(|old| {
+                                            old.card_problems != next.card_problems
+                                        }) {
+                                            for problem in &next.card_problems {
+                                                diagnostic_error!(
+                                                    "Board card problem: {}: {}",
+                                                    problem.field,
+                                                    problem.detail
+                                                );
+                                            }
                                         }
                                     }
+                                    this.filter_cache.invalidate();
+                                    this.binding = binding;
+                                    this.refresh_waiting();
+                                    this.binding_read = Some(now());
+                                    this.binding_error = None;
+                                    if this.active {
+                                        this.refresh(window, cx);
+                                    }
                                 }
-                                this.filter_cache.invalidate();
-                                this.binding = binding;
-                                this.refresh_waiting();
-                                this.binding_read = Some(now());
-                                this.binding_error = None;
-                                if this.active {
-                                    this.refresh(window, cx);
+                                Err(error) => {
+                                    let detail = format!("{error:#}");
+                                    if this.binding_error.as_deref() != Some(detail.as_str()) {
+                                        diagnostic_error!("Board binding error: {detail}");
+                                    }
+                                    this.binding_error = Some(detail);
                                 }
                             }
-                            Err(error) => {
-                                let detail = format!("{error:#}");
-                                if this.binding_error.as_deref() != Some(detail.as_str()) {
-                                    eprintln!("Board binding error: {detail}");
-                                }
-                                this.binding_error = Some(detail);
-                            }
-                        }
-                        cx.notify();
-                    });
+                            cx.notify();
+                        });
                 })
                 .await
             }
@@ -578,7 +580,7 @@ impl Board {
                         this.filter_cache.invalidate();
                         if this.snapshot.t3.error != previous {
                             if let Some(detail) = &this.snapshot.t3.error {
-                                eprintln!("Board T3 error: {detail}");
+                                diagnostic_error!("Board T3 error: {detail}");
                             }
                         }
                         cx.notify();

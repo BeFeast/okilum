@@ -194,7 +194,7 @@ fn gutter_quote_bars_are_painted_on_every_wrapped_row(cx: &mut TestAppContext) {
                     );
                 }
             }
-            eprintln!(
+            diagnostic_error!(
                 "GUTTER_PAINT depth={depth} rows={} visible_bars={}",
                 rows.len(),
                 first.len()
@@ -272,7 +272,7 @@ fn gutter_large_live_preview_caret_reveal_moves_text_at_most_one_pixel(cx: &mut 
             });
         }
     }
-    eprintln!(
+    diagnostic_error!(
         "GUTTER_LARGE_NOTE bytes={} max_text_shift_px={max_shift}",
         text.len()
     );

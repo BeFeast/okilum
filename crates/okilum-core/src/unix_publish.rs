@@ -149,7 +149,7 @@ pub(crate) fn flagged_rename(
             let entry = cache.flags.entry(scope).or_default();
             entry.unsupported |= flags.bits();
             if !entry.reported {
-                eprintln!("Okilum: this vault's drive does not support exclusive rename/exchange; using compatible link-based publication (vault {:?}, device {}).", scope.0, scope.1);
+                diagnostic_error!("Okilum: this vault's drive does not support exclusive rename/exchange; using compatible link-based publication (vault {:?}, device {}).", scope.0, scope.1);
                 entry.reported = true;
             }
         });

@@ -187,9 +187,9 @@ pub(super) fn notify_approval(name: &str) {
         let result = Command::new("osascript").args(["-e", "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run", &title, body])
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
         match result {
-            Err(error) => eprintln!("okilum-sync: approval notification failed: {error}"),
+            Err(error) => diagnostic_error!("okilum-sync: approval notification failed: {error}"),
             Ok(status) if !status.success() => {
-                eprintln!("okilum-sync: approval notification failed: {status}")
+                diagnostic_error!("okilum-sync: approval notification failed: {status}")
             }
             _ => {}
         }

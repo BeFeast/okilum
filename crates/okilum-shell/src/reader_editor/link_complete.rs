@@ -2743,14 +2743,14 @@ mod tests {
             max_ms < 16.0,
             "UI completion refresh exceeds one 60 Hz frame: {max_ms} ms"
         );
-        println!(
+        diagnostic_println!(
             "COMPLETION_UI_REFRESH {}",
             serde_json::json!({"notes": 5576, "samples": refresh_ms.len(),
                 "p50_ms": refresh_ms[refresh_ms.len()/2], "p95_ms": refresh_ms[refresh_ms.len()*95/100],
                 "max_ms": max_ms, "budget_ms": 16,
                 "boundary": "synchronous refresh_link_complete; ranking/context validation on background executor"})
         );
-        println!(
+        diagnostic_println!(
             "COMPLETION_5576 {}",
             serde_json::json!({"corpus": "synthetic-topic-and-folder-inventory",
             "notes": 5576, "boundary": "GPUI-test-worker-to-popup-draw", "measurements": measurements})
@@ -2786,7 +2786,7 @@ mod tests {
             "Recipes.md",
             "positive control: query actually published"
         );
-        println!(
+        diagnostic_println!(
             "COMPLETION_LARGE_SOURCE_UI {}",
             serde_json::json!({"bytes": source.len()-1, "max_refresh_ms": max, "samples": samples.len(), "boundary": "completion refresh only; Source mode"})
         );

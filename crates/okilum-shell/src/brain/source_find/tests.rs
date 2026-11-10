@@ -278,6 +278,6 @@ fn find_long_source_and_worst_case_range_memory_measurement() {
         ranges.last(),
         Some(&(MAX_SOURCE_BYTES - 1..MAX_SOURCE_BYTES))
     );
-    eprintln!("find277 worst-case: source_bytes={MAX_SOURCE_BYTES} matches={} range_capacity_bytes={} elapsed_ms={}",
+    diagnostic_error!("find277 worst-case: source_bytes={MAX_SOURCE_BYTES} matches={} range_capacity_bytes={} elapsed_ms={}",
         ranges.len(), ranges.capacity() * std::mem::size_of::<Range<usize>>(), started.elapsed().as_millis());
 }

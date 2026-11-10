@@ -158,7 +158,7 @@ fn caret_bounds_and_caret_steps_do_not_grow_with_the_note(cx: &mut TestAppContex
     assert!(long.len() > 1_000_000, "positive control: a megabyte note");
     let (short_bounds, short_steps) = frame_costs(cx, &short);
     let (long_bounds, long_steps) = frame_costs(cx, &long);
-    eprintln!(
+    diagnostic_error!(
         "caret bounds {:.3} ms -> {:.3} ms, caret step {:.3} ms -> {:.3} ms",
         short_bounds * 1e3,
         long_bounds * 1e3,

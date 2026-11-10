@@ -50,7 +50,7 @@ impl Reader {
                         reader.link_notice = Some("The note changed during Repair. Review its current contents before trying again.".into());
                     }
                     Err(error) => {
-                        eprintln!("Encoding Repair failed: {error:#}");
+                        diagnostic_error!("Encoding Repair failed: {error:#}");
                         reader.link_notice = Some("Encoding could not be repaired. The note and its recovery have been preserved.".into());
                     }
                 }

@@ -92,7 +92,7 @@ pub(crate) fn reserve_windows_launch() -> Option<StartupReservation> {
     match result {
         Ok(reservation) => Some(reservation),
         Err(error) => {
-            eprintln!("Cannot reserve Reader startup; auto-apply disabled: {error:#}");
+            diagnostic_error!("Cannot reserve Reader startup; auto-apply disabled: {error:#}");
             None
         }
     }
@@ -264,7 +264,7 @@ pub(crate) fn receive(receiver: async_channel::Receiver<Request>, cx: &mut App) 
                         },
                         cx,
                     ) {
-                        eprintln!("Cannot open requested document: {error:#}");
+                        diagnostic_error!("Cannot open requested document: {error:#}");
                     }
                 } else {
                     cx.activate(true);

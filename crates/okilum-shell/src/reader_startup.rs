@@ -154,7 +154,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     match restore {
                         Some((_, Ok(intent))) => (roots, Some(intent), None),
                         Some((last, Err(error))) => {
-                            eprintln!("Cannot restore {}: {error:#}", last.display());
+                            diagnostic_error!("Cannot restore {}: {error:#}", last.display());
                             let notice = Notice::unopened(&last, missing.contains(&last), cx);
                             (roots, None, Some(notice))
                         }
@@ -162,7 +162,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     }
                 }
                 Err(error) => {
-                    eprintln!("Cannot read the Reader session: {error:#}");
+                    diagnostic_error!("Cannot read the Reader session: {error:#}");
                     let notice = Notice {
                         text:
                             "Your last session couldn’t be restored. Choose a folder to continue."
@@ -186,7 +186,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     opts.vault = Some(intent.root);
                 }
                 if let Err(error) = reader_open::open_window(opts, cx) {
-                    eprintln!("Cannot open {}: {error:#}", last.display());
+                    diagnostic_error!("Cannot open {}: {error:#}", last.display());
                     let notice = Notice::unopened(&last, false, cx);
                     show_entry(
                         roots,
@@ -312,7 +312,7 @@ fn restore_session_windows(
                         if let Err(error) =
                             cx.update(|cx| reader_open::create_window(opts, None, None, cx))
                         {
-                            eprintln!("Cannot reopen {}: {error:#}", root.display());
+                            diagnostic_error!("Cannot reopen {}: {error:#}", root.display());
                             skipped.push(root);
                             continue;
                         }
@@ -332,7 +332,7 @@ fn restore_session_windows(
                     }
                 }
                 Err(error) => {
-                    eprintln!("Cannot reopen {}: {error:#}", root.display());
+                    diagnostic_error!("Cannot reopen {}: {error:#}", root.display());
                     skipped.push(root);
                 }
             }
@@ -446,7 +446,7 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
                 super::reader_sync_conflicts::show_startup_notice(window, cx);
             });
         }
-        Err(error) => eprintln!("Cannot open Reader entry: {error:#}"),
+        Err(error) => diagnostic_error!("Cannot open Reader entry: {error:#}"),
     }
 }
 
@@ -478,7 +478,7 @@ impl Entry {
                     },
                     cx,
                 ) {
-                    eprintln!("Cannot open recent folder: {error:#}");
+                    diagnostic_error!("Cannot open recent folder: {error:#}");
                     entry.state.notice = Some(Notice::unopened(&root, false, cx));
                     cx.notify();
                 }
@@ -518,7 +518,10 @@ impl Entry {
                         }
                     }
                     Err(error) => {
-                        eprintln!("Cannot remove {} from the list: {error:#}", root.display());
+                        diagnostic_error!(
+                            "Cannot remove {} from the list: {error:#}",
+                            root.display()
+                        );
                         entry.state.notice = Some(Notice {
                             text: "The list couldn’t be updated. Try again.".into(),
                             root: Some(root),

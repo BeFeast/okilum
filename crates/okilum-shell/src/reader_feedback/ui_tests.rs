@@ -489,7 +489,7 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
         // debug bounds alone do not prove that an offscreen click can fire.
         let form = visual.debug_bounds("feedback-form").unwrap();
         let before = visual.debug_bounds("feedback-remove-video").unwrap();
-        println!("FEEDBACK_2683_REMOVE_BEFORE form={form:?} button={before:?}");
+        diagnostic_println!("FEEDBACK_2683_REMOVE_BEFORE form={form:?} button={before:?}");
         for _ in 0..4 {
             let bounds = visual.debug_bounds("feedback-remove-video").unwrap();
             if bounds.top() >= form.top() && bounds.bottom() <= form.bottom() {
@@ -509,7 +509,7 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
         assert!(remove.size.height > px(0.) && remove.size.width > px(0.));
         assert!(remove.top() >= form.top() && remove.bottom() <= form.bottom());
         assert!(remove.top() >= px(0.) && remove.bottom() <= viewport.height);
-        println!("FEEDBACK_2683_REMOVE_VISIBLE button={remove:?}");
+        diagnostic_println!("FEEDBACK_2683_REMOVE_VISIBLE button={remove:?}");
         visual.simulate_click(remove.center(), Modifiers::default());
         visual.run_until_parked();
         view.read_with(visual, |view, cx| {

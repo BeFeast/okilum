@@ -76,7 +76,7 @@ fn catalog() -> &'static Catalog {
         match flate2::read::GzDecoder::new(BUNDLE).read_to_string(&mut text) {
             Ok(_) => parse(&text),
             Err(error) => {
-                eprintln!("okilum: the bundled Lucide icons are unreadable: {error}");
+                diagnostic_error!("okilum: the bundled Lucide icons are unreadable: {error}");
                 Catalog::default()
             }
         }

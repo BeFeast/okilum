@@ -33,10 +33,14 @@ fn code2771_invalid_json_pretty_is_callable_and_never_writes_source(cx: &mut Tes
     visual.run_until_parked();
     preview.read_with(visual, |p, cx| {
         assert!(
-            p.document_revision > before,
-            "positive control: invalid Pretty click reaches formatter"
+            p.document_revision == before,
+            "an unchanged display does not restart parsing"
         );
         let json = p.json.as_ref().unwrap();
+        assert!(
+            json.requested_pretty,
+            "positive control: Pretty click is recorded"
+        );
         assert!(!json.showing_pretty && matches!(json.pretty, Some(Err(_))));
         assert_eq!(p.input().unwrap().read(cx).value().as_ref(), source);
     });
@@ -166,7 +170,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     let started = Instant::now();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let draw = started.elapsed();
-    eprintln!(
+    diagnostic_error!(
         "DATA_VIEW_2669 minified_bytes={} first_draw_ms={}",
         source.len(),
         draw.as_millis()
@@ -175,8 +179,19 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         draw < std::time::Duration::from_secs(2),
         "bounded page first draw: {draw:?}"
     );
-    // Draw the real Raw handoff before its replacement AST is available.
+    // Above the automatic Pretty budget, a repeated Raw request is a no-op.
     preview.update_in(visual, |p, window, cx| {
+        assert!(!p.json.as_ref().unwrap().showing_pretty);
+        let revision = p.document_revision;
+        p.show_json(false, window, cx);
+        assert_eq!(p.document_revision, revision);
+        assert!(p.document.is_some());
+        p.show_json(true, window, cx);
+    });
+    visual.run_until_parked();
+    // Draw a real Pretty-to-Raw handoff before its replacement AST is available.
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.json.as_ref().unwrap().showing_pretty);
         assert!(p.structure_view);
         p.show_json(false, window, cx);
         assert!(!p.structure_view);
@@ -277,7 +292,7 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
     let started = Instant::now();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let draw = started.elapsed();
-    eprintln!(
+    diagnostic_error!(
         "DATA_VIEW_2669 multiline_bytes={} first_draw_ms={}",
         source.len(),
         draw.as_millis()
@@ -353,4 +368,57 @@ fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_ma
         reader.record_usable_document(cx);
     });
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+}
+
+#[gpui::test]
+fn json2787_multi_megabyte_pretty_raw_toggles_keep_complete_valid_snapshot(
+    cx: &mut TestAppContext,
+) {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("__test2.json");
+    let source = format!(
+        "{{\"openapi\":\"3.0.4\",\"paths\":[{}],\"tail\":\"NEEDLE\"}}",
+        "{\"description\":\"public fixture\"},"
+            .repeat(120_000)
+            .trim_end_matches(',')
+    );
+    assert!(source.len() > 3_500_000);
+    std::fs::write(&path, &source).unwrap();
+    cx.update(crate::test_init);
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            CodePreview::new(
+                fixture.path().to_owned(),
+                "__test2.json".into(),
+                path.clone(),
+                window,
+                cx,
+            )
+        });
+        preview = Some(view.clone());
+        Root::new(cx.new(|_| Surface(view)), window, cx)
+    });
+    let preview = preview.unwrap();
+    visual.run_until_parked();
+    for round in 0..20 {
+        preview.update_in(visual, |p, window, cx| {
+            p.show_json(round % 2 == 0, window, cx)
+        });
+        visual.run_until_parked();
+        preview.read_with(visual, |p, _| {
+            assert!(
+                p.table.is_none(),
+                "object JSON must never start an array table reader"
+            );
+            let json = p.json.as_ref().unwrap();
+            assert!(matches!(json.pretty, Some(Ok(_))));
+            assert_eq!(json.showing_pretty, round % 2 == 0);
+            let doc = p.document.as_ref().unwrap();
+            assert!(okilum_core::code_operations::json_validation(&doc.text).is_ok());
+            assert_eq!(doc.find("NEEDLE").len(), 1);
+            assert!(doc.find("NEEDLE")[0].start > 32 * 1024);
+        });
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }

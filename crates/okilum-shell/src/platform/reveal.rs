@@ -219,7 +219,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.0.kill();
             self.0.wait().expect("could not reap private dbus-daemon");
-            eprintln!("reveal: private dbus-daemon reaped");
+            diagnostic_error!("reveal: private dbus-daemon reaped");
         }
     }
 
@@ -318,15 +318,15 @@ mod tests {
 
     #[test]
     fn show_items_selects_the_item_and_fails_without_a_file_manager() {
-        eprintln!("reveal: starting private bus");
+        diagnostic_error!("reveal: starting private bus");
         let Some(bus) = Bus::start() else {
-            eprintln!("skipped: dbus-daemon is not installed");
+            diagnostic_error!("skipped: dbus-daemon is not installed");
             return;
         };
         zbus::block_on(deadline("private bus test", async {
-            eprintln!("reveal: connecting client");
+            diagnostic_error!("reveal: connecting client");
             let client = bus.connect().await;
-            eprintln!("reveal: listing activatable names");
+            diagnostic_error!("reveal: listing activatable names");
             let daemon = zbus::fdo::DBusProxy::new(&client).await.unwrap();
             // A missing-manager error alone could also mean activation failed.
             // Prove that no host service can be activated in the first place.
@@ -338,7 +338,7 @@ mod tests {
                 .all(|name| name.as_str() == "org.freedesktop.DBus"));
             // Without a FileManager1 owner the call fails, which is what
             // routes Reveal to the xdg-open fallback.
-            eprintln!("reveal: calling missing FileManager1");
+            diagnostic_error!("reveal: calling missing FileManager1");
             let missing = show_items(&client, Path::new("/vault/a.md"))
                 .await
                 .unwrap_err();
@@ -348,14 +348,14 @@ mod tests {
                         if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"),
                 "expected ServiceUnknown from the private bus, got: {missing:#}"
             );
-            eprintln!("reveal: missing-manager error received");
+            diagnostic_error!("reveal: missing-manager error received");
 
             // Positive control: the same call reaches a file manager that
             // owns the name, with the item's URI and an empty startup id.
             let (sender, receiver) = async_channel::unbounded();
-            eprintln!("reveal: connecting fake manager");
+            diagnostic_error!("reveal: connecting fake manager");
             let server = bus.connect().await;
-            eprintln!("reveal: registering fake manager object");
+            diagnostic_error!("reveal: registering fake manager object");
             server
                 .object_server()
                 .at(
@@ -367,16 +367,16 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            eprintln!("reveal: requesting manager name");
+            diagnostic_error!("reveal: requesting manager name");
             server
                 .request_name("org.freedesktop.FileManager1")
                 .await
                 .unwrap();
-            eprintln!("reveal: calling fake manager");
+            diagnostic_error!("reveal: calling fake manager");
             show_items(&client, Path::new("/vault/a note.md"))
                 .await
                 .unwrap();
-            eprintln!("reveal: receiving positive control");
+            diagnostic_error!("reveal: receiving positive control");
             assert_eq!(
                 deadline("fake manager receipt", async { Ok(receiver.recv().await?) })
                     .await
@@ -386,6 +386,6 @@ mod tests {
             Ok(())
         }))
         .unwrap();
-        eprintln!("reveal: finished, reaping private bus");
+        diagnostic_error!("reveal: finished, reaping private bus");
     }
 }

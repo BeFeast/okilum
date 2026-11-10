@@ -319,7 +319,7 @@ fn restart_verified(cx: &mut gpui::App) {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Check for updates again"))?;
         let recovery = staged.arm(&args)?;
-        eprintln!("AppImage update recovery directory: {}", recovery.display());
+        diagnostic_error!("AppImage update recovery directory: {}", recovery.display());
         super::restart_feedback::record(
             "accepted",
             "AppImage armed after editor protection and state persistence",
@@ -370,7 +370,7 @@ pub(super) fn confirm_startup() {
                 std::path::Path::new(&image),
                 build,
             ) {
-                eprintln!("AppImage installation record: {error:#}");
+                diagnostic_error!("AppImage installation record: {error:#}");
             }
         }
         STARTUP_CONFIRMED.store(true, Ordering::SeqCst);

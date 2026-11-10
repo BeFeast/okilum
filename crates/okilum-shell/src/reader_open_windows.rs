@@ -104,7 +104,7 @@ fn record(cx: &mut App) {
     }
     match write_modes(&state.directory, &windows.0, &windows.1) {
         Ok(()) => cx.global_mut::<State>().written = Some(windows),
-        Err(error) => eprintln!("Cannot save the open windows: {error:#}"),
+        Err(error) => diagnostic_error!("Cannot save the open windows: {error:#}"),
     }
 }
 

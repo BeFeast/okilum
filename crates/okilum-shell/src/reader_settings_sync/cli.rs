@@ -94,7 +94,7 @@ pub(crate) fn entry() -> Option<i32> {
         .map(std::ffi::OsString::into_string)
         .collect::<Result<Vec<_>, _>>()
     else {
-        eprintln!("okilum sync: arguments must be UTF-8");
+        diagnostic_error!("okilum sync: arguments must be UTF-8");
         return Some(2);
     };
     Some(run(&arguments))
@@ -107,11 +107,11 @@ fn run(arguments: &[String]) -> i32 {
             .and_then(okilum_sync_controller::sidecar::macos::bootstrap::stop_isolated_current_app)
         {
             Ok(()) => {
-                println!("Isolated Sync helper stopped and its exit verified.");
+                diagnostic_println!("Isolated Sync helper stopped and its exit verified.");
                 0
             }
             Err(error) => {
-                eprintln!("okilum sync qa-stop: {error:#}");
+                diagnostic_error!("okilum sync qa-stop: {error:#}");
                 1
             }
         };
@@ -123,7 +123,7 @@ fn run(arguments: &[String]) -> i32 {
             return 0;
         }
         Err(error) => {
-            eprintln!("okilum sync: {error:#}\n\n{USAGE}");
+            diagnostic_error!("okilum sync: {error:#}\n\n{USAGE}");
             return 2;
         }
     };
@@ -145,7 +145,7 @@ fn run(arguments: &[String]) -> i32 {
         }
         if let Some(pid) = app {
             if !request.quit_app {
-                eprintln!("okilum sync: {}", running_message(pid));
+                diagnostic_error!("okilum sync: {}", running_message(pid));
                 return Ok(3);
             }
             quit_app(&directory, pid)?;
@@ -158,10 +158,12 @@ fn run(arguments: &[String]) -> i32 {
         execute(request.verb, Session::default())
     })();
     result.unwrap_or_else(|error| {
-        eprintln!("okilum sync: {error:#}");
+        diagnostic_error!("okilum sync: {error:#}");
         if format!("{error:#}").contains("would block") {
             // Controller::open found the profile's Sync lock taken.
-            eprintln!("okilum sync: another `okilum sync` command is using this Sync state");
+            diagnostic_error!(
+                "okilum sync: another `okilum sync` command is using this Sync state"
+            );
         }
         1
     })
@@ -340,7 +342,7 @@ fn running_message(pid: u32) -> String {
     )
 }
 fn quit_app(directory: &Path, pid: u32) -> anyhow::Result<()> {
-    eprintln!("okilum sync: quitting Okilum: {}", quit_command(pid));
+    diagnostic_error!("okilum sync: quitting Okilum: {}", quit_command(pid));
     #[cfg(target_os = "macos")]
     {
         let _ = pid;
@@ -506,10 +508,12 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
                     })
                 })
                 .map_err(|error| {
-                    eprintln!("okilum sync: other commands cannot reach this process: {error:#}")
+                    diagnostic_error!(
+                        "okilum sync: other commands cannot reach this process: {error:#}"
+                    )
                 })
                 .ok();
-            eprintln!(
+            diagnostic_error!(
                 "okilum sync: serving {} paired computer(s)",
                 output.snapshot.peers.len()
             );
@@ -517,7 +521,7 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
                 std::thread::sleep(Duration::from_secs(2));
                 match session.perform(Operation::Read) {
                     Ok(next) => output = next,
-                    Err(error) => eprintln!("okilum sync: refresh failed: {error:#}"),
+                    Err(error) => diagnostic_error!("okilum sync: refresh failed: {error:#}"),
                 }
             }
             print_json(&output.status);
@@ -592,7 +596,7 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
                 std::thread::sleep(Duration::from_secs(2));
                 match session.perform(Operation::Read) {
                     Ok(next) => output = next,
-                    Err(error) => eprintln!("okilum sync: refresh failed: {error:#}"),
+                    Err(error) => diagnostic_error!("okilum sync: refresh failed: {error:#}"),
                 }
             }
             print_json(&output.status);
@@ -614,9 +618,9 @@ fn invite(
         .offer_url
         .clone()
         .context("Sync did not create a pairing URL")?;
-    println!("{url}");
+    diagnostic_println!("{url}");
     std::io::stdout().flush()?;
-    eprintln!(
+    diagnostic_error!(
         "okilum sync: waiting up to {}s for the other computer",
         wait.as_secs()
     );
@@ -638,9 +642,10 @@ fn invite(
             // The Settings view's pairing poll on its cached controller.
             let snapshot = session.refresh_pairing()?;
             if let Some(pending) = snapshot.pending.clone().filter(|p| p.incoming) {
-                eprintln!(
+                diagnostic_error!(
                     "okilum sync: request from {:?}, fingerprint {}",
-                    pending.name, pending.fingerprint
+                    pending.name,
+                    pending.fingerprint
                 );
                 if !decide(&approval, &pending)? {
                     session.reject(pending.request_id)?;
@@ -649,7 +654,7 @@ fn invite(
                 let before: HashSet<_> = snapshot.peers.iter().map(|p| p.id).collect();
                 let after = session.approve(pending.request_id)?;
                 let peer = after.peers.into_iter().find(|p| !before.contains(&p.id));
-                eprintln!("okilum sync: approved; waiting until it receives the approval");
+                diagnostic_error!("okilum sync: approved; waiting until it receives the approval");
                 approved = Some((pending, peer));
                 continue;
             }
@@ -660,7 +665,7 @@ fn invite(
         if Instant::now() >= deadline {
             print_json(&serde_json::json!({ "paired": false, "reason": "timeout" }));
             if approved.is_some() {
-                eprintln!(
+                diagnostic_error!(
                     "okilum sync: approved, but the other computer did not collect the \
                      approval in time. {}",
                     if matches!(session, Session::Owner(_)) {
@@ -706,17 +711,17 @@ fn connect(
     let before: Option<HashSet<_>> = match session.perform(Operation::EnterPairing) {
         Ok(output) => Some(output.snapshot.peers.iter().map(|p| p.id).collect()),
         Err(error) => {
-            eprintln!("okilum sync: {error:#}");
+            diagnostic_error!("okilum sync: {error:#}");
             None
         }
     };
     // A first Connect also prepares and starts this computer's Sync; on a Mac its
     // first launch can take a few minutes (#2589).
-    eprintln!("okilum sync: connecting (a first Connect also starts Sync here)");
+    diagnostic_error!("okilum sync: connecting (a first Connect also starts Sync here)");
     let output = session.perform(Operation::Redeem(url, name))?;
     let mut snapshot = output.snapshot;
     let deadline = Instant::now() + wait;
-    eprintln!("okilum sync: waiting for approval on the other computer");
+    diagnostic_error!("okilum sync: waiting for approval on the other computer");
     loop {
         if snapshot.pending.is_none() {
             let peer = snapshot
@@ -742,7 +747,7 @@ fn connect(
         match session.refresh_pairing() {
             Ok(next) => snapshot = next,
             Err(error) if pairing_ended(&error) => return Err(error),
-            Err(error) => eprintln!("okilum sync: still waiting ({error:#})"),
+            Err(error) => diagnostic_error!("okilum sync: still waiting ({error:#})"),
         }
     }
 }
@@ -844,7 +849,7 @@ fn status(output: &Output) -> serde_json::Value {
     value
 }
 fn print_json(value: &serde_json::Value) {
-    println!("{value}");
+    diagnostic_println!("{value}");
 }
 
 #[cfg(test)]

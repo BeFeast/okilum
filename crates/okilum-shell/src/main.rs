@@ -7,6 +7,10 @@
 //! decide the framework (self-driven scroll sweeps, height dumps, frame
 //! timing) is deliberately gone: it measured a decision that has been made.
 
+#[macro_use]
+#[path = "../../okilum-core/src/diagnostic_io.rs"]
+mod diagnostic_io;
+
 // Keep transient native frame allocations local to the rendering thread.
 // The test allocation meter wraps this same backend instead of replacing it.
 #[cfg(target_os = "linux")]
@@ -860,7 +864,7 @@ fn save_appearance(vault: Option<&Path>, cx: &App) {
             })
         })();
         if let Err(error) = saved {
-            eprintln!("Could not save appearance: {error}");
+            diagnostic_error!("Could not save appearance: {error}");
         }
     }
 }
@@ -2044,10 +2048,12 @@ impl Reader {
                     match okilum_core::source_history::cleanup_windows(&drafts, &root) {
                         Ok(warnings) => {
                             for warning in warnings {
-                                eprintln!("{warning}");
+                                diagnostic_error!("{warning}");
                             }
                         }
-                        Err(error) => eprintln!("Save recovery cleanup retained files: {error:#}"),
+                        Err(error) => {
+                            diagnostic_error!("Save recovery cleanup retained files: {error:#}")
+                        }
                     }
                 })
                 .detach();
@@ -2652,7 +2658,7 @@ impl Reader {
         } = match document {
             Ok(document) => document,
             Err(error) => {
-                eprintln!("Document unavailable: {error:#}");
+                diagnostic_error!("Document unavailable: {error:#}");
                 #[cfg(target_os = "macos")]
                 if let Some(error) = error.downcast_ref::<reader_icloud::DownloadError>() {
                     self.link_notice = Some(error.to_string().into());
@@ -3330,7 +3336,7 @@ impl Reader {
         cx.background_executor()
             .spawn(async move {
                 if let Err(error) = state.save_ordered(&path, sequence, &latest) {
-                    eprintln!("Could not save sidebar state: {error:#}");
+                    diagnostic_error!("Could not save sidebar state: {error:#}");
                 }
             })
             .detach();
@@ -7491,7 +7497,7 @@ impl Reader {
                     }));
                 }
                 Err(error) => {
-                    eprintln!("Agent language worker unavailable: {error}");
+                    diagnostic_error!("Agent language worker unavailable: {error}");
                 }
             }
         }
@@ -8574,7 +8580,7 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     if let Err(error) = initialize_native_sync_qa() {
-        eprintln!("Native Sync isolation: {error:#}");
+        diagnostic_error!("Native Sync isolation: {error:#}");
         std::process::exit(1);
     }
     #[cfg(feature = "data-view-native-harness")]
@@ -8590,7 +8596,7 @@ fn main() {
         return;
     }
     if let Err(error) = linux_sprint::initialize() {
-        eprintln!("Linux Sprint isolation: {error:#}");
+        diagnostic_error!("Linux Sprint isolation: {error:#}");
         std::process::exit(1);
     }
     #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
@@ -8601,7 +8607,7 @@ fn main() {
         match result {
             Ok(()) => std::process::exit(0),
             Err(error) => {
-                eprintln!("AppImage acceptance: {error:#}");
+                diagnostic_error!("AppImage acceptance: {error:#}");
                 std::process::exit(1);
             }
         }
@@ -8695,7 +8701,7 @@ fn main() {
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = assume_yes;
-                eprintln!(
+                diagnostic_error!(
                     "--uninstall-data is for Linux. On Windows use Settings → Apps; on macOS \
                      use Okilum → Settings → Uninstall Okilum…"
                 );
@@ -8703,7 +8709,7 @@ fn main() {
             }
         }
         Err(error) => {
-            eprintln!("{error:#}\n\n{USAGE}");
+            diagnostic_error!("{error:#}\n\n{USAGE}");
             std::process::exit(2);
         }
     };
@@ -8746,7 +8752,7 @@ fn main() {
             Ok(reader_instance::Instance::Forwarded) => return,
             Ok(reader_instance::Instance::Primary(lock, requests)) => (Some(lock), Some(requests)),
             Err(error) => {
-                eprintln!("Cannot start Reader: {error:#}");
+                diagnostic_error!("Cannot start Reader: {error:#}");
                 std::process::exit(1);
             }
         }
@@ -8849,7 +8855,7 @@ fn main() {
         drop(services_phase);
         let fonts_phase = diagnostics.phase("fonts_load");
         if let Err(error) = brand::load_fonts(cx) {
-            eprintln!("Embedded typography unavailable: {error}");
+            diagnostic_error!("Embedded typography unavailable: {error}");
         }
         reader_fonts::install(cx);
         reader_keymap::install(cx);
@@ -8898,7 +8904,7 @@ fn main() {
         }
         if (opts.vault.is_some() || opts.open_path.is_some()) && opts.brain_endpoint.is_none() {
             if let Err(error) = reader_open::open_window(opts, cx) {
-                eprintln!("Cannot open Reader: {error:#}");
+                diagnostic_error!("Cannot open Reader: {error:#}");
             }
             return;
         }

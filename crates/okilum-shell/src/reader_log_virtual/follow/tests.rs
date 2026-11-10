@@ -516,7 +516,7 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
     assert_eq!(update.sources[0].snapshot.raw(0).unwrap(), b"second");
     assert_eq!(session.published.len(), 3);
     assert_eq!(session.aliases.len(), 1);
-    println!("compressed alias and pressure controls passed");
+    diagnostic_println!("compressed alias and pressure controls passed");
 }
 
 #[test]

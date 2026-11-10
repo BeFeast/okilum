@@ -272,7 +272,7 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
                 view.update(cx, |view, cx| view.send(cx));
             }
         }
-        Err(error) => eprintln!("Could not open Feedback: {error}"),
+        Err(error) => diagnostic_error!("Could not open Feedback: {error}"),
     }
 }
 

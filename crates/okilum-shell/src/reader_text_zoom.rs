@@ -822,7 +822,9 @@ mod tests {
             );
             assert!(styles.iter().all(|size| *size == Some(expected.into())),
                 "Read code block font must equal themed base code font times zoom: {styles:?}, expected={expected:?}");
-            eprintln!("READ_CODE_STYLE zoom={zoom} expected={expected:?} styles={styles:?}");
+            diagnostic_error!(
+                "READ_CODE_STYLE zoom={zoom} expected={expected:?} styles={styles:?}"
+            );
         }
         reader.update_in(visual, |r, window, cx| {
             r.open_live_preview(window, cx);
@@ -881,7 +883,7 @@ mod tests {
             base.iter().all(|width| *width > px(0.)),
             "LP baseline geometry positive control: {base:?}"
         );
-        eprintln!("LP_GEOMETRY baseline={base:?}");
+        diagnostic_error!("LP_GEOMETRY baseline={base:?}");
         for zoom in [2., 0.5, 1.] {
             CODE_STYLES.with(|styles| *styles.borrow_mut() = Some(Vec::new()));
             reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
@@ -896,7 +898,7 @@ mod tests {
                     input.scroll_offset(),
                 )
             });
-            eprintln!("LP_VIEWPORT_BEFORE zoom={zoom} state={before:?}");
+            diagnostic_error!("LP_VIEWPORT_BEFORE zoom={zoom} state={before:?}");
             reader.update(visual, |r, cx| {
                 r.editing
                     .as_ref()
@@ -923,7 +925,7 @@ mod tests {
                     input.painted_cursor(),
                 )
             });
-            eprintln!("LP_GEOMETRY zoom={zoom} actual={actual:?} baseline={base:?} font_size={font_size} stamp={stamp:?} epoch={epoch} painted_cursor={painted_cursor:?} block_styles={styles:?}");
+            diagnostic_error!("LP_GEOMETRY zoom={zoom} actual={actual:?} baseline={base:?} font_size={font_size} stamp={stamp:?} epoch={epoch} painted_cursor={painted_cursor:?} block_styles={styles:?}");
             for (label, (actual, base)) in ["body", "inline code", "fenced code"]
                 .into_iter()
                 .zip(actual.into_iter().zip(base))

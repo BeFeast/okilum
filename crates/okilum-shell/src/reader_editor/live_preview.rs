@@ -1381,7 +1381,7 @@ mod tests {
             assert!(edit.reshaped_lines <= 4, "bounded edit layout: {}", edit.reshaped_lines);
             assert!(edit.scroll_delta.abs() < 1., "typing keeps first visible row");
             assert_eq!(i.selected_range(), 1..1);
-            println!("LARGE_LP_RENDERER source_bytes={} SourceMutation_to_draw_ms={elapsed:.3} raw=false projection_composes={}", original.len(), counts.projection_composes);
+            diagnostic_println!("LARGE_LP_RENDERER source_bytes={} SourceMutation_to_draw_ms={elapsed:.3} raw=false projection_composes={}", original.len(), counts.projection_composes);
         });
         visual.run_until_parked();
         #[cfg(target_os = "macos")]
@@ -3133,7 +3133,7 @@ mod tests {
                 i.input_bounds().contains(&bounds.center()),
                 "1/1 match is visible in Source"
             );
-            eprintln!("ISSUE2484_FIND_POSITIVE_CONTROL=1/1 y={:?}", bounds.top());
+            diagnostic_error!("ISSUE2484_FIND_POSITIVE_CONTROL=1/1 y={:?}", bounds.top());
             bounds.top() - i.input_bounds().top()
         });
         input.update(visual, |i, cx| i.close_search(cx));

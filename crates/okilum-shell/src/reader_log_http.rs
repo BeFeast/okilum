@@ -29,7 +29,7 @@ pub(crate) fn show(vault: PathBuf, cx: &mut App) {
     let state = match reader_ui_state::state_directory(cx) {
         Ok(state) => state,
         Err(error) => {
-            eprintln!("Cannot open HTTPS logs: {error}");
+            diagnostic_error!("Cannot open HTTPS logs: {error}");
             return;
         }
     };

@@ -378,7 +378,7 @@ mod provider {
                 let task = self.text.read_text(request, cx);
                 return cx.background_executor().spawn(async move {
                     let result = task.await;
-                    eprintln!("Paste: windows note route=PlainText types=[CF_UNICODETEXT] bytes={} ms={} ok={}",
+                    diagnostic_error!("Paste: windows note route=PlainText types=[CF_UNICODETEXT] bytes={} ms={} ok={}",
                         result.as_ref().ok().and_then(|text| text.as_ref()).map_or(0, String::len),
                         started.elapsed().as_millis(), result.is_ok());
                     result
@@ -395,7 +395,7 @@ mod provider {
             cx.background_executor().spawn(async move {
                 let started = Instant::now();
                 let snapshot = read(&request, deadline).inspect_err(|error| {
-                    eprintln!("Paste: windows note route=ReadError types=[] bytes=0 ms={} error={error:?}",
+                    diagnostic_error!("Paste: windows note route=ReadError types=[] bytes=0 ms={} error={error:?}",
                         started.elapsed().as_millis());
                 })?;
                 let types = snapshot.native.as_ref().map(|native| native.types.clone())
@@ -413,7 +413,7 @@ mod provider {
                 #[cfg(not(windows))]
                 let flavor_reader = None;
                 if request.is_cancelled() {
-                    eprintln!("Paste: windows note route=Cancelled types={types:?} bytes=0 ms={}",
+                    diagnostic_error!("Paste: windows note route=Cancelled types={types:?} bytes=0 ms={}",
                         started.elapsed().as_millis());
                     return Err(Error::Cancelled);
                 }
@@ -430,10 +430,10 @@ mod provider {
                 };
                 let mut routed = *route_snapshot_with(snapshot, &context, flavor_reader)
                     .inspect_err(|error| {
-                        eprintln!("Paste: windows note route=ReadError types={types:?} bytes=0 ms={} error={error:?}",
+                        diagnostic_error!("Paste: windows note route=ReadError types={types:?} bytes=0 ms={} error={error:?}",
                             started.elapsed().as_millis());
                     })?;
-                eprintln!(
+                diagnostic_error!(
                     "Paste: windows note route={:?} bytes={} types={:?} ms={}",
                     routed.route,
                     routed.bytes,

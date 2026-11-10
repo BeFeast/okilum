@@ -175,7 +175,7 @@ fn install_shutdown(cx: &mut App) {
         let barrier = wait_for_disk(barrier, cx.background_executor());
         async move {
             if !matches!(barrier.await, Ok(Ok(()))) {
-                eprintln!("Manager draft could not be flushed before quit");
+                diagnostic_error!("Manager draft could not be flushed before quit");
             }
         }
     })

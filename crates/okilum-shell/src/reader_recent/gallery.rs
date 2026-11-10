@@ -702,7 +702,10 @@ mod mounted_tests {
                 "# Alpha\n\n**Bold** and [inert](https://example.invalid)\n",
             ),
             ("nested/a.md", "# Nested\n\nDifferent source\n"),
-            ("code.rs", "fn main() { println!(\"**literal**\"); }\r\n"),
+            (
+                "code.rs",
+                "fn main() { diagnostic_println!(\"**literal**\"); }\r\n",
+            ),
         ] {
             std::fs::write(root.join(path), source).unwrap();
         }

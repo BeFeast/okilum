@@ -121,9 +121,9 @@ impl Render for Surface {
 }
 
 /// Above this a JSON file opens raw; Pretty formats it on a worker on request.
-const PRETTY_BYTES: usize = 1024 * 1024;
+const PRETTY_BYTES: usize = 8 * 1024 * 1024;
 
-type Pretty = Result<String, okilum_core::json_view::Invalid>;
+type Pretty = Result<String, okilum_core::json_view::Error>;
 
 struct JsonText {
     raw: String,
@@ -131,6 +131,7 @@ struct JsonText {
     pretty: Option<Pretty>,
     showing_pretty: bool,
     formatting: bool,
+    requested_pretty: bool,
 }
 
 /// `.json` only: JSONC allows comments and is never reformatted.
@@ -176,11 +177,7 @@ impl CodePreview {
     ) -> Self {
         let started = Instant::now();
         let json = is_json(&rel);
-        let table =
-            json.then(|| cx.new(|cx| reader_delimited::TablePreview::new(path.clone(), cx)));
-        if let Some(table) = &table {
-            cx.observe(table, |_, _, cx| cx.notify()).detach();
-        }
+        let table_path = path.clone();
         let task = cx.background_executor().spawn(async move {
             if std::fs::metadata(&path)?.len() > MAX_BYTES {
                 return anyhow::Ok(Loaded::TooLarge);
@@ -216,6 +213,18 @@ impl CodePreview {
                 this.state = match result {
                     Ok(Loaded::Text(text, pretty)) => {
                         this.source_bytes = Some(text.len());
+                        if json
+                            && text
+                                .trim_start_matches('\u{feff}')
+                                .trim_start()
+                                .starts_with('[')
+                        {
+                            let table = cx.new(|cx| {
+                                reader_delimited::TablePreview::new(table_path.clone(), cx)
+                            });
+                            cx.observe(&table, |_, _, cx| cx.notify()).detach();
+                            this.table = Some(table);
+                        }
                         let shown = if json {
                             let showing_pretty =
                                 !reader_ui_state::json_raw(cx) && matches!(pretty, Some(Ok(_)));
@@ -224,6 +233,7 @@ impl CodePreview {
                                 pretty,
                                 showing_pretty,
                                 formatting: false,
+                                requested_pretty: showing_pretty,
                             });
                             json.shown().to_owned()
                         } else {
@@ -233,7 +243,7 @@ impl CodePreview {
                         let apply_started = Instant::now();
                         let input = cx.new(|cx| editor(language, &shown[range], window, cx));
                         if shown.len() > EDIT_BYTES {
-                            eprintln!(
+                            diagnostic_error!(
                                 "DATA_VIEW_2669 bytes={} editor_apply_ms={}",
                                 shown.len(),
                                 apply_started.elapsed().as_millis()
@@ -267,7 +277,7 @@ impl CodePreview {
             state: State::Loading,
             source_bytes: None,
             json: None,
-            table,
+            table: None,
             show_table: true,
             document: None,
             page: 0,
@@ -289,6 +299,7 @@ impl CodePreview {
         let Some(json) = &mut self.json else {
             return;
         };
+        json.requested_pretty = pretty;
         if pretty && json.pretty.is_none() {
             // A large file: format on a worker, then show it.
             if json.formatting {
@@ -307,7 +318,7 @@ impl CodePreview {
                         json.pretty = Some(pretty);
                     }
                     // Raw chosen while formatting wins: keep the result, don't show it.
-                    let pretty = !reader_ui_state::json_raw(cx);
+                    let pretty = this.json.as_ref().is_some_and(|json| json.requested_pretty);
                     this.show_json(pretty, window, cx);
                 });
             })
@@ -315,7 +326,12 @@ impl CodePreview {
             cx.notify();
             return;
         }
-        json.showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
+        let showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
+        if json.showing_pretty == showing_pretty {
+            cx.notify();
+            return;
+        }
+        json.showing_pretty = showing_pretty;
         let shown = json.shown().to_owned();
         let range = document::first_page(&shown);
         if let State::Content(input) = &self.state {
@@ -466,9 +482,12 @@ impl CodePreview {
         let json = self.json.as_ref()?;
         let note = match &json.pretty {
             _ if json.formatting => Some("Formatting…".to_owned()),
-            Some(Err(invalid)) => Some(format!(
+            Some(Err(okilum_core::json_view::Error::Invalid(invalid))) => Some(format!(
                 "Not valid JSON — showing raw (line {}, column {})",
                 invalid.line, invalid.column
+            )),
+            Some(Err(okilum_core::json_view::Error::Limit { reason, limit })) => Some(format!(
+                "Pretty unavailable: {reason} limit {limit}; showing raw"
             )),
             None => Some("Large file — showing raw".to_owned()),
             Some(Ok(_)) => None,
@@ -606,7 +625,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     if std::env::var("OKILUM_CODE_TIMING").as_deref() != Ok("1") {
         return;
     }
-    eprintln!(
+    diagnostic_error!(
         "code_preview text_ready_ms={}",
         started.elapsed().as_millis()
     );
@@ -614,7 +633,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     cx.observe(input, move |_, input, cx| {
         if !reported && !input.read(cx).highlighting_pending() {
             reported = true;
-            eprintln!(
+            diagnostic_error!(
                 "code_preview highlighted_ms={}",
                 started.elapsed().as_millis()
             );
@@ -929,6 +948,6 @@ mod native_tests;
 #[cfg(feature = "data-view-native-harness")]
 fn native_trace(phase: &str) {
     if std::env::var_os("OKILUM_DATA_VIEW_NATIVE_FIXTURE").is_some() {
-        eprintln!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
+        diagnostic_error!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
     }
 }

@@ -5,6 +5,9 @@
 //! exposes the same thing over a versioned protocol, so a second client never
 //! needs a private API.
 
+#[macro_use]
+mod diagnostic_io;
+
 pub mod agent_imports;
 pub mod agent_language;
 pub mod agent_rules;

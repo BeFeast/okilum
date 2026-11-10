@@ -21,7 +21,7 @@ fn install_requested(requested: bool, cx: &mut App) {
     cx.set_global(TraceSettings { enabled });
     attribution::init(enabled);
     if requested {
-        println!(
+        diagnostic_println!(
             "{}",
             json!({"event":"managed_trace_configuration", "enabled":enabled,
                 "capacity":attribution::CAPACITY, "schema":"managed-source-trace/v1"})
@@ -49,7 +49,7 @@ fn clock_sample() {
         .expect("system clock after epoch")
         .as_nanos();
     let after = attribution::now();
-    println!(
+    diagnostic_println!(
         "{}",
         json!({"event":"managed_trace_clock_sample", "monotonic_before_ns":before,
             "realtime_ns":realtime, "monotonic_after_ns":after})
@@ -86,13 +86,13 @@ impl BrainView {
         // Explicit action only: formatting, hashing, stdout and buffer draining
         // are outside the sparse-input measurement interval.
         clock_sample();
-        println!("{snapshot}");
-        println!(
+        diagnostic_println!("{snapshot}");
+        diagnostic_println!(
             "{}",
             json!({"event":"attribution_dump", "trace":attribution::dump()})
         );
         clock_sample();
-        println!(
+        diagnostic_println!(
             "{}",
             json!({"event":"managed_trace_dump_complete", "monotonic_ns":attribution::now()})
         );

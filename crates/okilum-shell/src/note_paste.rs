@@ -145,7 +145,7 @@ pub fn edit_menu() -> gpui::Menu {
 
 pub fn install_menu(cx: &mut App) {
     cx.on_action(|_: &PasteFromMenu, cx: &mut App| {
-        eprintln!("Paste: Edit menu");
+        diagnostic_error!("Paste: Edit menu");
         // Dispatch after the menu command releases the window.
         cx.defer(|cx| {
             let Some(window) = cx
@@ -330,7 +330,7 @@ impl ExactClipboardProvider for NotePaste {
             Ok(None) => "inserted=0".into(),
             Err(error) => format!("error={error:?}"),
         };
-        eprintln!(
+        diagnostic_error!(
             "Paste: attempt types={types:?} path={path} bytes={bytes} {outcome} ms={}",
             started.elapsed().as_millis()
         );
@@ -368,7 +368,7 @@ impl ExactClipboardProvider for NotePaste {
         Some(match routed {
             Ok(routed) => {
                 // Type names, the path taken, sizes and time; never contents.
-                eprintln!(
+                diagnostic_error!(
                     "Paste: mode={:?} route={:?} bytes={} inserted={} follow_up={} ms={:.1} {} types={:?}",
                     context.mode,
                     routed.route,
@@ -400,7 +400,7 @@ impl ExactClipboardProvider for NotePaste {
                 }
             }
             Err(error) => {
-                eprintln!("Paste: clipboard read failed ({error:?})");
+                diagnostic_error!("Paste: clipboard read failed ({error:?})");
                 Err(error)
             }
         })
@@ -446,13 +446,13 @@ fn paste_now(
         Ok(PasteOffer::Text(text)) => Ok(Some(text)),
         Ok(PasteOffer::Image(image)) => {
             let Some(note_rel) = note_rel else {
-                eprintln!("Paste: image refused, this file takes text only");
+                diagnostic_error!("Paste: image refused, this file takes text only");
                 tell("Images can be pasted into notes, not into this file.".into());
                 return Ok(None);
             };
             match attachments::save_pasted_image(vault_root, note_rel, &image, stamp) {
                 Ok(saved) => {
-                    eprintln!(
+                    diagnostic_error!(
                         "Paste: saved image {:?} ({:?}, {} bytes)",
                         saved.file_name,
                         image.kind,
@@ -461,7 +461,7 @@ fn paste_now(
                     Ok(Some(saved.embed))
                 }
                 Err(error) => {
-                    eprintln!("Paste: image not saved ({error:?}), nothing inserted");
+                    diagnostic_error!("Paste: image not saved ({error:?}), nothing inserted");
                     tell(error.user_text());
                     Err(ClipboardReadError::Io)
                 }
@@ -478,7 +478,7 @@ fn paste_now(
             };
             match attachments::save_pasted_files(vault_root, note_rel, &files, stamp) {
                 Ok(saved) => {
-                    eprintln!(
+                    diagnostic_error!(
                         "Paste: files={} copied={} ({} bytes) in_vault={} linked_outside={}",
                         files.len(),
                         saved.copied,
@@ -495,7 +495,7 @@ fn paste_now(
                     Ok(Some(saved.text))
                 }
                 Err(error) => {
-                    eprintln!("Paste: files not saved ({error:?}), nothing inserted");
+                    diagnostic_error!("Paste: files not saved ({error:?}), nothing inserted");
                     tell(error.user_text());
                     Err(ClipboardReadError::Io)
                 }
@@ -503,11 +503,11 @@ fn paste_now(
         }
         Ok(PasteOffer::Nothing { types }) => {
             // Type names only, never contents: the next report shows what was there.
-            eprintln!("Paste: no text or image on the clipboard; types: {types:?}");
+            diagnostic_error!("Paste: no text or image on the clipboard; types: {types:?}");
             Ok(None)
         }
         Err(error) => {
-            eprintln!("Paste: clipboard read failed ({error:?})");
+            diagnostic_error!("Paste: clipboard read failed ({error:?})");
             Err(clipboard_error(error))
         }
     }

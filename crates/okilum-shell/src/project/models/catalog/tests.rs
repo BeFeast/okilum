@@ -258,7 +258,7 @@ async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memo
         });
         visual.run_until_parked();
     }
-    eprintln!("MODEL2207 GPUI first/repeated click→usable rows ms={timings:?}; 292 models; headless regression, not idunn compositor timing");
+    diagnostic_error!("MODEL2207 GPUI first/repeated click→usable rows ms={timings:?}; 292 models; headless regression, not idunn compositor timing");
     assert_eq!(
         requests.load(Ordering::SeqCst),
         1,

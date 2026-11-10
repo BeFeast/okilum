@@ -53,7 +53,7 @@ mod policy {
         use super::*;
         #[test]
         fn bounded_source_keeps_authored_code_and_utf8() {
-            let code = "fn main() {\r\n\tprintln!(\"**not Markdown**\");\r\n}\r\n";
+            let code = "fn main() {\r\n\tdiagnostic_println!(\"**not Markdown**\");\r\n}\r\n";
             assert_eq!(prefix(code), (code, false));
             let large = format!("{}Жtail", "a".repeat(BYTES - 1));
             assert_eq!(prefix(&large), (&large[..BYTES - 1], true));

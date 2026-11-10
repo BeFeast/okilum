@@ -226,7 +226,7 @@ pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
     }
     if let Err(error) = write(root, name.as_deref()) {
         let message = format!("Cannot save the vault name: {error:#}");
-        eprintln!("{message}");
+        diagnostic_error!("{message}");
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, cx| {
                 crate::reader_toast::error(message, window, cx)

@@ -1694,11 +1694,13 @@ mod tests {
         parent.run_until_parked();
         let cleanup = std::fs::remove_dir_all(&directory);
         if let Err(error) = &cleanup {
-            eprintln!("fixture app stopped but cleanup failed: {error}; root={directory:?}");
+            diagnostic_error!(
+                "fixture app stopped but cleanup failed: {error}; root={directory:?}"
+            );
             let mut pending = vec![directory.clone()];
             for _ in 0..100 {
                 let Some(path) = pending.pop() else { break };
-                eprintln!("remaining fixture path: {path:?}");
+                diagnostic_error!("remaining fixture path: {path:?}");
                 if let Ok(entries) = std::fs::read_dir(&path) {
                     pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
                 }

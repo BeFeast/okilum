@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(pool().used(), used);
         drop(held);
         assert_eq!(pool().used(), 0);
-        println!("positive: leased COW succeeded after refusal");
+        diagnostic_println!("positive: leased COW succeeded after refusal");
 
         // Sparse indexes do not hide the old+new raw Vec overlap. Leave
         // exactly enough for final capacity: the pre-fix allocation fit its
@@ -525,6 +525,6 @@ mod tests {
         );
         drop(snapshot);
         assert_eq!(pool().used(), 0);
-        println!("positive: raw growth succeeded after overlap refusal");
+        diagnostic_println!("positive: raw growth succeeded after overlap refusal");
     }
 }

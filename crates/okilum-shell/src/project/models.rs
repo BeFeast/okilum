@@ -62,7 +62,7 @@ impl ProjectView {
     fn close_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(feature = "project-ui-harness")]
         if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
-            eprintln!("QA model-picker close");
+            diagnostic_error!("QA model-picker close");
         }
         self.model_open = false;
         self.model_ui.overlay.take();
@@ -471,7 +471,7 @@ impl ProjectView {
             .unwrap_or(0);
         #[cfg(feature = "project-ui-harness")]
         if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
-            eprintln!(
+            diagnostic_error!(
                 "QA model-picker open: catalog_ready={}",
                 self.models.is_some()
             );
@@ -632,7 +632,7 @@ impl ProjectView {
                             } else {
                                 "Cannot read thread models; no change was requested"
                             };
-                            eprintln!("Manager model request failed ({action}): {error:#}");
+                            diagnostic_error!("Manager model request failed ({action}): {error:#}");
                             this.model_error = Some(format!(
                                 "{action}. {error:#} Refresh to read the current configuration; no automatic retry."
                             ));
@@ -801,7 +801,7 @@ impl ProjectView {
                         painted.set(Some((bounds, mask)));
                         #[cfg(feature = "project-ui-harness")]
                         if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
-                            eprintln!("QA model-picker paint: bounds={bounds:?} mask={mask:?} viewport={:?}", window.viewport_size());
+                            diagnostic_error!("QA model-picker paint: bounds={bounds:?} mask={mask:?} viewport={:?}", window.viewport_size());
                         }
                     },
                 )

@@ -144,7 +144,7 @@ impl Reader {
         let started = std::time::Instant::now();
         match router::route(&DroppedFiles(paths), &context) {
             Ok(routed) => {
-                eprintln!(
+                diagnostic_error!(
                     "Drop: route={:?} offset={} follow_up={} ms={:.1} {}",
                     routed.route,
                     offset,
@@ -155,7 +155,7 @@ impl Reader {
                 self.apply_routed(input, routed, offset, window, cx);
             }
             Err(error) => {
-                eprintln!("Drop: not inserted ({error:?})");
+                diagnostic_error!("Drop: not inserted ({error:?})");
                 reader_toast::error("The dropped files couldn’t be read.", window, cx);
             }
         }
@@ -320,7 +320,7 @@ fn ask_then_copy(
                     note_closed("", window, cx);
                 }
             }
-            _ => eprintln!("Paste: file copy cancelled"),
+            _ => diagnostic_error!("Paste: file copy cancelled"),
         });
     })
     .detach();
@@ -402,7 +402,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
     cx.spawn(async move |cx| {
         let (copied, errors, saved_files) = task.await;
         finished.store(true, Ordering::Relaxed);
-        eprintln!(
+        diagnostic_error!(
             "Paste: copied {} of {} files, {} bytes, ms={}",
             copied.iter().filter(|c| c.is_some()).count(),
             copied.len(),
@@ -474,7 +474,7 @@ fn fetch_title(input: Target, url: String, anchor: Anchor, window: &mut Window, 
     let started = std::time::Instant::now();
     cx.spawn(async move |cx| {
         let title = task.await;
-        eprintln!(
+        diagnostic_error!(
             "Paste: title fetch {} ms={}",
             if title.is_some() { "found" } else { "failed" },
             started.elapsed().as_millis()
@@ -517,7 +517,9 @@ fn insert_at_anchor(
     cx: &mut App,
 ) -> Option<Region> {
     let Some(input) = target.live(cx) else {
-        eprintln!("Paste: background result not inserted (the note is no longer being edited)");
+        diagnostic_error!(
+            "Paste: background result not inserted (the note is no longer being edited)"
+        );
         return None;
     };
     let (moved, region) = input.update(cx, |state, cx| {
@@ -536,7 +538,7 @@ fn insert_at_anchor(
         };
         let inserted = state.replace_source_range(at..at, &fitted, window, cx);
         if !inserted {
-            eprintln!("Paste: background result not inserted (the editor is read-only)");
+            diagnostic_error!("Paste: background result not inserted (the editor is read-only)");
         }
         let region = inserted.then(|| Region::at(state.value().as_ref(), at, fitted.len()));
         (moved && inserted, region)
@@ -583,7 +585,7 @@ fn convert_in_background(
     cx.spawn(async move |cx| {
         let done = task.await;
         finished.store(true, Ordering::Relaxed);
-        eprintln!(
+        diagnostic_error!(
             "Paste: background rich text bytes={html_bytes} inserted={} convert_ms={:.1} \
              images_saved={} images_failed={} images_remote={} ms={}",
             done.text.len(),
@@ -746,7 +748,7 @@ fn download_images(
                 Ok(saved) => saved,
                 Err(error) => {
                     failed += 1;
-                    eprintln!("Paste: image download failed ({error})");
+                    diagnostic_error!("Paste: image download failed ({error})");
                     continue;
                 }
             };
@@ -786,7 +788,7 @@ fn download_images(
             replaced += hits;
         }
         finished.store(true, Ordering::Relaxed);
-        eprintln!(
+        diagnostic_error!(
             "Paste: images downloaded={saved} failed={failed} replaced={replaced} ms={}",
             started.elapsed().as_millis()
         );

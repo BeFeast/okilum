@@ -186,11 +186,11 @@ mod tests {
             !snapshot.is_mapped(),
             "positive control: canonical bytes are copied into a bounded snapshot"
         );
-        println!("owned snapshot opened");
+        diagnostic_println!("owned snapshot opened");
         std::fs::write(&path, []).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         assert_eq!(snapshot.raw(0).unwrap(), b"level=info message=first");
         assert_eq!(snapshot.raw(1).unwrap(), b"level=error message=second");
-        println!("snapshot remained readable after canonical truncation");
+        diagnostic_println!("snapshot remained readable after canonical truncation");
     }
 }

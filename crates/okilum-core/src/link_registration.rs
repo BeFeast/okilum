@@ -36,7 +36,7 @@ fn registry(args: &[String]) {
         .status()
     {
         Ok(status) if status.success() => {}
-        result => eprintln!("okilum: link registration: {result:?}"),
+        result => diagnostic_error!("okilum: link registration: {result:?}"),
     }
 }
 

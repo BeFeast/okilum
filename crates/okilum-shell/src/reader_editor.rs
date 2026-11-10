@@ -788,7 +788,7 @@ impl Reader {
         let store = match result {
             Ok(store) => store,
             Err(error) => {
-                eprintln!("Cannot edit: {error:#}");
+                diagnostic_error!("Cannot edit: {error:#}");
                 // A read-only location explains itself and what still works.
                 let notice = location_notice(&error)
                     .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(&error)));
@@ -1087,7 +1087,7 @@ impl Reader {
                     editing.protecting = false;
                     if let Err(error) = result {
                         editing.save_failed = true;
-                        eprintln!("Draft recovery could not be saved: {error:#}");
+                        diagnostic_error!("Draft recovery could not be saved: {error:#}");
                         this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
                         cx.notify();
                     } else if this.link_notice.as_deref() == Some(DRAFT_WRITE_NOTICE) {
@@ -1253,7 +1253,7 @@ impl Reader {
                                 .update(cx, |grid, cx| grid.claim_paste_edit(stamp, window, cx));
                         }
                         this.suppress_pasted_completion(cx);
-                        eprintln!("Paste: inserted {bytes} bytes");
+                        diagnostic_error!("Paste: inserted {bytes} bytes");
                         // A file too large to copy was linked where it is; say so.
                         let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
                         if let Some(text) = notice {
@@ -1261,7 +1261,7 @@ impl Reader {
                         }
                     }
                     ClipboardPasteEvent::Failed(error) => {
-                        eprintln!("Paste: nothing inserted ({error:?})");
+                        diagnostic_error!("Paste: nothing inserted ({error:?})");
                         if handled && matches!(error, ClipboardReadError::Unavailable) {
                             return;
                         }
@@ -1653,7 +1653,7 @@ impl Reader {
             }
             Err(error) => {
                 outcome = "error";
-                eprintln!("Could not refresh the edited file: {error:#}");
+                diagnostic_error!("Could not refresh the edited file: {error:#}");
                 editing.save_failed = true;
                 self.link_notice = Some(file_access_notice(&error).into());
             }
@@ -1728,7 +1728,9 @@ impl Reader {
                 true
             }
             Err(error) => {
-                eprintln!("The restored note could not be reopened in the editor: {error:#}");
+                diagnostic_error!(
+                    "The restored note could not be reopened in the editor: {error:#}"
+                );
                 false
             }
         }
@@ -1742,7 +1744,7 @@ impl Reader {
         };
         let text = editing.input.read(cx).value().to_string();
         if let Err(error) = editing.store.saved_as(text) {
-            eprintln!("Could not mark the saved draft: {error:#}");
+            diagnostic_error!("Could not mark the saved draft: {error:#}");
         }
         editing.save_failed = false;
         self.clear_moved_or_deleted_notice();
@@ -1891,7 +1893,7 @@ impl Reader {
             }
             Err(error) => {
                 editing.save_failed = true;
-                eprintln!("Could not save the edited file: {error:#}");
+                diagnostic_error!("Could not save the edited file: {error:#}");
                 self.link_notice = Some(
                     if protected {
                         file_access_notice(&error)
@@ -1981,7 +1983,7 @@ impl Reader {
             Err(error) => {
                 editing.save_failed = true;
                 self.link_notice = Some(AUTOSAVE_START_NOTICE.into());
-                eprintln!("Autosave could not start: {error:#}");
+                diagnostic_error!("Autosave could not start: {error:#}");
                 cx.notify();
                 return;
             }
@@ -2086,7 +2088,9 @@ impl Reader {
                         editing.input.update(cx, |_, cx| cx.notify());
                         if let Err(error) = result {
                             editing.save_failed = true;
-                            eprintln!("Autosaved, but recovery acknowledgement failed: {error:#}");
+                            diagnostic_error!(
+                                "Autosaved, but recovery acknowledgement failed: {error:#}"
+                            );
                             this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
                             cx.notify();
                         }
@@ -2127,7 +2131,7 @@ impl Reader {
             }
             Err(error) => {
                 editing.save_failed = true;
-                eprintln!("Autosave failed: {error:#}");
+                diagnostic_error!("Autosave failed: {error:#}");
                 self.link_notice = Some(file_access_notice(&error).into());
             }
         }
@@ -6690,7 +6694,7 @@ mod autosave_tests {
                     assert_eq!(frame.presentation_epoch, i.presentation_epoch());
                 });
                 let cache_kept = LIVE_PREPARES.with(|n| n.get()) == prepared;
-                println!(
+                diagnostic_println!(
                     "EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}"
                 );
                 if !same
@@ -6712,7 +6716,9 @@ mod autosave_tests {
                     control.largest >= bytes && control.bytes >= 2 * bytes,
                     "unfired refresh control {control:?}"
                 );
-                println!("EDITOR_SAVE_CONTROL bytes={bytes} shared={shared} measured={control:?}");
+                diagnostic_println!(
+                    "EDITOR_SAVE_CONTROL bytes={bytes} shared={shared} measured={control:?}"
+                );
                 // Each size owns its windows. Old watcher timers must not join
                 // the next fixture's measured autosave after its vault is gone.
                 visual.update(|window, _| window.remove_window());
@@ -6859,7 +6865,9 @@ mod autosave_tests {
                     "the measured mutation must reach the real persistence subscription"
                 );
             });
-            println!("EDITOR_KEY_WORK bytes={bytes} measured={measured:?} control={control:?}");
+            diagnostic_println!(
+                "EDITOR_KEY_WORK bytes={bytes} measured={measured:?} control={control:?}"
+            );
         }
         assert!(
             violations.is_empty(),

@@ -179,7 +179,7 @@ pub(crate) fn with_pending(mut opts: Opts) -> Opts {
     match windows {
         Ok(windows) if !windows.is_empty() => opts.restart_windows = windows,
         Ok(_) => {}
-        Err(error) => eprintln!("Cannot restore update windows: {error:#}"),
+        Err(error) => diagnostic_error!("Cannot restore update windows: {error:#}"),
     }
     opts
 }

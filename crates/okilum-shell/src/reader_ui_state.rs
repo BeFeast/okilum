@@ -355,7 +355,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
             saved
         }
         Err(error) => {
-            eprintln!("Cannot restore UI state: {error:#}");
+            diagnostic_error!("Cannot restore UI state: {error:#}");
             // Preserve unreadable/future data; do not overwrite it with defaults.
             return;
         }
@@ -958,7 +958,7 @@ fn schedule(cx: &mut App) {
                 .await;
             match result {
                 Ok(()) => cx.update(|cx| mark_saved(generation, cx)),
-                Err(error) => eprintln!("Cannot save UI state: {error:#}"),
+                Err(error) => diagnostic_error!("Cannot save UI state: {error:#}"),
             }
         }
     });
@@ -991,7 +991,7 @@ pub(crate) fn flush(cx: &mut App) {
     if let Some(job) = job(cx).filter(|job| job.generation > 0) {
         match job.run() {
             Ok(()) => mark_saved(job.generation, cx),
-            Err(error) => eprintln!("Cannot flush UI state: {error:#}"),
+            Err(error) => diagnostic_error!("Cannot flush UI state: {error:#}"),
         }
     }
 }
@@ -1459,7 +1459,7 @@ pub(crate) fn guard_window_root(key: &str, cx: &mut App) {
     };
     if !outside_vault(Path::new(root), &state.path) {
         cx.global_mut::<Store>().blocked = true;
-        eprintln!("UI state is unavailable: its directory is inside the selected vault");
+        diagnostic_error!("UI state is unavailable: its directory is inside the selected vault");
     }
 }
 

@@ -1931,7 +1931,7 @@ mod tests {
             }
             local_times.sort_unstable();
             full_times.sort_unstable();
-            eprintln!("corpus={kind} blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
+            diagnostic_error!("corpus={kind} blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
                 original.len(), local_times[50], local_times[95], local_times[99],
                 full_times[50], full_times[95], full_times[99]);
         }
