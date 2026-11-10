@@ -14,6 +14,7 @@ spec.loader.exec_module(sparkle)
 
 
 class FetchTests(unittest.TestCase):
+    @patch.dict(os.environ, GITHUB_TOKEN='')
     def test_official_api_fallback_retains_the_exact_archive_pin(self):
         data = b'synthetic archive'
         with tempfile.TemporaryDirectory() as temporary:
@@ -41,6 +42,7 @@ class FetchTests(unittest.TestCase):
             self.assertNotIn('synthetic-token', ' '.join(download.call_args.args[0]))
             self.assertEqual(download.call_args.kwargs['env']['GH_TOKEN'], 'synthetic-token')
 
+    @patch.dict(os.environ, GITHUB_TOKEN='')
     def test_wrong_api_bytes_never_create_an_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / 'archive'
