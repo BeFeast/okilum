@@ -218,3 +218,14 @@ move/copy/history suites and writer authority tests with TEMP/TMP on NTFS, then
 on an owned ReFS VHDX. ReFS creation/formatting inability is an explicit logged
 SKIP with the reason; any test failure is fatal. The VHDX is detached in finally.
 The native workflow archives exact-source test executables for VM replay.
+
+Native Server 2022 ReFS execution also found that the race-injection fixture's
+`std::fs::rename` replacement over an already open target can return Access
+Denied. Production no-replace moves and `ReplaceFileW` saves pass this control.
+The external-race fixture now renames the original aside, then publishes into
+the vacant name, exercising a reachable competing publication on both volumes;
+all draft/preimage/raced-version retention assertions remain required.
+
+Remaining legacy-index reads in warm-cache, log-tail and Feedback snapshots are
+read-only observations, not authority for any source mutation. Canonical writes
+reopen and validate through the full native identities above.
