@@ -22,13 +22,46 @@ keeps the raw source when strict formatting cannot safely recover its structure.
 
 Highlighting support is not a claim of a safe formatter. No generic whitespace
 normalizer or another language's formatter is substituted for missing support.
-Operations above 256 KiB refuse without changing the buffer. Grammar syntax
-checks run on a worker with a budget and do not claim semantic validity.
-JSON indentation also checks a conservative output bound before allocating:
-at most 128 container levels and 1 MiB of LF output (at most 2 MiB after CRLF
-conversion). Read-only Pretty keeps the depth bound but allows a separate 64 MiB
-output budget and opens JSON inputs up to 8 MiB automatically in Pretty. A display
-budget refusal names its reason and numeric limit; it is never a JSON syntax verdict.
+Strict JSON operations share the read-only viewer's **64 MiB input/output**
+budget and **128 container levels**. Grammar syntax checks retain their existing
+256 KiB / 250 ms budget: their trees can amplify input, unlike the strict JSON
+validator, which never builds a value tree. Unsupported formatters/repairs remain
+explicitly unavailable. A size/depth/output refusal is one message containing the
+limit and source size, never a syntax verdict.
+
+Button dispatch pins an immutable native source revision. Target flattening,
+newline detection, validation, formatting and repair construction all run on the
+background executor. A visible operation label and **Cancel** share the existing
+control row; typing remains available. Cancellation is checked every 16 KiB in
+scans and output construction and before/after the strict parser's bounded call.
+Cancel/navigation/source mutation retires the result: no partial edit is applied.
+The non-interruptible strict parser phase is bounded to 64 MiB. A cancelled job
+keeps admission until it drains; there is at most one admitted operation per App,
+so repeated Cancel/retry or multiple Reader windows cannot queue source copies.
+
+JSON worker scratch has a conservative **512 MiB envelope**, separate from the
+already open editor, its Undo history and rendering caches: a shared native Rope,
+one flattened target (at most twice its 64 MiB length in String capacity), bounded
+64 MiB proposal/output buffers and bounded parser/string/conversion scratch.
+The formatter preallocates its conservative output bound; Repair appends once
+instead of repeatedly inserting quotes into the remainder. Repair output growth
+is checked before every append, including quoted keys and EOF closers; CRLF/BOM
+expansion is checked before conversion. Native controls exercise a near-64-MiB
+input with all complete round-trip versions alive and record process peak RSS.
+
+Repair retains the complete revision-bound original and proposal, but each
+read-only comparison editor receives at most **64 KiB**, clipped at a UTF-8
+boundary. The explanation explicitly says when comparison is shortened; Apply
+uses the complete proposal. Preview construction cannot mount several multi-MB
+editors on the UI thread. The first source mutation retires those comparison
+editors. Apply uses the native stamp/range/language guard, without flattening or
+revalidating the source on the UI thread; proposed validation is prepared by the
+worker. Format and Apply remain one native Undo transaction and use the normal
+atomic, revision-checked save path.
+
+Read-only Pretty opens JSON inputs up to 8 MiB automatically in Pretty and keeps
+its separate 64 MiB display-output budget. No tree, Find, sidebar Contents or
+control-layout behavior is changed by these source-operation limits.
 
 | Explicit language | Validation | Format: valid / invalid / incomplete | Automatic Repair |
 | --- | --- | --- | --- |

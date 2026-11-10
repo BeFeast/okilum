@@ -15,12 +15,47 @@ pub(super) struct State {
     language: Option<(usize, String)>,
     generation: u64,
     busy: bool,
+    running: Option<Running>,
     status: Option<(SourceStamp, Range<usize>, String, String)>,
     notice: Option<String>,
+    notice_stamp: Option<SourceStamp>,
     preview: Option<Preview>,
     inventory: Option<Inventory>,
     inventory_requested: Option<SourceStamp>,
     inventory_task: Option<Task<()>>,
+}
+
+struct Running {
+    control: model::Control,
+    action: Action,
+    stamp: SourceStamp,
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.control.cancel();
+    }
+}
+
+#[derive(Default)]
+struct JobGate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl gpui::Global for JobGate {}
+struct Permit(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Permit {
+    fn acquire(cx: &mut App) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        if cx.try_global::<JobGate>().is_none() {
+            cx.set_global(JobGate::default());
+        }
+        let gate = cx.global::<JobGate>().0.clone();
+        gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Self(gate))
+    }
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 struct Inventory {
@@ -42,6 +77,15 @@ impl State {
     }
 
     pub(super) fn source_changed(&mut self, stamp: SourceStamp) -> bool {
+        if let Some(running) = self.running.as_ref().filter(|run| run.stamp != stamp) {
+            running.control.cancel();
+        }
+        let notice_stale =
+            self.notice.is_some() && self.notice_stamp.is_some_and(|known| known != stamp);
+        if notice_stale {
+            self.notice = None;
+            self.notice_stamp = None;
+        }
         let stale = self
             .status
             .as_ref()
@@ -56,8 +100,9 @@ impl State {
         if preview_stale {
             self.preview = None;
             self.notice = Some("Repair preview is stale after editing; run Repair again.".into());
+            self.notice_stamp = Some(stamp);
         }
-        stale || preview_stale
+        stale || preview_stale || notice_stale
     }
 }
 
@@ -82,6 +127,7 @@ struct Preview {
     target: Target,
     proposed: String,
     explanation: String,
+    validation: String,
     before: Entity<EditorState>,
     after: Entity<EditorState>,
 }
@@ -93,15 +139,27 @@ enum Action {
     Repair,
 }
 
+#[cfg(test)]
 fn validation(language: &str, source: &str) -> String {
+    validation_with_control(language, source, &model::Control::default())
+}
+
+fn validation_with_control(language: &str, source: &str, control: &model::Control) -> String {
     if source.len() > model::MAX_BYTES {
-        return "Validation unavailable above 256 KiB; source unchanged.".into();
+        return model::size_notice("Validate", source.len());
     }
     if language == "json" {
-        return match model::json_validation(source) {
-            Ok(()) => "Valid strict JSON".into(),
-            Err(e) => format!("Invalid JSON · {}:{} · {}", e.line, e.column, e.message),
+        return match model::json_validation_controlled(source, control) {
+            None => "Operation cancelled.".into(),
+            Some(Err(reason)) => reason,
+            Some(Ok(Ok(()))) => "Valid strict JSON".into(),
+            Some(Ok(Err(e))) => format!("Invalid JSON · {}:{} · {}", e.line, e.column, e.message),
         };
+    }
+    // Grammar trees can amplify their input substantially. Keep their existing
+    // 256 KiB / 250 ms budget; JSON uses the allocation-bounded strict parser.
+    if source.len() > 256 * 1024 {
+        return format!("Syntax validation for {language} works with files up to 256 KiB; this file is {:.1} MiB.", source.len() as f64 / 1048576.);
     }
     // A highlighting grammar is only a syntax check, never semantic validation.
     // Dialects without a matching grammar must not borrow a stricter language.
@@ -120,7 +178,7 @@ fn validation(language: &str, source: &str) -> String {
     }
     let deadline = Instant::now() + Duration::from_millis(250);
     let mut progress = |_: &tree_sitter::ParseState| {
-        if Instant::now() >= deadline {
+        if control.cancelled() || Instant::now() >= deadline {
             std::ops::ControlFlow::Break(())
         } else {
             std::ops::ControlFlow::Continue(())
@@ -135,6 +193,9 @@ fn validation(language: &str, source: &str) -> String {
     };
     let mut cursor = tree.walk();
     loop {
+        if control.cancelled() {
+            return "Operation cancelled.".into();
+        }
         let node = cursor.node();
         if node.is_error() || node.is_missing() {
             let at = node.start_position();
@@ -304,6 +365,7 @@ impl Reader {
         })
     }
 
+    #[cfg(test)]
     fn code_target(&self, cx: &App) -> Option<Target> {
         let scope = self.code_scope(cx)?;
         let input = self.editing.as_ref()?.input.read(cx);
@@ -324,8 +386,19 @@ impl Reader {
         })
     }
 
+    fn cancel_code_operation(&mut self, cx: &mut Context<Self>) {
+        if let Some(editing) = self.editing.as_mut() {
+            if let Some(running) = &editing.operations.running {
+                running.control.cancel();
+                editing.operations.notice = Some("Cancelling…".into());
+                editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
+            }
+        }
+        cx.notify();
+    }
+
     fn code_operation(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(target) = self.code_target(cx) else {
+        let Some(scope) = self.code_scope(cx) else {
             return;
         };
         if !self.ime_allows(ime_guard::Trigger::Text, cx) {
@@ -339,103 +412,187 @@ impl Reader {
         {
             return;
         }
+        if scope.range.len() > model::MAX_BYTES {
+            editing.operations.status = None;
+            editing.operations.preview = None;
+            editing.operations.notice = Some(model::size_notice(action.name(), scope.range.len()));
+            editing.operations.notice_stamp = Some(scope.stamp);
+            cx.notify();
+            return;
+        }
+        let Some(permit) = Permit::acquire(cx) else {
+            editing.operations.notice =
+                Some("Another code operation is finishing; try again.".into());
+            editing.operations.notice_stamp = Some(scope.stamp);
+            cx.notify();
+            return;
+        };
+        let control = model::Control::default();
         editing.operations.generation = editing.operations.generation.wrapping_add(1);
         let generation = editing.operations.generation;
         editing.operations.busy = true;
         editing.operations.notice = None;
+        editing.operations.notice_stamp = None;
+        editing.operations.status = None;
+        editing.operations.preview = None;
+        editing.operations.running = Some(Running {
+            control: control.clone(),
+            action,
+            stamp: scope.stamp,
+        });
         let input = editing.input.clone();
+        // Pin an immutable native revision; flattening and newline scans belong
+        // to the admitted worker, not the button/focus event on the UI thread.
+        let snapshot = input.read(cx).source_snapshot();
         crate::source_presentation::code_languages::install();
-        let work = target.clone();
+        let snapshot_stamp = scope.stamp;
+        let worker_control = control.clone();
         let task = cx.background_executor().spawn(async move {
-            let status = validation(&work.language, &work.text);
-            let format = matches!(action, Action::Format).then(|| {
-                model::format_with_line_ending(&work.language, &work.text, work.line_ending)
-            });
-            let repair =
-                matches!(action, Action::Repair).then(|| model::repair(&work.language, &work.text));
-            (status, format, repair)
+            let result = (|| {
+                if worker_control.cancelled() {
+                    return None;
+                }
+                let text = snapshot.text.rope().slice(scope.range.clone()).to_string();
+                let target = Target {
+                    line_ending: scope
+                        .line_ending
+                        .unwrap_or_else(|| model::line_ending(&text)),
+                    range: scope.range,
+                    language: scope.language,
+                    stamp: scope.stamp,
+                    text,
+                };
+                let mut status = None;
+                let mut format = None;
+                let mut repair = None;
+                let mut proposed_validation = None;
+                match action {
+                    Action::Validate => {
+                        status = Some(validation_with_control(
+                            &target.language,
+                            &target.text,
+                            &worker_control,
+                        ))
+                    }
+                    Action::Format => {
+                        let result = model::format_controlled(
+                            &target.language,
+                            &target.text,
+                            target.line_ending,
+                            &worker_control,
+                        )?;
+                        match &result {
+                            model::Formatted::Changed(text) => {
+                                status = Some(validation_with_control(
+                                    &target.language,
+                                    text,
+                                    &worker_control,
+                                ))
+                            }
+                            model::Formatted::Unchanged(reason)
+                                if reason == "Already formatted."
+                                    || reason.starts_with("JSON is invalid") =>
+                            {
+                                status = Some(validation_with_control(
+                                    &target.language,
+                                    &target.text,
+                                    &worker_control,
+                                ))
+                            }
+                            _ => {}
+                        }
+                        format = Some(result);
+                    }
+                    Action::Repair => {
+                        let mut result = model::repair_controlled(
+                            &target.language,
+                            &target.text,
+                            &worker_control,
+                        )?;
+                        if let Ok(repair) = &mut result {
+                            // Target already owns the exact original revision.
+                            // Drop the model's compatibility copy on this worker.
+                            drop(std::mem::take(&mut repair.source));
+                            // Core has already checked both the invalid original
+                            // and the complete strict-JSON proposal on this worker.
+                            status = Some("Repair proposal ready.".into());
+                            proposed_validation = Some("Valid strict JSON".into());
+                        }
+                        repair = Some(result);
+                    }
+                }
+                if worker_control.cancelled() {
+                    return None;
+                }
+                Some((target, status, format, repair, proposed_validation))
+            })();
+            // Admission remains held until UI consumption drops all transient
+            // results, even after Cancel, navigation or a retired editor.
+            (result, permit)
         });
         cx.spawn_in(window, async move |this, cx| {
-            let (mut status, format, repair) = task.await;
+            let (result, _permit) = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                let Some(editing) = this.editing.as_mut().filter(|e| e.input == input) else {
-                    return;
-                };
-                if editing.operations.generation != generation {
-                    return;
-                }
+                let composition_ready = this.ime_allows(ime_guard::Trigger::Text, cx);
+                let Some(editing) = this.editing.as_mut().filter(|e| e.input == input) else { return; };
+                if editing.operations.generation != generation { return; }
+                let cancelled = control.cancelled();
                 editing.operations.busy = false;
-                if input.read(cx).source_stamp() != target.stamp
-                    || editing.conflict_detected
-                    || editing.save_failed
-                    || !input.read(cx).is_editable()
-                {
-                    editing.operations.notice =
-                        Some("Source changed; run the operation again. No result applied.".into());
-                    cx.notify();
-                    return;
+                editing.operations.running = None;
+                editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
+                if !composition_ready || input.read(cx).source_stamp() != snapshot_stamp
+                    || editing.conflict_detected || editing.save_failed || !input.read(cx).is_editable() {
+                    editing.operations.notice = Some("Source changed; run the operation again. No result applied.".into());
+                    cx.notify(); return;
+                }
+                let Some((target, status, format, repair, proposed_validation)) = result else {
+                    editing.operations.notice = Some(if input.read(cx).source_stamp() != snapshot_stamp { "Source changed; run the operation again. No result applied." } else { "Operation cancelled." }.into());
+                    cx.notify(); return;
+                };
+                if cancelled {
+                    editing.operations.notice = Some("Operation cancelled.".into());
+                    cx.notify(); return;
                 }
                 let mut status_range = target.range.clone();
                 match format {
                     Some(model::Formatted::Changed(text)) => {
-                        // The exact native revision was checked immediately above.
                         input.update(cx, |state, cx| {
-                            state.replace_source_range(
-                                target.range.clone(),
-                                text.as_str(),
-                                window,
-                                cx,
-                            );
+                            state.replace_source_range(target.range.clone(), text.as_str(), window, cx);
                             state.focus(window, cx);
                         });
                         status_range.end = status_range.start + text.len();
-                        status = validation(&target.language, &text);
                         this.editing.as_mut().unwrap().operations.notice = Some(
-                            "Formatted. Validation refreshed; Undo restores the original source."
-                                .into(),
-                        );
+                            "Formatted. Validation refreshed; Undo restores the original source.".into());
                     }
-                    Some(model::Formatted::Unchanged(reason)) => {
-                        editing.operations.notice = Some(reason)
-                    }
+                    Some(model::Formatted::Unchanged(reason)) => editing.operations.notice = Some(reason),
                     None => {}
                 }
                 let editing = this.editing.as_mut().unwrap();
-                editing.operations.status = Some((
-                    input.read(cx).source_stamp(),
-                    status_range,
-                    target.language.clone(),
-                    status,
-                ));
+                editing.operations.status = status.map(|status| (input.read(cx).source_stamp(), status_range, target.language.clone(), status));
                 if let Some(result) = repair {
                     match result {
                         Err(reason) => editing.operations.notice = Some(reason),
                         Ok(repair) => {
-                            let before = cx.new(|cx| {
-                                preview_editor(&repair.source, &target.language, window, cx)
-                            });
-                            let after = cx.new(|cx| {
-                                preview_editor(&repair.proposed, &target.language, window, cx)
-                            });
-                            editing.operations.preview = Some(Preview {
-                                target,
-                                proposed: repair.proposed,
-                                explanation: repair.explanation,
-                                before,
-                                after,
-                            });
+                            let before = cx.new(|cx| preview_editor(preview_excerpt(&target.text), &target.language, window, cx));
+                            let after = cx.new(|cx| preview_editor(preview_excerpt(&repair.proposed), &target.language, window, cx));
+                            let mut explanation = repair.explanation;
+                            if target.text.len() > PREVIEW_BYTES || repair.proposed.len() > PREVIEW_BYTES {
+                                explanation.push_str(" Preview shows the first 64 KiB of each version; Apply uses the complete result.");
+                            }
+                            editing.operations.preview = Some(Preview { target, proposed: repair.proposed, explanation,
+                                validation: proposed_validation.expect("prepared repair validation"), before, after });
                         }
                     }
                 }
+                this.editing.as_mut().unwrap().operations.notice_stamp = Some(input.read(cx).source_stamp());
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
     }
 
     fn apply_code_repair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current) = self.code_target(cx) else {
+        let Some(current) = self.code_scope(cx) else {
             return;
         };
         if !self.ime_allows(ime_guard::Trigger::Text, cx) {
@@ -448,7 +605,6 @@ impl Reader {
         if current.stamp != preview.target.stamp
             || current.range != preview.target.range
             || current.language != preview.target.language
-            || current.text != preview.target.text
             || editing.conflict_detected
             || editing.save_failed
             || !editing.input.read(cx).is_editable()
@@ -459,7 +615,7 @@ impl Reader {
         }
         let preview = editing.operations.preview.take().unwrap();
         let input = editing.input.clone();
-        let status = validation(&preview.target.language, &preview.proposed);
+        let status = preview.validation;
         input.update(cx, |state, cx| {
             state.replace_source_range(preview.target.range, preview.proposed.as_str(), window, cx)
         });
@@ -472,6 +628,7 @@ impl Reader {
         ));
         editing.operations.notice =
             Some("Repair applied as one Undo step. Save behavior is unchanged.".into());
+        editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
         input.update(cx, |state, cx| state.focus(window, cx));
         cx.notify();
     }
@@ -487,6 +644,7 @@ impl Reader {
             || editing.save_failed
             || !editing.input.read(cx).is_editable();
         let selector = Button::new("source-code-language")
+            .disabled(disabled)
             .small()
             .ghost()
             .label(language.clone())
@@ -524,6 +682,18 @@ impl Reader {
             })
             .map(|(_, _, _, text)| text.clone())
             .unwrap_or_else(|| "Validation not checked for this revision".into());
+        let status = if state.busy {
+            state.notice.clone().unwrap_or_else(|| {
+                state
+                    .running
+                    .as_ref()
+                    .map(|run| run.action.busy_text())
+                    .unwrap_or("Working…")
+                    .into()
+            })
+        } else {
+            state.notice.clone().unwrap_or(status)
+        };
         let controls = h_flex()
             .gap_2()
             .flex_wrap()
@@ -559,24 +729,23 @@ impl Reader {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.code_operation(Action::Repair, window, cx)
                     })),
-            );
-        let mut view = v_flex()
-            .px_4()
-            .py_2()
-            .gap_1()
-            .child(controls)
-            .child(
-                div()
-                    .text_sm()
-                    .debug_selector(|| "source-code-validation".into())
-                    .child(status),
             )
-            .children(
-                state
-                    .notice
-                    .iter()
-                    .map(|text| div().text_sm().child(text.clone())),
-            );
+            .when(state.busy, |controls| {
+                controls.child(
+                    Button::new("source-code-operation-cancel")
+                        .small()
+                        .ghost()
+                        .label("Cancel")
+                        .debug_selector(|| "source-code-operation-cancel".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_code_operation(cx))),
+                )
+            });
+        let mut view = v_flex().px_4().py_2().gap_1().child(controls).child(
+            div()
+                .text_sm()
+                .debug_selector(|| "source-code-validation".into())
+                .child(status),
+        );
         if let Some(preview) = &state.preview {
             let columns = h_flex()
                 .gap_2()
@@ -618,6 +787,11 @@ impl Reader {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(editing) = this.editing.as_mut() {
                                         editing.operations.preview = None;
+                                        editing.operations.status = None;
+                                        editing.operations.notice =
+                                            Some("Repair cancelled.".into());
+                                        editing.operations.notice_stamp =
+                                            Some(editing.input.read(cx).source_stamp());
                                     }
                                     cx.notify();
                                 })),
@@ -640,6 +814,9 @@ impl Reader {
         let Some(editing) = self.editing.as_mut() else {
             return;
         };
+        if editing.operations.busy {
+            return;
+        }
         let generation = editing.operations.generation.wrapping_add(1);
         editing.operations = State {
             language: Some((target.range.start, name.into())),
@@ -672,6 +849,31 @@ impl Reader {
     }
 }
 
+const PREVIEW_BYTES: usize = 64 * 1024;
+fn preview_excerpt(text: &str) -> &str {
+    let mut end = text.len().min(PREVIEW_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+impl Action {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Validate => "Validate",
+            Self::Format => "Format",
+            Self::Repair => "Repair",
+        }
+    }
+    fn busy_text(self) -> &'static str {
+        match self {
+            Self::Validate => "Validating…",
+            Self::Format => "Formatting…",
+            Self::Repair => "Preparing repair…",
+        }
+    }
+}
+
 fn preview_editor(
     text: &str,
     language: &str,
@@ -693,13 +895,16 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::input::Undo;
 
-    struct Fixture {
-        reader: Entity<Reader>,
-        input: Entity<EditorState>,
-        directory: tempfile::TempDir,
+    pub(super) struct Fixture {
+        pub(super) reader: Entity<Reader>,
+        pub(super) input: Entity<EditorState>,
+        pub(super) directory: tempfile::TempDir,
     }
 
-    fn open<'a>(cx: &'a mut TestAppContext, source: &str) -> (Fixture, &'a mut VisualTestContext) {
+    pub(super) fn open<'a>(
+        cx: &'a mut TestAppContext,
+        source: &str,
+    ) -> (Fixture, &'a mut VisualTestContext) {
         cx.update(|cx| {
             crate::test_init(cx);
             crate::bind_keys(cx);
@@ -750,17 +955,17 @@ mod tests {
         )
     }
 
-    fn value(f: &Fixture, cx: &App) -> String {
+    pub(super) fn value(f: &Fixture, cx: &App) -> String {
         f.input.read(cx).value().to_string()
     }
 
-    fn settle(visual: &mut VisualTestContext) {
+    pub(super) fn settle(visual: &mut VisualTestContext) {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(101));
         visual.run_until_parked();
     }
 
-    fn click(visual: &mut VisualTestContext, selector: &'static str) {
+    pub(super) fn click(visual: &mut VisualTestContext, selector: &'static str) {
         settle(visual);
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = visual
@@ -1335,3 +1540,6 @@ mod tests {
         assert_eq!(file_language("example.scss"), "scss");
     }
 }
+
+#[cfg(test)]
+mod large_tests;
