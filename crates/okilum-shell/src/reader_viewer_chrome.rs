@@ -28,15 +28,40 @@ struct HeaderKey {
     full_width: bool,
     editable: bool,
     renaming: Option<(EntityId, Option<String>)>,
-    actions: Vec<(
-        String,
-        SharedString,
-        SharedString,
-        Option<SharedString>,
-        bool,
-        bool,
-    )>,
+    actions: Vec<ActionKey>,
+    views: Vec<bool>,
+    find: Option<(SharedString, bool)>,
+    deleted: bool,
 }
+#[derive(PartialEq)]
+struct ActionKey {
+    id: &'static str,
+    label: SharedString,
+    tooltip: SharedString,
+    reason: Option<SharedString>,
+    flags: (bool, bool, bool, bool, bool, bool),
+    priority: (u16, u16),
+}
+impl From<&ViewerAction> for ActionKey {
+    fn from(action: &ViewerAction) -> Self {
+        Self {
+            id: action.id,
+            label: action.label.clone(),
+            tooltip: action.tooltip.clone(),
+            reason: action.disabled_reason.clone(),
+            flags: (
+                action.enabled,
+                action.toggled,
+                action.labelled,
+                action.label_by_default,
+                action.filled,
+                action.never_dropped,
+            ),
+            priority: (action.priority, action.collapse_priority),
+        }
+    }
+}
+
 impl HeaderKey {
     fn new(reader: &Reader, cx: &App) -> Self {
         let chrome = reader.viewer_chrome(cx);
@@ -73,17 +98,13 @@ impl HeaderKey {
                 .iter()
                 .chain(chrome.views.iter().map(|view| &view.action))
                 .chain(chrome.state.iter())
-                .map(|action| {
-                    (
-                        action.id.to_owned(),
-                        action.label.clone(),
-                        action.tooltip.clone(),
-                        action.disabled_reason.clone(),
-                        action.enabled,
-                        action.toggled,
-                    )
-                })
+                .map(ActionKey::from)
                 .collect(),
+            views: chrome.views.iter().map(|view| view.active).collect(),
+            find: chrome.find.map(|find| (find.scope, find.large_file)),
+            deleted: reader
+                .deleted_current()
+                .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Missing),
         }
     }
 }
@@ -98,13 +119,6 @@ impl Header {
         Self {
             reader: reader.downgrade(),
             key,
-        }
-    }
-
-    fn synchronize(&mut self, key: HeaderKey, cx: &mut Context<Self>) {
-        if self.key != key {
-            self.key = key;
-            cx.notify();
         }
     }
 }
@@ -313,14 +327,16 @@ impl Reader {
         let reader = cx.entity();
         let key = HeaderKey::new(self, cx);
         let mut cached = self.viewer_header.borrow_mut();
-        let header = if let Some(header) = cached.as_ref() {
-            header.update(cx, |header, cx| header.synchronize(key, cx));
-            header.clone()
-        } else {
-            let header = cx.new(|_| Header::new(reader, key));
-            *cached = Some(header.clone());
-            header
-        };
+        if cached
+            .as_ref()
+            .is_none_or(|header| header.read(cx).key != key)
+        {
+            // Notifying a view while GPUI is already drawing can be deferred
+            // beyond this frame. A new identity applies a structural change
+            // immediately, while ordinary input retains the cached identity.
+            *cached = Some(cx.new(|_| Header::new(reader, key)));
+        }
+        let header = cached.as_ref().unwrap().clone();
         drop(cached);
         let header = header.cached(
             StyleRefinement::default()
