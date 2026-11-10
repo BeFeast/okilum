@@ -16,12 +16,42 @@ thread_local! {
     static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
 }
 
+pub(crate) struct Header {
+    reader: WeakEntity<Reader>,
+    _source: Subscription,
+}
+
+impl Header {
+    fn new(reader: Entity<Reader>, cx: &mut Context<Self>) -> Self {
+        Self {
+            reader: reader.downgrade(),
+            _source: cx.observe(&reader, |_, _, cx| cx.notify()),
+        }
+    }
+}
+
+impl Render for Header {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reader
+            .update(cx, |reader, cx| {
+                if reader.file_preview.is_some() {
+                    reader.render_file_header(window, cx).into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 /// Only this view follows clean/dirty transitions. The header slots and their
 /// overflow plan stay outside the editor's per-key notification path.
 pub(crate) struct SaveControls {
     input: EntityId,
     reader: WeakEntity<Reader>,
     dirty: bool,
+    origin: Rc<std::cell::Cell<Point<Pixels>>>,
+    bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -42,10 +72,18 @@ impl SaveControls {
 
 impl Render for SaveControls {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(bounds) = self.bounds.get() else {
+            return div().into_any_element();
+        };
+        let position = bounds.origin - self.origin.get();
         let reader = self.reader.clone();
         h_flex()
+            .absolute()
+            .left(position.x)
+            .top(position.y)
             .flex_none()
             .w(px(60.))
+            .h(px(28.))
             .gap_1()
             .when(self.dirty, |row| {
                 let status = reader
@@ -64,6 +102,7 @@ impl Render for SaveControls {
                     }),
                 )
             })
+            .into_any_element()
     }
 }
 
@@ -182,15 +221,47 @@ impl Reader {
     #[inline(never)]
     pub(crate) fn render_file_header_viewport(
         &self,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let save = if self.editing.is_some() {
+            Some(self.file_save_controls(cx))
+        } else {
+            self.viewer_save_controls.borrow_mut().take();
+            self.viewer_save_bounds.set(None);
+            None
+        };
+        let reader = cx.entity();
+        let mut cached = self.viewer_header.borrow_mut();
+        let header = cached
+            .get_or_insert_with(|| cx.new(|cx| Header::new(reader, cx)))
+            .clone();
+        drop(cached);
+        let header = header.cached(
+            StyleRefinement::default()
+                .w_full()
+                .h(px(48.))
+                .flex_shrink_0(),
+        );
+        let origin = self.viewer_header_origin.clone();
         div()
             .debug_selector(|| "document-header-viewport".into())
+            .relative()
             .flex_none()
             .overflow_hidden()
             .h(px(48.))
-            .child(self.render_document_header(window, cx))
+            .child(
+                canvas(
+                    move |bounds, _, _| origin.set(bounds.origin),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(header)
+            // GPUI invalidates cached ancestors of notified child views. Save
+            // therefore occupies its measured slot as a sibling overlay.
+            .children(save)
             .into_any_element()
     }
     /// Only this adapter knows where the active viewer lives. Slot builders
@@ -339,6 +410,8 @@ impl Reader {
             input: input.entity_id(),
             reader: reader.downgrade(),
             dirty,
+            origin: self.viewer_header_origin.clone(),
+            bounds: self.viewer_save_bounds.clone(),
             _subscriptions: [
                 cx.observe(&input, |this, _, cx| this.synchronize(cx)),
                 cx.observe(&reader, |this, _, cx| this.synchronize(cx)),
@@ -535,9 +608,29 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
         );
     }
     if plan.editing {
-        row = row.child(reader.file_save_controls(cx));
-    } else {
-        reader.viewer_save_controls.borrow_mut().take();
+        let bounds = reader.viewer_save_bounds.clone();
+        let save = reader
+            .viewer_save_controls
+            .borrow()
+            .as_ref()
+            .map(Entity::downgrade);
+        row = row.child(
+            div().relative().flex_none().w(px(60.)).h(px(28.)).child(
+                canvas(
+                    move |measured, _, cx| {
+                        if bounds.get() != Some(measured) {
+                            bounds.set(Some(measured));
+                            if let Some(save) = &save {
+                                let _ = save.update(cx, |_, cx| cx.notify());
+                            }
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            ),
+        );
     }
     if plan.editing {
         row = row.child(
