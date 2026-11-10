@@ -162,7 +162,9 @@ mod native {
             if !affected_version(version.majorVersion, version.minorVersion) {
                 return None;
             }
-            let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else {
+            let RawWindowHandle::AppKit(handle) =
+                HasWindowHandle::window_handle(window).ok()?.as_raw()
+            else {
                 return None;
             };
             // SAFETY: invoked on the GPUI UI thread with its live native view.
