@@ -2364,10 +2364,10 @@ mod tests {
             assert!(content.size.width > px(0.));
             for section in Section::NAVIGATION {
                 let label = visual
-                    .debug_bounds(format!("settings-label-{}", section.key()))
+                    .debug_bounds(format!("settings-label-{}", section.key()).leak())
                     .expect("every Settings navigation label is rendered");
                 let button = visual
-                    .debug_bounds(format!("settings-section-{}", section.label()))
+                    .debug_bounds(format!("settings-section-{}", section.label()).leak())
                     .unwrap();
                 let (intrinsic, padding) = visual.update(|window, _| {
                     (
