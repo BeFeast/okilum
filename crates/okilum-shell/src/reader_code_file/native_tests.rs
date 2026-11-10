@@ -179,8 +179,19 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         draw < std::time::Duration::from_secs(2),
         "bounded page first draw: {draw:?}"
     );
-    // Draw the real Raw handoff before its replacement AST is available.
+    // Above the automatic Pretty budget, a repeated Raw request is a no-op.
     preview.update_in(visual, |p, window, cx| {
+        assert!(!p.json.as_ref().unwrap().showing_pretty);
+        let revision = p.document_revision;
+        p.show_json(false, window, cx);
+        assert_eq!(p.document_revision, revision);
+        assert!(p.document.is_some());
+        p.show_json(true, window, cx);
+    });
+    visual.run_until_parked();
+    // Draw a real Pretty-to-Raw handoff before its replacement AST is available.
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.json.as_ref().unwrap().showing_pretty);
         assert!(p.structure_view);
         p.show_json(false, window, cx);
         assert!(!p.structure_view);
