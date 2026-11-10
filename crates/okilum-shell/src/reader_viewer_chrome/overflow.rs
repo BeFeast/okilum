@@ -258,6 +258,63 @@ mod tests {
     }
 
     #[test]
+    fn reference_widths_have_exact_shown_collapsed_and_menu_results_per_viewer() {
+        // The same complete slot fixture at each reference width. S is shown,
+        // C is collapsed, M is in Document actions. These expectations also
+        // distinguish ZIP's late label collapse from ordinary viewer actions.
+        for (kind, expected) in [
+            (
+                "json",
+                ["SSSSSSSSSSS", "SSSCCCCSSSS", "MMMMMMMCSCS", "MMMMMMMCCCS"],
+            ),
+            (
+                "pdf",
+                ["SSSSSSSSSS", "SSSSSSSSSS", "SSSCCCCSSS", "MMMCCCCCCS"],
+            ),
+            ("image", ["SSSSSSS", "SSSSSSS", "SSSSSSS", "SSSCCCS"]),
+            (
+                "zip",
+                ["SSSSSSSSSS", "SSSSSSSSSS", "MMMMSCCSCS", "MMMMCMMCCS"],
+            ),
+            (
+                "canvas",
+                ["SSSSSSSSSS", "SSSSSSSSSS", "SSSCCCCSSS", "MMMCCCCCCS"],
+            ),
+        ] {
+            let items = full_slots(kind, false, false);
+            for (width, expected) in [1400., 1100., 700., 520.].into_iter().zip(expected) {
+                let actual: String = layout(width, 128., 120., &items)
+                    .into_iter()
+                    .map(|state| match state {
+                        Disposition::Shown => 'S',
+                        Disposition::Collapsed => 'C',
+                        Disposition::Menu => 'M',
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "{kind} at {width}");
+            }
+        }
+        assert_eq!(
+            layout(700., 128., 120., &full_slots("json", true, false)),
+            vec![
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Menu,
+                Disposition::Collapsed,
+                Disposition::Shown,
+                Disposition::Collapsed,
+                Disposition::Shown,
+                Disposition::Collapsed,
+                Disposition::Shown
+            ]
+        );
+    }
+
+    #[test]
     fn large_file_find_keeps_128_pixels_and_zip_extract_all_stays_pinned() {
         for kind in ["json", "zip"] {
             let items = full_slots(kind, true, true);
