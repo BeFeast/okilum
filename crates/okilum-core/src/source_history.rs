@@ -661,7 +661,10 @@ mod recovery_preview_tests {
         #[cfg(not(windows))]
         let identity = (42, 73);
         #[cfg(windows)]
-        let identity = crate::windows_files::Identity::Full { volume: 42, file: [73; 16] };
+        let identity = crate::windows_files::Identity::Full {
+            volume: 42,
+            file: [73; 16],
+        };
         entry.prepared_identity = Some(identity);
         let path = root.join("state/source-history/record.json");
         persist(&path, &entry).unwrap();

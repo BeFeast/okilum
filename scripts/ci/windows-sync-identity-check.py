@@ -8,7 +8,7 @@ import runpy
 from pathlib import Path
 
 TESTS = {
-    "filesystem_identity::tests::windows_open_handle_identity_preserves_the_existing_serialized_shape_and_detects_replacement",
+    "filesystem_identity::tests::windows_open_handle_identity_preserves_all_file_id_bits_and_detects_replacement",
     "filesystem_identity::tests::windows_identity_refuses_reparse_points_from_the_open_handle",
 }
 
