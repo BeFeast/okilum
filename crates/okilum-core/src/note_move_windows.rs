@@ -1,4 +1,4 @@
-//! Preview-bound NTFS moves. Ancestors stay pinned; publication never replaces.
+//! Preview-bound NTFS/ReFS moves. Ancestors stay pinned; publication never replaces.
 use crate::windows_files::{identity, information, move_no_replace, Directory};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::{
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 
-type Identity = (u32, u32, u32);
+type Identity = crate::windows_files::Identity;
 fn parent(root: &Path, relative: &Path, markdown: bool) -> Result<(Directory, OsString)> {
     ensure!(
         !relative.as_os_str().is_empty()
@@ -132,7 +132,7 @@ impl DirectorySnapshot {
                 let entry = entry?;
                 let name = entry.file_name();
                 let text = name.to_str().context("Move requires Unicode filenames")?;
-                // Save recovery remains on the source NTFS volume with its DACL.
+                // Save recovery remains on the source volume with its DACL.
                 // Rewrites generate these files; they are not canonical inventory.
                 if text.starts_with(".okilum-save-") {
                     continue;
@@ -244,5 +244,60 @@ impl DirectoryMovePlan {
                     .into()
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn windows_move_note_folder_collision_and_same_bytes_replacement() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("vault");
+        fs::create_dir_all(root.join("folder"))?;
+        fs::write(root.join("note.md"), b"original")?;
+        let plan = MovePlan::prepare(&root, Path::new("note.md"), Path::new("moved.md"))?;
+        fs::rename(root.join("note.md"), root.join("retained.md"))?;
+        fs::write(root.join("note.md"), b"original")?;
+        assert!(
+            plan.commit().is_err(),
+            "same bytes with another ID must not move"
+        );
+        let plan = MovePlan::prepare(&root, Path::new("note.md"), Path::new("moved.md"))?;
+        fs::write(root.join("moved.md"), b"collision")?;
+        assert!(plan.commit().is_err());
+        assert_eq!(fs::read(root.join("moved.md"))?, b"collision");
+        fs::remove_file(root.join("moved.md"))?;
+        assert!(
+            MovePlan::prepare(&root, Path::new("note.md"), Path::new("folder/moved.md"))?
+                .commit()?
+                .warning
+                .is_none()
+        );
+        assert_eq!(fs::read(root.join("folder/moved.md"))?, b"original");
+        let snapshot = DirectorySnapshot::read(&root, Path::new("folder"))?;
+        let plan = DirectoryMovePlan::prepare(
+            &root,
+            Path::new("folder"),
+            Path::new("renamed"),
+            &snapshot,
+        )?;
+        fs::create_dir(root.join("renamed"))?;
+        assert!(plan.commit().is_err());
+        fs::remove_dir(root.join("renamed"))?;
+        assert!(DirectoryMovePlan::prepare(
+            &root,
+            Path::new("folder"),
+            Path::new("renamed"),
+            &snapshot
+        )?
+        .commit()?
+        .warning
+        .is_none());
+        assert_eq!(fs::read(root.join("renamed/moved.md"))?, b"original");
+        assert_eq!(fs::read(root.join("retained.md"))?, b"original");
+        Ok(())
     }
 }

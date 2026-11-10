@@ -8,7 +8,7 @@ thread_local! { static FAIL_STAGE: std::cell::Cell<bool> = const { std::cell::Ce
 #[cfg(unix)]
 type Identity = (u64, u64);
 #[cfg(windows)]
-type Identity = (u32, u32, u32);
+type Identity = crate::windows_files::Identity;
 
 pub(super) struct ByteTransaction {
     before: Vec<u8>,
@@ -231,19 +231,8 @@ impl FileEditor {
         Ok(())
     }
     #[cfg(windows)]
-    pub(super) fn track_raw_windows_preimage(
-        &self,
-        path: &Path,
-        identity: (u64, u64),
-    ) -> Result<()> {
-        self.track_raw_windows_identity(
-            path,
-            (
-                identity.0 as u32,
-                (identity.1 >> 32) as u32,
-                identity.1 as u32,
-            ),
-        )
+    pub(super) fn track_raw_windows_preimage(&self, path: &Path, identity: Identity) -> Result<()> {
+        self.track_raw_windows_identity(path, identity)
     }
 
     #[cfg(unix)]
@@ -319,10 +308,7 @@ impl FileEditor {
                 );
                 crate::windows_files::undo_created(
                     &self.draft.path.parent().unwrap().join(name),
-                    (
-                        u64::from(identity.0),
-                        u64::from(identity.1) << 32 | u64::from(identity.2),
-                    ),
+                    identity,
                     Some(&bytes),
                 )?;
             }
@@ -356,7 +342,7 @@ impl FileEditor {
         &self,
         history: &Path,
         native: &crate::windows_files::Directory,
-        expected_identity: (u64, u64),
+        expected_identity: Identity,
     ) -> Result<()> {
         let record = crate::source_history::RawRecord::load(history)?;
         let name = record
@@ -366,11 +352,7 @@ impl FileEditor {
         let (_, bytes, info) = native.read(name)?;
         let identity = crate::windows_files::identity(&info);
         anyhow::ensure!(
-            bytes == self.base_bytes()
-                && (
-                    u64::from(identity.0),
-                    u64::from(identity.1) << 32 | u64::from(identity.2)
-                ) == expected_identity,
+            bytes == self.base_bytes() && identity == expected_identity,
             "Displaced bytes changed; recovery retained"
         );
         crate::source_history::RawRecord::complete(history)?;

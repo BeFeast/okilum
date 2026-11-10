@@ -1,4 +1,4 @@
-//! Native NTFS mutation primitives for desktop source editing.
+//! Native NTFS/ReFS mutation primitives for desktop source editing.
 //!
 //! Callers must persist their revision-aware draft before replacement and keep
 //! it until this module reports Saved. All prepared/displaced files survive an
@@ -43,7 +43,7 @@ use windows_sys::Win32::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedLocation {
     Network,
-    NotLocalNtfs,
+    UnsupportedFilesystem,
 }
 
 impl std::fmt::Display for UnsupportedLocation {
@@ -54,11 +54,11 @@ impl std::fmt::Display for UnsupportedLocation {
                  To edit a note, use ⋯ → Open with default app, or copy the vault \
                  to a folder on this computer."
             }
-            Self::NotLocalNtfs => {
+            Self::UnsupportedFilesystem => {
                 "This vault opens read-only in Okilum. Editing and pasting notes \
-                 require a local NTFS drive; ReFS (including Dev Drive) is read-only. \
+                 require a local NTFS or ReFS drive. \
                  Reading and search still work. To edit in Okilum, copy the vault \
-                 to a local NTFS folder, or use ⋯ → Open with default app."
+                 to a local NTFS or ReFS folder, or use ⋯ → Open with default app."
             }
         })
     }
@@ -84,7 +84,20 @@ fn retry<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Resul
     }
     operation()
 }
-pub fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
+pub use okilum_write_authority::filesystem_identity::{file_identity, FileIdentity as Identity};
+
+/// Legacy metadata is used only for attributes/size/time/link count, never identity.
+pub struct Information {
+    metadata: BY_HANDLE_FILE_INFORMATION,
+    identity: Identity,
+}
+impl std::ops::Deref for Information {
+    type Target = BY_HANDLE_FILE_INFORMATION;
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+fn metadata(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // File owns the handle for the complete call; info has the required layout.
     ensure!(
@@ -93,6 +106,12 @@ pub fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
         std::io::Error::last_os_error()
     );
     Ok(info)
+}
+pub fn information(file: &File) -> Result<Information> {
+    Ok(Information {
+        metadata: metadata(file)?,
+        identity: file_identity(file)?,
+    })
 }
 fn plain(info: &BY_HANDLE_FILE_INFORMATION, directory: bool, file: &File) -> Result<()> {
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -138,7 +157,7 @@ fn resident_cloud(tag: u32, attributes: u32, directory: bool) -> bool {
                     | FILE_ATTRIBUTE_RECALL_ON_OPEN)
                 == 0)
 }
-pub(crate) fn open_regular(path: &Path) -> Result<(File, BY_HANDLE_FILE_INFORMATION)> {
+pub(crate) fn open_regular(path: &Path) -> Result<(File, Information)> {
     let file = retry(|| {
         OpenOptions::new()
             .read(true)
@@ -150,14 +169,14 @@ pub(crate) fn open_regular(path: &Path) -> Result<(File, BY_HANDLE_FILE_INFORMAT
     plain(&info, false, &file)?;
     Ok((file, info))
 }
-pub(crate) fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
+pub(crate) fn read_file(path: &Path) -> Result<(File, Vec<u8>, Information)> {
     let (mut file, info) = open_regular(path)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok((file, bytes, info))
 }
 
-/// One representable NTFS/Win32 name, with no ADS, device or trimming alias.
+/// One representable Windows name, with no ADS, device or trimming alias.
 pub fn validate_file_name(name: &OsStr) -> Result<()> {
     let mut components = Path::new(name).components();
     ensure!(
@@ -197,16 +216,17 @@ pub fn validate_file_name(name: &OsStr) -> Result<()> {
 /// required for our own child-file publication operations too.
 pub struct Directory {
     path: PathBuf,
+    refs: bool,
     _ancestors: Vec<File>,
 }
 impl Directory {
-    pub(crate) fn identities(&self) -> Result<Vec<(u32, u32, u32)>> {
+    pub(crate) fn identities(&self) -> Result<Vec<Identity>> {
         self._ancestors
             .iter()
             .map(|file| information(file).map(|info| identity(&info)))
             .collect()
     }
-    pub fn information(&self) -> Result<BY_HANDLE_FILE_INFORMATION> {
+    pub fn information(&self) -> Result<Information> {
         information(self._ancestors.last().unwrap())
     }
     pub fn path(&self) -> &Path {
@@ -227,7 +247,7 @@ impl Directory {
             self._ancestors.last().context("Missing pinned directory")?,
         )
     }
-    pub(crate) fn read(&self, name: &OsStr) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
+    pub(crate) fn read(&self, name: &OsStr) -> Result<(File, Vec<u8>, Information)> {
         read_file(&self.child(name)?)
     }
     pub fn open_file(&self, name: &OsStr) -> Result<File> {
@@ -251,7 +271,7 @@ impl Directory {
         match prefix.kind() {
             Prefix::Disk(_) | Prefix::VerbatimDisk(_) => {}
             Prefix::UNC(..) | Prefix::VerbatimUNC(..) => bail!(UnsupportedLocation::Network),
-            _ => bail!(UnsupportedLocation::NotLocalNtfs),
+            _ => bail!(UnsupportedLocation::UnsupportedFilesystem),
         }
         ensure!(
             matches!(components.next(), Some(Component::RootDir)),
@@ -264,7 +284,7 @@ impl Directory {
         match unsafe { GetDriveTypeW(drive.as_ptr()) } {
             DRIVE_FIXED => {}
             DRIVE_REMOTE => bail!(UnsupportedLocation::Network),
-            _ => bail!(UnsupportedLocation::NotLocalNtfs),
+            _ => bail!(UnsupportedLocation::UnsupportedFilesystem),
         }
         let mut ancestors = vec![Self::pin(&current)?];
         let mut filesystem = [0u16; 32];
@@ -289,8 +309,9 @@ impl Directory {
             .iter()
             .position(|c| *c == 0)
             .unwrap_or(filesystem.len());
-        if !String::from_utf16_lossy(&filesystem[..end]).eq_ignore_ascii_case("NTFS") {
-            bail!(UnsupportedLocation::NotLocalNtfs);
+        let filesystem = String::from_utf16_lossy(&filesystem[..end]);
+        if !filesystem.eq_ignore_ascii_case("NTFS") && !filesystem.eq_ignore_ascii_case("ReFS") {
+            bail!(UnsupportedLocation::UnsupportedFilesystem);
         }
         for component in components {
             let Component::Normal(name) = component else {
@@ -301,6 +322,7 @@ impl Directory {
         }
         Ok(Self {
             path: current,
+            refs: filesystem.eq_ignore_ascii_case("ReFS"),
             _ancestors: ancestors,
         })
     }
@@ -317,7 +339,8 @@ impl Directory {
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(path)
         })?;
-        plain(&information(&file)?, true, &file)?;
+        // Filesystem admission must precede FileIdInfo (exFAT may reject it).
+        plain(&metadata(&file)?, true, &file)?;
         Ok(file)
     }
     pub fn child(&self, name: &OsStr) -> Result<PathBuf> {
@@ -331,7 +354,7 @@ impl Directory {
         &self,
         bytes: &[u8],
         security_source: Option<&File>,
-        mut created: impl FnMut(&Path, (u32, u32, u32)) -> Result<()>,
+        mut created: impl FnMut(&Path, Identity) -> Result<()>,
     ) -> Result<PathBuf> {
         let path = self
             .path
@@ -415,6 +438,11 @@ impl Directory {
             encrypted == 0 || information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_ENCRYPTED != 0,
             "The encrypted source needs an encrypted recovery file; no proposed bytes were written"
         );
+        if self.refs {
+            if let Some(source) = security_source {
+                copy_integrity(source, &file)?;
+            }
+        }
         file.write_all(bytes)?;
         file.sync_all()?;
         // No path destructor: the complete proposed bytes remain recoverable
@@ -458,9 +486,15 @@ impl Directory {
             bytes == expected,
             "The note changed; refresh the rename preview"
         );
+        // The pinned directory already passed the resident-cloud tag policy.
+        // Do not apply the stricter authority-root reparse policy to a volume
+        // comparison; compare the complete native volume serials directly.
         ensure!(
-            information(destination._ancestors.last().unwrap())?.dwVolumeSerialNumber
-                == info.dwVolumeSerialNumber,
+            matches!(
+                (identity(&destination.information()?), identity(&info)),
+                (Identity::Full { volume: target, .. }, Identity::Full { volume: source, .. })
+                    if target == source
+            ),
             "Cross-volume moves are not supported"
         );
         move_no_replace(&source, &target)?;
@@ -485,7 +519,7 @@ impl Directory {
         name: &OsStr,
         expected: &[u8],
         proposed: &[u8],
-        created: impl FnMut(&Path, (u32, u32, u32)) -> Result<()>,
+        created: impl FnMut(&Path, Identity) -> Result<()>,
     ) -> Result<Option<PreparedReplacement<'_>>> {
         let path = self.child(name)?;
         let (guard, bytes, info) = read_file(&path)?;
@@ -560,7 +594,7 @@ pub struct PreparedReplacement<'a> {
     backup: PathBuf,
     expected: Vec<u8>,
     proposed: Vec<u8>,
-    info: BY_HANDLE_FILE_INFORMATION,
+    info: Information,
 }
 impl PreparedReplacement<'_> {
     pub fn note_path(&self) -> &Path {
@@ -572,9 +606,8 @@ impl PreparedReplacement<'_> {
     pub fn preimage_path(&self) -> &Path {
         &self.backup
     }
-    pub(crate) fn preimage_identity(&self) -> (u64, u64) {
-        let (volume, high, low) = identity(&self.info);
-        (u64::from(volume), u64::from(high) << 32 | u64::from(low))
+    pub(crate) fn preimage_identity(&self) -> Identity {
+        identity(&self.info)
     }
     /// The caller must have completed durable draft/history persistence first.
     pub fn commit(self) -> Result<Replacement> {
@@ -644,6 +677,61 @@ impl PreparedReplacement<'_> {
         committed.sync_all().context("The replacement completed but durability could not be confirmed; retain draft and recovery files")?;
         Ok(Replacement::Saved { preimage: backup })
     }
+}
+
+fn integrity(
+    file: &File,
+) -> Result<windows_sys::Win32::System::Ioctl::FSCTL_GET_INTEGRITY_INFORMATION_BUFFER> {
+    use windows_sys::Win32::System::{Ioctl::*, IO::DeviceIoControl};
+    let mut result = FSCTL_GET_INTEGRITY_INFORMATION_BUFFER::default();
+    let mut returned = 0;
+    ensure!(
+        unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_GET_INTEGRITY_INFORMATION,
+                std::ptr::null(),
+                0,
+                (&mut result as *mut FSCTL_GET_INTEGRITY_INFORMATION_BUFFER).cast(),
+                std::mem::size_of_val(&result) as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        } != 0,
+        "Read ReFS integrity policy: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(result)
+}
+fn set_integrity(file: &File, algorithm: u16, flags: u32) -> Result<()> {
+    use windows_sys::Win32::System::{Ioctl::*, IO::DeviceIoControl};
+    let policy = FSCTL_SET_INTEGRITY_INFORMATION_BUFFER {
+        ChecksumAlgorithm: algorithm,
+        Reserved: 0,
+        Flags: flags,
+    };
+    let mut returned = 0;
+    ensure!(
+        unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_INTEGRITY_INFORMATION,
+                (&policy as *const FSCTL_SET_INTEGRITY_INFORMATION_BUFFER).cast(),
+                std::mem::size_of_val(&policy) as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        } != 0,
+        "Preserve ReFS integrity policy: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(())
+}
+fn copy_integrity(source: &File, prepared: &File) -> Result<()> {
+    let policy = integrity(source)?;
+    set_integrity(prepared, policy.ChecksumAlgorithm, policy.Flags)
 }
 
 struct Descriptor(PSECURITY_DESCRIPTOR);
@@ -804,12 +892,8 @@ impl Drop for Descriptor {
         }
     }
 }
-pub(crate) fn identity(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u32, u32) {
-    (
-        info.dwVolumeSerialNumber,
-        info.nFileIndexHigh,
-        info.nFileIndexLow,
-    )
+pub(crate) fn identity(info: &Information) -> Identity {
+    info.identity
 }
 pub(crate) fn move_no_replace(source: &Path, destination: &Path) -> Result<()> {
     let source = wide(source)?;
@@ -865,7 +949,7 @@ pub enum Replacement {
 mod tests;
 
 /// Native identity for a checked creation Undo target. Redirecting names fail closed.
-pub fn checked_identity(path: &Path) -> Result<(u64, u64)> {
+pub fn checked_identity(path: &Path) -> Result<Identity> {
     let parent = Directory::open(path.parent().context("Missing parent")?)?;
     let name = path.file_name().context("Missing filename")?;
     let child = parent.child(name)?;
@@ -875,13 +959,12 @@ pub fn checked_identity(path: &Path) -> Result<(u64, u64)> {
         // Identity does not need the file's bytes (images may be large).
         open_regular(&child)?.1
     };
-    let (volume, high, low) = identity(&info);
-    Ok((u64::from(volume), u64::from(high) << 32 | u64::from(low)))
+    Ok(identity(&info))
 }
 
 /// Undo only an untouched creation, through the checked DELETE handle itself.
 /// No path-based unlink can delete a racing replacement. A nonempty folder is refused.
-pub fn undo_created(path: &Path, expected: (u64, u64), source: Option<&[u8]>) -> Result<()> {
+pub fn undo_created(path: &Path, expected: Identity, source: Option<&[u8]>) -> Result<()> {
     // Fence the primitive itself: both creation Undo and startup history cleanup
     // reach this native unlink. Nested save cleanup inherits its writer lease.
     let _admission = okilum_write_authority::operation_for_path(path)?;
@@ -909,9 +992,8 @@ pub fn undo_created(path: &Path, expected: (u64, u64), source: Option<&[u8]>) ->
     })?;
     let info = information(&guard)?;
     plain(&info, directory, &guard)?;
-    let (volume, high, low) = identity(&info);
     ensure!(
-        (u64::from(volume), u64::from(high) << 32 | u64::from(low)) == expected,
+        identity(&info) == expected,
         "This item was replaced; it was kept"
     );
     if let Some(source) = source {

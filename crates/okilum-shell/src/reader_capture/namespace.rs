@@ -224,7 +224,10 @@ struct Directory {
     file: File,
     #[cfg(windows)]
     pin: okilum_core::windows_files::Directory,
+    #[cfg(unix)]
     identity: (u64, u64),
+    #[cfg(windows)]
+    identity: okilum_core::windows_files::Identity,
 }
 impl Directory {
     fn open(path: PathBuf) -> Result<Self> {
@@ -407,25 +410,12 @@ fn file_identity(file: &File) -> Result<(u64, u64)> {
     Ok((metadata.dev(), metadata.ino()))
 }
 #[cfg(windows)]
-fn file_identity(file: &File) -> Result<(u64, u64)> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    };
-    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+fn file_identity(file: &File) -> Result<okilum_core::windows_files::Identity> {
     ensure!(
-        unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) } != 0,
-        "Cannot validate capture identity handle"
-    );
-    let info = unsafe { info.assume_init() };
-    ensure!(
-        info.nNumberOfLinks == 1,
+        okilum_core::windows_files::information(file)?.nNumberOfLinks == 1,
         "Capture identity has unsafe hard links"
     );
-    Ok((
-        u64::from(info.dwVolumeSerialNumber),
-        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-    ))
+    okilum_core::windows_files::file_identity(file)
 }
 
 #[cfg(all(test, unix))]

@@ -9,7 +9,10 @@ pub(super) struct CreatedUndo {
     pub root: PathBuf,
     pub relative: String,
     pub(super) source: Option<String>,
+    #[cfg(unix)]
     pub(super) identity: (u64, u64),
+    #[cfg(windows)]
+    pub(super) identity: okilum_core::windows_files::Identity,
     #[cfg(test)]
     pointer_clicks: std::sync::atomic::AtomicUsize,
 }
