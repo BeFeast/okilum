@@ -53,6 +53,8 @@ pub(crate) enum Presentation {
 pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> AnyElement {
     let floating = matches!(presentation, Presentation::Floating);
     let palette = brand::palette(cx);
+    let focused = matches!(presentation, Presentation::Header { focused: true, .. });
+    let empty = target.input.read(cx).value().is_empty();
     let mut row = h_flex()
         .id(if floating {
             "find-bar"
@@ -73,10 +75,14 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
         .bg(if floating {
             cx.theme().popover
         } else {
-            palette.surface
+            palette.canvas
         })
         .border_1()
-        .border_color(cx.theme().border)
+        .border_color(if focused {
+            palette.focus
+        } else {
+            cx.theme().border
+        })
         .rounded(px(if floating { 8. } else { 6. }));
     row = if floating {
         row.absolute()
@@ -151,16 +157,18 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
     }
     let close = target.clone();
     let dismiss = target.clone();
-    row = row.child(
-        control("find-close", IconName::Close, floating)
-            .tooltip(reader_shortcuts::hint("Close", &Dismiss, cx))
-            .on_click(move |_, window, cx| {
-                if !floating {
-                    close.set_query("", window, cx);
-                }
-                (close.close)(window, cx);
-            }),
-    );
+    if floating || focused || !empty {
+        row = row.child(
+            control("find-close", IconName::Close, floating)
+                .tooltip(reader_shortcuts::hint("Close", &Dismiss, cx))
+                .on_click(move |_, window, cx| {
+                    if !floating {
+                        close.set_query("", window, cx);
+                    }
+                    (close.close)(window, cx);
+                }),
+        );
+    }
     if !floating {
         row = row.on_action(move |_: &Dismiss, window, cx| {
             dismiss.set_query("", window, cx);
@@ -170,7 +178,7 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
     match presentation {
         Presentation::Floating => row.into_any_element(),
         Presentation::Header { width, focused } => {
-            let expanded = if focused { width.max(340.) } else { width };
+            let expanded = if focused { width.max(272.) } else { width };
             if width < 128. && !focused && !target.large_file {
                 let target = target.clone();
                 return reader_icon_button(
@@ -183,17 +191,14 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
                 .on_click(move |_, window, cx| target.focus(window, cx))
                 .into_any_element();
             }
-            let empty = target.input.read(cx).value().is_empty();
             let mut field = row.w(px(expanded));
             if empty && !focused && width >= 200. {
                 let hint = reader_shortcuts::shortcut(&FindInNote, cx).unwrap_or_default();
-                field = field.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(palette.text_muted)
-                        .child(hint),
-                );
+                field = field.child(reader_shortcuts::key_cap(
+                    hint,
+                    palette,
+                    brand::reader_palette(cx),
+                ));
             }
             div()
                 .relative()

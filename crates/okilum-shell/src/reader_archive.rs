@@ -162,7 +162,7 @@ impl ArchivePreview {
         );
         h_flex()
             .flex_none()
-            .h(px(36.))
+            .h(px(48.))
             .px_3()
             .gap_1()
             .min_w_0()
@@ -884,7 +884,7 @@ mod tests {
         let bar = visual
             .debug_bounds("archive-entry-bar")
             .expect("entry compact bar");
-        assert_eq!(bar.size.height, px(36.));
+        assert_eq!(bar.size.height, px(48.));
         assert!(
             (code.top() - bar.bottom()).abs() <= px(1.),
             "code starts directly below its compact bar"

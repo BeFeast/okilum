@@ -112,13 +112,18 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
         assert!(matches!(v.scene, Some(Ok(_))));
         v.view.scale
     });
-    let plus = visual
-        .debug_bounds("canvas-plus")
+    let header =
+        reader_viewer_chrome::tests::measured_bounds(visual, "document-header-viewport").unwrap();
+    let lock = reader_viewer_chrome::tests::measured_bounds(visual, "canvas-read-only").unwrap();
+    assert!(lock.size.height >= px(28.));
+    assert!(lock.top() >= header.top() && lock.bottom() <= header.bottom());
+    assert!(reader_viewer_chrome::tests::measured_bounds(visual, "file-status-line").is_some());
+    let plus = reader_viewer_chrome::tests::measured_bounds(visual, "canvas-plus")
         .expect("zoom button must render");
     visual.simulate_click(plus.center(), Modifiers::default());
     visual.run_until_parked();
     view.read_with(visual, |v, _| assert!(v.view.scale > scale));
-    let fit = visual.debug_bounds("canvas-fit").unwrap();
+    let fit = reader_viewer_chrome::tests::measured_bounds(visual, "canvas-fit").unwrap();
     visual.simulate_click(fit.center(), Modifiers::default());
     visual.run_until_parked();
     let area = visual.debug_bounds("canvas-scene").unwrap();

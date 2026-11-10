@@ -69,11 +69,11 @@ original combined titlebar and document controls:
   with a target that owns its query, count/case/step capabilities and clear/focus
   callbacks. Its bordered header field is 200 px, narrows to 128 px without the
   key hint, then becomes an icon; large-file targets retain the field. Focusing
-  expands it left to 340 px over the title inside a fixed-width slot. Neighboring
+  expands it left to 272 px over the title inside a fixed-width slot. Neighboring
   controls and content do not move. ZIP is the first file target: Find in entries,
   no count/case/steps, Enter returns to the list retaining the filter, and Esc
   clears and returns in one press. With entry-pane focus Find belongs to that
-  pane. The entry's 36 px compact bar contains its archive/entry crumb and PDF
+  pane. The entry's 48 px compact bar contains its archive/entry crumb and PDF
   zoom or plain-text Open action; it has no history controls.
 - **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
   a filled, pinned Extract all button. Its summary is in the bottom line.

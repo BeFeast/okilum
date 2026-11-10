@@ -33,8 +33,45 @@ impl EditorTarget {
         Self {
             source,
             query,
-            case_sensitive: false,
+            case_sensitive: crate::reader_ui_state::find_case_sensitive(cx),
             _subscriptions: [changed, mutated],
+        }
+    }
+
+    pub(super) fn target(entity: &Entity<Self>, cx: &App) -> super::Target {
+        let state = entity.read(cx);
+        let (current, total) = state.count(cx);
+        let count = if state.query.read(cx).value().is_empty() {
+            String::new()
+        } else if total == 0 {
+            "No matches".to_string()
+        } else {
+            format!("{} of {total}", current + 1)
+        };
+        let case = entity.clone();
+        let step = entity.clone();
+        let close = entity.clone();
+        super::Target {
+            input: state.query.clone(),
+            focus_override: None,
+            scope: "Find".into(),
+            count: Some(count.into()),
+            match_case: Some((
+                state.case_sensitive,
+                std::rc::Rc::new(move |_, cx| {
+                    case.update(cx, |state, cx| {
+                        state.set_case_sensitive(!state.case_sensitive, cx)
+                    })
+                }),
+            )),
+            step: Some(std::rc::Rc::new(move |direction, _, cx| {
+                step.update(cx, |state, cx| state.step(direction, cx))
+            })),
+            steps_visible: true,
+            close: std::rc::Rc::new(move |window, cx| {
+                close.update(cx, |state, cx| state.clear(window, cx))
+            }),
+            large_file: false,
         }
     }
 
@@ -61,6 +98,7 @@ impl EditorTarget {
 
     pub(super) fn set_case_sensitive(&mut self, sensitive: bool, cx: &mut Context<Self>) {
         self.case_sensitive = sensitive;
+        crate::reader_ui_state::set_find_case_sensitive(sensitive, cx);
         self.apply_query(cx);
     }
 

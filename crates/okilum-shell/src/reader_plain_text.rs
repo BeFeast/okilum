@@ -114,7 +114,7 @@ impl Render for PlainTextPreview {
             .pb_6()
             .gap_3()
             .when(self.compact_header, |view| {
-                view.child(h_flex().flex_none().h(px(36.)).child(self.open_button(cx)))
+                view.child(h_flex().flex_none().h(px(48.)).child(self.open_button(cx)))
             });
         match &self.state {
             State::Loading => view.child(
