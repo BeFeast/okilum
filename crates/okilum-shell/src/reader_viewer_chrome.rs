@@ -16,16 +16,95 @@ thread_local! {
     static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
 }
 
+/// Only presentation state invalidates the cached slot builders. A Reader
+/// notification may describe editor bookkeeping that has no header consequence.
+#[derive(PartialEq)]
+struct HeaderKey {
+    file: (PathBuf, String, String),
+    editing: Option<EntityId>,
+    geometry: (f32, reader_layout::Panels, reader_layout::Widths),
+    navigation: (usize, usize, bool),
+    labels: bool,
+    full_width: bool,
+    editable: bool,
+    renaming: Option<(EntityId, Option<String>)>,
+    actions: Vec<(
+        String,
+        SharedString,
+        SharedString,
+        Option<SharedString>,
+        bool,
+        bool,
+    )>,
+}
+impl HeaderKey {
+    fn new(reader: &Reader, cx: &App) -> Self {
+        let chrome = reader.viewer_chrome(cx);
+        Self {
+            file: (
+                reader.vault_root.clone(),
+                reader.selected_file().to_owned(),
+                reader.selected_title(),
+            ),
+            editing: reader
+                .editing
+                .as_ref()
+                .map(|editing| editing.input().entity_id()),
+            geometry: (
+                reader.body_bounds.size.width.as_f32(),
+                reader.panels.clone(),
+                reader.panel_widths.clone(),
+            ),
+            navigation: (
+                reader.navigation.history_ix,
+                reader.navigation.history.len(),
+                reader.tree.can_reveal(reader.selected_file()),
+            ),
+            labels: reader_ui_state::toolbar_labels(cx),
+            full_width: reader_ui_state::full_note_width(cx),
+            editable: reader.code_file_editable(cx),
+            renaming: reader
+                .renaming
+                .as_ref()
+                .filter(|rename| rename.in_header)
+                .map(|rename| (rename.input.entity_id(), rename.error.clone())),
+            actions: chrome
+                .actions
+                .iter()
+                .chain(chrome.views.iter().map(|view| &view.action))
+                .chain(chrome.state.iter())
+                .map(|action| {
+                    (
+                        action.id.to_owned(),
+                        action.label.clone(),
+                        action.tooltip.clone(),
+                        action.disabled_reason.clone(),
+                        action.enabled,
+                        action.toggled,
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
 pub(crate) struct Header {
     reader: WeakEntity<Reader>,
-    _source: Subscription,
+    key: HeaderKey,
 }
 
 impl Header {
-    fn new(reader: Entity<Reader>, cx: &mut Context<Self>) -> Self {
+    fn new(reader: Entity<Reader>, key: HeaderKey) -> Self {
         Self {
             reader: reader.downgrade(),
-            _source: cx.observe(&reader, |_, _, cx| cx.notify()),
+            key,
+        }
+    }
+
+    fn synchronize(&mut self, key: HeaderKey, cx: &mut Context<Self>) {
+        if self.key != key {
+            self.key = key;
+            cx.notify();
         }
     }
 }
@@ -232,10 +311,16 @@ impl Reader {
             None
         };
         let reader = cx.entity();
+        let key = HeaderKey::new(self, cx);
         let mut cached = self.viewer_header.borrow_mut();
-        let header = cached
-            .get_or_insert_with(|| cx.new(|cx| Header::new(reader, cx)))
-            .clone();
+        let header = if let Some(header) = cached.as_ref() {
+            header.update(cx, |header, cx| header.synchronize(key, cx));
+            header.clone()
+        } else {
+            let header = cx.new(|_| Header::new(reader, key));
+            *cached = Some(header.clone());
+            header
+        };
         drop(cached);
         let header = header.cached(
             StyleRefinement::default()
