@@ -18,7 +18,7 @@ class DiagnosticOutputTests(unittest.TestCase):
         self.assertEqual(offenders, [], 'use the best-effort diagnostic macros')
 
     def test_both_crates_install_the_shared_macros_before_other_modules(self):
-        for relative in ('okilum-core/src/lib.rs', 'okilum-shell/src/main.rs'):
+        for relative in ('okilum-core/src/lib.rs', 'okilum-shell/src/main.rs', 'okilum-shell/src/lib.rs'):
             source = (ROOT / 'crates' / relative).read_text()
             self.assertIn('#[macro_use]', source[:source.index('mod diagnostic_io;')])
-            self.assertLess(source.index('mod diagnostic_io;'), source.index('mod about;' if 'shell' in relative else 'pub mod agent_imports;'))
+            self.assertLess(source.index('mod diagnostic_io;'), source.index('pub mod lucide;' if relative.endswith('shell/src/lib.rs') else 'mod about;' if 'shell' in relative else 'pub mod agent_imports;'))

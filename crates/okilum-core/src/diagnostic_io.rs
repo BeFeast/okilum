@@ -5,6 +5,8 @@ pub(crate) fn stderr(args: fmt::Arguments<'_>) {
     let _ = writeln!(std::io::stderr().lock(), "{args}");
 }
 
+// Some feature sets only emit errors; both sinks are covered by pipe tests.
+#[allow(dead_code)]
 pub(crate) fn stdout(args: fmt::Arguments<'_>) {
     let _ = writeln!(std::io::stdout().lock(), "{args}");
 }
@@ -14,6 +16,7 @@ macro_rules! diagnostic_error {
     ($($arg:tt)*) => { $crate::diagnostic_io::stderr(format_args!($($arg)*)) };
 }
 
+#[allow(unused_macros)]
 macro_rules! diagnostic_println {
     () => { $crate::diagnostic_io::stdout(format_args!("")) };
     ($($arg:tt)*) => { $crate::diagnostic_io::stdout(format_args!($($arg)*)) };
