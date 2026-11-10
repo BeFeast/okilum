@@ -72,7 +72,7 @@ fn fixture<'a>(
 
 pub(crate) fn measured_bounds(
     visual: &mut VisualTestContext,
-    selector: &str,
+    selector: &'static str,
 ) -> Option<Bounds<Pixels>> {
     // GPUI replays cached paint/hitboxes but clears its test-only debug_bounds
     // map without replaying it. Measure a real fresh frame; all visibility,
@@ -81,7 +81,7 @@ pub(crate) fn measured_bounds(
         window.refresh();
         window.draw(cx).clear(cx);
     });
-    visual.debug_bounds(selector.to_owned())
+    visual.debug_bounds(selector)
 }
 
 fn clipboard(visual: &mut VisualTestContext) -> Option<String> {
