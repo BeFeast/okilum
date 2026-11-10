@@ -42,7 +42,9 @@ try {
         try {
             & diskpart /s $diskpart | Out-Host
             $attached = Test-Path $vhd
-            if (!(Test-Path "${letter}:\")) { throw 'DiskPart did not attach the VHDX' }
+            # An unformatted partition has no accessible root yet. Format it
+            # before testing the path, otherwise every capable runner would skip.
+            Get-Volume -DriveLetter $letter -ErrorAction Stop | Out-Host
             Format-Volume -DriveLetter $letter -FileSystem ReFS -NewFileSystemLabel OkilumReFSTests -Confirm:$false -ErrorAction Stop | Out-Host
             if ((Get-Volume -DriveLetter $letter).FileSystem -ne 'ReFS') { throw 'Formatted volume is not ReFS' }
         } catch {
