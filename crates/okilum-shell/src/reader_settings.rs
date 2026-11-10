@@ -576,6 +576,7 @@ impl Section {
     }
 }
 struct Settings {
+    caption: caption::Caption,
     vaults: Option<Entity<reader_settings_vaults::Vaults>>,
     _vaults_changes: Option<Subscription>,
     content_scroll: ScrollHandle,
@@ -706,6 +707,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
+            caption: caption::Caption::default(),
             _features: cx.observe_global::<reader_features::Features>(|this, cx| {
                 this.t3 = None;
                 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -2149,7 +2151,8 @@ impl Render for Settings {
             .when(cfg!(target_os = "macos"), |view| {
                 // Dialog reserves this first client strip for window actions,
                 // so Close remains usable over the Sync wizard backdrop.
-                view.child(caption::render(self.close_button(cx)))
+                let close = self.close_button(cx);
+                view.child(self.caption.render(close, window, cx))
             })
             .child(content)
             .children({

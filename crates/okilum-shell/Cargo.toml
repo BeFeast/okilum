@@ -133,6 +133,7 @@ async-io = "2"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "=0.6.2"
 okilum-sync-controller = { path = "../okilum-sync-controller" }
 libc = "0.2"
 objc2 = "=0.6.4"
