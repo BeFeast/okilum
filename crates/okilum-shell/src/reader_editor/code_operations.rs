@@ -255,6 +255,12 @@ impl Reader {
     }
 
     fn code_scope(&self, cx: &App) -> Option<Scope> {
+        self.code_scope_for_display(cx, false)
+    }
+
+    // Keep the last toolbar while the debounced fence inventory catches up.
+    // Actions still require the exact current revision through code_scope().
+    fn code_scope_for_display(&self, cx: &App, retain_inventory: bool) -> Option<Scope> {
         let editing = self.editing.as_ref()?;
         let input = editing.input.read(cx);
         let stamp = input.source_stamp();
@@ -264,7 +270,7 @@ impl Reader {
                 .operations
                 .inventory
                 .as_ref()
-                .filter(|i| i.stamp == stamp)?;
+                .filter(|i| retain_inventory || i.stamp == stamp)?;
             let at = inventory
                 .blocks
                 .partition_point(|block| block.body.end < selection.start);
@@ -471,7 +477,7 @@ impl Reader {
     }
 
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let target = self.code_scope(cx)?;
+        let target = self.code_scope_for_display(cx, true)?;
         let editing = self.editing.as_ref()?;
         let state = &editing.operations;
         let owner = cx.entity().downgrade();
@@ -648,7 +654,7 @@ impl Reader {
 
     pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(usize, String)> {
         // Body length changes on every key; it is not a toolbar boundary.
-        self.code_scope(cx)
+        self.code_scope_for_display(cx, true)
             .map(|target| (target.range.start, target.language))
     }
 
@@ -894,6 +900,14 @@ mod tests {
             .read_with(visual, |reader, cx| reader.code_operation_target_key(cx));
         for _ in 0..8 {
             visual.simulate_input(" ");
+            visual.run_until_parked();
+            f.reader.read_with(visual, |reader, cx| {
+                assert_eq!(
+                    reader.code_operation_target_key(cx),
+                    key,
+                    "pending fence classification must not hide the toolbar on each key"
+                );
+            });
             settle(visual);
             f.reader.read_with(visual, |reader, cx| {
                 assert_eq!(
