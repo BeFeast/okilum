@@ -47,6 +47,13 @@ impl Identity {
     pub fn same_volume(&self, other: &Self) -> bool {
         matches!((self.3, other.3), (Some(FileIdentity::Full {volume: a, ..}), Some(FileIdentity::Full {volume: b, ..})) if a == b)
     }
+    pub(super) fn legacy_candidate(&self, current: &Self) -> bool {
+        // A possible collision fences admission; it never proves an upgrade.
+        self.3.is_none()
+            && self.0 == current.0
+            && self.1 == current.1
+            && (self.2.is_none() || self.2 == current.2)
+    }
     pub(super) fn legacy_matches(&self, current: &Self) -> bool {
         // Only identities whose full ID is representable by the old NTFS index
         // can be upgraded automatically. Never infer a ReFS ID's missing bits.

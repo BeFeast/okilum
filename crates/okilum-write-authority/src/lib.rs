@@ -39,6 +39,8 @@ use filesystem_identity::Identity;
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
 mod identity_macos_tests;
+#[cfg(all(test, windows))]
+mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
 
@@ -223,7 +225,11 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if identity == stored {
             return true;
         }
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        #[cfg(windows)]
+        if stored.legacy_candidate(identity) {
+            return true;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
@@ -528,6 +534,13 @@ impl Authority {
         admission
             .lock()
             .context("Cannot serialize local writer admission")?;
+        #[cfg(windows)]
+        if old.binding.schema == 1 {
+            old.validate_legacy_windows_objects()?;
+        } else {
+            old.validate_binding()?;
+        }
+        #[cfg(not(windows))]
         old.validate_binding()?;
         plain_folder(&bound)?;
         let owner = file(&old.directory.join("owner.lock"), false)?;
@@ -566,13 +579,45 @@ impl Authority {
             }
         }
         let binding = Binding {
+            schema: BINDING_SCHEMA,
             root_identity: identity(&bound)?,
+            directory: identity(&old.directory)?,
+            admission: identity(&old.directory.join("admission.lock"))?,
+            writers: identity(&old.directory.join("writers.lock"))?,
+            owner: identity(&old.directory.join("owner.lock"))?,
             ..old.binding.clone()
         };
         persist(&old.binding_path, &binding, false)?;
         let rebound = Self { binding, ..old };
         rebound.validate()?;
         Ok(rebound)
+    }
+    #[cfg(windows)]
+    fn validate_legacy_windows_objects(&self) -> Result<()> {
+        ensure!(
+            self.binding.schema == 1 && read::<Binding>(&self.binding_path)? == self.binding,
+            "Writer authority replaced; stale authority refused"
+        );
+        for (path, old) in [
+            (self.directory.clone(), &self.binding.directory),
+            (
+                self.directory.join("admission.lock"),
+                &self.binding.admission,
+            ),
+            (self.directory.join("writers.lock"), &self.binding.writers),
+            (self.directory.join("owner.lock"), &self.binding.owner),
+        ] {
+            ensure!(
+                old.legacy_matches(&identity(&path)?),
+                "Ambiguous or replaced legacy writer authority object; recovery required"
+            );
+        }
+        ensure!(
+            !self.account.starts_with(&self.binding.root),
+            "Authority is inside canonical vault"
+        );
+        self.state()?;
+        Ok(())
     }
     fn validate_binding(&self) -> Result<()> {
         ensure!(

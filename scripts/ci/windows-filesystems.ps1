@@ -20,6 +20,8 @@ function Suites($label, $root) {
     python scripts/ci/windows-recovery-check.py
     if ($LASTEXITCODE -ne 0) { throw "$label Windows regression suite failed ($LASTEXITCODE)" }
     foreach ($filter in @('note_move', 'note_files', 'source_history')) {
+        $discovered = & cargo test --locked -p okilum-core --tests $filter -- --list
+        if ($LASTEXITCODE -ne 0 -or !($discovered -match ': test$')) { throw "$label $filter compiled/discovered no tests" }
         & cargo test --locked -p okilum-core --tests $filter -- --nocapture --test-threads=1
         if ($LASTEXITCODE -ne 0) { throw "$label $filter failed ($LASTEXITCODE)" }
     }

@@ -222,11 +222,18 @@ fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
     }
     directory.create(OsStr::new("note.md"), b"base").unwrap();
     let path = folder.join("note.md");
-    fs::hard_link(&path, folder.join("alias.md")).unwrap();
-    assert!(directory
-        .replace(OsStr::new("note.md"), b"base", b"mine")
-        .is_err());
-    fs::remove_file(folder.join("alias.md")).unwrap();
+    match fs::hard_link(&path, folder.join("alias.md")) {
+        Ok(()) => {
+            assert!(directory
+                .replace(OsStr::new("note.md"), b"base", b"mine")
+                .is_err());
+            fs::remove_file(folder.join("alias.md")).unwrap();
+        }
+        Err(error) if directory.refs && matches!(error.raw_os_error(), Some(1 | 50)) => {
+            eprintln!("SKIP hardlink capability only: this ReFS version does not support hardlinks: {error}");
+        }
+        Err(error) => panic!("hardlink capability failed: {error}"),
+    }
     let original = fs::metadata(&path).unwrap().permissions();
     let mut permissions = original.clone();
     permissions.set_readonly(true);
