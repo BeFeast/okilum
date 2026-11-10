@@ -4739,25 +4739,15 @@ impl LogView {
                 text.push_str(&format!(" · Live · last update {last}"));
             }
         }
-        h_flex()
-            .flex_none()
-            .h(px(28.))
-            .px_3()
-            .border_t_1()
-            .border_color(brand::palette(cx).border_subtle)
-            .text_size(px(12.))
-            .text_color(cx.theme().muted_foreground)
-            .child(
-                div()
-                    .id("log-status")
-                    .debug_selector(|| "log-status".into())
-                    .truncate()
-                    .child(text.clone())
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
-                    }),
-            )
-            .into_any_element()
+        reader_status_line::render(
+            &reader_status_line::StatusLine {
+                text: text.into(),
+                ..Default::default()
+            },
+            "log-status",
+            None,
+            cx,
+        )
     }
 }
 
@@ -5528,7 +5518,7 @@ impl Reader {
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
-            .child(self.render_document_header(window, cx))
+            .child(self.render_file_header_viewport(window, cx))
             .child(view.clone())
             .into_any_element()
     }

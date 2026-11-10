@@ -81,6 +81,7 @@ mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
+mod reader_file_copy;
 mod reader_files;
 mod reader_fonts;
 #[cfg(target_os = "linux")]
@@ -135,6 +136,10 @@ mod reader_right_panel;
 mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
+mod reader_status_line;
+mod reader_viewer_chrome;
+#[cfg(feature = "data-view-native-harness")]
+mod reader_viewer_native;
 #[cfg(test)]
 mod reader_viewer_tests;
 // One module for Linux and macOS: an `include!` wrapper made every name in
@@ -408,6 +413,10 @@ actions!(
         ToggleProject,
         ToggleHiddenFiles,
         ToggleSoftWrap,
+        CopyFileContent,
+        CopyFilePath,
+        CopyFileWikilink,
+        OpenFileDefault,
         NewFromTemplate,
         TreeDown,
         TreeUp,
@@ -7331,7 +7340,7 @@ fn reader_more_menu(
                     }),
             )
             .item(
-                PopupMenuItem::new("Soft wrap in code files")
+                PopupMenuItem::new("Wrap long lines")
                     .checked(reader_ui_state::code_soft_wrap(cx))
                     .action(Box::new(ToggleSoftWrap))
                     .on_click(move |_, window, cx| {
@@ -8137,6 +8146,18 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &CopyVaultPath, window, cx| {
                 this.file_action(reader_files::FileAction::Relative, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &CopyFileContent, window, cx| {
+                this.copy_file_content(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyFilePath, window, cx| {
+                this.file_action(reader_files::FileAction::Absolute, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyFileWikilink, window, cx| {
+                this.file_action(reader_files::FileAction::Wiki, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenFileDefault, window, cx| {
+                this.file_action(reader_files::FileAction::Open, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &QuickLookFile, window, cx| {
                 this.file_action(reader_files::FileAction::QuickLook, window, cx)
             }))
@@ -8586,6 +8607,10 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(feature = "data-view-native-harness")]
+    if reader_viewer_native::entry() {
+        return;
+    }
     if let Some(code) = reader_service_storage::command_line() {
         std::process::exit(code);
     }
