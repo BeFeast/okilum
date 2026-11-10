@@ -70,15 +70,27 @@ fn fixture<'a>(
     (reader, visual, temp)
 }
 
+pub(crate) fn measured_bounds(
+    visual: &mut VisualTestContext,
+    selector: &str,
+) -> Option<Bounds<Pixels>> {
+    // GPUI replays cached paint/hitboxes but clears its test-only debug_bounds
+    // map without replaying it. Measure a real fresh frame; all visibility,
+    // size and click assertions remain unchanged.
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.debug_bounds(selector)
+}
+
 fn clipboard(visual: &mut VisualTestContext) -> Option<String> {
     visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
 }
 
 fn open_copy(visual: &mut VisualTestContext) {
-    let bounds = visual
-        .debug_bounds("viewer-copy")
-        .expect("Copy menu is mounted");
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    let button_bounds = measured_bounds(visual, "viewer-copy").expect("Copy menu is mounted");
+    visual.simulate_click(button_bounds.center(), Modifiers::default());
     visual.run_until_parked();
 }
 
@@ -121,9 +133,7 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
     }
     reader.update_in(visual, |r, w, cx| r.preview_file("data.json", w, cx));
     visual.run_until_parked();
-    let edit = visual
-        .debug_bounds("reader-edit")
-        .expect("loaded JSON can be edited");
+    let edit = measured_bounds(visual, "reader-edit").expect("loaded JSON can be edited");
     visual.simulate_click(edit.center(), Modifiers::default());
     visual.run_until_parked();
     reader.update_in(visual, |r, w, cx| {
@@ -191,21 +201,21 @@ fn file_header_never_wraps_and_preserves_title_edit_dirty_save_and_more(cx: &mut
             cx.notify();
         });
         visual.run_until_parked();
-        let header = visual.debug_bounds("document-header-viewport").unwrap();
+        let header = measured_bounds(visual, "document-header-viewport").unwrap();
         assert_eq!(header.size.height, px(48.));
-        let title = visual.debug_bounds("reader-document-root").unwrap();
+        let title = measured_bounds(visual, "reader-document-root").unwrap();
         assert!(
             title.size.width >= px(120.),
             "file name protected at {width}: {title:?}"
         );
         for id in ["reader-edit", "document-more"] {
-            let b = visual.debug_bounds(id).unwrap();
+            let b = measured_bounds(visual, id).unwrap();
             assert!(b.size.height >= px(28.) && b.size.width >= px(28.));
             assert!(b.left() >= header.left() && b.right() <= header.right());
             assert!(b.top() >= header.top() && b.bottom() <= header.bottom());
         }
         for obsolete in ["file-open", "file-reveal", "file-copy", "file-quicklook"] {
-            assert!(visual.debug_bounds(obsolete).is_none());
+            assert!(measured_bounds(visual, obsolete).is_none());
         }
     }
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
@@ -215,8 +225,19 @@ fn file_header_never_wraps_and_preserves_title_edit_dirty_save_and_more(cx: &mut
     });
     visual.simulate_resize(size(px(600.), px(800.)));
     visual.run_until_parked();
-    for id in ["reader-read", "source-save", "document-more"] {
-        assert!(visual.debug_bounds(id).is_some(), "{id} never dropped");
+    for width in [600., 1400., 700., 600.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let header = measured_bounds(visual, "document-header-viewport").unwrap();
+        let read = measured_bounds(visual, "reader-read").unwrap();
+        let save = measured_bounds(visual, "source-save").unwrap();
+        let more = measured_bounds(visual, "document-more").unwrap();
+        assert!(save.left() >= read.right(), "Save stays after Read");
+        assert!(
+            save.right() <= more.left(),
+            "Save stays before the window actions"
+        );
+        assert!(save.top() >= header.top() && save.bottom() <= header.bottom());
     }
 }
 
@@ -232,12 +253,12 @@ fn optional_file_labels_yield_at_narrow_width_and_return_on_widening(cx: &mut Te
     let ids = ["viewer-copy", "reader-edit", "viewer-open-with"];
     visual.simulate_resize(size(px(1600.), px(800.)));
     visual.run_until_parked();
-    let labelled = ids.map(|id| visual.debug_bounds(id).unwrap().size.width);
+    let labelled = ids.map(|id| measured_bounds(visual, id).unwrap().size.width);
     visual.simulate_resize(size(px(700.), px(800.)));
     visual.run_until_parked();
     for (id, wide) in ids.into_iter().zip(labelled) {
         assert!(
-            visual.debug_bounds(id).unwrap().size.width < wide,
+            measured_bounds(visual, id).unwrap().size.width < wide,
             "{id} label yields first"
         );
     }
@@ -245,7 +266,7 @@ fn optional_file_labels_yield_at_narrow_width_and_return_on_widening(cx: &mut Te
     visual.run_until_parked();
     for (id, wide) in ids.into_iter().zip(labelled) {
         assert_eq!(
-            visual.debug_bounds(id).unwrap().size.width,
+            measured_bounds(visual, id).unwrap().size.width,
             wide,
             "{id} label returns"
         );
@@ -260,7 +281,7 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
     for name in ["image.svg", "drawing.excalidraw"] {
         reader.update_in(visual, |r, w, cx| r.preview_file(name, w, cx));
         visual.run_until_parked();
-        let before = visual.debug_bounds("document-header-viewport").unwrap();
+        let before = measured_bounds(visual, "document-header-viewport").unwrap();
         let marker = if name == "image.svg" {
             "reader-file-content"
         } else {
@@ -271,10 +292,9 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
         for _ in 0..20 {
             visual.update(|window, cx| window.draw(cx).clear(cx));
             visual.run_until_parked();
-            if visual.debug_bounds(marker).is_some_and(|bounds| {
+            if measured_bounds(visual, marker).is_some_and(|bounds| {
                 bounds.size.height
-                    > visual
-                        .debug_bounds("document-header-viewport")
+                    > measured_bounds(visual, "document-header-viewport")
                         .unwrap()
                         .size
                         .height
@@ -283,8 +303,7 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
                 break;
             }
         }
-        let content_before = visual
-            .debug_bounds(marker)
+        let content_before = measured_bounds(visual, marker)
             .unwrap_or_else(|| panic!("scrollable content mounted for {name}: {marker}"));
         visual.simulate_event(ScrollWheelEvent {
             position: point(before.center().x, before.bottom() + px(100.)),
@@ -293,11 +312,11 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
         });
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds(marker).unwrap().top() < content_before.top(),
+            measured_bounds(visual, marker).unwrap().top() < content_before.top(),
             "positive control: {name} content actually scrolled"
         );
         assert_eq!(
-            visual.debug_bounds("document-header-viewport").unwrap(),
+            measured_bounds(visual, "document-header-viewport").unwrap(),
             before
         );
     }
@@ -307,10 +326,10 @@ fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
         visual.simulate_resize(size(px(width), px(800.)));
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("reader-maximize-note").is_some(),
+            measured_bounds(visual, "reader-maximize-note").is_some(),
             "note Maximize stays pinned"
         );
-        assert!(visual.debug_bounds("viewer-copy").is_none());
+        assert!(measured_bounds(visual, "viewer-copy").is_none());
     }
 }
 
@@ -335,9 +354,9 @@ fn pdf_header_buttons_and_erased_overflow_callbacks_zoom_the_active_pdf(cx: &mut
     }
     for (id, before_delta) in [("pdf-zoom-in", 1isize), ("pdf-zoom-out", -1)] {
         let before = pdf.read_with(visual, |p, _| p.zoom_step());
-        let bounds = visual.debug_bounds(id).unwrap();
-        assert!(bounds.size.width >= px(28.) && bounds.size.height >= px(28.));
-        visual.simulate_click(bounds.center(), Modifiers::default());
+        let button_bounds = measured_bounds(visual, id).unwrap();
+        assert!(button_bounds.size.width >= px(28.) && button_bounds.size.height >= px(28.));
+        visual.simulate_click(button_bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             pdf.read_with(visual, |p, _| p.zoom_step()),
@@ -357,7 +376,7 @@ fn pdf_header_buttons_and_erased_overflow_callbacks_zoom_the_active_pdf(cx: &mut
         }
         _ => panic!("PDF overflow must be an actionable menu item"),
     }
-    let fit = visual.debug_bounds("pdf-zoom-fit").unwrap();
+    let fit = measured_bounds(visual, "pdf-zoom-fit").unwrap();
     visual.simulate_click(fit.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(pdf.read_with(visual, |p, _| p.zoom_step()), 4);
@@ -382,12 +401,12 @@ fn open_with_contains_platform_reveal_and_quick_look_only_on_macos() {
 #[gpui::test]
 fn open_with_button_opens_and_dismisses_the_same_header_menu(cx: &mut TestAppContext) {
     let (_, visual, _temp) = fixture(cx, "text.txt");
-    let button = visual.debug_bounds("viewer-open-with").unwrap();
+    let button = measured_bounds(visual, "viewer-open-with").unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert_eq!(visual.debug_bounds("viewer-open-with").unwrap(), button);
+    assert_eq!(measured_bounds(visual, "viewer-open-with").unwrap(), button);
 }
 
 #[gpui::test]
@@ -459,7 +478,7 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
         assert!(reader.source_indicator_dirty(cx))
     });
     assert!(
-        visual.debug_bounds("source-save").is_some(),
+        measured_bounds(visual, "source-save").is_some(),
         "dirty Save updates independently"
     );
 }

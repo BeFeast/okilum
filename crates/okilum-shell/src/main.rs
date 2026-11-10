@@ -1759,7 +1759,6 @@ struct Reader {
     editing: Option<reader_editor::Editing>,
     viewer_save_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::SaveControls>>>,
     viewer_header: std::cell::RefCell<Option<Entity<reader_viewer_chrome::Header>>>,
-    viewer_header_origin: std::rc::Rc<std::cell::Cell<Point<Pixels>>>,
     viewer_save_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     #[cfg(target_os = "linux")]
     sync_note_conflicts: Option<(PathBuf, String, Vec<PathBuf>, bool)>,
@@ -2194,7 +2193,6 @@ impl Reader {
             editing: None,
             viewer_save_controls: Default::default(),
             viewer_header: Default::default(),
-            viewer_header_origin: Default::default(),
             viewer_save_bounds: Default::default(),
             #[cfg(target_os = "linux")]
             sync_note_conflicts: None,

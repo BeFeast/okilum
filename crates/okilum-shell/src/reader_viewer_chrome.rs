@@ -143,8 +143,6 @@ pub(crate) struct SaveControls {
     input: EntityId,
     reader: WeakEntity<Reader>,
     dirty: bool,
-    origin: Rc<std::cell::Cell<Point<Pixels>>>,
-    bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -165,15 +163,8 @@ impl SaveControls {
 
 impl Render for SaveControls {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(bounds) = self.bounds.get() else {
-            return div().into_any_element();
-        };
-        let position = bounds.origin - self.origin.get();
         let reader = self.reader.clone();
         h_flex()
-            .absolute()
-            .left(position.x)
-            .top(position.y)
             .flex_none()
             .w(px(60.))
             .h(px(28.))
@@ -344,25 +335,35 @@ impl Reader {
                 .h(px(48.))
                 .flex_shrink_0(),
         );
-        let origin = self.viewer_header_origin.clone();
         div()
             .debug_selector(|| "document-header-viewport".into())
             .relative()
             .flex_none()
             .overflow_hidden()
             .h(px(48.))
-            .child(
-                canvas(
-                    move |bounds, _, _| origin.set(bounds.origin),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
             .child(header)
             // GPUI invalidates cached ancestors of notified child views. Save
             // therefore occupies its measured slot as a sibling overlay.
-            .children(save)
+            .children(save.map(|save| {
+                let bounds = self.viewer_save_bounds.clone();
+                canvas(
+                    move |_, window, cx| {
+                        bounds.get().map(|bounds| {
+                            let mut element = save.into_any_element();
+                            element.layout_as_root(bounds.size.into(), window, cx);
+                            element.prepaint_at(bounds.origin, window, cx);
+                            element
+                        })
+                    },
+                    |_, element, window, cx| {
+                        if let Some(mut element) = element {
+                            element.paint(window, cx);
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+            }))
             .into_any_element()
     }
     /// Only this adapter knows where the active viewer lives. Slot builders
@@ -511,8 +512,6 @@ impl Reader {
             input: input.entity_id(),
             reader: reader.downgrade(),
             dirty,
-            origin: self.viewer_header_origin.clone(),
-            bounds: self.viewer_save_bounds.clone(),
             _subscriptions: [
                 cx.observe(&input, |this, _, cx| this.synchronize(cx)),
                 cx.observe(&reader, |this, _, cx| this.synchronize(cx)),
@@ -710,22 +709,10 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
     }
     if plan.editing {
         let bounds = reader.viewer_save_bounds.clone();
-        let save = reader
-            .viewer_save_controls
-            .borrow()
-            .as_ref()
-            .map(Entity::downgrade);
         row = row.child(
             div().relative().flex_none().w(px(60.)).h(px(28.)).child(
                 canvas(
-                    move |measured, _, cx| {
-                        if bounds.get() != Some(measured) {
-                            bounds.set(Some(measured));
-                            if let Some(save) = &save {
-                                let _ = save.update(cx, |_, cx| cx.notify());
-                            }
-                        }
-                    },
+                    move |measured, _, _| bounds.set(Some(measured)),
                     |_, _, _, _| {},
                 )
                 .absolute()
