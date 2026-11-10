@@ -86,7 +86,7 @@ fn large2804_shared_limits_refuse_once_without_invalid_claims() {
 
 #[test]
 fn large2804_maximum_input_memory_envelope() {
-    // Run as a separate native process under /usr/bin/time: the complete input,
+    // Measure peak RSS in an isolated native process: the complete input,
     // original repair, proposal and formatted output are live simultaneously.
     let source = format!("{{bare:\"{}\"", "x".repeat(MAX_BYTES - 128));
     let repaired = repair("json", &source).unwrap();
@@ -100,6 +100,25 @@ fn large2804_maximum_input_memory_envelope() {
         formatted.bytes().filter(|b| *b == b'x').count(),
         MAX_BYTES - 128
     );
+    let Formatted::Changed(crlf) =
+        format_with_line_ending("json", &repaired.proposed, LineEnding::Crlf)
+    else {
+        panic!("bounded CRLF conversion refused")
+    };
+    assert!(
+        crlf.capacity() <= MAX_OUTPUT_BYTES,
+        "conversion allocation must respect the precomputed ceiling"
+    );
+    assert!(crlf.contains("\r\n"));
+    assert_eq!(json_validation(&crlf), Ok(()));
+    assert_eq!(repaired.source, source);
+    std::hint::black_box((
+        &source,
+        &repaired.source,
+        &repaired.proposed,
+        &formatted,
+        &crlf,
+    ));
 }
 
 #[test]

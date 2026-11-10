@@ -226,7 +226,23 @@ pub fn format_controlled(
         return None;
     }
     if ending == LineEnding::Crlf {
-        result = result.replace('\n', "\r\n");
+        // Reserve the checked final size: String::replace may double capacity
+        // past the output ceiling when CRLF adds just one byte to a huge line.
+        let mut converted = String::with_capacity(final_len);
+        let mut next_check = 0;
+        for (at, ch) in result.char_indices() {
+            if at >= next_check {
+                next_check = at + 16 * 1024;
+                if control.cancelled() {
+                    return None;
+                }
+            }
+            if ch == '\n' {
+                converted.push('\r');
+            }
+            converted.push(ch);
+        }
+        result = converted;
     }
     if source.starts_with('\u{feff}') {
         result.insert(0, '\u{feff}');

@@ -38,8 +38,10 @@ fn large2804_worker_cancel_keeps_source_and_ui_responsive(cx: &mut TestAppContex
         "visible Cancel before worker completion"
     );
     assert!(f.input.read_with(visual, |input, _| input.is_editable()));
-    f.reader
-        .update(visual, |reader, cx| reader.cancel_code_operation(cx));
+    let cancel = visual
+        .debug_bounds("source-code-operation-cancel")
+        .expect("visible Cancel");
+    visual.simulate_click(cancel.center(), Modifiers::default());
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
         let state = &reader.editing.as_ref().unwrap().operations;
@@ -182,4 +184,93 @@ fn large2804_completion_retains_composition_started_after_request(cx: &mut TestA
         input.unmark_text(window, cx);
     });
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn large2804_cancel_stays_visible_when_caret_leaves_requested_fence(cx: &mut TestAppContext) {
+    let original = "Before\n```json\n{\"a\":1}\n```\nAfter\n";
+    let (f, visual) = open(cx, original);
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.code_operation(Action::Format, window, cx)
+    });
+    f.input
+        .update(visual, |input, cx| input.set_selected_range(0..0, cx));
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(visual
+        .debug_bounds("source-code-operation-cancel")
+        .is_some());
+    f.reader
+        .update(visual, |reader, cx| reader.cancel_code_operation(cx));
+    visual.run_until_parked();
+    f.reader
+        .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
+}
+
+#[gpui::test]
+fn large2804_rebound_reader_rejects_result_even_with_identical_native_stamp(
+    cx: &mut TestAppContext,
+) {
+    let original = "Before\n```json\n{\"a\":1}\n```\nAfter\n";
+    let (f, visual) = open(cx, original);
+    let before = f.input.read_with(visual, |input, _| input.source_stamp());
+    std::fs::write(f.directory.path().join("vault/other.md"), original).unwrap();
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.code_operation(Action::Format, window, cx);
+        reader.current_rel = "other.md".into();
+        assert_eq!(reader.selected_file(), "other.md");
+    });
+    assert_eq!(
+        f.input.read_with(visual, |input, _| input.source_stamp()),
+        before,
+        "positive control: a stamp-only completion guard would accept this result"
+    );
+    visual.run_until_parked();
+    f.reader.update(visual, |reader, cx| {
+        assert_eq!(value(&f, cx), original);
+        assert!(reader
+            .editing
+            .as_ref()
+            .unwrap()
+            .operations
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("Source changed"));
+        reader.current_rel = "note.md".into();
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.directory.path().join("vault/other.md")).unwrap(),
+        original
+    );
+}
+
+#[gpui::test]
+fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut TestAppContext) {
+    let original = "Before\n```json\n{a:1}\n```\nAfter\n";
+    let (f, visual) = open(cx, original);
+    click(visual, "source-code-repair");
+    std::fs::write(f.directory.path().join("vault/other.md"), original).unwrap();
+    f.reader.update_in(visual, |reader, window, cx| {
+        assert!(reader
+            .editing
+            .as_ref()
+            .unwrap()
+            .operations
+            .preview
+            .is_some());
+        reader.current_rel = "other.md".into();
+        assert_eq!(reader.selected_file(), "other.md");
+        reader.apply_code_repair(window, cx);
+        assert_eq!(value(&f, cx), original);
+        assert!(reader
+            .editing
+            .as_ref()
+            .unwrap()
+            .operations
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("stale"));
+        reader.current_rel = "note.md".into();
+    });
 }

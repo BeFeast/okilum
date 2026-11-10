@@ -28,7 +28,7 @@ pub(super) struct State {
 struct Running {
     control: model::Control,
     action: Action,
-    stamp: SourceStamp,
+    scope: Scope,
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -77,7 +77,7 @@ impl State {
     }
 
     pub(super) fn source_changed(&mut self, stamp: SourceStamp) -> bool {
-        if let Some(running) = self.running.as_ref().filter(|run| run.stamp != stamp) {
+        if let Some(running) = self.running.as_ref().filter(|run| run.scope.stamp != stamp) {
             running.control.cancel();
         }
         let notice_stale =
@@ -108,6 +108,8 @@ impl State {
 
 #[derive(Clone)]
 struct Target {
+    binding_root: PathBuf,
+    binding_file: String,
     range: Range<usize>,
     language: String,
     text: String,
@@ -323,6 +325,11 @@ impl Reader {
     // Actions still require the exact current revision through code_scope().
     fn code_scope_for_display(&self, cx: &App, retain_inventory: bool) -> Option<Scope> {
         let editing = self.editing.as_ref()?;
+        if retain_inventory {
+            if let Some(running) = &editing.operations.running {
+                return Some(running.scope.clone());
+            }
+        }
         let input = editing.input.read(cx);
         let stamp = input.source_stamp();
         let (range, language, line_ending) = if editing.markdown {
@@ -376,6 +383,8 @@ impl Reader {
             .slice(scope.range.clone())
             .to_string();
         Some(Target {
+            binding_root: self.vault_root.clone(),
+            binding_file: self.selected_file().to_owned(),
             line_ending: scope
                 .line_ending
                 .unwrap_or_else(|| model::line_ending(&text)),
@@ -404,6 +413,8 @@ impl Reader {
         if !self.ime_allows(ime_guard::Trigger::Text, cx) {
             return;
         }
+        let binding_root = self.vault_root.clone();
+        let binding_file = self.selected_file().to_owned();
         let editing = self.editing.as_mut().unwrap();
         if editing.operations.busy
             || editing.conflict_detected
@@ -438,7 +449,7 @@ impl Reader {
         editing.operations.running = Some(Running {
             control: control.clone(),
             action,
-            stamp: scope.stamp,
+            scope: scope.clone(),
         });
         let input = editing.input.clone();
         // Pin an immutable native revision; flattening and newline scans belong
@@ -446,14 +457,26 @@ impl Reader {
         let snapshot = input.read(cx).source_snapshot();
         crate::source_presentation::code_languages::install();
         let snapshot_stamp = scope.stamp;
+        let started = Instant::now();
+        let bytes = scope.range.len();
+        let trace = reader_diagnostics::trace(cx);
+        if let Some(trace) = &trace {
+            trace.event("code_operation_queued", serde_json::json!({"action":action.name(), "bytes":bytes, "thread":format!("{:?}", std::thread::current().id())}));
+        }
+        let worker_trace = trace.clone();
         let worker_control = control.clone();
+        let target_root = binding_root.clone();
+        let target_file = binding_file.clone();
         let task = cx.background_executor().spawn(async move {
+            let worker_started = Instant::now();
             let result = (|| {
                 if worker_control.cancelled() {
                     return None;
                 }
                 let text = snapshot.text.rope().slice(scope.range.clone()).to_string();
                 let target = Target {
+                    binding_root: target_root,
+                    binding_file: target_file,
                     line_ending: scope
                         .line_ending
                         .unwrap_or_else(|| model::line_ending(&text)),
@@ -526,6 +549,9 @@ impl Reader {
                 }
                 Some((target, status, format, repair, proposed_validation))
             })();
+            if let Some(trace) = &worker_trace {
+                trace.event("code_operation_worker", serde_json::json!({"action":action.name(), "bytes":bytes, "duration_ms":worker_started.elapsed().as_secs_f64()*1000., "cancelled":worker_control.cancelled(), "thread":format!("{:?}", std::thread::current().id())}));
+            }
             // Admission remains held until UI consumption drops all transient
             // results, even after Cancel, navigation or a retired editor.
             (result, permit)
@@ -534,13 +560,18 @@ impl Reader {
             let (result, _permit) = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 let composition_ready = this.ime_allows(ime_guard::Trigger::Text, cx);
+                let binding_ready = this.vault_root == binding_root && this.selected_file() == binding_file;
                 let Some(editing) = this.editing.as_mut().filter(|e| e.input == input) else { return; };
                 if editing.operations.generation != generation { return; }
+                // Snapshot cancellation before dropping its cancel-on-retirement guard.
                 let cancelled = control.cancelled();
+                if let Some(trace) = &trace {
+                    trace.event("code_operation_delivered", serde_json::json!({"action":action.name(), "bytes":bytes, "duration_ms":started.elapsed().as_secs_f64()*1000., "cancelled":cancelled, "binding_current":binding_ready, "source_current":input.read(cx).source_stamp()==snapshot_stamp}));
+                }
                 editing.operations.busy = false;
                 editing.operations.running = None;
                 editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
-                if !composition_ready || input.read(cx).source_stamp() != snapshot_stamp
+                if !binding_ready || !composition_ready || input.read(cx).source_stamp() != snapshot_stamp
                     || editing.conflict_detected || editing.save_failed || !input.read(cx).is_editable() {
                     editing.operations.notice = Some("Source changed; run the operation again. No result applied.".into());
                     cx.notify(); return;
@@ -598,11 +629,15 @@ impl Reader {
         if !self.ime_allows(ime_guard::Trigger::Text, cx) {
             return;
         }
+        let binding_root = self.vault_root.clone();
+        let binding_file = self.selected_file().to_owned();
         let editing = self.editing.as_mut().unwrap();
         let Some(preview) = editing.operations.preview.as_ref() else {
             return;
         };
-        if current.stamp != preview.target.stamp
+        if binding_root != preview.target.binding_root
+            || binding_file != preview.target.binding_file
+            || current.stamp != preview.target.stamp
             || current.range != preview.target.range
             || current.language != preview.target.language
             || editing.conflict_detected
@@ -610,6 +645,7 @@ impl Reader {
             || !editing.input.read(cx).is_editable()
         {
             editing.operations.notice = Some("Repair preview is stale or source is in conflict. Nothing applied; review a fresh proposal.".into());
+            editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
             cx.notify();
             return;
         }
