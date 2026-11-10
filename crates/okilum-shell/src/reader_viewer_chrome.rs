@@ -7,7 +7,7 @@ use std::rc::Rc;
 mod overflow;
 #[cfg(test)]
 mod tests;
-pub(crate) use overflow::{Disposition, LayoutItem, layout};
+pub(crate) use overflow::{layout, Disposition, LayoutItem};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -325,7 +325,7 @@ impl Reader {
     }
 
     fn file_save_controls(&self, cx: &mut Context<Self>) -> Entity<SaveControls> {
-        let input = self.editing.as_ref().unwrap().input();
+        let input = self.editing.as_ref().unwrap().input().clone();
         let mut cached = self.viewer_save_controls.borrow_mut();
         if let Some(controls) = cached
             .as_ref()

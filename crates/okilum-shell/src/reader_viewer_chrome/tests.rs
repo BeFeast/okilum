@@ -370,7 +370,9 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
-    let input = reader.read_with(visual, |reader, _| reader.editing.as_ref().unwrap().input());
+    let input = reader.read_with(visual, |reader, _| {
+        reader.editing.as_ref().unwrap().input().clone()
+    });
     input.update_in(visual, |input, window, cx| input.focus(window, cx));
     visual.run_until_parked();
     let before = input.read_with(visual, |input, _| input.source_stamp());
