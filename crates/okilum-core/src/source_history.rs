@@ -658,12 +658,16 @@ mod recovery_preview_tests {
         assert!(entry.prepared_snapshot.is_none() && entry.prepared_identity.is_none());
         let proposed = "\u{feff}# Proposed שלום e\u{301}\r\n";
         entry.prepared_snapshot = Some(proposed.into());
-        entry.prepared_identity = Some((42, 73));
+        #[cfg(not(windows))]
+        let identity = (42, 73);
+        #[cfg(windows)]
+        let identity = crate::windows_files::Identity::Full { volume: 42, file: [73; 16] };
+        entry.prepared_identity = Some(identity);
         let path = root.join("state/source-history/record.json");
         persist(&path, &entry).unwrap();
         let recovered = Preimage::load(&path).unwrap();
         assert_eq!(recovered.prepared_snapshot.as_deref(), Some(proposed));
-        assert_eq!(recovered.prepared_identity, Some((42, 73)));
+        assert_eq!(recovered.prepared_identity, Some(identity));
         assert!(recovered.pending);
         assert_eq!(recovered.text, "base\r\n");
     }
