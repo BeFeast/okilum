@@ -83,7 +83,7 @@ jobs:
       - name: Run native Windows recovery controls
         shell: pwsh
         run: |
-          python scripts/ci/windows-recovery-check.py
+          ./scripts/ci/windows-filesystems.ps1
           exit $LASTEXITCODE
       - name: Run native Windows Sync identity controls
         shell: pwsh

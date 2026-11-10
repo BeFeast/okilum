@@ -570,3 +570,62 @@ fn windows_sync_create_preserving_keeps_captured_bytes_dacl_and_a_racing_destina
     assert_eq!(fs::read(&path).unwrap(), b"other version\r\n");
     assert_eq!(fs::read(&retained).unwrap(), [0, 255, 42]);
 }
+
+#[test]
+fn windows_save_named_streams_and_refs_integrity_policy_survive_replacement() {
+    let (temp, directory) = fixture();
+    directory.create(OsStr::new("note.md"), b"base").unwrap();
+    let note = temp.path().join("note.md");
+    let stream = temp.path().join("note.md:qa-stream");
+    fs::write(&stream, b"retained stream").unwrap();
+    if directory.refs {
+        // Per-file policy deliberately differs from the parent/default.
+        let handle = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&note)
+            .unwrap();
+        set_integrity(&handle, 0, 0).unwrap();
+    }
+    let policy = directory
+        .refs
+        .then(|| integrity(&File::open(&note).unwrap()).unwrap());
+    let Replacement::Saved { preimage } = directory
+        .replace(OsStr::new("note.md"), b"base", b"mine")
+        .unwrap()
+    else {
+        panic!("save")
+    };
+    assert_eq!(fs::read(&stream).unwrap(), b"retained stream");
+    assert_eq!(fs::read(&preimage).unwrap(), b"base");
+    if let Some(before) = policy {
+        for path in [&note, &preimage] {
+            let after = integrity(&File::open(path).unwrap()).unwrap();
+            assert_eq!(
+                (before.ChecksumAlgorithm, before.Flags),
+                (after.ChecksumAlgorithm, after.Flags)
+            );
+        }
+    }
+}
+
+#[test]
+fn windows_full_identity_does_not_alias_the_high_64_bits_or_legacy_records() {
+    let a = Identity::Full {
+        volume: 1,
+        file: [0; 16],
+    };
+    let mut file = [0; 16];
+    file[15] = 1;
+    let b = Identity::Full { volume: 1, file };
+    assert_ne!(a, b);
+    assert_ne!(a, Identity::Legacy((1, 0)));
+    assert_eq!(
+        serde_json::from_slice::<Identity>(&serde_json::to_vec(&b).unwrap()).unwrap(),
+        b
+    );
+    assert_eq!(
+        serde_json::from_str::<Identity>("[1,0]").unwrap(),
+        Identity::Legacy((1, 0))
+    );
+}

@@ -3,7 +3,7 @@
 //! The shell recycles the item (`SHFileOperationW` with `FOF_ALLOWUNDO`).
 //! Undo finds the record the shell wrote for it — `$I…` in the drive's
 //! `$Recycle.Bin\<SID>`, which names the original path — and moves the
-//! matching `$R…` back without replacing anything. Only local NTFS folders are
+//! matching `$R…` back without replacing anything. Only local NTFS/ReFS folders are
 //! accepted: elsewhere Windows deletes permanently instead of recycling. The
 //! record parser is plain bytes and builds everywhere.
 #[cfg(windows)]
@@ -39,13 +39,12 @@ mod windows {
     use std::{
         collections::HashSet,
         fs,
-        os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
+        os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
         path::{Component, Path, PathBuf, Prefix},
     };
     use windows_sys::Win32::{
         Storage::FileSystem::{
-            GetFileInformationByHandle, MoveFileExW, BY_HANDLE_FILE_INFORMATION,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            MoveFileExW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         },
         UI::Shell::{
             SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
@@ -59,40 +58,30 @@ mod windows {
         pub relative: PathBuf,
         pub(crate) location: PathBuf,
         pub(crate) info: PathBuf,
-        pub(crate) identity: (u64, u64),
+        pub(crate) identity: crate::windows_files::Identity,
     }
 
-    /// Volume serial number and file index: what `(dev, ino)` is on Unix.
-    pub fn identity(path: &Path) -> Result<(u64, u64)> {
+    pub fn identity(path: &Path) -> Result<crate::windows_files::Identity> {
         let file = fs::OpenOptions::new()
             .access_mode(0)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
-        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: the handle is open for the lifetime of `file`; `info` is writable.
-        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
-        ensure!(ok != 0, std::io::Error::last_os_error());
-        Ok((
-            u64::from(info.dwVolumeSerialNumber),
-            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-        ))
+        crate::windows_files::file_identity(&file)
     }
 
     /// What the confirmation inventory compares: identity, size and mtime.
-    pub fn stamp(path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
-        let (volume, index) = identity(path).unwrap_or((0, 0));
-        let modified = meta
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .unwrap_or_default();
-        (
-            volume,
-            index,
+    pub fn stamp(
+        path: &Path,
+        meta: &fs::Metadata,
+    ) -> Result<(crate::windows_files::Identity, u64, i64, i64)> {
+        let identity = identity(path)?;
+        let modified = meta.modified()?.duration_since(std::time::UNIX_EPOCH)?;
+        Ok((
+            identity,
             meta.len(),
             modified.as_secs() as i64,
             i64::from(modified.subsec_nanos()),
-        )
+        ))
     }
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -154,7 +143,7 @@ mod windows {
             (metadata.is_file() || metadata.is_dir()) && !metadata.file_type().is_symlink(),
             "Choose a regular file or folder, not a link"
         );
-        // A network or non-NTFS location has no Recycle Bin: Windows would
+        // A network or unsupported local location has no Recycle Bin: Windows would
         // delete the item for good. Refuse before touching it.
         crate::windows_files::Directory::open(source.parent().context("Missing source folder")?)?;
         let identity = identity(&source)?;

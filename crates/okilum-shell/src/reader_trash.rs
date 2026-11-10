@@ -17,7 +17,10 @@ struct TrashToast;
 
 const TRASH_TOAST_LIFETIME: std::time::Duration = std::time::Duration::from_secs(8);
 
+#[cfg(unix)]
 type Inventory = Vec<(PathBuf, u64, u64, u64, i64, i64)>;
+#[cfg(windows)]
+type Inventory = Vec<(PathBuf, okilum_core::windows_files::Identity, u64, i64, i64)>;
 fn inventory(path: &Path) -> anyhow::Result<Inventory> {
     let mut pending = vec![path.to_owned()];
     let mut entries = Vec::new();
@@ -28,8 +31,15 @@ fn inventory(path: &Path) -> anyhow::Result<Inventory> {
                 pending.push(entry?.path());
             }
         }
+        #[cfg(unix)]
         let (volume, index, len, seconds, nanos) = reader_trash_fs::stamp(&path, &meta);
+        #[cfg(unix)]
         entries.push((path, volume, index, len, seconds, nanos));
+        #[cfg(windows)]
+        {
+            let (identity, len, seconds, nanos) = reader_trash_fs::stamp(&path, &meta)?;
+            entries.push((path, identity, len, seconds, nanos));
+        }
     }
     entries.sort();
     Ok(entries)

@@ -1,4 +1,4 @@
-//! Preview-bound NTFS moves. Ancestors stay pinned; publication never replaces.
+//! Preview-bound NTFS/ReFS moves. Ancestors stay pinned; publication never replaces.
 use crate::windows_files::{identity, information, move_no_replace, Directory};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::{
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 
-type Identity = (u32, u32, u32);
+type Identity = crate::windows_files::Identity;
 fn parent(root: &Path, relative: &Path, markdown: bool) -> Result<(Directory, OsString)> {
     ensure!(
         !relative.as_os_str().is_empty()
@@ -132,7 +132,7 @@ impl DirectorySnapshot {
                 let entry = entry?;
                 let name = entry.file_name();
                 let text = name.to_str().context("Move requires Unicode filenames")?;
-                // Save recovery remains on the source NTFS volume with its DACL.
+                // Save recovery remains on the source volume with its DACL.
                 // Rewrites generate these files; they are not canonical inventory.
                 if text.starts_with(".okilum-save-") {
                     continue;

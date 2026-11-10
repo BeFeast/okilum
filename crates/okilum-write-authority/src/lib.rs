@@ -39,10 +39,10 @@ use filesystem_identity::Identity;
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
 mod identity_macos_tests;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
 
-const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux")) {
+const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
     2
 } else {
     1
@@ -62,7 +62,7 @@ fn identity(path: &Path) -> Result<Identity> {
     {
         identity_linux::read(path)
     }
-    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux", windows))))]
     {
         use std::os::unix::fs::MetadataExt;
         Ok(Identity(
@@ -223,7 +223,7 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if identity == stored {
             return true;
         }
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
@@ -341,7 +341,7 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         Self::migrate_legacy_bindings(&account, &root)?;
         if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
