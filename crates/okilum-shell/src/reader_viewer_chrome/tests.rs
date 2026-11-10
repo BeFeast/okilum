@@ -221,6 +221,38 @@ fn file_header_never_wraps_and_preserves_title_edit_dirty_save_and_more(cx: &mut
 }
 
 #[gpui::test]
+fn optional_file_labels_yield_at_narrow_width_and_return_on_widening(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "source.rs");
+    reader.update(visual, |reader, cx| {
+        reader.panels.close(reader_layout::Panel::Notes);
+        reader.panels.close(reader_layout::Panel::Backlinks);
+        reader_ui_state::set_toolbar_labels(true, cx);
+        cx.notify();
+    });
+    let ids = ["viewer-copy", "reader-edit", "viewer-open-with"];
+    visual.simulate_resize(size(px(1600.), px(800.)));
+    visual.run_until_parked();
+    let labelled = ids.map(|id| visual.debug_bounds(id).unwrap().size.width);
+    visual.simulate_resize(size(px(700.), px(800.)));
+    visual.run_until_parked();
+    for (id, wide) in ids.into_iter().zip(labelled) {
+        assert!(
+            visual.debug_bounds(id).unwrap().size.width < wide,
+            "{id} label yields first"
+        );
+    }
+    visual.simulate_resize(size(px(1600.), px(800.)));
+    visual.run_until_parked();
+    for (id, wide) in ids.into_iter().zip(labelled) {
+        assert_eq!(
+            visual.debug_bounds(id).unwrap().size.width,
+            wide,
+            "{id} label returns"
+        );
+    }
+}
+
+#[gpui::test]
 fn file_header_mount_is_pinned_for_image_and_excalidraw_and_notes_keep_maximize(
     cx: &mut TestAppContext,
 ) {

@@ -743,6 +743,7 @@ impl Reader {
                         .id("reader-thumbnail-scroll")
                         .flex_1()
                         .min_h_0()
+                        .pt_3()
                         .overflow_y_scroll()
                         .child(
                             v_flex()
@@ -817,6 +818,7 @@ impl Reader {
                     .id("reader-file-scroll")
                     .flex_1()
                     .min_h_0()
+                    .pt_3()
                     .overflow_y_scroll()
                     .child(view),
             )
