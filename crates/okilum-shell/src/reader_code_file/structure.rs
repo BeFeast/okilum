@@ -286,13 +286,12 @@ mod tests {
                 visible.len() >= 3,
                 "positive control: multiple structure rows are drawn"
             );
-            for index in visible {
-                let row = visual
-                    .debug_bounds(format!("data-structure-row-{index}"))
-                    .unwrap();
-                let label = visual
-                    .debug_bounds(format!("data-node-label-{index}"))
-                    .unwrap();
+            for (row_selector, label_selector) in [
+                ("data-structure-row-0", "data-node-label-0"),
+                ("data-structure-row-1", "data-node-label-1"),
+            ] {
+                let row = visual.debug_bounds(row_selector).unwrap();
+                let label = visual.debug_bounds(label_selector).unwrap();
                 assert_eq!(row.size.height, px(32.));
                 assert!(
                     label.top() >= row.top() && label.bottom() <= row.bottom(),
