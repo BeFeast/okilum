@@ -335,7 +335,7 @@ impl Reader {
         }
         let reader = cx.entity();
         let dirty = self.source_indicator_dirty(cx);
-        let controls = cx.new(|cx| SaveControls {
+        let controls = cx.new(|cx: &mut Context<SaveControls>| SaveControls {
             input: input.entity_id(),
             reader: reader.downgrade(),
             dirty,
