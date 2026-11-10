@@ -7,9 +7,65 @@ use std::rc::Rc;
 mod overflow;
 #[cfg(test)]
 mod tests;
-pub(crate) use overflow::{layout, Disposition, LayoutItem};
+pub(crate) use overflow::{Disposition, LayoutItem, layout};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[cfg(test)]
+thread_local! {
+    static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
+}
+
+/// Only this view follows clean/dirty transitions. The header slots and their
+/// overflow plan stay outside the editor's per-key notification path.
+pub(crate) struct SaveControls {
+    input: EntityId,
+    reader: WeakEntity<Reader>,
+    dirty: bool,
+    _subscriptions: [Subscription; 2],
+}
+
+impl SaveControls {
+    fn synchronize(&mut self, cx: &mut Context<Self>) {
+        let dirty = self.reader.upgrade().is_some_and(|reader| {
+            let reader = reader.read(cx);
+            reader.editing.as_ref().is_some_and(|editing| {
+                editing.input().entity_id() == self.input && reader.source_indicator_dirty(cx)
+            })
+        });
+        if self.dirty != dirty {
+            self.dirty = dirty;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for SaveControls {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let reader = self.reader.clone();
+        h_flex()
+            .flex_none()
+            .w(px(60.))
+            .gap_1()
+            .when(self.dirty, |row| {
+                let status = reader
+                    .upgrade()
+                    .map(|reader| reader.update(cx, |reader, cx| reader.render_save_status(cx)));
+                row.children(status).child(
+                    reader_icon_button(
+                        "source-save",
+                        Icon::default().path("icons/save.svg"),
+                        reader_shortcuts::hint("Save", &SaveSource, cx),
+                        cx,
+                    )
+                    .debug_selector(|| "source-save".into())
+                    .on_click(move |_, _, cx| {
+                        let _ = reader.update(cx, |reader, cx| reader.request_source_save(cx));
+                    }),
+                )
+            })
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ViewerAction {
@@ -104,7 +160,6 @@ struct HeaderLayout {
     labels: bool,
     editable: bool,
     editing: bool,
-    dirty: bool,
     width_applies: bool,
 }
 
@@ -154,6 +209,10 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        #[cfg(test)]
+        HEADER_RENDERS.with(|counts| {
+            *counts.borrow_mut().entry(cx.entity_id()).or_default() += 1;
+        });
         let available = if self.body_bounds.size.width > px(0.) {
             self.body_bounds.size.width.as_f32()
         } else {
@@ -168,7 +227,6 @@ impl Reader {
             };
         let chrome = self.viewer_chrome(cx);
         let editing = self.editing.is_some();
-        let dirty = self.source_indicator_dirty(cx);
         let editable = self
             .file_preview
             .as_ref()
@@ -208,7 +266,7 @@ impl Reader {
                 28.,
             ));
         }
-        if editing && dirty {
+        if editing {
             items.push(LayoutItem::pinned("save", 60., 60.));
         }
         if editing {
@@ -245,7 +303,6 @@ impl Reader {
             labels,
             editable,
             editing,
-            dirty,
             width_applies,
         };
         h_flex()
@@ -265,6 +322,30 @@ impl Reader {
             .child(viewer_actions_slot(&chrome, &plan, cx))
             .child(file_actions_slot(self, &plan, cx))
             .child(window_slot(self, &chrome, &plan, cx))
+    }
+
+    fn file_save_controls(&self, cx: &mut Context<Self>) -> Entity<SaveControls> {
+        let input = self.editing.as_ref().unwrap().input();
+        let mut cached = self.viewer_save_controls.borrow_mut();
+        if let Some(controls) = cached
+            .as_ref()
+            .filter(|controls| controls.read(cx).input == input.entity_id())
+        {
+            return controls.clone();
+        }
+        let reader = cx.entity();
+        let dirty = self.source_indicator_dirty(cx);
+        let controls = cx.new(|cx| SaveControls {
+            input: input.entity_id(),
+            reader: reader.downgrade(),
+            dirty,
+            _subscriptions: [
+                cx.observe(&input, |this, _, cx| this.synchronize(cx)),
+                cx.observe(&reader, |this, _, cx| this.synchronize(cx)),
+            ],
+        });
+        *cached = Some(controls.clone());
+        controls
     }
 }
 
@@ -453,17 +534,10 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
             .on_click(cx.listener(|r, _, w, cx| r.toggle_source(w, cx))),
         );
     }
-    if plan.editing && plan.dirty {
-        row = row.child(reader.render_save_status(cx)).child(
-            reader_icon_button(
-                "source-save",
-                Icon::default().path("icons/save.svg"),
-                reader_shortcuts::hint("Save", &SaveSource, cx),
-                cx,
-            )
-            .debug_selector(|| "source-save".into())
-            .on_click(cx.listener(|r, _, _, cx| r.request_source_save(cx))),
-        );
+    if plan.editing {
+        row = row.child(reader.file_save_controls(cx));
+    } else {
+        reader.viewer_save_controls.borrow_mut().take();
     }
     if plan.editing {
         row = row.child(

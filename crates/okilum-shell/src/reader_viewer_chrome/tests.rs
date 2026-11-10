@@ -362,3 +362,49 @@ fn header_observes_viewer_notifications_without_a_vault_event(cx: &mut TestAppCo
         "viewer state invalidates the Reader-owned header"
     );
 }
+
+#[gpui::test]
+fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "source.rs");
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    let input = reader.read_with(visual, |reader, _| reader.editing.as_ref().unwrap().input());
+    input.update_in(visual, |input, window, cx| input.focus(window, cx));
+    visual.run_until_parked();
+    let before = input.read_with(visual, |input, _| input.source_stamp());
+    let header_renders = || {
+        HEADER_RENDERS.with(|counts| {
+            counts
+                .borrow()
+                .get(&reader.entity_id())
+                .copied()
+                .unwrap_or(0)
+        })
+    };
+    let initial = header_renders();
+    assert!(initial > 0, "positive control: real file header rendered");
+    for _ in 0..8 {
+        visual.simulate_input(" ");
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(101));
+        visual.run_until_parked();
+        assert_eq!(
+            header_renders(),
+            initial,
+            "typing must not rebuild the seven header slots"
+        );
+    }
+    assert_ne!(
+        input.read_with(visual, |input, _| input.source_stamp()),
+        before
+    );
+    reader.read_with(visual, |reader, cx| {
+        assert!(reader.source_indicator_dirty(cx))
+    });
+    assert!(
+        visual.debug_bounds("source-save").is_some(),
+        "dirty Save updates independently"
+    );
+}

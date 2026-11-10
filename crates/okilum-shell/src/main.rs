@@ -1757,6 +1757,7 @@ struct Reader {
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
+    viewer_save_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::SaveControls>>>,
     #[cfg(target_os = "linux")]
     sync_note_conflicts: Option<(PathBuf, String, Vec<PathBuf>, bool)>,
     /// Undo history and selection of the editor last left for the Reader, by
@@ -2188,6 +2189,7 @@ impl Reader {
             zoom_hud: Default::default(),
             content,
             editing: None,
+            viewer_save_controls: Default::default(),
             #[cfg(target_os = "linux")]
             sync_note_conflicts: None,
             retained_edit: None,
