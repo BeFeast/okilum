@@ -11,6 +11,14 @@ pub struct Invalid {
     pub column: usize,
 }
 
+/// Display refusal is distinct from a JSON syntax error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Invalid(Invalid),
+    Limit { reason: &'static str, limit: usize },
+}
+
+pub const MAX_VIEW_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PRETTY_DEPTH: usize = 128;
 pub const MAX_PRETTY_BYTES: usize = 1024 * 1024;
 
@@ -19,6 +27,10 @@ pub const MAX_PRETTY_BYTES: usize = 1024 * 1024;
 /// not count as nesting. The input bytes already bound verbatim token copies;
 /// each structural token adds at most one newline and its indentation.
 pub fn within_pretty_budget(text: &str) -> bool {
+    budget(text, MAX_PRETTY_BYTES).is_ok()
+}
+
+fn budget(text: &str, max_bytes: usize) -> Result<(), Error> {
     let mut bound = text.len().saturating_add(1);
     let mut depth = 0usize;
     let mut quoted = false;
@@ -39,7 +51,10 @@ pub fn within_pretty_budget(text: &str) -> bool {
             b'{' | b'[' => {
                 depth += 1;
                 if depth > MAX_PRETTY_DEPTH {
-                    return false;
+                    return Err(Error::Limit {
+                        reason: "nesting depth",
+                        limit: MAX_PRETTY_DEPTH,
+                    });
                 }
                 bound = bound.saturating_add(1 + depth * 2);
             }
@@ -51,25 +66,33 @@ pub fn within_pretty_budget(text: &str) -> bool {
             b':' => bound = bound.saturating_add(1),
             _ => {}
         }
-        if bound > MAX_PRETTY_BYTES {
-            return false;
+        if bound > max_bytes {
+            return Err(Error::Limit {
+                reason: "formatted output bytes",
+                limit: max_bytes,
+            });
         }
     }
-    bound <= MAX_PRETTY_BYTES
+    if bound > max_bytes {
+        Err(Error::Limit {
+            reason: "formatted output bytes",
+            limit: max_bytes,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 /// Two-space indent, one member per line, `"key": value`. Empty objects and
 /// arrays stay `{}` / `[]`. A leading byte order mark is not shown.
-pub fn pretty(text: &str) -> Result<String, Invalid> {
-    if !within_pretty_budget(text) {
-        return Err(Invalid { line: 1, column: 1 });
-    }
+pub fn pretty(text: &str) -> Result<String, Error> {
+    budget(text, MAX_VIEW_BYTES)?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if let Err(error) = serde_json::from_str::<serde::de::IgnoredAny>(text) {
-        return Err(Invalid {
+        return Err(Error::Invalid(Invalid {
             line: error.line(),
             column: error.column(),
-        });
+        }));
     }
     let mut out = String::with_capacity(text.len() + text.len() / 4);
     let mut depth = 0usize;
@@ -153,10 +176,36 @@ mod tests {
         );
         assert!(wide.len() < 256 * 1024);
         assert!(!within_pretty_budget(&wide));
-        assert!(pretty(&wide).is_err());
+        assert!(pretty(&wide).is_ok());
         // Actual nested formatting and literal brackets remain supported.
         assert!(pretty(&format!("{}0{}", "[".repeat(32), "]".repeat(32))).is_ok());
         assert!(pretty(&format!("\"{}\"", "[".repeat(100_000))).is_ok());
+    }
+
+    #[test]
+    fn large_view_2787_formats_the_whole_file_with_stable_verdict() {
+        let raw = format!(
+            "{{\"openapi\":\"3.0.4\",\"description\":\"{}\",\"tail\":42}}",
+            "x".repeat(3_553_578)
+        );
+        assert!(
+            !within_pretty_budget(&raw),
+            "editing keeps its smaller bound"
+        );
+        for _ in 0..20 {
+            let shown = pretty(&raw).unwrap();
+            assert!(shown.contains("\n  \"tail\": 42\n"));
+            assert!(crate::code_operations::json_validation(&shown).is_ok());
+        }
+        let huge = format!("\"{}\"", "x".repeat(MAX_VIEW_BYTES));
+        assert_eq!(
+            pretty(&huge),
+            Err(Error::Limit {
+                reason: "formatted output bytes",
+                limit: MAX_VIEW_BYTES
+            })
+        );
+        assert!(matches!(pretty("{broken}"), Err(Error::Invalid(_))));
     }
 
     #[test]
@@ -199,7 +248,7 @@ mod tests {
     fn invalid_json_reports_where_and_shows_nothing_pretty() {
         assert_eq!(
             pretty("{\n  \"a\": 1,\n  \"b\": \n}"),
-            Err(Invalid { line: 4, column: 1 })
+            Err(Error::Invalid(Invalid { line: 4, column: 1 }))
         );
         // Comments are not JSON: JSONC files stay raw.
         assert!(pretty("// note\n{}").is_err());

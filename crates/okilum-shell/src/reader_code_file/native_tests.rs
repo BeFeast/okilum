@@ -33,10 +33,14 @@ fn code2771_invalid_json_pretty_is_callable_and_never_writes_source(cx: &mut Tes
     visual.run_until_parked();
     preview.read_with(visual, |p, cx| {
         assert!(
-            p.document_revision > before,
-            "positive control: invalid Pretty click reaches formatter"
+            p.document_revision == before,
+            "an unchanged display does not restart parsing"
         );
         let json = p.json.as_ref().unwrap();
+        assert!(
+            json.requested_pretty,
+            "positive control: Pretty click is recorded"
+        );
         assert!(!json.showing_pretty && matches!(json.pretty, Some(Err(_))));
         assert_eq!(p.input().unwrap().read(cx).value().as_ref(), source);
     });
@@ -353,4 +357,53 @@ fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_ma
         reader.record_usable_document(cx);
     });
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+}
+
+#[gpui::test]
+fn json2787_multi_megabyte_pretty_raw_toggles_keep_complete_valid_snapshot(
+    cx: &mut TestAppContext,
+) {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("__test2.json");
+    let source = format!(
+        "{{\"openapi\":\"3.0.4\",\"paths\":[{}],\"tail\":\"NEEDLE\"}}",
+        "{\"description\":\"public fixture\"},"
+            .repeat(120_000)
+            .trim_end_matches(',')
+    );
+    assert!(source.len() > 3_500_000);
+    std::fs::write(&path, &source).unwrap();
+    cx.update(crate::test_init);
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            CodePreview::new(
+                fixture.path().to_owned(),
+                "__test2.json".into(),
+                path.clone(),
+                window,
+                cx,
+            )
+        });
+        preview = Some(view.clone());
+        Root::new(cx.new(|_| Surface(view)), window, cx)
+    });
+    let preview = preview.unwrap();
+    visual.run_until_parked();
+    for round in 0..20 {
+        preview.update_in(visual, |p, window, cx| {
+            p.show_json(round % 2 == 0, window, cx)
+        });
+        visual.run_until_parked();
+        preview.read_with(visual, |p, _| {
+            let json = p.json.as_ref().unwrap();
+            assert!(matches!(json.pretty, Some(Ok(_))));
+            assert_eq!(json.showing_pretty, round % 2 == 0);
+            let doc = p.document.as_ref().unwrap();
+            assert!(okilum_core::code_operations::json_validation(&doc.text).is_ok());
+            assert_eq!(doc.find("NEEDLE").len(), 1);
+            assert!(doc.find("NEEDLE")[0].start > 32 * 1024);
+        });
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }

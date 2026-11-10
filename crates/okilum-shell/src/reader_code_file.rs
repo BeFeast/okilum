@@ -121,9 +121,9 @@ impl Render for Surface {
 }
 
 /// Above this a JSON file opens raw; Pretty formats it on a worker on request.
-const PRETTY_BYTES: usize = 1024 * 1024;
+const PRETTY_BYTES: usize = 8 * 1024 * 1024;
 
-type Pretty = Result<String, okilum_core::json_view::Invalid>;
+type Pretty = Result<String, okilum_core::json_view::Error>;
 
 struct JsonText {
     raw: String,
@@ -131,6 +131,7 @@ struct JsonText {
     pretty: Option<Pretty>,
     showing_pretty: bool,
     formatting: bool,
+    requested_pretty: bool,
 }
 
 /// `.json` only: JSONC allows comments and is never reformatted.
@@ -224,6 +225,7 @@ impl CodePreview {
                                 pretty,
                                 showing_pretty,
                                 formatting: false,
+                                requested_pretty: showing_pretty,
                             });
                             json.shown().to_owned()
                         } else {
@@ -289,6 +291,7 @@ impl CodePreview {
         let Some(json) = &mut self.json else {
             return;
         };
+        json.requested_pretty = pretty;
         if pretty && json.pretty.is_none() {
             // A large file: format on a worker, then show it.
             if json.formatting {
@@ -307,7 +310,7 @@ impl CodePreview {
                         json.pretty = Some(pretty);
                     }
                     // Raw chosen while formatting wins: keep the result, don't show it.
-                    let pretty = !reader_ui_state::json_raw(cx);
+                    let pretty = this.json.as_ref().is_some_and(|json| json.requested_pretty);
                     this.show_json(pretty, window, cx);
                 });
             })
@@ -315,7 +318,12 @@ impl CodePreview {
             cx.notify();
             return;
         }
-        json.showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
+        let showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
+        if json.showing_pretty == showing_pretty {
+            cx.notify();
+            return;
+        }
+        json.showing_pretty = showing_pretty;
         let shown = json.shown().to_owned();
         let range = document::first_page(&shown);
         if let State::Content(input) = &self.state {
@@ -466,9 +474,12 @@ impl CodePreview {
         let json = self.json.as_ref()?;
         let note = match &json.pretty {
             _ if json.formatting => Some("Formatting…".to_owned()),
-            Some(Err(invalid)) => Some(format!(
+            Some(Err(okilum_core::json_view::Error::Invalid(invalid))) => Some(format!(
                 "Not valid JSON — showing raw (line {}, column {})",
                 invalid.line, invalid.column
+            )),
+            Some(Err(okilum_core::json_view::Error::Limit { reason, limit })) => Some(format!(
+                "Pretty unavailable: {reason} limit {limit}; showing raw"
             )),
             None => Some("Large file — showing raw".to_owned()),
             Some(Ok(_)) => None,

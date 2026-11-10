@@ -26,7 +26,9 @@ Operations above 256 KiB refuse without changing the buffer. Grammar syntax
 checks run on a worker with a budget and do not claim semantic validity.
 JSON indentation also checks a conservative output bound before allocating:
 at most 128 container levels and 1 MiB of LF output (at most 2 MiB after CRLF
-conversion). The read-only Pretty surface shares these bounds.
+conversion). Read-only Pretty keeps the depth bound but allows a separate 64 MiB
+output budget and opens JSON inputs up to 8 MiB automatically in Pretty. A display
+budget refusal names its reason and numeric limit; it is never a JSON syntax verdict.
 
 | Explicit language | Validation | Format: valid / invalid / incomplete | Automatic Repair |
 | --- | --- | --- | --- |
