@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare Area TOML manifests. Dry-run by default; YAML removal needs a backup.
 
-The manager applies this to the real vault only after every channel/OS supports
-TOML. Conversion tests use a separate copy of the Area manifests.
+Use a quiescent copy of the Area manifests. Real-vault conversion is a separate
+explicit rollout after every channel/OS and external reader supports TOML.
 """
 from __future__ import annotations
 
@@ -19,6 +19,46 @@ from ruamel.yaml import YAML
 import tomlkit
 
 SKIP = {".git", ".obsidian", ".trash", ".stversions", "node_modules", ".okilum", ".okilum-index"}
+# The whole service set from okilum_t3::service_layout, not just the two files
+# converted here: an orphan sidecar in the other directory is also a conflict.
+SERVICE_FILES = {
+    "project.toml", "project.yaml", "board.toml", "board.yaml",
+    "board-local.toml", "board-local.yaml", "board-context.toml",
+    "board-delivery.toml", "thread-ids.md",
+}
+
+
+def service_directory(context):
+    """Resolve one existing layout without relocating or combining metadata."""
+    inventories = {}
+    for name in (".okilum", "ops"):
+        directory = context / name
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            inventories[name] = set()
+            continue
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{directory}: service directory must not be a symlink or file")
+        found = set()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name == "service-migration.json" and name == ".okilum":
+                    raise ValueError(f"{directory}: service migration needs explicit recovery first")
+                if ".sync-conflict-" in entry.name and entry.name.startswith(("project", "board", "thread-ids")):
+                    raise ValueError(f"{directory / entry.name}: conflicting service file needs reconciliation")
+                if entry.name in SERVICE_FILES:
+                    if not entry.is_file(follow_symlinks=False):
+                        raise ValueError(f"{directory / entry.name}: service file must be regular, not a symlink")
+                    found.add(entry.name)
+        inventories[name] = found
+    if inventories[".okilum"] and inventories["ops"]:
+        raise ValueError(f"{context}: conflicting service layouts; reconcile .okilum and ops first")
+    selected = "ops" if inventories["ops"] else ".okilum"
+    files = inventories[selected]
+    if files and not files.intersection({"project.toml", "project.yaml"}):
+        raise ValueError(f"{context / selected}: orphan service files; restore the project manifest first")
+    return context / selected, files
 
 
 def pointer(parts):
@@ -254,11 +294,14 @@ def manifests(root):
         raise error  # An unreadable subtree must not look like an empty Area.
 
     for directory, folders, files in os.walk(root, followlinks=False, onerror=fail):
-        folders[:] = [name for name in folders if name not in SKIP and not (Path(directory) / name).is_symlink()]
-        if Path(directory).name == "ops":
-            for name in ("project.yaml", "board.yaml"):
-                if name in files:
-                    yield Path(directory) / name
+        selected, service_files = service_directory(Path(directory))
+        # Inspect service directories above, but never walk their other files
+        # as though they were independent owning contexts.
+        folders[:] = [name for name in folders if name not in SKIP and name != "ops"
+                      and not (Path(directory) / name).is_symlink()]
+        for name in ("project.yaml", "board.yaml"):
+            if name in service_files:
+                yield selected / name
 
 
 def main():
@@ -278,9 +321,20 @@ def main():
         if args.backup_dir.resolve().is_relative_to(args.root.resolve()):
             parser.error("backup directory must be outside the selected tree")
     rows, failed = [], False
-    for source in sorted(manifests(args.root)):
+    try:
+        # Complete discovery before any write: a later conflicting Area must
+        # not leave the earlier Areas half converted.
+        sources = sorted(manifests(args.root))
+    except (OSError, ValueError) as error:
+        print(json.dumps({"mode": "write" if args.write else "dry-run",
+                          "files": [], "error": str(error)}, ensure_ascii=False, indent=2))
+        return 1
+    for source in sources:
         row = {"source": str(source.relative_to(args.root)), "target": str(source.with_suffix('.toml').relative_to(args.root))}
         try:
+            selected, _ = service_directory(source.parent.parent)
+            if selected != source.parent:
+                raise ValueError("Service location changed; rerun discovery on a quiescent copy")
             backup = args.backup_dir / source.relative_to(args.root) if args.remove_yaml else None
             row.update(convert_file(source, args.write, backup))
         except Exception as error:
