@@ -513,6 +513,12 @@ impl Reader {
                         )
                     }));
                 }
+                // Header availability reads the viewer's loaded state (for
+                // example the Edit capability). It must update from that
+                // entity, independently of vault-wide polling or mouse input.
+                if let Some(code) = &preview.code {
+                    cx.observe(code, |_, _, cx| cx.notify()).detach();
+                }
                 #[cfg(target_os = "macos")]
                 if preview.pdf.is_none()
                     && preview.log.is_none()
