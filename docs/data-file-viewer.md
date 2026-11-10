@@ -60,21 +60,40 @@ byte ranges, Previous/Next and whole-file Find with total count and navigation.
 Copy selection is exact within the displayed page; Copy node can cross any number
 of pages. Search can match across a page boundary. A spanning match selects its
 part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
-Structured long-line files initially show a virtualized Structure view over the
+Structured long-line files initially show a virtualized Tree over the
 complete AST, with original source line numbers, individual node folding, Fold
-all/Unfold all, exact whole-node Copy and Source navigation. Tree folding is
-independent of page boundaries, and row labels read at most 96 characters.
-Find navigates to the matching Source page. No placeholder text is inserted into
+all/Unfold all, exact whole-node Copy and Source navigation. Valid JSON has a
+semantic Tree in both Raw and Pretty: the root, named properties and indexed
+array items, including scalar items. Containers show their type and child count;
+only expanded rows are visible and only the viewport is rendered. The index is
+built iteratively on a worker from the complete immutable parse, within the
+existing 64 MiB file preview limit. Pretty's formatting bounds remain separate.
+Tree folding is independent of page boundaries, and value previews read at most
+96 characters. Tree never displays byte-page controls. Whole-file Find keeps
+Tree open, unfolds the matching node's ancestors, scrolls to and highlights the
+hit, and provides bounded context when a match is beyond the default value
+preview. Find in paged Source still navigates to the matching Source page; its
+keyboard shortcut targets whole-file Find rather than a page-local search.
+No placeholder text is inserted into
 the source or copied as file contents. JSON Pretty can also restore the complete
 multi-line code view without changing its file.
 
-Structure rows stay at 32 px with a clipped, single-line ellipsis label, including
+Tree rows stay at 32 px with a clipped, single-line ellipsis label, including
 narrow windows. The Contents panel accepts only a complete display snapshot; a
 32 KiB source page never supplies a partial document outline. Large complete
 inputs retain the outline's existing 256 KiB budget and keep Linked from visible.
 Leading underscores on ordinary non-Markdown data files are not a hidden marker.
 Underscore Markdown notes/folders and dot paths retain the vault's existing
 hidden-file preference.
+
+The functional Tree/Find work in #2794 retains the existing toolbar and control
+styles. Toolbar Variant A and its chrome belong to #2795.
+Contents can reuse `CodePreview::document_snapshot()` without parsing again.
+It returns the same immutable `Arc<reader_code_file::document::Document>` used
+by Tree and Find, with full text, `json_tree` validity, preorder `structure` rows
+(parent, depth, subtree end, original line and exact byte range), `row_label`,
+`row_at` and `find`. Node indices/ranges belong to that snapshot; consumers must
+replace them together when Pretty/Raw publishes a new document.
 
 Console output is best-effort: a desktop launcher's closed stdout/stderr pipe
 must not panic the Reader. `reader-diagnostic.log` records native platform close

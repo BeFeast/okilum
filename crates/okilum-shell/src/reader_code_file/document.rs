@@ -3,23 +3,29 @@
 //! of glyphs on the UI thread. Copy node and Find still cover the whole file.
 use std::{ops::Range, sync::Arc};
 
+mod json_tree;
+
 const LONG_LINE: usize = 64 * 1024;
 const PAGE_BYTES: usize = 32 * 1024;
 
-pub(super) struct Document {
+pub(crate) struct Document {
     pub text: Arc<str>,
     pub pages: Vec<Range<usize>>,
     tree: Option<tree_sitter::Tree>,
+    tree_offset: usize,
+    pub json_tree: bool,
     pub structure: Vec<StructureRow>,
 }
 
 /// A preorder AST index, with no copied node text or recursive UI elements.
 #[derive(Debug)]
-pub(super) struct StructureRow {
+pub(crate) struct StructureRow {
     pub range: Range<usize>,
     pub subtree_end: usize,
     pub depth: usize,
     pub line: usize,
+    pub parent: Option<usize>,
+    label: json_tree::Label,
 }
 
 pub(super) fn structural(kind: &str) -> bool {
@@ -53,6 +59,8 @@ fn structure(tree: &tree_sitter::Tree) -> Vec<StructureRow> {
                 subtree_end: index + 1,
                 depth: parents.len(),
                 line: node.start_position().row + 1,
+                parent: parents.last().map(|&(_, index)| index),
+                label: json_tree::Label::Source,
             });
             parents.push((depth, index));
         }
@@ -93,22 +101,40 @@ fn page_end(text: &str, start: usize) -> usize {
 }
 
 impl Document {
+    #[cfg(test)]
     pub fn new(text: String, language: &str) -> Self {
+        Self::for_file(text, language, language == "json")
+    }
+
+    pub fn for_file(text: String, language: &str, json: bool) -> Self {
         let first = first_page(&text);
         let mut pages = vec![first];
         while pages.last().unwrap().end < text.len() {
             let start = pages.last().unwrap().end;
             pages.push(start..page_end(&text, start));
         }
+        let tree_offset = if json && text.starts_with('\u{feff}') {
+            3
+        } else {
+            0
+        };
+        let parsed = &text[tree_offset..];
         let tree = gpui_component::highlighter::LanguageRegistry::singleton()
             .language(language)
             .and_then(|config| config.language)
             .and_then(|language| {
                 let mut parser = tree_sitter::Parser::new();
                 parser.set_language(&language).ok()?;
-                parser.parse(&text, None)
+                parser.parse(parsed, None)
             });
-        let structure = if pages.len() > 1 {
+        let json_tree = json
+            && serde_json::from_str::<serde::de::IgnoredAny>(parsed).is_ok()
+            && tree
+                .as_ref()
+                .is_some_and(|tree| !tree.root_node().has_error());
+        let structure = if json_tree {
+            json_tree::index(tree.as_ref().unwrap(), tree_offset, text.len())
+        } else if !json && pages.len() > 1 {
             tree.as_ref().map(structure).unwrap_or_default()
         } else {
             Vec::new()
@@ -117,22 +143,43 @@ impl Document {
             text: text.into(),
             pages,
             tree,
+            tree_offset,
+            json_tree,
             structure,
         }
     }
 
     pub fn node_range(&self, offset: usize) -> Option<Range<usize>> {
         let tree = self.tree.as_ref()?;
-        let offset = offset.min(self.text.len().saturating_sub(1));
+        let offset = offset
+            .min(self.text.len().saturating_sub(1))
+            .saturating_sub(self.tree_offset);
         let mut node = tree
             .root_node()
             .named_descendant_for_byte_range(offset, offset)?;
         loop {
             if structural(node.kind()) {
-                return Some(node.byte_range());
+                let range = node.byte_range();
+                return Some(range.start + self.tree_offset..range.end + self.tree_offset);
             }
             node = node.parent()?;
         }
+    }
+
+    pub fn row_at(&self, range: &Range<usize>) -> Option<usize> {
+        self.structure
+            .iter()
+            .rposition(|row| row.range.start <= range.start && row.range.end >= range.end)
+    }
+
+    pub fn row_label(&self, index: usize) -> String {
+        let row = &self.structure[index];
+        row.label.display(&self.text, &row.range)
+    }
+
+    pub fn row_hit_label(&self, index: usize, hit: &Range<usize>) -> String {
+        let row = &self.structure[index];
+        row.label.display_hit(&self.text, &row.range, hit)
     }
 
     pub fn page_at(&self, offset: usize) -> usize {
@@ -159,6 +206,93 @@ impl Document {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn json2794_whole_file_tree_has_root_keys_and_scalar_array_items() {
+        crate::source_presentation::code_languages::install();
+        let values = "\"public OpenAPI fixture value\",".repeat(125_000);
+        let source = format!("{{\"components\":{{\"schemas\":[{}]}},\"paths\":{{\"deep\":[1,true,null,\"NEEDLE\"]}}}}", values.trim_end_matches(','));
+        let doc = Document::new(source.clone(), "json");
+        assert!(doc.json_tree && doc.pages.len() > 100);
+        assert_eq!(doc.row_label(0), "Object · 2 properties");
+        let children: Vec<_> = doc
+            .structure
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.parent == Some(0))
+            .map(|(index, _)| doc.row_label(index))
+            .collect();
+        assert_eq!(
+            children,
+            [
+                "\"components\": Object · 1 property",
+                "\"paths\": Object · 1 property"
+            ]
+        );
+        for label in ["[0] 1", "[1] true", "[2] null", "[3] \"NEEDLE\""] {
+            assert!(
+                (0..doc.structure.len()).any(|index| doc.row_label(index) == label),
+                "{label}"
+            );
+        }
+        let hit = doc.find("NEEDLE").pop().unwrap();
+        assert!(hit.start > 3_500_000);
+        assert_eq!(doc.row_label(doc.row_at(&hit).unwrap()), "[3] \"NEEDLE\"");
+        let pretty = okilum_core::json_view::pretty(&source).unwrap();
+        let pretty = Document::new(pretty, "json");
+        assert_eq!(
+            pretty.pages.len(),
+            1,
+            "Pretty is independent of long-line pages"
+        );
+        assert!(pretty.json_tree);
+        assert_eq!(pretty.structure.len(), doc.structure.len());
+    }
+
+    #[test]
+    fn json2794_tree_keeps_exact_bom_copy_ranges_and_rejects_invalid_json() {
+        crate::source_presentation::code_languages::install();
+        let text = "\u{feff}{\"z\":1.50,\"z\":2e3}";
+        let doc = Document::new(text.into(), "json");
+        assert!(doc.json_tree);
+        assert_eq!(&doc.text[doc.structure[0].range.clone()], text);
+        assert_eq!(&doc.text[doc.structure[2].range.clone()], "\"z\":2e3");
+        assert_eq!(
+            &doc.text[doc.node_range(text.find("2e3").unwrap()).unwrap()],
+            "\"z\":2e3"
+        );
+        let invalid = Document::new(format!("{{\"x\":\"{}\",}}", "x".repeat(100_000)), "json");
+        assert!(!invalid.json_tree && invalid.structure.is_empty());
+        assert!(invalid.pages.len() > 1);
+        // Index construction must remain iterative for deeply nested raw JSON.
+        let deep = Document::new(format!("{}0{}", "[".repeat(512), "]".repeat(512)), "json");
+        if deep.json_tree {
+            assert_eq!(deep.structure.len(), 513);
+        }
+    }
+
+    #[test]
+    fn json2794_match_preview_reveals_a_hit_inside_a_long_unicode_value() {
+        crate::source_presentation::code_languages::install();
+        let source = format!(
+            "{{\"description\":\"{}NEEDLE{}\"}}",
+            "é".repeat(100_000),
+            "界".repeat(100_000)
+        );
+        let doc = Document::new(source, "json");
+        let hit = doc.find("NEEDLE").pop().unwrap();
+        let index = doc.row_at(&hit).unwrap();
+        assert!(
+            !doc.row_label(index).contains("NEEDLE"),
+            "positive control: default preview does not contain the distant hit"
+        );
+        let label = doc.row_hit_label(index, &hit);
+        assert!(label.contains("NEEDLE"));
+        assert!(
+            label.len() < 500,
+            "search preview remains bounded, UTF-8 safe text"
+        );
+    }
 
     #[test]
     fn data_view_2669_pages_cover_every_utf8_byte_and_find_crosses_page_boundaries() {

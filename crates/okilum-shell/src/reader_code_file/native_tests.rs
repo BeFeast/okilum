@@ -244,8 +244,14 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         p.search(window, cx);
     });
     visual.run_until_parked();
-    preview.update_in(visual, |p, _, cx| {
+    preview.update_in(visual, |p, window, cx| {
         assert_eq!(p.matches.len(), 1);
+        assert!(p.structure_view, "Find retains the whole-file Tree");
+        assert_eq!(p.structure.match_node, Some(2));
+        assert_eq!(p.page, 0, "Tree matches never navigate byte pages");
+        // Source still selects the same whole-file hit on the right raw page.
+        p.show_page(0, window, cx);
+        p.show_match(window, cx);
         assert!(p.page > 0);
         assert_eq!(
             p.input().unwrap().read(cx).value()[p.input().unwrap().read(cx).selected_range()]
@@ -261,6 +267,166 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         )
     });
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+}
+
+#[gpui::test]
+fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_file(
+    cx: &mut TestAppContext,
+) {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("api.json");
+    let values = "\"public OpenAPI fixture value\",".repeat(125_000);
+    let source = format!(
+        "{{\"components\":[{}],\"tail\":{{\"nested\":{{\"marker\":\"NEEDLE\"}}}}}}",
+        values.trim_end_matches(',')
+    );
+    assert!(source.len() > 3_500_000);
+    std::fs::write(&path, &source).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        crate::bind_keys(cx);
+    });
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            CodePreview::new(
+                fixture.path().to_owned(),
+                "api.json".into(),
+                path.clone(),
+                window,
+                cx,
+            )
+        });
+        preview = Some(view.clone());
+        Root::new(cx.new(|_| Surface(view)), window, cx)
+    });
+    let preview = preview.unwrap();
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        visual.debug_bounds("data-structure").is_some(),
+        "Tree is available for the complete Pretty snapshot"
+    );
+    preview.update_in(visual, |p, window, cx| p.show_json(false, window, cx));
+    visual.run_until_parked();
+    preview.update_in(visual, |p, window, cx| {
+        p.show_page(0, window, cx);
+        p.input()
+            .unwrap()
+            .update(cx, |input, cx| input.focus(window, cx));
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    #[cfg(not(target_os = "macos"))]
+    visual.simulate_keystrokes("ctrl-f");
+    #[cfg(target_os = "macos")]
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    preview.update_in(visual, |p, window, cx| {
+        assert!(
+            p.find.read(cx).focus_handle(cx).is_focused(window),
+            "real shortcut focuses whole-file Find, not the page editor"
+        );
+    });
+    visual.simulate_input("NEEDLE");
+    visual.run_until_parked();
+    preview.read_with(visual, |p, _| {
+        assert_eq!(p.matches.len(), 1);
+        let shared = p.document_snapshot().unwrap();
+        assert!(Arc::ptr_eq(&shared, p.document.as_ref().unwrap()));
+        assert_eq!(
+            shared.row_at(&p.matches[0]),
+            shared.structure.len().checked_sub(1)
+        );
+        assert!(
+            p.page > 100,
+            "positive control: Source reached the footer beyond the first page"
+        );
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = visual.debug_bounds("data-structure").unwrap();
+    visual.simulate_click(tree.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        visual.debug_bounds("data-page-range").is_none(),
+        "Tree has no byte-page controls"
+    );
+    assert!(
+        visual.debug_bounds("data-tree-match-label").is_some(),
+        "matching node is scrolled into the actual viewport"
+    );
+    // Tree controls must leave a mounted keyboard target: the hidden Source
+    // editor can no longer own focus after folding or view changes.
+    let source_button = visual.debug_bounds("data-source").unwrap();
+    visual.simulate_click(source_button.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| {
+        p.input()
+            .unwrap()
+            .update(cx, |input, cx| input.focus(window, cx));
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = visual.debug_bounds("data-structure").unwrap();
+    visual.simulate_click(tree.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let fold = visual.debug_bounds("data-fold-all").unwrap();
+    visual.simulate_click(fold.center(), Modifiers::default());
+    visual.run_until_parked();
+    #[cfg(not(target_os = "macos"))]
+    visual.simulate_keystrokes("ctrl-f");
+    #[cfg(target_os = "macos")]
+    visual.simulate_keystrokes("cmd-f");
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.find.read(cx).focus_handle(cx).is_focused(window));
+        p.show_match(window, cx);
+    });
+    preview.update_in(visual, |p, _, cx| {
+        assert!(p.structure_view);
+        let doc = p.document.as_ref().unwrap();
+        let index = p.structure.match_node.unwrap();
+        assert!(doc.row_label(index).contains("NEEDLE"));
+        let mut parent = doc.structure[index].parent;
+        while let Some(index) = parent {
+            assert!(p.structure.visible.contains(&index));
+            assert!(!p.structure.folded(index));
+            parent = doc.structure[index].parent;
+        }
+        assert!(
+            p.structure.visible.len() < 10,
+            "only the hit path is expanded, not 125,000 array items"
+        );
+        p.copy_node(cx);
+    });
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "\"marker\":\"NEEDLE\""
+        )
+    });
+    preview.update_in(visual, |p, window, cx| p.show_json(true, window, cx));
+    visual.run_until_parked();
+    preview.read_with(visual, |p, _| {
+        assert!(
+            p.structure_view,
+            "explicit Tree mode survives Pretty/Raw changes"
+        );
+        assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
+        assert!(p.structure.match_node.is_some());
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let source_button = visual.debug_bounds("data-source").unwrap();
+    visual.simulate_click(source_button.center(), Modifiers::default());
+    visual.run_until_parked();
+    preview.read_with(visual, |p, cx| {
+        assert!(!p.structure_view);
+        let input = p.input().unwrap().read(cx);
+        assert_eq!(
+            &input.value()[input.selected_range()],
+            "NEEDLE",
+            "Source retains the hit from Tree even without byte pages"
+        );
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }
 
 #[gpui::test]
