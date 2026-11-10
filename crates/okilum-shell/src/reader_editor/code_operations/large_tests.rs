@@ -41,7 +41,38 @@ fn large2804_worker_cancel_keeps_source_and_ui_responsive(cx: &mut TestAppContex
     let cancel = visual
         .debug_bounds("source-code-operation-cancel")
         .expect("visible Cancel");
-    visual.simulate_click(cancel.center(), Modifiers::default());
+    // simulate_click drains *all* queued worker work after mouse-down, before
+    // mouse-up invokes Button::on_click. Deliver both actual pointer events in
+    // one UI turn so this is a click while the operation is still pending.
+    visual.update(|window, cx| {
+        use gpui::InputEvent;
+        window.dispatch_event(
+            gpui::MouseDownEvent {
+                position: cancel.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::MouseUpEvent {
+                position: cancel.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    f.reader.read_with(visual, |reader, _| {
+        let state = &reader.editing.as_ref().unwrap().operations;
+        assert_eq!(state.notice.as_deref(), Some("Cancelling…"));
+        assert!(state.running.as_ref().unwrap().control.cancelled());
+    });
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
         let state = &reader.editing.as_ref().unwrap().operations;
