@@ -22,6 +22,9 @@ pub(crate) struct ViewerAction {
     pub toggled: bool,
     pub priority: u16,
     pub labelled: bool,
+    /// ZIP extraction and labelled log menus keep a label without enabling
+    /// optional toolbar labels. Their supplied collapse stage still applies.
+    pub label_by_default: bool,
     /// Most labels yield first; mandatory actions such as ZIP Extract all may
     /// keep theirs until the menu-collapse stage of their supplied order table.
     pub collapse_priority: u16,
@@ -178,7 +181,7 @@ impl Reader {
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
         let mut items = vec![LayoutItem::optional("reveal", 28., 28., 10)];
         for action in &chrome.actions {
-            let wide = if labels && action.labelled {
+            let wide = if (labels || action.label_by_default) && action.labelled {
                 toolbar_text_width(&action.label, FontWeight::MEDIUM, window) + 44.
             } else {
                 28.
@@ -377,7 +380,7 @@ fn viewer_actions_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> 
         .children(
             actions
                 .into_iter()
-                .map(|a| a.button(!plan.labels || plan.collapsed(a.id))),
+                .map(|a| a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id))),
         )
         .into_any_element()
 }

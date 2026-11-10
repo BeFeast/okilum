@@ -926,6 +926,7 @@ pub(crate) fn chrome(viewer: &Entity<PdfViewer>, cx: &App) -> reader_viewer_chro
             toggled: false,
             priority: 30,
             labelled: false,
+            label_by_default: false,
             collapse_priority: 0,
             filled: false,
             never_dropped: false,
