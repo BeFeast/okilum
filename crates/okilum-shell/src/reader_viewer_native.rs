@@ -119,7 +119,9 @@ pub(crate) fn entry() -> bool {
                             break;
                         }
                     }
-                    println!("READER_NATIVE file={name} mode=read mounted=Reader ticks={ticks}");
+                    diagnostic_println!(
+                        "READER_NATIVE file={name} mode=read mounted=Reader ticks={ticks}"
+                    );
                     let editable = cx.update(|cx| {
                         let r = reader.read(cx);
                         name.ends_with(".md")
@@ -140,7 +142,7 @@ pub(crate) fn entry() -> bool {
                                 "Reader did not enter edit mode: {name}"
                             )
                         });
-                        println!("READER_NATIVE file={name} mode=edit mounted=Reader");
+                        diagnostic_println!("READER_NATIVE file={name} mode=edit mounted=Reader");
                     }
                     // Real renders of both neutral and warning component states,
                     // including all theme palettes, are covered by Reader tests.
