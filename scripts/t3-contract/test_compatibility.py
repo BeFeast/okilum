@@ -196,6 +196,104 @@ class Compatibility(unittest.TestCase):
         self.assertEqual(result['status'], 'FAIL', result)
         self.assertTrue(result['errors'], result)
 
+    def background_tasks(self):
+        """T3 OrchestrationV2PendingBackgroundTask as encoded by kindUnionWithFallback:
+        four variants tagged by a required kind literal plus one decode-only
+        fallback whose kind is optional and not a literal (#2796)."""
+        def nullable(kind='string'):
+            return {'anyOf': [{'type': kind}, {'type': 'null'}]}
+        common = {'taskId': {'type': 'string'}, 'description': nullable(),
+                  'parentTaskId': nullable(),
+                  'awaited': {'anyOf': [{'type': 'boolean', 'enum': [True]}, {'type': 'null'}]}}
+        branches = [variant('subagent', {**common, 'providerInstanceId': nullable(),
+                                         'childThreadId': nullable()})]
+        branches += [variant(kind, common) for kind in ('command', 'monitor', 'background_task')]
+        for branch in branches:
+            branch['required'] = ['taskId', 'kind']
+        branches.append(obj({**common, 'kind': nullable()}, ['taskId']))
+        return {'tasks': doc({'anyOf': [
+            {'type': 'array', 'items': {'anyOf': branches}}, {'type': 'null'}]})}
+
+    def task_branches(self, schemas):
+        return schemas['tasks']['schema']['anyOf'][0]['items']['anyOf']
+
+    def widen_background_tasks(self, old):
+        """Upstream t3code 16a6c1c4 (#33647): optional fields on every branch."""
+        new = copy.deepcopy(old)
+        for branch in self.task_branches(new):
+            for name in ('command', 'itemId', 'sourceThreadId'):
+                branch['properties'][name] = {'anyOf': [{'type': 'string'}, {'type': 'null'}]}
+        self.task_branches(new).reverse()
+        return new
+
+    def test_kind_union_with_fallback_additions_pair_by_literal(self):
+        old = self.background_tasks()
+        new = self.widen_background_tasks(old)
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertFalse(result['breaking']); self.assertFalse(result['errors'])
+        additions = [x['path'] for x in result['informational'] if x['message'] == 'field added']
+        self.assertEqual(len(additions), 15, result)
+        for kind in ('subagent', 'command', 'monitor', 'background_task'):
+            self.assertEqual(sum(f'[kind="{kind}"].' in x for x in additions), 3, additions)
+        self.assertEqual(sum('[kind fallback].' in x for x in additions), 3, additions)
+        # A new tagged variant beside the fallback is an ordinary informational addition.
+        self.task_branches(new).append(variant('future', {'taskId': {'type': 'string'}}))
+        result = self.compare(old, new)
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertTrue(any(x['message'] == 'variant added' and 'kind="future"' in x['path']
+                            for x in result['informational']), result)
+
+    def test_kind_union_with_fallback_still_rejects_breaking_changes(self):
+        old = self.background_tasks()
+        for change in ('fallback field removed', 'tagged field removed', 'tagged variant removed',
+                       'fallback field required', 'tagged field required', 'fallback kind narrowed'):
+            new = self.widen_background_tasks(old)
+            branches = self.task_branches(new)
+            fallback = next(x for x in branches if 'kind' not in x['required'])
+            subagent = next(x for x in branches if x['properties']['kind'].get('enum') == ['subagent'])
+            if change == 'fallback field removed':
+                del fallback['properties']['parentTaskId']
+            elif change == 'tagged field removed':
+                del subagent['properties']['childThreadId']
+            elif change == 'tagged variant removed':
+                branches.remove(next(x for x in branches if x['properties']['kind'].get('enum') == ['monitor']))
+            elif change == 'fallback field required':
+                fallback['required'].append('command')
+            elif change == 'tagged field required':
+                subagent['required'].append('itemId')
+            else:
+                fallback['properties']['kind'] = {'type': 'string'}
+            with self.subTest(change=change):
+                result = self.compare(old, new)
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertTrue(result['breaking'], result)
+                self.assertFalse(result['errors'], result)
+
+    def test_kind_union_with_fallback_ambiguity_still_fails_closed(self):
+        old = self.background_tasks()
+        for change in ('two untagged branches', 'fallback removed', 'fallback added only',
+                       'single literal'):
+            base, new = copy.deepcopy(old), self.widen_background_tasks(old)
+            branches = self.task_branches(new)
+            fallback = next(x for x in branches if 'kind' not in x['required'])
+            if change == 'two untagged branches':
+                branches.append(obj({'other': {'type': 'string'}}, ['other']))
+            elif change == 'fallback removed':
+                branches.remove(fallback)
+            elif change == 'fallback added only':
+                self.task_branches(base).pop()
+            else:
+                # One tagged branch and the fallback: one literal is no discriminator.
+                for schemas in (base, new):
+                    kept = [x for x in self.task_branches(schemas) if 'kind' not in x['required']
+                            or x['properties']['kind'].get('enum') == ['command']]
+                    self.task_branches(schemas)[:] = kept
+            with self.subTest(change=change):
+                result = self.compare(base, new)
+                self.assertEqual(result['status'], 'FAIL', result)
+                self.assertTrue(result['errors'], result)
+
     def test_actual_current_consumer_baseline_and_opaque_rpc_are_distinct(self):
         baseline = c.load_baseline()
         result = c.compare(copy.deepcopy(baseline), baseline)

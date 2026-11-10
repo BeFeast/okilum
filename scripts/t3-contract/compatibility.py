@@ -338,7 +338,7 @@ class Comparison:
             if len(values) > 1:
                 choices.append(key)
         if choices:
-            key = sorted(choices, key=lambda x: (x not in {'type', 'kind', '_tag', 'tag'}, x.count('.'), x))[0]
+            key = sorted(choices, key=_discriminator_order)[0]
             def groups(branches, tags):
                 result = {}
                 for branch, tag in zip(branches, tags):
@@ -385,6 +385,8 @@ class Comparison:
                 return result
             oa, nb = primitive_groups(old_left), primitive_groups(new_left)
             if oa is None or nb is None:
+                if self.tagged_with_fallback(old_left, new_left, od, nd, path, used):
+                    return
                 raise SchemaError('ambiguous untagged union change; cannot establish variant identity')
             for kind in set(oa) & set(nb):
                 self.node(oa[kind], nb[kind], od, nd, path + '[' + '|'.join(kind) + ']')
@@ -392,6 +394,46 @@ class Comparison:
                 self.note('breaking', path, 'union type variant removed: ' + '|'.join(kind))
             for kind in set(nb) - set(oa):
                 self.note('informational', path, 'union type variant added: ' + '|'.join(kind))
+
+    def tagged_with_fallback(self, old, new, od, nd, path, used):
+        """Compare tagged variants plus exactly one untagged fallback per side.
+
+        Effect kind unions with a decode-only fallback (T3 kindUnionWithFallback,
+        e.g. OrchestrationV2PendingBackgroundTask) encode every known variant
+        with a required literal key and the fallback with an optional, non-literal
+        key. The fallback hides that key from the shared-discriminator check, so
+        a field added to the common fields changes every branch and leaves no
+        exact shape to match. Pair the tagged variants by the literal, using the
+        normal discriminator path (removed variant breaks, added variant is
+        informational), and the two fallbacks with each other.
+
+        Reached only where the union would otherwise be ambiguous, so it never
+        changes a verdict the comparator could already give. It still declines,
+        and the caller fails closed, for more than one untagged branch on either
+        side, a fallback on only one side, no tagged branch on a side, or fewer
+        than two literal values.
+        """
+        tags_old = [od.tags(x) for x in old]
+        tags_new = [nd.tags(x) for x in new]
+        keys = set().union(*(set(x) for x in tags_old + tags_new)) - used
+        for key in sorted(keys, key=_discriminator_order):
+            old_tagged = [b for b, t in zip(old, tags_old) if key in t]
+            new_tagged = [b for b, t in zip(new, tags_new) if key in t]
+            old_fallback = [b for b, t in zip(old, tags_old) if key not in t]
+            new_fallback = [b for b, t in zip(new, tags_new) if key not in t]
+            if len(old_fallback) != 1 or len(new_fallback) != 1 or not old_tagged or not new_tagged:
+                continue
+            if len(set().union(*(t[key] for t in tags_old + tags_new if key in t))) < 2:
+                continue
+            self.union(old_tagged, new_tagged, od, nd, path, used)
+            self.node(old_fallback[0], new_fallback[0], od, nd, path + '[' + key + ' fallback]')
+            return True
+        return False
+
+
+def _discriminator_order(key):
+    """Conventional discriminator names first, then shallow paths."""
+    return key not in {'type', 'kind', '_tag', 'tag'}, key.count('.'), key
 
 
 def _field(doc, schema, path):
