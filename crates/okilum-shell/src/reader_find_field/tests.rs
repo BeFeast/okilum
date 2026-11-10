@@ -1,5 +1,6 @@
 use super::editor::EditorTarget;
 use super::*;
+use reader_viewer_chrome::tests::measured_bounds;
 
 #[gpui::test]
 fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
@@ -61,7 +62,7 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     target.update(visual, |target, cx| target.set_case_sensitive(true, cx));
     target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 1));
     assert!(
-        visual.debug_bounds("search-panel").is_none(),
+        measured_bounds(visual, "search-panel").is_none(),
         "toolkit strip stays absent"
     );
     target.update_in(visual, |target, window, cx| target.clear(window, cx));
@@ -95,22 +96,26 @@ fn archive_header_find_expands_left_without_moving_other_controls_or_content(
         "document-more",
         "archive-view",
     ];
-    let before = ids.map(|id| visual.debug_bounds(id).unwrap());
-    let field = visual.debug_bounds("viewer-find-field").unwrap();
+    let before = ids.map(|id| measured_bounds(visual, id).unwrap());
+    let field = measured_bounds(visual, "viewer-find-field").unwrap();
     visual.simulate_keystrokes(if cfg!(target_os = "macos") {
         "cmd-f"
     } else {
         "ctrl-f"
     });
     visual.run_until_parked();
-    let focused = visual.debug_bounds("viewer-find-field").unwrap();
+    let focused = measured_bounds(visual, "viewer-find-field").unwrap();
     assert_eq!(field.right(), focused.right());
     assert!(focused.left() < field.left());
     for (id, bounds) in ids.into_iter().zip(before) {
-        assert_eq!(visual.debug_bounds(id).unwrap(), bounds, "{id} stays put");
+        assert_eq!(
+            measured_bounds(visual, id).unwrap(),
+            bounds,
+            "{id} stays put"
+        );
     }
     for id in ["viewer-find-field", "find-close", "canvas-read-only"] {
-        if let Some(bounds) = visual.debug_bounds(id) {
+        if let Some(bounds) = measured_bounds(visual, id) {
             assert!(bounds.size.height >= px(28.));
         }
     }
@@ -162,7 +167,7 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
         .find(|a| a.id == "archive-extract-all")
         .unwrap();
     assert!(all.enabled && all.filled && all.never_dropped);
-    let mark = visual.debug_bounds("archive-mark-0").unwrap();
+    let mark = measured_bounds(visual, "archive-mark-0").unwrap();
     visual.simulate_click(mark.center(), Modifiers::default());
     visual.run_until_parked();
     let actions = reader.read_with(visual, |reader, cx| reader.viewer_chrome(cx).actions);
@@ -171,11 +176,11 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
         .find(|a| a.id == "archive-extract-selected")
         .unwrap();
     assert!(selected.enabled);
-    assert_eq!(selected.label.as_ref(), "Extract 1 selected…");
-    let row = visual.debug_bounds("archive-row-0").unwrap();
+    assert_eq!(selected.label.to_string(), "Extract 1 selected…");
+    let row = measured_bounds(visual, "archive-row-0").unwrap();
     visual.simulate_click(row.center(), Modifiers::default());
     visual.run_until_parked();
-    let pane = visual.debug_bounds("archive-entry-bar").unwrap();
+    let pane = measured_bounds(visual, "archive-entry-bar").unwrap();
     visual.simulate_click(pane.center(), Modifiers::default());
     visual.simulate_keystrokes(if cfg!(target_os = "macos") {
         "cmd-f"
@@ -192,5 +197,5 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
     });
     visual.simulate_resize(size(px(700.), px(800.)));
     visual.run_until_parked();
-    assert!(visual.debug_bounds("archive-extract-all").is_some());
+    assert!(measured_bounds(visual, "archive-extract-all").is_some());
 }

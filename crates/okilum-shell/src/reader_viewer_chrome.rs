@@ -32,7 +32,8 @@ struct HeaderKey {
     renaming: Option<(EntityId, Option<String>)>,
     actions: Vec<ActionKey>,
     views: Vec<bool>,
-    find: Option<(SharedString, bool)>,
+    find: Option<FindKey>,
+    action_text: Option<SharedString>,
     deleted: bool,
 }
 #[derive(PartialEq)]
@@ -64,8 +65,19 @@ impl From<&ViewerAction> for ActionKey {
     }
 }
 
+#[derive(PartialEq)]
+struct FindKey {
+    input: EntityId,
+    scope: SharedString,
+    query: String,
+    count: Option<SharedString>,
+    sensitive: Option<bool>,
+    focused: bool,
+    large_file: bool,
+}
+
 impl HeaderKey {
-    fn new(reader: &Reader, cx: &App) -> Self {
+    fn new(reader: &Reader, window: &Window, cx: &App) -> Self {
         let chrome = reader.viewer_chrome(cx);
         Self {
             file: (
@@ -124,7 +136,16 @@ impl HeaderKey {
                 .map(ActionKey::from)
                 .collect(),
             views: chrome.views.iter().map(|view| view.active).collect(),
-            find: chrome.find.map(|find| (find.scope, find.large_file)),
+            find: chrome.find.as_ref().map(|find| FindKey {
+                input: find.input.entity_id(),
+                scope: find.scope.clone(),
+                query: find.input.read(cx).value().to_string(),
+                count: find.count.clone(),
+                sensitive: find.match_case.as_ref().map(|(sensitive, _)| *sensitive),
+                focused: find.input.read(cx).focus_handle(cx).is_focused(window),
+                large_file: find.large_file,
+            }),
+            action_text: chrome.action_text.clone(),
             deleted: reader
                 .deleted_current()
                 .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Missing),
@@ -383,7 +404,7 @@ impl Reader {
     #[inline(never)]
     pub(crate) fn render_file_header_viewport(
         &self,
-        _window: &Window,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let save = if self.editing.is_some() {
@@ -394,7 +415,7 @@ impl Reader {
             None
         };
         let reader = cx.entity();
-        let key = HeaderKey::new(self, cx);
+        let key = HeaderKey::new(self, window, cx);
         let mut cached = self.viewer_header.borrow_mut();
         if cached
             .as_ref()
