@@ -92,6 +92,24 @@ pub(crate) fn entry() -> bool {
                                 && (name.ends_with(".md")
                                     || r.file_preview.as_ref().is_some_and(|p| {
                                         p.unavailable.is_none()
+                                            && match name {
+                                                "data.json" | "source.rs" => p.code.is_some(),
+                                                "array.json" => {
+                                                    p.code.as_ref().is_some_and(|code| {
+                                                        code.read(cx).native_table().is_some()
+                                                    })
+                                                }
+                                                "data.csv" => p.table.is_some(),
+                                                "gateway.log" => p.log.is_some(),
+                                                "document.pdf" => p.pdf.is_some(),
+                                                "image.png" => p.image,
+                                                "archive.zip" => p.archive.is_some(),
+                                                "scene.canvas" => p.canvas.is_some(),
+                                                "drawing.excalidraw" => {
+                                                    okilum_core::excalidraw::is_drawing(&p.rel)
+                                                }
+                                                _ => false,
+                                            }
                                             && p.code
                                                 .as_ref()
                                                 .is_none_or(|c| c.read(cx).native_source_ready())
