@@ -517,7 +517,18 @@ impl Reader {
                 // example the Edit capability). It must update from that
                 // entity, independently of vault-wide polling or mouse input.
                 if let Some(code) = &preview.code {
-                    cx.observe(code, |_, _, cx| cx.notify()).detach();
+                    cx.observe(code, |this, code, cx| {
+                        // The read-only preview no longer owns chrome while
+                        // editing. Its late completions must not redraw the
+                        // editor or the header on the source input hot path.
+                        if this.editing.is_none()
+                            && this.file_preview.as_ref().and_then(|p| p.code.as_ref())
+                                == Some(&code)
+                        {
+                            cx.notify();
+                        }
+                    })
+                    .detach();
                 }
                 #[cfg(target_os = "macos")]
                 if preview.pdf.is_none()
