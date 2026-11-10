@@ -230,7 +230,7 @@ fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
             fs::remove_file(folder.join("alias.md")).unwrap();
         }
         Err(error) if directory.refs && matches!(error.raw_os_error(), Some(1 | 50)) => {
-            eprintln!("SKIP hardlink capability only: this ReFS version does not support hardlinks: {error}");
+            diagnostic_error!("SKIP hardlink capability only: this ReFS version does not support hardlinks: {error}");
         }
         Err(error) => panic!("hardlink capability failed: {error}"),
     }
