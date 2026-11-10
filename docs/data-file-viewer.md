@@ -68,6 +68,20 @@ Find navigates to the matching Source page. No placeholder text is inserted into
 the source or copied as file contents. JSON Pretty can also restore the complete
 multi-line code view without changing its file.
 
+Structure rows stay at 32 px with a clipped, single-line ellipsis label, including
+narrow windows. The Contents panel accepts only a complete display snapshot; a
+32 KiB source page never supplies a partial document outline. Large complete
+inputs retain the outline's existing 256 KiB budget and keep Linked from visible.
+Leading underscores on ordinary non-Markdown data files are not a hidden marker.
+Underscore Markdown notes/folders and dot paths retain the vault's existing
+hidden-file preference.
+
+Console output is best-effort: a desktop launcher's closed stdout/stderr pipe
+must not panic the Reader. `reader-diagnostic.log` records native platform close
+requests, actual window removals and their window ids/remaining counts, plus
+platform warning/error messages. A removal without a recorded close request is
+explicitly unattributed rather than asserted to be a compositor failure.
+
 Native regression refs are `data-view-native/**`. They cover admission without
 new write authority, XML folding/copy/count/unchanged bytes, a 32 MiB minified file
 and a compiled disabled-folding control. Tests record first-draw duration on the

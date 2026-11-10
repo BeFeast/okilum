@@ -558,6 +558,11 @@ impl Reader {
     pub(super) fn close_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
             if self.save_source(cx) {
+                reader_diagnostics::window_close_requested(
+                    window,
+                    cx,
+                    "Close note command on empty window",
+                );
                 window.remove_window();
             }
         } else {

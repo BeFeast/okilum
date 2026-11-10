@@ -566,6 +566,12 @@ impl CodePreview {
         matches!(self.state, State::Loading)
     }
 
+    /// The right-panel outline must never parse a source page as a document.
+    pub(crate) fn outline_input(&self) -> Option<Entity<EditorState>> {
+        self.document.as_ref().filter(|doc| doc.pages.len() == 1)?;
+        self.input()
+    }
+
     pub(crate) fn input(&self) -> Option<Entity<EditorState>> {
         match &self.state {
             State::Content(input) => Some(input.clone()),

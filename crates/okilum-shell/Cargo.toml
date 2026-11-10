@@ -44,6 +44,8 @@ gpui-kit-assets.workspace = true
 # The Windows HLSL profile uses debug assertions; icons must still be portable.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
+# Persist platform/Wayland errors in the existing diagnostic log.
+log = "0.4"
 # App-owned multi-format clipboard: GPUI 0.3 exposes no text/html write API.
 # Keep the native owner alive and publish HTML + plain in one offer.
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }

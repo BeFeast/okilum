@@ -31,6 +31,52 @@ pub(crate) struct Phase {
     start: std::time::Instant,
 }
 
+#[derive(Default)]
+struct WindowCloseRequests(std::collections::HashMap<gpui::WindowId, &'static str>);
+impl Global for WindowCloseRequests {}
+
+/// This callback is reached for a native platform close request. App removals
+/// are recorded separately, so a disappearing surface is not called a panic.
+pub(crate) fn window_close_requested(window: &Window, cx: &mut App, origin: &'static str) {
+    let id = window.window_handle().window_id();
+    cx.default_global::<WindowCloseRequests>()
+        .0
+        .insert(id, origin);
+    if let Some(trace) = trace(cx) {
+        trace.event_now(
+            "window_close_requested",
+            serde_json::json!({
+                "window": format!("{id:?}"), "origin": origin, "windows": cx.windows().len(),
+                "wayland": std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            }),
+        );
+    }
+}
+
+static PLATFORM_TRACE: std::sync::Mutex<Option<Trace>> = std::sync::Mutex::new(None);
+struct PlatformLogger;
+static PLATFORM_LOGGER: PlatformLogger = PlatformLogger;
+impl log::Log for PlatformLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let trace = PLATFORM_TRACE.lock().ok().and_then(|trace| trace.clone());
+            if let Some(trace) = trace {
+                trace.event_now(
+                    "platform_log",
+                    serde_json::json!({
+                        "level": record.level().as_str(), "target": record.target(),
+                        "message": record.args().to_string(),
+                    }),
+                );
+            }
+        }
+    }
+    fn flush(&self) {}
+}
+
 impl Trace {
     #[cfg(test)]
     pub(crate) fn new(state: Option<PathBuf>, root: Option<PathBuf>) -> Self {
@@ -110,6 +156,13 @@ impl Trace {
     /// many windows were left (none means the last window closed), a panic
     /// its message and place, before the previous hook runs.
     pub(crate) fn record_exits(&self, cx: &mut App) {
+        if let Ok(mut trace) = PLATFORM_TRACE.lock() {
+            *trace = Some(self.clone());
+        }
+        if log::set_logger(&PLATFORM_LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
+        self.record_window_closes(cx);
         let trace = self.clone();
         cx.on_app_quit(move |cx| {
             let windows = cx.windows().len();
@@ -142,6 +195,17 @@ impl Trace {
             );
             previous(info);
         }));
+    }
+
+    fn record_window_closes(&self, cx: &mut App) {
+        let closed_trace = self.clone();
+        cx.on_window_closed(move |cx, id| {
+            let origin = cx.default_global::<WindowCloseRequests>().0.remove(&id);
+            closed_trace.event_now("window_closed", serde_json::json!({
+                "window": format!("{id:?}"), "remaining_windows": cx.windows().len(),
+                "origin": origin.unwrap_or("no recorded close request; app removal or surface destruction"),
+            }));
+        }).detach();
     }
 
     pub(crate) fn once(&self, phase: &'static str, details: serde_json::Value) {
@@ -575,6 +639,74 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    struct CloseSurface;
+    impl Render for CloseSurface {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn json2787_close_requests_and_actual_window_removal_are_recorded(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        let trace = Trace::new(Some(state.path().to_owned()), None);
+        cx.update(|cx| {
+            cx.set_global(LaunchTrace(trace.clone()));
+            trace.record_window_closes(cx);
+        });
+        let (_, visual) =
+            cx.add_window_view(|window, cx| Root::new(cx.new(|_| CloseSurface), window, cx));
+        visual.update(|window, cx| {
+            window_close_requested(window, cx, "native platform request");
+            window.remove_window();
+        });
+        cx.update(|_| ());
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(state.path().join(LOG_FILE))
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        assert!(events
+            .iter()
+            .any(|event| event["phase"] == "window_close_requested"));
+        let closed = events
+            .iter()
+            .find(|event| event["phase"] == "window_closed")
+            .expect("actual GPUI removal must fire the observer");
+        assert_eq!(closed["details"]["origin"], "native platform request");
+        assert_eq!(closed["details"]["remaining_windows"], 0);
+    }
+
+    #[test]
+    fn json2787_platform_errors_survive_without_a_console() {
+        let state = tempfile::tempdir().unwrap();
+        let trace = Trace::new(Some(state.path().to_owned()), None);
+        let previous = PLATFORM_TRACE.lock().unwrap().replace(trace);
+        let args = format_args!("synthetic Wayland protocol error");
+        let record = log::Record::builder()
+            .args(args)
+            .level(log::Level::Error)
+            .target("gpui::wayland")
+            .build();
+        log::Log::log(&PlatformLogger, &record);
+        *PLATFORM_TRACE.lock().unwrap() = previous;
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(state.path().join(LOG_FILE))
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let error = events
+            .iter()
+            .find(|event| event["phase"] == "platform_log")
+            .unwrap();
+        assert_eq!(error["details"]["target"], "gpui::wayland");
+        assert_eq!(
+            error["details"]["message"],
+            "synthetic Wayland protocol error"
+        );
+    }
+
     #[test]
     fn encoding_damage_is_inline_even_with_legacy_cached_diagnostics() {
         use okilum_core::vault::{UnreadableEntry, DECODE_NOTE};
