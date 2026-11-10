@@ -71,7 +71,12 @@ impl CodePreview {
             .label(if folded { "Fold all" } else { "Unfold all" })
             .disabled(self.document.is_none())
             .debug_selector(move || id.into())
-            .on_click(cx.listener(move |this, _, _, cx| this.fold_all(folded, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.fold_all(folded, cx);
+                if this.structure_view {
+                    this.focus.focus(window, cx);
+                }
+            }))
             .into_any_element()
     }
 
@@ -176,6 +181,7 @@ impl CodePreview {
                 this.requested_tree = Some(structure);
                 this.structure_view = structure;
                 this.show_match(window, cx);
+                this.focus.focus(window, cx);
                 cx.notify();
             }))
             .into_any_element()

@@ -96,6 +96,10 @@ impl CodePreview {
     pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .debug_selector(|| "data-structure-viewport".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus.focus(window, cx)),
+            )
             .flex_1()
             .min_h_0()
             .w_full()

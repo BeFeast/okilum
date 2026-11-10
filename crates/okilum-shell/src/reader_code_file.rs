@@ -109,6 +109,7 @@ pub(crate) struct CodePreview {
     match_index: usize,
     search_revision: u64,
     searching: bool,
+    focus: FocusHandle,
     _find_subscription: Subscription,
 }
 
@@ -293,6 +294,7 @@ impl CodePreview {
             match_index: 0,
             search_revision: 0,
             searching: false,
+            focus: cx.focus_handle(),
             _find_subscription: find_subscription,
         }
     }
@@ -725,12 +727,14 @@ impl Render for CodePreview {
             .children(modes)
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CopyNode, _, cx| this.copy_node(cx)))
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| {
                 if !this.open_paged_find(window, cx) {
                     if let Some(input) = this.input() {
                         input.update(cx, |state, cx| {
                             state.open_search(false, cx);
+                            state.focus(window, cx);
                         });
                     }
                 }

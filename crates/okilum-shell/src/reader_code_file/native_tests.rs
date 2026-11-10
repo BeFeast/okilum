@@ -355,6 +355,31 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         visual.debug_bounds("data-tree-match-label").is_some(),
         "matching node is scrolled into the actual viewport"
     );
+    // Tree controls must leave a mounted keyboard target: the hidden Source
+    // editor can no longer own focus after folding or view changes.
+    let source_button = visual.debug_bounds("data-source").unwrap();
+    visual.simulate_click(source_button.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| {
+        p.input()
+            .unwrap()
+            .update(cx, |input, cx| input.focus(window, cx));
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = visual.debug_bounds("data-structure").unwrap();
+    visual.simulate_click(tree.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let fold = visual.debug_bounds("data-fold-all").unwrap();
+    visual.simulate_click(fold.center(), Modifiers::default());
+    visual.run_until_parked();
+    #[cfg(not(target_os = "macos"))]
+    visual.simulate_keystrokes("ctrl-f");
+    #[cfg(target_os = "macos")]
+    visual.simulate_keystrokes("cmd-f");
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.find.read(cx).focus_handle(cx).is_focused(window));
+        p.show_match(window, cx);
+    });
     preview.update_in(visual, |p, _, cx| {
         assert!(p.structure_view);
         let doc = p.document.as_ref().unwrap();
