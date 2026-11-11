@@ -721,6 +721,8 @@ impl LogView {
                 .children(self.render_regex_editor(cx))
                 .child(
                     bar_button("log-chips-clear", false)
+                        .secondary()
+                        .outline()
                         .label("Clear all")
                         .debug_selector(|| "log-chips-clear".into())
                         .tooltip(reader_shortcuts::hint(

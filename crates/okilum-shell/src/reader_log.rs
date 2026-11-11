@@ -3737,6 +3737,8 @@ impl LogView {
             self.data()
                 .is_some_and(|data| data.index().format() == Format::Regex),
         )
+        .secondary()
+        .outline()
         .label("Regex")
         .dropdown_caret(true)
         .debug_selector(|| "log-regex".into())
