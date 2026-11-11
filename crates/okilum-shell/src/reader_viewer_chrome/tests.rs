@@ -816,10 +816,30 @@ fn real_viewer_descriptions_supply_the_reference_overflow_order(cx: &mut TestApp
                             Some(Disposition::Menu)
                         );
                     }
-                } else if width == 700. {
-                    assert_eq!(disposition("viewer-action-text"), Some(Disposition::Menu));
-                    for id in ["canvas-fit", "canvas-plus", "canvas-minus"] {
-                        assert_eq!(disposition(id), Some(Disposition::Shown));
+                } else if width <= 700. {
+                    assert_eq!(
+                        disposition("viewer-action-text"),
+                        Some(if width == 700. {
+                            Disposition::Shown
+                        } else {
+                            Disposition::Menu
+                        }),
+                        "the real Canvas has room for its percentage at 700 px"
+                    );
+                    assert_eq!(
+                        plan.items
+                            .iter()
+                            .find(|item| item.id == "viewer-action-text")
+                            .unwrap()
+                            .steps[0]
+                            .priority,
+                        0,
+                        "the percentage yields before shared controls"
+                    );
+                    if width == 700. {
+                        for id in ["canvas-fit", "canvas-plus", "canvas-minus"] {
+                            assert_eq!(disposition(id), Some(Disposition::Shown));
+                        }
                     }
                 }
             });

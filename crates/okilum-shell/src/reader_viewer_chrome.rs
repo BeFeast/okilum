@@ -303,7 +303,7 @@ impl ViewerAction {
         let invoke = self.invoke.clone();
         Button::new(self.id)
             .ghost()
-            .when(self.filled, |b| b.primary())
+            .when(self.filled, |b| b.secondary())
             .icon(self.icon.clone())
             .h(px(28.))
             .rounded(px(6.))
