@@ -89,7 +89,12 @@ pub(crate) fn entry() -> bool {
                         let ready = cx.update(|cx| {
                             let r = reader.read(cx);
                             r.selected_file() == name
-                                && (name.ends_with(".md")
+                                && ((name.ends_with(".md")
+                                    && r.document_ready()
+                                    && !r
+                                        .loading
+                                        .as_ref()
+                                        .is_some_and(|load| load.active && !load.published))
                                     || r.file_preview.as_ref().is_some_and(|p| {
                                         p.unavailable.is_none()
                                             && match name {

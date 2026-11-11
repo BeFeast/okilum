@@ -553,10 +553,30 @@ fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
 #[gpui::test]
 fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
-    let (reader, visual, _temp) = fixture(cx, "document.pdf");
+    let (reader, visual, temp) = fixture(cx, "document.pdf");
     let first = reader.read_with(visual, |reader, _| {
         reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
     });
+    let start = std::time::Instant::now();
+    while first.read_with(visual, |pdf, _| pdf.page_count().is_none()) {
+        visual.run_until_parked();
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Complete the replacement before exposing it to Reader. Otherwise a
+    // transient loading/disabled action changes the key for an unrelated
+    // reason and hides callbacks retained by an otherwise identical header.
+    let second = visual.update(|window, cx| {
+        cx.new(|cx| {
+            crate::reader_pdf::PdfViewer::new(temp.path().join("vault/document.pdf"), window, cx)
+        })
+    });
+    let start = std::time::Instant::now();
+    while second.read_with(visual, |pdf, _| pdf.page_count().is_none()) {
+        visual.run_until_parked();
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(10));
+    }
     reader.update_in(visual, |reader, window, cx| {
         reader.focus_handle.focus(window, cx)
     });
@@ -568,24 +588,24 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
     visual.run_until_parked();
     measured_bounds(visual, "pdf-zoom-in").unwrap();
     let first_zoom = first.read_with(visual, |pdf, _| pdf.zoom_step());
-    reader.update_in(visual, |reader, window, cx| {
-        reader.preview_file("document.pdf", window, cx)
+    let mut original_key = reader.read_with(visual, HeaderKey::new);
+    reader.update(visual, |reader, cx| {
+        reader.file_preview.as_mut().unwrap().pdf = Some(second.clone());
+        cx.notify();
     });
     visual.run_until_parked();
-    let second = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
-    });
+    let mut replacement_key = reader.read_with(visual, HeaderKey::new);
+    original_key.viewers.clear();
+    replacement_key.viewers.clear();
+    assert!(
+        original_key == replacement_key,
+        "positive control: only callback ownership changed, not presentation"
+    );
     assert_ne!(
         first.entity_id(),
         second.entity_id(),
         "positive control: same file got a new viewer entity"
     );
-    let start = std::time::Instant::now();
-    while second.read_with(visual, |pdf, _| pdf.page_count().is_none()) {
-        visual.run_until_parked();
-        assert!(start.elapsed() < Duration::from_secs(30));
-        std::thread::sleep(Duration::from_millis(10));
-    }
     // Preserve ordinary cache reuse: a full refresh would accidentally repair
     // stale callbacks and make a missing entity-id key look correct.
     visual.update(|window, cx| window.draw(cx).clear(cx));
