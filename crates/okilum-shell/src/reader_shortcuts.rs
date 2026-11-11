@@ -128,9 +128,9 @@ fn catalog() -> Vec<Entry> {
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         menu_entry::<CopyFileContent>("Copy file content", Notes),
-        entry::<CopyFilePath>("Copy path", Notes),
-        entry::<CopyFileWikilink>("Copy wikilink", Notes),
-        entry::<OpenFileDefault>("Open with default app", Notes),
+        menu_entry::<CopyFilePath>("Copy path", Notes),
+        menu_entry::<CopyFileWikilink>("Copy wikilink", Notes),
+        menu_entry::<OpenFileDefault>("Open with default app", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
@@ -651,18 +651,25 @@ mod tests {
     }
 
     #[gpui::test]
-    fn file_content_copy_is_catalogued_without_an_unsolicited_shortcut(cx: &mut TestAppContext) {
+    fn file_menu_actions_are_catalogued_without_unsolicited_shortcuts(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);
-        let copy = catalog()
-            .into_iter()
-            .find(|entry| entry.action == CopyFileContent::name_for_type())
-            .expect("menu action is registered for live labels and user bindings");
-        assert_eq!(copy.label, "Copy file content");
-        assert!(!copy.default_binding);
-        assert!(keys_for(&keymap, copy.action, Os::CURRENT).is_empty());
-        assert!(!rows(&keymap, Os::CURRENT)
-            .iter()
-            .any(|row| row.label == copy.label));
+        for (action, label) in [
+            (CopyFileContent::name_for_type(), "Copy file content"),
+            (CopyFilePath::name_for_type(), "Copy path"),
+            (CopyFileWikilink::name_for_type(), "Copy wikilink"),
+            (OpenFileDefault::name_for_type(), "Open with default app"),
+        ] {
+            let item = catalog()
+                .into_iter()
+                .find(|entry| entry.action == action)
+                .expect("menu action is registered for live labels and user bindings");
+            assert_eq!(item.label, label);
+            assert!(!item.default_binding);
+            assert!(keys_for(&keymap, action, Os::CURRENT).is_empty());
+            assert!(!rows(&keymap, Os::CURRENT)
+                .iter()
+                .any(|row| row.label == label));
+        }
     }
 
     #[gpui::test]

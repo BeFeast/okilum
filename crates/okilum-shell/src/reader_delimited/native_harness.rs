@@ -41,7 +41,6 @@ pub(crate) fn entry() -> bool {
                     };
                     cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
                 })).unwrap();
-                let preview = preview.unwrap();
                 let mut previous = started;
                 let mut maximum = Duration::ZERO;
                 let mut ticks = 0;
@@ -54,6 +53,12 @@ pub(crate) fn entry() -> bool {
                     ticks += 1;
                     assert!(maximum < Duration::from_secs(2), "{name}: event loop blocked {maximum:?}");
                     assert!(started.elapsed() < Duration::from_secs(90), "{name}: table never completed");
+                    // CodePreview attaches its table after the document read
+                    // completes. A JSON array need not have a table at construction.
+                    if preview.is_none() {
+                        preview = cx.update(|cx| code.as_ref().and_then(|code| code.read(cx).native_table()));
+                    }
+                    let Some(preview) = preview.as_ref() else { continue; };
                     let ready = cx.update(|cx| {
                         let p = preview.read(cx);
                         p.table.is_some() && !p.loading && !p.updating
@@ -76,6 +81,7 @@ pub(crate) fn entry() -> bool {
                         phase = 2;
                     } else if ticks >= 6 { break; }
                 }
+                let preview = preview.expect("completed native table");
                 cx.update(|cx| preview.update(cx, |p, cx| {
                     assert!(!p.order.is_empty(), "filter must exercise actual rows");
                     assert!(p.table.as_ref().unwrap().cell(p.order[0], 0).contains("needle"));
