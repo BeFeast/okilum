@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -224,6 +225,65 @@ class HelperFlowTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(workspace.run("fixture", [], expected), accepted)
 
+    def test_workspace_log_and_ordinary_overlap_but_reveal_waits_and_failures_survive(self):
+        inventory = subprocess.CompletedProcess([], 0, stdout=(
+            "ordinary::case0: test\nordinary::case2: test\nreader_log::case: test\n"
+            "platform::reveal::tests::case: test\n"), stderr="")
+        for failed in (None, "ordinary-0", "ordinary-1", "logs", "reveal"):
+            with self.subTest(failed=failed):
+                barrier = threading.Barrier(3)
+                completed = set()
+                lock = threading.Lock()
+
+                def execute(name, arguments, expected):
+                    self.assertEqual(expected, 1)
+                    if name in ("ordinary-0", "ordinary-1", "logs"):
+                        # A serial regression cannot satisfy this positive
+                        # rendezvous; no compiler, services or sleeps involved.
+                        barrier.wait(timeout=3)
+                    else:
+                        with lock:
+                            self.assertEqual(completed, {"ordinary-0", "ordinary-1", "logs"})
+                    with lock:
+                        completed.add(name)
+                    return name != failed
+
+                with patch.object(workspace.subprocess, "run", return_value=inventory), \
+                        patch.object(workspace, "run", side_effect=execute), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(workspace.main(), int(failed is not None))
+                self.assertEqual(completed, {"ordinary-0", "ordinary-1", "logs", "reveal"})
+
+    def test_workspace_exact_shards_preserve_duplicate_and_prefix_names_once(self):
+        names = ['ordinary::case0', 'ordinary::case2', 'ordinary::case0',
+                 'ordinary::case0::nested', 'reader_log::case',
+                 'platform::reveal::tests::case']
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            name + ': test\n' for name in names), stderr='')
+        seen = []
+        threads = []
+        lock = threading.Lock()
+
+        def execute(name, arguments, expected):
+            if name.startswith('ordinary-'):
+                self.assertIn('--exact', arguments)
+                self.assertIn('--test-threads=2', arguments)
+                selected = [item for item in names if item in arguments]
+                threads.append(2)
+            else:
+                selected = [item for item in names if arguments[0] in item]
+            self.assertEqual(len(selected), expected)
+            with lock:
+                seen.extend(selected)
+            return True
+
+        with patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                patch.object(workspace, 'run', side_effect=execute), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(workspace.main(), 0)
+        self.assertCountEqual(seen, names)
+        self.assertEqual(sum(threads), 4)
+
     def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -251,7 +311,7 @@ class HelperFlowTests(unittest.TestCase):
                              'fi\n'
                              'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
                              '  if [[ " $* " == *" --list "* ]]; then\n'
-                             '    printf "ordinary::sample: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
+                             '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
                              '  else\n'
                              '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
                              '  fi\n'
@@ -279,12 +339,17 @@ class HelperFlowTests(unittest.TestCase):
                 wrapped = groups.read_text().splitlines()
                 workspace_calls = [call for call in calls if
                                    '-p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3' in call]
-                self.assertEqual(len(workspace_calls), 4)  # census + three disjoint runs
+                self.assertEqual(len(workspace_calls), 5)  # census + four disjoint runs
                 self.assertIn('--list', workspace_calls[0])
-                self.assertIn('--skip reader_log --skip platform::reveal::tests::', workspace_calls[1])
-                self.assertIn('reader_log --nocapture --test-threads=1', workspace_calls[2])
-                self.assertIn('platform::reveal::tests:: --nocapture --test-threads=1', workspace_calls[3])
-                self.assertEqual(len(wrapped) + 3, len(calls))
+                ordinary_calls = [call for call in workspace_calls if '--exact' in call]
+                self.assertEqual(len(ordinary_calls), 2)
+                self.assertTrue(all('--test-threads=2' in call for call in ordinary_calls))
+                self.assertTrue(any('ordinary::case0' in call for call in ordinary_calls))
+                self.assertTrue(any('ordinary::case2' in call for call in ordinary_calls))
+                self.assertTrue(any('reader_log --nocapture --test-threads=1' in call
+                                    for call in workspace_calls[1:4]))
+                self.assertIn('platform::reveal::tests:: --nocapture --test-threads=1', workspace_calls[4])
+                self.assertEqual(len(wrapped) + 4, len(calls))
                 self.assertIn('issue2049 120', wrapped)
                 self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))

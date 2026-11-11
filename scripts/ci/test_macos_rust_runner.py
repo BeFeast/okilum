@@ -12,6 +12,70 @@ RUN_TESTS = re.search(r"^run_tests\(\) \{.*?^\}", SCRIPT, re.M | re.S)[0]
 
 
 class NativeRustVerdicts(unittest.TestCase):
+    def test_split_jobs_execute_the_complete_gate_without_serial_production_build(self):
+        # Execute the actual shell orchestration with synthetic platform tools.
+        # Cargo is never started on this host. The old unsplit script fails
+        # both mode checks: production reaches tests and tests builds the app.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'scripts/ci').mkdir(parents=True)
+            (root / 'scripts/ci/release-cache.sh').write_text('release_cache_stats() { :; }\n')
+            (root / 'scripts/ci/check-supervisor-bundle.sh').write_text('echo supervisor-bundle >> "$RECEIPT"\n')
+            (root / 'scripts/vendor-setup.sh').write_text(':\n')
+            binary = root / 'bin'
+            binary.mkdir()
+            programs = {
+                'uname': 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac',
+                'rustc': ':', 'rustup': ':',
+                'python3': 'echo "python $*" >> "$RECEIPT"',
+                'cargo': 'echo "cargo $*" >> "$RECEIPT"; echo "fixture::positive: test"',
+                'xcrun': '''
+if [ "$1" = --sdk ]; then echo /synthetic-sdk; exit; fi
+while [ "$1" != -o ]; do shift; done
+printf '#!/bin/sh\nexit 0\n' > "$2"
+chmod +x "$2"
+''',
+            }
+            for name, text in programs.items():
+                path = binary / name
+                path.write_text('#!/bin/sh\n' + text + '\n')
+                path.chmod(0o755)
+            script = root / 'check-macos.sh'
+            script.write_text(SCRIPT)
+            receipts = {}
+            for mode in ('all', 'production', 'tests'):
+                receipt = root / (mode + '.receipt')
+                result = subprocess.run(['bash', str(script), mode], cwd=root,
+                    env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH'],
+                             HOME=str(root), RUNNER_TEMP=str(root), RECEIPT=str(receipt),
+                             GITHUB_ACTIONS='true', GITHUB_SERVER_URL='https://github.com',
+                             OKILUM_NETWORK_WRITE_QA='0', OKILUM_ENCODING_REPAIR_QA='0'),
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                receipts[mode] = receipt.read_text().splitlines()
+            production_build = 'cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell'
+            self.assertIn(production_build, receipts['production'])
+            self.assertNotIn(production_build, receipts['tests'])
+            self.assertFalse(any(line.startswith('cargo test') for line in receipts['production']))
+            for line in receipts['all']:
+                # Shared setup intentionally runs in both isolated jobs.
+                self.assertIn(line, receipts['production'] + receipts['tests'])
+            for line in receipts['tests']:
+                self.assertIn(line, receipts['all'])
+            for control in ('negative_control.py', 'sparkle-freshness/run.py'):
+                self.assertTrue(any(control in line for line in receipts['production']))
+                self.assertFalse(any(control in line for line in receipts['tests']))
+            self.assertTrue(any('--workspace --no-run' in line for line in receipts['tests']))
+            workflow = (Path(__file__).parents[2] / '.github/workflows/forgejo-macos.yml').read_text()
+            for job, mode in (('macos', 'tests'), ('production', 'production')):
+                # This module also runs before dependencies on a fresh Mac.
+                # Check the two literal job blocks without a PyYAML dependency.
+                value = re.search(r'^  ' + job + r':\n(.*?)(?=^  \S|\Z)',
+                                  workflow, re.M | re.S)[1]
+                self.assertIn('    needs: select\n', value)
+                self.assertIn('    timeout-minutes: 75\n', value)
+                self.assertIn('check-macos.sh ' + mode + '\n', value)
+
     def run_suites(self, list_case="match", run_status=0, second=False):
         with tempfile.TemporaryDirectory() as directory:
             program = r'''
