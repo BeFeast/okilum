@@ -7728,6 +7728,9 @@ mod tests {
         {
             let (_directory, reader, visual) = open_log(first, cx);
             let view = log_view(&reader, visual);
+            // Saved views is a header icon at the default desktop width;
+            // narrow headers expose the same live menu through overflow.
+            visual.simulate_resize(gpui::size(px(1440.), px(900.)));
             visual.update(|window, cx| window.draw(cx).clear(cx));
             assert!(
                 reader_viewer_chrome::tests::measured_bounds(visual, "log-saved").is_some(),

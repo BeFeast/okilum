@@ -413,8 +413,11 @@ fn toolbar2808_investigation_breadcrumb_back_and_count_share_the_demand_row(
         for id in ["log-request-back", "log-breadcrumb", "log-request-count"] {
             let control = bounds(visual, id).expect("required investigation control");
             assert!(
-                row.contains(&control.center()),
-                "{id} stays inside the single row at {width}"
+                control.left() >= row.left()
+                    && control.right() <= row.right()
+                    && control.top() >= row.top()
+                    && control.bottom() <= row.bottom(),
+                "{id} stays fully inside the single row at {width}"
             );
         }
         filter_click(visual, "log-request-back");
@@ -636,4 +639,51 @@ fn toolbar2808_retained_alias_and_menu_commands_reach_the_header_from_reader_foc
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     view.read_with(visual, |view, _| assert!(view.command_menu.is_none()));
+}
+
+#[gpui::test]
+fn toolbar2808_save_view_uses_the_bottom_bar_and_menu_dismissal_keeps_name_focus(
+    cx: &mut TestAppContext,
+) {
+    let _shutdown = TestShutdown(cx.clone());
+    let settings = tempfile::tempdir().unwrap();
+    cx.update(|cx| reader_ui_state::install(settings.path(), cx));
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    let root_focus = reader.read_with(visual, |reader, _| reader.focus_handle.clone());
+    visual.update(|window, cx| {
+        root_focus.focus(window, cx);
+        window.dispatch_action(Box::new(OpenLogSavedViews), cx);
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down down enter");
+    visual.run_until_parked();
+    let input = view.read_with(visual, |view, _| {
+        view.saving
+            .as_ref()
+            .expect("Save current view opened its form")
+            .input
+            .clone()
+    });
+    visual.update(|window, cx| {
+        assert!(
+            input.read(cx).focus_handle(cx).is_focused(window),
+            "dismissing the command menu preserves the new name field's focus"
+        )
+    });
+    let bounds = reader_viewer_chrome::tests::measured_bounds;
+    let form = bounds(visual, "log-saving").unwrap();
+    let viewer = bounds(visual, "reader-log").unwrap();
+    assert!(
+        (form.bottom() - viewer.bottom()).abs() <= px(1.),
+        "save-view feedback belongs to the bottom bar"
+    );
+    assert_eq!(form.size.height, px(28.));
+    assert!(
+        bounds(visual, "log-query-row").is_none(),
+        "saving adds no row above the records"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| assert!(view.saving.is_none()));
 }
