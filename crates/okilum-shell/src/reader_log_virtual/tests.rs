@@ -68,6 +68,11 @@ fn toolbar2808_embedded_okilog_plans_from_its_docked_pane(cx: &mut TestAppContex
             "{id} {control:?} stays inside the measured embedded pane {pane:?}"
         );
     }
+    let more = bounds(visual, "log-more").unwrap();
+    assert!(
+        (more.right() - (pane.right() - px(12.))).abs() <= px(1.),
+        "More stays pinned to the pane's trailing padding"
+    );
     for id in ["log-saved", "log-columns-menu", "log-export", "log-files"] {
         if let Some(control) = bounds(visual, id) {
             assert!(

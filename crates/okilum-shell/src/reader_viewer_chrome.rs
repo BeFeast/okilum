@@ -1499,6 +1499,7 @@ pub(crate) fn render_compact_header(
     let copies = chrome.copy_actions.clone();
     h_flex()
         .debug_selector(|| "viewer-compact-header".into())
+        .w_full()
         .flex_none()
         .min_w_0()
         .h(px(48.))
