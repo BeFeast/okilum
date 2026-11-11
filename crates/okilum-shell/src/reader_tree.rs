@@ -15,10 +15,10 @@ pub struct Row {
     pub expanded: bool,
     /// Inside an Archive folder: rendered muted (docs/design/reader.md, #369).
     pub archived: bool,
-    /// A `_`/`.` item shown only because hidden files are on or because it
+    /// A `@`/`_`/`.` item shown only because hidden files are on or because it
     /// leads to the current note (#395): rendered muted with a marker.
     pub hidden: bool,
-    /// The folder's index note (`_index.md`, #1512): listed first in its
+    /// The folder's index note (`@index.md` or `_index.md`, #1512): listed first in its
     /// folder, muted, with its own icon, and shown without Show hidden
     /// files. Otherwise an ordinary note row.
     pub index: bool,
@@ -34,7 +34,7 @@ pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
     crate::reader_tree_breadcrumbs::Ancestors::new(rows.to_vec()).at(first)
 }
 
-/// Ordinary `_`/`.` paths are hidden in the browser until Show hidden files
+/// Ordinary `@`/`_`/`.` paths are hidden in the browser until Show hidden files
 /// or navigation reveals them. They remain in inventory for links and search;
 /// service directories are excluded by the scanner.
 pub fn hidden(path: &str) -> bool {
@@ -57,7 +57,7 @@ pub struct Tree {
     pub cursor: Option<String>,
     selected: BTreeSet<String>,
     selection_anchor: Option<String>,
-    /// Show `_`/`.` items (per-vault preference, #395).
+    /// Show `@`/`_`/`.` items (per-vault preference, #395).
     show_hidden: bool,
     agent_shims: BTreeSet<String>,
     /// A hidden path revealed for navigation; its branch is shown until the

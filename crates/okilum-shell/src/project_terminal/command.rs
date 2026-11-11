@@ -287,6 +287,20 @@ mod at_argument_tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap();
+        let data = script
+            .split("FromBase64String('")
+            .nth(1)
+            .unwrap()
+            .split("')")
+            .next()
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&STANDARD.decode(data).unwrap()).unwrap();
+        assert_eq!(payload["argv"], serde_json::json!(initial.argv));
+        assert_eq!(
+            payload["arguments"],
+            serde_json::json!("\"@AgentContract.md\" \"@Assets/Files/a b.pdf\"")
+        );
         assert!(script.contains("FromBase64String"));
         assert!(
             !script.contains("@AgentContract.md"),

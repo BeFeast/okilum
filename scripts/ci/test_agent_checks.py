@@ -37,7 +37,7 @@ def receipt():
                 "Run CI, releases and updater Python suites", "Verify per-user AppImage runtime",
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
-                "Reject and reap surviving agent fixture daemons")]},
+                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
@@ -129,6 +129,12 @@ class VerdictTests(unittest.TestCase):
         data["conclusion"] = "failure"
         data["jobs"][1]["conclusion"] = "failure"
         self.assertEqual(helper.verdict(data, SHA), 1)
+
+    def test_vault_regression_control_must_run_for_normal_worker_checks(self):
+        info = receipt()
+        for verdict in ("skipped", "failure"):
+            info["jobs"][0]["steps"][-1]["conclusion"] = verdict
+            self.assertEqual(helper.verdict(info, SHA), 75)
 
     def test_worker_lane_has_no_secrets_or_publication(self):
         workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()

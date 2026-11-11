@@ -246,7 +246,7 @@ jobs:
           CARGO_NET_OFFLINE: 'true'
         run: cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
       - name: Verify additive vault regression controls
-        if: inputs.benchmark != 'true'
+        if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
         run: python3 scripts/ci/at-vault-regression-control.py
       - name: Warm complete okilum-core suite offline
         if: ${{ !cancelled() && steps.warm-build.outcome == 'success' }}

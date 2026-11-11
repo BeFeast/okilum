@@ -50,7 +50,7 @@ pub struct FileItem {
 }
 
 /// What a paste of file URLs does, decided on the UI thread from metadata
-/// only; the copying happens later.
+/// and bounded image signature reads; the copying happens later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FilePlan {
     pub image_options: super::image_import::Options,

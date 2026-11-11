@@ -1276,13 +1276,37 @@ impl Vault {
     /// Resolve `target` as written inside `from_note` (a rel path; pass `""`
     /// when there is no source note).
     ///
-    /// Only relative targets — those starting with `./` or `../` — use the
+    /// Bare `@index` additionally prefers the source folder's unambiguous @ index.
+    /// Legacy `_index` and other bare names retain their existing root-first rules.
+    /// Relative targets — those starting with `./` or `../` — use the
     /// source note, and for them it is not a hint but the whole meaning:
     /// `[[../ops/signoff]]` names a sibling directory of the *linking* note and
     /// says nothing on its own. The vault has hundreds of these. Resolving them
     /// by suffix instead would answer with whichever unrelated note happened to
     /// end in `ops/signoff`.
     pub fn resolve_from(&self, target: &str, from_note: &str) -> Resolution {
+        let bare = target.split(['#', '^']).next().unwrap_or("").trim();
+        if bare.eq_ignore_ascii_case("@index") || bare.eq_ignore_ascii_case("@index.md") {
+            let folder = from_note.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let key = if folder.is_empty() {
+                "@index".to_owned()
+            } else {
+                format!("{folder}/@index").to_lowercase()
+            };
+            let candidates: Vec<_> = self
+                .suffix_map
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter(|path| path.rsplit_once('/').map_or("", |(parent, _)| parent) == folder)
+                .cloned()
+                .collect();
+            match candidates.as_slice() {
+                [path] => return Resolution::Resolved { path: path.clone() },
+                [] => {}
+                _ => return Resolution::Ambiguous { candidates },
+            }
+        }
         if let Some(graph) = self.published_graph() {
             return self.resolve_published(target, from_note, &graph.alias_map);
         }

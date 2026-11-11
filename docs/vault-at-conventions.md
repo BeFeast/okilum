@@ -9,6 +9,12 @@ The shared conventions classify hidden path segments and case-insensitive
 over every legacy spelling. Multiple spellings in the preferred family remain
 ambiguous. Index rows and the Vault Index header use that decision; legacy-only
 folders retain their existing behavior. Quick open/backlinks use folder titles.
+Bare `[[@index]]` prefers an unambiguous @ index in the linking note's folder;
+without a local @ index it uses the existing resolver fallback. Multiple local
+@ spellings remain ambiguous. Explicit relative, qualified and root paths keep
+their existing meaning. The original issue described legacy bare `[[_index]]`
+as folder-relative, but the actual resolver is root-first. Legacy `_index` and
+unrelated bare-name resolution deliberately remain unchanged.
 Projects and workbench consume the same families. Project creation inspects both
 families before writing and defaults to `@index.md` only when the vault signals
 that convention with a root `@index` or `@Assets` / `@Schema` directory.

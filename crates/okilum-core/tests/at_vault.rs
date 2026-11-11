@@ -57,6 +57,7 @@ fn windows_issue2821_mixed_inventory_links_search_and_warm_sources() {
     for (target, expected) in [
         ("Area/@index", "Area/@index.md"),
         ("@index", "Area/@index.md"),
+        ("./@index", "Area/@index.md"),
         ("@AgentContract", "@AgentContract.md"),
         ("a.excalidraw.md", "@Assets/Excalidraw/a.excalidraw.md"),
     ] {
@@ -265,8 +266,9 @@ fn windows_issue2821_incremental_asset_create_update_and_directory_delete() {
     };
     let root = tempfile::tempdir().unwrap();
     fixture::populate(root.path());
+    let canonical_root = root.path().canonicalize().unwrap();
     let (vault, snapshot, _) =
-        warm::reconcile(root.path(), None, false, &mut |_, _| Ok(())).unwrap();
+        warm::reconcile(&canonical_root, None, false, &mut |_, _| Ok(())).unwrap();
     let mut state = State::new(vault, snapshot);
     let path = "@Assets/Clippings/Nested/new.md";
     std::fs::write(root.path().join(path), "# Created asset").unwrap();
@@ -320,4 +322,48 @@ fn windows_issue2821_incremental_asset_create_update_and_directory_delete() {
             Resolution::Unresolved
         );
     }
+}
+
+#[test]
+fn windows_issue2821_only_new_bare_at_index_prefers_source_folder() {
+    let root = tempfile::tempdir().unwrap();
+    for (path, source) in [
+        ("@Index.md", "# Root current"),
+        ("_Index.md", "# Root legacy"),
+        ("Area/@INDEX.md", "# Local current"),
+        ("Area/_index.md", "# Local legacy"),
+        ("guide.md", "# Root guide"),
+        ("Area/guide.md", "# Local guide"),
+    ] {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, source).unwrap();
+    }
+    let vault = Vault::scan(root.path()).unwrap();
+    for (target, from, expected) in [
+        ("@index", "Area/Links.md", "Area/@INDEX.md"),
+        ("@index.md#Heading", "Area/Links.md", "Area/@INDEX.md"),
+        ("@index", "NoLocal/Links.md", "@Index.md"),
+        ("_index", "Area/Links.md", "_Index.md"),
+        ("guide", "Area/Links.md", "guide.md"),
+        ("./@index", "Area/Links.md", "Area/@INDEX.md"),
+        ("/@index", "Area/Links.md", "@Index.md"),
+        ("Area/@index", "NoLocal/Links.md", "Area/@INDEX.md"),
+    ] {
+        assert_eq!(
+            vault.resolve_from(target, from),
+            Resolution::Resolved {
+                path: expected.into()
+            },
+            "{target} from {from}"
+        );
+    }
+    let ambiguous = Vault::from_note_paths(
+        ["@Index.md", "Area/@index.md", "Area/@INDEX.md"]
+            .into_iter()
+            .map(str::to_owned),
+    );
+    assert!(
+        matches!(ambiguous.resolve_from("@index", "Area/Links.md"), Resolution::Ambiguous { candidates } if candidates.len() == 2)
+    );
 }

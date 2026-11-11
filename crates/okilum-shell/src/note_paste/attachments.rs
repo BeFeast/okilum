@@ -3,8 +3,8 @@
 //!
 //! Folder: `.obsidian/app.json` `attachmentFolderPath` — `/` is the vault
 //! root, `./` the note's folder, `./sub` a folder under the note's folder, any
-//! other value a vault-relative folder. Absent (or unusable): `attachments/`
-//! at the vault root. Name: `Pasted image YYYYMMDDHHMMSS.png`, `-1`, `-2`, …
+//! other value a vault-relative folder. Absent (or unusable): the typed vault
+//! default (`@Assets/Images` or `Files`, with legacy directory fallbacks). Name: `Pasted image YYYYMMDDHHMMSS.png`, `-1`, `-2`, …
 //! when taken. The file is written to a temporary file in that folder and
 //! linked into place without replacing anything, before the embed is inserted.
 

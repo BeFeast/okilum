@@ -56,6 +56,8 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Reject and reap surviving agent fixture daemons"}
+    if not benchmark:
+        required.add("Verify additive vault regression controls")
     if publication_controls:
         required.add("Compare editor publication with pinned main on this host")
     if benchmark:
