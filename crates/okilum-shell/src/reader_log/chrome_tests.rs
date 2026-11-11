@@ -180,6 +180,20 @@ fn toolbar2808_live_append_keeps_header_and_side_panels_cached(cx: &mut TestAppC
         )
         .unwrap();
         drop(file);
+        // Deliver an actual OS watcher receipt through Reader's production
+        // callback as well as advancing Follow. Its debounce uses wall time,
+        // unlike GPUI's test clock: never let an undrained watcher pass a guard.
+        let mut watcher = reader.update(visual, |reader, _| {
+            reader.watcher.take().expect("the live Reader watcher")
+        });
+        let changes = watcher
+            .wait(Duration::from_secs(3))
+            .expect("the real append reaches the bounded folder watcher");
+        assert!(changes.directories.contains(""));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.watcher = Some(watcher);
+            reader.apply_vault_changes(changes, window, cx);
+        });
         visual.executor().advance_clock(Duration::from_millis(600));
         guard.unchanged(&reader, visual);
         view.read_with(visual, |view, _| {
