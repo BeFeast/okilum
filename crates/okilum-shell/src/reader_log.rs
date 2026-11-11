@@ -3784,6 +3784,7 @@ impl LogView {
                 .when_some(editor.error.clone(), |input, error| {
                     input.suffix(
                         div()
+                            .id("log-regex-pattern-error")
                             .debug_selector(|| "log-regex-error".into())
                             .max_w(px(200.))
                             .truncate()

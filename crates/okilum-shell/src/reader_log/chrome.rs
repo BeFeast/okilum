@@ -740,6 +740,7 @@ impl LogView {
                 )
                 .children(self.regex_error.clone().map(|error| {
                     div()
+                        .id("log-regex-apply-error")
                         .debug_selector(|| "log-regex-error".into())
                         .text_color(brand::palette(cx).danger)
                         .text_size(px(12.))
