@@ -169,7 +169,14 @@ impl ArchivePreview {
             .debug_selector(|| "archive-entry-bar".into())
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
-            .child(div().flex_1().min_w_0().truncate().child(crumb))
+            .child(
+                div()
+                    .debug_selector(|| "archive-entry-crumb".into())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(crumb),
+            )
             .when(matches!(&self.entry, Some(EntryView::Text(_))), |row| {
                 if let Some(EntryView::Text(text)) = &self.entry {
                     row.child(text.read(cx).open_button(cx))
@@ -791,6 +798,70 @@ impl Render for ArchivePreview {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn entry_compact_bar_fits_460_pixels_and_partial_status_stays_inside_the_pane(
+        cx: &mut TestAppContext,
+    ) {
+        use reader_viewer_chrome::tests::{fixture, measured_bounds};
+        let (reader, visual, temp) = fixture(cx, "note.md");
+        let mut zip = zip::ZipWriter::new(
+            std::fs::File::create(temp.path().join("vault/release-0.9.4.zip")).unwrap(),
+        );
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("package.json", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"{\"name\":\"entry-fixture\"}\n").unwrap();
+        zip.start_file("gateway.log", options).unwrap();
+        std::io::Write::write_all(&mut zip, &b"INFO ready\n".repeat(7000)).unwrap();
+        zip.finish().unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("release-0.9.4.zip", window, cx);
+            reader.maximize_note(window, cx);
+        });
+        visual.simulate_resize(size(px(460.), px(800.)));
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |reader, _| {
+            reader
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .unwrap()
+        });
+        for name in ["package.json", "gateway.log"] {
+            let index = archive.read_with(visual, |archive, _| {
+                archive
+                    .listing
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name == name)
+                    .unwrap()
+            });
+            archive.update_in(visual, |archive, window, cx| {
+                archive.open_entry(index, window, cx)
+            });
+            visual.run_until_parked();
+            let pane = measured_bounds(visual, "archive-entry").unwrap();
+            let bar = measured_bounds(visual, "archive-entry-bar").unwrap();
+            let crumb = measured_bounds(visual, "archive-entry-crumb").unwrap();
+            assert_eq!(bar.size, size(px(460.), px(48.)));
+            assert_eq!(bar.top(), pane.top());
+            assert!(crumb.size.width >= px(120.));
+            assert!(crumb.left() >= bar.left() && crumb.right() <= bar.right());
+            if name == "gateway.log" {
+                let open = measured_bounds(visual, "plain-file-open").unwrap();
+                assert!(open.left() >= bar.left() && open.right() <= bar.right());
+                let status = measured_bounds(visual, "plain-file-status-line").unwrap();
+                let archive_status = measured_bounds(visual, "file-status-line").unwrap();
+                assert_eq!(status.size.height, px(28.));
+                assert!(status.top() >= bar.bottom() && status.bottom() <= pane.bottom());
+                assert!(status.bottom() <= archive_status.top());
+            }
+        }
+    }
 
     #[gpui::test]
     fn a_selected_entry_fills_the_space_under_the_list(cx: &mut TestAppContext) {

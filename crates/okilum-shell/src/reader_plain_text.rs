@@ -92,6 +92,7 @@ impl PlainTextPreview {
             "Open with default app",
             cx,
         )
+        .debug_selector(|| "plain-file-open".into())
         .accessibility_label("Open with default app")
         .on_click(move |_, window, cx| {
             reader_files::run(reader_files::FileAction::Open, &root, &rel, window, cx);
