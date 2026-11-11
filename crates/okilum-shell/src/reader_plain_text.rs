@@ -113,11 +113,8 @@ impl Render for PlainTextPreview {
             .min_h_0()
             .px(px(READER_SIDE_PADDING))
             .pb_6()
-            .gap_3()
-            .when(self.compact_header, |view| {
-                view.child(h_flex().flex_none().h(px(48.)).child(self.open_button(cx)))
-            });
-        match &self.state {
+            .gap_3();
+        let content = match &self.state {
             State::Loading => view.child(
                 div()
                     .text_color(cx.theme().muted_foreground)
@@ -131,27 +128,45 @@ impl Render for PlainTextPreview {
                         .child(*message),
                 ),
             ),
-            State::Content { content, partial } => view
-                .child(
-                    TextView::new(content)
-                        .selectable(true)
-                        .selection_format(SelectionFormat::Plain)
-                        .scrollable(true)
-                        .w_full()
-                        .flex_1()
-                        .min_h_0()
-                        .style(
-                            TextViewStyle::default().code_block(
-                                StyleRefinement::default()
-                                    .bg(gpui::rgba(0))
-                                    .border_0()
-                                    .rounded(px(0.))
-                                    .p_0()
-                                    .text_size(code_size),
-                            ),
+            State::Content { content, .. } => view.child(
+                TextView::new(content)
+                    .selectable(true)
+                    .selection_format(SelectionFormat::Plain)
+                    .scrollable(true)
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .style(
+                        TextViewStyle::default().code_block(
+                            StyleRefinement::default()
+                                .bg(gpui::rgba(0))
+                                .border_0()
+                                .rounded(px(0.))
+                                .p_0()
+                                .text_size(code_size),
                         ),
+                    ),
+            ),
+        };
+        v_flex()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .when(self.compact_header, |view| {
+                view.child(
+                    h_flex()
+                        .flex_none()
+                        .h(px(48.))
+                        .px_3()
+                        .border_b_1()
+                        .border_color(brand::palette(cx).border_subtle)
+                        .child(self.open_button(cx)),
                 )
-                .when(*partial, |view| {
+            })
+            .child(content)
+            .when(
+                matches!(&self.state, State::Content { partial: true, .. }),
+                |view| {
                     view.child(reader_status_line::render(
                         &reader_status_line::StatusLine {
                             text: "Showing the beginning of this file".into(),
@@ -161,8 +176,8 @@ impl Render for PlainTextPreview {
                         None,
                         cx,
                     ))
-                }),
-        }
+                },
+            )
     }
 }
 
