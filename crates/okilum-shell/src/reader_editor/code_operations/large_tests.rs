@@ -73,6 +73,31 @@ fn large2804_plain_file_mutation_never_parses_markdown_outline(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn large2804_plain_json_format_growth_retires_small_read_preview(cx: &mut TestAppContext) {
+    let source = format!("{{\"rows\":[{}0]}}", "0,".repeat(600_000));
+    assert!(source.len() < 4 * 1024 * 1024);
+    let (f, visual) = open_file(cx, &source, "growth.json");
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(
+            reader.code_view_input(cx).is_some(),
+            "small read preview positive control"
+        );
+    });
+    click(visual, "source-code-format");
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(value(&f, cx).len() > 4 * 1024 * 1024);
+        assert!(
+            reader.code_view_input(cx).is_none(),
+            "growing Format result must release the hidden small preview too"
+        );
+    });
+    visual.dispatch_action(Undo);
+    settle(visual);
+    f.reader
+        .read_with(visual, |_, cx| assert_eq!(value(&f, cx), source));
+}
+
+#[gpui::test]
 fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestAppContext) {
     let source = format!(
         "{{\"values\":[\n{}\"tail\"]}}",
