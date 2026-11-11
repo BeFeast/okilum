@@ -371,9 +371,17 @@ impl ViewerAction {
             .when(self.menu.is_none(), |button| {
                 button.on_click(move |_, window, cx| invoke(window, cx))
             })
-            .when_some(self.menu.clone(), |button, menu| {
-                button.dropdown_menu_with_anchor(Anchor::TopRight, move |m, w, cx| menu(m, w, cx))
-            })
+    }
+
+    pub(crate) fn render_button(&self, collapsed: bool) -> AnyElement {
+        let button = self.button(collapsed);
+        if let Some(menu) = self.menu.clone() {
+            button
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |m, w, cx| menu(m, w, cx))
+                .into_any_element()
+        } else {
+            button.into_any_element()
+        }
     }
 
     pub(crate) fn menu_item(&self) -> PopupMenuItem {
@@ -712,7 +720,7 @@ impl Reader {
         let width_applies = self
             .file_preview
             .as_ref()
-            .is_some_and(|p| p.code.is_some() || p.text.is_some());
+            .is_some_and(|p| p.log.is_none() && (p.code.is_some() || p.text.is_some()));
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
         let order = chrome.overflow_order;
         let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
@@ -1004,7 +1012,9 @@ fn viewer_actions_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> 
         .children(actions.into_iter().map(|a| {
             h_flex()
                 .gap_1()
-                .child(a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id)))
+                .child(
+                    a.render_button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id)),
+                )
                 .when(
                     plan.shows("viewer-action-text") && chrome.action_text_after == Some(a.id),
                     |row| row.child(text()),

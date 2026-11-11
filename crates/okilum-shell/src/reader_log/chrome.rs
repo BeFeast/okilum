@@ -4,13 +4,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use reader_viewer_chrome::{BuildMenu, ViewerAction, ViewerChrome};
 
 impl LogView {
-    fn saved_menu(
-        &self,
-        view: WeakEntity<Self>,
-        menu: PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
+    fn saved_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let names: Vec<String> = reader_ui_state::saved_log_filters(cx)
             .sorted()
             .iter()
@@ -18,114 +12,107 @@ impl LogView {
             .collect();
         let can_save = self.data().is_some();
 
-        let mut menu = menu;
-        for name in &names {
-            let (view, name) = (view.clone(), name.clone());
-            menu = menu.item(
-                PopupMenuItem::new(name.clone()).on_click(move |_, window, cx| {
-                    let _ = view.update(cx, |this, cx| this.apply_saved(&name, window, cx));
-                }),
+        Rc::new(move |menu, window, cx| {
+            let mut menu = menu;
+            for name in &names {
+                let (view, name) = (view.clone(), name.clone());
+                menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.apply_saved(&name, window, cx));
+                    },
+                ));
+            }
+            if names.is_empty() {
+                menu = menu.item(PopupMenuItem::new("No saved views yet").disabled(true));
+            }
+            let save_view = view.clone();
+            menu = menu.separator().item(
+                PopupMenuItem::new("Save current view…")
+                    .disabled(!can_save)
+                    .on_click(move |_, window, cx| {
+                        let _ = save_view.update(cx, |this, cx| this.begin_saving(window, cx));
+                    }),
             );
-        }
-        if names.is_empty() {
-            menu = menu.item(PopupMenuItem::new("No saved views yet").disabled(true));
-        }
-        let save_view = view.clone();
-        menu = menu.separator().item(
-            PopupMenuItem::new("Save current view…")
-                .disabled(!can_save)
-                .on_click(move |_, window, cx| {
-                    let _ = save_view.update(cx, |this, cx| this.begin_saving(window, cx));
-                }),
-        );
-        if !names.is_empty() {
-            let (view, names) = (view.clone(), names.clone());
-            menu = menu.submenu("Delete", window, cx, move |menu, _, _| {
-                let mut menu = menu;
-                for name in &names {
-                    let (view, name) = (view.clone(), name.clone());
-                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
-                        move |_, window, cx| {
-                            reader_ui_state::delete_log_filter(&name, cx);
-                            reader_toast::transient(format!("Deleted “{name}”"), window, cx);
-                            let _ = view.update(cx, |_, cx| cx.notify());
-                        },
-                    ));
-                }
-                menu
-            });
-        }
-        menu
+            if !names.is_empty() {
+                let (view, names) = (view.clone(), names.clone());
+                menu = menu.submenu("Delete", window, cx, move |menu, _, _| {
+                    let mut menu = menu;
+                    for name in &names {
+                        let (view, name) = (view.clone(), name.clone());
+                        menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                            move |_, window, cx| {
+                                reader_ui_state::delete_log_filter(&name, cx);
+                                reader_toast::transient(format!("Deleted “{name}”"), window, cx);
+                                let _ = view.update(cx, |_, cx| cx.notify());
+                            },
+                        ));
+                    }
+                    menu
+                });
+            }
+            menu
+        })
     }
 }
 
 impl LogView {
-    fn export_menu(
-        &self,
-        view: WeakEntity<Self>,
-        menu: PopupMenu,
-        _window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
+    fn export_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let shown = self.visible_len();
         let selected = self.selection().map_or(0, |rows| rows.len());
         let marked = self.marked_rows().len();
         let csv = ExportFormat::Csv(self.csv_columns(cx));
         let raw_values = self.csv_raw_values;
 
-        let mut menu = menu;
-        let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
-        if selected > 1 {
-            scopes.push((ExportScope::Selected, selected, "selected"));
-        }
-        if marked > 0 {
-            scopes.push((ExportScope::Marked, marked, "marked"));
-        }
-        for (at, (scope, count, what)) in scopes.into_iter().enumerate() {
-            if at > 0 {
-                menu = menu.separator();
+        Rc::new(move |menu, _window, cx| {
+            let mut menu = menu;
+            let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
+            if selected > 1 {
+                scopes.push((ExportScope::Selected, selected, "selected"));
             }
-            for (format, how) in [
-                (ExportFormat::Raw, "raw lines"),
-                (ExportFormat::JsonLines, "JSON lines"),
-                (csv.clone(), "CSV"),
-            ] {
-                let view = view.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(format!(
-                        "Export {} {what} as {how}…",
-                        grouped(count as u64)
-                    ))
-                    .disabled(count == 0)
-                    .on_click(move |_, window, cx| {
-                        let format = format.clone();
+            if marked > 0 {
+                scopes.push((ExportScope::Marked, marked, "marked"));
+            }
+            for (at, (scope, count, what)) in scopes.into_iter().enumerate() {
+                if at > 0 {
+                    menu = menu.separator();
+                }
+                for (format, how) in [
+                    (ExportFormat::Raw, "raw lines"),
+                    (ExportFormat::JsonLines, "JSON lines"),
+                    (csv.clone(), "CSV"),
+                ] {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!(
+                            "Export {} {what} as {how}…",
+                            grouped(count as u64)
+                        ))
+                        .disabled(count == 0)
+                        .on_click(move |_, window, cx| {
+                            let format = format.clone();
+                            let _ = view
+                                .update(cx, |this, cx| this.export_rows(scope, format, window, cx));
+                        }),
+                    );
+                }
+            }
+            // A spreadsheet runs a cell that starts with = + - @ as a
+            // formula; CSV cells get an apostrophe there unless this is on.
+            let view = view.clone();
+            menu.separator().item(
+                PopupMenuItem::new("Raw values in CSV")
+                    .checked(raw_values)
+                    .on_click(move |_, _, cx| {
                         let _ =
-                            view.update(cx, |this, cx| this.export_rows(scope, format, window, cx));
+                            view.update(cx, |this, cx| this.set_csv_raw_values(!raw_values, cx));
                     }),
-                );
-            }
-        }
-        // A spreadsheet runs a cell that starts with = + - @ as a
-        // formula; CSV cells get an apostrophe there unless this is on.
-        let view = view.clone();
-        menu.separator().item(
-            PopupMenuItem::new("Raw values in CSV")
-                .checked(raw_values)
-                .on_click(move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| this.set_csv_raw_values(!raw_values, cx));
-                }),
-        )
+            )
+        })
     }
 }
 
 impl LogView {
-    fn files_menu(
-        &self,
-        view: WeakEntity<Self>,
-        menu: PopupMenu,
-        _window: &mut Window,
-        _cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
+    fn files_menu(&self, view: WeakEntity<Self>, _cx: &App) -> BuildMenu {
         let sources: Vec<(usize, String, bool)> = (0..self.source_count())
             .map(|source| {
                 (
@@ -135,79 +122,79 @@ impl LogView {
                 )
             })
             .collect();
-        let several = sources.len() > 1;
-        let hidden = sources.iter().any(|(_, _, enabled)| !enabled);
 
-        let mut menu = menu;
-        for (source, name, enabled) in &sources {
-            let (view, source, enabled) = (view.clone(), *source, *enabled);
-            menu = menu.item(PopupMenuItem::new(name.clone()).checked(enabled).on_click(
-                move |_, _, cx| {
-                    let _ =
-                        view.update(cx, |this, cx| this.set_source_enabled(source, !enabled, cx));
-                },
-            ));
-        }
-        let view = view.clone();
-        menu.separator()
-            .item(PopupMenuItem::new("Add file…").on_click(move |_, _, cx| {
-                let _ = view.update(cx, |this, cx| this.prompt_add_files(cx));
-            }))
+        Rc::new(move |menu, _window, cx| {
+            let mut menu = menu;
+            for (source, name, enabled) in &sources {
+                let (view, source, enabled) = (view.clone(), *source, *enabled);
+                menu = menu.item(PopupMenuItem::new(name.clone()).checked(enabled).on_click(
+                    move |_, _, cx| {
+                        let _ = view
+                            .update(cx, |this, cx| this.set_source_enabled(source, !enabled, cx));
+                    },
+                ));
+            }
+            let view = view.clone();
+            menu.separator()
+                .item(PopupMenuItem::new("Add file…").on_click(move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| this.prompt_add_files(cx));
+                }))
+        })
     }
 }
 
 impl LogView {
-    fn columns_menu(
-        &self,
-        view: WeakEntity<Self>,
-        menu: PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
+    fn columns_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let shown = self.columns(cx);
 
         let names = self.field_names();
-        let mut menu = menu;
-        for name in names {
-            let (view, checked) = (view.clone(), shown.contains(&name));
-            menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
-                move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| this.toggle_column(&name, cx));
-                },
-            ));
-        }
         let fields = self.string_fields();
         let selected = self.message_field(cx);
-        let owner = view.clone();
-        let label = selected.map_or_else(
-            || "Choose message field".to_owned(),
-            |key| format!("Message: {key}"),
-        );
-        menu.separator()
-            .submenu(label, window, cx, move |mut menu, _, _| {
-                let clear = owner.clone();
-                menu = menu.item(PopupMenuItem::new("Default message field").on_click(
+        Rc::new(move |menu, window, cx| {
+            let mut menu = menu;
+            for name in &names {
+                let name = name.clone();
+                let (view, checked) = (view.clone(), shown.contains(&name));
+                menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
                     move |_, _, cx| {
-                        let _ = clear.update(cx, |this, cx| this.choose_field(None, true, cx));
+                        let _ = view.update(cx, |this, cx| this.toggle_column(&name, cx));
                     },
                 ));
-                for field in &fields {
-                    let (owner, field) = (owner.clone(), field.clone());
-                    menu =
-                        menu.item(PopupMenuItem::new(field.clone()).on_click(move |_, _, cx| {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.choose_field(Some(field.clone()), true, cx)
-                            });
-                        }));
-                }
-                menu
-            })
+            }
+            let owner = view.clone();
+            let label = selected.as_ref().map_or_else(
+                || "Choose message field".to_owned(),
+                |key| format!("Message: {key}"),
+            );
+            let fields = fields.clone();
+            menu.separator()
+                .submenu(label, window, cx, move |mut menu, _, _| {
+                    let clear = owner.clone();
+                    menu = menu.item(PopupMenuItem::new("Default message field").on_click(
+                        move |_, _, cx| {
+                            let _ = clear.update(cx, |this, cx| this.choose_field(None, true, cx));
+                        },
+                    ));
+                    for field in &fields {
+                        let (owner, field) = (owner.clone(), field.clone());
+                        menu = menu.item(PopupMenuItem::new(field.clone()).on_click(
+                            move |_, _, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    this.choose_field(Some(field.clone()), true, cx)
+                                });
+                            },
+                        ));
+                    }
+                    menu
+                })
+        })
     }
 }
 
 impl LogView {
     fn render_query_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let danger = brand::palette(cx).danger;
+        let palette = brand::palette(cx);
+        let danger = palette.danger;
         let view = cx.entity().downgrade();
         let error = self.query_error.clone();
         let query = div()
@@ -309,7 +296,8 @@ fn menu_builder(owner: WeakEntity<LogView>, kind: MenuKind) -> BuildMenu {
         let Some(view) = owner.upgrade() else {
             return menu;
         };
-        view.read(cx).menu(kind, owner.clone(), menu, window, cx)
+        let build = view.read(cx).build_menu(kind, owner.clone(), cx);
+        build(menu, window, cx)
     })
 }
 
@@ -333,60 +321,59 @@ impl LogView {
         )
     }
 
-    fn menu(
-        &self,
-        kind: MenuKind,
-        owner: WeakEntity<Self>,
-        mut menu: PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
+    fn build_menu(&self, kind: MenuKind, owner: WeakEntity<Self>, cx: &App) -> BuildMenu {
         match kind {
-            MenuKind::Saved => self.saved_menu(owner, menu, window, cx),
-            MenuKind::Columns => self.columns_menu(owner, menu, window, cx),
-            MenuKind::Export => self.export_menu(owner, menu, window, cx),
-            MenuKind::Files => self.files_menu(owner, menu, window, cx),
+            MenuKind::Saved => self.saved_menu(owner, cx),
+            MenuKind::Columns => self.columns_menu(owner, cx),
+            MenuKind::Export => self.export_menu(owner, cx),
+            MenuKind::Files => self.files_menu(owner, cx),
             MenuKind::Level => {
-                for (min, label) in LEVEL_CHOICES {
+                let level = self.filter.level;
+                Rc::new(move |mut menu, _, _| {
+                    for (min, label) in LEVEL_CHOICES {
+                        let owner = owner.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(level.min == min)
+                                .on_click(move |_, _, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.update_filter(|filter| filter.level.min = min, cx)
+                                    });
+                                }),
+                        );
+                    }
                     let owner = owner.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(self.filter.level.min == min)
+                    menu.separator().item(
+                        PopupMenuItem::new("Include lines without a level")
+                            .checked(level.without_level)
                             .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
-                                    this.update_filter(|filter| filter.level.min = min, cx)
+                                    this.update_filter(
+                                        |filter| filter.level.without_level = !level.without_level,
+                                        cx,
+                                    )
                                 });
                             }),
-                    );
-                }
-                let without = self.filter.level.without_level;
-                menu.separator().item(
-                    PopupMenuItem::new("Include lines without a level")
-                        .checked(without)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.update_filter(
-                                    |filter| filter.level.without_level = !without,
-                                    cx,
-                                )
-                            });
-                        }),
-                )
+                    )
+                })
             }
             MenuKind::Time => {
-                for time in TimeWindow::ALL {
-                    let owner = owner.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(time.label())
-                            .checked(self.filter.time == time)
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    this.update_filter(|filter| filter.time = time, cx)
-                                });
-                            }),
-                    );
-                }
-                menu
+                let current = self.filter.time;
+                Rc::new(move |mut menu, _, _| {
+                    for time in TimeWindow::ALL {
+                        let owner = owner.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(time.label())
+                                .checked(current == time)
+                                .on_click(move |_, _, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.update_filter(|filter| filter.time = time, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
             }
         }
     }
@@ -592,11 +579,17 @@ impl LogView {
         }
     }
 
-    pub(super) fn show_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_menu(
+        &mut self,
+        kind: MenuKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let owner = cx.entity().downgrade();
         let focus = self.focus.clone();
+        let build = self.build_menu(kind, owner, cx);
         let menu = PopupMenu::build(window, cx, |menu, window, cx| {
-            self.menu(kind, owner, menu.action_context(focus.clone()), window, cx)
+            build(menu.action_context(focus.clone()), window, cx)
         });
         menu.focus_handle(cx).focus(window, cx);
         let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {

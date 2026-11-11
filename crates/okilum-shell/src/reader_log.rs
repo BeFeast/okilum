@@ -2862,10 +2862,8 @@ impl LogView {
     }
 
     fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.data().is_some_and(|data| !data.index().is_empty()) {
-            self.text_input
-                .update(cx, |input, cx| input.focus(window, cx));
-        }
+        self.text_input
+            .update(cx, |input, cx| input.focus(window, cx));
     }
 
     /// Copies the selected record's raw lines; several records are copied as
@@ -4348,6 +4346,7 @@ impl LogView {
             full.push_str(part);
         }
         let trailing = h_flex()
+            .id("log-status-content")
             .debug_selector(|| "log-status".into())
             .flex_1()
             .min_w_0()
@@ -4405,6 +4404,10 @@ impl Render for LogView {
         // layout, which has measured the rows, place it.
         self.keep_pinned();
         let count = self.visible_len();
+        let has_entries = (0..self.source_count()).any(|source| {
+            self.source(source)
+                .is_some_and(|data| !data.index().is_empty())
+        });
         let list = div().relative().flex_1().min_h_0().w_full();
         let columns = self.columns(cx);
         let list = if count > 0 {
@@ -4469,13 +4472,6 @@ impl Render for LogView {
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(message)
-                // An empty log can still be followed until records arrive.
-                .when(
-                    matches!(self.state, State::Ready(_))
-                        && self.follow.is_none()
-                        && !self.compressed(),
-                    |list| list.child(self.follow_button(cx)),
-                )
         };
         // Column titles above the rows, on the rows' grid (#1167).
         let list = if !has_entries {

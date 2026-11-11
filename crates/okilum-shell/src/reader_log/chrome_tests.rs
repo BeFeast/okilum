@@ -10,7 +10,7 @@ fn toolbar2808_idle_log_has_one_header_and_no_secondary_rows(cx: &mut TestAppCon
     let _shutdown = TestShutdown(cx.clone());
     let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
     let view = log_view(&reader, visual);
-    visual.simulate_resize(size(px(1440.), px(900.)));
+    visual.simulate_resize(gpui::size(px(1440.), px(900.)));
     let bounds = reader_viewer_chrome::tests::measured_bounds;
     assert!(bounds(visual, "viewer-find-field").is_some(), "header Find is mounted");
     assert!(bounds(visual, "log-query-toggle").is_some(), "Query is reachable in the header");
@@ -29,7 +29,7 @@ fn toolbar2808_idle_log_has_one_header_and_no_secondary_rows(cx: &mut TestAppCon
     assert!(status.contains(&source.center()), "source path belongs to the bottom line");
     view.read_with(visual, |view, _| assert!(view.hosted_header));
     for width in [1100., 700.] {
-        visual.simulate_resize(size(px(width), px(900.)));
+        visual.simulate_resize(gpui::size(px(width), px(900.)));
         for id in ["log-level", "log-time", "log-follow", "log-query-toggle", "document-more"] {
             assert!(bounds(visual, id).is_some(), "{id} is pinned at {width}");
         }
@@ -134,4 +134,93 @@ fn toolbar2808_same_file_reload_restores_header_text_filter(cx: &mut TestAppCont
     assert_ne!(view.entity_id(), restored.entity_id(), "positive control: a fresh log entity");
     restored.read_with(visual, |view, cx| { assert_eq!(view.filter.text, "cache"); assert_eq!(view.text_input.read(cx).value().as_ref(), "cache"); assert!(view.hosted_header); });
     assert_eq!(shown(&restored, visual), [1]);
+}
+
+fn toolbar2808_open_copy_menu(visual: &mut VisualTestContext) {
+    filter_click(visual, "document-more");
+    // At 1,600 px every log action is inline: Reveal, then the Copy submenu.
+    visual.simulate_keystrokes("down down right");
+    visual.run_until_parked();
+    visual.update(|window, cx| assert!(!gpui_base::GlobalState::native_overlays(window, cx).is_empty(), "Copy popup mounted"));
+}
+
+#[gpui::test]
+fn toolbar2808_document_copy_submenu_uses_live_selection_and_confirms_every_payload(cx: &mut TestAppContext) {
+    use gpui_component::menu::PopupMenuItem;
+    use gpui_component::WindowExt as _;
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    let raw = reader.read_with(visual, |reader, cx| reader.viewer_chrome(cx).copy_actions.remove(0));
+    let PopupMenuItem::Item { disabled, label, .. } = raw.menu_item() else { panic!("raw Copy item"); };
+    assert!(disabled && label.contains("Select a record first"), "disabled raw copy explains why");
+    visual.update(|window, cx| { window.clear_notifications(cx); cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())); });
+    toolbar2808_open_copy_menu(visual);
+    visual.simulate_keystrokes("down enter"); // disabled raw is skipped
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(CHROME_LOG), "Copy file content is reachable while raw Copy is disabled");
+        assert!(!window.notifications(cx).is_empty());
+    });
+    view.update_in(visual, |view, window, cx| view.select(1, true, window, cx));
+    let (root, rel) = reader.read_with(visual, |reader, _| (reader.vault_root.clone(), reader.selected_file().to_owned()));
+    let raw = CHROME_LOG.lines().nth(1).unwrap().to_owned();
+    let wiki = format!("[[{rel}]]");
+    for (index, expected) in [raw.as_str(), CHROME_LOG, root.join(&rel).to_str().unwrap(), rel.as_str(), wiki.as_str()].into_iter().enumerate() {
+        visual.update(|window, cx| { window.clear_notifications(cx); cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())); });
+        toolbar2808_open_copy_menu(visual);
+        visual.simulate_keystrokes(&("down ".repeat(index + 1) + "enter"));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(expected), "actual Copy submenu command {index}");
+            assert!(!window.notifications(cx).is_empty(), "Copy command {index} confirms with a toast");
+        });
+    }
+    assert_eq!(std::fs::read_to_string(root.join(rel)).unwrap(), CHROME_LOG);
+}
+
+#[gpui::test]
+fn toolbar2808_columns_menu_contains_the_live_message_field_chooser(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let settings = tempfile::tempdir().unwrap();
+    cx.update(|cx| reader_ui_state::install(settings.path(), cx));
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    let (columns, choice) = view.read_with(visual, |view, _| (view.field_names().len(), view.string_fields().iter().position(|key| key == "request_id").unwrap()));
+    filter_click(visual, "log-columns-menu");
+    visual.simulate_keystrokes(&("down ".repeat(columns + 1) + "right"));
+    visual.run_until_parked();
+    visual.simulate_keystrokes(&("down ".repeat(choice + 2) + "enter"));
+    visual.run_until_parked();
+    view.read_with(visual, |view, cx| assert_eq!(view.field_choices(cx).message.as_deref(), Some("request_id"), "message chooser remains reachable inside Columns"));
+    assert!(reader_viewer_chrome::tests::measured_bounds(visual, "log-query-row").is_none());
+}
+
+#[gpui::test]
+fn toolbar2808_investigation_breadcrumb_back_and_count_share_the_demand_row(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    for width in [1100., 700.] {
+        visual.simulate_resize(gpui::size(px(width), px(900.)));
+        view.update_in(visual, |view, window, cx| {
+            view.replace_query("level=error".into(), window, cx);
+            view.follow_request(correlation::RequestId { key: "request_id".into(), value: "first".into() }, window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [0, 2], "request temporarily replaces the parent filter");
+        let bounds = reader_viewer_chrome::tests::measured_bounds;
+        let row = bounds(visual, "log-query-row").unwrap();
+        assert_eq!(row.size.height, px(40.), "investigation adds only the one secondary row");
+        for id in ["log-request-back", "log-breadcrumb", "log-request-count"] {
+            let control = bounds(visual, id).expect("required investigation control");
+            assert!(row.contains(&control.center()), "{id} stays inside the single row at {width}");
+        }
+        filter_click(visual, "log-request-back");
+        assert_eq!(shown(&view, visual), [1], "Back restores the exact parent filter");
+        view.read_with(visual, |view, _| assert_eq!(view.query_text, "level=error"));
+        view.update_in(visual, |view, window, cx| view.clear_filters(window, cx));
+    }
 }

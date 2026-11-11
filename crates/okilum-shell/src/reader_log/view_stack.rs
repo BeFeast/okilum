@@ -112,7 +112,7 @@ impl LogView {
                 .find(|key| key == "message")
         })
     }
-    fn string_fields(&self) -> Vec<String> {
+    pub(super) fn string_fields(&self) -> Vec<String> {
         if let Some((revision, fields)) = self.investigation.fields.borrow().as_ref() {
             if *revision == self.window_revision {
                 return fields.clone();
