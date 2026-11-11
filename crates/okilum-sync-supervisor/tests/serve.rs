@@ -288,27 +288,48 @@ fn a_runtime_that_exits_by_itself_is_flushed_reported_and_its_hint_cleared() {
     assert_eq!(world.store.read_hint(soon()).unwrap(), None);
     #[cfg(target_os = "macos")]
     {
-        // launchd's restart after a crash must not create another daemon, even
-        // after cleanup succeeded and the endpoint hint has disappeared.
+        // A verified lifetime lease permits launchd to replace a dead generation
+        // after its entire runtime tree is gone. Enrollment stays unchanged;
+        // the old IPC generation must never be reused.
+        let before = world
+            .store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap()
+            .clone();
         let Startup::Run(retry) = world.prepare().unwrap() else {
             panic!()
         };
-        let error = serve::run(
+        let restarted = serve::run(
             &world.state,
             world.store.clone(),
             *retry,
             &settings(),
             || SameUser,
         )
-        .unwrap_err();
-        assert!(
-            format!("{error:#}").contains("recovery pending"),
-            "{error:#}"
-        );
-        assert_eq!(
-            world.child_pid(),
-            Some(child),
-            "a second runtime rewrote the positive-control marker"
+        .unwrap();
+        assert_eq!(restarted, Exit::RuntimeExited);
+        let replacement = world
+            .child_pid()
+            .expect("replacement runtime positive control");
+        assert_ne!(replacement, child, "the replacement actually spawned");
+        wait_until("replacement descendant cleanup", || !alive(replacement));
+        assert_eq!(world.store.read_hint(soon()).unwrap(), None);
+        let after = world
+            .store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap()
+            .clone();
+        assert_eq!(after.binding(), before.binding());
+        assert_eq!(after.intent(), before.intent());
+        assert_ne!(
+            after.launch_registration().unwrap().generation(),
+            before.launch_registration().unwrap().generation()
         );
     }
 }
@@ -322,6 +343,14 @@ fn a_second_helper_cannot_launch_while_the_first_generation_is_live() {
         world.child_pid().is_some()
     });
     let first_child = world.child_pid().unwrap();
+    let before = world
+        .store
+        .begin(soon())
+        .unwrap()
+        .current()
+        .unwrap()
+        .unwrap()
+        .clone();
     let Startup::Run(duplicate) = world.prepare().unwrap() else {
         panic!()
     };
@@ -332,7 +361,22 @@ fn a_second_helper_cannot_launch_while_the_first_generation_is_live() {
         &settings(),
         || SameUser,
     );
-    assert!(format!("{:#}", refused.unwrap_err()).contains("recovery pending"));
+    let error = format!("{:#}", refused.unwrap_err());
+    assert!(
+        error.contains("another Sync helper owns the supervisor lock"),
+        "{error}"
+    );
+    assert_eq!(
+        world
+            .store
+            .begin(soon())
+            .unwrap()
+            .current()
+            .unwrap()
+            .unwrap(),
+        &before,
+        "the rejected helper must not consume or replace launch authority"
+    );
     assert_eq!(world.child_pid(), Some(first_child));
     assert_eq!(
         call(&world, &scope, Command::Status).unwrap(),
@@ -434,6 +478,7 @@ fn a_disabled_instance_is_idle_not_an_error() {
     assert!(matches!(world.prepare().unwrap(), Startup::Idle));
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_policy() {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-supervisor"));
@@ -470,6 +515,47 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
         .unwrap();
     drop(transaction);
     assert_eq!(run(&["--state", &state]).status.code(), Some(0));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_binary_refuses_unscoped_qa_state_before_startup_even_when_idle() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-supervisor"));
+    let world = World::with_supervisor(&[], binary.clone());
+    let run = || {
+        Process::new(&binary)
+            .arg("--state")
+            .arg(&world.state)
+            .output()
+            .unwrap()
+    };
+    let assert_refused = || {
+        let output = run();
+        assert_eq!(output.status.code(), Some(1));
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("QA helper requires explicit state and instance"),
+            "{message}"
+        );
+        assert!(world.child_pid().is_none(), "unscoped QA must never spawn");
+        assert_eq!(world.store.read_hint(soon()).unwrap(), None);
+    };
+    // The binary validates its isolated launch channel before either policy or
+    // Idle startup. The signed positive path is covered by the isolated launcher.
+    assert_refused();
+    let scope = Scope {
+        installation: world.binding.installation,
+        instance: world.binding.instance,
+        generation: Uuid::new_v4(),
+    };
+    let mut transaction = world.store.begin(soon()).unwrap();
+    let current = transaction.current().unwrap().unwrap().clone();
+    transaction
+        .commit(current.disable(scope).unwrap().0)
+        .unwrap();
+    drop(transaction);
+    assert!(matches!(world.prepare().unwrap(), Startup::Idle));
+    assert_refused();
 }
 
 // ---- the app's discovery glue against the real run loop -------------------------------

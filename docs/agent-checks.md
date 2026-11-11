@@ -58,6 +58,13 @@ CI backtraces no longer include DWARF line tables. The existing 900 s budget
 still includes compilation and every admission/review group. No prewarming,
 separate compile allowance, release-profile change or deadline increase is used.
 
+Native Mac Sync admission also executes the complete supervisor `serve`
+integration target with nonempty discovery. Its restart controls require a new
+IPC generation with unchanged enrollment after verified tree cleanup, reject a
+concurrent helper at the lifetime lease without changing the journal, and prove
+that an unscoped scratch-state binary cannot bypass the isolated QA launch guard
+even when its journal is Idle. Production launch/signature guards are unchanged.
+
 The complete workspace invocation isolates Reader Log and private reveal-bus cases
 in separate serial processes; ordinary cases run with four test threads.
 They share the product's process-wide log memory pool and async runtime: an
