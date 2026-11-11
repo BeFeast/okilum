@@ -29,6 +29,8 @@ class ColdWriterControls(unittest.TestCase):
         self.assertEqual(status, 7)
         values = [json.loads(line.split(' ', 1)[1]) for line in output.getvalue().splitlines()]
         self.assertTrue(any(value['processes'] for value in values))
+        self.assertTrue(any(process['command'][:2] == [sys.executable, '-c']
+                            for value in values for process in value['processes']))
         self.assertEqual(values[-1]['status'], 7)
         self.assertGreater(len(values), 2)
 
@@ -40,6 +42,7 @@ class ColdWriterControls(unittest.TestCase):
                 scripts.mkdir(parents=True)
                 shutil.copy2(HERE / 'test-group.sh', scripts)
                 shutil.copy2(HERE / 'test-group.py', scripts)
+                shutil.copy2(HERE / 'require-target-tests.py', scripts)
                 (scripts / 'check-linux.sh').write_text(
                     '#!/bin/bash\nset -e\necho ORIGINAL_PRELUDE\n'
                     # The unchanged prelude copies which('bash') as its fake
@@ -54,14 +57,24 @@ class ColdWriterControls(unittest.TestCase):
                     'bash scripts/ci/linux-rust-tests.sh\n')
                 (scripts / 'linux-rust-tests.sh').write_text('echo WRONG_LATER_FILTERS\n')
                 (scripts / 'local-writer-admission.sh').write_text(
-                    f'echo ORIGINAL_ADMISSION\ncargo test sentinel -- --nocapture\nexit {group_status}\n')
+                    'set -euo pipefail\necho ORIGINAL_ADMISSION\n'
+                    'cargo test sentinel -- --nocapture 2>&1 | tee receipt\n'
+                    'python3 scripts/ci/require-target-tests.py sentinel receipt\n'
+                    f'exit {group_status}\n')
                 binary = root / 'bin'
                 binary.mkdir()
                 for name, value in [('git', 'a' * 40), ('cargo', 'fake Cargo'),
                                     ('rustc', 'fake rustc'), ('mold', 'fake mold')]:
                     path = binary / name
                     path.write_text('#!/bin/sh\nprintf "%s\\n" ' + repr(value) + '\n'
-                                    + ('printf "CARGO_ARGV:%s\\n" "$*"\n' if name == 'cargo' else ''))
+                                    + ('''printf "CARGO_ARGV:%s\\n" "$*"
+if [ "$1" = -vv ]; then
+    echo 'Running `CARGO=value /target/debug/deps/sentinel-abc --nocapture`'
+else
+    echo 'Running unittests src/lib.rs (/target/debug/deps/sentinel-abc)'
+fi
+echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+''' if name == 'cargo' else ''))
                     path.chmod(0o755)
                 result = subprocess.run([sys.executable, str(HERE / 'cold-writer-diagnostic.py'),
                     '--source', 'a' * 40], cwd=root, capture_output=True, text=True, timeout=10,
@@ -75,7 +88,7 @@ class ColdWriterControls(unittest.TestCase):
                 self.assertIn('ORIGINAL_ADMISSION', result.stdout)
                 self.assertIn('TEST_GROUP_START group=cold-writer limit=900s', result.stdout)
                 self.assertIn('COLD_WRITER_FINAL', result.stdout)
-                self.assertIn('CARGO_ARGV:-vv test sentinel -- --nocapture', result.stdout)
+                self.assertIn('CARGO_ARGV:test sentinel -- --nocapture', result.stdout)
                 self.assertIn('"invoked": true', result.stdout)
                 self.assertNotIn('WRONG_LATER_FILTERS', result.stdout)
 

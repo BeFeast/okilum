@@ -54,6 +54,7 @@ def snapshot():
             continue
         fields = raw.rsplit(')', 1)[1].split()
         processes.append(dict(pid=pid, name=raw.split('(', 1)[1].rsplit(')', 1)[0],
+                              command=(read(f'/proc/{pid}/cmdline') or '').rstrip('\0').split('\0'),
                               start_ticks=fields[19], user_ticks=int(fields[11]),
                               system_ticks=int(fields[12]), rss_pages=int(fields[21]),
                               major_faults=int(fields[9]), io=read(f'/proc/{pid}/io')))
@@ -109,16 +110,11 @@ def identity(source):
 def admission(source, marker):
     marker.write_text(json.dumps(dict(source=source, limit=LIMIT)))
     emit('COLD_WRITER_IDENTITY', identity(source))
-    # Verbosity changes receipts only. The real Cargo executable, selected
-    # source, original seven groups and existing supervisor remain unchanged.
-    cargo = subprocess.check_output(['which', 'cargo'], text=True).strip()
-    with tempfile.TemporaryDirectory(prefix='writer-cargo-') as directory:
-        wrapper = Path(directory) / 'cargo'
-        wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(cargo) + ' -vv "$@"\n')
-        wrapper.chmod(0o755)
-        env = dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'])
-        return observe(['bash', 'scripts/ci/test-group.sh', 'cold-writer', str(LIMIT),
-                        'bash', 'scripts/ci/local-writer-admission.sh'], env)
+    # Keep Cargo's ordinary target headers: -vv changes them into shell commands
+    # that the original positive target guards intentionally do not accept.
+    # Compiler/linker argv are sampled from /proc without altering dispatch.
+    return observe(['bash', 'scripts/ci/test-group.sh', 'cold-writer', str(LIMIT),
+                    'bash', 'scripts/ci/local-writer-admission.sh'], dict(os.environ))
 
 
 def prelude(source):

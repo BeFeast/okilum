@@ -112,9 +112,11 @@ Subsequent filters do not repeatedly restart a timed-out build.
 No product compilation is inserted outside its original prelude or admission.
 A missing boundary invocation fails even if the prelude exits successfully.
 
-Verbose Cargo commands and five-second owned-process CPU/RSS/I/O plus cgroup
+Five-second owned-process command lines and CPU/RSS/I/O plus cgroup
 quota, throttling, memory and pressure samples go directly to the job log,
-including a terminal snapshot. Compiler/linker versions, source identities,
+including a terminal snapshot. Cargo keeps its original verbosity and target
+headers so the measured source's strict parent-target guards remain effective.
+Compiler/linker versions, source identities,
 affinity and configured jobs are recorded; unset jobs is not labelled as a
 measured concurrency count. This is a diagnostic, not full Linux acceptance,
 and neither a warmed hosted pass nor a successful probe establishes canonical
