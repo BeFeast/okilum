@@ -700,15 +700,16 @@ fn a_real_click_deferred_across_a_conversation_switch_cannot_answer_a_reused_req
 }
 
 #[gpui::test]
-fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_advances(
+async fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_advances(
     cx: &mut TestAppContext,
 ) {
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
-        sync::Mutex,
+        sync::{mpsc, Mutex},
         thread,
     };
+    cx.executor().allow_parking();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let environment = Environment::new(
@@ -718,6 +719,7 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
     .unwrap();
     let received = Arc::new(Mutex::new(Vec::new()));
     let observed = received.clone();
+    let (ready, actions) = mpsc::channel();
     let server = thread::spawn(move || {
         let accept = || {
             let start = std::time::Instant::now();
@@ -738,6 +740,9 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
             }
         };
         for sequence in 1..=4 {
+            // Rendering the next request is not part of its RPC deadline.
+            // Arm the autonomous socket fixture only when its UI is ready.
+            assert_eq!(actions.recv().unwrap(), sequence);
             let mut stream = accept();
             let mut reader = BufReader::new(&mut stream);
             loop {
@@ -797,16 +802,29 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
                 "T3 approval priority precedes questions"
             );
         }
+        let expected = Intent::Respond {
+            attachments_by_question_id: Default::default(),
+            request_id: id.clone(),
+            decision: Some((*decision).into()),
+            answers: None,
+        };
+        ready.send((index + 1) as u64).unwrap();
         click(visual, &format!("approval-{id}-{index}"));
+        let actions = view.read_with(visual, |view, _| view.native.actions.clone());
+        // Parking a test executor is not an acknowledgement from the real
+        // socket worker. Observe publication before inspecting its receipt.
+        visual
+            .condition(&actions, |actions, _| {
+                actions
+                    .records
+                    .iter()
+                    .any(|record| record.command.intent == expected && record.sequence.is_some())
+                    || actions.error.is_some()
+            })
+            .await;
         view.read_with(visual, |view, cx| {
             let actions = view.native.actions.read(cx);
             assert_eq!(actions.records.len(), index + 1);
-            let expected = Intent::Respond {
-                attachments_by_question_id: Default::default(),
-                request_id: id.clone(),
-                decision: Some((*decision).into()),
-                answers: None,
-            };
             let record = actions
                 .records
                 .iter()

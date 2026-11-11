@@ -2249,10 +2249,14 @@ fn issue2615_computer_vaults_open_observations_before_any_catalog_request(cx: &m
 }
 
 #[gpui::test]
-fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
+async fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
     cx: &mut TestAppContext,
 ) {
-    cx.update(crate::test_init);
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_reduce_motion(true);
+    });
     let mut offered = snapshot(None);
     offered.offer_url = Some("synthetic-offer".into());
     let calls = guided_worker(cx, vec![offered]);
@@ -2276,6 +2280,8 @@ fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
+    visual.condition(&view, |view, _| !view.busy).await;
+    assert_eq!(*calls.lock().unwrap(), vec!["offer"]);
     view.update(visual, |view, cx| {
         assert!(!view.receiving);
         view.presentation.wizard = Some(super::presentation::Step::Expired);
@@ -2286,6 +2292,7 @@ fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
     let new_link = visual.debug_bounds("sync-new-link").unwrap();
     visual.simulate_click(new_link.center(), Modifiers::default());
     visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
     assert_eq!(*calls.lock().unwrap(), vec!["offer", "offer"]);
     assert!(visual.debug_bounds("sync-copy-url").is_some());
 }
