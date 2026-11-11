@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the complete workspace census with resource-sensitive cases isolated."""
 import re
+import hashlib
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -59,19 +60,29 @@ def main():
     reveals = sum(REVEAL in name for name in names)
     ordinary = len(names) - logs - reveals
     assert ordinary > 0 and logs > 0 and reveals > 0, "every measured group must fire"
+    shards = [[], []]
+    for name in names:
+        if LOG not in name and REVEAL not in name:
+            # Identical names in different targets must stay in one shard;
+            # libtest exact matching runs every occurrence there, once only.
+            shards[hashlib.sha256(name.encode()).digest()[0] % 2].append(name)
+    assert all(shards), "both ordinary shards must fire"
     parts = [
-        ("ordinary", ["--nocapture", "--test-threads=4", "--skip", LOG, "--skip", REVEAL], ordinary),
+        (f"ordinary-{index}", ["--nocapture", "--test-threads=2", "--exact", *sorted(set(shard))], len(shard))
+        for index, shard in enumerate(shards)
+    ] + [
         ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
         ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
     ]
     print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals}",
           flush=True)
-    # Separate processes retain separate Log pools. Overlap its serial I/O
-    # fixtures with ordinary tests, after inventory has compiled every target.
+    # Separate processes retain separate Log pools. Split ordinary cases with
+    # the same total of four threads, and overlap serial Log I/O after inventory
+    # compilation. Exact filters prevent substring overlap between the shards.
     # Reveal stays alone so its real D-Bus deadlines do not compete with either.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda part: run(*part), parts[:2]))
-    results.append(run(*parts[2]))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda part: run(*part), parts[:3]))
+    results.append(run(*parts[3]))
     passed = all(results)
     return 0 if passed else 1
 

@@ -102,18 +102,27 @@ receipt was not established. Neither failed control was accepted as a passing
 verdict.
 
 `workspace-rust-tests.py` first lists every unit/integration/doc case for the
-same four packages. Its three disjoint selections must report exactly that
+same four packages. Its four disjoint selections must report exactly that
 inventory in their completed/ignored counts. Every Cargo invocation keeps all
 four packages for the same feature unification and test environment. One
-1320 s deadline covers the complete census and all three selections together.
-After inventory compilation, ordinary cases and the serial Log cases execute
-concurrently in separate processes, preserving their independent Log pools.
-The reveal process starts only after both complete. Run `26071` exhausted the
-same deadline after its ordinary census passed 4342/4342 and the serial Log
-process had started; all 4471 selected cases still require individual census
-receipts. The orchestration control requires ordinary/Log rendezvous, checks
-that reveal waits, and retains failures from every process. It rejects the old
-serial schedule without changing assertions, filters or the overall deadline.
+1320 s deadline covers the complete census and all four selections together.
+After inventory compilation, two ordinary shards and the serial Log cases
+execute concurrently in separate processes. Stable SHA-256 assignment of full
+test names and libtest `--exact` filters keep both ordinary shards disjoint,
+including identical names in different targets and prefix-related names.
+Each shard has two test threads, retaining four ordinary threads in total.
+Every invocation still selects the same four packages. The reveal process
+starts only after all three finish. Run `26071` exhausted the same deadline
+after its ordinary census passed 4342/4342 and the serial Log process had
+started. Worker `42973322089` proved actual ordinary/Log runtime overlap and
+Log 124/124, but still exhausted the overall deadline after the shell target
+passed and before the final ordinary targets finished. All selected cases
+still require individual census receipts. The orchestration control requires
+both ordinary shards and Log to rendezvous, makes reveal wait, and retains
+failures from every process. Exact-selection controls retain duplicate names,
+reject prefix leakage and require four ordinary threads in total. These
+controls reject the previous single ordinary process without reducing the
+inventory, assertions or overall deadline.
 This replaces whole-workspace serialization after run `42390453208` exhausted
 that deadline; the deadline and every runtime assertion remain unchanged.
 
