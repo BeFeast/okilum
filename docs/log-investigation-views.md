@@ -12,7 +12,8 @@ Known aliases and W3C traceparent detection continue to work alongside that choi
 
 A follow pushes filters (including disabled typed chips), advanced query text,
 columns and widths, field choices, time scope, selection, range anchor and scroll.
-Back restores that frame. The shortcut is Cmd+[ on macOS and Alt+Left on Linux and
+Back restores that frame. Its button, breadcrumb and loaded count share the
+single conditional query row, including at 700 px. The shortcut is Cmd+[ on macOS and Alt+Left on Linux and
 Windows. Nested follows retain their breadcrumb and individual Back frames.
 
 A local follow searches loaded rows across enabled files, clears unrelated local
@@ -35,7 +36,7 @@ ResultStatus supplies partial, truncated, unknown-total and lower-bound labels.
 
 ## Message and live
 
-Choose message field lists observed string fields. An existing message field is
+Columns > Choose message field lists observed string fields. An existing message field is
 the default; other field names are never guessed. The choice is remembered per
 canonical file/source. Rows stay one line and bounded; the selected message is
 shown in full, wrapped, above the other detail fields. Original JSON and raw copy

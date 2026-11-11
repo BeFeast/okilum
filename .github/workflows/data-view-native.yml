@@ -84,6 +84,7 @@ jobs:
             echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
           fi
       - name: Build real native app without GPUI test support
+        id: native_build
         shell: bash
         run: |
           if [[ "$RUNNER_OS" = Windows ]]; then
@@ -98,7 +99,10 @@ jobs:
           python3 scripts/ci/data-view-native-app.py "$binary"
           python3 scripts/ci/data-table-native-app.py "$binary"
           python3 scripts/ci/reader-viewer-native-app.py "$binary"
+      # A known app-probe failure must not hide independent Rust regressions.
+      # The failed probe still fails the job; no threshold or reserve changes.
       - name: Exercise read-only data viewing and compiled negative controls
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         shell: bash
         run: |
           if [[ "$RUNNER_OS" = Windows ]]; then

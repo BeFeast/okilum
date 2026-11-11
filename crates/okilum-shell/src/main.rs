@@ -643,7 +643,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", PaletteNext, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
-        KeyBinding::new("escape", Dismiss, Some("Reader > ViewerFind > Input")),
+        KeyBinding::new("escape", Dismiss, Some("ViewerFind > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
         KeyBinding::new("escape", Dismiss, Some("LogSaving > Input")),
         #[cfg(any(unix, windows))]

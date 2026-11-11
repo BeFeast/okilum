@@ -33,6 +33,7 @@ const ICON_DARK: &str = "brand/app-icon-dark.svg";
 // Lucide outline glyphs the toolkit set lacks (docs/design/reader.md §Icons).
 const READER_LIST_ICON: &str = "icons/list.svg";
 const READER_LINK_ICON: &str = "icons/link.svg";
+pub const READER_FILTER_ICON: &str = "icons/list-filter.svg";
 pub const READER_LOCK_ICON: &str = "icons/lock.svg";
 pub const READER_DOWNLOAD_ICON: &str = "icons/download.svg";
 pub const READER_OPEN_ICON: &str = "icons/arrow-up-right.svg";
@@ -45,7 +46,11 @@ pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
 /// Note width toggle: shown in full width (back to normal) and in normal width.
 pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
 pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
-const IMAGES: [(&str, &[u8]); 45] = [
+const IMAGES: [(&str, &[u8]); 46] = [
+    (
+        READER_FILTER_ICON,
+        include_bytes!("../assets/icons/list-filter.svg"),
+    ),
     (READER_LOCK_ICON, include_bytes!("../assets/icons/lock.svg")),
     (
         READER_DOWNLOAD_ICON,

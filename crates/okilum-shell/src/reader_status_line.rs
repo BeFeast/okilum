@@ -26,7 +26,18 @@ pub(crate) fn render(
     trailing: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
-    if status.label.is_empty() && status.text.is_empty() {
+    render_with_content(status, selector, None, trailing, cx)
+}
+
+#[inline(never)]
+pub(crate) fn render_with_content(
+    status: &StatusLine,
+    selector: &'static str,
+    content: Option<AnyElement>,
+    trailing: Option<AnyElement>,
+    cx: &App,
+) -> AnyElement {
+    if status.label.is_empty() && status.text.is_empty() && content.is_none() {
         return div().into_any_element();
     }
     let p = brand::palette(cx);
@@ -57,7 +68,7 @@ pub(crate) fn render(
             icon.size(px(14.))
                 .text_color(if warning { p.warning } else { p.text_muted })
         }))
-        .child(
+        .child(content.unwrap_or_else(|| {
             h_flex()
                 .id(selector)
                 .debug_selector(move || selector.into())
@@ -77,8 +88,9 @@ pub(crate) fn render(
                 .child(div().truncate().child(status.text.clone()))
                 .tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(full.clone()).build(window, cx)
-                }),
-        )
+                })
+                .into_any_element()
+        }))
         .children(
             status
                 .actions

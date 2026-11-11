@@ -487,7 +487,8 @@ impl Reader {
                         .and_then(|old| old.log.as_ref())
                         .map(|old| old.read(cx).filter_view_state());
                     let view = cx.new(|cx| {
-                        let mut view = reader_log::LogView::indexing(rel, path, window, cx);
+                        let mut view =
+                            reader_log::LogView::indexing(rel, path, window, cx).without_header();
                         if let Some(filters) = filters {
                             view.restore_filter_view(filters, window, cx);
                         }

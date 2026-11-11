@@ -112,7 +112,7 @@ impl LogView {
                 .find(|key| key == "message")
         })
     }
-    fn string_fields(&self) -> Vec<String> {
+    pub(super) fn string_fields(&self) -> Vec<String> {
         if let Some((revision, fields)) = self.investigation.fields.borrow().as_ref() {
             if *revision == self.window_revision {
                 return fields.clone();
@@ -375,59 +375,31 @@ impl LogView {
             .collect::<Vec<_>>()
             .join(" › ");
         Some(
-            v_flex()
+            h_flex()
                 .flex_none()
                 .min_w_0()
-                .px_3()
-                .py_2()
+                .max_w(px(240.))
+                .gap_2()
                 .text_sm()
                 .child(
                     div()
                         .debug_selector(|| "log-breadcrumb".into())
+                        .flex_1()
+                        .min_w_0()
                         .truncate()
                         .child(breadcrumb),
                 )
                 .child(
                     div()
                         .debug_selector(|| "log-request-count".into())
+                        .max_w(px(120.))
+                        .min_w_0()
                         .truncate()
                         .child(label),
                 )
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element(),
         )
-    }
-    pub(super) fn message_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let owner = cx.entity().downgrade();
-        let selected = self.message_field(cx);
-        let fields = self.string_fields();
-        bar_button("log-message-field", selected.is_some())
-            .debug_selector(|| "log-message-field".into())
-            .label(selected.as_ref().map_or_else(
-                || "Choose message field".into(),
-                |key| format!("Message: {key}"),
-            ))
-            .dropdown_menu(move |mut menu, _, _| {
-                let clear = owner.clone();
-                menu = menu.item(PopupMenuItem::new("Default message field").on_click(
-                    move |_, _, cx| {
-                        let _ = clear.update(cx, |this, cx| this.choose_field(None, true, cx));
-                    },
-                ));
-                for field in &fields {
-                    let owner = owner.clone();
-                    let field = field.clone();
-                    menu =
-                        menu.item(PopupMenuItem::new(field.clone()).on_click(move |_, _, cx| {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.choose_field(Some(field.clone()), true, cx)
-                            });
-                        }));
-                }
-                menu
-            })
-            .into_any_element()
     }
     pub(super) fn restore_saved_source(
         &mut self,
