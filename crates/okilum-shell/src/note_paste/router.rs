@@ -1362,7 +1362,12 @@ mod tests {
     impl Note {
         fn new() -> Self {
             let vault = tempfile::tempdir().unwrap();
-            std::fs::create_dir(vault.path().join("attachments")).unwrap();
+            std::fs::create_dir(vault.path().join(".obsidian")).unwrap();
+            std::fs::write(
+                vault.path().join(".obsidian/app.json"),
+                r#"{"attachmentFolderPath":"attachments"}"#,
+            )
+            .unwrap();
             Self { vault }
         }
         fn cx<'a>(

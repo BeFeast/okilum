@@ -8,7 +8,7 @@ use std::path::Path;
 fn windows_issue2821_assets_are_not_notes_but_resolve_and_render() {
     let root = tempfile::tempdir().unwrap();
     fixture::populate(root.path());
-    let vault = Vault::load(root.path()).unwrap();
+    let vault = Vault::scan(root.path()).unwrap();
     for asset in [
         "@Assets/Excalidraw/a.excalidraw.md",
         "@Assets/Clippings/Nested/clip.md",
@@ -114,6 +114,14 @@ fn windows_issue2821_mixed_inventory_links_search_and_warm_sources() {
     assert!(restored
         .source("@Assets/Excalidraw/a.excalidraw.md")
         .is_some());
+    assert_eq!(
+        restored
+            .vault()
+            .resolve_from("a.excalidraw.md", "Area/Links.md"),
+        Resolution::Resolved {
+            path: "@Assets/Excalidraw/a.excalidraw.md".into()
+        }
+    );
 }
 
 #[test]
@@ -206,6 +214,22 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
 #[test]
 fn windows_issue2821_at_data_syncs_and_deep_links_round_trip() {
     use okilum_core::{deep_link, syncthing_ignore};
+    for service in [
+        ".okilum/settings.json",
+        ".obsidian/app.json",
+        ".okilum-index/cache",
+    ] {
+        assert!(
+            okilum_core::vault::service_path(Path::new(service)),
+            "service positive control: {service}"
+        );
+    }
+    let matchers: Vec<_> = syncthing_ignore::PATTERNS
+        .iter()
+        .map(|pattern| globset::Glob::new(pattern).unwrap().compile_matcher())
+        .collect();
+    assert!(matchers[0].is_match(".okilum-index"));
+    assert!(matchers[1].is_match(".okilum-save-positive-control.tmp"));
     for path in [
         "@Assets/Images/a.png",
         "@Assets/Excalidraw/a.excalidraw.md",
@@ -214,12 +238,11 @@ fn windows_issue2821_at_data_syncs_and_deep_links_round_trip() {
         "@AgentContract.md",
     ] {
         assert!(!okilum_core::vault::service_path(Path::new(path)));
-        for pattern in syncthing_ignore::PATTERNS {
-            // These are the only two built-in patterns, both literal dot prefixes.
-            assert!(pattern.starts_with('.'));
-            assert!(!path
-                .split('/')
-                .any(|segment| segment.starts_with(pattern.trim_end_matches('*'))));
+        for matcher in &matchers {
+            assert!(
+                !path.split('/').any(|segment| matcher.is_match(segment)),
+                "built-in ignore matched @ data: {path}"
+            );
         }
         let position = deep_link::Position::default();
         let url = deep_link::build("Synthetic", path, &position);

@@ -12,7 +12,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
     use reader_tree::{FolderIndex, Tree};
     let root = tempfile::tempdir().unwrap();
     let case_sensitive = fixture::populate(root.path());
-    let vault = Vault::load(root.path()).unwrap();
+    let vault = Vault::scan(root.path()).unwrap();
     let mut tree = Tree::default();
     tree.refresh(root.path(), &vault.entries);
     for folder in ["Area", "Legacy", "Mixed", "Visible"] {
@@ -83,8 +83,8 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
     }
     // Case-variant precedence also runs on case-insensitive hosts without creating collisions.
     for names in [
-        vec!["_index.md", "_Index.md", "@INDEX.md"],
-        vec!["_index.md", "@index.md", "@Index.md"],
+        ["_index.md", "_Index.md", "@INDEX.md"],
+        ["_index.md", "@index.md", "@Index.md"],
     ] {
         let entries: Vec<_> = names
             .iter()
@@ -223,4 +223,76 @@ fn template_and_language_resolution_preserve_precedence() {
         reader_agent_language::policy_path(root.path()),
         "@Schema/language.yaml"
     );
+}
+
+#[gpui::test]
+fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    std::fs::create_dir(&root).unwrap();
+    fixture::populate(&root);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        bind_keys(cx);
+    });
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("Area/Links.md".into()),
+                    index_dir: Some(temp.path().join("cache")),
+                    session_directory: Some(temp.path().join("state")),
+                    panel_settings_override: Some(temp.path().join("panels.json")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.simulate_resize(size(px(1400.), px(860.)));
+    visual.run_until_parked();
+    reader.update(visual, |view, cx| {
+        view.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
+        view.panels.open(reader_layout::Panel::Notes);
+        view.sync_tree();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("tree-vault-index").is_some(),
+        "root index header must be rendered"
+    );
+    let header = visual.debug_bounds("tree-vault-index").unwrap();
+    visual.simulate_click(header.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.current_rel, "@Index.md");
+        assert_eq!(view.vault_index_path().as_deref(), Some("@Index.md"));
+        assert_eq!(view.backlink_title("Area/@index.md").0, "Area");
+    });
+    reader.update_in(visual, |view, window, cx| {
+        view.sync_tree();
+        let row = view
+            .tree
+            .rows
+            .iter()
+            .find(|row| row.path == "Mixed")
+            .unwrap()
+            .clone();
+        view.activate_tree_row(&row, window, cx);
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.current_rel, "Mixed/@index.md");
+        assert!(
+            view.link_notice.is_none(),
+            "one @ index must suppress legacy ambiguity"
+        );
+    });
 }

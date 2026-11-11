@@ -413,6 +413,16 @@ pub struct VaultEntry {
     pub kind: EntryKind,
 }
 
+impl VaultEntry {
+    /// A source document can be an ordinary note or Markdown asset content.
+    pub fn markdown_document(&self) -> bool {
+        self.kind != EntryKind::Directory
+            && Path::new(&self.path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    }
+}
+
 /// The `operation` of an [`UnreadableEntry`] for a note that exists under its real name
 /// but whose bytes are not valid UTF-8.
 pub const DECODE_NOTE: &str = "decode note";
@@ -1216,22 +1226,19 @@ impl Vault {
         })
     }
 
+    /// Markdown document identities, including Markdown assets. Source operations
+    /// use this rather than the user-facing note list.
+    pub fn markdown_entries(&self) -> impl Iterator<Item = &VaultEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.markdown_document())
+    }
+
     /// The first note in scan order, or `None` for an empty vault.
     ///
     /// Used when the shell is started without `--note`: there is no
     /// vault-specific default note to fall back on, and an empty window is a
     /// worse first impression than an arbitrary real one.
-    /// Markdown document identities, including Markdown assets. Source operations
-    /// use this rather than the user-facing note list.
-    pub fn markdown_entries(&self) -> impl Iterator<Item = &VaultEntry> {
-        self.entries.iter().filter(|entry| {
-            entry.kind != EntryKind::Directory
-                && Path::new(&entry.path)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-        })
-    }
-
     pub fn first_note(&self) -> Option<String> {
         self.notes.first().map(|n| n.path.clone())
     }

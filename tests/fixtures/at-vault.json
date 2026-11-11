@@ -22,7 +22,7 @@
     "_Schema/stignore.template": "// synthetic legacy shared policy\nlegacy-generated\n"
   },
   "base64": {
-    "@Assets/Images/a.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII="
+    "@Assets/Images/a.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="
   },
   "case_sensitive": {
     "Twice/@index.md": "# First case\n",

@@ -367,7 +367,7 @@ fn latest_primary(base: &Path, root: &Path) -> Option<(String, Source)> {
 fn validate_aliases(entries: &[VaultEntry], aliases: &BTreeMap<String, Vec<String>>) -> Result<()> {
     let notes: std::collections::HashSet<_> = entries
         .iter()
-        .filter(|entry| entry.kind == EntryKind::Markdown)
+        .filter(|entry| entry.markdown_document())
         .map(|entry| &entry.path)
         .collect();
     ensure!(
@@ -387,7 +387,7 @@ fn cached_vault(
     let mut vault = Vault::from_note_paths(
         entries
             .iter()
-            .filter(|entry| entry.kind == EntryKind::Markdown)
+            .filter(|entry| entry.markdown_document())
             .map(|entry| entry.path.clone()),
     );
     vault.root = root.to_path_buf();
@@ -552,7 +552,7 @@ impl StartupSnapshot {
                     && snapshot
                         .entries
                         .iter()
-                        .any(|e| e.kind == EntryKind::Markdown && &e.path == path),
+                        .any(|e| e.markdown_document() && &e.path == path),
                 "Invalid Reader startup primary identity"
             );
             STANDARD.decode(&source.bytes)?;
@@ -781,7 +781,7 @@ impl Snapshot {
         let notes: std::collections::HashSet<_> = snapshot
             .entries
             .iter()
-            .filter(|e| e.kind == EntryKind::Markdown)
+            .filter(|e| e.markdown_document())
             .map(|e| &e.path)
             .collect();
         for path in &notes {

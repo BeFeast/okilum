@@ -874,6 +874,7 @@ mod attachment_refresh_tests {
         let root = temp.path().join("vault");
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
+        std::fs::create_dir(root.join("attachments")).unwrap();
         std::fs::write(root.join("note.md"), "# Note\n\n").unwrap();
         let png = crate::note_paste::image_import::fixture_png();
         let source = temp.path().join("import.png");
