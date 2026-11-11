@@ -4,6 +4,7 @@
   "basis": "docs/design/reader.md, direction A (#348); theme roles from #349. Reader roles layered on interface-tokens.json; also the default \u00abOkilum\u00bb theme in docs/design/reader.md \u00a7Themes.",
   "themes": {
     "light": {
+      "warningTint": "#fbf5e6",
       "textFaint": "#8d929a",
       "hover": "#eff0f2",
       "missingLink": "#9a5b00",
@@ -19,6 +20,7 @@
       "onStatus": "#ffffff"
     },
     "dark": {
+      "warningTint": "#3a3220",
       "textFaint": "#7c818a",
       "hover": "#2a2d33",
       "missingLink": "#e2b25c",

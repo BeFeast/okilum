@@ -30,9 +30,20 @@ impl Reader {
                 .child("Loading project…")
                 .into_any_element();
         }
-        if self.active_timeline().is_some_and(|t| t.selected.is_some())
-            || self.file_preview.is_some()
-        {
+        if self.file_preview.is_some() {
+            let status = self.viewer_chrome(cx).status;
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
+                .children(
+                    status
+                        .as_ref()
+                        .map(|status| reader_status_line::render(status, "file-status", None, cx)),
+                )
+                .into_any_element();
+        }
+        if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
             return self.render_main(window, cx);
         }
         v_flex()
@@ -99,6 +110,9 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        if self.file_preview.is_some() {
+            return self.render_file_header(window, cx);
+        }
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let is_file = self.file_preview.is_some();
         let file_editable = self
@@ -305,64 +319,6 @@ impl Reader {
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
             );
-        }
-        if is_file {
-            row = row.children(self.render_pdf_controls(cx));
-            #[cfg(target_os = "macos")]
-            let actions = vec![
-                (
-                    "file-quicklook",
-                    IconName::Eye,
-                    reader_shortcuts::hint("Quick Look", &QuickLookFile, cx),
-                    reader_files::FileAction::QuickLook,
-                ),
-                (
-                    "file-open",
-                    IconName::ExternalLink,
-                    SharedString::from("Open with default app"),
-                    reader_files::FileAction::Open,
-                ),
-                (
-                    "file-reveal",
-                    IconName::FolderOpen,
-                    SharedString::from(Os::CURRENT.reveal()),
-                    reader_files::FileAction::Reveal,
-                ),
-                (
-                    "file-copy",
-                    IconName::Copy,
-                    SharedString::from("Copy path"),
-                    reader_files::FileAction::Absolute,
-                ),
-            ];
-            #[cfg(not(target_os = "macos"))]
-            let actions = vec![
-                (
-                    "file-open",
-                    IconName::ExternalLink,
-                    SharedString::from("Open with default app"),
-                    reader_files::FileAction::Open,
-                ),
-                (
-                    "file-reveal",
-                    IconName::FolderOpen,
-                    SharedString::from(Os::CURRENT.reveal()),
-                    reader_files::FileAction::Reveal,
-                ),
-                (
-                    "file-copy",
-                    IconName::Copy,
-                    SharedString::from("Copy path"),
-                    reader_files::FileAction::Absolute,
-                ),
-            ];
-            for (id, icon, tip, action) in actions {
-                let root = root.clone();
-                let rel = rel.clone();
-                row = row.child(reader_icon_button(id, icon, tip, cx).on_click(
-                    move |_, window, cx| reader_files::run(action, &root, &rel, window, cx),
-                ));
-            }
         }
         if show_width {
             let full = reader_ui_state::full_note_width(cx);
