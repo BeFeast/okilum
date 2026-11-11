@@ -883,6 +883,9 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
+        if plain_file {
+            self.retire_large_plain_preview(store.text().len());
+        }
         // The note's reference definitions and text, for rendered blocks (#1067).
         let block_context: BlockContext = Rc::new(std::cell::RefCell::new(BlockNote::initial(
             store.snapshot(),
@@ -1176,7 +1179,9 @@ impl Reader {
                     }
                 });
             }));
-            this.refresh_draft_outline(cx);
+            if !plain_file {
+                this.refresh_draft_outline(cx);
+            }
             this.schedule_autosave(input_id, epoch, cx);
             this.schedule_live_preview(cx);
         });
@@ -1432,12 +1437,28 @@ impl Reader {
         if let Some(place) = reader_place {
             self.place_editor_at_reader(input.clone(), place, window, cx);
         }
-        self.refresh_draft_outline(cx);
+        if plain_file {
+            // A plain file has no Markdown headings. Retire the old note's
+            // cache/worker so it cannot loop into this file and parse data.
+            self.draft_outline = Default::default();
+        } else {
+            self.refresh_draft_outline(cx);
+        }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
+    }
+
+    /// Source owns the complete native revision. A hidden read preview can
+    /// retain another complete data tree; explicit Read rebuilds it normally.
+    fn retire_large_plain_preview(&mut self, bytes: usize) {
+        if bytes > 4 * 1024 * 1024 {
+            if let Some(preview) = self.file_preview.as_mut() {
+                preview.code.take();
+            }
+        }
     }
 
     pub(super) fn request_source_save(&mut self, cx: &mut Context<Self>) {

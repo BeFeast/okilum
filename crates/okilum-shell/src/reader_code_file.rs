@@ -13,7 +13,7 @@ mod structure;
 mod toolbar;
 use document::Document;
 
-/// Bounded text loading; large files remain read-only.
+/// Bounded text loading; explicit JSON editing shares the source-tool budget.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const EDIT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -562,7 +562,8 @@ impl CodePreview {
         )
     }
 
-    /// Preserve the existing explicit TXT editor; code formats keep their old cap.
+    /// JSON tools admit the same input sizes as the bounded viewer. Keep the
+    /// existing TXT editor and other code-format admission rules independent.
     pub(crate) fn editable(&self) -> bool {
         if Path::new(&self.rel)
             .extension()
@@ -572,9 +573,17 @@ impl CodePreview {
             // Its own canonical read/recovery checks remain authoritative.
             return true;
         }
+        let edit_bytes = if Path::new(&self.rel)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
+            okilum_core::code_operations::MAX_BYTES
+        } else {
+            EDIT_BYTES
+        };
         matches!(self.state, State::Content(_))
             && editable_format(&self.rel)
-            && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
+            && self.source_bytes.is_some_and(|bytes| bytes <= edit_bytes)
     }
 
     /// The file is still being read; whether it is editable is not known yet.

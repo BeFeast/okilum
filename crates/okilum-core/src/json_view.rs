@@ -31,11 +31,23 @@ pub fn within_pretty_budget(text: &str) -> bool {
 }
 
 fn budget(text: &str, max_bytes: usize) -> Result<(), Error> {
+    formatting_bound(text, max_bytes, &|| false).map(|_| ())
+}
+
+/// Shared preallocation/depth bound. Cancellation never returns partial output.
+pub fn formatting_bound(
+    text: &str,
+    max_bytes: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<usize>, Error> {
     let mut bound = text.len().saturating_add(1);
     let mut depth = 0usize;
     let mut quoted = false;
     let mut escaped = false;
-    for byte in text.bytes() {
+    for (at, byte) in text.bytes().enumerate() {
+        if at % (16 * 1024) == 0 && cancelled() {
+            return Ok(None);
+        }
         if quoted {
             if escaped {
                 escaped = false;
@@ -79,24 +91,60 @@ fn budget(text: &str, max_bytes: usize) -> Result<(), Error> {
             limit: max_bytes,
         })
     } else {
-        Ok(())
+        Ok(Some(bound))
     }
 }
 
 /// Two-space indent, one member per line, `"key": value`. Empty objects and
 /// arrays stay `{}` / `[]`. A leading byte order mark is not shown.
 pub fn pretty(text: &str) -> Result<String, Error> {
-    budget(text, MAX_VIEW_BYTES)?;
+    pretty_controlled(text, &|| false).map(|text| text.expect("uncancelled formatting"))
+}
+
+/// Worker formatter: cancellation retires the complete result, never a prefix.
+pub fn pretty_controlled(
+    text: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<String>, Error> {
+    let Some(bound) = formatting_bound(text, MAX_VIEW_BYTES, cancelled)? else {
+        return Ok(None);
+    };
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if let Err(error) = serde_json::from_str::<serde::de::IgnoredAny>(text) {
+        if error.to_string().starts_with("recursion limit exceeded") {
+            return Err(Error::Limit {
+                reason: "nesting depth",
+                limit: MAX_PRETTY_DEPTH,
+            });
+        }
         return Err(Error::Invalid(Invalid {
             line: error.line(),
             column: error.column(),
         }));
     }
-    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    if cancelled() {
+        return Ok(None);
+    }
+    let mut out = String::with_capacity(bound);
     let mut depth = 0usize;
-    let mut chars = text.chars().peekable();
+    let mut visited = 0usize;
+    let mut next_check = 0usize;
+    let stopped = std::cell::Cell::new(false);
+    let mut chars = text
+        .chars()
+        .take_while(|c| {
+            visited += c.len_utf8();
+            if visited < next_check {
+                return true;
+            }
+            next_check = visited + 16 * 1024;
+            let keep = !cancelled();
+            if !keep {
+                stopped.set(true);
+            }
+            keep
+        })
+        .peekable();
     while let Some(c) = chars.next() {
         match c {
             '"' => {
@@ -143,10 +191,10 @@ pub fn pretty(text: &str) -> Result<String, Error> {
         }
     }
     out.push('\n');
-    Ok(out)
+    Ok((!stopped.get() && !cancelled()).then_some(out))
 }
 
-fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+fn skip_whitespace<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
     while chars.peek().is_some_and(|c| c.is_whitespace()) {
         chars.next();
     }
