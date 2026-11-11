@@ -130,7 +130,9 @@ then size/storage read-only in that order; a view-only format such as XML uses
 only the name lock. The lock always retains the read-only reason. View switches
 never focus the read-only text Input; Tree retains a mounted CodePreview target.
 Async formatting preserves focus and never applies after Edit entry or a newer
-view request. Part commands apply only to changed Raw/Formatted pages. Copy-node
+view request. A result that would unmount a focused whole-file Find is retained
+until a later explicit view choice; that choice leaves a live Reader focus
+target. Part commands apply only to changed Raw/Formatted pages. Copy-node
 enablement caches tree-sitter lookup by snapshot, page and caret. Error-tolerant
 source grammars keep any fold ranges the editor can fold.
 Raw and Formatted show position controls when paged. The right sidebar remains

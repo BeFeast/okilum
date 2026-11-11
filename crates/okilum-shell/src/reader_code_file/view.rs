@@ -178,7 +178,14 @@ impl CodePreview {
                 reader_ui_state::set_code_view(kind, view, cx);
             }
         }
+        let focused_find = self.find.focus_handle(cx).is_focused(window);
         self.apply_view(view, window, cx);
+        let keeps_find = self.view == View::Tree || (self.view != View::Table && self.paged);
+        if focused_find && !keeps_find {
+            // An explicit choice may remove the old Find row. Keep a mounted
+            // keyboard target rather than leaving focus on its hidden Input.
+            self.focus.focus(window, cx);
+        }
         if view == View::Tree {
             self.focus.focus(window, cx);
         } else if view == View::Table
@@ -220,13 +227,19 @@ impl CodePreview {
             });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
+                let keeps_find = result.as_ref().is_ok_and(|doc| doc.pages.len() > 1);
                 let _ = this.update_in(cx, |this, window, cx| {
                     let Some(json) = &mut this.json else {
                         return;
                     };
                     json.formatting = false;
                     json.pretty = Some(result);
-                    if json.requested == View::Formatted && this.read_active {
+                    let requested_formatted = json.requested == View::Formatted;
+                    let hide_focused_find =
+                        !keeps_find && this.find.focus_handle(cx).is_focused(window);
+                    // Keep the result, but never unmount the Find the user is
+                    // currently typing into. A later explicit choice applies it.
+                    if requested_formatted && this.read_active && !hide_focused_find {
                         this.apply_view(View::Formatted, window, cx);
                     }
                     cx.notify();

@@ -171,8 +171,14 @@ fn code2809_header_caches_node_lookup_until_caret_or_snapshot_changes(cx: &mut T
 
 #[gpui::test]
 fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut TestAppContext) {
-    for switch_away in [false, true] {
-        let source = format!("{{\"payload\":\"{}\"}}", "x".repeat(120_000));
+    for (switch_away, formatted_paged) in
+        [(false, true), (true, true), (false, false), (true, false)]
+    {
+        let source = if formatted_paged {
+            format!("{{\"payload\":\"{}\"}}", "x".repeat(120_000))
+        } else {
+            format!("{{\"payload\":[{}0]}}", "0,".repeat(40_000))
+        };
         let (code, visual, _temp) = fixture(cx, "data.json", &source);
         let (release, gate) = futures::channel::oneshot::channel();
         code.update_in(visual, |code, window, cx| {
@@ -191,8 +197,10 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
                 code.view,
                 if switch_away {
                     View::Raw
-                } else {
+                } else if formatted_paged {
                     View::Formatted
+                } else {
+                    View::Tree
                 }
             );
             assert!(
@@ -200,7 +208,35 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
                 "worker completion preserves Find focus"
             );
             assert!(!code.json.as_ref().unwrap().formatting);
+            assert_eq!(
+                code.snapshot_for(View::Formatted).unwrap().pages.len() > 1,
+                formatted_paged
+            );
         });
+        assert!(
+            visual.debug_bounds("data-whole-file-find").is_some(),
+            "the focused Find is still mounted after completion"
+        );
+        visual.simulate_input("payload");
+        settle(visual);
+        code.read_with(visual, |code, cx| {
+            assert_eq!(code.find.read(cx).value().as_ref(), "payload");
+            assert_eq!(code.matches.len(), 1, "the mounted Find remains usable");
+        });
+        if !switch_away && !formatted_paged {
+            code.update_in(visual, |code, window, cx| {
+                code.set_view(View::Formatted, window, cx);
+                assert_eq!(
+                    code.view,
+                    View::Formatted,
+                    "explicit retry uses the retained result"
+                );
+                assert!(
+                    code.focus.is_focused(window),
+                    "explicit removal of Find leaves a live Reader target"
+                );
+            });
+        }
     }
 }
 
@@ -501,6 +537,10 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     let code = reader.read_with(visual, |reader, _| {
         reader.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
+    let fresh_recovery = temp.path().join("fresh-recovery");
+    reader.update(visual, |reader, _| {
+        reader.session_directory = Some(fresh_recovery)
+    });
     let recovery = reader.read_with(visual, |reader, _| {
         reader
             .session_directory
@@ -509,6 +549,11 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
             .join("editor-drafts")
     });
     std::fs::create_dir_all(&recovery).unwrap();
+    assert_eq!(
+        std::fs::read_dir(&recovery).unwrap().count(),
+        0,
+        "the denied recovery fixture has no pre-existing writable lock file"
+    );
     let _restore_recovery = Restore(recovery.clone());
     std::fs::set_permissions(&recovery, std::fs::Permissions::from_mode(0o500)).unwrap();
     reader.update_in(visual, |reader, window, cx| {
