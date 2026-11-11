@@ -125,18 +125,27 @@ def prelude(source):
     root = Path.cwd().resolve()
     with tempfile.TemporaryDirectory(prefix='writer-boundary-') as directory:
         marker = Path(directory) / 'invoked.json'
-        wrapper = Path(directory) / 'bash'
+        startup = Path(directory) / 'boundary.bash'
         command = shlex.join([sys.executable, str(Path(__file__).resolve()),
                               '--source', source, '--admission', '--marker', str(marker)])
-        wrapper.write_text('#!/bin/bash\n'
-            f'if [[ ${{1:-}} == scripts/ci/linux-rust-tests.sh && $PWD == {shlex.quote(str(root))} ]]; then\n'
-            f'  exec {command}\nfi\nexec /bin/bash "$@"\n')
-        wrapper.chmod(0o755)
+        # Keep PATH's bash a real executable: the original prelude copies it
+        # as a window stand-in and checks its executable identity in /proc.
+        # Install this function only in the top-level measured script. Child
+        # shells inherit BASH_ENV, but neither this function nor its dispatch.
+        startup.write_text(
+            f'if [[ $0 == scripts/ci/check-linux.sh && $PWD == {shlex.quote(str(root))} ]]; then\n'
+            '  bash() {\n'
+            '    if [[ $# == 1 && $1 == scripts/ci/linux-rust-tests.sh ]]; then\n'
+            f'      exec {command}\n'
+            '    fi\n'
+            '    command bash "$@"\n'
+            '  }\n'
+            'fi\n')
         # Reproduce the original check-linux prelude, rather than inserting a
         # new build outside the 900s budget. Stop after its original first group
         # so a timeout cannot cascade into repeatedly restarted compilation.
         result = subprocess.run(['/bin/bash', 'scripts/ci/check-linux.sh'],
-            env=dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'],
+            env=dict(os.environ, BASH_ENV=str(startup),
                      OKILUM_SOURCE_COMMIT=source, GITHUB_SHA=source,
                      GITHUB_REF='refs/heads/main'))
         invoked = marker.exists()

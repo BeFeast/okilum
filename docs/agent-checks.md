@@ -105,7 +105,10 @@ a target cache and reproduces the observed unavailable compiler wrapper. Its
 original `check-linux.sh` prelude runs unchanged; a source-directory-qualified
 shell boundary replaces only the transition to `linux-rust-tests.sh` with
 that source's original first local-writer group under the existing 900-second
-supervisor. Subsequent filters do not repeatedly restart a timed-out build.
+supervisor. A guarded `BASH_ENV` function exists only in the top-level script;
+PATH still resolves the real Bash executable, preserving the original restart
+fixture's executable identity. Child shells retain ordinary Bash dispatch.
+Subsequent filters do not repeatedly restart a timed-out build.
 No product compilation is inserted outside its original prelude or admission.
 A missing boundary invocation fails even if the prelude exits successfully.
 

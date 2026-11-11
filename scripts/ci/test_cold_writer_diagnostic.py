@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,15 @@ class ColdWriterControls(unittest.TestCase):
                 shutil.copy2(HERE / 'test-group.py', scripts)
                 (scripts / 'check-linux.sh').write_text(
                     '#!/bin/bash\nset -e\necho ORIGINAL_PRELUDE\n'
+                    # The unchanged prelude copies which('bash') as its fake
+                    # window executable; a PATH wrapper breaks /proc identity.
+                    + shlex.join([sys.executable, '-c',
+                        "import pathlib,shutil; assert pathlib.Path(shutil.which('bash')).read_bytes().startswith(b'\\x7fELF')"])
+                    + '\n' + shlex.join([sys.executable, '-m', 'unittest',
+                        'test_dev_builds.LinuxRestart'])
+                    + '\n'
+                    # A child shell must retain ordinary bash dispatch too.
+                    'bash -c \'if declare -F bash; then exit 99; fi; echo CHILD_BASH_UNCHANGED\'\n'
                     'bash scripts/ci/linux-rust-tests.sh\n')
                 (scripts / 'linux-rust-tests.sh').write_text('echo WRONG_LATER_FILTERS\n')
                 (scripts / 'local-writer-admission.sh').write_text(
@@ -56,9 +66,12 @@ class ColdWriterControls(unittest.TestCase):
                 result = subprocess.run([sys.executable, str(HERE / 'cold-writer-diagnostic.py'),
                     '--source', 'a' * 40], cwd=root, capture_output=True, text=True, timeout=10,
                     env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH'],
+                             PYTHONPATH=str(HERE),
                              RUNNER_OS='Linux'))
                 self.assertEqual(result.returncode, group_status, result.stderr)
                 self.assertIn('ORIGINAL_PRELUDE', result.stdout)
+                self.assertIn('CHILD_BASH_UNCHANGED', result.stdout)
+                self.assertIn('Ran 3 tests', result.stderr)
                 self.assertIn('ORIGINAL_ADMISSION', result.stdout)
                 self.assertIn('TEST_GROUP_START group=cold-writer limit=900s', result.stdout)
                 self.assertIn('COLD_WRITER_FINAL', result.stdout)
