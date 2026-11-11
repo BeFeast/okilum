@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::time::UNIX_EPOCH;
 
 // v3 adds alias identities and removes alias declarations from relationship edges.
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -367,7 +367,7 @@ fn latest_primary(base: &Path, root: &Path) -> Option<(String, Source)> {
 fn validate_aliases(entries: &[VaultEntry], aliases: &BTreeMap<String, Vec<String>>) -> Result<()> {
     let notes: std::collections::HashSet<_> = entries
         .iter()
-        .filter(|entry| entry.kind == EntryKind::Markdown)
+        .filter(|entry| entry.markdown_document())
         .map(|entry| &entry.path)
         .collect();
     ensure!(
@@ -387,7 +387,7 @@ fn cached_vault(
     let mut vault = Vault::from_note_paths(
         entries
             .iter()
-            .filter(|entry| entry.kind == EntryKind::Markdown)
+            .filter(|entry| entry.markdown_document())
             .map(|entry| entry.path.clone()),
     );
     vault.root = root.to_path_buf();
@@ -552,7 +552,7 @@ impl StartupSnapshot {
                     && snapshot
                         .entries
                         .iter()
-                        .any(|e| e.kind == EntryKind::Markdown && &e.path == path),
+                        .any(|e| e.markdown_document() && &e.path == path),
                 "Invalid Reader startup primary identity"
             );
             STANDARD.decode(&source.bytes)?;
@@ -781,7 +781,7 @@ impl Snapshot {
         let notes: std::collections::HashSet<_> = snapshot
             .entries
             .iter()
-            .filter(|e| e.kind == EntryKind::Markdown)
+            .filter(|e| e.markdown_document())
             .map(|e| &e.path)
             .collect();
         for path in &notes {
@@ -843,8 +843,17 @@ impl Snapshot {
         self.sources.get(path)?.stamp.as_ref()
     }
 
-    pub fn source_paths(&self) -> impl Iterator<Item = &str> {
+    /// Every prepared Markdown document, including asset content used by embeds
+    /// and revision-aware source operations. Not a note-list iterator.
+    pub fn markdown_source_paths(&self) -> impl Iterator<Item = &str> {
         self.sources.keys().map(String::as_str)
+    }
+
+    pub fn source_paths(&self) -> impl Iterator<Item = &str> {
+        self.sources
+            .keys()
+            .map(String::as_str)
+            .filter(|path| !crate::vault_conventions::asset_content(path))
     }
 
     pub fn sources(&self) -> Result<HashMap<String, Vec<u8>>> {
@@ -913,7 +922,14 @@ pub fn reconcile_with_reader(
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
     let (canonical, previous, mut vault) = begin_reconcile(root, previous, checkpoint)?;
     let mut bank = CheckedSources::default();
-    for (count, note) in vault.notes.iter().enumerate() {
+    for (count, note) in vault
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind != EntryKind::Directory && entry.path.to_ascii_lowercase().ends_with(".md")
+        })
+        .enumerate()
+    {
         checkpoint("Checking notes", count)?;
         bank.insert(
             &note.path,
@@ -989,7 +1005,13 @@ fn reconcile_parallel_prioritized_with_reader(
         mpsc,
     };
     let (canonical, previous, mut vault) = begin_reconcile(root, previous, checkpoint)?;
-    let mut work: Vec<_> = vault.notes.iter().collect();
+    let mut work: Vec<_> = vault
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.path.to_ascii_lowercase().ends_with(".md") && entry.kind != EntryKind::Directory
+        })
+        .collect();
     work.sort_by_key(|note| {
         priority
             .iter()

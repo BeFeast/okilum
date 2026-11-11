@@ -323,7 +323,7 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
     })?;
     // From here a failure takes the manifest back, so the folder is not left
     // half made and refused as «already a project» on the next try.
-    finish(folder, draft, &relative).inspect_err(|_| {
+    finish(vault, folder, draft, &relative).inspect_err(|_| {
         let _ = std::fs::remove_file(&manifest_path);
         rollback_ops();
     })
@@ -331,20 +331,41 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
 
 /// The rest of [`create`] once the manifest is written: `_index.md` when the
 /// folder has none, then the project as the Projects list reads it.
-fn finish(folder: &Path, draft: &Draft, relative: &str) -> Result<Created> {
-    let index = folder.join(INDEX);
-    let wrote_index = match std::fs::symlink_metadata(&index) {
-        Ok(_) => false,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match write_new(&index, &format!("# {}\n", draft.name.trim())) {
-                Ok(()) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-                Err(error) => {
-                    return Err(error).with_context(|| format!("cannot write {relative}/{INDEX}"))
+fn finish(vault: &Path, folder: &Path, draft: &Draft, relative: &str) -> Result<Created> {
+    // Check both families and all case spellings before creating anything.
+    // Directory enumeration errors must not turn into permission to add an index.
+    let mut existing = false;
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        if okilum_core::vault_conventions::index_name(&entry.file_name().to_string_lossy()) {
+            existing = true;
+        }
+    }
+    let name = if okilum_core::vault_conventions::uses_at(vault)? {
+        "@index.md"
+    } else {
+        INDEX
+    };
+    let index = folder.join(name);
+    let wrote_index = if existing {
+        false
+    } else {
+        match std::fs::symlink_metadata(&index) {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match write_new(&index, &format!("# {}\n", draft.name.trim())) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("cannot write {relative}/{INDEX}"))
+                    }
                 }
             }
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {relative}/{INDEX}"))
+            }
         }
-        Err(error) => return Err(error).with_context(|| format!("cannot read {relative}/{INDEX}")),
     };
     Ok(Created {
         project: Project::read(folder)?,
@@ -563,3 +584,54 @@ pub fn pick_environment<'a>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod at_index_tests {
+    use super::*;
+    #[test]
+    fn create_obeys_vault_convention_and_never_adds_a_second_index() {
+        for signal in [None, Some("@Index.md"), Some("@Assets"), Some("@Schema")] {
+            let root = tempfile::tempdir().unwrap();
+            if let Some(signal) = signal {
+                if signal.ends_with(".md") {
+                    std::fs::write(root.path().join(signal), "# Root").unwrap();
+                } else {
+                    std::fs::create_dir(root.path().join(signal)).unwrap();
+                }
+            }
+            for existing in [None, Some("@INDEX.md"), Some("_Index.md")] {
+                let folder = tempfile::Builder::new()
+                    .prefix("Project-")
+                    .tempdir_in(root.path())
+                    .unwrap();
+                if let Some(existing) = existing {
+                    std::fs::write(folder.path().join(existing), b"keep exact bytes").unwrap();
+                }
+                let draft = Draft::for_folder(folder.path());
+                let made = create(root.path(), folder.path(), &draft).unwrap();
+                assert_eq!(made.wrote_index, existing.is_none());
+                let indexes: Vec<_> = std::fs::read_dir(folder.path())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|name| okilum_core::vault_conventions::index_name(name))
+                    .collect();
+                assert_eq!(indexes.len(), 1);
+                if let Some(existing) = existing {
+                    assert_eq!(
+                        std::fs::read(folder.path().join(existing)).unwrap(),
+                        b"keep exact bytes"
+                    );
+                } else {
+                    assert_eq!(
+                        indexes[0],
+                        if signal.is_some() {
+                            "@index.md"
+                        } else {
+                            "_index.md"
+                        }
+                    );
+                }
+            }
+        }
+    }
+}

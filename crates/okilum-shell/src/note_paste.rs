@@ -530,6 +530,7 @@ mod tests {
     #[test]
     fn image_paste_saves_the_file_then_inserts_the_embed() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("attachments")).unwrap();
         let notice = PasteNotice::default();
         let inserted = paste_now(
             Ok(PasteOffer::Image(png())),
@@ -553,6 +554,12 @@ mod tests {
     #[test]
     fn image_paste_failure_inserts_nothing_and_explains() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join(".obsidian")).unwrap();
+        std::fs::write(
+            vault.path().join(".obsidian/app.json"),
+            r#"{"attachmentFolderPath":"attachments"}"#,
+        )
+        .unwrap();
         std::fs::write(vault.path().join("attachments"), b"a file, not a folder").unwrap();
         let notice = PasteNotice::default();
         let inserted = paste_now(
@@ -584,6 +591,7 @@ mod tests {
     #[test]
     fn pasted_files_are_saved_then_linked() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("attachments")).unwrap();
         let outside = tempfile::tempdir().unwrap();
         let doc = outside.path().join("spec.pdf");
         std::fs::write(&doc, b"%PDF").unwrap();

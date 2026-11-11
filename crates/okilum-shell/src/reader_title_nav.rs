@@ -201,6 +201,7 @@ impl Reader {
         // Hidden notes follow Show hidden files, as in the tree (#635).
         let shown = |path: &str| {
             in_folder(path, &folder)
+                && !okilum_core::vault_conventions::markdown_asset(path)
                 && (!self.tree.hidden_by_preference(path)
                     || (agent_files
                         && okilum_core::quick_open::is_agent_file(path)

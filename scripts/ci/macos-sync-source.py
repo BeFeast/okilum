@@ -51,6 +51,10 @@ def main():
         raise RuntimeError("native Mac Sync controls require macOS")
     health_negative_controls()
     for package, target, selected in (
+        ("okilum-core", "--test=at_vault", "windows_issue2821_"),
+        ("okilum-t3", "--lib", "projects::create::at_index_tests::"),
+        ("okilum-shell", "--bin=okilum", "issue2821_tests::"),
+        ("okilum-sync-controller", "--lib", "direct::shared_ignores::at_template_tests::"),
         ("okilum-sync-supervisor", "--lib", "args::tests::"),
         ("okilum-sync-supervisor", "--lib", "serve::unix::tests::"),
         ("okilum-sync-supervisor", "--test=serve", ""),

@@ -1135,3 +1135,7 @@ offers Rescan for other clients' changes; it adds no modal or banner and exposes
 no filesystem paths. Local/unknown FUSE keeps its existing watcher behavior.
 NFS/SMB handling is unchanged. Other remote filesystem types and periodic scans
 are outside this change.
+
+Additive `@` vault conventions and the synthetic native acceptance matrix are
+defined in [special-path compatibility](../vault-at-conventions.md). Both legacy
+`_` behavior and the configured templates branch exception remain supported.

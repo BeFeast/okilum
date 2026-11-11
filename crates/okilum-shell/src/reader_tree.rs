@@ -15,10 +15,10 @@ pub struct Row {
     pub expanded: bool,
     /// Inside an Archive folder: rendered muted (docs/design/reader.md, #369).
     pub archived: bool,
-    /// A `_`/`.` item shown only because hidden files are on or because it
+    /// A `@`/`_`/`.` item shown only because hidden files are on or because it
     /// leads to the current note (#395): rendered muted with a marker.
     pub hidden: bool,
-    /// The folder's index note (`_index.md`, #1512): listed first in its
+    /// The folder's index note (`@index.md` or `_index.md`, #1512): listed first in its
     /// folder, muted, with its own icon, and shown without Show hidden
     /// files. Otherwise an ordinary note row.
     pub index: bool,
@@ -34,12 +34,11 @@ pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
     crate::reader_tree_breadcrumbs::Ancestors::new(rows.to_vec()).at(first)
 }
 
-/// Ordinary `_`/`.` paths are hidden in the browser until Show hidden files
+/// Ordinary `@`/`_`/`.` paths are hidden in the browser until Show hidden files
 /// or navigation reveals them. They remain in inventory for links and search;
 /// service directories are excluded by the scanner.
 pub fn hidden(path: &str) -> bool {
-    path.split('/')
-        .any(|segment| segment.starts_with('_') || segment.starts_with('.'))
+    okilum_core::vault_conventions::hidden(path)
 }
 
 /// PARA archive folders, with or without a numeric prefix ("4 Archive").
@@ -58,7 +57,7 @@ pub struct Tree {
     pub cursor: Option<String>,
     selected: BTreeSet<String>,
     selection_anchor: Option<String>,
-    /// Show `_`/`.` items (per-vault preference, #395).
+    /// Show `@`/`_`/`.` items (per-vault preference, #395).
     show_hidden: bool,
     agent_shims: BTreeSet<String>,
     /// A hidden path revealed for navigation; its branch is shown until the
@@ -232,7 +231,12 @@ impl Tree {
                 ..Self::default()
             };
             self.root = root.to_path_buf();
-            self.templates_folder = "_Assets/Templates".into();
+            self.templates_folder = okilum_core::note_templates::default_folder_from(|folder| {
+                entries
+                    .iter()
+                    .any(|entry| entry.path == folder && entry.kind == EntryKind::Directory)
+            })
+            .into();
         }
         self.children.clear();
         self.kinds.clear();
@@ -834,18 +838,19 @@ pub fn folder_index(folder: &str, entries: &[VaultEntry]) -> FolderIndex {
 }
 
 fn index_name(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("_index.md"))
+    okilum_core::vault_conventions::index_name(path)
 }
 
 /// The index note among one folder's direct children.
 fn index_among<'a>(children: impl Iterator<Item = &'a VaultEntry>) -> FolderIndex {
-    let mut found =
-        children.filter(|entry| entry.kind == EntryKind::Markdown && index_name(&entry.path));
-    match (found.next(), found.next()) {
-        (None, _) => FolderIndex::None,
-        (Some(entry), None) => FolderIndex::One(entry.path.clone()),
+    let found = okilum_core::vault_conventions::index_candidates(
+        children
+            .filter(|entry| entry.kind == EntryKind::Markdown)
+            .map(|entry| entry.path.as_str()),
+    );
+    match found.as_slice() {
+        [] => FolderIndex::None,
+        [path] => FolderIndex::One((*path).to_owned()),
         _ => FolderIndex::Several,
     }
 }

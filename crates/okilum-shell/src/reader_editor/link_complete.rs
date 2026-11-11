@@ -2914,3 +2914,24 @@ mod tests {
         assert!(std::fs::read_to_string(note._directory.path().join("vault/note.md")).is_ok());
     }
 }
+
+#[cfg(test)]
+mod at_prefix_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn completion_obeys_at_hiding_without_hiding_inventory() {
+        let vault = Arc::new(Vault::from_note_paths(
+            ["Area/@index.md", "@Private/y.md", "Visible.md"]
+                .into_iter()
+                .map(str::to_owned),
+        ));
+        assert!(Index::new(vault.clone(), false)
+            .search("y", "Visible.md")
+            .is_empty());
+        assert_eq!(
+            Index::new(vault, true).search("y", "Visible.md")[0].path,
+            "@Private/y.md"
+        );
+    }
+}

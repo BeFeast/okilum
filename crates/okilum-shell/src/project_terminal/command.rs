@@ -261,3 +261,53 @@ else {{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod at_argument_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn powershell_at_arguments_are_encoded_data_not_splatting() {
+        let initial = Initial {
+            argv: vec![
+                "tool.exe".into(),
+                "@AgentContract.md".into(),
+                "@Assets/Files/a b.pdf".into(),
+            ],
+            directory: None,
+        };
+        let launch = plan("windows", &initial, "wt.exe");
+        assert!(!launch.args.iter().any(|arg| arg.starts_with('@')));
+        assert_eq!(windows_quote("@AgentContract.md"), "\"@AgentContract.md\"");
+        let script = String::from_utf16(
+            &STANDARD
+                .decode(launch.args.last().unwrap())
+                .unwrap()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let data = script
+            .split("FromBase64String('")
+            .nth(1)
+            .unwrap()
+            .split("')")
+            .next()
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&STANDARD.decode(data).unwrap()).unwrap();
+        assert_eq!(payload["argv"], serde_json::json!(initial.argv));
+        assert_eq!(
+            payload["arguments"],
+            serde_json::json!("\"@AgentContract.md\" \"@Assets/Files/a b.pdf\"")
+        );
+        assert!(script.contains("FromBase64String"));
+        assert!(
+            !script.contains("@AgentContract.md"),
+            "user arguments are JSON inside base64 data"
+        );
+    }
+}

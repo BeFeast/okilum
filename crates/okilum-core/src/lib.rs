@@ -103,3 +103,5 @@ pub mod unix_publish;
 
 /// Shared cooperative local-writer authority; never a transport-exclusive receipt.
 pub use okilum_write_authority as local_writer_authority;
+
+pub mod vault_conventions;

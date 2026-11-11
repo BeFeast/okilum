@@ -43,13 +43,14 @@ pub enum FileAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileItem {
+    pub folder: PathBuf,
     pub source: PathBuf,
     pub size: u64,
     pub action: FileAction,
 }
 
 /// What a paste of file URLs does, decided on the UI thread from metadata
-/// only; the copying happens later.
+/// and bounded image signature reads; the copying happens later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FilePlan {
     pub image_options: super::image_import::Options,
@@ -72,6 +73,17 @@ pub struct FilePlan {
 }
 
 impl FilePlan {
+    pub fn relative_folder<'a>(&'a self, item: &FileItem) -> std::borrow::Cow<'a, str> {
+        if item.folder == self.folder {
+            std::borrow::Cow::Borrowed(&self.folder_rel)
+        } else {
+            std::borrow::Cow::Owned(slash_path(
+                item.folder
+                    .strip_prefix(&self.vault_root)
+                    .unwrap_or(&item.folder),
+            ))
+        }
+    }
     pub fn copies(&self) -> usize {
         self.items
             .iter()
@@ -111,7 +123,8 @@ pub fn plan(
     stamp: &str,
     ask_above: Option<u64>,
 ) -> FilePlan {
-    let folder = attachments::attachment_folder(vault_root, note_rel);
+    let folder =
+        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::File);
     let vault = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
     let folder_rel = folder
         .strip_prefix(vault_root)
@@ -129,6 +142,11 @@ pub fn plan(
         ask: false,
     };
     for path in paths {
+        let destination = attachments::attachment_folder(
+            vault_root,
+            note_rel,
+            attachments::AttachmentKind::of_path(path),
+        );
         let Ok(metadata) = std::fs::metadata(path) else {
             plan.missing += 1;
             continue;
@@ -143,6 +161,7 @@ pub fn plan(
             if !hidden(rel) {
                 let text = vault_link(rel);
                 plan.items.push(FileItem {
+                    folder: destination.clone(),
                     source: path.clone(),
                     size,
                     action: FileAction::Link { text },
@@ -156,6 +175,7 @@ pub fn plan(
             plan.ask = true;
         }
         plan.items.push(FileItem {
+            folder: destination.clone(),
             source: path.clone(),
             size,
             action: FileAction::Copy { file_name },
@@ -641,6 +661,7 @@ mod tests {
     #[test]
     fn outside_files_are_copied_under_their_own_names() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(vault.path().join("attachments")).unwrap();
         let outside = tempfile::tempdir().unwrap();
         let doc = outside.path().join("Report Q3.pdf");
         write(&doc, b"%PDF");
@@ -797,6 +818,7 @@ mod tests {
     #[test]
     fn cached_files_are_named_by_content_and_numbered_when_placed() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(vault.path().join("attachments")).unwrap();
         let outside = tempfile::tempdir().unwrap();
         let cache = outside.path().join("com.raycast.macos/clipboard");
         write(&cache.join("file-A"), b"\xff\xd8\xff\xe0jpeg");

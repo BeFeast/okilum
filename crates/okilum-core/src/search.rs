@@ -304,7 +304,10 @@ impl Searcher {
             |fields| {
                 documents
                     .iter()
-                    .filter(|doc| !crate::vault::service_path(Path::new(&doc.path)))
+                    .filter(|doc| {
+                        !crate::vault::service_path(Path::new(&doc.path))
+                            && !crate::vault_conventions::asset_content(&doc.path)
+                    })
                     .enumerate()
                     .map(|(count, doc)| {
                         checkpoint.borrow_mut()("Parsing searchable text", count)?;
@@ -324,7 +327,10 @@ impl Searcher {
         Self::build_with(index_dir, |fields| {
             Ok(documents
                 .iter()
-                .filter(|doc| !crate::vault::service_path(Path::new(&doc.path)))
+                .filter(|doc| {
+                    !crate::vault::service_path(Path::new(&doc.path))
+                        && !crate::vault_conventions::asset_content(&doc.path)
+                })
                 .map(|doc| Self::document_from_text(fields, &doc.path, &doc.title, &doc.text))
                 .collect())
         })
@@ -444,7 +450,9 @@ impl Searcher {
         rel: &str,
         title: &str,
     ) -> Result<Option<TantivyDocument>> {
-        if crate::vault::service_path(Path::new(rel)) {
+        if crate::vault::service_path(Path::new(rel))
+            || crate::vault_conventions::asset_content(rel)
+        {
             return Ok(None);
         }
         match vault.read_note(rel) {
@@ -680,6 +688,7 @@ impl Searcher {
     ) -> Result<()> {
         let parsed: Vec<_> = documents
             .iter()
+            .filter(|doc| !crate::vault_conventions::asset_content(&doc.path))
             .map(|document| {
                 Self::document_for_text(
                     self.f,

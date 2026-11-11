@@ -95,7 +95,7 @@ pub fn short_project_name(path: &str, suggested: &str) -> String {
     if dated
         || suggested.trim().is_empty()
         || suggested.to_ascii_lowercase().ends_with("project manager")
-        || suggested == "_index"
+        || matches!(suggested.to_ascii_lowercase().as_str(), "_index" | "@index")
     {
         short.to_owned()
     } else {
@@ -181,7 +181,7 @@ pub fn noise(path: &str) -> bool {
             p.starts_with('.')
                 || matches!(
                     p.to_lowercase().as_str(),
-                    "pokutan" | "transcripts" | "archive" | "архив" | "_schema"
+                    "pokutan" | "transcripts" | "archive" | "архив" | "_schema" | "@schema"
                 )
         })
         || crate::quick_open::is_agent_file(path)
@@ -189,6 +189,7 @@ pub fn noise(path: &str) -> bool {
         || path.ends_with("ops/thread-ids.md")
         || path.ends_with("ops/board.md")
         || path.ends_with("ops/manager-state.md")
+        || path.starts_with("@Assets/")
         || path.starts_with("_Assets/") && !path.starts_with("_Assets/Daily Notes/")
 }
 
@@ -281,7 +282,11 @@ impl Index {
 
     pub fn replace(&mut self, path: &str, source: &str, mtime: u64) {
         // Only unit metadata needs YAML parsing, not every body on a watcher batch.
-        let metadata = if path.ends_with("/_index.md")
+        if crate::vault_conventions::asset_content(path) {
+            self.remove(path);
+            return;
+        }
+        let metadata = if crate::vault_conventions::index_name(path)
             || para_unit(path).is_some_and(|unit| path == format!("{unit}.md"))
         {
             crate::properties::frontmatter_block(source)
@@ -350,11 +355,21 @@ impl Index {
             }
         }
         for unit in units.values_mut() {
-            if let Some(row) = self
-                .notes
-                .get(&format!("{}/_index.md", unit.path))
-                .or_else(|| self.notes.get(&format!("{}.md", unit.path)))
-            {
+            let candidates = crate::vault_conventions::index_candidates(
+                self.notes
+                    .keys()
+                    .filter(|path| {
+                        path.rsplit_once('/')
+                            .is_some_and(|(folder, _)| folder == unit.path)
+                    })
+                    .map(String::as_str),
+            );
+            let row = match candidates.as_slice() {
+                [path] => self.notes.get(*path),
+                [] => self.notes.get(&format!("{}.md", unit.path)),
+                _ => None,
+            };
+            if let Some(row) = row {
                 unit.terminal |= row.terminal;
             }
             unit.title = short_project_name(&unit.path, &unit.title);
@@ -773,5 +788,44 @@ mod tests {
         assert!(index.view.active.is_empty());
         assert_eq!(index.view.older, 0);
         assert!(noise("Dev/4 Archive/Old/plan.md"));
+    }
+}
+
+#[cfg(test)]
+mod at_tests {
+    use super::*;
+    #[test]
+    fn at_noise_metadata_and_legacy_daily_notes() {
+        assert_eq!(
+            short_project_name("Dev/Projects/Synthetic", "@INDEX"),
+            "Synthetic"
+        );
+        for path in [
+            "@Assets/Clippings/clip.md",
+            "@Assets/Daily Notes/day.md",
+            "@Schema/note.md",
+        ] {
+            assert!(noise(path), "{path}");
+        }
+        assert!(!noise("_Assets/Daily Notes/day.md"));
+        assert!(!noise("@Private/ordinary.md"));
+        let mut index = Index::default();
+        index.replace(
+            "Dev/Projects/Synthetic/_index.md",
+            "---\nstatus: active\n---\n",
+            10,
+        );
+        index.replace(
+            "Dev/Projects/Synthetic/@INDEX.md",
+            "---\nstatus: done\n---\n",
+            11,
+        );
+        index.replace("@Assets/Clippings/clip.md", "# Clipping", 100);
+        assert!(!index.rows().any(|row| row.path.starts_with("@Assets/")));
+        index.refresh(100, 0, 0);
+        assert!(
+            index.view.active.is_empty(),
+            "@ metadata must make this unit terminal"
+        );
     }
 }

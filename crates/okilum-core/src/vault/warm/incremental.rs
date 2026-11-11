@@ -205,7 +205,13 @@ impl State {
                                 directories.insert(name.clone(), false);
                             }
                             EntryKind::Attachment => {
-                                attachments.insert(name.clone(), false);
+                                if name.to_ascii_lowercase().ends_with(".md")
+                                    && crate::vault_conventions::asset_content(name)
+                                {
+                                    changes.removed.insert(name.clone());
+                                } else {
+                                    attachments.insert(name.clone(), false);
+                                }
                             }
                         }
                     }
@@ -313,7 +319,13 @@ impl State {
                             pending.insert(name.clone());
                         }
                         EntryKind::Attachment => {
-                            attachments.insert(name.clone(), false);
+                            if name.to_ascii_lowercase().ends_with(".md")
+                                && crate::vault_conventions::asset_content(name)
+                            {
+                                changes.removed.insert(name.clone());
+                            } else {
+                                attachments.insert(name.clone(), false);
+                            }
                         }
                     }
                 }
@@ -507,7 +519,7 @@ impl State {
                     .cloud_placeholders
                     .push(self.vault.root.join(&path));
             }
-            if self.vault.notes.iter().any(|note| note.path == path) != present {
+            if self.vault.markdown_entries().any(|note| note.path == path) != present {
                 self.vault.set_note_identity(&path, present);
             }
             if present {
