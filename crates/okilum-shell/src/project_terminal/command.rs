@@ -283,7 +283,9 @@ mod at_argument_tests {
             &STANDARD
                 .decode(launch.args.last().unwrap())
                 .unwrap()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
                 .collect::<Vec<_>>(),
         )
