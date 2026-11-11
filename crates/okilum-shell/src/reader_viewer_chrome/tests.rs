@@ -8,13 +8,14 @@ fn fixture<'a>(
 ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
-    std::fs::create_dir_all(root.join("Folder")).unwrap();
+    std::fs::create_dir_all(root.join("Folder/A long parent folder name")).unwrap();
     for (name, value) in [
         ("data.json", "{\"a\":1,\"a\":2e2}\r\n"),
         ("data.csv", "name,value\r\none,1\r\n"),
         ("source.rs", "fn main() {}\n"),
         ("text.txt", "hello שלום\r\n"),
         ("Folder/text.txt", "nested text\n"),
+        ("Folder/A long parent folder name/file.txt", "nested text\n"),
         ("gateway.log", "2026-11-10T12:00:00Z INFO ready\n"),
         ("note.md", "# Note\n\nBody\n"),
         (
@@ -407,6 +408,8 @@ fn open_with_button_opens_and_dismisses_the_same_header_menu(cx: &mut TestAppCon
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
     visual.update(|window, cx| {
+        // Cached prepaint does not replay overlay measurement callbacks.
+        window.refresh();
         window.draw(cx).clear(cx);
         assert!(
             !gpui_base::GlobalState::native_overlays(window, cx).is_empty(),
@@ -431,6 +434,8 @@ fn open_with_button_opens_and_dismisses_the_same_header_menu(cx: &mut TestAppCon
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     visual.update(|window, cx| {
+        // Cached prepaint does not replay overlay measurement callbacks.
+        window.refresh();
         window.draw(cx).clear(cx);
         assert!(
             gpui_base::GlobalState::native_overlays(window, cx).is_empty(),
@@ -524,13 +529,13 @@ fn read_mode_find_keystrokes_do_not_notify_cached_side_panels(cx: &mut TestAppCo
 fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
     cx: &mut TestAppContext,
 ) {
-    let (reader, visual, _temp) = fixture(cx, "Folder/text.txt");
+    let (reader, visual, _temp) = fixture(cx, "Folder/A long parent folder name/file.txt");
     reader.update(visual, |reader, cx| {
         reader.panels.close(reader_layout::Panel::Notes);
         reader.panels.close(reader_layout::Panel::Backlinks);
         cx.notify();
     });
-    for (width, expanded) in [(1600., true), (520., false), (1600., true)] {
+    for (width, expanded) in [(1600., true), (600., false), (1600., true)] {
         visual.simulate_resize(size(px(width), px(800.)));
         visual.run_until_parked();
         assert_eq!(
