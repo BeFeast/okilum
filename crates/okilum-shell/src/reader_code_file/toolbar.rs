@@ -259,11 +259,26 @@ impl CodePreview {
                 action.labelled = true;
                 status.actions.push(action);
             }
-        } else if raw.pages.len() > 1 {
+        } else if raw.pages.len() > 1 && (self.view == View::Tree || self.paged) {
             status.label = "Large file.".into();
             status.text = if self.view == View::Tree {
-                format!("{} on a single line. Tree shows all of it.", view::size(raw.text.len()))
-            } else { format!("{} on a single line, so Raw shows it in parts. Tree, Find and Copy cover the whole file.", view::size(raw.text.len())) }.into();
+                format!(
+                    "{} on a single line. Tree shows all of it.",
+                    view::size(raw.text.len())
+                )
+            } else {
+                format!(
+                    "{} on a single line, so {} shows it in parts. {} cover the whole file.",
+                    view::size(raw.text.len()),
+                    self.view.label(),
+                    if self.availability(View::Tree).available() {
+                        "Tree, Find and Copy"
+                    } else {
+                        "Find and Copy"
+                    }
+                )
+            }
+            .into();
         } else if let Some(reason) = self.readonly_reason() {
             status.icon = Some(Icon::default().path("icons/lock.svg"));
             status.label = "Read-only.".into();
@@ -286,6 +301,11 @@ impl CodePreview {
 
     #[inline(never)]
     pub(super) fn bottom_line(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Table retains its own rows/count line until #2812; never stack a
+        // second CodePreview status line under it. The name lock remains.
+        if self.view == View::Table {
+            return div().into_any_element();
+        }
         let mut status = self.status(cx.entity(), cx);
         let trailing = (self.view != View::Tree
             && self.view != View::Table

@@ -94,6 +94,10 @@ fn code2809_switches_and_pages_keep_tree_folds_and_ready_snapshots(cx: &mut Test
     preview.update_in(visual, |p, window, cx| {
         assert_eq!(p.view, View::Formatted);
         assert!(p.document.is_some());
+        assert!(
+            p.status(preview.clone(), cx).text.is_empty(),
+            "Formatted without parts must not keep the Raw long-line reason"
+        );
         p.fold_all(true, cx);
         assert_eq!(p.view, View::Formatted);
         assert!(!p.input().unwrap().read(cx).folded_ranges().is_empty());
@@ -182,6 +186,10 @@ fn code2809_large_line_and_size_status_precedence_and_edit_cap(cx: &mut TestAppC
         // A long string remains paged after formatting; position controls apply
         // to Formatted as well as Raw.
         assert!(p.document.as_ref().unwrap().pages.len() > 1);
+        assert!(p
+            .status(preview.clone(), cx)
+            .text
+            .contains("Formatted shows it in parts"));
         assert_eq!(
             p.chrome(preview.clone(), cx).state.unwrap().id,
             "code-readonly"
@@ -646,5 +654,42 @@ fn code2809_copy_menu_disables_tree_selection_and_copies_exact_node_with_counted
     assert_eq!(
         std::fs::read_to_string(temp.path().join("data.json")).unwrap(),
         source
+    );
+}
+
+#[gpui::test]
+fn code2809_raw_only_long_line_names_only_available_whole_file_tools(cx: &mut TestAppContext) {
+    let text = "x".repeat(120_000);
+    let (preview, visual, _temp) = fixture(cx, "text.txt", &text);
+    preview.read_with(visual, |p, cx| {
+        assert_eq!(p.availability(View::Tree), Availability::Absent);
+        assert_eq!(p.status(preview.clone(), cx).text.as_ref(), "0.1 MB on a single line, so Raw shows it in parts. Find and Copy cover the whole file.");
+    });
+}
+
+#[gpui::test]
+fn code2809_table_keeps_its_own_status_without_a_second_code_line(cx: &mut TestAppContext) {
+    let (preview, visual, _temp) = fixture(cx, "rows.json", "[{\"a\":1}]");
+    preview.update(visual, |p, cx| {
+        assert_eq!(p.view, View::Table);
+        p.source_bytes = Some(5_200_000);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        visual.debug_bounds("delimited-viewport").is_some(),
+        "actual table is mounted"
+    );
+    assert!(
+        visual.debug_bounds("code-readonly").is_some(),
+        "read-only reason remains in the header lock"
+    );
+    assert!(
+        visual.debug_bounds("code-status-line").is_none(),
+        "Table must not get a second CodePreview bottom line"
     );
 }
