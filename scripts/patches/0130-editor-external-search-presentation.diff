@@ -196,6 +196,11 @@ index d1a45fef..cdad152d 100644
 diff --git a/crates/component/src/input/search.rs b/crates/component/src/input/search.rs
 --- a/crates/component/src/input/search.rs
 +++ b/crates/component/src/input/search.rs
-@@ -325 +325,2 @@
+@@ -323,6 +323,7 @@
+ 
+         v_flex()
              .id("search-panel")
 +            .debug_selector(|| "search-panel".into())
+             .occlude()
+             .track_focus(&self.focus_handle(cx))
+             .key_context(CONTEXT)
