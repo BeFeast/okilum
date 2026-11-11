@@ -428,7 +428,21 @@ mod tests {
         .unwrap();
         assert!(Catalog::load(root).is_err());
         std::fs::remove_file(root.join(".obsidian/templates.json")).unwrap();
+        // Select the existing legacy default under the additive precedence rule.
+        std::fs::create_dir(root.join("Templates")).unwrap();
         std::os::unix::fs::symlink(dir.path(), root.join("_Assets")).unwrap();
         assert!(Catalog::load(root).is_err());
+    }
+    #[test]
+    fn both_default_template_branches_refuse_symlink_ancestors() {
+        for branch in ["@Schema", "_Assets"] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("Templates")).unwrap();
+            std::os::unix::fs::symlink(root.path(), root.path().join(branch)).unwrap();
+            assert!(
+                Catalog::load(root.path()).is_err(),
+                "selected {branch} template ancestor must be a real directory"
+            );
+        }
     }
 }
