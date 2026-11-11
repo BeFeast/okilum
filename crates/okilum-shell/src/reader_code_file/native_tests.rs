@@ -2,7 +2,7 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
-fn code2771_invalid_json_pretty_is_callable_and_never_writes_source(cx: &mut TestAppContext) {
+fn code2771_invalid_json_formatted_is_disabled_and_never_writes_source(cx: &mut TestAppContext) {
     let fixture = tempfile::tempdir().unwrap();
     let path = fixture.path().join("invalid.json");
     let source = "{ a: 1 }";
@@ -26,22 +26,22 @@ fn code2771_invalid_json_pretty_is_callable_and_never_writes_source(cx: &mut Tes
     visual.run_until_parked();
     let before = preview.read_with(visual, |p, _| p.document_revision);
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    let pretty = visual
-        .debug_bounds("json-pretty")
-        .expect("invalid still has Pretty");
-    visual.simulate_click(pretty.center(), Modifiers::default());
-    visual.run_until_parked();
-    preview.read_with(visual, |p, cx| {
-        assert!(
-            p.document_revision == before,
-            "an unchanged display does not restart parsing"
+    preview.update_in(visual, |p, window, cx| {
+        assert_eq!(
+            p.availability(View::Formatted),
+            Availability::Disabled("Not available: the file is not valid JSON".into())
         );
-        let json = p.json.as_ref().unwrap();
-        assert!(
-            json.requested_pretty,
-            "positive control: Pretty click is recorded"
+        assert_eq!(
+            p.availability(View::Tree),
+            Availability::Disabled("Not available: the file is not valid JSON".into())
         );
-        assert!(!json.showing_pretty && matches!(json.pretty, Some(Err(_))));
+        p.set_view(View::Formatted, window, cx);
+        assert!(
+            !p.json.as_ref().unwrap().formatting,
+            "disabled segment never starts a worker"
+        );
+        assert_eq!(p.document_revision, before);
+        assert_eq!(p.view, View::Raw);
         assert_eq!(p.input().unwrap().read(cx).value().as_ref(), source);
     });
     assert_eq!(std::fs::read_to_string(path).unwrap(), source);
@@ -99,7 +99,7 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
         assert!(!s.is_editable());
         assert_eq!(s.value().as_ref(), source);
     });
-    let fold = visual.debug_bounds("data-fold-all").expect("Fold all");
+    let fold = visual.debug_bounds("code-fold-all").expect("Fold all");
     visual.simulate_click(fold.center(), Modifiers::default());
     visual.run_until_parked();
     input.read_with(visual, |s, _| {
@@ -108,7 +108,7 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
             "native XML grammar supplies folds"
         )
     });
-    let unfold = visual.debug_bounds("data-unfold-all").expect("Unfold all");
+    let unfold = visual.debug_bounds("code-unfold-all").expect("Unfold all");
     visual.simulate_click(unfold.center(), Modifiers::default());
     visual.run_until_parked();
     input.update(visual, |s, cx| {
@@ -118,9 +118,7 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
             cx,
         );
     });
-    let copy = visual.debug_bounds("data-copy-node").expect("Copy node");
-    visual.simulate_click(copy.center(), Modifiers::default());
-    visual.run_until_parked();
+    preview.update_in(visual, |p, window, cx| p.copy_node(window, cx));
     visual.update(|_, cx| {
         assert_eq!(
             cx.read_from_clipboard().unwrap().text().unwrap(),
@@ -128,9 +126,14 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
         )
     });
     input.update(visual, |s, cx| s.set_selected_range(0..6, cx));
-    let copy = visual.debug_bounds("data-copy-selection").unwrap();
-    visual.simulate_click(copy.center(), Modifiers::default());
-    visual.run_until_parked();
+    let selection = preview.read_with(visual, |p, cx| {
+        p.chrome(preview.clone(), cx)
+            .copy_actions
+            .into_iter()
+            .find(|a| a.id == "code-copy-selection")
+            .unwrap()
+    });
+    visual.update(|window, cx| (selection.invoke)(window, cx));
     visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "<root>"));
     input.update(visual, |s, cx| {
         s.set_search_query("other", false, cx);
@@ -181,34 +184,37 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     );
     // Above the automatic Pretty budget, a repeated Raw request is a no-op.
     preview.update_in(visual, |p, window, cx| {
-        assert!(!p.json.as_ref().unwrap().showing_pretty);
+        assert!(p.view != View::Formatted);
         let revision = p.document_revision;
-        p.show_json(false, window, cx);
+        p.set_view(View::Raw, window, cx);
         assert_eq!(p.document_revision, revision);
         assert!(p.document.is_some());
-        p.show_json(true, window, cx);
+        p.set_view(View::Formatted, window, cx);
     });
     visual.run_until_parked();
-    // Draw a real Pretty-to-Raw handoff before its replacement AST is available.
+    // Switching immutable snapshots keeps a ready document, and text folding
+    // never silently changes the selected view.
     preview.update_in(visual, |p, window, cx| {
-        assert!(p.json.as_ref().unwrap().showing_pretty);
-        assert!(p.structure_view);
-        p.show_json(false, window, cx);
-        assert!(!p.structure_view);
-        assert!(p.document.is_none());
+        assert_eq!(p.view, View::Formatted);
+        p.set_view(View::Raw, window, cx);
+        assert_eq!(p.view, View::Raw);
+        assert!(p.document.is_some());
+        p.fold_all(true, cx);
+        assert_eq!(p.view, View::Raw);
+        p.set_view(View::Tree, window, cx);
     });
-    visual.update(|window, cx| window.draw(cx).clear(cx));
     visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
     let fold = visual
-        .debug_bounds("data-fold-all")
+        .debug_bounds("code-fold-all")
         .expect("Fold all for the complete minified AST");
     visual.simulate_click(fold.center(), Modifiers::default());
     visual.run_until_parked();
     preview.read_with(visual, |p, _| {
-        assert!(p.structure_view);
+        assert!(p.view == View::Tree);
         assert_eq!(p.structure.visible, vec![0]);
     });
-    let unfold = visual.debug_bounds("data-unfold-all").unwrap();
+    let unfold = visual.debug_bounds("code-unfold-all").unwrap();
     visual.simulate_click(unfold.center(), Modifiers::default());
     visual.run_until_parked();
     preview.read_with(visual, |p, _| {
@@ -238,8 +244,8 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     });
     preview.update_in(visual, |p, window, cx| {
         assert!(
-            p.editable(),
-            "explicit JSON Edit admits inputs up to 64 MiB"
+            !p.editable(),
+            "UI Edit has a 4 MiB cap; the independent source-tool budget stays 64 MiB"
         );
         assert!(!p.input().unwrap().read(cx).is_editable());
         assert!(p.input().unwrap().read(cx).value().len() <= 32 * 1024);
@@ -250,10 +256,11 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     visual.run_until_parked();
     preview.update_in(visual, |p, window, cx| {
         assert_eq!(p.matches.len(), 1);
-        assert!(p.structure_view, "Find retains the whole-file Tree");
+        assert!(p.view == View::Tree, "Find retains the whole-file Tree");
         assert_eq!(p.structure.match_node, Some(2));
         assert_eq!(p.page, 0, "Tree matches never navigate byte pages");
         // Source still selects the same whole-file hit on the right raw page.
+        p.set_view(View::Raw, window, cx);
         p.show_page(0, window, cx);
         p.show_match(window, cx);
         assert!(p.page > 0);
@@ -262,7 +269,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
                 .to_owned(),
             "NEEDLE"
         );
-        p.copy_node(cx);
+        p.copy_node(window, cx);
     });
     visual.update(|_, cx| {
         assert_eq!(
@@ -308,10 +315,10 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        visual.debug_bounds("data-structure").is_some(),
+        visual.debug_bounds("code-view-menu").is_some(),
         "Tree is available for the complete Pretty snapshot"
     );
-    preview.update_in(visual, |p, window, cx| p.show_json(false, window, cx));
+    preview.update_in(visual, |p, window, cx| p.set_view(View::Raw, window, cx));
     visual.run_until_parked();
     preview.update_in(visual, |p, window, cx| {
         p.show_page(0, window, cx);
@@ -347,12 +354,11 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         );
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    let tree = visual.debug_bounds("data-structure").unwrap();
-    visual.simulate_click(tree.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| p.set_view(View::Tree, window, cx));
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        visual.debug_bounds("data-page-range").is_none(),
+        visual.debug_bounds("code-part-scrubber").is_none(),
         "Tree has no byte-page controls"
     );
     assert!(
@@ -361,19 +367,20 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
     );
     // Tree controls must leave a mounted keyboard target: the hidden Source
     // editor can no longer own focus after folding or view changes.
-    let source_button = visual.debug_bounds("data-source").unwrap();
-    visual.simulate_click(source_button.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| {
+        p.set_view(View::Raw, window, cx);
+        p.show_match(window, cx);
+    });
     preview.update_in(visual, |p, window, cx| {
         p.input()
             .unwrap()
             .update(cx, |input, cx| input.focus(window, cx));
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    let tree = visual.debug_bounds("data-structure").unwrap();
-    visual.simulate_click(tree.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| p.set_view(View::Tree, window, cx));
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    let fold = visual.debug_bounds("data-fold-all").unwrap();
+    let fold = visual.debug_bounds("code-fold-all").unwrap();
     visual.simulate_click(fold.center(), Modifiers::default());
     visual.run_until_parked();
     #[cfg(not(target_os = "macos"))]
@@ -384,8 +391,8 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         assert!(p.find.read(cx).focus_handle(cx).is_focused(window));
         p.show_match(window, cx);
     });
-    preview.update_in(visual, |p, _, cx| {
-        assert!(p.structure_view);
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.view == View::Tree);
         let doc = p.document.as_ref().unwrap();
         let index = p.structure.match_node.unwrap();
         assert!(doc.row_label(index).contains("NEEDLE"));
@@ -399,7 +406,7 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
             p.structure.visible.len() < 10,
             "only the hit path is expanded, not 125,000 array items"
         );
-        p.copy_node(cx);
+        p.copy_node(window, cx);
     });
     visual.update(|_, cx| {
         assert_eq!(
@@ -407,22 +414,26 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
             "\"marker\":\"NEEDLE\""
         )
     });
-    preview.update_in(visual, |p, window, cx| p.show_json(true, window, cx));
+    preview.update_in(visual, |p, window, cx| {
+        p.set_view(View::Formatted, window, cx)
+    });
     visual.run_until_parked();
     preview.read_with(visual, |p, _| {
         assert!(
-            p.structure_view,
-            "explicit Tree mode survives Pretty/Raw changes"
+            p.view == View::Formatted,
+            "Formatted is the authoritative selected view"
         );
         assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
-        assert!(p.structure.match_node.is_some());
+        assert!(p.structure.selected.is_some());
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
-    let source_button = visual.debug_bounds("data-source").unwrap();
-    visual.simulate_click(source_button.center(), Modifiers::default());
+    preview.update_in(visual, |p, window, cx| {
+        p.set_view(View::Raw, window, cx);
+        p.show_match(window, cx);
+    });
     visual.run_until_parked();
     preview.read_with(visual, |p, cx| {
-        assert!(!p.structure_view);
+        assert!(p.view != View::Tree);
         let input = p.input().unwrap().read(cx);
         assert_eq!(
             &input.value()[input.selected_range()],
@@ -473,8 +484,8 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
     );
     preview.update_in(visual, |p, _, cx| {
         assert!(
-            p.editable(),
-            "existing explicit TXT editing authority is preserved"
+            !p.editable(),
+            "CodePreview UI uses the shared 4 MiB editing cap; FileEditor remains independently bounded"
         );
         assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
         p.input().unwrap().update(cx, |input, cx| {
@@ -573,7 +584,15 @@ fn json2787_multi_megabyte_pretty_raw_toggles_keep_complete_valid_snapshot(
     visual.run_until_parked();
     for round in 0..20 {
         preview.update_in(visual, |p, window, cx| {
-            p.show_json(round % 2 == 0, window, cx)
+            p.set_view(
+                if round % 2 == 0 {
+                    View::Formatted
+                } else {
+                    View::Raw
+                },
+                window,
+                cx,
+            )
         });
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
@@ -583,7 +602,7 @@ fn json2787_multi_megabyte_pretty_raw_toggles_keep_complete_valid_snapshot(
             );
             let json = p.json.as_ref().unwrap();
             assert!(matches!(json.pretty, Some(Ok(_))));
-            assert_eq!(json.showing_pretty, round % 2 == 0);
+            assert_eq!(p.view == View::Formatted, round % 2 == 0);
             let doc = p.document.as_ref().unwrap();
             assert!(okilum_core::code_operations::json_validation(&doc.text).is_ok());
             assert_eq!(doc.find("NEEDLE").len(), 1);

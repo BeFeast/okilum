@@ -2,9 +2,8 @@
 
 ## CSV and JSON tables (#2735, decision #1532)
 
-CSV/TSV and JSON arrays open as read-only tables. JSON retains its Source view
-(Pretty/Raw, Find, folding and exact Copy); JSON objects/configuration files
-continue to open as source. JSONC and JSONL/log routing remain unchanged.
+CSV/TSV and JSON arrays open as read-only tables. JSON offers Table, Tree, Formatted and Raw through one header switch; normal valid JSON objects
+open in Formatted. JSONC and JSONL/log routing remain unchanged.
 Objects in an array use the union of their top-level keys, nested values stay
 compact JSON, missing fields stay empty and explicit null displays `null`.
 Arrays of arrays use numbered columns; scalar arrays use a Value column.
@@ -47,20 +46,20 @@ Copy node at the caret, Fold all/Unfold all and per-node gutter folding. Copy no
 uses a parsed immutable snapshot of the displayed Raw/Pretty revision and copies
 the smallest containing object/array/property, XML element, TOML property/table or
 YAML property/item. A stale parse/search cannot replace a newer display revision.
-The external editor button uses the existing guarded default-app file action.
+Open with default app uses the existing guarded file action.
 
 Files up to 64 MiB load on a worker with a bounded read even when the file grows.
-Parsing, JSON Pretty and full-file search run on workers. Code formats above their old
-4 MiB edit budget remain read-only. TXT retains its pre-existing explicit editor
-and canonical FileEditor checks; the Read view is always read-only. Large multi-line files start without soft
+Parsing, JSON formatting and full-file search run on workers. All CodePreview formats
+above the 4 MiB UI editing cap stay read-only, including JSON and TXT. This is UI admission:
+canonical FileEditor checks and the independent 64 MiB source-tool budget remain unchanged. Large multi-line files start without soft
 wrap; the existing wrap preference continues for smaller files.
 
-A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with explicit page and
-byte ranges, Previous/Next and whole-file Find with total count and navigation.
+A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with a bottom percentage, Previous/Next part, a toolkit scrubber and whole-file Find with total count and navigation.
+Slider events coalesce to the last requested part before the next frame.
 Copy selection is exact within the displayed page; Copy node can cross any number
 of pages. Search can match across a page boundary. A spanning match selects its
 part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
-Structured long-line files initially show a virtualized Tree over the
+Structured long-line files below the 8 MiB automatic threshold initially show a virtualized Tree over the
 complete AST, with original source line numbers, individual node folding, Fold
 all/Unfold all, exact whole-node Copy and Source navigation. Valid JSON has a
 semantic Tree in both Raw and Pretty: the root, named properties and indexed
@@ -86,14 +85,48 @@ Leading underscores on ordinary non-Markdown data files are not a hidden marker.
 Underscore Markdown notes/folders and dot paths retain the vault's existing
 hidden-file preference.
 
-The functional Tree/Find work in #2794 retains the existing toolbar and control
-styles. Toolbar Variant A and its chrome belong to #2795.
+## Variant A CodePreview header (#2809)
+
+One `View` value owns Table, Tree, Formatted or Raw. Availability distinguishes
+available, disabled with a reason, and absent. Raw/Formatted snapshots are built
+on workers and retained; switching, folding and paging never reparse or reset
+Tree folds. Fold all never changes the selected view. Only explicit user choices
+in unguarded files update the per-type map (json, json-array, yaml, toml, xml;
+csv/tsv entries are reserved for the table step). Legacy `json_raw` migrates to
+the JSON-object entry and is omitted from subsequent writes.
+
+Size guards precede memory: over 8 MiB opens Raw without formatting; a line over
+64 KiB opens Tree when available, otherwise Raw. Then a supported remembered view
+wins, followed by Table for arrays, Formatted for valid JSON, Raw otherwise.
+Formatting refuses only nesting over 128 or the existing 64 MiB formatted-output
+budget. Invalid JSON disables Tree and Formatted without writing any source.
+Its owned serde error survives above the automatic threshold; Go to error maps
+its byte offset to the correct Raw part. Read-only editor diagnostics use the
+same whole-file error, translated into the visible page.
+
+The shared 48 px header has a reusable 28 px segmented switch. At narrow width
+it keeps icons and the active label before Fold/Unfold yield into Document
+actions. A single-view source file has no switch. All tooltips use live bindings.
+Bare/native hosts and ZIP entries use the same builders with one view menu;
+ZIP merges them with its breadcrumb in one measured compact bar. Copy holds
+Copy selection (disabled in Tree) and Copy node with `Copied node · N lines`.
+The old tools, Structure/Source, page and Pretty/Raw rows are removed. Whole-file
+Find remains the one viewer row until #2810; the header has its trigger icon.
+The table's inner rows and all edit chrome remain for their ordered steps.
+
+The name has a read-only lock with its reason and, independently, a warning that
+jumps to a JSON error. Storage writability is never inferred from opening a file;
+a failed existing Edit admission records its permission/read-only failure.
+One bottom line chooses invalid JSON, formatting, large/raw or long-line,
+then read-only in that order; the lock always retains the read-only reason.
+Raw and Formatted show position controls when paged. The right sidebar remains
+unchanged until #2814; it will consume the existing document snapshot API.
 Contents can reuse `CodePreview::document_snapshot()` without parsing again.
 It returns the same immutable `Arc<reader_code_file::document::Document>` used
 by Tree and Find, with full text, `json_tree` validity, preorder `structure` rows
 (parent, depth, subtree end, original line and exact byte range), `row_label`,
 `row_at` and `find`. Node indices/ranges belong to that snapshot; consumers must
-replace them together when Pretty/Raw publishes a new document.
+replace them together when the selected view publishes a different snapshot.
 
 Console output is best-effort: a desktop launcher's closed stdout/stderr pipe
 must not panic the Reader. `reader-diagnostic.log` records native platform close

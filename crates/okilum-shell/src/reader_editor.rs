@@ -834,6 +834,15 @@ impl Reader {
             Ok(store) => store,
             Err(error) => {
                 diagnostic_error!("Cannot edit: {error:#}");
+                // Record storage admission only after the existing edit attempt
+                // failed; a read must never probe writability for the header.
+                if let Some(code) = self
+                    .file_preview
+                    .as_ref()
+                    .and_then(|preview| preview.code.as_ref())
+                {
+                    code.update(cx, |code, cx| code.record_edit_failure(&error, cx));
+                }
                 // A read-only location explains itself and what still works.
                 let notice = location_notice(&error)
                     .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(&error)));

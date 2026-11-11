@@ -14,7 +14,20 @@ pub(crate) struct Document {
     tree: Option<tree_sitter::Tree>,
     tree_offset: usize,
     pub json_tree: bool,
+    pub invalid: Option<JsonError>,
+    pub parses: bool,
+    pub foldable: bool,
     pub structure: Vec<StructureRow>,
+}
+
+/// Owned parser diagnostics belong to the whole raw snapshot, including
+/// documents above the automatic formatting threshold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JsonError {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+    pub offset: usize,
 }
 
 /// A preorder AST index, with no copied node text or recursive UI elements.
@@ -127,11 +140,45 @@ impl Document {
                 parser.set_language(&language).ok()?;
                 parser.parse(parsed, None)
             });
-        let json_tree = json
-            && serde_json::from_str::<serde::de::IgnoredAny>(parsed).is_ok()
-            && tree
-                .as_ref()
-                .is_some_and(|tree| !tree.root_node().has_error());
+        let invalid = if json {
+            serde_json::from_str::<serde::de::IgnoredAny>(parsed)
+                .err()
+                .and_then(|error| {
+                    // IgnoredAny is iterative, but serde still enforces its default
+                    // nesting policy. That is a formatting refusal, not invalid JSON.
+                    if error.to_string().starts_with("recursion limit exceeded") {
+                        return None;
+                    }
+                    let line = error.line();
+                    let column = error.column();
+                    let start = parsed
+                        .split_inclusive('\n')
+                        .take(line.saturating_sub(1))
+                        .map(str::len)
+                        .sum::<usize>();
+                    let mut offset =
+                        (tree_offset + start + column.saturating_sub(1)).min(text.len());
+                    while !text.is_char_boundary(offset) {
+                        offset -= 1;
+                    }
+                    let message = error
+                        .to_string()
+                        .rsplit_once(" at line ")
+                        .map_or_else(|| error.to_string(), |(message, _)| message.to_owned());
+                    Some(JsonError {
+                        line,
+                        column,
+                        message,
+                        offset,
+                    })
+                })
+        } else {
+            None
+        };
+        let parses = tree
+            .as_ref()
+            .is_some_and(|tree| !tree.root_node().has_error());
+        let json_tree = json && invalid.is_none() && parses;
         let structure = if json_tree {
             json_tree::index(tree.as_ref().unwrap(), tree_offset, text.len())
         } else if !json && pages.len() > 1 {
@@ -139,12 +186,38 @@ impl Document {
         } else {
             Vec::new()
         };
+        let foldable = tree.as_ref().is_some_and(|tree| {
+            let mut cursor = tree.walk();
+            loop {
+                let node = cursor.node();
+                if node.is_named()
+                    && node.start_position().row < node.end_position().row
+                    && node.parent().is_some()
+                {
+                    break true;
+                }
+                if cursor.goto_first_child() {
+                    continue;
+                }
+                loop {
+                    if cursor.goto_next_sibling() {
+                        break;
+                    }
+                    if !cursor.goto_parent() {
+                        return false;
+                    }
+                }
+            }
+        });
         Self {
             text: text.into(),
             pages,
             tree,
             tree_offset,
             json_tree,
+            invalid,
+            parses,
+            foldable,
             structure,
         }
     }

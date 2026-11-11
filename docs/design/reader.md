@@ -65,6 +65,18 @@ original combined titlebar and document controls:
   the row. Notes retain their existing layout and pinned Maximize.
   PDF supplies zoom out, fit to width (width glyph), zoom in to slot 5;
   their tooltips use live bindings and their overflow items remain functional.
+- **Code/data header (#2809).** CodePreview supplies Table / Tree / Formatted /
+  Raw through the shared segmented control (28 px hit areas, token border and
+  semibold active label). The sidebar Tree / Now uses the same component.
+  Code view labels collapse to icons plus the active label before Fold/Unfold
+  overflow. The view switch and Document actions stay in the row. One-view
+  files omit the switch. ZIP combines its breadcrumb and one-button view menu
+  with the same compact action builders; it has no second code toolbar.
+  Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
+  large-file reasons and paged position/slider. Find remains an icon plus the
+  existing whole-file row until #2810. Edit and table inner chrome remain for
+  their own steps. Focus changes re-render the GPUI cached header; source edits,
+  query typing and page changes do not invalidate its slot key.
 - **One Find component (#2807).** Notes retain their floating bar, selectors,
   match count, case toggle, stepping and two-press Esc behavior. A file opts in
   with a target that owns its query, count/case/step capabilities and clear/focus

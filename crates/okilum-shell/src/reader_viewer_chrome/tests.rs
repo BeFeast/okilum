@@ -1102,3 +1102,78 @@ fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut 
         "the selected field appears in the actual log grid"
     );
 }
+
+#[gpui::test]
+fn code2809_view_changes_invalidate_the_cached_header_without_refresh(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    let code = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    let draw = |visual: &mut VisualTestContext| {
+        for _ in 0..3 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    };
+    draw(visual);
+    let key = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |reader, cx| {
+            let header = reader.viewer_header.borrow();
+            let header = header.as_ref().unwrap();
+            (header.entity_id(), header.read(cx).key.views.clone())
+        })
+    };
+    let before = key(visual);
+    assert_eq!(before.1, [false, true, false]);
+    for (view, expected) in [
+        (reader_code_file::View::Tree, [true, false, false]),
+        (reader_code_file::View::Raw, [false, false, true]),
+        (reader_code_file::View::Formatted, [false, true, false]),
+    ] {
+        let previous = key(visual).0;
+        code.update_in(visual, |code, window, cx| code.set_view(view, window, cx));
+        draw(visual);
+        let current = key(visual);
+        assert_ne!(
+            current.0, previous,
+            "presentation state must replace the cached header"
+        );
+        assert_eq!(
+            current.1, expected,
+            "cached slots have the actual active view"
+        );
+    }
+}
+
+#[gpui::test]
+fn code2809_header_switch_and_more_stay_inside_the_pane_at_600(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    for width in [1440., 700., 600.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let header = measured_bounds(visual, "document-header").unwrap();
+        for id in [
+            "code-view-tree",
+            "code-view-formatted",
+            "code-view-raw",
+            "code-header-find",
+            "document-more",
+        ] {
+            let control = visual
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("required control {id} at {width}"));
+            assert!(
+                control.left() >= header.left() && control.right() <= header.right(),
+                "{id}: {control:?} outside {header:?} at {width}"
+            );
+            assert_eq!(control.size.height, px(28.));
+        }
+        assert!(
+            visual.debug_bounds("viewer-compact-header").is_none(),
+            "Reader must not mount a second toolbar"
+        );
+        reader.read_with(visual, |reader, cx| {
+            assert!(reader.viewer_chrome(cx).views.len() == 3)
+        });
+    }
+}

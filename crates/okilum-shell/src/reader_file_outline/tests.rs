@@ -355,7 +355,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     cx.update(|cx| {
         crate::test_init(cx);
         bind_keys(cx);
-        reader_ui_state::set_json_raw(false, cx);
+        reader_ui_state::set_code_view("json", reader_code_file::View::Formatted, cx);
     });
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -411,8 +411,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         assert!(view.data.entries.iter().any(|entry| entry.line > 0));
         assert_eq!(view.current, None, "Pretty starts above the first key");
     });
-    let raw = visual
-        .debug_bounds("json-raw")
+    let raw = reader_viewer_chrome::tests::measured_bounds(visual, "code-view-raw")
         .expect("actual JSON mode control");
     visual.simulate_click(raw.center(), Modifiers::default());
     visual.run_until_parked();
@@ -451,7 +450,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     visual.executor().advance_clock(Duration::from_millis(130));
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("json-raw").is_some(),
+        reader_viewer_chrome::tests::measured_bounds(visual, "code-view-raw").is_some(),
         "positive control: the paged JSON opened"
     );
     assert!(visual.debug_bounds("file-linked-from-heading").is_some());
