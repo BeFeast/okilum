@@ -4,6 +4,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use reader_viewer_chrome::{BuildMenu, ViewerAction, ViewerChrome};
 
 impl LogView {
+    /// The saved filters: apply one, save the shown filter, delete one.
     fn saved_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let names: Vec<String> = reader_ui_state::saved_log_filters(cx)
             .sorted()
@@ -56,6 +57,7 @@ impl LogView {
 }
 
 impl LogView {
+    /// Export of the shown rows, or of a selection of several.
     fn export_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let shown = self.visible_len();
         let selected = self.selection().map_or(0, |rows| rows.len());
@@ -112,6 +114,7 @@ impl LogView {
 }
 
 impl LogView {
+    /// The files of this view: show or hide each, or add more (#1160).
     fn files_menu(&self, view: WeakEntity<Self>, _cx: &App) -> BuildMenu {
         let sources: Vec<(usize, String, bool)> = (0..self.source_count())
             .map(|source| {
@@ -144,6 +147,7 @@ impl LogView {
 }
 
 impl LogView {
+    /// Fields of the first records as columns, with the shown ones checked.
     fn columns_menu(&self, view: WeakEntity<Self>, cx: &App) -> BuildMenu {
         let shown = self.columns(cx);
 

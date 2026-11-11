@@ -4055,8 +4055,6 @@ impl LogView {
         )
     }
 
-    /// The saved filters: apply one, save the shown filter, delete one.
-
     /// The files and rows an export would write now, or `None` when a file
     /// of the view cannot be read.
     fn export_job(&self, scope: ExportScope) -> Option<ExportJob> {
@@ -4185,12 +4183,6 @@ impl LogView {
         })
         .detach();
     }
-
-    /// Export of the shown rows, or of a selection of several.
-
-    /// The files of this view: show or hide each, or add more (#1160).
-
-    /// Fields of the first records as columns, with the shown ones checked.
 
     /// The truncation or rotation follow mode saw last, above the rows.
     fn reset_notice(&self) -> Option<String> {
