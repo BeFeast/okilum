@@ -1355,8 +1355,14 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
 }
 
 #[gpui::test]
-fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+async fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_reduce_motion(true);
+    });
     let directory = tempfile::tempdir().unwrap();
     let peer = uuid::Uuid::new_v4();
     let mut ready = snapshot(None);
@@ -1370,7 +1376,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
         label: "Work notes".into(),
     });
     let calls = guided_worker(cx, vec![ready]);
-    let (_, visual) = cx.add_window_view(|window, cx| {
+    let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
             view.presentation.wizard = Some(super::presentation::Step::Vaults);
@@ -1381,6 +1387,14 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
         Root::new(view, window, cx)
     });
     visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual
+        .condition(&view, |view, _| !view.busy && view.snapshot.is_some())
+        .await;
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.run_until_parked();
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1390,11 +1404,17 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     );
     visual.executor().advance_clock(Duration::from_secs(30));
     visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
     visual.simulate_path_prompt_response(|options| {
         assert!(options.directories && !options.files && !options.multiple);
         Some(vec![directory.path().join("Work notes")])
     });
     visual.run_until_parked();
+    visual
+        .condition(&view, |view, _| {
+            view.presentation.destinations.contains_key("notes")
+        })
+        .await;
     assert_eq!(
         *calls.lock().unwrap(),
         vec!["read", "read"],
@@ -1403,6 +1423,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
     visual.simulate_click(start.center(), Modifiers::default());
     visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
     assert_eq!(
         *calls.lock().unwrap(),
         vec!["read", "read", "other"],

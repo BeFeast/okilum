@@ -58,6 +58,19 @@ CI backtraces no longer include DWARF line tables. The existing 900 s budget
 still includes compilation and every admission/review group. No prewarming,
 separate compile allowance, release-profile change or deadline increase is used.
 
+The full hosted native Mac gate runs its production Reader/Sparkle lifecycle
+and workspace release tests in independent jobs on the same source. Both jobs
+are mandatory for workflow success. Cold native run `42965153887` passed in
+67 minutes, but its canonical Forgejo wrapper had already been cancelled at
+the runner's 60-minute maximum. With no native cache, controller compilation
+used 4m26s, the production app 17m35s and workspace test compilation 28m34s.
+Overlapping production and test work removes that serial dependency; neither
+the release profile, production build, Sparkle controls, native test selection
+nor existing deadlines change. `check-macos.sh` still defaults to the complete
+serial gate for local/other callers. Its orchestration control executes all
+three modes with synthetic tools and requires the split jobs to retain every
+original command; the old script fails the split-mode assertions.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a
@@ -89,10 +102,27 @@ receipt was not established. Neither failed control was accepted as a passing
 verdict.
 
 `workspace-rust-tests.py` first lists every unit/integration/doc case for the
-same four packages. Its three disjoint selections must report exactly that
+same four packages. Its four disjoint selections must report exactly that
 inventory in their completed/ignored counts. Every Cargo invocation keeps all
 four packages for the same feature unification and test environment. One
-1320 s deadline covers the complete census and all three selections together.
+1320 s deadline covers the complete census and all four selections together.
+After inventory compilation, two ordinary shards and the serial Log cases
+execute concurrently in separate processes. Stable SHA-256 assignment of full
+test names and libtest `--exact` filters keep both ordinary shards disjoint,
+including identical names in different targets and prefix-related names.
+Each shard has two test threads, retaining four ordinary threads in total.
+Every invocation still selects the same four packages. The reveal process
+starts only after all three finish. Run `26071` exhausted the same deadline
+after its ordinary census passed 4342/4342 and the serial Log process had
+started. Worker `42973322089` proved actual ordinary/Log runtime overlap and
+Log 124/124, but still exhausted the overall deadline after the shell target
+passed and before the final ordinary targets finished. All selected cases
+still require individual census receipts. The orchestration control requires
+both ordinary shards and Log to rendezvous, makes reveal wait, and retains
+failures from every process. Exact-selection controls retain duplicate names,
+reject prefix leakage and require four ordinary threads in total. These
+controls reject the previous single ordinary process without reducing the
+inventory, assertions or overall deadline.
 This replaces whole-workspace serialization after run `42390453208` exhausted
 that deadline; the deadline and every runtime assertion remain unchanged.
 
