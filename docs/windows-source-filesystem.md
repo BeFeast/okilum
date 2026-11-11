@@ -229,3 +229,12 @@ all draft/preimage/raced-version retention assertions remain required.
 Remaining legacy-index reads in warm-cache, log-tail and Feedback snapshots are
 read-only observations, not authority for any source mutation. Canonical writes
 reopen and validate through the full native identities above.
+
+Inventory registers writer authority only for admitted Windows locations. The
+published-beta VM control found that exFAT rejects `FileIdInfo`; read-only scans
+must not require a writer identity. Only a typed unsupported-location refusal
+skips registration. Mutation-only ancestor/reparse checks do not restrict
+metadata reading through a directory alias; authority still validates its
+canonical root and bindings. Authority itself continues to require the full
+identity without fallback. The
+native lane runs the inventory regression on an owned exFAT VHDX as well.

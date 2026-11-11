@@ -746,9 +746,31 @@ impl Vault {
         // Register the vault scope before a nested editor/publisher resolves it.
         // Surface scope/identity failures instead of silently leaving sibling
         // folders registered under independent authorities.
-        okilum_write_authority::Authority::for_root(root).with_context(|| {
-            format!("Cannot establish local writer scope for {}", root.display())
-        })?;
+        // Read-only Windows locations may not support the full identities
+        // required by writer authority (for example FileIdInfo on exFAT).
+        // Do not weaken mutation identity or invent an authority for them.
+        #[cfg(windows)]
+        let register_writer = match crate::windows_files::Directory::open(root) {
+            Ok(_) => true,
+            Err(error)
+                if error
+                    .downcast_ref::<crate::windows_files::UnsupportedLocation>()
+                    .is_some() =>
+            {
+                false
+            }
+            // Ancestor/reparse restrictions belong to source mutation, not
+            // metadata reading. Authority retains its canonical-root identity
+            // and binding checks, including for readable directory aliases.
+            Err(_) => true,
+        };
+        #[cfg(not(windows))]
+        let register_writer = true;
+        if register_writer {
+            okilum_write_authority::Authority::for_root(root).with_context(|| {
+                format!("Cannot establish local writer scope for {}", root.display())
+            })?;
+        }
         #[cfg(unix)]
         let _ = crate::unix_publish::register_vault(root);
         // A bad root is a failed open, not an empty successful inventory.
