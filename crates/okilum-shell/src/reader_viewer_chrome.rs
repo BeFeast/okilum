@@ -7,7 +7,7 @@ use std::rc::Rc;
 mod overflow;
 #[cfg(test)]
 pub(crate) mod tests;
-pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem};
+pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem, Order as OverflowOrder};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -25,6 +25,7 @@ struct HeaderKey {
     editing: Option<EntityId>,
     viewers: Vec<EntityId>,
     drawing_revision: Option<u64>,
+    overflow_order: OverflowOrder,
     geometry: (f32, reader_layout::Panels, reader_layout::Widths),
     navigation: (usize, usize, bool),
     labels: bool,
@@ -108,6 +109,7 @@ impl HeaderKey {
                     .collect()
                 })
                 .unwrap_or_default(),
+            overflow_order: chrome.overflow_order,
             drawing_revision: reader
                 .file_preview
                 .as_ref()
@@ -346,6 +348,7 @@ pub(crate) use crate::reader_find_field::Target as ViewerFindTarget;
 
 #[derive(Clone, Default)]
 pub(crate) struct ViewerChrome {
+    pub overflow_order: OverflowOrder,
     pub views: Vec<ViewerView>,
     pub find: Option<ViewerFindTarget>,
     pub actions: Vec<ViewerAction>,
@@ -529,6 +532,33 @@ impl Reader {
                 widths.notes + widths.backlinks
             };
         let chrome = self.viewer_chrome(cx);
+        let plan = self.header_layout(&chrome, width, window, cx);
+        h_flex()
+            .id("document-header")
+            .debug_selector(|| "document-header".into())
+            .flex_none()
+            .h(px(48.))
+            .w_full()
+            .min_w_0()
+            .px_4()
+            .gap_1()
+            .overflow_hidden()
+            .child(navigation_slot(self, &plan, cx))
+            .child(name_slot(self, &chrome, &plan, cx))
+            .child(find_slot(&chrome, &plan, window, cx))
+            .child(views_slot(&chrome))
+            .child(viewer_actions_slot(&chrome, &plan, cx))
+            .child(file_actions_slot(self, &plan, cx))
+            .child(window_slot(self, &chrome, &plan, cx))
+    }
+
+    fn header_layout(
+        &self,
+        chrome: &ViewerChrome,
+        width: f32,
+        window: &mut Window,
+        cx: &App,
+    ) -> HeaderLayout {
         let editing = self.editing.is_some();
         let editable = self
             .file_preview
@@ -540,7 +570,8 @@ impl Reader {
             .as_ref()
             .is_some_and(|p| p.code.is_some() || p.text.is_some());
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
-        let mut items = vec![LayoutItem::optional("reveal", 28., 28., 10)];
+        let order = chrome.overflow_order;
+        let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
         for action in &chrome.actions {
             let wide = if (labels || action.label_by_default) && action.labelled {
                 toolbar_text_width(&action.label, FontWeight::MEDIUM, window) + 44.
@@ -557,19 +588,24 @@ impl Reader {
             items.push(item);
         }
         if chrome.action_text.is_some() {
-            items.push(LayoutItem::optional("viewer-action-text", 44., 44., 0));
+            items.push(LayoutItem::optional(
+                "viewer-action-text",
+                44.,
+                44.,
+                order.viewer_text,
+            ));
         }
         if let Some(find) = &chrome.find {
             let mut item =
                 LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
             item.steps = vec![overflow::OverflowStep {
-                priority: 60,
+                priority: order.find_narrow,
                 width: 128.,
                 disposition: Disposition::Collapsed,
             }];
             if !find.large_file {
                 item.steps.push(overflow::OverflowStep {
-                    priority: 61,
+                    priority: order.find_icon,
                     width: 28.,
                     disposition: Disposition::Collapsed,
                 });
@@ -580,7 +616,7 @@ impl Reader {
             "copy",
             if labels { 90. } else { 40. },
             40.,
-            50,
+            order.copy,
         ));
         if editable {
             items.push(LayoutItem::pinned(
@@ -599,12 +635,12 @@ impl Reader {
             "open-with",
             if labels { 120. } else { 40. },
             40.,
-            40,
+            order.open_with,
         ));
         if width_applies {
-            items.push(LayoutItem::optional("width", 28., 28., 20));
+            items.push(LayoutItem::optional("width", 28., 28., order.width));
         }
-        items.push(LayoutItem::optional("maximize", 28., 28., 21));
+        items.push(LayoutItem::optional("maximize", 28., 28., order.maximize));
         items.push(LayoutItem::pinned("more", 28., 28.));
         // Padding + navigation + group separators. The title owns the remaining
         // space, with 120 px protected before any optional control is admitted.
@@ -650,7 +686,7 @@ impl Reader {
             - if chrome.state.is_some() { 32. } else { 0. };
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
 
-        let plan = HeaderLayout {
+        HeaderLayout {
             items,
             states,
             widths,
@@ -659,24 +695,7 @@ impl Reader {
             editing,
             width_applies,
             collapse_parents,
-        };
-        h_flex()
-            .id("document-header")
-            .debug_selector(|| "document-header".into())
-            .flex_none()
-            .h(px(48.))
-            .w_full()
-            .min_w_0()
-            .px_4()
-            .gap_1()
-            .overflow_hidden()
-            .child(navigation_slot(self, &plan, cx))
-            .child(name_slot(self, &chrome, &plan, cx))
-            .child(find_slot(&chrome, &plan, window, cx))
-            .child(views_slot(&chrome))
-            .child(viewer_actions_slot(&chrome, &plan, cx))
-            .child(file_actions_slot(self, &plan, cx))
-            .child(window_slot(self, &chrome, &plan, cx))
+        }
     }
 
     fn file_save_controls(&self, cx: &mut Context<Self>) -> Entity<SaveControls> {

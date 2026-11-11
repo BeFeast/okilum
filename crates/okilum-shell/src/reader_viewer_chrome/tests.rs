@@ -180,7 +180,10 @@ fn binary_viewers_omit_content_and_path_items_act_on_the_open_file(cx: &mut Test
             (3, format!("[[{name}|{}]]", Vault::title_of(name))),
         ] {
             open_copy(visual);
-            visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(downs)));
+            // Copy image is now the first image-only command. The same
+            // three path commands follow it, and still target the open file.
+            let image_command = usize::from(name == "image.png");
+            visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(downs + image_command)));
             visual.run_until_parked();
             assert_eq!(
                 clipboard(visual),
@@ -748,4 +751,78 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
         measured_bounds(visual, "source-save").is_some(),
         "dirty Save updates independently"
     );
+}
+
+#[gpui::test]
+fn real_viewer_descriptions_supply_the_reference_overflow_order(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (reader, visual, temp) = fixture(cx, "note.md");
+    let mut zip =
+        zip::ZipWriter::new(std::fs::File::create(temp.path().join("vault/archive.zip")).unwrap());
+    zip.start_file("package.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut zip, b"{}").unwrap();
+    zip.finish().unwrap();
+    for name in ["archive.zip", "scene.canvas"] {
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file(name, window, cx)
+        });
+        visual.run_until_parked();
+        for width in [1400., 1100., 700., 520., 1400.] {
+            reader.update_in(visual, |reader, window, cx| {
+                let chrome = reader.viewer_chrome(cx);
+                let plan = reader.header_layout(&chrome, width, window, cx);
+                let disposition = |id| {
+                    plan.items
+                        .iter()
+                        .position(|item| item.id == id)
+                        .map(|i| plan.states[i])
+                };
+                for (id, expected) in [
+                    ("reveal", 10),
+                    ("width", 20),
+                    ("maximize", 21),
+                    ("open-with", 40),
+                    ("copy", 50),
+                ] {
+                    if let Some(item) = plan.items.iter().find(|item| item.id == id) {
+                        assert_eq!(
+                            item.steps
+                                .iter()
+                                .find(|step| step.disposition == Disposition::Menu)
+                                .unwrap()
+                                .priority,
+                            expected
+                        );
+                    }
+                }
+                assert_eq!(disposition("more"), Some(Disposition::Shown));
+                if name.ends_with(".zip") {
+                    assert_ne!(disposition("archive-extract-all"), Some(Disposition::Menu));
+                    assert_eq!(
+                        plan.items
+                            .iter()
+                            .find(|item| item.id == "find")
+                            .unwrap()
+                            .steps
+                            .iter()
+                            .map(|step| (step.width, step.priority))
+                            .collect::<Vec<_>>(),
+                        vec![(128., 60), (28., 61)]
+                    );
+                    if width == 700. {
+                        assert_eq!(
+                            disposition("archive-extract-selected"),
+                            Some(Disposition::Menu)
+                        );
+                    }
+                } else if width == 700. {
+                    assert_eq!(disposition("viewer-action-text"), Some(Disposition::Menu));
+                    for id in ["canvas-fit", "canvas-plus", "canvas-minus"] {
+                        assert_eq!(disposition(id), Some(Disposition::Shown));
+                    }
+                }
+            });
+        }
+    }
 }

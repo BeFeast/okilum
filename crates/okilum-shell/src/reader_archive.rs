@@ -218,6 +218,17 @@ impl ArchivePreview {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn code_entry_find_is_focused(&self, window: &Window, cx: &App) -> bool {
+        let Some(EntryView::Code(code)) = &self.entry else {
+            return false;
+        };
+        code.read(cx).input().is_some_and(|input| {
+            input.read(cx).search_session().open
+                && input.read(cx).focus_handle(cx).is_focused(window)
+        })
+    }
+
     fn refresh_rows(&mut self, cx: &App) {
         let Some(listing) = self.listing.clone() else {
             self.rows.clear();
@@ -1063,6 +1074,83 @@ mod tests {
         for path in ["a.zip.md", "a.tar.gz", "zip", "a.pdf"] {
             assert!(!eligible(path), "{path}");
         }
+    }
+
+    #[gpui::test]
+    fn header_find_filters_entries_and_enter_and_escape_return_to_the_entry_list(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let (reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "note.md");
+        let mut zip = zip::ZipWriter::new(
+            std::fs::File::create(temp.path().join("vault/archive.zip")).unwrap(),
+        );
+        for name in ["package.json", "README.md"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"{}").unwrap();
+        }
+        zip.finish().unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("archive.zip", window, cx)
+        });
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |reader, _| {
+            reader
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .unwrap()
+        });
+        assert_eq!(
+            archive.read_with(visual, |archive, _| archive.rows.len()),
+            2
+        );
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        });
+        visual.run_until_parked();
+        visual.simulate_input("package");
+        visual.run_until_parked();
+        archive.read_with(visual, |archive, cx| {
+            assert_eq!(archive.filter.read(cx).value().to_string(), "package");
+            assert_eq!(
+                archive.rows.len(),
+                1,
+                "header query actually narrows archive entries"
+            );
+            assert_eq!(
+                archive.listing.as_ref().unwrap().entries[archive.rows[0]].name,
+                "package.json"
+            );
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(archive.read(cx).list_focus.is_focused(window));
+            assert_eq!(
+                archive.read(cx).filter.read(cx).value().to_string(),
+                "package"
+            );
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            let archive = archive.read(cx);
+            assert_eq!(archive.rows.len(), 2, "one Escape restores every entry");
+            assert!(archive.filter.read(cx).value().is_empty());
+            assert!(archive.list_focus.is_focused(window));
+        });
     }
 
     #[test]

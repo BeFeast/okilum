@@ -203,6 +203,21 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
             "entry Find must not focus the archive filter"
         )
     });
+    let archive = reader.read_with(visual, |reader, _| {
+        reader
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .archive
+            .clone()
+            .unwrap()
+    });
+    visual.update(|window, cx| {
+        assert!(
+            archive.read(cx).code_entry_find_is_focused(window, cx),
+            "nested Ctrl+F opens and focuses the entry's actual search"
+        )
+    });
     // The keyboard shortcut follows entry focus; the archive's own compact
     // Find icon still opens the archive filter when clicked.
     let mut compact = None;
@@ -228,6 +243,7 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
 
 #[gpui::test]
 fn standalone_image_copy_menu_copies_png_pixels_without_changing_the_file(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
     let (_reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "image.png");
     let path = temp.path().join("vault/image.png");
     let before = std::fs::read(&path).unwrap();

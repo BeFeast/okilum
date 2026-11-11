@@ -57,7 +57,8 @@ original combined titlebar and document controls:
   Open with holds the default app, installed editors under Open in, the
   platform file manager, and Quick Look on macOS only.
   Labels are opt-in from about 1,400 px of document width. The pure overflow
-  policy drops labels, Reveal in sidebar, width and Maximize, viewer actions,
+  policy reads the viewer's `overflow_order` table plus its action descriptors,
+  and drops labels, Reveal in sidebar, width and Maximize, viewer actions,
   Open with and Copy (as submenus), then narrows Find to 128 px and an icon
   (large files keep a field), then collapses the view switch. It protects
   120 px of file name. Edit/Read, dirty Save and Document actions never leave

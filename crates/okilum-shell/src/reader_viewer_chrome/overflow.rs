@@ -6,6 +6,36 @@ pub(crate) enum Disposition {
     Menu,
 }
 
+/// The shared-control order belongs to the viewer description. Viewers can
+/// override it without adding a viewer-kind branch to the header renderer;
+/// individual viewer actions carry their own collapse/overflow priorities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Order {
+    pub reveal: u16,
+    pub width: u16,
+    pub maximize: u16,
+    pub open_with: u16,
+    pub copy: u16,
+    pub find_narrow: u16,
+    pub find_icon: u16,
+    pub viewer_text: u16,
+}
+
+impl Default for Order {
+    fn default() -> Self {
+        Self {
+            reveal: 10,
+            width: 20,
+            maximize: 21,
+            open_with: 40,
+            copy: 50,
+            find_narrow: 60,
+            find_icon: 61,
+            viewer_text: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OverflowStep {
     pub priority: u16,
