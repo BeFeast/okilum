@@ -1176,7 +1176,9 @@ impl Reader {
                     }
                 });
             }));
-            this.refresh_draft_outline(cx);
+            if !plain_file {
+                this.refresh_draft_outline(cx);
+            }
             this.schedule_autosave(input_id, epoch, cx);
             this.schedule_live_preview(cx);
         });
@@ -1432,7 +1434,13 @@ impl Reader {
         if let Some(place) = reader_place {
             self.place_editor_at_reader(input.clone(), place, window, cx);
         }
-        self.refresh_draft_outline(cx);
+        if plain_file {
+            // A plain file has no Markdown headings. Retire the old note's
+            // cache/worker so it cannot loop into this file and parse data.
+            self.draft_outline = Default::default();
+        } else {
+            self.refresh_draft_outline(cx);
+        }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
         self.start_editor_layout_diagnostics(input.clone(), cx);

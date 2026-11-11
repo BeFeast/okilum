@@ -13,6 +13,66 @@ fn document(valid: bool) -> String {
 }
 
 #[gpui::test]
+fn large2804_plain_file_open_retires_markdown_outline(cx: &mut TestAppContext) {
+    let (f, visual) = open(cx, "# A real heading\n\n{note}\n");
+    f.reader.read_with(visual, |reader, _| {
+        assert!(reader
+            .visible_outline()
+            .iter()
+            .any(|h| h.text == "A real heading"));
+    });
+    let text = "# Literal plain-file data\n{value}\n";
+    std::fs::write(f.directory.path().join("vault/data.txt"), text).unwrap();
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx);
+        reader.preview_file("data.txt", window, cx);
+    });
+    visual.run_until_parked();
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    f.reader.read_with(visual, |reader, cx| {
+        assert_eq!(reader.selected_file(), "data.txt");
+        assert_eq!(
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .value()
+                .as_ref(),
+            text
+        );
+        assert!(
+            reader.visible_outline().is_empty(),
+            "plain data must not be parsed as Markdown or inherit the old note's headings"
+        );
+    });
+}
+
+#[gpui::test]
+fn large2804_plain_file_mutation_never_parses_markdown_outline(cx: &mut TestAppContext) {
+    let original = "Plain data\n{value}\n";
+    let (f, visual) = open_file(cx, original, "data.txt");
+    f.reader.read_with(visual, |reader, _| {
+        assert!(reader.visible_outline().is_empty())
+    });
+    f.input.update_in(visual, |input, window, cx| {
+        input.replace_source_range(0..0, "# Still plain data\n", window, cx);
+    });
+    visual.run_until_parked();
+    f.reader.read_with(visual, |reader, cx| {
+        assert_eq!(value(&f, cx), format!("# Still plain data\n{original}"));
+        assert!(
+            reader.visible_outline().is_empty(),
+            "a plain-file mutation cannot launch the Markdown parser"
+        );
+    });
+}
+
+#[gpui::test]
 fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestAppContext) {
     let source = format!(
         "{{\"values\":[\n{}\"tail\"]}}",

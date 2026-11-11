@@ -33,6 +33,9 @@ The explicit Edit entry for `.json` files (case-insensitive) also uses that
 64 MiB input budget, including after Format grows a file beyond 4 MiB. The
 read-only viewer, its pagination, tree, Find and wrapping thresholds retain
 their existing behavior; other source formats keep their existing edit limits.
+Plain-file edit entry and mutation do not schedule the Markdown draft-outline
+parser. Entering a plain file retires the previous note's draft-outline worker
+and cache; ordinary Markdown editing retains its existing outline updates.
 
 Button dispatch pins an immutable native source revision. Target flattening,
 newline detection, validation, formatting and repair construction all run on the
