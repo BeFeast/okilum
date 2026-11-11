@@ -48,6 +48,16 @@ concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
+The canonical local Linux and shared gates use the same dev/test debug-info
+setting (`0`) as these required hosted checks. Run `26004` on `67e1d82b`
+exhausted the local-writer group's 900 s budget after roughly 880 s of cold
+compilation with `line-tables-only`; its last review group was interrupted.
+Omitting debug info reduces compiler/linker work without disabling debug
+assertions or changing the test selection. Panic assertion locations remain;
+CI backtraces no longer include DWARF line tables. The existing 900 s budget
+still includes compilation and every admission/review group. No prewarming,
+separate compile allowance, release-profile change or deadline increase is used.
+
 The complete workspace invocation isolates Reader Log and private reveal-bus cases
 in separate serial processes; ordinary cases run with four test threads.
 They share the product's process-wide log memory pool and async runtime: an
