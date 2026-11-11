@@ -970,3 +970,105 @@ fn focused_find_stays_inside_minimum_width_header_and_clear_of_history(cx: &mut 
         visual.run_until_parked();
     }
 }
+
+#[gpui::test]
+fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (reader, visual, temp) = fixture(cx, "note.md");
+    let log_path = temp.path().join("vault/gateway.log");
+    std::fs::write(
+        &log_path,
+        "{\"ts\":\"2026-11-10T12:00:00Z\",\"level\":\"warn\",\"msg\":\"ready\",\"status\":502}\n",
+    )
+    .unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file("gateway.log", window, cx)
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        for width in (600..=1600).step_by(4) {
+            let plan = reader.header_layout(&chrome, width as f32, window, cx);
+            let menu = |id| !plan.shows(id);
+            let collapsed = |id| plan.collapsed(id);
+            for (first, later) in [
+                ("log-files", "log-export"),
+                ("log-export", "log-columns-menu"),
+                ("log-columns-menu", "log-saved"),
+            ] {
+                assert!(
+                    !menu(later) || menu(first),
+                    "{first} must overflow before {later} at {width}"
+                );
+            }
+            assert!(
+                !collapsed("log-follow") || menu("log-saved"),
+                "all four optional menus yield before Follow text"
+            );
+            assert!(!collapsed("log-time") || collapsed("log-follow"));
+            assert!(!collapsed("log-level") || collapsed("log-time"));
+            assert!(!menu("open-with") || collapsed("log-level"));
+            for id in [
+                "log-level",
+                "log-time",
+                "log-follow",
+                "log-query-toggle",
+                "find",
+                "more",
+            ] {
+                assert!(!menu(id), "{id} stays reachable at {width}");
+            }
+        }
+    });
+    visual.simulate_resize(size(px(700.), px(900.)));
+    let header_width = measured_bounds(visual, "document-header-viewport")
+        .unwrap()
+        .size
+        .width
+        .as_f32();
+    let downs = reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        let plan = reader.header_layout(&chrome, header_width, window, cx);
+        assert!(
+            !plan.shows("log-columns-menu"),
+            "positive control: Columns really overflowed"
+        );
+        1 + usize::from(plan.width_applies && !plan.shows("width"))
+            + usize::from(!plan.shows("maximize"))
+            + chrome
+                .actions
+                .iter()
+                .filter(|action| !plan.shows(action.id))
+                .position(|action| action.id == "log-columns-menu")
+                .unwrap()
+    });
+    let more = measured_bounds(visual, "document-more").unwrap();
+    visual.simulate_click(more.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes(&"down ".repeat(downs + 1));
+    let parent = visual.update(|window, cx| window.focused(cx).unwrap());
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    if visual.update(|window, _| parent.is_focused(window)) {
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+    }
+    visual.update(|window, _| {
+        assert!(
+            !parent.is_focused(window),
+            "real Columns submenu opens from Document actions"
+        )
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(
+            !reader_ui_state::log_columns(&log_path.to_string_lossy(), cx).is_empty(),
+            "overflow Columns performs the real column toggle"
+        )
+    });
+    assert!(
+        measured_bounds(visual, "log-field-cell-0-0").is_some(),
+        "the selected field appears in the actual log grid"
+    );
+}

@@ -549,3 +549,91 @@ fn toolbar2808_active_state_controls_are_filled_and_order_is_viewer_owned(cx: &m
         assert!(collapse("log-level") < chrome.overflow_order.open_with);
     });
 }
+
+#[gpui::test]
+fn toolbar2808_disabled_chips_keep_the_row_and_narrow_popover_has_only_one_clear(
+    cx: &mut TestAppContext,
+) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    view.update_in(visual, |view, window, cx| {
+        let mut chip = FilterChip::new(
+            FieldRef::Key("request_id".into()),
+            vec![FilterValue::string("first")],
+            FilterMode::Include,
+        );
+        chip.enabled = false;
+        view.add_chip(chip, window, cx);
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.query_text.is_empty(),
+            "positive control: only the disabled chip keeps the row"
+        )
+    });
+    assert_eq!(shown(&view, visual), [0, 1, 2]);
+    visual.simulate_resize(gpui::size(px(700.), px(900.)));
+    let bounds = reader_viewer_chrome::tests::measured_bounds;
+    let row = bounds(visual, "log-query-row").expect("a disabled chip retains its editing row");
+    assert!(
+        bounds(visual, "log-chip-count").is_some(),
+        "narrow chips fold into one counter"
+    );
+    assert!(
+        bounds(visual, "log-chip-0").is_none(),
+        "chip editor is initially collapsed"
+    );
+    filter_click(visual, "log-chip-count");
+    assert!(
+        bounds(visual, "log-chip-0").is_some(),
+        "the actual chip editor opens from the counter"
+    );
+    let clear = bounds(visual, "log-chips-clear").expect("the one Clear all remains in the row");
+    assert!(
+        row.contains(&clear.center()),
+        "Clear all belongs only to the query row, never to the chip popover"
+    );
+    filter_click(visual, "log-chip-remove-0");
+    assert!(
+        bounds(visual, "log-query-row").is_none(),
+        "removing the last inactive chip closes the demand row"
+    );
+}
+
+#[gpui::test]
+fn toolbar2808_retained_alias_and_menu_commands_reach_the_header_from_reader_focus(
+    cx: &mut TestAppContext,
+) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    let root_focus = reader.read_with(visual, |reader, _| reader.focus_handle.clone());
+    visual.update(|window, cx| {
+        root_focus.focus(window, cx);
+        window.dispatch_action(Box::new(FocusLogFilter), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            view.read(cx)
+                .text_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "the old Filter log alias works outside LogView's subtree"
+        )
+    });
+    visual.update(|window, cx| window.dispatch_action(Box::new(OpenLogColumns), cx));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.command_menu.is_some(),
+            "a rebound log menu command works from header Find"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| assert!(view.command_menu.is_none()));
+}

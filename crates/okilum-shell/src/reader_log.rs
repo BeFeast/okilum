@@ -5867,7 +5867,7 @@ mod tests {
             assert_eq!(view.visible_len(), 649);
         });
         assert!(
-            visual.debug_bounds("log-follow").is_none(),
+            reader_viewer_chrome::tests::measured_bounds(visual, "log-follow").is_none(),
             "a compressed log is not followed"
         );
     }
@@ -5887,7 +5887,7 @@ mod tests {
             assert_eq!(view.visible_len(), 26);
         });
         // Positive control for the test above: an uncompressed log has Follow.
-        assert!(visual.debug_bounds("log-follow").is_some());
+        assert!(reader_viewer_chrome::tests::measured_bounds(visual, "log-follow").is_some());
     }
 
     fn shown(view: &Entity<LogView>, visual: &mut VisualTestContext) -> Vec<usize> {
@@ -7730,7 +7730,7 @@ mod tests {
             let view = log_view(&reader, visual);
             visual.update(|window, cx| window.draw(cx).clear(cx));
             assert!(
-                visual.debug_bounds("log-saved").is_some(),
+                reader_viewer_chrome::tests::measured_bounds(visual, "log-saved").is_some(),
                 "the Saved button"
             );
             view.update_in(visual, |view, window, cx| {
