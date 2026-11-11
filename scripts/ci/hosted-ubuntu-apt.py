@@ -64,7 +64,11 @@ def provision(packages, source_root=Path('/etc/apt')):
             return subprocess.run(['bash', str(HELPER), *common, *options, *args],
                                   env=env, check=False).returncode
 
-        for index, mirror in enumerate(('azure.archive.ubuntu.com', 'archive.ubuntu.com')):
+        # Keep both official routes first. The independently hosted kernel.org
+        # mirror also serves Ubuntu-signed indexes/packages when Ubuntu DNS is
+        # unavailable; retain the original keyrings, TLS checks and outer bound.
+        for index, mirror in enumerate(('azure.archive.ubuntu.com', 'archive.ubuntu.com',
+                                        'mirrors.edge.kernel.org')):
             target = root / str(index)
             target.mkdir()
             options = source_copy(source_root, target, mirror)
@@ -78,7 +82,7 @@ def provision(packages, source_root=Path('/etc/apt')):
                            '--no-install-recommends', *packages)
             print(f'Hosted Ubuntu provisioning: {mirror} failed (status {status})',
                   file=sys.stderr, flush=True)
-        print('Hosted Ubuntu provisioning: both official HTTPS routes failed', file=sys.stderr)
+        print('Hosted Ubuntu provisioning: all HTTPS Ubuntu routes failed', file=sys.stderr)
         if source_root == Path('/etc/apt'):
             # Read-only diagnostics for the actual ephemeral runner; fake-apt
             # tests stay offline. Never turn transport probes into a verdict.

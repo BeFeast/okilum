@@ -28,7 +28,8 @@ primary = 'https://azure.archive.ubuntu.com' in sources + ''.join(mirrors)
 if '--download-only' in args:
     (cache / 'verified.deb').write_text('fixture standing in for a verified download')
 if os.environ['MODE'] == 'both_fail' or (
-    os.environ['MODE'] == 'fallback' and primary and '--download-only' in args):
+    os.environ['MODE'] == 'fallback' and primary and '--download-only' in args) or (
+    os.environ['MODE'] == 'ubuntu_dns_fail' and 'https://mirrors.edge.kernel.org' not in sources):
     sys.exit(124)
 '''
 
@@ -106,8 +107,18 @@ class HostedUbuntuAptTests(unittest.TestCase):
     def test_exhaustion_never_installs(self):
         result, calls = self.invoke('both_fail')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertTrue(all(c['args'][-1] == 'update' for c in calls))
+
+    def test_ubuntu_dns_failure_uses_independent_signed_mirror(self):
+        result, calls = self.invoke('ubuntu_dns_fail')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(all(call['args'][-1] == 'update' for call in calls[:2]))
+        self.assertIn('https://mirrors.edge.kernel.org/ubuntu', calls[2]['sources'])
+        self.assertIn('https://mirrors.edge.kernel.org/ubuntu/', calls[2]['mirrors'][0])
+        self.assertIn('--no-download', calls[-1]['args'])
+        self.assertTrue(calls[-1]['cached'])
 
     def test_outer_deadline_and_both_build_jobs(self):
         wrapper = (ROOT / 'hosted-ubuntu-apt.sh').read_text()
