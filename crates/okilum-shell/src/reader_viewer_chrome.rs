@@ -514,7 +514,7 @@ impl Reader {
                         .iter()
                         .filter(|step| step.disposition == Disposition::Collapsed)
                         .map(|step| step.width.max(item.minimum_width))
-                        .last()
+                        .next_back()
                         .unwrap_or(item.minimum_width)
                         + 4.
                 }
