@@ -86,6 +86,20 @@ pub(crate) fn entry() -> bool {
                             "Reader did not open {name}"
                         );
                         ticks += 1;
+                        // Earlier fixtures persist Source for this vault. A
+                        // restored editor is not a read-mode receipt: use the
+                        // normal Read action before testing Read -> Edit.
+                        if cx.update(|cx| reader.read(cx).editing.is_some()) {
+                            diagnostic_println!(
+                                "READER_NATIVE file={name} mode=read stage=leave-restored-edit"
+                            );
+                            handle
+                                .update(cx, |_, window, cx| {
+                                    reader.update(cx, |r, cx| r.toggle_source(window, cx))
+                                })
+                                .unwrap();
+                            continue;
+                        }
                         let ready = cx.update(|cx| {
                             let r = reader.read(cx);
                             r.selected_file() == name
