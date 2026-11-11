@@ -9,13 +9,18 @@ use crate::vault::{EntryKind, Note, VaultEntry};
 pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) -> Vec<Note> {
     let mut inventory: Vec<Note> = notes
         .into_iter()
-        .filter(|note| !crate::vault::service_path(std::path::Path::new(&note.path)))
+        .filter(|note| {
+            !crate::vault::service_path(std::path::Path::new(&note.path))
+                && !crate::vault_conventions::asset_content(&note.path)
+        })
         .collect();
     inventory.extend(
         entries
             .iter()
             .filter(|entry| {
                 entry.kind == EntryKind::Attachment
+                    && !(crate::vault_conventions::asset_content(&entry.path)
+                        && entry.path.to_ascii_lowercase().ends_with(".md"))
                     && !crate::vault::service_path(std::path::Path::new(&entry.path))
             })
             .map(|entry| Note {

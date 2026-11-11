@@ -75,7 +75,16 @@ fn manager_brief(project: &Project, context: &str) -> Result<(String, String)> {
         let path =
             |p: &Path| serde_json::to_string(&p.to_string_lossy()).expect("string serialization");
         let mut message = format!("You are this project's Manager. Work in the local T3 workspace {}. Project notes live in {}. Read the service manifest {} and its existing entry note before proposing work. Service metadata is in {}; do not recreate another metadata directory. Ordinary notes/runbooks remain in their existing locations. Do not require a repository, executor, goal or stage to discuss local work.", path(Path::new(&workspace.root)), path(&project.folder), path(&manifest), path(&layout.directory()));
-        for note in ["AGENTS.md", "ops/manager-state.md", "_index.md"] {
+        let mut notes = vec!["AGENTS.md".to_owned(), "ops/manager-state.md".to_owned()];
+        let indexes: Vec<_> = std::fs::read_dir(&project.folder)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<_>>()?;
+        let candidates =
+            okilum_core::vault_conventions::index_candidates(indexes.iter().map(String::as_str));
+        if let [entry] = candidates.as_slice() {
+            notes.push((*entry).to_owned());
+        }
+        for note in notes {
             let note = project.folder.join(note);
             if note.is_file() {
                 message.push_str(&format!(" Read {}.", path(&note)));

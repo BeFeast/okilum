@@ -194,6 +194,7 @@ pub fn discover(vault: &Path, project: &Path) -> RuleStack {
         let mut names = vec!["AGENTS.md"];
         if relative.as_os_str().is_empty() {
             names.insert(0, "_AgentContract.md");
+            names.insert(0, "@AgentContract.md");
         }
         for name in names {
             let path = relative.join(name);

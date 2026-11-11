@@ -881,9 +881,13 @@ impl Settings {
         if self.template_root == root {
             return;
         }
-        self.template_root = root;
+        self.template_root = root.clone();
         self.template_epoch += 1;
-        self.template_folder = reader_templates::DEFAULT_FOLDER.into();
+        self.template_folder = root
+            .as_deref()
+            .map(okilum_core::note_templates::default_folder)
+            .unwrap_or(reader_templates::DEFAULT_FOLDER)
+            .into();
         self.template_error = None;
         self.template_pending = false;
         self.template_missing = false;

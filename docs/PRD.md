@@ -278,6 +278,9 @@ client over the frozen protocol.
 
 ## 4. Note identity and link resolution
 
+[Additive special-path compatibility](vault-at-conventions.md) defines `@` alongside
+legacy `_`, including index precedence, typed defaults and Markdown asset content.
+
 **Decision (2026-09-02): identity is the path from the vault root.**
 
 Resolution follows Obsidian's shortest-unique-path rule so existing vaults keep

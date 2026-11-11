@@ -2,7 +2,15 @@
 //! No source writes, background requests or implicit vault traversal.
 use okilum_core::agent_language::{self, Report, Status};
 
-pub const POLICY_PATH: &str = "_Schema/language.yaml";
+pub const POLICY_PATH: &str = "@Schema/language.yaml";
+
+pub fn policy_path(root: &std::path::Path) -> &'static str {
+    // Fall back only for absence; an unreadable/broken @ policy stays visible.
+    match std::fs::symlink_metadata(root.join(POLICY_PATH)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "_Schema/language.yaml",
+        _ => POLICY_PATH,
+    }
+}
 
 /// The parent reader owns loading the bounded policy snapshot and presenting
 /// `status_text` plus range/hover decorations. Call on current source or policy

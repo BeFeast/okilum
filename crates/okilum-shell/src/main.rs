@@ -3576,9 +3576,15 @@ impl Reader {
     /// notes (`_index`, `index`, `README`) take their folder's name.
     fn backlink_title(&self, path: &str) -> (String, Option<String>) {
         let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
-        let stem = file.strip_suffix(".md").unwrap_or(file);
+        let stem = file
+            .rsplit_once('.')
+            .filter(|(_, extension)| extension.eq_ignore_ascii_case("md"))
+            .map_or(file, |(stem, _)| stem);
         let location = (!folder.is_empty()).then(|| folder.replace('/', " / "));
-        let is_index = matches!(stem.to_lowercase().as_str(), "_index" | "index" | "readme");
+        let is_index = matches!(
+            stem.to_lowercase().as_str(),
+            "_index" | "@index" | "index" | "readme"
+        );
         if is_index && !folder.is_empty() {
             let name = folder.rsplit('/').next().unwrap_or(folder).to_owned();
             return (name, location);
@@ -3746,7 +3752,9 @@ impl Reader {
                 let folder = self
                     .creation_templates()
                     .map(|catalog| catalog.folder.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| okilum_core::note_templates::DEFAULT_FOLDER.into());
+                    .unwrap_or_else(|_| {
+                        okilum_core::note_templates::default_folder(&self.vault_root).into()
+                    });
                 self.tree.set_templates_folder(folder);
             }
             self.tree_source = Some(self.vault.clone());
@@ -4026,7 +4034,7 @@ impl Reader {
                         }
                         reader_tree::FolderIndex::Several => {
                             self.link_notice = Some(
-                                "This folder has more than one _index note, so none was opened."
+                                "This folder has more than one index note, so none was opened."
                                     .into(),
                             );
                         }
@@ -7572,7 +7580,11 @@ impl Reader {
                     let store = okilum_core::agent_imports::RootedSource::new(&read_root);
                     let policy: Result<Arc<str>, Arc<str>> = match &store {
                         Ok(store) => store
-                            .canonicalize(&store.root().join(reader_agent_language::POLICY_PATH))
+                            .canonicalize(
+                                &store
+                                    .root()
+                                    .join(reader_agent_language::policy_path(store.root())),
+                            )
                             .and_then(|path| {
                                 store.read(&path, okilum_core::agent_language::MAX_SCHEMA_BYTES)
                             })
@@ -13263,3 +13275,6 @@ fn initialize_native_sync_qa() -> anyhow::Result<()> {
         &account_state_directory()?,
     )?)
 }
+
+#[cfg(test)]
+mod issue2821_tests;

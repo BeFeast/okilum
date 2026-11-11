@@ -413,6 +413,16 @@ pub struct VaultEntry {
     pub kind: EntryKind,
 }
 
+impl VaultEntry {
+    /// A source document can be an ordinary note or Markdown asset content.
+    pub fn markdown_document(&self) -> bool {
+        self.kind != EntryKind::Directory
+            && Path::new(&self.path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    }
+}
+
 /// The `operation` of an [`UnreadableEntry`] for a note that exists under its real name
 /// but whose bytes are not valid UTF-8.
 pub const DECODE_NOTE: &str = "decode note";
@@ -853,7 +863,11 @@ impl Vault {
             if ext == "md" {
                 entries.push(VaultEntry {
                     path: rel.clone(),
-                    kind: EntryKind::Markdown,
+                    kind: if crate::vault_conventions::asset_content(&rel) {
+                        EntryKind::Attachment
+                    } else {
+                        EntryKind::Markdown
+                    },
                 });
                 let stem = path
                     .file_stem()
@@ -873,10 +887,19 @@ impl Vault {
                         .push(rel.clone());
                 }
                 path_map.insert(key.to_string(), rel.clone());
-                notes.push(Note {
-                    path: rel,
-                    title: stem,
-                });
+                if crate::vault_conventions::asset_content(&rel) {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    asset_map.entry(name).or_insert_with(|| path.to_path_buf());
+                } else {
+                    notes.push(Note {
+                        path: rel,
+                        title: stem,
+                    });
+                }
             } else {
                 entries.push(VaultEntry {
                     path: rel,
@@ -968,16 +991,22 @@ impl Vault {
             self.non_directory_paths.insert(path.to_lowercase());
             self.entries.push(VaultEntry {
                 path: path.into(),
-                kind: EntryKind::Markdown,
+                kind: if crate::vault_conventions::asset_content(path) {
+                    EntryKind::Attachment
+                } else {
+                    EntryKind::Markdown
+                },
             });
-            self.notes.push(Note {
-                path: path.into(),
-                title: Path::new(path)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            });
+            if !crate::vault_conventions::asset_content(path) {
+                self.notes.push(Note {
+                    path: path.into(),
+                    title: Path::new(path)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
             let lower = path.to_lowercase();
             let key = lower.trim_end_matches(".md");
             self.path_map.insert(key.into(), path.into());
@@ -990,6 +1019,9 @@ impl Vault {
             }
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+        if crate::vault_conventions::asset_content(path) {
+            self.refresh_attachment_name(path);
         }
         self.rebuild_alias_map();
     }
@@ -1012,6 +1044,10 @@ impl Vault {
             });
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
         }
+        self.refresh_attachment_name(path);
+    }
+
+    fn refresh_attachment_name(&mut self, path: &str) {
         let name = Path::new(path)
             .file_name()
             .unwrap_or_default()
@@ -1103,12 +1139,18 @@ impl Vault {
             vault.path_map.insert(key.to_owned(), path.clone());
             vault.entries.push(VaultEntry {
                 path: path.clone(),
-                kind: EntryKind::Markdown,
+                kind: if crate::vault_conventions::asset_content(&path) {
+                    EntryKind::Attachment
+                } else {
+                    EntryKind::Markdown
+                },
             });
-            vault.notes.push(Note {
-                title: Self::title_of(&path),
-                path,
-            });
+            if !crate::vault_conventions::asset_content(&path) {
+                vault.notes.push(Note {
+                    title: Self::title_of(&path),
+                    path,
+                });
+            }
         }
         vault.notes.sort_by(|a, b| a.path.cmp(&b.path));
         for candidates in vault.suffix_map.values_mut() {
@@ -1198,6 +1240,14 @@ impl Vault {
         })
     }
 
+    /// Markdown document identities, including Markdown assets. Source operations
+    /// use this rather than the user-facing note list.
+    pub fn markdown_entries(&self) -> impl Iterator<Item = &VaultEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.markdown_document())
+    }
+
     /// The first note in scan order, or `None` for an empty vault.
     ///
     /// Used when the shell is started without `--note`: there is no
@@ -1240,13 +1290,37 @@ impl Vault {
     /// Resolve `target` as written inside `from_note` (a rel path; pass `""`
     /// when there is no source note).
     ///
-    /// Only relative targets — those starting with `./` or `../` — use the
+    /// Bare `@index` additionally prefers the source folder's unambiguous @ index.
+    /// Legacy `_index` and other bare names retain their existing root-first rules.
+    /// Relative targets — those starting with `./` or `../` — use the
     /// source note, and for them it is not a hint but the whole meaning:
     /// `[[../ops/signoff]]` names a sibling directory of the *linking* note and
     /// says nothing on its own. The vault has hundreds of these. Resolving them
     /// by suffix instead would answer with whichever unrelated note happened to
     /// end in `ops/signoff`.
     pub fn resolve_from(&self, target: &str, from_note: &str) -> Resolution {
+        let bare = target.split(['#', '^']).next().unwrap_or("").trim();
+        if bare.eq_ignore_ascii_case("@index") || bare.eq_ignore_ascii_case("@index.md") {
+            let folder = from_note.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let key = if folder.is_empty() {
+                "@index".to_owned()
+            } else {
+                format!("{folder}/@index").to_lowercase()
+            };
+            let candidates: Vec<_> = self
+                .suffix_map
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter(|path| path.rsplit_once('/').map_or("", |(parent, _)| parent) == folder)
+                .cloned()
+                .collect();
+            match candidates.as_slice() {
+                [path] => return Resolution::Resolved { path: path.clone() },
+                [] => {}
+                _ => return Resolution::Ambiguous { candidates },
+            }
+        }
         if let Some(graph) = self.published_graph() {
             return self.resolve_published(target, from_note, &graph.alias_map);
         }

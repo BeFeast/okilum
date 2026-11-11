@@ -19,7 +19,7 @@ function Suites($label, $root) {
     Log "START $label native save/move/copy/delete/recycle/recovery/identity controls; TEMP=$root; source=$env:GITHUB_SHA"
     python scripts/ci/windows-recovery-check.py
     if ($LASTEXITCODE -ne 0) { throw "$label Windows regression suite failed ($LASTEXITCODE)" }
-    foreach ($filter in @('note_move', 'note_files', 'source_history')) {
+    foreach ($filter in @('note_move', 'note_files', 'source_history', 'windows_issue2821_')) {
         $discovered = & cargo test --locked -p okilum-core --tests $filter -- --list
         if ($LASTEXITCODE -ne 0 -or !($discovered -match ': test$')) { throw "$label $filter compiled/discovered no tests" }
         & cargo test --locked -p okilum-core --tests $filter -- --nocapture --test-threads=1

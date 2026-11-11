@@ -5,9 +5,10 @@ use std::{
 };
 
 /// Document behavior is independent of tree/search visibility. The root contract
-/// participates in Rules, while remaining an ordinary visible vault entry.
+/// participates in Rules, while remaining an ordinary vault inventory entry.
 pub fn is_agent_document(path: &str) -> bool {
-    path == "_AgentContract.md" || crate::quick_open::is_agent_file(path)
+    matches!(path, "_AgentContract.md" | "@AgentContract.md")
+        || crate::quick_open::is_agent_file(path)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -123,11 +123,14 @@ impl Preview {
         let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.;
 
         ensure!(
-            directory.is_some() || vault.notes.iter().any(|n| n.path == from),
+            directory.is_some() || vault.markdown_entries().any(|n| n.path == from),
             "The moved note is excluded from this folder inventory"
         );
-        let mut after =
-            Vault::from_note_paths(vault.notes.iter().map(|n| moved_path(&n.path, from, to)));
+        let mut after = Vault::from_note_paths(
+            vault
+                .markdown_entries()
+                .map(|n| moved_path(&n.path, from, to)),
+        );
         // Simulated inventory must not consult pre-move filesystem entries.
         after.root = root.to_path_buf();
         let rewrite = RewriteContext::new(&vault, &after, from, to);
@@ -191,7 +194,7 @@ impl Preview {
             inventory: vault.entries.iter().map(|e| e.path.clone()).collect(),
         };
         preview.enumeration_skips.sort();
-        for (count, note) in vault.notes.iter().enumerate() {
+        for (count, note) in vault.markdown_entries().enumerate() {
             if candidates
                 .as_ref()
                 .is_some_and(|paths| !paths.contains(&note.path))
@@ -333,7 +336,8 @@ impl Preview {
                 == self.inventory.iter().collect::<Vec<_>>(),
             "Folder inventory changed; preview again. Nothing was written"
         );
-        let paths: std::collections::BTreeSet<_> = vault.notes.iter().map(|n| &n.path).collect();
+        let paths: std::collections::BTreeSet<_> =
+            vault.markdown_entries().map(|n| &n.path).collect();
         ensure!(
             paths
                 == self
@@ -372,8 +376,7 @@ impl Preview {
         }
         let mut after = Vault::from_note_paths(
             vault
-                .notes
-                .iter()
+                .markdown_entries()
                 .map(|n| moved_path(&n.path, &self.from, &self.to)),
         );
         after.root = root.to_path_buf();
@@ -458,7 +461,7 @@ impl<'a> NotePaths<'a> {
     fn new(vault: &'a Vault) -> Self {
         let mut exact = HashSet::new();
         let mut folded_counts = HashMap::new();
-        for note in &vault.notes {
+        for note in vault.markdown_entries() {
             exact.insert(note.path.as_str());
             *folded_counts.entry(note.path.to_lowercase()).or_insert(0) += 1;
         }
