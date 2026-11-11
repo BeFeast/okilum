@@ -193,3 +193,9 @@ index d1a45fef..cdad152d 100644
      /// Asking for search again, while it is already open, must re-select the query.
      ///
      /// Re-invoking search leaves every other part of the session identical, so a
+diff --git a/crates/component/src/input/search.rs b/crates/component/src/input/search.rs
+--- a/crates/component/src/input/search.rs
++++ b/crates/component/src/input/search.rs
+@@ -325 +325,2 @@
+             .id("search-panel")
++            .debug_selector(|| "search-panel".into())

@@ -50,7 +50,11 @@ impl Target {
 #[derive(Clone, Copy)]
 pub(crate) enum Presentation {
     Floating,
-    Header { width: f32, focused: bool },
+    Header {
+        width: f32,
+        focused: bool,
+        max_width: f32,
+    },
 }
 
 /// Header expansion is an absolutely positioned child of a fixed-width slot.
@@ -184,13 +188,21 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
     }
     match presentation {
         Presentation::Floating => row.into_any_element(),
-        Presentation::Header { width, focused } => {
+        Presentation::Header {
+            width,
+            focused,
+            max_width,
+        } => {
             let width = if target.large_file {
                 width.max(128.)
             } else {
                 width
             };
-            let expanded = if focused { width.max(272.) } else { width };
+            let expanded = if focused {
+                width.max(272.).min(max_width)
+            } else {
+                width
+            };
             if width < 128. && !focused && !target.large_file {
                 let target = target.clone();
                 return reader_icon_button(

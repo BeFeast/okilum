@@ -134,6 +134,7 @@ fn catalog() -> Vec<Entry> {
         menu_entry::<ArchiveExtractAll>("Extract all entries…", Notes),
         menu_entry::<ExpandDrawing>("Expand drawing", View),
         menu_entry::<OpenDrawingExternally>("Open in Excalidraw", View),
+        menu_entry::<ShowDrawingDetails>("Drawing details", View),
         menu_entry::<CopyDrawingDetails>("Copy drawing details", Notes),
         menu_entry::<CopyViewerImage>("Copy image", Notes),
         menu_entry::<CopyFileContent>("Copy file content", Notes),

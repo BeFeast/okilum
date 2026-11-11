@@ -748,10 +748,6 @@ impl Render for ArchivePreview {
         let table = v_flex()
             .debug_selector(|| "archive-table".into())
             .track_focus(&self.list_focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.list_focus.focus(window, cx)),
-            )
             .mx_6()
             .border_1()
             .border_color(palette.border_subtle)
@@ -791,10 +787,6 @@ impl Render for ArchivePreview {
         let slot = div()
             .debug_selector(|| "archive-entry".into())
             .track_focus(&self.entry_focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.entry_focus.focus(window, cx)),
-            )
             .flex_1()
             .min_h_0()
             .w_full()
@@ -813,6 +805,106 @@ impl Render for ArchivePreview {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn code_entry_click_retains_keyboard_selection_and_copy(cx: &mut TestAppContext) {
+        entry_click_copy(cx, "source.rs");
+    }
+
+    #[gpui::test]
+    fn table_entry_click_retains_keyboard_cell_copy(cx: &mut TestAppContext) {
+        entry_click_copy(cx, "data.csv");
+    }
+
+    fn entry_click_copy(cx: &mut TestAppContext, name: &str) {
+        use reader_viewer_chrome::tests::{fixture, measured_bounds};
+        cx.executor().allow_parking();
+        let (reader, visual, temp) = fixture(cx, "note.md");
+        let mut zip = zip::ZipWriter::new(
+            std::fs::File::create(temp.path().join("vault/focus.zip")).unwrap(),
+        );
+        for (name, text) in [
+            ("source.rs", "alpha beta gamma\n"),
+            ("data.csv", "id,value\nfirst,1\nsecond,2\n"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("focus.zip", window, cx)
+        });
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |reader, _| {
+            reader
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .unwrap()
+        });
+        for name in [name] {
+            let index = archive.read_with(visual, |archive, _| {
+                archive
+                    .listing
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name == name)
+                    .unwrap()
+            });
+            archive.update_in(visual, |archive, window, cx| {
+                archive.open_entry(index, window, cx)
+            });
+            visual.run_until_parked();
+            let at = if name == "source.rs" {
+                let input = archive.read_with(visual, |archive, cx| {
+                    match archive.entry.as_ref().unwrap() {
+                        EntryView::Code(code) => code.read(cx).input().unwrap(),
+                        _ => panic!("code entry"),
+                    }
+                });
+                let bounds = input.read_with(visual, |input, _| input.text_bounds().unwrap());
+                bounds.origin + point(px(8.), px(8.))
+            } else {
+                measured_bounds(visual, "delimited-cell-1-0")
+                    .unwrap()
+                    .center()
+            };
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()))
+            });
+            visual.simulate_click(at, Modifiers::default());
+            visual.run_until_parked();
+            if name == "source.rs" {
+                visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                });
+            }
+            visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            });
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some(if name == "source.rs" {
+                        "alpha beta gamma\n"
+                    } else {
+                        "first"
+                    }),
+                    "clicking {name} retains the child's keyboard Copy handler"
+                )
+            });
+        }
+    }
 
     #[gpui::test]
     fn entry_compact_bar_fits_460_pixels_and_partial_status_stays_inside_the_pane(

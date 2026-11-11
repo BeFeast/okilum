@@ -487,6 +487,7 @@ pub(crate) fn chrome(viewer: &Entity<CanvasView>, cx: &App) -> reader_viewer_chr
         state: Some(lock),
         status: Some(status_line(state)),
         action_text: Some(format!("{:.0}%", state.view.scale * 100.).into()),
+        action_text_after: Some("canvas-minus"),
         ..Default::default()
     }
 }

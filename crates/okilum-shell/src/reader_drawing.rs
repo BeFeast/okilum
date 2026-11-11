@@ -498,8 +498,22 @@ pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::Vie
         "drawing-diagnostic-details",
         Icon::new(IconName::Info),
         "Drawing details",
-        Rc::new(|_, _| {}),
+        {
+            let details = details.clone();
+            Rc::new(move |window, cx| {
+                let details = details.clone();
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog.title("Drawing details").child(
+                        div()
+                            .debug_selector(|| "drawing-details".into())
+                            .text_sm()
+                            .child(details.clone()),
+                    )
+                });
+            })
+        },
     );
+    info = info.with_action(ShowDrawingDetails, cx);
     info.tooltip = details.clone().into();
     actions.push(info);
     let copy = ViewerAction::new(

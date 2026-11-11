@@ -23,6 +23,13 @@ fn canvas_state_badge_is_visible_next_to_the_title_at_both_widths(cx: &mut TestA
             "state badge is not clipped by the name slot"
         );
         assert!(badge.size.width >= px(28.) && badge.size.height >= px(28.));
+        let minus = measured_bounds(visual, "canvas-minus").unwrap();
+        let percentage = measured_bounds(visual, "viewer-action-text").unwrap();
+        let plus = measured_bounds(visual, "canvas-plus").unwrap();
+        assert!(
+            minus.right() <= percentage.left() && percentage.right() <= plus.left(),
+            "Canvas percentage belongs between Zoom out and Zoom in"
+        );
     }
 }
 
@@ -39,6 +46,7 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
                 Presentation::Header {
                     width: self.width,
                     focused: false,
+                    max_width: f32::MAX,
                 },
                 cx,
             ))
@@ -83,6 +91,30 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
             assert!(icon.size.width >= px(28.) && icon.size.height >= px(28.));
         }
     }
+    field.update_in(visual, |field, window, cx| {
+        field.width = 272.;
+        field.target.match_case = Some((false, std::rc::Rc::new(|_, _| {})));
+        field.target.step = Some(std::rc::Rc::new(|_, _, _| {}));
+        field.target.steps_visible = true;
+        field
+            .target
+            .input
+            .update(cx, |input, cx| input.set_value("query", window, cx));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for id in [
+        "find-case-sensitive",
+        "find-prev",
+        "find-next",
+        "find-close",
+    ] {
+        let bounds = measured_bounds(visual, id).expect("required header-form Find control");
+        assert!(
+            bounds.size.width >= px(28.) && bounds.size.height >= px(28.),
+            "{id} has a full-height hit area"
+        );
+    }
 }
 
 #[gpui::test]
@@ -99,20 +131,28 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     });
     input.update_in(visual, |input, window, cx| {
         input.set_value(
-            "fn first() {\n    target();\n}\nfn second() {\n    TARGET();\n}\n",
+            "fn first() {\n    target();\n    target();\n}\nfn second() {\n    TARGET();\n}\n",
             window,
             cx,
         );
         input.set_folding(true, window, cx);
         input.apply_highlighter_fold_candidates(
             vec![
-                gpui_component::input::FoldRange::new(0, 2),
-                gpui_component::input::FoldRange::new(3, 5),
+                gpui_component::input::FoldRange::new(0, 3),
+                gpui_component::input::FoldRange::new(4, 6),
             ],
             cx,
         );
         input.set_all_folded(true, cx);
     });
+    visual.run_until_parked();
+    input.update(visual, |input, cx| input.open_search(false, cx));
+    visual.run_until_parked();
+    assert!(
+        measured_bounds(visual, "search-panel").is_some(),
+        "positive control: the real toolkit strip mounts"
+    );
+    input.update(visual, |input, cx| input.close_search(cx));
     visual.run_until_parked();
     let stamp = input.read_with(visual, |input, _| input.source_stamp());
     let target =
@@ -122,7 +162,7 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         target.set_query("target", window, cx);
     });
     visual.run_until_parked();
-    target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 2));
+    target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 3));
     let descriptor = visual.update(|_, cx| EditorTarget::target(&target, cx));
     assert_eq!(descriptor.scope.to_string(), "Find");
     assert!(descriptor.match_case.is_some() && descriptor.step.is_some());
@@ -141,16 +181,23 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     });
     target.update(visual, |target, cx| target.step(1, cx));
     visual.run_until_parked();
-    let forward = target.read_with(visual, |target, cx| target.count(cx).0);
+    assert_eq!(target.read_with(visual, |target, cx| target.count(cx).0), 1);
     assert!(input.read_with(visual, |input, _| input.folded_ranges().len()) < 2);
     target.update(visual, |target, cx| target.step(-1, cx));
     visual.run_until_parked();
-    assert_ne!(
+    assert_eq!(
         target.read_with(visual, |target, cx| target.count(cx).0),
-        forward
+        0,
+        "previous goes backwards, not forwards to match 2"
+    );
+    target.update(visual, |target, cx| target.step(-1, cx));
+    assert_eq!(
+        target.read_with(visual, |target, cx| target.count(cx).0),
+        2,
+        "previous wraps from zero to the last of three matches"
     );
     target.update(visual, |target, cx| target.set_case_sensitive(true, cx));
-    target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 1));
+    target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 2));
     assert!(
         measured_bounds(visual, "search-panel").is_none(),
         "toolkit strip stays absent"
@@ -204,10 +251,9 @@ fn archive_header_find_expands_left_without_moving_other_controls_or_content(
             "{id} stays put"
         );
     }
-    for id in ["viewer-find-field", "find-close", "canvas-read-only"] {
-        if let Some(bounds) = measured_bounds(visual, id) {
-            assert!(bounds.size.height >= px(28.));
-        }
+    for id in ["viewer-find-field", "find-close"] {
+        let bounds = measured_bounds(visual, id).expect("required ZIP Find control");
+        assert!(bounds.size.width >= px(28.) && bounds.size.height >= px(28.));
     }
     let target = reader.read_with(visual, |reader, cx| reader.viewer_chrome(cx).find.unwrap());
     visual.update(|window, cx| assert!(target.input.read(cx).focus_handle(cx).is_focused(window)));
@@ -439,5 +485,43 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
     assert_eq!(
         std::fs::read(temp.path().join("vault/drawing.excalidraw")).unwrap(),
         before
+    );
+}
+
+#[gpui::test]
+fn drawing_details_remains_actionable_from_overflow(cx: &mut TestAppContext) {
+    use gpui_component::{menu::PopupMenuItem, WindowExt as _};
+    cx.executor().allow_parking();
+    let (reader, visual, _temp) = reader_viewer_chrome::tests::fixture(cx, "drawing.excalidraw");
+    let started = std::time::Instant::now();
+    let info = loop {
+        visual.run_until_parked();
+        let info = reader.read_with(visual, |reader, cx| {
+            reader
+                .viewer_chrome(cx)
+                .actions
+                .into_iter()
+                .find(|a| a.id == "drawing-diagnostic-details")
+        });
+        if let Some(info) = info {
+            break info;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30));
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let PopupMenuItem::Item {
+        handler: Some(handler),
+        ..
+    } = info.menu_item()
+    else {
+        panic!("details is an actionable overflow item");
+    };
+    visual.update(|window, cx| handler(&ClickEvent::default(), window, cx));
+    visual.run_until_parked();
+    assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(
+        measured_bounds(visual, "drawing-details").is_some(),
+        "overflow exposes the drawing details"
     );
 }

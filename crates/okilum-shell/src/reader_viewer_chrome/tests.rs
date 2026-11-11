@@ -846,3 +846,127 @@ fn real_viewer_descriptions_supply_the_reference_overflow_order(cx: &mut TestApp
         }
     }
 }
+
+fn archive_fixture(
+    cx: &mut TestAppContext,
+    long_name: bool,
+) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+    let (reader, visual, temp) = fixture(cx, "note.md");
+    let name = if long_name {
+        format!("{}-release.zip", "long-name-".repeat(15))
+    } else {
+        "archive.zip".to_owned()
+    };
+    let mut zip =
+        zip::ZipWriter::new(std::fs::File::create(temp.path().join("vault").join(&name)).unwrap());
+    for entry in ["package.json", "README.md"] {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"{}").unwrap();
+    }
+    zip.finish().unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file(&name, window, cx)
+    });
+    visual.run_until_parked();
+    (reader, visual, temp)
+}
+
+#[gpui::test]
+fn header_find_typing_never_renders_slots_or_notifies_side_panels(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    struct Observer {
+        _subscriptions: Vec<Subscription>,
+    }
+    let _cached = reader_side_panel::tests::CachedPanels::on();
+    let (reader, visual, _temp) = archive_fixture(cx, false);
+    reader.update_in(visual, |reader, window, cx| reader.open_find(window, cx));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("home");
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let renders = || {
+        HEADER_RENDERS.with(|counts| {
+            counts
+                .borrow()
+                .get(&reader.entity_id())
+                .copied()
+                .unwrap_or(0)
+        })
+    };
+    let initial = renders();
+    assert!(initial > 0, "positive control: header slots were rendered");
+    let panels = reader.read_with(visual, |reader, _| reader.side_panels.clone());
+    let notifications = Rc::new(std::cell::Cell::new([0; 2]));
+    let _observer = visual.update(|_, cx| {
+        cx.new(|cx: &mut Context<Observer>| Observer {
+            _subscriptions: panels
+                .into_iter()
+                .enumerate()
+                .map(|(i, panel)| {
+                    let notifications = notifications.clone();
+                    cx.observe(&panel.unwrap(), move |_, _, _| {
+                        let mut counts = notifications.get();
+                        counts[i] += 1;
+                        notifications.set(counts);
+                    })
+                })
+                .collect(),
+        })
+    });
+    for ch in "package".chars() {
+        visual.simulate_input(&ch.to_string());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            renders(),
+            initial,
+            "Find typing must render zero header slots, including the first character"
+        );
+        assert_eq!(
+            notifications.get(),
+            [0, 0],
+            "Find typing never notifies cached SidePanels"
+        );
+    }
+    reader.read_with(visual, |reader, cx| {
+        assert_eq!(
+            reader
+                .viewer_chrome(cx)
+                .find
+                .unwrap()
+                .input
+                .read(cx)
+                .value()
+                .to_string(),
+            "package"
+        )
+    });
+}
+
+#[gpui::test]
+fn focused_find_stays_inside_minimum_width_header_and_clear_of_history(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (reader, visual, _temp) = archive_fixture(cx, true);
+    for width in [600., 460.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| reader.open_find(window, cx));
+        visual.run_until_parked();
+        let field = measured_bounds(visual, "viewer-find-field").unwrap();
+        let header = measured_bounds(visual, "document-header-viewport").unwrap();
+        assert!(
+            field.left() >= header.left() && field.right() <= header.right(),
+            "expanded Find fits the header"
+        );
+        for id in ["reader-history-back", "reader-history-forward"] {
+            let button = measured_bounds(visual, id).unwrap();
+            assert!(
+                field.left() >= button.right(),
+                "expanded Find never covers {id}"
+            );
+        }
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+    }
+}

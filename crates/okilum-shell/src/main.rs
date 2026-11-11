@@ -424,6 +424,7 @@ actions!(
         ExpandDrawing,
         OpenDrawingExternally,
         CopyDrawingDetails,
+        ShowDrawingDetails,
         CopyFilePath,
         CopyFileWikilink,
         OpenFileDefault,
@@ -1771,6 +1772,9 @@ struct Reader {
     viewer_save_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::SaveControls>>>,
     viewer_header: std::cell::RefCell<Option<Entity<reader_viewer_chrome::Header>>>,
     viewer_save_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    viewer_find_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::FindControls>>>,
+    viewer_find_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    viewer_find_min_x: std::rc::Rc<std::cell::Cell<Pixels>>,
     #[cfg(target_os = "linux")]
     sync_note_conflicts: Option<(PathBuf, String, Vec<PathBuf>, bool)>,
     /// Undo history and selection of the editor last left for the Reader, by
@@ -2205,6 +2209,9 @@ impl Reader {
             viewer_save_controls: Default::default(),
             viewer_header: Default::default(),
             viewer_save_bounds: Default::default(),
+            viewer_find_controls: Default::default(),
+            viewer_find_bounds: Default::default(),
+            viewer_find_min_x: Default::default(),
             #[cfg(target_os = "linux")]
             sync_note_conflicts: None,
             retained_edit: None,
@@ -8161,6 +8168,9 @@ impl Render for Reader {
             }))
             .on_action(cx.listener(|this, _: &OpenDrawingExternally, window, cx| {
                 this.invoke_viewer_action("drawing-open", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowDrawingDetails, window, cx| {
+                this.invoke_viewer_action("drawing-diagnostic-details", window, cx)
             }))
             .on_action(cx.listener(|this, _: &CopyDrawingDetails, window, cx| {
                 this.invoke_viewer_action("drawing-copy-details", window, cx)
