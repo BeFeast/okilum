@@ -847,7 +847,7 @@ mod tests {
             let pane = measured_bounds(visual, "archive-entry").unwrap();
             let bar = measured_bounds(visual, "archive-entry-bar").unwrap();
             let crumb = measured_bounds(visual, "archive-entry-crumb").unwrap();
-            assert_eq!(bar.size, size(px(460.), px(48.)));
+            assert_eq!(bar.size, gpui::size(px(460.), px(48.)));
             assert_eq!(bar.top(), pane.top());
             assert!(crumb.size.width >= px(120.));
             assert!(crumb.left() >= bar.left() && crumb.right() <= bar.right());
