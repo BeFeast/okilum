@@ -5,6 +5,7 @@ use reader_viewer_chrome::tests::measured_bounds;
 
 #[gpui::test]
 fn canvas_state_badge_is_visible_next_to_the_title_at_both_widths(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
     let (_reader, visual, _temp) = reader_viewer_chrome::tests::fixture(cx, "scene.canvas");
     for width in [1440., 700.] {
         visual.simulate_resize(size(px(width), px(800.)));
