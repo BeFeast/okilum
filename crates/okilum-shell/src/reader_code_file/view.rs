@@ -181,7 +181,7 @@ impl CodePreview {
         let focused_find = self.find.focus_handle(cx).is_focused(window);
         self.apply_view(view, window, cx);
         let keeps_find = self.view == View::Tree || (self.view != View::Table && self.paged);
-        if focused_find && !keeps_find {
+        if focused_find && (!keeps_find || view != self.view) {
             // An explicit choice may remove the old Find row. Keep a mounted
             // keyboard target rather than leaving focus on its hidden Input.
             self.focus.focus(window, cx);
