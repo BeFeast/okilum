@@ -80,6 +80,12 @@ fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestA
     );
     assert!(source.len() > 5 * 1024 * 1024);
     let (f, visual) = open_file(cx, &source, "large.JSON");
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(
+            reader.code_view_input(cx).is_none(),
+            "large Source must not retain a hidden read preview"
+        );
+    });
     assert_eq!(
         f.input.read_with(visual, |input, _| input.value().len()),
         source.len()
@@ -127,6 +133,12 @@ fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestA
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(
+            reader.code_view_input(cx).is_none(),
+            "reopened large Source retires the rebuilt read preview"
+        );
+    });
     visual.dispatch_action(Undo);
     settle(visual);
     f.reader.read_with(visual, |reader, cx| {

@@ -36,6 +36,9 @@ their existing behavior; other source formats keep their existing edit limits.
 Plain-file edit entry and mutation do not schedule the Markdown draft-outline
 parser. Entering a plain file retires the previous note's draft-outline worker
 and cache; ordinary Markdown editing retains its existing outline updates.
+Large plain-file Source also releases its hidden read preview instead of
+retaining a second complete data tree beside the native editor. Explicit Read
+recreates that preview through the existing file-open path.
 
 Button dispatch pins an immutable native source revision. Target flattening,
 newline detection, validation, formatting and repair construction all run on the

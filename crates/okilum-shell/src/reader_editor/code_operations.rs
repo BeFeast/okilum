@@ -587,6 +587,9 @@ impl Reader {
                 let mut status_range = target.range.clone();
                 match format {
                     Some(model::Formatted::Changed(text)) => {
+                        if !editing.markdown {
+                            this.retire_large_plain_preview(input.read(cx).text().len() - target.range.len() + text.len());
+                        }
                         input.update(cx, |state, cx| {
                             state.replace_source_range(target.range.clone(), text.as_str(), window, cx);
                             state.focus(window, cx);
@@ -652,6 +655,11 @@ impl Reader {
         let preview = editing.operations.preview.take().unwrap();
         let input = editing.input.clone();
         let status = preview.validation;
+        if !editing.markdown {
+            self.retire_large_plain_preview(
+                input.read(cx).text().len() - preview.target.range.len() + preview.proposed.len(),
+            );
+        }
         input.update(cx, |state, cx| {
             state.replace_source_range(preview.target.range, preview.proposed.as_str(), window, cx)
         });

@@ -883,6 +883,9 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
+        if plain_file {
+            self.retire_large_plain_preview(store.text().len());
+        }
         // The note's reference definitions and text, for rendered blocks (#1067).
         let block_context: BlockContext = Rc::new(std::cell::RefCell::new(BlockNote::initial(
             store.snapshot(),
@@ -1446,6 +1449,16 @@ impl Reader {
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
+    }
+
+    /// Source owns the complete native revision. A hidden read preview can
+    /// retain another complete data tree; explicit Read rebuilds it normally.
+    fn retire_large_plain_preview(&mut self, bytes: usize) {
+        if bytes > 4 * 1024 * 1024 {
+            if let Some(preview) = self.file_preview.as_mut() {
+                preview.code.take();
+            }
+        }
     }
 
     pub(super) fn request_source_save(&mut self, cx: &mut Context<Self>) {
