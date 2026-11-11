@@ -82,7 +82,7 @@ const COPY_KEY: &str = "secondary-c";
 const FILTER_KEY: &str = "secondary-f";
 /// Filter bar controls follow the Reader's 28 px icon-button geometry.
 const BAR_CONTROL_HEIGHT: f32 = 28.;
-const BAR_HEIGHT: f32 = 40.;
+const QUERY_ROW_HEIGHT: f32 = 40.;
 const QUERY_MIN_WIDTH: f32 = 80.;
 const QUERY_ERROR_MAX_WIDTH: f32 = 260.;
 /// Level menu choices: the lowest severity shown.
@@ -4345,6 +4345,25 @@ impl LogView {
             full.push_str(" · ");
             full.push_str(part);
         }
+        let total_label = format!(
+            "{} {}",
+            grouped(self.total() as u64),
+            if self.total() == 1 {
+                "record"
+            } else {
+                "records"
+            }
+        );
+        let (leading, remainder, count_label) = match (&counter, text.split_once(" · ")) {
+            (Some(counter), Some((format, rest))) if rest.starts_with(&total_label) => (
+                format.to_owned(),
+                rest[total_label.len()..]
+                    .trim_start_matches(" · ")
+                    .to_owned(),
+                Some(format!("{counter} records")),
+            ),
+            _ => (text.clone(), String::new(), counter.clone()),
+        };
         let trailing = h_flex()
             .id("log-status-content")
             .debug_selector(|| "log-status".into())
@@ -4352,13 +4371,16 @@ impl LogView {
             .min_w_0()
             .gap_2()
             .overflow_hidden()
-            .children(counter.map(|counter| {
+            .child(div().truncate().child(leading))
+            .children(count_label.map(|count| {
                 div()
                     .flex_none()
                     .debug_selector(|| "log-match-counter".into())
-                    .child(counter)
+                    .child(count)
             }))
-            .child(div().truncate().child(text))
+            .when(!remainder.is_empty(), |row| {
+                row.child(div().truncate().child(remainder))
+            })
             .children(source.map(|source| {
                 div()
                     .min_w_0()

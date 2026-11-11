@@ -224,3 +224,61 @@ fn toolbar2808_investigation_breadcrumb_back_and_count_share_the_demand_row(cx: 
         view.update_in(visual, |view, window, cx| view.clear_filters(window, cx));
     }
 }
+
+#[gpui::test]
+fn toolbar2808_standalone_host_uses_the_shared_slots_and_find_alias(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    cx.update(|cx| { crate::test_init(cx); crate::bind_keys(cx); });
+    let (_dir, file) = log(CHROME_LOG);
+    let file_path = file.path().to_owned();
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| LogView::ready(LogDocument { rel: "standalone.log".into(), file: Arc::new(file), elapsed: Duration::ZERO }, window, cx));
+        entity = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let view = entity.unwrap();
+    visual.simulate_resize(gpui::size(px(1100.), px(900.)));
+    let bounds = reader_viewer_chrome::tests::measured_bounds;
+    let header = bounds(visual, "viewer-compact-header").unwrap();
+    for id in ["viewer-find-field", "log-level", "log-time", "log-follow", "log-query-toggle", "log-more"] {
+        assert!(header.contains(&bounds(visual, id).expect("shared standalone control").center()));
+    }
+    assert!(bounds(visual, "log-query-row").is_none());
+    visual.update(|window, cx| { view.read(cx).focus.focus(window, cx); window.dispatch_action(Box::new(FocusLogFilter), cx); });
+    visual.simulate_input("cache");
+    visual.run_until_parked();
+    assert_eq!(shown(&view, visual), [1], "the retained alias reaches the shared field");
+    visual.simulate_keystrokes("enter");
+    visual.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+    visual.update(|window, cx| window.dispatch_action(Box::new(FindInNote), cx));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(shown(&view, visual), [0, 1, 2]);
+    assert_eq!(std::fs::read_to_string(file_path).unwrap(), CHROME_LOG);
+}
+
+#[gpui::test]
+fn toolbar2808_active_state_controls_are_filled_and_order_is_viewer_owned(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    view.update(visual, |view, cx| view.update_filter(|filter| { filter.level.min = Some(Level::Warn); filter.time = TimeWindow::LastHour; }, cx));
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        for id in ["log-level", "log-time"] {
+            let action = chrome.actions.iter().find(|action| action.id == id).unwrap();
+            assert!(action.filled && action.toggled, "active {id} is a filled state control");
+            assert!(action.caret && action.never_dropped);
+        }
+        let priority = |id| chrome.actions.iter().find(|action| action.id == id).unwrap().priority;
+        assert!(priority("log-files") < priority("log-export"));
+        assert!(priority("log-export") < priority("log-columns-menu"));
+        assert!(priority("log-columns-menu") < priority("log-saved"));
+        let collapse = |id| chrome.actions.iter().find(|action| action.id == id).unwrap().collapse_priority;
+        assert!(priority("log-saved") < collapse("log-follow"));
+        assert!(collapse("log-follow") < collapse("log-time") && collapse("log-time") < collapse("log-level"));
+        assert!(collapse("log-level") < chrome.overflow_order.open_with);
+    });
+}

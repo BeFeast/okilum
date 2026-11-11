@@ -63,7 +63,7 @@ impl LogView {
         let csv = ExportFormat::Csv(self.csv_columns(cx));
         let raw_values = self.csv_raw_values;
 
-        Rc::new(move |menu, _window, cx| {
+        Rc::new(move |menu, _window, _cx| {
             let mut menu = menu;
             let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
             if selected > 1 {
@@ -123,7 +123,7 @@ impl LogView {
             })
             .collect();
 
-        Rc::new(move |menu, _window, cx| {
+        Rc::new(move |menu, _window, _cx| {
             let mut menu = menu;
             for (source, name, enabled) in &sources {
                 let (view, source, enabled) = (view.clone(), *source, *enabled);
@@ -531,6 +531,14 @@ impl LogView {
             if allowed {
                 let mut action = self.menu_action(owner.clone(), kind, id, icon, label, cx);
                 action.priority = priority;
+                action.toggled = match kind {
+                    MenuKind::Columns => !self.columns(cx).is_empty(),
+                    MenuKind::Files => {
+                        self.source_count() > 1
+                            && (0..self.source_count()).any(|source| !self.source_enabled(source))
+                    }
+                    _ => false,
+                };
                 actions.push(action);
             }
         }
@@ -591,12 +599,22 @@ impl LogView {
         let menu = PopupMenu::build(window, cx, |menu, window, cx| {
             build(menu.action_context(focus.clone()), window, cx)
         });
-        menu.focus_handle(cx).focus(window, cx);
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.command_menu = None;
-            this.focus.focus(window, cx);
-            cx.notify();
-        });
+        let previous = window.focused(cx);
+        let menu_focus = menu.focus_handle(cx);
+        menu_focus.focus(window, cx);
+        let dismiss = cx.subscribe_in(
+            &menu,
+            window,
+            move |this, _, _: &DismissEvent, window, cx| {
+                this.command_menu = None;
+                if menu_focus.contains_focused(window, cx) {
+                    if let Some(previous) = &previous {
+                        previous.focus(window, cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
         self.command_menu = Some(CommandMenu {
             menu,
             position: window.mouse_position(),
@@ -679,7 +697,7 @@ impl LogView {
                 .id("log-query-row")
                 .debug_selector(|| "log-query-row".into())
                 .flex_none()
-                .h(px(40.))
+                .h(px(QUERY_ROW_HEIGHT))
                 .px_3()
                 .gap_1()
                 .min_w_0()

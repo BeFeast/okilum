@@ -155,7 +155,7 @@ fn catalog() -> Vec<Entry> {
         entry::<QuickOpen>("Quick open", Search),
         entry::<FullTextSearch>("Search note contents", Search),
         entry::<FindInNote>("Find in note", Search),
-        entry::<reader_log::FocusLogFilter>("Find in records (log alias)", Search),
+        entry::<reader_log::FocusLogFilter>("Find in records", Search),
         menu_entry::<reader_log::ToggleLogQuery>("Log query", Search),
         menu_entry::<reader_log::ToggleLogFollow>("Follow log records", View),
         menu_entry::<reader_log::ClearLogFilters>("Clear log filters", Search),
