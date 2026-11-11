@@ -24,6 +24,10 @@ workspace_spec = importlib.util.spec_from_file_location(
     "workspace_tests", ROOT / "scripts/ci/workspace-rust-tests.py")
 workspace = importlib.util.module_from_spec(workspace_spec)
 workspace_spec.loader.exec_module(workspace)
+target_spec = importlib.util.spec_from_file_location(
+    'target_tests', ROOT / 'scripts/ci/require-target-tests.py')
+target_tests = importlib.util.module_from_spec(target_spec)
+target_spec.loader.exec_module(target_tests)
 SHA = "a" * 40
 
 
@@ -418,40 +422,60 @@ class HelperFlowTests(unittest.TestCase):
 
 
     def test_local_writer_regression_groups_require_nonzero_passed_counts(self):
-        for passed, status in [('1', 0), ('0', 0), ('1', 7)]:
-            with self.subTest(passed=passed, status=status), tempfile.TemporaryDirectory() as directory:
+        for passed, status, missing in [('1', 0, False), ('0', 0, False), ('1', 7, False), ('1', 0, True)]:
+            with self.subTest(passed=passed, status=status, missing=missing), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 scripts = root / 'scripts/ci'
                 scripts.mkdir(parents=True)
-                for name in ('local-writer-admission.sh', 'test-nofile.sh'):
+                for name in ('local-writer-admission.sh', 'test-nofile.sh', 'require-target-tests.py'):
                     shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
                 fake = root / 'bin'
                 fake.mkdir()
                 cargo = fake / 'cargo'
                 cargo.write_text('#!/usr/bin/env bash\n'
                                  'echo "$*" >> "$CALL_LOG"\n'
-                                 'echo "test result: ok. $PASSED passed; 0 failed;"\n'
+                                 'for target in okilum_write_authority okilum_core local_writer_admission okilum okilum_t3; do\n'
+                                 '  if [[ "$MISSING" = 1 && "$target" = okilum_write_authority ]]; then continue; fi\n'
+                                 '  echo "Running unittests src/lib.rs (target/debug/deps/$target-abc123)"\n'
+                                 '  echo "test result: ok. $PASSED passed; 0 failed;"\n'
+                                 'done\n'
                                  'exit "$STATUS"\n')
                 cargo.chmod(0o755)
                 calls = root / 'calls'
                 result = subprocess.run(['bash', str(scripts / 'local-writer-admission.sh')],
                     cwd=root, env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
-                        'CALL_LOG': str(calls), 'PASSED': passed, 'STATUS': str(status)},
+                        'CALL_LOG': str(calls), 'PASSED': passed, 'STATUS': str(status), 'MISSING': str(int(missing))},
                     capture_output=True, text=True, timeout=30)
-                success = passed == '1' and status == 0
+                success = passed == '1' and status == 0 and not missing
                 self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                selection = '-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3'
                 expected = [
-                    'test --locked -p okilum-write-authority local_writer_admission -- --nocapture',
-                    'test --locked -p okilum-core --lib file_editor::local_writer_admission_tests -- --nocapture',
-                    'test --locked -p okilum-core --test local_writer_admission -- --nocapture',
-                    'test --locked -p okilum-shell --bin okilum local_writer_admission -- --nocapture',
-                    'test --locked -p okilum-t3 local_writer_admission -- --nocapture',
-                    'test --locked -p okilum-core --lib local_writer_review -- --nocapture',
-                    'test --locked -p okilum-shell --bin okilum local_writer_review -- --nocapture',
+                    f'test --locked {selection} local_writer_admission -- --nocapture',
+                    f'test --locked {selection} --lib file_editor::local_writer_admission_tests -- --nocapture',
+                    f'test --locked {selection} --test local_writer_admission -- --nocapture',
+                    f'test --locked {selection} --bin okilum local_writer_admission -- --nocapture',
+                    f'test --locked {selection} local_writer_admission -- --nocapture',
+                    f'test --locked {selection} --lib local_writer_review -- --nocapture',
+                    f'test --locked {selection} --bin okilum local_writer_review -- --nocapture',
                 ]
                 self.assertEqual(calls.read_text().splitlines(), expected if success else expected[:1])
                 if passed == '0' and status == 0:
                     self.assertIn('No non-zero passing test count', result.stderr)
+
+    def test_required_target_cannot_borrow_another_target_or_child_footer(self):
+        authority = 'Running unittests src/lib.rs (target/debug/deps/okilum_write_authority-abc)\n'
+        core = 'Running unittests src/lib.rs (target/debug/deps/okilum_core-def)\n'
+        passed = 'test result: ok. 1 passed; 0 failed; 0 ignored;\n'
+        empty = 'test result: ok. 0 passed; 0 failed; 1 ignored;\n'
+        failed = 'test result: FAILED. 1 passed; 1 failed; 0 ignored;\n'
+        for receipt, accepted in [
+                (authority + passed + core + empty, True),
+                (core + passed, False),
+                (authority + passed + empty + core + passed, False),
+                (authority + passed + failed + core + passed, False),
+                (authority + core + passed, False)]:
+            with self.subTest(receipt=receipt):
+                self.assertEqual(target_tests.passed(receipt, 'okilum_write_authority'), accepted)
 
 
 if __name__ == "__main__":

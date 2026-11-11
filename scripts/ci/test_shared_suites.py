@@ -17,18 +17,20 @@ if Path(sys.argv[0]).name == 'python3':
 else:
     name = args[0]
     if name == 'test':
-        name = 'workspace' if '--workspace' in args else 'portable'
+        name = ('logs' if 'reader_log' in args[:args.index('--')] else 'workspace') if '--workspace' in args else 'portable'
         assert '--no-fail-fast' in args, args
 with open(os.environ['SHARED_TRACE'], 'a') as trace:
     trace.write(json.dumps([name, args]) + '\n')
-sys.exit(42 if name in os.environ.get('SHARED_FAILURES', '').split(',') else 0)
+pooled = (name == 'workspace' and '--skip' in args and 'reader_log' not in args)
+sys.exit(42 if name in os.environ.get('SHARED_FAILURES', '').split(',') else
+         43 if pooled and os.environ.get('SHARED_POOL_CONFLICT') == '1' else 0)
 '''
-EXPECTED = ['fmt', 'clippy', 'workspace', 'portable', 'scripts/ci',
+EXPECTED = ['fmt', 'clippy', 'workspace', 'logs', 'portable', 'scripts/ci',
             'scripts/releases', 'scripts/manifests/check.py', 'scripts/updater']
 
 
 class SharedSuitesTests(unittest.TestCase):
-    def invoke(self, failures):
+    def invoke(self, failures, pool_conflict=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for name in ('cargo', 'python3'):
@@ -41,6 +43,7 @@ class SharedSuitesTests(unittest.TestCase):
                 ['bash', str(SCRIPT)], capture_output=True, text=True, timeout=10,
                 env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
                          SHARED_TRACE=str(trace), SHARED_FAILURES=','.join(failures),
+                         SHARED_POOL_CONFLICT=str(int(pool_conflict)),
                          GITHUB_STEP_SUMMARY=str(summary)))
             events = [json.loads(line) for line in trace.read_text().splitlines()]
             self.assertEqual([event[0] for event in events], EXPECTED)
@@ -58,7 +61,18 @@ class SharedSuitesTests(unittest.TestCase):
         self.assertIn('| Updater Python tests | PASS | 0 |', receipt)
         self.assertEqual(events[2][1], [
             'test', '--workspace', '--locked', '--no-fail-fast', '--',
-            '--test-threads=4', '--skip', 'platform::'])
+            '--test-threads=4', '--skip', 'platform::', '--skip', 'reader_log'])
+
+    def test_log_pool_is_isolated_and_log_failure_still_fails_the_gate(self):
+        result, _, events = self.invoke([], pool_conflict=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(events[3][1], [
+            'test', '--workspace', '--locked', '--no-fail-fast', 'reader_log', '--',
+            '--test-threads=1', '--skip', 'platform::'])
+        result, receipt, _ = self.invoke(['logs'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('| Log Rust tests | FAIL | 42 |', receipt)
+        self.assertIn('| Updater Python tests | PASS | 0 |', receipt)
 
     def test_lint_failure_does_not_hide_rust_or_python_results(self):
         result, receipt, _ = self.invoke(['fmt', 'clippy'])

@@ -21,7 +21,10 @@ suite 'Rust formatting' cargo fmt --check
 suite 'Workspace clippy' cargo clippy --workspace --all-targets --locked -- -D warnings
 # Keep the complete shared workspace inventory, but do not let the host's CPU
 # count run dozens of socket/GUI fixtures against each other's deadlines.
-suite 'Workspace Rust tests' cargo test --workspace --locked --no-fail-fast -- --test-threads=4 --skip platform::
+suite 'Workspace Rust tests' cargo test --workspace --locked --no-fail-fast -- --test-threads=4 --skip platform:: --skip reader_log
+# Log fixtures share a process-wide memory pool. Keep their entire selection
+# serial and in another process, as the complete Linux workspace census does.
+suite 'Log Rust tests' cargo test --workspace --locked --no-fail-fast reader_log -- --test-threads=1 --skip platform::
 suite 'Portable reader' cargo test -p okilum-core --no-default-features --test portable_reader --locked --no-fail-fast
 suite 'CI Python tests' python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 suite 'Release Python tests' python3 -m unittest discover -s scripts/releases -p 'test_*.py'
