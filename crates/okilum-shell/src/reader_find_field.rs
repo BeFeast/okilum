@@ -184,6 +184,11 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
     match presentation {
         Presentation::Floating => row.into_any_element(),
         Presentation::Header { width, focused } => {
+            let width = if target.large_file {
+                width.max(128.)
+            } else {
+                width
+            };
             let expanded = if focused { width.max(272.) } else { width };
             if width < 128. && !focused && !target.large_file {
                 let target = target.clone();

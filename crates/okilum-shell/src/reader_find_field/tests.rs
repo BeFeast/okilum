@@ -4,6 +4,65 @@ use ::core::prelude::v1::test;
 use reader_viewer_chrome::tests::measured_bounds;
 
 #[gpui::test]
+fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut TestAppContext) {
+    struct Field {
+        target: Target,
+        width: f32,
+    }
+    impl Render for Field {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            h_flex().size_full().child(render(
+                &self.target,
+                Presentation::Header {
+                    width: self.width,
+                    focused: false,
+                },
+                cx,
+            ))
+        }
+    }
+    cx.update(crate::test_init);
+    let (field, visual) = cx.add_window_view(|window, cx| Field {
+        target: Target {
+            input: cx.new(|cx| InputState::new(window, cx).placeholder("Find in entries")),
+            focus_override: None,
+            scope: "Find in entries".into(),
+            count: None,
+            match_case: None,
+            step: None,
+            steps_visible: false,
+            close: std::rc::Rc::new(|_, _| {}),
+            large_file: false,
+        },
+        width: 200.,
+    });
+    for (width, large, expected) in [
+        (200., false, Some(200.)),
+        (128., false, Some(128.)),
+        (28., false, None),
+        (28., true, Some(128.)),
+        (128., true, Some(128.)),
+        (200., true, Some(200.)),
+    ] {
+        field.update(visual, |field, cx| {
+            field.width = width;
+            field.target.large_file = large;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        if let Some(expected) = expected {
+            let bounds = measured_bounds(visual, "viewer-find-field").unwrap();
+            assert_eq!(bounds.size, size(px(expected), px(28.)));
+            assert!(measured_bounds(visual, "viewer-find").is_none());
+        } else {
+            assert!(measured_bounds(visual, "viewer-find-field").is_none());
+            let icon = measured_bounds(visual, "viewer-find").unwrap();
+            assert!(icon.size.width >= px(28.) && icon.size.height >= px(28.));
+        }
+    }
+}
+
+#[gpui::test]
 fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     cx: &mut TestAppContext,
 ) {
@@ -323,10 +382,32 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
     visual.simulate_keystrokes("down enter");
     visual.run_until_parked();
     visual.update(|_, cx| {
-        assert_ne!(
+        assert_eq!(
             cx.read_from_clipboard().unwrap().text().as_deref(),
-            Some("sentinel")
+            Some("Drawing loaded successfully")
         )
+    });
+    let open = reader.read_with(visual, |reader, cx| {
+        reader
+            .viewer_chrome(cx)
+            .open_actions
+            .into_iter()
+            .find(|action| action.id == "drawing-open")
+            .expect("the file offers Open in Excalidraw")
+    });
+    assert_eq!(open.label.to_string(), "Open in Excalidraw");
+    visual.update(|window, cx| (open.invoke)(window, cx));
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some("https://draw.oklabs.uk")
+    );
+    visual.update(|_, cx| {
+        let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&copied).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&before).unwrap(),
+            "Open in Excalidraw copies the loaded scene"
+        );
     });
     let expand = measured_bounds(visual, "drawing-expand").unwrap();
     visual.simulate_click(expand.center(), Modifiers::default());
