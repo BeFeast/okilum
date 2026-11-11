@@ -408,21 +408,87 @@ impl Render for CanvasView {
                 }
             }
         }
-        v_flex().size_full().min_h_0()
-            .child(h_flex().gap_2().p_3()
-                .child("Canvas · Read only")
-                .child(Button::new("canvas-fit").small().label("Fit to content").debug_selector(|| "canvas-fit".into())
-                    .on_click(cx.listener(|this, _, _, cx| { this.fit(); cx.notify(); })))
-                .child(reader_icon_button("canvas-minus", IconName::Minus, "Zoom out", cx)
-                    .on_click(cx.listener(|this, _, _, cx| { this.zoom(0.8); cx.notify(); })))
-                .child(format!("{:.0}%", self.view.scale * 100.))
-                .child(reader_icon_button("canvas-plus", IconName::Plus, "Zoom in", cx)
-                    .debug_selector(|| "canvas-plus".into())
-                    .on_click(cx.listener(|this, _, _, cx| { this.zoom(1.25); cx.notify(); }))))
-            .child(div().px_3().text_sm().text_color(cx.theme().muted_foreground)
-                .child(format!("Scroll or middle-drag to pan · Ctrl/Cmd + scroll to zoom · {} cards, {} edges{}", scene.nodes.len(), scene.edges.len(),
-                    if scene.missing_edges() > 0 { format!(" · {} edges reference missing cards", scene.missing_edges()) } else { String::new() })))
-            .child(area).into_any_element()
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(area)
+            .into_any_element()
+    }
+}
+
+fn status_line(viewer: &CanvasView) -> reader_status_line::StatusLine {
+    let text = match &viewer.scene {
+        Some(Ok(scene)) => format!(
+            "Scroll or middle-drag to pan · Ctrl/Cmd + scroll to zoom · {} cards, {} edges{}",
+            scene.nodes.len(),
+            scene.edges.len(),
+            if scene.missing_edges() > 0 {
+                format!(" · {} edges reference missing cards", scene.missing_edges())
+            } else {
+                String::new()
+            }
+        ),
+        _ => String::new(),
+    };
+    reader_status_line::StatusLine {
+        text: text.into(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn chrome(viewer: &Entity<CanvasView>, cx: &App) -> reader_viewer_chrome::ViewerChrome {
+    use reader_viewer_chrome::{ViewerAction, ViewerChrome};
+    let state = viewer.read(cx);
+    let mut lock = ViewerAction::new(
+        "canvas-read-only",
+        Icon::default().path(brand::READER_LOCK_ICON),
+        "Read only",
+        std::rc::Rc::new(|_, _| {}),
+    );
+    lock.tooltip = "Read-only: canvas files are view-only".into();
+    let mut actions = Vec::new();
+    for (id, icon, label, factor) in [
+        (
+            "canvas-fit",
+            Icon::default().path(brand::NOTE_WIDTH_FULL_ICON),
+            "Fit to content",
+            0.,
+        ),
+        ("canvas-minus", Icon::new(IconName::Minus), "Zoom out", 0.8),
+        ("canvas-plus", Icon::new(IconName::Plus), "Zoom in", 1.25),
+    ] {
+        let target = viewer.clone();
+        let mut action = ViewerAction::new(
+            id,
+            icon,
+            label,
+            std::rc::Rc::new(move |_, cx| {
+                target.update(cx, |this, cx| {
+                    if factor == 0. {
+                        this.fit();
+                    } else {
+                        this.zoom(factor);
+                    }
+                    cx.notify();
+                })
+            }),
+        );
+        action = match id {
+            "canvas-fit" => action.with_action(CanvasFit, cx),
+            "canvas-minus" => action.with_action(CanvasZoomOut, cx),
+            _ => action.with_action(CanvasZoomIn, cx),
+        };
+        action.enabled = matches!(&state.scene, Some(Ok(_)));
+        action.disabled_reason = (!action.enabled).then(|| "Canvas is not loaded".into());
+        actions.push(action);
+    }
+    ViewerChrome {
+        actions,
+        state: Some(lock),
+        status: Some(status_line(state)),
+        action_text: Some(format!("{:.0}%", state.view.scale * 100.).into()),
+        action_text_after: Some("canvas-minus"),
+        ..Default::default()
     }
 }
 
