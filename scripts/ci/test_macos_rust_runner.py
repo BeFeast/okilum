@@ -5,7 +5,6 @@ import re
 import subprocess
 import tempfile
 import unittest
-import yaml
 
 
 SCRIPT = Path(__file__).with_name("check-macos.sh").read_text()
@@ -67,13 +66,15 @@ chmod +x "$2"
                 self.assertTrue(any(control in line for line in receipts['production']))
                 self.assertFalse(any(control in line for line in receipts['tests']))
             self.assertTrue(any('--workspace --no-run' in line for line in receipts['tests']))
-            workflow = yaml.safe_load((Path(__file__).parents[2] / '.github/workflows/forgejo-macos.yml').read_text())
+            workflow = (Path(__file__).parents[2] / '.github/workflows/forgejo-macos.yml').read_text()
             for job, mode in (('macos', 'tests'), ('production', 'production')):
-                value = workflow['jobs'][job]
-                self.assertEqual(value['needs'], 'select')
-                self.assertEqual(value['timeout-minutes'], 75)
-                commands = [step.get('run', '') for step in value['steps']]
-                self.assertTrue(any('check-macos.sh ' + mode in command for command in commands))
+                # This module also runs before dependencies on a fresh Mac.
+                # Check the two literal job blocks without a PyYAML dependency.
+                value = re.search(r'^  ' + job + r':\n(.*?)(?=^  \S|\Z)',
+                                  workflow, re.M | re.S)[1]
+                self.assertIn('    needs: select\n', value)
+                self.assertIn('    timeout-minutes: 75\n', value)
+                self.assertIn('check-macos.sh ' + mode + '\n', value)
 
     def run_suites(self, list_case="match", run_status=0, second=False):
         with tempfile.TemporaryDirectory() as directory:
