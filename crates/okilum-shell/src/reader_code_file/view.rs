@@ -30,8 +30,8 @@ impl View {
     }
     pub fn icon(self) -> Icon {
         Icon::default().path(match self {
-            Self::Table => "icons/view-table.svg",
-            Self::Tree => "icons/view-tree.svg",
+            Self::Table => brand::CODE_VIEW_TABLE_ICON,
+            Self::Tree => brand::CODE_VIEW_TREE_ICON,
             Self::Formatted => "icons/list.svg",
             Self::Raw => "icons/code-xml.svg",
         })

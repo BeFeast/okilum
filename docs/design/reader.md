@@ -397,6 +397,10 @@ does not leave a later window with permanently hidden panels.
 
 ## Icons
 
+Code view segments use the embedded `view-tree.svg` and `view-table.svg` outline
+glyphs; Raw uses `code-xml.svg` and Formatted uses `list.svg`. Segment glyphs keep
+the sidebar Tree / Now component’s 14 px size inside 28 px hit areas.
+
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
 hover. Toolkit names come from `gpui-component`'s `IconName`; the four missing
 glyphs are added as Okilum assets under `icons/` and loaded with `Icon::path`.

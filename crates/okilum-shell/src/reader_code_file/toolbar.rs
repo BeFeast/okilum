@@ -164,7 +164,7 @@ impl CodePreview {
             let target = entity.clone();
             let mut warning = ViewerAction::new(
                 "code-invalid",
-                Icon::new(IconName::TriangleAlert),
+                Icon::new(IconName::TriangleAlert).text_color(brand::palette(cx).warning),
                 "Go to error",
                 Rc::new(move |window, cx| {
                     target.update(cx, |this, cx| this.go_to_error(window, cx))
