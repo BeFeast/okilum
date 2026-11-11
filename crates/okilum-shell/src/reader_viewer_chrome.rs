@@ -1524,8 +1524,13 @@ pub(crate) fn render_compact_header_with_leading(
         ));
     }
     items.push(LayoutItem::pinned("more", 28., 28.));
-    let (states, widths) =
-        layout_with_widths(width, if has_leading { 112. } else { 32. }, 0., &items);
+    let state_width = 32. * (usize::from(chrome.state.is_some()) + chrome.badges.len()) as f32;
+    let (states, widths) = layout_with_widths(
+        width,
+        (if has_leading { 112. } else { 32. }) + state_width,
+        0.,
+        &items,
+    );
     let plan = HeaderLayout {
         items,
         states,
@@ -1565,6 +1570,13 @@ pub(crate) fn render_compact_header_with_leading(
         .px_3()
         .gap_1()
         .children(leading)
+        .children(
+            chrome
+                .state
+                .iter()
+                .chain(chrome.badges.iter())
+                .map(|badge| badge.button(true)),
+        )
         .children(find)
         .children(
             chrome

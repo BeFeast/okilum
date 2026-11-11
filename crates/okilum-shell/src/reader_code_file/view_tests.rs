@@ -108,7 +108,7 @@ fn code2809_invalid_paged_json_keeps_error_and_navigates_above_auto_threshold(
 ) {
     let text = format!("{{\"a\":\"{}\",}}", "x".repeat(PRETTY_BYTES + 200));
     let (preview, visual, temp) = fixture(cx, "broken.json", &text);
-    preview.update_in(visual, |p, window, cx| {
+    preview.update_in(visual, |p, _, cx| {
         assert_eq!(p.view, View::Raw);
         let error = p.raw_document.as_ref().unwrap().invalid.clone().unwrap();
         assert!(error.offset > PRETTY_BYTES);
@@ -129,7 +129,18 @@ fn code2809_invalid_paged_json_keeps_error_and_navigates_above_auto_threshold(
         let status = p.status(preview.clone(), cx);
         assert_eq!(status.label.as_ref(), "Not valid JSON.");
         assert!(status.text.contains("key must be a string"));
-        p.go_to_error(window, cx);
+    });
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let warning = visual
+        .debug_bounds("code-invalid")
+        .expect("warning badge is mounted in the compact header");
+    visual.simulate_click(warning.center(), Modifiers::default());
+    visual.run_until_parked();
+    preview.read_with(visual, |p, cx| {
+        let error = p.raw_document.as_ref().unwrap().invalid.as_ref().unwrap();
         assert_eq!(p.page, p.document.as_ref().unwrap().page_at(error.offset));
         assert!(p.page > 1);
         let input = p.input().unwrap();

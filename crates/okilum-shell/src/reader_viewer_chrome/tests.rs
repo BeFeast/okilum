@@ -1196,3 +1196,38 @@ fn code2809_header_switch_and_more_stay_inside_the_pane_at_600(cx: &mut TestAppC
         });
     }
 }
+
+#[gpui::test]
+fn code2809_actual_overflow_plan_collapses_view_labels_before_fold_actions(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        assert_eq!(chrome.views.len(), 3);
+        let mut saw_icons = false;
+        let mut saw_fold_menu = false;
+        for width in (600..=1400).rev().step_by(4) {
+            let plan = reader.header_layout(&chrome, width as f32, window, cx);
+            assert!(plan.shows("views") && plan.shows("more") && plan.shows("code-header-find"));
+            saw_icons |= plan.collapsed("views");
+            if !plan.shows("code-fold-all") || !plan.shows("code-unfold-all") {
+                saw_fold_menu = true;
+                assert!(
+                    plan.collapsed("views"),
+                    "view labels collapse before folding actions leave the row at {width}"
+                );
+            }
+        }
+        assert!(
+            saw_icons && saw_fold_menu,
+            "actual CodePreview overflow stages fired"
+        );
+        let wide = reader.header_layout(&chrome, 1400., window, cx);
+        assert!(
+            !wide.collapsed("views")
+                && wide.shows("code-fold-all")
+                && wide.shows("code-unfold-all")
+        );
+    });
+}
