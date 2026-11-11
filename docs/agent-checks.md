@@ -71,6 +71,27 @@ serial gate for local/other callers. Its orchestration control executes all
 three modes with synthetic tools and requires the split jobs to retain every
 original command; the old script fails the split-mode assertions.
 
+Canonical run `26270` on `f3d8876b1` exposed the same Log memory-pool
+contention in the shared gate: its Follow backlog control correctly refused
+admission while other GUI fixtures retained the pool. `check-shared.sh` keeps
+its full workspace selection and existing `platform::` exclusion, but runs
+ordinary cases and the complete `reader_log` selection in separate processes.
+Log runs serially; neither its production memory budget nor its assertions
+change. Both processes must pass and later independent suites still run after
+either fails.
+
+The compile-inclusive local-writer admission keeps all seven original groups
+and the existing 900-second deadline. Every invocation now selects the same
+four packages (write-authority, core, shell and T3), instead of changing the
+package feature closure for each group. Run `26270` interrupted the initial
+shell test build after earlier single-package builds; subsequent 120/300s
+filters repeatedly started the unfinished build until the runner cap. There
+is no prewarming or separate compile allowance. Each group also requires a
+nonzero passing *parent* footer from its original Cargo target: another
+package's successful footer, a child fixture's earlier result, a missing
+target or an empty parent cannot satisfy it. All original filters, integration
+targets, test bodies and profile/deadline settings remain enabled.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a
