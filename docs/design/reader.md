@@ -91,6 +91,25 @@ original combined titlebar and document controls:
   Drawing files contribute Expand/details, Open in Excalidraw and Copy drawing
   details through their loaded drawing handle. Drawing details opens the full
   diagnostics in a dialog, including from overflow; embedded rows stay intact.
+- **Logs (#2808).** Find in records is the same header field, with no count,
+  case toggle or stepping; Enter retains the filter and focuses records, Esc
+  clears it and returns. The former Filter log command remains an alias for
+  existing user bindings. Level, Time range and Follow are labelled state
+  controls, filled while active. Query, Saved views, Columns, Export rows and
+  Files are icons. Files, Export, Columns and Saved views overflow first, then
+  Follow/Time/Level keep their icons and carets; Open with and Maximize yield
+  next. Find, the three applicable state controls, Query and More stay.
+  A single 40 px secondary row appears for an opened Query, nonempty query,
+  chips (including disabled chips), regex editor/error or investigation. It
+  contains query/error, Recent queries, Regex, chips and one Clear all; regex
+  editing occupies that same row. Investigation Back, breadcrumb and loaded
+  count stay in it at 700 px too. Narrow chips use one counter popover.
+  The message-field chooser lives in Columns. Logs have no Copy header button:
+  Document actions > Copy contains raw line (with a reason while disabled),
+  file content and the three path forms, each with a toast. Match count, source,
+  window scope, rotation/reset notices and save-view feedback use the bottom bar.
+  Standalone Log hosts use the same descriptions and erased action slot in their
+  own compact header. Histogram, row/column menus and details retain their behavior.
 - **Viewer bottom status line.** Empty descriptions render nothing. Otherwise
   it is 28 px high with a top `border-subtle`, a leading icon, a bold label,
   12/16 muted text, at most two actions and an optional trailing control.
@@ -139,6 +158,9 @@ Quick open (Ctrl+K / ⌘K) is the palette described under «⌘K palette». The 
 and Edit source. Both match literal text without case by default, including
 Unicode letters. The optional Aa / Match case switch starts off; its explicit
 choice is remembered globally in the application UI store outside the vault (#682).
+
+The following floating-bar rules apply to Markdown notes; opted-in file viewers
+use their header field as described above.
 
 - Hidden by default. ⌘F / Ctrl+F opens it; ✕ closes it and clears marks.
   Opening it keeps docked panels; only a compact overlay closes.
@@ -370,6 +392,8 @@ glyphs are added as Okilum assets under `icons/` and loaded with `Icon::path`.
 | More | `Ellipsis` | menu |
 | Close find | `Close` | «Close Esc» |
 | Find previous / next | `ChevronUp` / `ChevronDown` | «⇧⏎» / «⏎» |
+| Log level / time / Follow | `list-filter.svg` / `Clock` / `ArrowDown`, with caret | Live state/action hint |
+| Log query / saved / columns / export / files | `SquareTerminal` / `Star` / `LayoutDashboard` / `download.svg` / `Folder` | Live action hint |
 | Case sensitive | `CaseSensitive` | toggle |
 | Folder / open folder | `Folder` / `FolderOpen` | tree |
 | Note | `FileText` | tree, quick open |

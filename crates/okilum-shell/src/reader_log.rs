@@ -5144,6 +5144,27 @@ impl Reader {
         cx.notify();
     }
 
+    /// The header is a sibling of LogView. Preserve user bindings from its
+    /// focus chain too, without handling a command twice after LogView did.
+    #[inline(never)]
+    fn log_header_command(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        invoke: impl FnOnce(&mut LogView, &mut Window, &mut Context<LogView>),
+    ) {
+        let Some(view) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.log.clone())
+        else {
+            return;
+        };
+        if !view.read(cx).focus.contains_focused(window, cx) {
+            view.update(cx, |view, cx| invoke(view, window, cx));
+        }
+    }
+
     pub(crate) fn render_log_preview(
         &self,
         view: &Entity<LogView>,
@@ -5154,6 +5175,57 @@ impl Reader {
             .id("reader-log-preview")
             .key_context("ReaderFile")
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|reader, _: &FocusLogFilter, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.focus_filter(window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &CopyRawLine, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| view.copy_raw(window, cx))
+            }))
+            .on_action(cx.listener(|reader, _: &ToggleLogQuery, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.toggle_query(window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &ToggleLogFollow, window, cx| {
+                reader.log_header_command(window, cx, |view, _, cx| view.toggle_follow(cx))
+            }))
+            .on_action(cx.listener(|reader, _: &ClearLogFilters, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.clear_filters(window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogLevels, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Level, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogTimeRange, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Time, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogSavedViews, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Saved, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogColumns, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Columns, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogExport, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Export, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|reader, _: &OpenLogFiles, window, cx| {
+                reader.log_header_command(window, cx, |view, window, cx| {
+                    view.show_menu(chrome::MenuKind::Files, window, cx)
+                })
+            }))
             .size_full()
             .min_h_0()
             .child(self.render_file_header_viewport(window, cx))

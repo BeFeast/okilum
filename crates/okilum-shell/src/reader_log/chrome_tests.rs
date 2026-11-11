@@ -310,7 +310,8 @@ fn toolbar2808_document_copy_submenu_uses_live_selection_and_confirms_every_payl
         (reader.vault_root.clone(), reader.selected_file().to_owned())
     });
     let raw = CHROME_LOG.lines().nth(1).unwrap().to_owned();
-    let wiki = format!("[[{rel}]]");
+    let stem = Path::new(&rel).file_stem().unwrap().to_str().unwrap();
+    let wiki = format!("[[{rel}|{stem}]]");
     for (index, expected) in [
         raw.as_str(),
         CHROME_LOG,
