@@ -31,6 +31,10 @@ impl AttachmentKind {
         {
             return Self::Image;
         }
+        // Do not open directories, devices or FIFOs just to classify a paste.
+        if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+            return Self::File;
+        }
         let mut head = [0; 16];
         if std::fs::File::open(path)
             .and_then(|mut file| file.read(&mut head))
