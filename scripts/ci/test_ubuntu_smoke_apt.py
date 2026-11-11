@@ -17,7 +17,8 @@ text = Path(source).read_text()
 with open(os.environ['CALLS'], 'a') as log:
     log.write(json.dumps({'args': args, 'sources': text}) + '\n')
 mode = os.environ['MODE']
-if mode == 'both_fail' or (mode == 'fallback' and 'https://archive.' in text and '--download-only' in args):
+if mode == 'both_fail' or (mode == 'fallback' and 'https://archive.' in text and '--download-only' in args) or (
+    mode == 'ubuntu_dns_fail' and 'https://mirrors.edge.kernel.org' not in text):
     sys.exit(124)
 '''
 
@@ -74,8 +75,16 @@ class UbuntuSmokeAptTests(unittest.TestCase):
     def test_both_updates_fail_closed_without_install(self):
         result, calls = self.invoke('both_fail')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertTrue(all(c['args'][-1] == 'update' for c in calls))
+
+    def test_ubuntu_dns_failure_uses_independent_signed_mirror(self):
+        result, calls = self.invoke('ubuntu_dns_fail')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(all(call['args'][-1] == 'update' for call in calls[:2]))
+        self.assertIn('https://mirrors.edge.kernel.org/ubuntu', calls[2]['sources'])
+        self.assertIn('--no-download', calls[-1]['args'])
 
 
 if __name__ == '__main__':
