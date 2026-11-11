@@ -303,29 +303,26 @@ fn content(document: Arc<Document>, width: f32, window: &mut Window, cx: &mut Ap
                 width * document.tree.size().height() / document.tree.size().width()
             ))
             .into_any_element(),
-        Some(Err(error)) => {
-            if file.is_some() {
-                div()
-                    .p_3()
-                    .child("Drawing could not be displayed")
-                    .into_any_element()
-            } else {
-                diagnostic("Drawing could not be displayed", error.as_str(), cx)
-            }
-        }
+        Some(Err(error)) => diagnostic("Drawing could not be displayed", error.as_str(), cx),
         None => div().p_3().child("Rendering drawing…").into_any_element(),
     }
 }
 pub(super) struct FileHandle {
     loaded: std::cell::RefCell<Option<(Source, Result<Arc<Document>, Arc<String>>)>>,
     reader: WeakEntity<Reader>,
+    revision: Cell<u64>,
 }
 impl FileHandle {
     pub(super) fn new(reader: WeakEntity<Reader>) -> Self {
         Self {
             loaded: Default::default(),
             reader,
+            revision: Cell::new(0),
         }
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.get()
     }
 }
 
@@ -342,11 +339,13 @@ pub(super) fn render(
 pub(super) fn render_file(
     root: &Path,
     path: &Path,
-    handle: &FileHandle,
+    handle: &Entity<FileHandle>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    render_impl(root, path, None, Some(handle), window, cx)
+    handle.update(cx, |handle, cx| {
+        render_impl(root, path, None, Some(handle), window, cx)
+    })
 }
 
 fn render_impl(
@@ -378,6 +377,7 @@ fn render_impl(
         });
         if changed {
             *loaded = Some((source, result.clone()));
+            file.revision.set(file.revision.get().wrapping_add(1));
             let reader = file.reader.clone();
             cx.defer(move |cx| {
                 let _ = reader.update(cx, |_, cx| cx.notify());

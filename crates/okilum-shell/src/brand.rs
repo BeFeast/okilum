@@ -33,6 +33,8 @@ const ICON_DARK: &str = "brand/app-icon-dark.svg";
 // Lucide outline glyphs the toolkit set lacks (docs/design/reader.md §Icons).
 const READER_LIST_ICON: &str = "icons/list.svg";
 const READER_LINK_ICON: &str = "icons/link.svg";
+pub const READER_LOCK_ICON: &str = "icons/lock.svg";
+pub const READER_DOWNLOAD_ICON: &str = "icons/download.svg";
 pub const READER_OPEN_ICON: &str = "icons/arrow-up-right.svg";
 pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";

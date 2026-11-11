@@ -572,7 +572,7 @@ pub(crate) fn chrome(
             } else {
                 "archive-extract-all"
             },
-            Icon::new(IconName::Download),
+            Icon::default().path(brand::READER_DOWNLOAD_ICON),
             label,
             std::rc::Rc::new(move |window, cx| {
                 target.update(cx, |this, cx| this.extract(selected, window, cx))
@@ -818,7 +818,7 @@ mod tests {
             reader.preview_file("release-0.9.4.zip", window, cx);
             reader.maximize_note(window, cx);
         });
-        visual.simulate_resize(size(px(460.), px(800.)));
+        visual.simulate_resize(gpui::size(px(460.), px(800.)));
         visual.run_until_parked();
         let archive = reader.read_with(visual, |reader, _| {
             reader

@@ -24,6 +24,7 @@ struct HeaderKey {
     file: (PathBuf, String, String),
     editing: Option<EntityId>,
     viewers: Vec<EntityId>,
+    drawing_revision: Option<u64>,
     geometry: (f32, reader_layout::Panels, reader_layout::Widths),
     navigation: (usize, usize, bool),
     labels: bool,
@@ -98,6 +99,7 @@ impl HeaderKey {
                         preview.archive.as_ref().map(Entity::entity_id),
                         preview.audio.as_ref().map(Entity::entity_id),
                         preview.canvas.as_ref().map(Entity::entity_id),
+                        preview.drawing.as_ref().map(Entity::entity_id),
                         preview.log.as_ref().map(Entity::entity_id),
                         preview.virtual_log.as_ref().map(Entity::entity_id),
                     ]
@@ -106,6 +108,11 @@ impl HeaderKey {
                     .collect()
                 })
                 .unwrap_or_default(),
+            drawing_revision: reader
+                .file_preview
+                .as_ref()
+                .and_then(|preview| preview.drawing.as_ref())
+                .map(|drawing| drawing.read(cx).revision()),
             editing: reader
                 .editing
                 .as_ref()
@@ -481,7 +488,7 @@ impl Reader {
             return reader_canvas::chrome(canvas, cx);
         }
         if let Some(drawing) = &preview.drawing {
-            return reader_drawing::chrome(drawing, cx);
+            return reader_drawing::chrome(drawing.read(cx), cx);
         }
         if preview.image {
             let mut action = ViewerAction::new(
@@ -622,20 +629,14 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let controls: f32 = items
+        let controls: f32 = states
             .iter()
-            .zip(&states)
-            .map(|(item, state)| match state {
-                Disposition::Menu => 0.,
-                Disposition::Shown => item.width + 4.,
-                Disposition::Collapsed => {
-                    item.steps
-                        .iter()
-                        .filter(|step| step.disposition == Disposition::Collapsed)
-                        .map(|step| step.width.max(item.minimum_width))
-                        .next_back()
-                        .unwrap_or(item.minimum_width)
-                        + 4.
+            .zip(&widths)
+            .map(|(state, width)| {
+                if *state == Disposition::Menu {
+                    0.
+                } else {
+                    width + 4.
                 }
             })
             .sum();

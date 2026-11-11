@@ -622,7 +622,7 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
     visual.run_until_parked();
     measured_bounds(visual, "pdf-zoom-in").unwrap();
     let first_zoom = first.read_with(visual, |pdf, _| pdf.zoom_step());
-    let mut original_key = reader.read_with(visual, HeaderKey::new);
+    let mut original_key = visual.update(|window, cx| HeaderKey::new(reader.read(cx), window, cx));
     let original_header = reader.read_with(visual, |reader, _| {
         reader.viewer_header.borrow().as_ref().unwrap().entity_id()
     });
@@ -631,7 +631,8 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
         cx.notify();
     });
     visual.run_until_parked();
-    let mut replacement_key = reader.read_with(visual, HeaderKey::new);
+    let mut replacement_key =
+        visual.update(|window, cx| HeaderKey::new(reader.read(cx), window, cx));
     original_key.viewers.clear();
     replacement_key.viewers.clear();
     assert!(

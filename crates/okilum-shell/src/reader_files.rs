@@ -197,7 +197,7 @@ pub(crate) struct FilePreview {
     pub archive: Option<Entity<reader_archive::ArchivePreview>>,
     pub audio: Option<Entity<reader_audio::AudioView>>,
     pub canvas: Option<Entity<reader_canvas::CanvasView>>,
-    pub drawing: Option<std::rc::Rc<reader_drawing::FileHandle>>,
+    pub drawing: Option<Entity<reader_drawing::FileHandle>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
@@ -435,9 +435,8 @@ impl Reader {
                 }
                 let mut preview = preview;
                 if okilum_core::excalidraw::is_drawing(rel) {
-                    preview.drawing = Some(std::rc::Rc::new(reader_drawing::FileHandle::new(
-                        cx.entity().downgrade(),
-                    )));
+                    let reader = cx.entity().downgrade();
+                    preview.drawing = Some(cx.new(|_| reader_drawing::FileHandle::new(reader)));
                 }
                 self.observe_preview_file(&mut preview, window, cx);
                 if reader_canvas::eligible(&preview.path) {

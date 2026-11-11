@@ -2838,7 +2838,13 @@ impl Reader {
         self.project_navigation.board_visible = false; // Accepted note; all existing save/navigation guards have passed.
         self.current_rel = rel.to_string();
         self.file_preview = if okilum_core::excalidraw::is_drawing(rel) {
-            reader_files::FilePreview::load(&self.vault_root, rel).ok()
+            reader_files::FilePreview::load(&self.vault_root, rel)
+                .ok()
+                .map(|mut preview| {
+                    let reader = cx.entity().downgrade();
+                    preview.drawing = Some(cx.new(|_| reader_drawing::FileHandle::new(reader)));
+                    preview
+                })
         } else {
             None
         };
@@ -4825,7 +4831,7 @@ impl Reader {
                 }),
             )),
             step: Some(std::rc::Rc::new(move |direction, _, cx| {
-                let _ = step.update(cx, |this, cx| this.find_step(direction, cx));
+                let _ = step.update(cx, |this, cx| this.find_step(direction as isize, cx));
             })),
             steps_visible: !native,
             close: std::rc::Rc::new(move |window, cx| {

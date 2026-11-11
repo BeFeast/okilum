@@ -441,7 +441,7 @@ pub(crate) fn chrome(viewer: &Entity<CanvasView>, cx: &App) -> reader_viewer_chr
     let state = viewer.read(cx);
     let mut lock = ViewerAction::new(
         "canvas-read-only",
-        Icon::new(IconName::Lock),
+        Icon::default().path(brand::READER_LOCK_ICON),
         "Read only",
         std::rc::Rc::new(|_, _| {}),
     );
