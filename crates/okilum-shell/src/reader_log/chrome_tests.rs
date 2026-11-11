@@ -5,6 +5,274 @@ const CHROME_LOG: &str = concat!(
     "{\"ts\":\"2026-11-10T10:02:00Z\",\"level\":\"warn\",\"msg\":\"slow\",\"request_id\":\"first\"}\n",
 );
 
+// Natural invalidation only: never refresh a window or force the cached Header.
+fn chrome_draw(visual: &mut VisualTestContext) {
+    for _ in 0..3 {
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    visual.run_until_parked();
+}
+
+struct ChromeObserver {
+    _subscriptions: Vec<Subscription>,
+}
+struct ChromeGuard {
+    renders: usize,
+    notifications: Rc<std::cell::Cell<[usize; 2]>>,
+    _observer: Entity<ChromeObserver>,
+}
+impl ChromeGuard {
+    fn capture(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Self {
+        chrome_draw(visual);
+        let notifications = Rc::new(std::cell::Cell::new([0; 2]));
+        let panels = reader.read_with(visual, |reader, _| reader.side_panels.clone());
+        assert_eq!(
+            panels.iter().flatten().count(),
+            2,
+            "both cached SidePanels are mounted"
+        );
+        let observer = visual.update(|_, cx| {
+            cx.new(|cx: &mut Context<ChromeObserver>| ChromeObserver {
+                _subscriptions: panels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, panel)| {
+                        let notifications = notifications.clone();
+                        cx.observe(panel.as_ref().unwrap(), move |_, _, _| {
+                            let mut counts = notifications.get();
+                            counts[i] += 1;
+                            notifications.set(counts);
+                        })
+                    })
+                    .collect(),
+            })
+        });
+        // Prove that a real notification from each panel reaches this observer.
+        visual.update(|_, cx| {
+            for panel in panels.into_iter().flatten() {
+                panel.update(cx, |_, cx| cx.notify());
+            }
+        });
+        chrome_draw(visual);
+        assert!(notifications.get().into_iter().all(|count| count > 0));
+        notifications.set([0, 0]);
+        let renders = reader_viewer_chrome::header_renders(reader.entity_id());
+        assert!(renders > 0, "positive control: header slots rendered");
+        Self {
+            renders,
+            notifications,
+            _observer: observer,
+        }
+    }
+    fn unchanged(&self, reader: &Entity<Reader>, visual: &mut VisualTestContext) {
+        chrome_draw(visual);
+        assert_eq!(
+            self.notifications.get(),
+            [0, 0],
+            "log updates notify zero SidePanels"
+        );
+        assert_eq!(
+            reader_viewer_chrome::header_renders(reader.entity_id()),
+            self.renders,
+            "log updates render zero header slots"
+        );
+    }
+}
+
+#[gpui::test]
+fn toolbar2808_log_states_invalidate_the_cached_header_without_refresh(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    visual.simulate_resize(gpui::size(px(1440.), px(900.)));
+    let view = log_view(&reader, visual);
+    chrome_draw(visual);
+    let header_id = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |reader, _| {
+            reader.viewer_header.borrow().as_ref().unwrap().entity_id()
+        })
+    };
+    let rendered = |id| {
+        reader_viewer_chrome::rendered_actions(reader.entity_id())
+            .into_iter()
+            .find(|action| action.id == id)
+            .expect("actual header slot rendered")
+    };
+    assert_eq!(rendered("log-level").label.as_ref(), "All levels");
+    assert!(!rendered("log-time").filled);
+    assert!(rendered("log-follow")
+        .tooltip
+        .contains("Show records as they are written"));
+    let previous = header_id(visual);
+    view.update(visual, |view, cx| {
+        view.update_filter(|filter| filter.level.min = Some(Level::Warn), cx)
+    });
+    chrome_draw(visual);
+    view.read_with(visual, |view, _| {
+        assert_eq!(view.filter.level.min, Some(Level::Warn))
+    });
+    assert_ne!(
+        header_id(visual),
+        previous,
+        "Level changes the actual header cache identity"
+    );
+    assert_eq!(rendered("log-level").label.as_ref(), "Warning and above");
+    assert!(rendered("log-level").filled);
+    let previous = header_id(visual);
+    view.update(visual, |view, cx| {
+        view.update_filter(|filter| filter.time = TimeWindow::LastHour, cx)
+    });
+    chrome_draw(visual);
+    assert_ne!(
+        header_id(visual),
+        previous,
+        "Time changes the actual header cache identity"
+    );
+    assert_eq!(rendered("log-time").label.as_ref(), "Last hour");
+    assert!(rendered("log-time").filled);
+    for enabled in [true, false] {
+        let previous = header_id(visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        chrome_draw(visual);
+        view.read_with(visual, |view, _| assert_eq!(view.following(), enabled));
+        assert_ne!(
+            header_id(visual),
+            previous,
+            "Follow changes the actual header cache identity"
+        );
+        let follow = rendered("log-follow");
+        assert_eq!(
+            follow.label.as_ref(),
+            if enabled { "Following" } else { "Follow" }
+        );
+        assert_eq!(follow.filled, enabled);
+        assert!(follow.tooltip.contains(if enabled {
+            "Stop following new records"
+        } else {
+            "Show records as they are written"
+        }));
+    }
+}
+
+#[gpui::test]
+fn toolbar2808_live_append_keeps_header_and_side_panels_cached(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let _shutdown = TestShutdown(cx.clone());
+    let _cached = reader_side_panel::tests::CachedPanels::on();
+    let (dir, reader, visual) = open_log(CHROME_LOG, cx);
+    // Let startup/session timers and the initial folder poll settle before
+    // measuring a running Follow session. The watcher remains active.
+    visual.executor().advance_clock(Duration::from_millis(600));
+    chrome_draw(visual);
+    let view = log_view(&reader, visual);
+    view.update(visual, |view, cx| view.toggle_follow(cx));
+    chrome_draw(visual);
+    view.read_with(visual, |view, _| assert!(view.following()));
+    let guard = ChromeGuard::capture(&reader, visual);
+    for i in 1..=5 {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("app.jsonl"))
+            .unwrap();
+        writeln!(
+            file,
+            "{{\"ts\":\"2026-11-10T10:03:00Z\",\"level\":\"info\",\"msg\":\"append {i}\"}}"
+        )
+        .unwrap();
+        drop(file);
+        visual.executor().advance_clock(Duration::from_millis(600));
+        guard.unchanged(&reader, visual);
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.total(), 3 + i, "real appended line reached Follow")
+        });
+    }
+}
+
+#[gpui::test]
+fn toolbar2808_query_typing_keeps_header_and_side_panels_cached(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let _cached = reader_side_panel::tests::CachedPanels::on();
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    view.update_in(visual, |view, window, cx| view.toggle_query(window, cx));
+    chrome_draw(visual);
+    // Settle GPUI keyboard modality before measuring source input notifications.
+    visual.simulate_keystrokes("home");
+    chrome_draw(visual);
+    let guard = ChromeGuard::capture(&reader, visual);
+    for ch in "level=error".chars() {
+        visual.simulate_input(&ch.to_string());
+        guard.unchanged(&reader, visual);
+    }
+    view.read_with(visual, |view, _| assert_eq!(view.query_text, "level=error"));
+    assert_eq!(shown(&view, visual), [1]);
+}
+
+#[gpui::test]
+fn toolbar2808_regex_typing_keeps_header_and_side_panels_cached(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let _cached = reader_side_panel::tests::CachedPanels::on();
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    view.update_in(visual, |view, window, cx| {
+        view.begin_regex(window, cx);
+        view.regex_editor
+            .as_ref()
+            .unwrap()
+            .pattern
+            .update(cx, |input, cx| input.focus(window, cx));
+    });
+    chrome_draw(visual);
+    // Settle GPUI keyboard modality before measuring source input notifications.
+    visual.simulate_keystrokes("home");
+    chrome_draw(visual);
+    let guard = ChromeGuard::capture(&reader, visual);
+    for ch in "(?P<msg>.*)".chars() {
+        visual.simulate_input(&ch.to_string());
+        guard.unchanged(&reader, visual);
+    }
+    view.read_with(visual, |view, cx| {
+        let editor = view.regex_editor.as_ref().unwrap();
+        assert_eq!(editor.pattern.read(cx).value().as_ref(), "(?P<msg>.*)");
+        assert!(editor.error.is_none());
+    });
+}
+
+#[gpui::test]
+fn toolbar2808_regex_help_remains_reachable_in_the_query_row(cx: &mut TestAppContext) {
+    let _shutdown = TestShutdown(cx.clone());
+    let (_dir, reader, visual) = open_log(CHROME_LOG, cx);
+    let view = log_view(&reader, visual);
+    view.update_in(visual, |view, window, cx| view.begin_regex(window, cx));
+    let bounds = reader_viewer_chrome::tests::measured_bounds;
+    assert!(bounds(visual, "log-regex-help-apply").is_none());
+    filter_click(visual, "log-regex-help");
+    for id in ["log-regex-help-named", "log-regex-help-apply"] {
+        assert!(
+            bounds(visual, id).is_some(),
+            "regex help is visible in the actual popover"
+        );
+    }
+}
+
+#[test]
+fn toolbar2808_filter_progress_is_a_label_not_a_record_count() {
+    let text = "JSON lines · 3 records · Times in UTC";
+    let parts = status_parts(text, match_counter(Some(1), 3, true), 3, true);
+    assert_eq!(
+        parts,
+        (text.into(), String::new(), Some("Filtering…".into()))
+    );
+    assert_eq!(
+        status_parts(text, match_counter(Some(1), 3, false), 3, false),
+        (
+            "JSON lines".into(),
+            "Times in UTC".into(),
+            Some("1 of 3 records".into())
+        )
+    );
+}
+
 #[gpui::test]
 fn toolbar2808_idle_log_has_one_header_and_no_secondary_rows(cx: &mut TestAppContext) {
     let _shutdown = TestShutdown(cx.clone());
@@ -12,6 +280,19 @@ fn toolbar2808_idle_log_has_one_header_and_no_secondary_rows(cx: &mut TestAppCon
     let view = log_view(&reader, visual);
     visual.simulate_resize(gpui::size(px(1440.), px(900.)));
     let bounds = reader_viewer_chrome::tests::measured_bounds;
+    let hosted = view.read_with(visual, |view, _| view.hosted_header);
+    view.update(visual, |view, cx| {
+        view.hosted_header = false;
+        cx.notify();
+    });
+    assert!(
+        bounds(visual, "viewer-compact-header").is_some(),
+        "positive control: the real local bar has an observable selector"
+    );
+    view.update(visual, |view, cx| {
+        view.hosted_header = hosted;
+        cx.notify();
+    });
     assert!(
         bounds(visual, "viewer-find-field").is_some(),
         "header Find is mounted"
@@ -32,7 +313,6 @@ fn toolbar2808_idle_log_has_one_header_and_no_secondary_rows(cx: &mut TestAppCon
         bounds(visual, "log-query-row").is_none(),
         "idle log has no second row"
     );
-    assert!(bounds(visual, "log-filter-bar").is_none());
     for id in ["log-level", "log-time", "log-follow"] {
         let control = bounds(visual, id).expect("pinned log state control");
         let header = bounds(visual, "document-header-viewport").unwrap();

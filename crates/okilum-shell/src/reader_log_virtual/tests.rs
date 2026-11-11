@@ -10,6 +10,87 @@ fn source_a(view: &LogView) -> &dyn LogData {
         .unwrap()
 }
 
+#[gpui::test]
+fn toolbar2808_embedded_okilog_plans_from_its_docked_pane(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (reader, visual, _dir) = reader_viewer_chrome::tests::fixture(cx, "view.okilog");
+    visual.simulate_resize(size(px(1100.), px(900.)));
+    reader.update(visual, |reader, cx| {
+        reader.panels.open(reader_layout::Panel::Notes);
+        reader.panels.open(reader_layout::Panel::Backlinks);
+        cx.notify();
+    });
+    let bounds = reader_viewer_chrome::tests::measured_bounds;
+    let panel = reader.read_with(visual, |reader, _| {
+        reader
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .virtual_log
+            .clone()
+            .unwrap()
+    });
+    let start = bounds(visual, "virtual-start").expect("real embedded .okilog criteria loaded");
+    visual.simulate_click(start.center(), Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let view = loop {
+        visual.run_until_parked();
+        if let Some(view) = panel.read_with(visual, |panel, _| panel.view.clone()) {
+            break view;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "real .okilog selection reaches LogView"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let pane = bounds(visual, "reader-log").unwrap();
+    assert!(
+        pane.size.width < px(700.),
+        "positive control: pane is narrower than the 1100 px window"
+    );
+    for id in ["reader-notes-panel", "reader-backlinks-panel"] {
+        assert!(
+            bounds(visual, id).is_some(),
+            "both actual panels are docked"
+        );
+    }
+    for id in [
+        "viewer-find-field",
+        "log-level",
+        "log-time",
+        "log-query-toggle",
+        "log-more",
+    ] {
+        let control = bounds(visual, id).expect("required compact-header control");
+        assert!(
+            control.left() >= pane.left() && control.right() <= pane.right(),
+            "{id} {control:?} stays inside the measured embedded pane {pane:?}"
+        );
+    }
+    for id in ["log-saved", "log-columns-menu", "log-export", "log-files"] {
+        if let Some(control) = bounds(visual, id) {
+            assert!(
+                control.left() >= pane.left() && control.right() <= pane.right(),
+                "visible {id} stays inside the measured embedded pane"
+            );
+        }
+    }
+    view.update_in(visual, |view, window, cx| {
+        let chip = FilterChip::new(
+            FieldRef::Key("status".into()),
+            vec![FilterValue::string("502")],
+            FilterMode::Include,
+        );
+        view.add_chip(chip, window, cx);
+    });
+    assert!(
+        bounds(visual, "log-chip-count").is_some(),
+        "chips fold from pane width, even though the window is wider than 900 px"
+    );
+    assert!(bounds(visual, "log-chip-0").is_none());
+}
+
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");

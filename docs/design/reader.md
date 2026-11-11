@@ -110,7 +110,13 @@ original combined titlebar and document controls:
   file content and the three path forms, each with a toast. Match count, source,
   window scope, rotation/reset notices and save-view feedback use the bottom bar.
   Standalone Log hosts use the same descriptions and erased action slot in their
-  own compact header. Histogram, row/column menus and details retain their behavior.
+  own compact header. Embedded `.okilog` headers plan overflow, labels and chip
+  folding from the allocated pane width, including with both side panels docked.
+  Follow has distinct start/stop hints. Regex help remains available beside the
+  pattern and explains named groups plus reopening the file and stopping Follow
+  when applying a pattern. During a background refilter the bottom bar retains
+  the source total and shows a separate “Filtering…” label.
+  Histogram, row/column menus and details retain their behavior.
 - **Viewer bottom status line.** Empty descriptions render nothing. Otherwise
   it is 28 px high with a top `border-subtle`, a leading icon, a bold label,
   12/16 muted text, at most two actions and an optional trailing control.

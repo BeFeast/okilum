@@ -22,6 +22,7 @@ pub(crate) fn fixture<'a>(
             "{\"ts\":\"2026-11-10T12:00:00Z\",\"level\":\"warn\",\"msg\":\"ready\",\"status\":502}\n",
         ),
         ("note.md", "# Note\n\nBody\n"),
+        ("view.okilog", r#"{"version":1,"name":"Header geometry","vault_root":true,"glob":"columns.log"}"#),
         (
             "Folder/A very long attachment name that must keep a usable title.txt",
             "text\n",

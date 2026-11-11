@@ -315,14 +315,28 @@ impl LogView {
         self
     }
 
-    pub(super) fn render_own_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_own_header(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let chrome = self.describe(cx.entity().downgrade(), cx);
-        reader_viewer_chrome::render_compact_header(
-            &chrome,
-            window.viewport_size().width.as_f32(),
-            window,
-            cx,
+        // The embedded .okilog host shares a window with docked panels. Build
+        // the row at its allocated width, including on the very first frame.
+        canvas(
+            move |area, window, cx| {
+                let mut header = reader_viewer_chrome::render_compact_header(
+                    &chrome,
+                    area.size.width.as_f32(),
+                    window,
+                    cx,
+                );
+                header.layout_as_root(area.size.into(), window, cx);
+                header.prepaint_at(area.origin, window, cx);
+                header
+            },
+            |_, mut header, window, cx| header.paint(window, cx),
         )
+        .w_full()
+        .h(px(48.))
+        .flex_none()
+        .into_any_element()
     }
 
     fn build_menu(&self, kind: MenuKind, owner: WeakEntity<Self>, cx: &App) -> BuildMenu {
@@ -475,6 +489,15 @@ impl LogView {
                 }),
             )
             .with_action(ToggleLogFollow, cx);
+            follow.tooltip = reader_shortcuts::hint(
+                if self.following() {
+                    "Stop following new records"
+                } else {
+                    "Show records as they are written"
+                },
+                &ToggleLogFollow,
+                cx,
+            );
             follow.labelled = true;
             follow.label_by_default = true;
             follow.caret = true;
@@ -664,13 +687,13 @@ impl LogView {
 
     pub(super) fn render_secondary(
         &self,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if !self.secondary_visible() {
             return None;
         }
-        let narrow = window.viewport_size().width < px(900.);
+        let narrow = self.pane_bounds.get().size.width < px(900.);
         let owner = cx.entity().downgrade();
         let chips = if narrow && !self.filter_ui.chips.is_empty() {
             let count = self.filter_ui.chips.len();
@@ -753,5 +776,24 @@ impl LogView {
                 }))
                 .into_any_element(),
         )
+    }
+
+    pub(super) fn regex_help(&self) -> AnyElement {
+        gpui_component::popover::Popover::new("log-regex-help-popover")
+            .trigger(
+                Button::new("log-regex-help")
+                    .ghost().small().icon(IconName::Info)
+                    .w(px(28.)).h(px(28.))
+                    .tooltip("Regex parser help")
+                    .debug_selector(|| "log-regex-help".into()),
+            )
+            .content(|_, _, _| {
+                v_flex().w(px(360.)).max_w_full().gap_2().p_3()
+                    .child(div().debug_selector(|| "log-regex-help-named".into())
+                        .child("Named groups ts, level and msg fill the columns. Other named groups become fields."))
+                    .child(div().debug_selector(|| "log-regex-help-apply".into())
+                        .child("One saved regex applies to Plain text files automatically. With several saved, choose one from Regex. Applying reopens this file and stops follow."))
+            })
+            .into_any_element()
     }
 }

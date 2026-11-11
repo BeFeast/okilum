@@ -7793,6 +7793,18 @@ impl Reader {
     }
 
     fn publish_quick_folder(&mut self, vault: Vault, cx: &mut Context<Self>) {
+        // A content-only watcher event (notably Follow appends) can relist the
+        // same shallow folder. Its metadata has no Reader/SidePanel consequence;
+        // the open viewer owns source updates independently.
+        if self.vault.single_file
+            && self.vault.root == vault.root
+            && self.vault.entries == vault.entries
+            && self.vault.unreadable == vault.unreadable
+            && self.vault.inventory_complete == vault.inventory_complete
+            && self.vault.inventory_scanned == vault.inventory_scanned
+        {
+            return;
+        }
         self.quick_folders.retain(|folder| {
             folder.is_empty()
                 || vault.entries.iter().any(|entry| {

@@ -17,11 +17,26 @@ pub(crate) type BuildMenu =
 thread_local! {
     static OPEN_WITH_ITEMS: std::cell::RefCell<Option<(WeakEntity<PopupMenu>, Vec<SharedString>)>> = const { std::cell::RefCell::new(None) };
     static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
+    static RENDERED_ACTIONS: std::cell::RefCell<std::collections::HashMap<EntityId, Vec<RenderedAction>>> = Default::default();
 }
 
 #[cfg(test)]
 pub(crate) fn header_renders(reader: EntityId) -> usize {
     HEADER_RENDERS.with(|counts| counts.borrow().get(&reader).copied().unwrap_or(0))
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct RenderedAction {
+    pub id: &'static str,
+    pub label: SharedString,
+    pub filled: bool,
+    pub tooltip: SharedString,
+}
+
+#[cfg(test)]
+pub(crate) fn rendered_actions(reader: EntityId) -> Vec<RenderedAction> {
+    RENDERED_ACTIONS.with(|states| states.borrow().get(&reader).cloned().unwrap_or_default())
 }
 
 /// Only presentation state invalidates the cached slot builders. A Reader
@@ -407,7 +422,12 @@ impl ViewerAction {
 
     fn layout_item(&self, labels: bool, window: &Window) -> LayoutItem {
         let wide = if (labels || self.label_by_default) && self.labelled {
-            toolbar_text_width(&self.label, FontWeight::MEDIUM, window) + 44.
+            // Toolkit Medium buttons use a 1rem label, 20px padding, a
+            // 16px icon and an 8px gap. A caret adds another 16px + 8px.
+            toolbar_text_width(&self.label, FontWeight::MEDIUM, window) * window.rem_size().as_f32()
+                / brand::READER_CHROME_FONT_SIZE
+                + 44.
+                + if self.caret { 24. } else { 0. }
         } else {
             self.minimum_width
         };
@@ -685,6 +705,24 @@ impl Reader {
             };
         let chrome = self.viewer_chrome(cx);
         let plan = self.header_layout(&chrome, width, window, cx);
+        // A test observes the values actually handed to the slot builders,
+        // not a fresh description that could hide an incorrectly cached Header.
+        #[cfg(test)]
+        RENDERED_ACTIONS.with(|states| {
+            states.borrow_mut().insert(
+                cx.entity_id(),
+                chrome
+                    .actions
+                    .iter()
+                    .map(|action| RenderedAction {
+                        id: action.id,
+                        label: action.label.clone(),
+                        filled: action.filled,
+                        tooltip: action.tooltip.clone(),
+                    })
+                    .collect(),
+            );
+        });
         h_flex()
             .id("document-header")
             .debug_selector(|| "document-header".into())

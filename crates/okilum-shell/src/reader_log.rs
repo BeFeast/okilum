@@ -547,6 +547,7 @@ fn source_color(source: usize, cx: &App) -> Hsla {
 pub(crate) struct LogView {
     state: State,
     hosted_header: bool,
+    pane_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
     query_open: bool,
     command_menu: Option<chrome::CommandMenu>,
     /// Entry index (into the log index) of the selected record.
@@ -785,6 +786,7 @@ impl LogView {
         Self {
             state,
             hosted_header: false,
+            pane_bounds: Rc::new(std::cell::Cell::new(Bounds::default())),
             query_open: false,
             command_menu: None,
             selected: None,
@@ -3816,6 +3818,7 @@ impl LogView {
                         .debug_selector(|| "log-regex-pattern".into())
                         .child(pattern),
                 )
+                .child(self.regex_help())
                 .child(
                     Button::new("log-regex-save")
                         .small()
@@ -4346,25 +4349,8 @@ impl LogView {
             full.push_str(" · ");
             full.push_str(part);
         }
-        let total_label = format!(
-            "{} {}",
-            grouped(self.total() as u64),
-            if self.total() == 1 {
-                "record"
-            } else {
-                "records"
-            }
-        );
-        let (leading, remainder, count_label) = match (&counter, text.split_once(" · ")) {
-            (Some(counter), Some((format, rest))) if rest.starts_with(&total_label) => (
-                format.to_owned(),
-                rest[total_label.len()..]
-                    .trim_start_matches(" · ")
-                    .to_owned(),
-                Some(format!("{counter} records")),
-            ),
-            _ => (text.clone(), String::new(), counter.clone()),
-        };
+        let (leading, remainder, count_label) =
+            status_parts(&text, counter, self.total(), self.filtering);
         let trailing = h_flex()
             .id("log-status-content")
             .debug_selector(|| "log-status".into())
@@ -4615,12 +4601,15 @@ impl Render for LogView {
                 .child(list)
                 .into_any_element()
         };
+        let bounds = self.pane_bounds.clone();
+        let owner = cx.entity().downgrade();
         v_flex()
             .id("reader-log")
             .debug_selector(|| "reader-log".into())
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
+            .relative()
             .min_h_0()
             .on_action(
                 cx.listener(|this, _: &SelectNextRecord, window, cx| this.step(1, window, cx)),
@@ -4700,6 +4689,22 @@ impl Render for LogView {
             .child(self.render_status(cx))
             .children(self.render_cell_menu())
             .children(self.render_command_menu())
+            .child(
+                canvas(
+                    move |area, _, cx| {
+                        let previous = bounds.replace(area);
+                        if previous.size.width != area.size.width {
+                            // Geometry changes once after layout, never per input or poll.
+                            cx.defer(move |cx| {
+                                let _ = owner.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
@@ -4882,6 +4887,30 @@ fn match_counter(matched: Option<usize>, total: usize, filtering: bool) -> Optio
             grouped(n as u64),
             grouped(total as u64)
         )),
+    }
+}
+
+/// Keep a progress label distinct from a completed "N of M records" count.
+fn status_parts(
+    text: &str,
+    counter: Option<String>,
+    total: usize,
+    filtering: bool,
+) -> (String, String, Option<String>) {
+    let total_label = format!(
+        "{} {}",
+        grouped(total as u64),
+        if total == 1 { "record" } else { "records" }
+    );
+    match (&counter, text.split_once(" · ")) {
+        (Some(counter), Some((format, rest))) if !filtering && rest.starts_with(&total_label) => (
+            format.to_owned(),
+            rest[total_label.len()..]
+                .trim_start_matches(" · ")
+                .to_owned(),
+            Some(format!("{counter} records")),
+        ),
+        _ => (text.to_owned(), String::new(), counter),
     }
 }
 
@@ -5846,6 +5875,9 @@ mod tests {
         let root = directory.path().canonicalize().unwrap();
         std::fs::write(root.join(name), bytes).unwrap();
         let state = root.join(".state");
+        // Admit fixture state before the initial shallow inventory, so Follow
+        // measures source appends rather than a newly created sibling folder.
+        std::fs::create_dir_all(&state).unwrap();
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| {
