@@ -845,65 +845,61 @@ mod tests {
                 .clone()
                 .unwrap()
         });
-        for name in [name] {
-            let index = archive.read_with(visual, |archive, _| {
-                archive
-                    .listing
-                    .as_ref()
-                    .unwrap()
-                    .entries
-                    .iter()
-                    .position(|entry| entry.name == name)
-                    .unwrap()
+        let index = archive.read_with(visual, |archive, _| {
+            archive
+                .listing
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|entry| entry.name == name)
+                .unwrap()
+        });
+        archive.update_in(visual, |archive, window, cx| {
+            archive.open_entry(index, window, cx)
+        });
+        visual.run_until_parked();
+        let at = if name == "source.rs" {
+            let input = archive.read_with(visual, |archive, cx| {
+                match archive.entry.as_ref().unwrap() {
+                    EntryView::Code(code) => code.read(cx).input().unwrap(),
+                    _ => panic!("code entry"),
+                }
             });
-            archive.update_in(visual, |archive, window, cx| {
-                archive.open_entry(index, window, cx)
-            });
-            visual.run_until_parked();
-            let at = if name == "source.rs" {
-                let input = archive.read_with(visual, |archive, cx| {
-                    match archive.entry.as_ref().unwrap() {
-                        EntryView::Code(code) => code.read(cx).input().unwrap(),
-                        _ => panic!("code entry"),
-                    }
-                });
-                let bounds = input.read_with(visual, |input, _| input.text_bounds().unwrap());
-                bounds.origin + point(px(8.), px(8.))
-            } else {
-                measured_bounds(visual, "delimited-cell-1-0")
-                    .unwrap()
-                    .center()
-            };
-            visual.update(|_, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()))
-            });
-            visual.simulate_click(at, Modifiers::default());
-            visual.run_until_parked();
-            if name == "source.rs" {
-                visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-                    "cmd-a"
-                } else {
-                    "ctrl-a"
-                });
-            }
+            let bounds = input.read_with(visual, |input, _| input.text_bounds().unwrap());
+            bounds.origin + point(px(8.), px(8.))
+        } else {
+            measured_bounds(visual, "delimited-cell-1-0")
+                .unwrap()
+                .center()
+        };
+        visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+        visual.simulate_click(at, Modifiers::default());
+        visual.run_until_parked();
+        if name == "source.rs" {
             visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-                "cmd-c"
+                "cmd-a"
             } else {
-                "ctrl-c"
-            });
-            visual.run_until_parked();
-            visual.update(|_, cx| {
-                assert_eq!(
-                    cx.read_from_clipboard().unwrap().text().as_deref(),
-                    Some(if name == "source.rs" {
-                        "alpha beta gamma\n"
-                    } else {
-                        "first"
-                    }),
-                    "clicking {name} retains the child's keyboard Copy handler"
-                )
+                "ctrl-a"
             });
         }
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(if name == "source.rs" {
+                    "alpha beta gamma\n"
+                } else {
+                    "first"
+                }),
+                "clicking {name} retains the child's keyboard Copy handler"
+            )
+        });
     }
 
     #[gpui::test]
