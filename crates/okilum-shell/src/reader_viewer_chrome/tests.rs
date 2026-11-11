@@ -447,6 +447,18 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
     });
     input.update_in(visual, |input, window, cx| input.focus(window, cx));
     visual.run_until_parked();
+    // GPUI intentionally refreshes the entire window when input modality
+    // switches from mouse to keyboard (window::dispatch_event). Establish
+    // keyboard modality with a navigation key before measuring typing; this
+    // does not mutate the source or hide an editor-triggered invalidation.
+    let before_navigation = input.read_with(visual, |input, _| input.source_stamp());
+    visual.simulate_keystrokes("home");
+    visual.run_until_parked();
+    assert_eq!(
+        input.read_with(visual, |input, _| input.source_stamp()),
+        before_navigation,
+        "navigation establishes keyboard modality without editing"
+    );
     let before = input.read_with(visual, |input, _| input.source_stamp());
     // Headless windows have no platform frame source. Commit the focus/layout
     // frame before taking the baseline, just as the native window does.
