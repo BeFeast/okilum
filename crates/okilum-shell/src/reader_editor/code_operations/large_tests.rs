@@ -112,12 +112,6 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
         input.replace_source_range(0..seed.len(), &source, window, cx);
     });
     settle(visual);
-    f.reader.read_with(visual, |reader, cx| {
-        assert!(
-            reader.code_view_input(cx).is_none(),
-            "large Source must not retain a hidden read preview"
-        );
-    });
     assert_eq!(
         f.input.read_with(visual, |input, _| input.value().len()),
         source.len()
@@ -142,6 +136,12 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
         .input
         .read_with(visual, |input, _| input.value().to_string());
     assert_ne!(formatted, source);
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(
+            reader.code_view_input(cx).is_none(),
+            "formatting the grown large Source retires the hidden small preview"
+        );
+    });
     visual.dispatch_action(Undo);
     settle(visual);
     f.reader
