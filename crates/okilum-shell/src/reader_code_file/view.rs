@@ -355,7 +355,12 @@ impl CodePreview {
 
 pub(super) fn copy_text_node(text: &str, window: &mut Window, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-    reader_toast::transient(copy_node_notice(text), window, cx);
+    let message = copy_node_notice(text);
+    // WindowHandle::update can already hold Root (including native hosts).
+    // Publish feedback after that lease ends; clipboard copying stays immediate.
+    window.defer(cx, move |window, cx| {
+        reader_toast::transient(message, window, cx);
+    });
 }
 
 pub(crate) fn bind_keys(cx: &mut App) {

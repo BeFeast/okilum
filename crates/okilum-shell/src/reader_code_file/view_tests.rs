@@ -29,6 +29,40 @@ fn fixture<'a>(
 }
 
 #[gpui::test]
+fn code2809_copy_node_publishes_feedback_after_the_native_host_root_update(
+    cx: &mut TestAppContext,
+) {
+    use gpui_component::WindowExt;
+    let source = "<root>\n  <value>hello</value>\n</root>\n";
+    let (preview, visual, _temp) = fixture(cx, "data.xml", source);
+    visual.update(|window, cx| {
+        let root = window.root::<Root>().flatten().unwrap();
+        // Typed WindowHandle::update holds this same Root lease in the real
+        // native harness. Copy must work without trying to reborrow that Root.
+        root.update(cx, |_, cx| {
+            preview.update(cx, |preview, cx| {
+                let offset = source.find("hello").unwrap();
+                preview
+                    .input()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_selected_range(offset..offset, cx));
+                preview.copy_node(window, cx);
+            });
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "<value>hello</value>",
+                "native clipboard is updated before the host callback returns"
+            );
+        });
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        let notices = window.notifications(cx);
+        assert_eq!(notices.len(), 1, "the deferred toast is actually mounted");
+    });
+}
+
+#[gpui::test]
 fn code2809_valid_object_has_three_views_and_no_legacy_rows(cx: &mut TestAppContext) {
     let (preview, visual, _temp) = fixture(cx, "data.json", "{\"a\":{\"b\":1}}");
     preview.read_with(visual, |p, _| {
