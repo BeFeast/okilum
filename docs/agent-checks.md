@@ -65,6 +65,16 @@ concurrent helper at the lifetime lease without changing the journal, and prove
 that an unscoped scratch-state binary cannot bypass the isolated QA launch guard
 even when its journal is Idle. Production launch/signature guards are unchanged.
 
+The supplementary perf workflow keeps shipped input A/B in its `perf-linux`
+job and runs measurement-only scroll in the independent `scroll-report` job.
+Both retain their 60-minute ceilings. Run `42945853529` spent 36 minutes building
+the unpatched A/B pair and another 18 minutes building report-only scroll before
+starting editor measurements; its bridge/runner deadline interrupted those
+measurements. The jobs retain both measurements, all calibration modes, the
+600-second editor bound and source/hardware receipts. Input A/B still compares
+both unpatched binaries on one runner. Artifacts are `perf-linux-<sha>` for A/B
+and `perf-scroll-<sha>` for scroll, with the trace binary/checksum under `trace/`.
+
 The complete workspace invocation isolates Reader Log and private reveal-bus cases
 in separate serial processes; ordinary cases run with four test threads.
 They share the product's process-wide log memory pool and async runtime: an
