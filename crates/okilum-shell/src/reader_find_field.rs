@@ -36,8 +36,14 @@ impl Target {
         if let Some(focus) = &self.focus_override {
             focus(window, cx);
         } else {
-            self.input.update(cx, |input, cx| input.focus(window, cx));
+            self.focus_field(window, cx);
         }
+    }
+
+    /// Clicking this viewer's Find icon always opens its own field. The
+    /// shortcut may instead follow a focused nested pane via focus_override.
+    pub(crate) fn focus_field(&self, window: &mut Window, cx: &mut App) {
+        self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 }
 
@@ -188,7 +194,7 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
                     cx,
                 )
                 .debug_selector(|| "viewer-find".into())
-                .on_click(move |_, window, cx| target.focus(window, cx))
+                .on_click(move |_, window, cx| target.focus_field(window, cx))
                 .into_any_element();
             }
             let mut field = row.w(px(expanded));

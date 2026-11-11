@@ -203,6 +203,24 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
             "entry Find must not focus the archive filter"
         )
     });
+    // The keyboard shortcut follows entry focus; the archive's own compact
+    // Find icon still opens the archive filter when clicked.
+    let mut compact = None;
+    for width in [520., 400.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        compact = measured_bounds(visual, "viewer-find");
+        if compact.is_some() {
+            break;
+        }
+    }
+    let compact = compact.expect("narrow archive Find becomes an icon");
+    visual.simulate_click(compact.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(target.input.read(cx).focus_handle(cx).is_focused(window));
+    });
+    assert!(measured_bounds(visual, "viewer-find-field").is_some());
     visual.simulate_resize(size(px(700.), px(800.)));
     visual.run_until_parked();
     assert!(measured_bounds(visual, "archive-extract-all").is_some());
