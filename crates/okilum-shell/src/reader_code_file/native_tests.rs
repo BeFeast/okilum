@@ -237,7 +237,8 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         )
     });
     preview.update_in(visual, |p, window, cx| {
-        assert!(!p.editable());
+        assert!(p.editable(), "explicit JSON Edit admits inputs up to 64 MiB");
+        assert!(!p.input().unwrap().read(cx).is_editable());
         assert!(p.input().unwrap().read(cx).value().len() <= 32 * 1024);
         assert!(p.document.as_ref().unwrap().pages.len() > 100);
         p.find.update(cx, |s, cx| s.set_value("needle", window, cx));
