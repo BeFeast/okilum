@@ -92,6 +92,32 @@ package's successful footer, a child fixture's earlier result, a missing
 target or an empty parent cannot satisfy it. All original filters, integration
 targets, test bodies and profile/deadline settings remain enabled.
 
+The write-authority and T3 admission queries use `--lib`, matching their
+original target scope. Selecting four packages without that flag also asks
+Cargo to compile unrelated core integration harnesses, even though their
+filters run zero cases. The explicit core integration group and shell binary
+groups remain separate and mandatory.
+
+`cold-writer-diagnostic.yml` is a manual, source-pinned measurement on the
+same `ubuntu-latest` runner class as canonical Linux. It checks out diagnostic
+tools and the measured source separately. The measured checkout begins without
+a target cache and reproduces the observed unavailable compiler wrapper. Its
+original `check-linux.sh` prelude runs unchanged; a source-directory-qualified
+shell boundary replaces only the transition to `linux-rust-tests.sh` with
+that source's original first local-writer group under the existing 900-second
+supervisor. Subsequent filters do not repeatedly restart a timed-out build.
+No product compilation is inserted outside its original prelude or admission.
+A missing boundary invocation fails even if the prelude exits successfully.
+
+Verbose Cargo commands and five-second owned-process CPU/RSS/I/O plus cgroup
+quota, throttling, memory and pressure samples go directly to the job log,
+including a terminal snapshot. Compiler/linker versions, source identities,
+affinity and configured jobs are recorded; unset jobs is not labelled as a
+measured concurrency count. This is a diagnostic, not full Linux acceptance,
+and neither a warmed hosted pass nor a successful probe establishes canonical
+main GREEN. The original baseline source can be measured while tools contain
+a candidate scope correction; receipts distinguish those two commits.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a

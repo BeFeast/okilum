@@ -450,11 +450,11 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
                 selection = '-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3'
                 expected = [
-                    f'test --locked {selection} local_writer_admission -- --nocapture',
+                    f'test --locked {selection} --lib local_writer_admission -- --nocapture',
                     f'test --locked {selection} --lib file_editor::local_writer_admission_tests -- --nocapture',
                     f'test --locked {selection} --test local_writer_admission -- --nocapture',
                     f'test --locked {selection} --bin okilum local_writer_admission -- --nocapture',
-                    f'test --locked {selection} local_writer_admission -- --nocapture',
+                    f'test --locked {selection} --lib local_writer_admission -- --nocapture',
                     f'test --locked {selection} --lib local_writer_review -- --nocapture',
                     f'test --locked {selection} --bin okilum local_writer_review -- --nocapture',
                 ]

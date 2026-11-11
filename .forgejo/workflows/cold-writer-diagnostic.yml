@@ -1,0 +1,73 @@
+name: cold-writer-diagnostic
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Exact baseline source SHA; never an admission or release verdict'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: cold-writer-diagnostic
+  cancel-in-progress: false
+jobs:
+  cold-writer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      OKILUM_SOURCE_COMMIT: ${{ inputs.source }}
+      COLD_WRITER_TOOL_SOURCE: ${{ github.sha }}
+      COLD_WRITER_TOOL_REF: ${{ github.ref }}
+    steps:
+      - name: Validate source
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: '[[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: diagnostic-tools
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source }}
+          path: source
+      - name: Install canonical system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold zstd python3-venv \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+      - name: Install pinned toolchain
+        working-directory: source
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo" --version
+      - name: Prepare exact source and Python dependencies
+        working-directory: source
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          test ! -d target
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+          bash scripts/ci/setup-python-tests.sh
+      - name: Observe original prelude and cold writer within 900 seconds
+        working-directory: source
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          export TMPDIR="${RUNNER_TEMP:?}"
+          # Reproduce the observed unavailable compiler cache, without changing
+          # any host cache/server or adding a compiled-target restore.
+          unset RUSTC_WRAPPER
+          python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
