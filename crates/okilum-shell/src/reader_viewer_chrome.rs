@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 mod overflow;
 #[cfg(test)]
-mod tests;
-pub(crate) use overflow::{layout, Disposition, LayoutItem};
+pub(crate) mod tests;
+pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem, Order as OverflowOrder};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -24,6 +24,8 @@ struct HeaderKey {
     file: (PathBuf, String, String),
     editing: Option<EntityId>,
     viewers: Vec<EntityId>,
+    drawing_revision: Option<u64>,
+    overflow_order: OverflowOrder,
     geometry: (f32, reader_layout::Panels, reader_layout::Widths),
     navigation: (usize, usize, bool),
     labels: bool,
@@ -32,7 +34,9 @@ struct HeaderKey {
     renaming: Option<(EntityId, Option<String>)>,
     actions: Vec<ActionKey>,
     views: Vec<bool>,
-    find: Option<(SharedString, bool)>,
+    find: Option<FindKey>,
+    action_text: Option<SharedString>,
+    action_text_after: Option<&'static str>,
     deleted: bool,
 }
 #[derive(PartialEq)]
@@ -64,8 +68,15 @@ impl From<&ViewerAction> for ActionKey {
     }
 }
 
+#[derive(PartialEq)]
+struct FindKey {
+    input: EntityId,
+    scope: SharedString,
+    large_file: bool,
+}
+
 impl HeaderKey {
-    fn new(reader: &Reader, cx: &App) -> Self {
+    fn new(reader: &Reader, _window: &Window, cx: &App) -> Self {
         let chrome = reader.viewer_chrome(cx);
         Self {
             file: (
@@ -86,6 +97,7 @@ impl HeaderKey {
                         preview.archive.as_ref().map(Entity::entity_id),
                         preview.audio.as_ref().map(Entity::entity_id),
                         preview.canvas.as_ref().map(Entity::entity_id),
+                        preview.drawing.as_ref().map(Entity::entity_id),
                         preview.log.as_ref().map(Entity::entity_id),
                         preview.virtual_log.as_ref().map(Entity::entity_id),
                     ]
@@ -94,6 +106,12 @@ impl HeaderKey {
                     .collect()
                 })
                 .unwrap_or_default(),
+            overflow_order: chrome.overflow_order,
+            drawing_revision: reader
+                .file_preview
+                .as_ref()
+                .and_then(|preview| preview.drawing.as_ref())
+                .map(|drawing| drawing.read(cx).revision()),
             editing: reader
                 .editing
                 .as_ref()
@@ -124,7 +142,13 @@ impl HeaderKey {
                 .map(ActionKey::from)
                 .collect(),
             views: chrome.views.iter().map(|view| view.active).collect(),
-            find: chrome.find.map(|find| (find.scope, find.large_file)),
+            find: chrome.find.as_ref().map(|find| FindKey {
+                input: find.input.entity_id(),
+                scope: find.scope.clone(),
+                large_file: find.large_file,
+            }),
+            action_text: chrome.action_text.clone(),
+            action_text_after: chrome.action_text_after,
             deleted: reader
                 .deleted_current()
                 .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Missing),
@@ -167,6 +191,41 @@ pub(crate) struct SaveControls {
     reader: WeakEntity<Reader>,
     dirty: bool,
     _subscriptions: [Subscription; 2],
+}
+
+/// Query, count, case, caret and focus belong to this sibling of Header.
+/// Input notifications must never invalidate the cached seven-slot view.
+pub(crate) struct FindControls {
+    input: EntityId,
+    reader: WeakEntity<Reader>,
+}
+
+impl Render for FindControls {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(reader) = self.reader.upgrade() else {
+            return div().into_any_element();
+        };
+        let reader = reader.read(cx);
+        let Some(target) = reader.viewer_chrome(cx).find else {
+            return div().into_any_element();
+        };
+        let Some(bounds) = reader.viewer_find_bounds.get() else {
+            return div().into_any_element();
+        };
+        let width = bounds.size.width.as_f32();
+        let max_width = (bounds.right() - reader.viewer_find_min_x.get())
+            .as_f32()
+            .max(width);
+        reader_find_field::render(
+            &target,
+            reader_find_field::Presentation::Header {
+                width,
+                focused: target.input.read(cx).focus_handle(cx).is_focused(window),
+                max_width,
+            },
+            cx,
+        )
+    }
 }
 
 impl SaveControls {
@@ -237,11 +296,43 @@ pub(crate) struct ViewerAction {
 }
 
 impl ViewerAction {
+    pub(crate) fn new(
+        id: &'static str,
+        icon: Icon,
+        label: impl Into<SharedString>,
+        invoke: Invoke,
+    ) -> Self {
+        let label = label.into();
+        Self {
+            id,
+            icon,
+            tooltip: label.clone(),
+            label,
+            enabled: true,
+            disabled_reason: None,
+            toggled: false,
+            priority: 30,
+            labelled: false,
+            label_by_default: false,
+            collapse_priority: 0,
+            filled: false,
+            never_dropped: false,
+            shortcut: None,
+            invoke,
+        }
+    }
+
+    pub(crate) fn with_action<A: Action>(mut self, action: A, cx: &App) -> Self {
+        self.tooltip = reader_shortcuts::hint(&self.label, &action, cx);
+        self.shortcut = Some(Rc::new(action));
+        self
+    }
+
     pub(crate) fn button(&self, collapsed: bool) -> Button {
         let invoke = self.invoke.clone();
         Button::new(self.id)
             .ghost()
-            .when(self.filled, |b| b.primary())
+            .when(self.filled, |b| b.secondary())
             .icon(self.icon.clone())
             .h(px(28.))
             .rounded(px(6.))
@@ -282,20 +373,18 @@ pub(crate) struct ViewerView {
     pub active: bool,
 }
 
-/// Viewers opt into Find through a description, never through header routing.
-/// The shared field and adapters fill this contract in the next step.
-#[derive(Clone)]
-pub(crate) struct ViewerFindTarget {
-    pub scope: SharedString,
-    pub focus: Invoke,
-    pub large_file: bool,
-}
+pub(crate) use crate::reader_find_field::Target as ViewerFindTarget;
 
 #[derive(Clone, Default)]
 pub(crate) struct ViewerChrome {
+    pub overflow_order: OverflowOrder,
     pub views: Vec<ViewerView>,
     pub find: Option<ViewerFindTarget>,
     pub actions: Vec<ViewerAction>,
+    pub action_text: Option<SharedString>,
+    pub action_text_after: Option<&'static str>,
+    pub copy_actions: Vec<ViewerAction>,
+    pub open_actions: Vec<ViewerAction>,
     pub status: Option<reader_status_line::StatusLine>,
     pub state: Option<ViewerAction>,
 }
@@ -303,6 +392,7 @@ pub(crate) struct ViewerChrome {
 struct HeaderLayout {
     items: Vec<LayoutItem>,
     states: Vec<Disposition>,
+    widths: Vec<f32>,
     labels: bool,
     editable: bool,
     editing: bool,
@@ -317,6 +407,13 @@ impl HeaderLayout {
             .zip(&self.states)
             .any(|(item, state)| item.id == id && *state != Disposition::Menu)
     }
+    fn width(&self, id: &str) -> f32 {
+        self.items
+            .iter()
+            .zip(&self.widths)
+            .find(|(item, _)| item.id == id)
+            .map_or(0., |(_, width)| *width)
+    }
     fn collapsed(&self, id: &str) -> bool {
         self.items
             .iter()
@@ -326,12 +423,48 @@ impl HeaderLayout {
 }
 
 impl Reader {
+    pub(crate) fn invoke_viewer_action(
+        &self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chrome = self.viewer_chrome(cx);
+        if let Some(action) = chrome
+            .actions
+            .into_iter()
+            .chain(chrome.copy_actions)
+            .chain(chrome.open_actions)
+            .find(|action| action.id == id && action.enabled)
+        {
+            (action.invoke)(window, cx);
+        }
+    }
+
     #[inline(never)]
     pub(crate) fn render_file_header_viewport(
         &self,
-        _window: &Window,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let find = self.viewer_chrome(cx).find.map(|target| {
+            let mut cached = self.viewer_find_controls.borrow_mut();
+            if cached
+                .as_ref()
+                .is_none_or(|view| view.read(cx).input != target.input.entity_id())
+            {
+                let reader = cx.entity().downgrade();
+                *cached = Some(cx.new(|_| FindControls {
+                    input: target.input.entity_id(),
+                    reader,
+                }));
+            }
+            cached.as_ref().unwrap().clone()
+        });
+        if find.is_none() {
+            self.viewer_find_controls.borrow_mut().take();
+            self.viewer_find_bounds.set(None);
+        }
         let save = if self.editing.is_some() {
             Some(self.file_save_controls(cx))
         } else {
@@ -340,7 +473,7 @@ impl Reader {
             None
         };
         let reader = cx.entity();
-        let key = HeaderKey::new(self, cx);
+        let key = HeaderKey::new(self, window, cx);
         let mut cached = self.viewer_header.borrow_mut();
         if cached
             .as_ref()
@@ -366,6 +499,26 @@ impl Reader {
             .overflow_hidden()
             .h(px(48.))
             .child(header)
+            .children(find.map(|find| {
+                let bounds = self.viewer_find_bounds.clone();
+                canvas(
+                    move |_, window, cx| {
+                        bounds.get().map(|bounds| {
+                            let mut element = find.into_any_element();
+                            element.layout_as_root(bounds.size.into(), window, cx);
+                            element.prepaint_at(bounds.origin, window, cx);
+                            element
+                        })
+                    },
+                    |_, element, window, cx| {
+                        if let Some(mut element) = element {
+                            element.paint(window, cx);
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+            }))
             // GPUI invalidates cached ancestors of notified child views. Save
             // therefore occupies its measured slot as a sibling overlay.
             .children(save.map(|save| {
@@ -393,11 +546,35 @@ impl Reader {
     /// Only this adapter knows where the active viewer lives. Slot builders
     /// render the resulting description without matching on a viewer kind.
     pub(crate) fn viewer_chrome(&self, cx: &App) -> ViewerChrome {
-        self.file_preview
-            .as_ref()
-            .and_then(|p| p.pdf.as_ref())
-            .map(|pdf| reader_pdf::chrome(pdf, cx))
-            .unwrap_or_default()
+        let Some(preview) = &self.file_preview else {
+            return ViewerChrome::default();
+        };
+        if let Some(pdf) = &preview.pdf {
+            return reader_pdf::chrome(pdf, cx);
+        }
+        if let Some(archive) = &preview.archive {
+            return reader_archive::chrome(archive, cx);
+        }
+        if let Some(canvas) = &preview.canvas {
+            return reader_canvas::chrome(canvas, cx);
+        }
+        if let Some(drawing) = &preview.drawing {
+            return reader_drawing::chrome(drawing.read(cx), cx);
+        }
+        if preview.image {
+            let mut action = ViewerAction::new(
+                "copy-viewer-image",
+                Icon::new(IconName::Copy),
+                "Copy image",
+                Rc::new(|window, cx| window.dispatch_action(Box::new(CopyViewerImage), cx)),
+            );
+            action.shortcut = Some(Rc::new(CopyViewerImage));
+            return ViewerChrome {
+                copy_actions: vec![action],
+                ..Default::default()
+            };
+        }
+        ViewerChrome::default()
     }
 
     #[inline(never)]
@@ -423,6 +600,33 @@ impl Reader {
                 widths.notes + widths.backlinks
             };
         let chrome = self.viewer_chrome(cx);
+        let plan = self.header_layout(&chrome, width, window, cx);
+        h_flex()
+            .id("document-header")
+            .debug_selector(|| "document-header".into())
+            .flex_none()
+            .h(px(48.))
+            .w_full()
+            .min_w_0()
+            .px_4()
+            .gap_1()
+            .overflow_hidden()
+            .child(navigation_slot(self, &plan, cx))
+            .child(name_slot(self, &chrome, &plan, cx))
+            .child(find_slot(self, &chrome, &plan))
+            .child(views_slot(&chrome))
+            .child(viewer_actions_slot(&chrome, &plan, cx))
+            .child(file_actions_slot(self, &plan, cx))
+            .child(window_slot(self, &chrome, &plan, cx))
+    }
+
+    fn header_layout(
+        &self,
+        chrome: &ViewerChrome,
+        width: f32,
+        window: &Window,
+        cx: &App,
+    ) -> HeaderLayout {
         let editing = self.editing.is_some();
         let editable = self
             .file_preview
@@ -434,7 +638,8 @@ impl Reader {
             .as_ref()
             .is_some_and(|p| p.code.is_some() || p.text.is_some());
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
-        let mut items = vec![LayoutItem::optional("reveal", 28., 28., 10)];
+        let order = chrome.overflow_order;
+        let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
         for action in &chrome.actions {
             let wide = if (labels || action.label_by_default) && action.labelled {
                 toolbar_text_width(&action.label, FontWeight::MEDIUM, window) + 44.
@@ -450,11 +655,36 @@ impl Reader {
             }
             items.push(item);
         }
+        if chrome.action_text.is_some() {
+            items.push(LayoutItem::optional(
+                "viewer-action-text",
+                44.,
+                44.,
+                order.viewer_text,
+            ));
+        }
+        if let Some(find) = &chrome.find {
+            let mut item =
+                LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
+            item.steps = vec![overflow::OverflowStep {
+                priority: order.find_narrow,
+                width: 128.,
+                disposition: Disposition::Collapsed,
+            }];
+            if !find.large_file {
+                item.steps.push(overflow::OverflowStep {
+                    priority: order.find_icon,
+                    width: 28.,
+                    disposition: Disposition::Collapsed,
+                });
+            }
+            items.push(item);
+        }
         items.push(LayoutItem::optional(
             "copy",
             if labels { 90. } else { 40. },
             40.,
-            50,
+            order.copy,
         ));
         if editable {
             items.push(LayoutItem::pinned(
@@ -473,12 +703,12 @@ impl Reader {
             "open-with",
             if labels { 120. } else { 40. },
             40.,
-            40,
+            order.open_with,
         ));
         if width_applies {
-            items.push(LayoutItem::optional("width", 28., 28., 20));
+            items.push(LayoutItem::optional("width", 28., 28., order.width));
         }
-        items.push(LayoutItem::optional("maximize", 28., 28., 21));
+        items.push(LayoutItem::optional("maximize", 28., 28., order.maximize));
         items.push(LayoutItem::pinned("more", 28., 28.));
         // Padding + navigation + group separators. The title owns the remaining
         // space, with 120 px protected before any optional control is admitted.
@@ -493,7 +723,7 @@ impl Reader {
         let title_budget = title_minimum
             + (toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window) - 120.)
                 .max(0.);
-        let states = layout(width, 128., title_budget, &items);
+        let (states, widths) = layout_with_widths(width, 128., title_budget, &items);
         let parent_width = self
             .selected_file()
             .rsplit_once('/')
@@ -503,20 +733,14 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let controls: f32 = items
+        let controls: f32 = states
             .iter()
-            .zip(&states)
-            .map(|(item, state)| match state {
-                Disposition::Menu => 0.,
-                Disposition::Shown => item.width + 4.,
-                Disposition::Collapsed => {
-                    item.steps
-                        .iter()
-                        .filter(|step| step.disposition == Disposition::Collapsed)
-                        .map(|step| step.width.max(item.minimum_width))
-                        .next_back()
-                        .unwrap_or(item.minimum_width)
-                        + 4.
+            .zip(&widths)
+            .map(|(state, width)| {
+                if *state == Disposition::Menu {
+                    0.
+                } else {
+                    width + 4.
                 }
             })
             .sum();
@@ -530,32 +754,16 @@ impl Reader {
             - if chrome.state.is_some() { 32. } else { 0. };
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
 
-        let plan = HeaderLayout {
+        HeaderLayout {
             items,
             states,
+            widths,
             labels,
             editable,
             editing,
             width_applies,
             collapse_parents,
-        };
-        h_flex()
-            .id("document-header")
-            .debug_selector(|| "document-header".into())
-            .flex_none()
-            .h(px(48.))
-            .w_full()
-            .min_w_0()
-            .px_4()
-            .gap_1()
-            .overflow_hidden()
-            .child(navigation_slot(self, &plan, cx))
-            .child(name_slot(self, &chrome, &plan, cx))
-            .child(find_slot(&chrome))
-            .child(views_slot(&chrome))
-            .child(viewer_actions_slot(&chrome, &plan, cx))
-            .child(file_actions_slot(self, &plan, cx))
-            .child(window_slot(self, &chrome, &plan, cx))
+        }
     }
 
     fn file_save_controls(&self, cx: &mut Context<Self>) -> Entity<SaveControls> {
@@ -585,9 +793,19 @@ impl Reader {
 
 #[inline(never)]
 fn navigation_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Reader>) -> AnyElement {
+    let min_x = reader.viewer_find_min_x.clone();
     h_flex()
+        .relative()
         .flex_none()
         .gap_1()
+        .child(
+            canvas(
+                move |bounds, _, _| min_x.set(bounds.right() + px(4.)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
+        )
         .child(
             reader_icon_button(
                 "reader-history-back",
@@ -641,28 +859,37 @@ fn name_slot(
             + if nested { 32. } else { 0. }
             + if chrome.state.is_some() { 32. } else { 0. }))
         .overflow_hidden()
-        .child(reader.render_breadcrumbs(plan.collapse_parents, cx))
-        .children(chrome.state.as_ref().map(|state| state.button(true)))
+        .child(
+            reader.render_breadcrumbs_with_state(
+                plan.collapse_parents,
+                chrome
+                    .state
+                    .as_ref()
+                    .map(|state| state.button(true).into_any_element()),
+                cx,
+            ),
+        )
         .into_any_element()
 }
 
 #[inline(never)]
-fn find_slot(chrome: &ViewerChrome) -> AnyElement {
-    let Some(target) = &chrome.find else {
+fn find_slot(reader: &Reader, chrome: &ViewerChrome, plan: &HeaderLayout) -> AnyElement {
+    let Some(_) = &chrome.find else {
         return div().into_any_element();
     };
-    let focus = target.focus.clone();
-    h_flex()
+    let bounds = reader.viewer_find_bounds.clone();
+    div()
+        .relative()
         .flex_none()
-        .min_w(px(if target.large_file { 128. } else { 28. }))
+        .w(px(plan.width("find")))
+        .h(px(28.))
         .child(
-            Button::new("viewer-find")
-                .ghost()
-                .icon(IconName::Search)
-                .h(px(28.))
-                .label(target.scope.clone())
-                .tooltip(target.scope.clone())
-                .on_click(move |_, w, cx| focus(w, cx)),
+            canvas(
+                move |measured, _, _| bounds.set(Some(measured)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
         )
         .into_any_element()
 }
@@ -693,14 +920,31 @@ fn separator(cx: &App) -> AnyElement {
 #[inline(never)]
 fn viewer_actions_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> AnyElement {
     let actions: Vec<_> = chrome.actions.iter().filter(|a| plan.shows(a.id)).collect();
+    let text = || {
+        div()
+            .debug_selector(|| "viewer-action-text".into())
+            .text_xs()
+            .text_color(brand::palette(cx).text_muted)
+            .children(chrome.action_text.clone())
+            .into_any_element()
+    };
     h_flex()
         .flex_none()
         .gap_1()
         .when(!actions.is_empty(), |row| row.child(separator(cx)))
-        .children(
-            actions
-                .into_iter()
-                .map(|a| a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id))),
+        .children(actions.into_iter().map(|a| {
+            h_flex()
+                .gap_1()
+                .child(a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id)))
+                .when(
+                    plan.shows("viewer-action-text") && chrome.action_text_after == Some(a.id),
+                    |row| row.child(text()),
+                )
+                .into_any_element()
+        }))
+        .when(
+            plan.shows("viewer-action-text") && chrome.action_text_after.is_none(),
+            |row| row.child(text()),
         )
         .into_any_element()
 }
@@ -741,8 +985,8 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
                 plan.labels && !plan.collapsed("copy"),
                 cx,
             )
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |m, _, _| {
-                copy_menu(m, copy_weak.clone(), text)
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |m, _, cx| {
+                copy_menu(m, copy_weak.clone(), text, cx)
             }),
         );
     }
@@ -820,7 +1064,12 @@ pub(crate) fn copy_content_available(reader: &Reader) -> bool {
     })
 }
 
-fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool) -> PopupMenu {
+fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool, cx: &App) -> PopupMenu {
+    if let Some(target) = reader.upgrade() {
+        for action in target.read(cx).viewer_chrome(cx).copy_actions {
+            menu = menu.item(action.menu_item());
+        }
+    }
     if text {
         let target = reader.clone();
         menu = menu
@@ -893,6 +1142,13 @@ fn open_menu(
 ) -> PopupMenu {
     #[cfg(test)]
     let mut rendered_labels = Vec::new();
+    if let Some(target) = reader.upgrade() {
+        for action in target.read(cx).viewer_chrome(cx).open_actions {
+            #[cfg(test)]
+            rendered_labels.push(action.label.clone());
+            menu = menu.item(action.menu_item());
+        }
+    }
     for (index, (label, action, command)) in open_commands().into_iter().enumerate() {
         if index == 1 {
             menu = open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
@@ -1022,8 +1278,8 @@ fn window_slot(
                 }
                 if hidden_copy {
                     let target = weak.clone();
-                    m = m.submenu("Copy", w, cx, move |m, _, _| {
-                        copy_menu(m, target.clone(), text)
+                    m = m.submenu("Copy", w, cx, move |m, _, cx| {
+                        copy_menu(m, target.clone(), text, cx)
                     });
                 }
                 if hidden_open {

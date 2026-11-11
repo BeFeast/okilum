@@ -46,8 +46,8 @@ original combined titlebar and document controls:
 - **File headers (Variant A, #2795 / #2806).** The same pinned 48 px mount
   has seven erased slots: navigation, name and state, Find, view switch,
   viewer actions and Copy, file actions (Edit/Read, dirty Save, Open with),
-  window actions (width, Maximize, Document actions). Slots 3 and 4 are empty
-  until their viewer opts in. Viewers provide read-only `ViewerChrome` values
+  window actions (width, Maximize, Document actions). The view-switch slot stays empty
+  until its viewer opts in. Viewers provide read-only `ViewerChrome` values
   and entity callbacks; shared builders do not match on viewer types.
   Every header control is at least 28 px high. Thin token dividers separate
   groups. Copy holds path, vault path, wikilink and, for text viewers only,
@@ -57,13 +57,38 @@ original combined titlebar and document controls:
   Open with holds the default app, installed editors under Open in, the
   platform file manager, and Quick Look on macOS only.
   Labels are opt-in from about 1,400 px of document width. The pure overflow
-  policy drops labels, Reveal in sidebar, width and Maximize, viewer actions,
+  policy reads the viewer's `overflow_order` table plus its action descriptors,
+  and drops labels, Reveal in sidebar, width and Maximize, viewer actions,
   Open with and Copy (as submenus), then narrows Find to 128 px and an icon
   (large files keep a field), then collapses the view switch. It protects
   120 px of file name. Edit/Read, dirty Save and Document actions never leave
   the row. Notes retain their existing layout and pinned Maximize.
   PDF supplies zoom out, fit to width (width glyph), zoom in to slot 5;
   their tooltips use live bindings and their overflow items remain functional.
+- **One Find component (#2807).** Notes retain their floating bar, selectors,
+  match count, case toggle, stepping and two-press Esc behavior. A file opts in
+  with a target that owns its query, count/case/step capabilities and clear/focus
+  callbacks. Its bordered header field is 200 px, narrows to 128 px without the
+  key hint, then becomes an icon; large-file targets retain the field. Focusing
+  expands it left toward 272 px over the title, clamped to the measured space
+  after Back/Forward. The field remains inside the header; neighboring controls
+  and content do not move. The cached header reserves the slot while the live
+  Find controls mount as a measured sibling overlay, like Save. Query, count,
+  case and focus changes do not invalidate the cached header slots or SidePanels. ZIP is the first file target: Find in entries,
+  no count/case/steps, Enter returns to the list retaining the filter, and Esc
+  clears and returns in one press. With entry-pane focus Find belongs to that
+  pane. The entry's 48 px compact bar contains its archive/entry crumb and PDF
+  zoom or plain-text Open action; it has no history controls.
+- **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
+  a filled, pinned Extract all button. Its summary is in the bottom line.
+  Canvas uses a 28 px read-only lock badge, header Fit/zoom and percentage;
+  percentage sits between Zoom out and Zoom in and yields first; pan/zoom hints
+  live in the bottom line.
+  A standalone image's Copy menu offers the same checked Copy image command as
+  an embedded image. Video retains its card and Open with default app button.
+  Drawing files contribute Expand/details, Open in Excalidraw and Copy drawing
+  details through their loaded drawing handle. Drawing details opens the full
+  diagnostics in a dialog, including from overflow; embedded rows stay intact.
 - **Viewer bottom status line.** Empty descriptions render nothing. Otherwise
   it is 28 px high with a top `border-subtle`, a leading icon, a bold label,
   12/16 muted text, at most two actions and an optional trailing control.

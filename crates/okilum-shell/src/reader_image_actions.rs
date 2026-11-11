@@ -381,6 +381,24 @@ impl Reader {
         cx.notify();
     }
 
+    pub(super) fn copy_preview_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(preview) = self.file_preview.as_ref().filter(|preview| preview.image) else {
+            return;
+        };
+        let Ok(url) = url::Url::from_file_path(&preview.path) else {
+            return;
+        };
+        let target = Target::captured(self, Some(url.as_str()));
+        self.image_command(
+            &ImageCommand {
+                target,
+                command: Command::CopyImage,
+            },
+            window,
+            cx,
+        );
+    }
+
     pub(super) fn image_command(
         &mut self,
         action: &ImageCommand,

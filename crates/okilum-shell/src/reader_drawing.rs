@@ -307,10 +307,54 @@ fn content(document: Arc<Document>, width: f32, window: &mut Window, cx: &mut Ap
         None => div().p_3().child("Rendering drawing…").into_any_element(),
     }
 }
+type LoadedDrawing = (Source, Result<Arc<Document>, Arc<String>>);
+
+pub(super) struct FileHandle {
+    loaded: std::cell::RefCell<Option<LoadedDrawing>>,
+    reader: WeakEntity<Reader>,
+    revision: Cell<u64>,
+}
+impl FileHandle {
+    pub(super) fn new(reader: WeakEntity<Reader>) -> Self {
+        Self {
+            loaded: Default::default(),
+            reader,
+            revision: Cell::new(0),
+        }
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+}
+
 pub(super) fn render(
     root: &Path,
     path: &Path,
     requested_size: Option<(f32, Option<f32>)>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    render_impl(root, path, requested_size, None, window, cx)
+}
+
+pub(super) fn render_file(
+    root: &Path,
+    path: &Path,
+    handle: &Entity<FileHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    handle.update(cx, |handle, cx| {
+        render_impl(root, path, None, Some(handle), window, cx)
+    })
+}
+
+fn render_impl(
+    root: &Path,
+    path: &Path,
+    requested_size: Option<(f32, Option<f32>)>,
+    file: Option<&FileHandle>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -322,7 +366,27 @@ pub(super) fn render(
         size: metadata.map_or(0, |m| m.len()),
     };
     retain_source(&source, cx);
-    match window.use_asset::<DrawingAsset>(&source, cx) {
+    let result = window.use_asset::<DrawingAsset>(&source, cx);
+    if let (Some(file), Some(result)) = (file, &result) {
+        let mut loaded = file.loaded.borrow_mut();
+        let changed = loaded.as_ref().is_none_or(|(previous, old)| {
+            previous != &source
+                || match (old, result) {
+                    (Ok(a), Ok(b)) => !Arc::ptr_eq(a, b),
+                    (Err(a), Err(b)) => !Arc::ptr_eq(a, b),
+                    _ => true,
+                }
+        });
+        if changed {
+            *loaded = Some((source, result.clone()));
+            file.revision.set(file.revision.get().wrapping_add(1));
+            let reader = file.reader.clone();
+            cx.defer(move |cx| {
+                let _ = reader.update(cx, |_, cx| cx.notify());
+            });
+        }
+    }
+    match result {
         Some(Ok(document)) => {
             let expand = document.clone();
             let open = document.clone();
@@ -336,36 +400,42 @@ pub(super) fn render(
                 .max_w_full()
                 .gap_2()
                 .p_3()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            reader_icon_button(
-                                "drawing-expand",
-                                IconName::Maximize,
-                                "Expand drawing",
-                                cx,
-                            )
-                            .on_click(move |_, window, cx| open_expand(expand.clone(), window, cx)),
-                        )
-                        .child(
-                            reader_icon_button(
-                                "drawing-open",
-                                IconName::ExternalLink,
-                                "Open in Excalidraw",
-                                cx,
-                            )
-                            .on_click(move |_, window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(open.json.clone()));
-                                reader_toast::transient(
-                                    "Scene copied — paste it into Excalidraw",
-                                    window,
+                .when(file.is_none(), |view| {
+                    view.child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                reader_icon_button(
+                                    "drawing-expand",
+                                    IconName::Maximize,
+                                    "Expand drawing",
                                     cx,
-                                );
-                                cx.open_url("https://draw.oklabs.uk");
-                            }),
-                        ),
-                )
+                                )
+                                .on_click(move |_, window, cx| {
+                                    open_expand(expand.clone(), window, cx)
+                                }),
+                            )
+                            .child(
+                                reader_icon_button(
+                                    "drawing-open",
+                                    IconName::ExternalLink,
+                                    "Open in Excalidraw",
+                                    cx,
+                                )
+                                .on_click(move |_, window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        open.json.clone(),
+                                    ));
+                                    reader_toast::transient(
+                                        "Scene copied — paste it into Excalidraw",
+                                        window,
+                                        cx,
+                                    );
+                                    cx.open_url("https://draw.oklabs.uk");
+                                }),
+                            ),
+                    )
+                })
                 .child(DrawingCanvas {
                     document: document.clone(),
                     max_width: width,
@@ -378,10 +448,100 @@ pub(super) fn render(
                 )
                 .into_any_element()
         }
-        Some(Err(error)) => diagnostic("Drawing could not be displayed", error.as_str(), cx),
+        Some(Err(error)) => {
+            if file.is_some() {
+                div()
+                    .p_3()
+                    .child("Drawing could not be displayed")
+                    .into_any_element()
+            } else {
+                diagnostic("Drawing could not be displayed", error.as_str(), cx)
+            }
+        }
         None => div().p_3().child("Loading drawing…").into_any_element(),
     }
 }
+pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::ViewerChrome {
+    use reader_viewer_chrome::{ViewerAction, ViewerChrome};
+    let loaded = handle.loaded.borrow();
+    let Some((_, result)) = loaded.as_ref() else {
+        return ViewerChrome::default();
+    };
+    let details = match result {
+        Ok(document) if document.warnings.is_empty() => "Drawing loaded successfully".to_string(),
+        Ok(document) => document.warnings.join("\n"),
+        Err(error) => error.to_string(),
+    };
+    let mut actions = Vec::new();
+    let mut open_actions = Vec::new();
+    if let Ok(document) = result {
+        let expanded = document.clone();
+        actions.push(ViewerAction::new(
+            "drawing-expand",
+            Icon::new(IconName::Maximize),
+            "Expand drawing",
+            Rc::new(move |window, cx| open_expand(expanded.clone(), window, cx)),
+        ));
+        let document = document.clone();
+        open_actions.push(ViewerAction::new(
+            "drawing-open",
+            Icon::new(IconName::ExternalLink),
+            "Open in Excalidraw",
+            Rc::new(move |window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(document.json.clone()));
+                reader_toast::transient("Scene copied — paste it into Excalidraw", window, cx);
+                cx.open_url("https://draw.oklabs.uk");
+            }),
+        ));
+    }
+    let mut info = ViewerAction::new(
+        "drawing-diagnostic-details",
+        Icon::new(IconName::Info),
+        "Drawing details",
+        {
+            let details = details.clone();
+            Rc::new(move |window, cx| {
+                let details = details.clone();
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog.title("Drawing details").child(
+                        div()
+                            .debug_selector(|| "drawing-details".into())
+                            .text_sm()
+                            .child(details.clone()),
+                    )
+                });
+            })
+        },
+    );
+    info = info.with_action(ShowDrawingDetails, cx);
+    info.tooltip = details.clone().into();
+    actions.push(info);
+    let copy = ViewerAction::new(
+        "drawing-copy-details",
+        Icon::new(IconName::Copy),
+        "Copy drawing details",
+        Rc::new(move |window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));
+            reader_toast::transient("Copied", window, cx);
+        }),
+    );
+    for action in &mut actions {
+        if action.id == "drawing-expand" {
+            *action = action.clone().with_action(ExpandDrawing, cx);
+        }
+    }
+    for action in &mut open_actions {
+        *action = action.clone().with_action(OpenDrawingExternally, cx);
+    }
+    let copy = copy.with_action(CopyDrawingDetails, cx);
+    ViewerChrome {
+        actions,
+        open_actions,
+        copy_actions: vec![copy],
+        ..Default::default()
+    }
+}
+
 fn unavailable_message(payload: &str) -> (&'static str, String, String) {
     let decoded = okilum_core::document_links::decode(payload);
     let (summary, target, details) =
