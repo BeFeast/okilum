@@ -113,8 +113,29 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
             w.clear_notifications(cx);
             cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
         });
-        open_copy(visual);
+        if name == "gateway.log" {
+            // Logs deliberately expose Copy only in Document actions (#2808).
+            // Keep the exact-byte, toast and no-write assertions below, and
+            // exercise the real submenu rather than bypassing the UI action.
+            visual.simulate_resize(size(px(1600.), px(900.)));
+            let more = measured_bounds(visual, "document-more").unwrap();
+            visual.simulate_click(more.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_keystrokes("down down");
+            let parent = visual.update(|window, cx| window.focused(cx).unwrap());
+            visual.simulate_keystrokes("right");
+            visual.run_until_parked();
+            if visual.update(|window, _| parent.is_focused(window)) {
+                visual.simulate_keystrokes("left");
+                visual.run_until_parked();
+            }
+            visual
+                .update(|window, _| assert!(!parent.is_focused(window), "log Copy submenu opened"));
+        } else {
+            open_copy(visual);
+        }
         // Keyboard selection exercises the actual dropdown click handler.
+        // In logs the unselected raw-line command is disabled and skipped.
         visual.simulate_keystrokes("down enter");
         visual.run_until_parked();
         assert_eq!(
