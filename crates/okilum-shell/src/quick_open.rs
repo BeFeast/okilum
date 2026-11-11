@@ -3807,6 +3807,7 @@ canaryhidden [[Target]]",
 #[cfg(test)]
 mod at_index_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn at_indexes_take_folder_titles_in_all_cases() {
         for path in ["Area/@index.md", "Area/@INDEX.md", "Area/_index.md"] {

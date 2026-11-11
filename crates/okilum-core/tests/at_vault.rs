@@ -269,7 +269,23 @@ fn windows_issue2821_incremental_asset_create_update_and_directory_delete() {
     let canonical_root = root.path().canonicalize().unwrap();
     let (vault, snapshot, _) =
         warm::reconcile(&canonical_root, None, false, &mut |_, _| Ok(())).unwrap();
-    let mut state = State::new(vault, snapshot);
+    let cache = tempfile::tempdir().unwrap();
+    snapshot.save(cache.path()).unwrap();
+    let snapshot = warm::Snapshot::load(cache.path(), &canonical_root).unwrap();
+    let cached_vault = snapshot.vault();
+    assert_eq!(
+        vault
+            .notes
+            .iter()
+            .map(|note| (&note.path, &note.title))
+            .collect::<Vec<_>>(),
+        cached_vault
+            .notes
+            .iter()
+            .map(|note| (&note.path, &note.title))
+            .collect::<Vec<_>>()
+    );
+    let mut state = State::new(cached_vault, snapshot);
     let path = "@Assets/Clippings/Nested/new.md";
     std::fs::write(root.path().join(path), "# Created asset").unwrap();
     state
@@ -316,6 +332,13 @@ fn windows_issue2821_incremental_asset_create_update_and_directory_delete() {
         assert!(
             state.snapshot.source(path).is_none(),
             "deleted assets must not retain ghost sources"
+        );
+        assert!(
+            state
+                .vault
+                .resolve_asset(path.rsplit('/').next().unwrap(), "Area/Links.md")
+                .is_none(),
+            "deleted asset name lookup must also be cleared"
         );
         assert_eq!(
             state.vault.resolve_from(path, "Area/Links.md"),

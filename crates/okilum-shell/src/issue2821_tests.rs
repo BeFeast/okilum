@@ -4,6 +4,7 @@ use crate::note_paste::{
     attachments::{self, AttachmentKind},
     files::{self, FileAction},
 };
+use ::core::prelude::v1::test;
 #[path = "../../okilum-core/tests/support/at_vault.rs"]
 mod fixture;
 
@@ -160,7 +161,13 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
         );
     }
     let original = root.path().join("@Assets/Files/report.pdf");
-    let linked = files::plan(&[original.clone()], root.path(), "a.md", "stamp", None);
+    let linked = files::plan(
+        std::slice::from_ref(&original),
+        root.path(),
+        "a.md",
+        "stamp",
+        None,
+    );
     assert!(
         matches!(&linked.items[0].action, FileAction::Link { text } if text.contains("@Assets/Files/report.pdf"))
     );

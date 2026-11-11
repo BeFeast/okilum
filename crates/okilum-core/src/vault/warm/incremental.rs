@@ -519,7 +519,7 @@ impl State {
                     .cloud_placeholders
                     .push(self.vault.root.join(&path));
             }
-            if self.vault.notes.iter().any(|note| note.path == path) != present {
+            if self.vault.markdown_entries().any(|note| note.path == path) != present {
                 self.vault.set_note_identity(&path, present);
             }
             if present {

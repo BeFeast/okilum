@@ -265,6 +265,7 @@ mod tests;
 #[cfg(test)]
 mod at_argument_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn powershell_at_arguments_are_encoded_data_not_splatting() {
         let initial = Initial {

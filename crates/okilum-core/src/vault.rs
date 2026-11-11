@@ -887,7 +887,14 @@ impl Vault {
                         .push(rel.clone());
                 }
                 path_map.insert(key.to_string(), rel.clone());
-                if !crate::vault_conventions::asset_content(&rel) {
+                if crate::vault_conventions::asset_content(&rel) {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    asset_map.entry(name).or_insert_with(|| path.to_path_buf());
+                } else {
                     notes.push(Note {
                         path: rel,
                         title: stem,
@@ -1013,6 +1020,9 @@ impl Vault {
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
         }
+        if crate::vault_conventions::asset_content(path) {
+            self.refresh_attachment_name(path);
+        }
         self.rebuild_alias_map();
     }
 
@@ -1034,6 +1044,10 @@ impl Vault {
             });
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
         }
+        self.refresh_attachment_name(path);
+    }
+
+    fn refresh_attachment_name(&mut self, path: &str) {
         let name = Path::new(path)
             .file_name()
             .unwrap_or_default()

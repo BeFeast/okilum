@@ -2918,6 +2918,7 @@ mod tests {
 #[cfg(test)]
 mod at_prefix_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn completion_obeys_at_hiding_without_hiding_inventory() {
         let vault = Arc::new(Vault::from_note_paths(
