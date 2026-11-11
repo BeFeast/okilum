@@ -1,7 +1,7 @@
 use super::*;
 use ::core::prelude::v1::test;
 
-fn fixture<'a>(
+pub(super) fn fixture<'a>(
     cx: &'a mut TestAppContext,
     name: &str,
     text: &str,
@@ -302,9 +302,9 @@ fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
                         .as_ref(),
                     "Read-only: XML files are view-only"
                 );
-                assert_eq!(
-                    p.status(preview.clone(), cx).text.as_ref(),
-                    "XML files are view-only"
+                assert!(
+                    p.status(preview.clone(), cx).text.is_empty(),
+                    "the XML lock tooltip needs no permanent bottom line"
                 );
             }
         });
@@ -318,10 +318,23 @@ fn code2809_scrubber_requests_coalesce_to_the_last_part(cx: &mut TestAppContext)
     let (preview, visual, _temp) = fixture(cx, "data.json", &text);
     preview.update_in(visual, |p, window, cx| {
         p.set_view(View::Raw, window, cx);
+        let _ = window;
+        let parts = p.document.as_ref().unwrap().pages.len();
         for page in [1, 0, 2, 3] {
-            p.request_page(page, window, cx);
+            p.scrubber.update(cx, |_, cx| {
+                cx.emit(gpui_component::slider::SliderEvent::Change(
+                    (page as f32 / (parts - 1) as f32).into(),
+                ))
+            });
         }
         assert_eq!(p.page, 0, "no shaping on each slider event");
+        // The actual SliderEvent subscription receives these after this update.
+    });
+    preview.read_with(visual, |p, _| {
+        assert_eq!(
+            p.page, 0,
+            "slider callbacks coalesce without applying intermediate pages"
+        );
         assert_eq!(p.requested_page, Some(3));
     });
     visual.run_until_parked();
@@ -522,7 +535,7 @@ fn code2809_preview_message_states_offer_default_app(cx: &mut TestAppContext) {
 struct GuardObserver {
     _subscriptions: Vec<Subscription>,
 }
-fn settle(visual: &mut VisualTestContext) {
+pub(super) fn settle(visual: &mut VisualTestContext) {
     for _ in 0..3 {
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -632,7 +645,15 @@ fn code2809_storage_reason_is_known_only_after_failed_edit_admission(cx: &mut Te
         p.record_edit_failure(&anyhow::anyhow!("unrelated error"), cx);
         assert!(p.chrome(preview.clone(), cx).state.is_none());
         p.record_edit_failure(
-            &anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+            cx,
+        );
+        assert!(
+            p.editable(),
+            "private recovery permission failure must not blame the document folder"
+        );
+        p.record_edit_failure(
+            &EditLocationError(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).into(),
             cx,
         );
         assert!(!p.editable());

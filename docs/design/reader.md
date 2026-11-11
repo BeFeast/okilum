@@ -399,7 +399,9 @@ does not leave a later window with permanently hidden panels.
 
 Code view segments use the embedded `view-tree.svg` and `view-table.svg` outline
 glyphs; Raw uses `code-xml.svg` and Formatted uses `list.svg`. Segment glyphs keep
-the sidebar Tree / Now component’s 14 px size inside 28 px hit areas.
+the sidebar Tree / Now component’s 14 px size inside 28 px hit areas. Fold all /
+Unfold all use `chevrons-down-up.svg` / `chevrons-up-down.svg`, distinct from the
+adjacent reading-width toggle’s `fold-horizontal.svg` / `unfold-horizontal.svg`.
 
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
 hover. Toolkit names come from `gpui-component`'s `IconName`; the four missing

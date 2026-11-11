@@ -825,6 +825,13 @@ impl Reader {
                 .session_directory
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("No recovery directory is available"))?;
+            if self
+                .file_preview
+                .as_ref()
+                .is_some_and(|preview| preview.code.is_some())
+            {
+                reader_code_file::check_edit_location(&self.vault_root.join(self.selected_file()))?;
+            }
             FileEditor::open(
                 &self.vault_root.join(self.selected_file()),
                 &state.join("editor-drafts"),
@@ -851,6 +858,13 @@ impl Reader {
                 return;
             }
         };
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+        {
+            code.update(cx, |code, _| code.suspend_presentation());
+        }
         // The editor opens at the Reader's place, not at the top (#1296). The
         // mapping parses the note (tens of ms for a long one), so it runs off
         // the UI thread; see place_editor_at_reader.

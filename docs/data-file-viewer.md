@@ -61,7 +61,7 @@ of pages. Search can match across a page boundary. A spanning match selects its
 part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
 Structured long-line files below the 8 MiB automatic threshold initially show a virtualized Tree over the
 complete AST, with original source line numbers, individual node folding, Fold
-all/Unfold all, exact whole-node Copy and Source navigation. Valid JSON has a
+all/Unfold all, exact whole-node Copy and Go to Raw navigation. Valid JSON has a
 semantic Tree in both Raw and Pretty: the root, named properties and indexed
 array items, including scalar items. Containers show their type and child count;
 only expanded rows are visible and only the viewport is rendered. The index is
@@ -88,10 +88,13 @@ hidden-file preference.
 ## Variant A CodePreview header (#2809)
 
 One `View` value owns Table, Tree, Formatted or Raw. Availability distinguishes
-available, disabled with a reason, and absent. Raw/Formatted snapshots are built
-on workers and retained; switching, folding and paging never reparse or reset
+available, disabled with a reason, and absent. The first bounded Raw text is
+shown before parsing/indexing begins. The raw document and formatting limits are
+then prepared on a worker; a formatted document is built only when requested
+(including the default Formatted view). Raw/Formatted snapshots are retained; switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
-in unguarded files update the per-type map (json, json-array, yaml, toml, xml;
+in unguarded files update the per-type map; Go to error, Go to Raw node navigation
+and background completion never write memory. The map covers (json, json-array, yaml, toml, xml;
 csv/tsv entries are reserved for the table step). Legacy `json_raw` migrates to
 the JSON-object entry and is omitted from subsequent writes.
 
@@ -116,9 +119,17 @@ The table's inner rows and all edit chrome remain for their ordered steps.
 
 The name has a read-only lock with its reason and, independently, a warning that
 jumps to a JSON error. Storage writability is never inferred from opening a file;
-a failed existing Edit admission records its permission/read-only failure.
+an explicit Edit attempt probes an empty temporary sibling in the document
+directory, immediately removes it and records only that location's permission or
+read-only failure. Private recovery-state failures never mark the vault read-only.
 One bottom line chooses invalid JSON, formatting, large/raw or long-line,
-then read-only in that order; the lock always retains the read-only reason.
+then size/storage read-only in that order; a view-only format such as XML uses
+only the name lock. The lock always retains the read-only reason. View switches
+never focus the read-only text Input; Tree retains a mounted CodePreview target.
+Async formatting preserves focus and never applies after Edit entry or a newer
+view request. Part commands apply only to changed Raw/Formatted pages. Copy-node
+enablement caches tree-sitter lookup by snapshot, page and caret. Error-tolerant
+source grammars keep any fold ranges the editor can fold.
 Raw and Formatted show position controls when paged. The right sidebar remains
 unchanged until #2814; it will consume the existing document snapshot API.
 Contents can reuse `CodePreview::document_snapshot()` without parsing again.

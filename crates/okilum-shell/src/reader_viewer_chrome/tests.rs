@@ -633,6 +633,41 @@ fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
 }
 
 #[gpui::test]
+fn code2809_warning_badge_consumes_breadcrumb_spare_width(cx: &mut TestAppContext) {
+    let name = "Folder/A long parent folder name/broken.json";
+    let (reader, visual, _temp) = fixture_with_files(cx, name, &[(name, "{broken}")]);
+    visual.run_until_parked();
+    let code = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    code.update(visual, |code, cx| {
+        code.source_bytes_for_layout_test(5_200_000);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        assert!(chrome.state.is_some());
+        assert_eq!(
+            chrome.badges.len(),
+            1,
+            "real invalid/oversize state has lock plus warning"
+        );
+        let mut without_warning = reader.viewer_chrome(cx);
+        without_warning.badges.clear();
+        let transition = (600..1800).find(|width| {
+            let with = reader.header_layout(&chrome, *width as f32, window, cx);
+            let without = reader.header_layout(&without_warning, *width as f32, window, cx);
+            with.states == without.states && with.collapse_parents && !without.collapse_parents
+        });
+        assert!(
+            transition.is_some(),
+            "an extra badge consumes spare width and makes parents collapse earlier"
+        );
+    });
+}
+
+#[gpui::test]
 fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let (reader, visual, temp) = fixture(cx, "document.pdf");

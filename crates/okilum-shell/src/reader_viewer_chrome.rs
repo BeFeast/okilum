@@ -887,7 +887,7 @@ impl Reader {
             - 16.
             - compact_parent
             - if chrome.state.is_some() { 32. } else { 0. }
-            + 32. * chrome.badges.len() as f32;
+            - 32. * chrome.badges.len() as f32;
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
 
         HeaderLayout {

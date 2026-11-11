@@ -318,6 +318,13 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         visual.debug_bounds("code-view-menu").is_some(),
         "Tree is available for the complete Pretty snapshot"
     );
+    preview.read_with(visual, |preview, _| {
+        assert_eq!(
+            preview.availability(View::Tree),
+            Availability::Available,
+            "the menu's existence alone cannot prove Tree availability"
+        );
+    });
     preview.update_in(visual, |p, window, cx| p.set_view(View::Raw, window, cx));
     visual.run_until_parked();
     preview.update_in(visual, |p, window, cx| {

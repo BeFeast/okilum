@@ -98,11 +98,11 @@ impl CodePreview {
         if let Some(Err(error)) = &json.pretty {
             return Availability::Disabled(match error {
                 okilum_core::json_view::Error::Limit { reason, limit } => format!(
-                    "Not available: {reason} limit {}",
+                    "Not available: {}",
                     if *reason == "formatted output bytes" {
-                        "64 MB".into()
+                        "formatted text over 64 MB".into()
                     } else {
-                        limit.to_string()
+                        format!("nesting deeper than {limit} levels")
                     }
                 ),
                 _ => "Not available: the file is not valid JSON".into(),
@@ -168,8 +168,32 @@ impl CodePreview {
             self.raw_document.clone()
         }
     }
+    /// Only the explicit segment/menu/ShowView commands remember a choice.
     pub(crate) fn set_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.availability(view).available() {
+        if !self.read_active || !self.availability(view).available() {
+            return;
+        }
+        if !self.guarded() {
+            if let Some(kind) = self.type_key() {
+                reader_ui_state::set_code_view(kind, view, cx);
+            }
+        }
+        self.apply_view(view, window, cx);
+        if view == View::Tree {
+            self.focus.focus(window, cx);
+        } else if view == View::Table
+            && self
+                .input()
+                .is_some_and(|input| input.focus_handle(cx).is_focused(window))
+        {
+            // Table does not mount the text input; retain a live Reader target.
+            self.focus.focus(window, cx);
+        }
+    }
+
+    /// Navigation and worker completion never persist a choice or move focus.
+    pub(super) fn apply_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_active || !self.availability(view).available() {
             return;
         }
         if let Some(json) = &mut self.json {
@@ -184,7 +208,13 @@ impl CodePreview {
             }
             json.formatting = true;
             let raw = json.raw.clone();
+            #[cfg(test)]
+            let gate = self.format_gate.take();
             let task = cx.background_executor().spawn(async move {
+                #[cfg(test)]
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
                 okilum_core::json_view::pretty(&raw.text)
                     .map(|text| Arc::new(Document::for_file(text, "json", true)))
             });
@@ -196,8 +226,8 @@ impl CodePreview {
                     };
                     json.formatting = false;
                     json.pretty = Some(result);
-                    if json.requested == View::Formatted {
-                        this.set_view(View::Formatted, window, cx);
+                    if json.requested == View::Formatted && this.read_active {
+                        this.apply_view(View::Formatted, window, cx);
                     }
                     cx.notify();
                 });
@@ -205,11 +235,6 @@ impl CodePreview {
             .detach();
             cx.notify();
             return;
-        }
-        if !self.guarded() {
-            if let Some(kind) = self.type_key() {
-                reader_ui_state::set_code_view(kind, view, cx);
-            }
         }
         if self.view == view {
             return;
@@ -237,11 +262,27 @@ impl CodePreview {
         }
         if self.view == View::Tree {
             self.show_match(window, cx);
-            self.focus.focus(window, cx);
-        } else if let Some(input) = self.input() {
-            input.update(cx, |input, cx| input.focus(window, cx));
         }
         cx.notify();
+    }
+
+    pub(crate) fn suspend_presentation(&mut self) {
+        self.read_active = false;
+        if let Some(json) = &mut self.json {
+            json.requested = self.view;
+        }
+    }
+
+    pub(super) fn step_part(&mut self, next: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.paged || !matches!(self.view, View::Raw | View::Formatted) {
+            return;
+        }
+        let page = if next {
+            self.page + 1
+        } else {
+            self.page.saturating_sub(1)
+        };
+        self.show_page(page, window, cx);
     }
     pub(super) fn open_find(&self, window: &mut Window, cx: &mut App) {
         if !self.open_paged_find(window, cx) {
@@ -260,7 +301,7 @@ impl CodePreview {
         if self.view == View::Table {
             return Availability::Absent;
         }
-        if doc.invalid.is_some() || (language(&self.rel) != Some("text") && !doc.parses) {
+        if doc.invalid.is_some() {
             return Availability::Disabled("Nothing to fold: the file does not parse".into());
         }
         if self.view == View::Tree {
@@ -287,6 +328,9 @@ impl CodePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.paged || !matches!(self.view, View::Raw | View::Formatted) {
+            return;
+        }
         self.requested_page = Some(page);
         if self.page_scheduled {
             return;
@@ -339,7 +383,7 @@ impl CodePreview {
         else {
             return;
         };
-        self.set_view(View::Raw, window, cx);
+        self.apply_view(View::Raw, window, cx);
         let doc = self.raw_document.as_ref().unwrap();
         let page = doc.page_at(error.offset);
         let start = doc.pages[page].start;

@@ -6,8 +6,11 @@ use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, 
 use std::time::Instant;
 
 pub(crate) mod document;
+mod loading;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+#[cfg(test)]
+mod review_tests;
 mod structure;
 mod toolbar;
 mod view;
@@ -127,6 +130,15 @@ pub(crate) struct CodePreview {
     structure: structure::Structure,
     paged: bool,
     document_revision: u64,
+    applied_page: Option<(u64, usize)>,
+    read_active: bool,
+    node_copy_cache: std::cell::RefCell<Option<(NodeCopyKey, Option<std::ops::Range<usize>>)>>,
+    #[cfg(test)]
+    preparation_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    format_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    first_content_ms: Option<u128>,
     find: Entity<InputState>,
     matches: Vec<std::ops::Range<usize>>,
     match_index: usize,
@@ -164,16 +176,65 @@ fn is_json(rel: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NodeCopyKey {
+    revision: u64,
+    page: usize,
+    cursor: usize,
+}
+
 enum Loaded {
-    Text(
-        Arc<Document>,
-        Option<Result<Arc<Document>, okilum_core::json_view::Error>>,
-    ),
+    Text(String),
     TooLarge(u64),
     Unsupported,
 }
 
+/// Identifies a failure of the *document location*, not private recovery state.
+#[derive(Debug)]
+pub(crate) struct EditLocationError(std::io::Error);
+impl std::fmt::Display for EditLocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "This folder cannot be written: {}", self.0)
+    }
+}
+impl std::error::Error for EditLocationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// An explicit Edit attempt checks the same directory needed by atomic Save.
+/// Reads never probe storage. The empty sibling is removed immediately.
+pub(crate) fn check_edit_location(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("No parent directory"))?;
+    match tempfile::Builder::new()
+        .prefix(".okilum-edit-check-")
+        .tempfile_in(parent)
+    {
+        Ok(probe) => {
+            probe.close()?;
+            Ok(())
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            Err(EditLocationError(error).into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl CodePreview {
+    #[cfg(test)]
+    pub(crate) fn source_bytes_for_layout_test(&mut self, bytes: usize) {
+        self.source_bytes = Some(bytes);
+    }
+
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
@@ -205,7 +266,6 @@ impl CodePreview {
         let json = is_json(&rel);
         let table_path = path.clone();
         let language = language(&rel).unwrap_or("text");
-        crate::source_presentation::code_languages::install();
         let task = cx.background_executor().spawn(async move {
             let bytes = std::fs::metadata(&path)?.len();
             if bytes > MAX_BYTES {
@@ -223,73 +283,32 @@ impl CodePreview {
                     }
                     bytes
                 }) {
-                    Ok(text) => {
-                        let raw = Arc::new(Document::for_file(text, language, json));
-                        // Long-line and size guards take precedence over memory.
-                        // They never eagerly allocate a formatted representation.
-                        let pretty = if json && raw.invalid.is_none() {
-                            match okilum_core::json_view::formatting_bound(
-                                &raw.text,
-                                okilum_core::json_view::MAX_VIEW_BYTES,
-                                &|| false,
-                            ) {
-                                Err(reason) => Some(Err(reason)),
-                                Ok(_) if raw.text.len() <= PRETTY_BYTES && raw.pages.len() == 1 => {
-                                    Some(okilum_core::json_view::pretty(&raw.text).map(|text| {
-                                        Arc::new(Document::for_file(text, language, true))
-                                    }))
-                                }
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
-                        Loaded::Text(raw, pretty)
-                    }
+                    Ok(text) => Loaded::Text(text),
                     Err(_) => Loaded::Unsupported,
                 },
             )
         });
+        crate::source_presentation::code_languages::install();
         // Each selection owns its own entity; a late read cannot reach a newer one.
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
-                    Ok(Loaded::Text(raw, pretty)) => {
-                        this.source_bytes = Some(raw.text.len());
-                        if json
-                            && raw.json_tree
-                            && raw
-                                .text
-                                .trim_start_matches('\u{feff}')
-                                .trim_start()
-                                .starts_with('[')
-                        {
-                            let table = cx.new(|cx| {
-                                reader_delimited::TablePreview::new(table_path.clone(), cx)
-                            });
-                            this.table = Some(table);
-                        }
-                        if json {
-                            this.json = Some(JsonText {
-                                raw: raw.clone(),
-                                pretty,
-                                formatting: false,
-                                requested: View::Raw,
-                            });
-                        }
-                        this.structure.reset(&raw);
-                        this.raw_document = Some(raw.clone());
-                        this.view = this.first_view(cx);
-                        let shown = this.snapshot_for(this.view).unwrap_or(raw);
-                        this.paged = shown.pages.len() > 1;
-                        let input = cx.new(|cx| {
-                            editor(language, &shown.text[shown.pages[0].clone()], window, cx)
-                        });
-                        this.document = Some(shown);
-                        this.apply_diagnostics(&input, cx);
+                    Ok(Loaded::Text(text)) => {
+                        this.source_bytes = Some(text.len());
+                        let range = document::first_page(&text);
+                        this.paged = range.end < text.len();
+                        let input = cx.new(|cx| editor(language, &text[range], window, cx));
                         this.document_revision += 1;
+                        this.applied_page = Some((this.document_revision, 0));
+                        #[cfg(test)]
+                        {
+                            this.first_content_ms = Some(started.elapsed().as_millis());
+                        }
                         timing(&input, started, cx);
+                        // Text is available before any full-file parse/index or
+                        // formatted snapshot. Those run on subsequent workers.
+                        this.prepare_loaded(text, table_path.clone(), json, window, cx);
                         State::Content(input)
                     }
                     Ok(Loaded::TooLarge(bytes)) => State::Message(format!(
@@ -349,6 +368,15 @@ impl CodePreview {
             structure: structure::Structure::default(),
             paged: false,
             document_revision: 0,
+            applied_page: None,
+            read_active: true,
+            node_copy_cache: Default::default(),
+            #[cfg(test)]
+            preparation_gate: None,
+            #[cfg(test)]
+            format_gate: None,
+            #[cfg(test)]
+            first_content_ms: None,
             find,
             matches: Vec::new(),
             match_index: 0,
@@ -363,7 +391,12 @@ impl CodePreview {
         let Some(doc) = &self.document else {
             return;
         };
-        self.page = page.min(doc.pages.len() - 1);
+        let page = page.min(doc.pages.len() - 1);
+        if self.applied_page == Some((self.document_revision, page)) {
+            return;
+        }
+        self.page = page;
+        self.applied_page = Some((self.document_revision, page));
         self.scrubber.update(cx, |slider, cx| {
             slider.set_value(
                 self.page as f32 / (doc.pages.len().saturating_sub(1).max(1)) as f32,
@@ -474,7 +507,19 @@ impl CodePreview {
                 .map(|row| row.range.clone())
         } else {
             let offset = doc.pages[self.page].start + input.read(cx).cursor();
-            doc.node_range(offset)
+            let key = NodeCopyKey {
+                revision: self.document_revision,
+                page: self.page,
+                cursor: offset,
+            };
+            if let Some((cached_key, range)) = &*self.node_copy_cache.borrow() {
+                if *cached_key == key {
+                    return range.clone();
+                }
+            }
+            let range = doc.node_range(offset);
+            *self.node_copy_cache.borrow_mut() = Some((key, range.clone()));
+            range
         }
     }
     fn copy_node(&self, window: &mut Window, cx: &mut App) {
@@ -648,12 +693,12 @@ impl Render for CodePreview {
             )
             .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
             .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
-            .on_action(cx.listener(|this, _: &PreviousPart, window, cx| {
-                this.show_page(this.page.saturating_sub(1), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NextPart, window, cx| {
-                this.show_page(this.page + 1, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &PreviousPart, window, cx| this.step_part(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NextPart, window, cx| this.step_part(true, window, cx)),
+            )
             .w_full()
             .flex_1()
             .min_h_0()
@@ -748,14 +793,12 @@ impl Reader {
         }))
         .on_action(cx.listener(|this, _: &PreviousPart, window, cx| {
             if let Some(code) = this.read_code_view() {
-                code.update(cx, |code, cx| {
-                    code.show_page(code.page.saturating_sub(1), window, cx)
-                });
+                code.update(cx, |code, cx| code.step_part(false, window, cx));
             }
         }))
         .on_action(cx.listener(|this, _: &NextPart, window, cx| {
             if let Some(code) = this.read_code_view() {
-                code.update(cx, |code, cx| code.show_page(code.page + 1, window, cx));
+                code.update(cx, |code, cx| code.step_part(true, window, cx));
             }
         }))
     }

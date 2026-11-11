@@ -88,11 +88,7 @@ impl CodePreview {
                     } else {
                         "code-unfold-all"
                     },
-                    Icon::default().path(if folded {
-                        "icons/fold-horizontal.svg"
-                    } else {
-                        "icons/unfold-horizontal.svg"
-                    }),
+                    Icon::default().path(fold_icon(folded)),
                     if folded { "Fold all" } else { "Unfold all" },
                     Rc::new(move |_, cx| target.update(cx, |this, cx| this.fold_all(folded, cx))),
                 );
@@ -177,14 +173,7 @@ impl CodePreview {
     }
 
     pub(crate) fn record_edit_failure(&mut self, error: &anyhow::Error, cx: &mut Context<Self>) {
-        if error.chain().any(|cause| {
-            cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
-                )
-            })
-        }) {
+        if error.chain().any(|cause| cause.is::<EditLocationError>()) {
             self.storage_reason = Some("this folder cannot be written".into());
             cx.notify();
         }
@@ -229,7 +218,7 @@ impl CodePreview {
             status.actions.push(action);
         } else if self.json.as_ref().is_some_and(|json| json.formatting) {
             status.text = format!("Formatting {}…", view::size(raw.text.len())).into();
-        } else if raw.text.len() > PRETTY_BYTES && self.view == View::Raw {
+        } else if self.json.is_some() && raw.text.len() > PRETTY_BYTES && self.view == View::Raw {
             status.label = "Large file.".into();
             status.text = format!(
                 "{}, opened as raw text to stay fast.",
@@ -270,7 +259,10 @@ impl CodePreview {
                 )
             }
             .into();
-        } else if let Some(reason) = self.readonly_reason() {
+        } else if let Some(reason) = self.readonly_reason().filter(|_| {
+            self.storage_reason.is_some()
+                || self.source_bytes.is_some_and(|bytes| bytes > EDIT_BYTES)
+        }) {
             status.icon = Some(Icon::default().path("icons/lock.svg"));
             status.label = "Read-only.".into();
             status.text = reason.into();
@@ -454,5 +446,14 @@ impl CodePreview {
                 }
             }))
             .into_any_element()
+    }
+}
+
+/// Fold glyphs must remain distinct from the adjacent note-width control.
+pub(super) fn fold_icon(folded: bool) -> &'static str {
+    if folded {
+        brand::READER_COLLAPSE_ICON
+    } else {
+        brand::READER_EXPAND_ICON
     }
 }

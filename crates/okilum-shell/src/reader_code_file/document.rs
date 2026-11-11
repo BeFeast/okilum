@@ -15,7 +15,10 @@ pub(crate) struct Document {
     tree_offset: usize,
     pub json_tree: bool,
     pub invalid: Option<JsonError>,
+    #[cfg(test)]
     pub parses: bool,
+    #[cfg(test)]
+    pub node_lookups: std::sync::atomic::AtomicUsize,
     pub foldable: bool,
     pub structure: Vec<StructureRow>,
 }
@@ -186,29 +189,32 @@ impl Document {
         } else {
             Vec::new()
         };
-        let foldable = tree.as_ref().is_some_and(|tree| {
-            let mut cursor = tree.walk();
-            loop {
-                let node = cursor.node();
-                if node.is_named()
-                    && node.start_position().row < node.end_position().row
-                    && node.parent().is_some()
-                {
-                    break true;
-                }
-                if cursor.goto_first_child() {
-                    continue;
-                }
+        let foldable = tree
+            .as_ref()
+            .filter(|_| text.contains('\n'))
+            .is_some_and(|tree| {
+                let mut cursor = tree.walk();
                 loop {
-                    if cursor.goto_next_sibling() {
-                        break;
+                    let node = cursor.node();
+                    if node.is_named()
+                        && node.start_position().row < node.end_position().row
+                        && node.parent().is_some()
+                    {
+                        break true;
                     }
-                    if !cursor.goto_parent() {
-                        return false;
+                    if cursor.goto_first_child() {
+                        continue;
+                    }
+                    loop {
+                        if cursor.goto_next_sibling() {
+                            break;
+                        }
+                        if !cursor.goto_parent() {
+                            return false;
+                        }
                     }
                 }
-            }
-        });
+            });
         Self {
             text: text.into(),
             pages,
@@ -216,13 +222,19 @@ impl Document {
             tree_offset,
             json_tree,
             invalid,
+            #[cfg(test)]
             parses,
+            #[cfg(test)]
+            node_lookups: std::sync::atomic::AtomicUsize::new(0),
             foldable,
             structure,
         }
     }
 
     pub fn node_range(&self, offset: usize) -> Option<Range<usize>> {
+        #[cfg(test)]
+        self.node_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tree = self.tree.as_ref()?;
         let offset = offset
             .min(self.text.len().saturating_sub(1))

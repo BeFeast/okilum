@@ -37,6 +37,7 @@ print('DATA_TABLE_2735_RESTORED_NATIVE_SUITE_PASS', flush=True)
 # Preserve the real selection/edit/recovery/image contracts exercised by full Linux.
 for regression in [
     'reader_viewer_chrome::',
+    'reader_shortcuts::tests::markdown_copy_shortcut_has_no_reader_or_toolkit_collision',
     'reader_status_line::',
     'reader_editor::mode_navigation_tests::',
     'reader_loading::quick_view_tests::window_mode_switch_keeps_typed_preview_entities_in_both_directions',

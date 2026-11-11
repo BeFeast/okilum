@@ -220,13 +220,14 @@ impl CodePreview {
                 Button::new(("data-node-source", index))
                     .small()
                     .ghost()
-                    .label("Source")
+                    .debug_selector(move || format!("data-node-source-{index}"))
+                    .label("Go to Raw")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let Some(doc) = &this.document else {
                             return;
                         };
                         let page = doc.page_at(source_offset);
-                        this.set_view(View::Raw, window, cx);
+                        this.apply_view(View::Raw, window, cx);
                         this.show_page(page, window, cx);
                     })),
             )
