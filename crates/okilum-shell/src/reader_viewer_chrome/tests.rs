@@ -589,6 +589,9 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
     measured_bounds(visual, "pdf-zoom-in").unwrap();
     let first_zoom = first.read_with(visual, |pdf, _| pdf.zoom_step());
     let mut original_key = reader.read_with(visual, HeaderKey::new);
+    let original_header = reader.read_with(visual, |reader, _| {
+        reader.viewer_header.borrow().as_ref().unwrap().entity_id()
+    });
     reader.update(visual, |reader, cx| {
         reader.file_preview.as_mut().unwrap().pdf = Some(second.clone());
         cx.notify();
@@ -606,9 +609,16 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
         second.entity_id(),
         "positive control: same file got a new viewer entity"
     );
-    // Preserve ordinary cache reuse: a full refresh would accidentally repair
-    // stale callbacks and make a missing entity-id key look correct.
+    // Do not force a refresh after replacement. Also require a new cache
+    // identity: incidental PDF paints may refresh callbacks in headless runs.
     visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert_ne!(
+        reader.read_with(visual, |reader, _| {
+            reader.viewer_header.borrow().as_ref().unwrap().entity_id()
+        }),
+        original_header,
+        "replacement viewer must invalidate the callback-owning header cache; incidental repaint is insufficient"
+    );
     let second_zoom = second.read_with(visual, |pdf, _| pdf.zoom_step());
     visual.simulate_click(at, Modifiers::default());
     visual.run_until_parked();
