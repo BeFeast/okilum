@@ -86,10 +86,12 @@ pub(crate) fn entry() -> bool {
                             "Reader did not open {name}"
                         );
                         ticks += 1;
-                        // Earlier fixtures persist Source for this vault. A
-                        // restored editor is not a read-mode receipt: use the
-                        // normal Read action before testing Read -> Edit.
-                        if cx.update(|cx| reader.read(cx).editing.is_some()) {
+                        // Earlier fixtures persist Source for this vault, and
+                        // Markdown restores it. Do not normalize file viewers:
+                        // unexpectedly opening one in Edit must fail the gate.
+                        if name.ends_with(".md")
+                            && cx.update(|cx| reader.read(cx).editing.is_some())
+                        {
                             diagnostic_println!(
                                 "READER_NATIVE file={name} mode=read stage=leave-restored-edit"
                             );

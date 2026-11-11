@@ -2,6 +2,7 @@
 """Mount every viewer in a real Reader on the native debug main stack."""
 import hashlib
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,11 @@ import tempfile
 import struct
 import zipfile
 import zlib
+
+
+def assert_restored_source_scope(output):
+    restored = re.findall(r'READER_NATIVE file=(\S+) mode=read stage=leave-restored-edit', output)
+    assert restored == ['note.md'], f'unexpected restored-edit normalization: {restored!r}'
 
 
 def pdf():
@@ -58,6 +64,7 @@ def main():
                 assert process.wait(timeout=240) == 0, log_path.read_text(encoding='utf-8')[-10000:]
                 assert (directory / 'complete').exists(), 'Reader harness never completed'
                 output = log_path.read_text(encoding='utf-8')
+                assert_restored_source_scope(output)
                 for name in names:
                     assert f'file={name} mode=read mounted=Reader' in output, name
                 for name in ['data.json', 'array.json', 'data.csv', 'source.rs', 'note.md']:

@@ -526,6 +526,40 @@ fn read_mode_find_keystrokes_do_not_notify_cached_side_panels(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn async_editable_flip_refreshes_header_on_the_next_reader_render(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "note.md");
+    let code = reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file("source.rs", window, cx);
+        let code = reader.file_preview.as_ref().unwrap().code.clone().unwrap();
+        assert!(
+            code.read(cx).loading(),
+            "exercise the asynchronous loading state"
+        );
+        assert!(!reader.code_file_editable(cx));
+        code
+    });
+    // Draw the loading header before polling the asynchronous completion.
+    // Neither this frame nor the completed one forces a window refresh.
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let loading_header = reader.read_with(visual, |reader, cx| {
+        let header = reader.viewer_header.borrow().as_ref().unwrap().clone();
+        assert!(!header.read(cx).key.editable);
+        header.entity_id()
+    });
+    visual.run_until_parked();
+    assert!(code.read_with(visual, |code, _| code.editable()));
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    reader.read_with(visual, |reader, cx| {
+        let header = reader.viewer_header.borrow().as_ref().unwrap().clone();
+        assert!(
+            header.read(cx).key.editable,
+            "async capability reaches the header key"
+        );
+        assert_ne!(header.entity_id(), loading_header);
+    });
+}
+
+#[gpui::test]
 fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
     cx: &mut TestAppContext,
 ) {
