@@ -693,3 +693,157 @@ fn code2809_table_keeps_its_own_status_without_a_second_code_line(cx: &mut TestA
         "Table must not get a second CodePreview bottom line"
     );
 }
+
+#[gpui::test]
+fn code2809_loading_shortcuts_do_not_write_unclassified_or_guarded_memory(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("large.json");
+    std::fs::write(
+        &path,
+        format!("{{\"payload\":\"{}\"}}", "x".repeat(9_000_000)),
+    )
+    .unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_ui_state::install(&temp.path().join("state"), cx);
+        reader_ui_state::set_code_view("json", View::Formatted, cx);
+    });
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx
+            .new(|cx| CodePreview::new(temp.path().into(), "large.json".into(), path, window, cx));
+        view.update(cx, |code, cx| {
+            assert!(
+                code.raw_document.is_none(),
+                "positive control: metadata is not known yet"
+            );
+            assert!(matches!(
+                code.availability(View::Raw),
+                Availability::Disabled(_)
+            ));
+            code.set_view(View::Raw, window, cx);
+            assert_eq!(
+                reader_ui_state::code_view("json", cx),
+                Some(View::Formatted),
+                "a loading shortcut cannot persist a view before the guards/type are known"
+            );
+        });
+        preview = Some(view.clone());
+        Root::new(cx.new(|_| Surface(view)), window, cx)
+    });
+    visual.run_until_parked();
+    preview.unwrap().read_with(visual, |code, cx| {
+        assert_eq!(code.view, View::Raw);
+        assert_eq!(
+            reader_ui_state::code_view("json", cx),
+            Some(View::Formatted)
+        );
+    });
+}
+
+#[gpui::test]
+fn code2809_catalogued_copy_selection_and_error_actions_dispatch_from_custom_keys(
+    cx: &mut TestAppContext,
+) {
+    let source = "{\n  invalid: true\n}\n";
+    let (preview, visual, temp) = fixture(cx, "broken.json", source);
+    preview.update_in(visual, |code, window, cx| {
+        cx.bind_keys([
+            KeyBinding::new("f7", GoToError, Some("ReaderCode")),
+            KeyBinding::new("f8", CopySelection, Some("ReaderCode")),
+        ]);
+        assert_eq!(code.input().unwrap().read(cx).cursor(), 0);
+        let chrome = code.chrome(preview.clone(), cx);
+        assert!(
+            chrome
+                .state
+                .as_ref()
+                .unwrap()
+                .tooltip
+                .to_ascii_lowercase()
+                .contains("f7"),
+            "badge hint follows the live Go to error binding"
+        );
+        assert!(chrome.copy_actions[0]
+            .tooltip
+            .to_ascii_lowercase()
+            .contains("f8"));
+        code.focus.focus(window, cx);
+    });
+    visual.simulate_keystrokes("f7");
+    visual.run_until_parked();
+    preview.update(visual, |code, cx| {
+        let error = code
+            .raw_document
+            .as_ref()
+            .unwrap()
+            .invalid
+            .as_ref()
+            .unwrap();
+        let input = code.input().unwrap();
+        assert_eq!(
+            input.read(cx).cursor(),
+            error.offset,
+            "Go to error reaches the same diagnostic through a custom key"
+        );
+        input.update(cx, |input, cx| input.set_selected_range(4..11, cx));
+    });
+    visual.simulate_keystrokes("f8");
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "invalid",
+            "custom Copy selection uses the real selected bytes"
+        )
+    });
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("broken.json")).unwrap(),
+        source
+    );
+}
+
+#[gpui::test]
+fn code2809_switching_from_formatted_find_to_paged_raw_keeps_exactly_one_find_ui(
+    cx: &mut TestAppContext,
+) {
+    let text = format!(
+        "{{\"values\":[{}]}}",
+        "1,".repeat(40_000).trim_end_matches(',')
+    );
+    let (preview, visual, _temp) = fixture(cx, "data.json", &text);
+    preview.update_in(visual, |code, window, cx| {
+        code.set_view(View::Formatted, window, cx)
+    });
+    visual.run_until_parked();
+    preview.update_in(visual, |code, window, cx| {
+        assert!(!code.paged);
+        code.open_find(window, cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        visual.debug_bounds("search-panel").is_some(),
+        "positive control: the real toolkit Find strip opened"
+    );
+    assert!(visual.debug_bounds("data-whole-file-find").is_none());
+    preview.update_in(visual, |code, window, cx| {
+        code.set_view(View::Raw, window, cx)
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        visual.debug_bounds("data-whole-file-find").is_some(),
+        "the whole-file row owns paged Raw Find"
+    );
+    assert!(
+        visual.debug_bounds("search-panel").is_none(),
+        "a viewer must never mount two Find fields"
+    );
+}

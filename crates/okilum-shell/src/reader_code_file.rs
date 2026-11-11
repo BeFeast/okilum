@@ -445,6 +445,21 @@ impl CodePreview {
         }
     }
 
+    fn copy_selection(&self, cx: &mut App) {
+        if matches!(self.view, View::Tree | View::Table) {
+            return;
+        }
+        if let Some(input) = self.input() {
+            let input = input.read(cx);
+            let range = input.selected_range();
+            if !range.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    input.text().slice(range).to_string(),
+                ));
+            }
+        }
+    }
+
     fn node_copy_range(&self, cx: &App) -> Option<std::ops::Range<usize>> {
         let (Some(doc), State::Content(input)) = (&self.document, &self.state) else {
             return None;
@@ -476,6 +491,9 @@ impl CodePreview {
             }
         }
         if self.view == View::Tree || self.paged {
+            if let Some(input) = self.input() {
+                input.update(cx, |input, cx| input.close_search(cx));
+            }
             self.find.update(cx, |input, cx| input.focus(window, cx));
             true
         } else {
@@ -611,6 +629,8 @@ impl Render for CodePreview {
             .track_focus(&self.focus)
             .debug_selector(|| "reader-code-file".into())
             .on_action(cx.listener(|this, _: &CopyNode, window, cx| this.copy_node(window, cx)))
+            .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy_selection(cx)))
+            .on_action(cx.listener(|this, _: &GoToError, window, cx| this.go_to_error(window, cx)))
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
             .on_action(
                 cx.listener(|this, _: &ShowTable, window, cx| {
@@ -692,6 +712,9 @@ impl CodePreview {
 impl Reader {
     #[inline(never)]
     pub(crate) fn code_action_listeners(&self, view: Div, cx: &mut Context<Self>) -> Div {
+        if self.read_code_view().is_none() {
+            return view;
+        }
         view.on_action(cx.listener(|this, _: &ShowTable, window, cx| {
             this.change_code_view(View::Table, window, cx)
         }))
@@ -711,6 +734,16 @@ impl Reader {
         .on_action(cx.listener(|this, _: &CopyNode, window, cx| {
             if let Some(code) = this.read_code_view() {
                 code.update(cx, |code, cx| code.copy_node(window, cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &CopySelection, _, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.copy_selection(cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &GoToError, window, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.go_to_error(window, cx));
             }
         }))
         .on_action(cx.listener(|this, _: &PreviousPart, window, cx| {

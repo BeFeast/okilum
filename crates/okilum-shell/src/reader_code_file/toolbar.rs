@@ -113,19 +113,7 @@ impl CodePreview {
             "code-copy-selection",
             Icon::new(IconName::Copy),
             "Copy selection",
-            Rc::new(move |_, cx| {
-                target.update(cx, |this, cx| {
-                    if let Some(input) = this.input() {
-                        let input = input.read(cx);
-                        let range = input.selected_range();
-                        if !range.is_empty() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                input.text().slice(range).to_string(),
-                            ));
-                        }
-                    }
-                })
-            }),
+            Rc::new(move |_, cx| target.update(cx, |this, cx| this.copy_selection(cx))),
         )
         .with_action(CopySelection, cx);
         selection.enabled = self.view != View::Tree && self.view != View::Table;
@@ -171,11 +159,14 @@ impl CodePreview {
                 }),
             )
             .with_action(GoToError, cx);
-            warning.tooltip = format!(
-                "Not valid JSON: line {}, column {}: {}",
-                invalid.line, invalid.column, invalid.message
-            )
-            .into();
+            warning.tooltip = reader_shortcuts::hint(
+                &format!(
+                    "Not valid JSON: line {}, column {}: {}. Go to error",
+                    invalid.line, invalid.column, invalid.message
+                ),
+                &GoToError,
+                cx,
+            );
             if chrome.state.is_some() {
                 chrome.badges.push(warning);
             } else {

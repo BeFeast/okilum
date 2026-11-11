@@ -64,7 +64,10 @@ impl CodePreview {
     pub(crate) fn availability(&self, view: View) -> Availability {
         let Some(raw) = &self.raw_document else {
             return if view == View::Raw {
-                Availability::Available
+                Availability::Disabled(match &self.state {
+                    State::Message(message) => message.clone(),
+                    _ => "Opening file…".into(),
+                })
             } else {
                 Availability::Absent
             };
@@ -223,6 +226,13 @@ impl CodePreview {
                 self.document_revision += 1;
                 self.show_page(0, window, cx);
                 self.search(window, cx);
+            }
+        }
+        if self.view == View::Tree || self.paged {
+            // The retained whole-file row owns Find in these presentations.
+            // A floating toolkit strip from Formatted must not survive here.
+            if let Some(input) = self.input() {
+                input.update(cx, |input, cx| input.close_search(cx));
             }
         }
         if self.view == View::Tree {
