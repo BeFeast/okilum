@@ -105,6 +105,7 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
     };
     let input = Input::new(&target.input)
         .appearance(false)
+        .when(!floating, |input| input.small())
         .cleanable(floating)
         .prefix(
             Icon::new(IconName::Search)
