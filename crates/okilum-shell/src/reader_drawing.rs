@@ -307,8 +307,10 @@ fn content(document: Arc<Document>, width: f32, window: &mut Window, cx: &mut Ap
         None => div().p_3().child("Rendering drawing…").into_any_element(),
     }
 }
+type LoadedDrawing = (Source, Result<Arc<Document>, Arc<String>>);
+
 pub(super) struct FileHandle {
-    loaded: std::cell::RefCell<Option<(Source, Result<Arc<Document>, Arc<String>>)>>,
+    loaded: std::cell::RefCell<Option<LoadedDrawing>>,
     reader: WeakEntity<Reader>,
     revision: Cell<u64>,
 }
