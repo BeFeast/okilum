@@ -93,6 +93,14 @@ same four packages. Its three disjoint selections must report exactly that
 inventory in their completed/ignored counts. Every Cargo invocation keeps all
 four packages for the same feature unification and test environment. One
 1320 s deadline covers the complete census and all three selections together.
+After inventory compilation, ordinary cases and the serial Log cases execute
+concurrently in separate processes, preserving their independent Log pools.
+The reveal process starts only after both complete. Run `26071` exhausted the
+same deadline after its ordinary census passed 4342/4342 and the serial Log
+process had started; all 4471 selected cases still require individual census
+receipts. The orchestration control requires ordinary/Log rendezvous, checks
+that reveal waits, and retains failures from every process. It rejects the old
+serial schedule without changing assertions, filters or the overall deadline.
 This replaces whole-workspace serialization after run `42390453208` exhausted
 that deadline; the deadline and every runtime assertion remain unchanged.
 

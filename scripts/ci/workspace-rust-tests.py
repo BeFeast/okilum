@@ -3,6 +3,7 @@
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell",
            "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
@@ -65,9 +66,13 @@ def main():
     ]
     print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals}",
           flush=True)
-    passed = True
-    for name, arguments, expected in parts:
-        passed = run(name, arguments, expected) and passed
+    # Separate processes retain separate Log pools. Overlap its serial I/O
+    # fixtures with ordinary tests, after inventory has compiled every target.
+    # Reveal stays alone so its real D-Bus deadlines do not compete with either.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda part: run(*part), parts[:2]))
+    results.append(run(*parts[2]))
+    passed = all(results)
     return 0 if passed else 1
 
 

@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -224,6 +225,35 @@ class HelperFlowTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(workspace.run("fixture", [], expected), accepted)
 
+    def test_workspace_log_and_ordinary_overlap_but_reveal_waits_and_failures_survive(self):
+        inventory = subprocess.CompletedProcess([], 0, stdout=(
+            "ordinary::case: test\nreader_log::case: test\n"
+            "platform::reveal::tests::case: test\n"), stderr="")
+        for failed in (None, "ordinary", "logs", "reveal"):
+            with self.subTest(failed=failed):
+                barrier = threading.Barrier(2)
+                completed = set()
+                lock = threading.Lock()
+
+                def execute(name, arguments, expected):
+                    self.assertEqual(expected, 1)
+                    if name in ("ordinary", "logs"):
+                        # A serial regression cannot satisfy this positive
+                        # rendezvous; no compiler, services or sleeps involved.
+                        barrier.wait(timeout=3)
+                    else:
+                        with lock:
+                            self.assertEqual(completed, {"ordinary", "logs"})
+                    with lock:
+                        completed.add(name)
+                    return name != failed
+
+                with patch.object(workspace.subprocess, "run", return_value=inventory), \
+                        patch.object(workspace, "run", side_effect=execute), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(workspace.main(), int(failed is not None))
+                self.assertEqual(completed, {"ordinary", "logs", "reveal"})
+
     def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -281,8 +311,10 @@ class HelperFlowTests(unittest.TestCase):
                                    '-p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3' in call]
                 self.assertEqual(len(workspace_calls), 4)  # census + three disjoint runs
                 self.assertIn('--list', workspace_calls[0])
-                self.assertIn('--skip reader_log --skip platform::reveal::tests::', workspace_calls[1])
-                self.assertIn('reader_log --nocapture --test-threads=1', workspace_calls[2])
+                self.assertTrue(any('--skip reader_log --skip platform::reveal::tests::' in call
+                                    for call in workspace_calls[1:3]))
+                self.assertTrue(any('reader_log --nocapture --test-threads=1' in call
+                                    for call in workspace_calls[1:3]))
                 self.assertIn('platform::reveal::tests:: --nocapture --test-threads=1', workspace_calls[3])
                 self.assertEqual(len(wrapped) + 3, len(calls))
                 self.assertIn('issue2049 120', wrapped)
