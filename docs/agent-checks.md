@@ -58,6 +58,19 @@ CI backtraces no longer include DWARF line tables. The existing 900 s budget
 still includes compilation and every admission/review group. No prewarming,
 separate compile allowance, release-profile change or deadline increase is used.
 
+The full hosted native Mac gate runs its production Reader/Sparkle lifecycle
+and workspace release tests in independent jobs on the same source. Both jobs
+are mandatory for workflow success. Cold native run `42965153887` passed in
+67 minutes, but its canonical Forgejo wrapper had already been cancelled at
+the runner's 60-minute maximum. With no native cache, controller compilation
+used 4m26s, the production app 17m35s and workspace test compilation 28m34s.
+Overlapping production and test work removes that serial dependency; neither
+the release profile, production build, Sparkle controls, native test selection
+nor existing deadlines change. `check-macos.sh` still defaults to the complete
+serial gate for local/other callers. Its orchestration control executes all
+three modes with synthetic tools and requires the split jobs to retain every
+original command; the old script fails the split-mode assertions.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a

@@ -1,6 +1,8 @@
 #!/bin/bash
 # Native PR gate: no signing, packaging, notarization or publishing.
 set -Eeuo pipefail
+mode=${1:-all}
+case "$mode" in all|production|tests) ;; *) echo "Unknown native gate mode: $mode" >&2; exit 2 ;; esac
 [[ $(uname -s) = Darwin && $(uname -m) = arm64 ]]
 # Exercise optional signing arrays with macOS /bin/bash 3.2 before any Cargo work.
 python3 scripts/ci/test_supervisor_bundle.py
@@ -32,7 +34,7 @@ python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination ve
 export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
 # #1603: only the hosted lane runs the isolated signed update/relaunch fixture.
 # Local/corporate runners must not execute it.
-if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+if [[ "$mode" != tests && "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
     python3 scripts/ci/sparkle-freshness/negative_control.py "$archive"
     python3 scripts/ci/sparkle-freshness/run.py "$archive"
 fi
@@ -63,12 +65,20 @@ run_tests() {
 }
 # Kernel lifecycle failures should surface before the long desktop/test builds.
 # The full sidecar suite remains mandatory; this only moves its existing invocation.
-run_tests okilum-sync-controller --lib sidecar::
-if [[ "$macos_rust_failed" != 0 ]]; then exit "$macos_rust_failed"; fi
+if [[ "$mode" != production ]]; then
+    run_tests okilum-sync-controller --lib sidecar::
+    if [[ "$macos_rust_failed" != 0 ]]; then exit "$macos_rust_failed"; fi
+fi
 
 # Compile the production binary too: cargo test alone only builds the shell
 # with cfg(test), because this crate has no integration-test targets.
-cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+if [[ "$mode" != tests ]]; then
+    cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+fi
+if [[ "$mode" == production ]]; then
+    release_cache_stats
+    exit 0
+fi
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
