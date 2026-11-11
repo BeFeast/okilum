@@ -449,11 +449,23 @@ impl CodePreview {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static BUILT_FOLD_ICONS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+pub(super) fn take_built_fold_icons() -> Vec<&'static str> {
+    BUILT_FOLD_ICONS.with(|icons| std::mem::take(&mut *icons.borrow_mut()))
+}
+
 /// Fold glyphs must remain distinct from the adjacent note-width control.
 pub(super) fn fold_icon(folded: bool) -> &'static str {
-    if folded {
+    let path = if folded {
         brand::READER_COLLAPSE_ICON
     } else {
         brand::READER_EXPAND_ICON
-    }
+    };
+    #[cfg(test)]
+    BUILT_FOLD_ICONS.with(|icons| icons.borrow_mut().push(path));
+    path
 }

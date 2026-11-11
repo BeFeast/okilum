@@ -319,6 +319,7 @@ fn code2809_part_keys_and_repeated_slider_values_do_not_rebuild_text(cx: &mut Te
 
 #[gpui::test]
 fn code2809_error_tolerant_source_folds_use_distinct_header_glyphs(cx: &mut TestAppContext) {
+    toolbar::take_built_fold_icons();
     let source = "fn main() {\n let broken = ;\n if true {\n   call();\n }\n}\n";
     let (code, visual, _temp) = fixture(cx, "source.rs", source);
     code.update(visual, |code, cx| {
@@ -334,12 +335,19 @@ fn code2809_error_tolerant_source_folds_use_distinct_header_glyphs(cx: &mut Test
         assert!(code.input().unwrap().read(cx).folded_ranges().is_empty());
     });
     assert!(visual.debug_bounds("code-fold-all").is_some());
-    assert_eq!(toolbar::fold_icon(true), brand::READER_COLLAPSE_ICON);
-    assert_eq!(toolbar::fold_icon(false), brand::READER_EXPAND_ICON);
-    for path in [toolbar::fold_icon(true), toolbar::fold_icon(false)] {
-        assert_ne!(path, brand::NOTE_WIDTH_NORMAL_ICON);
-        assert_ne!(path, brand::NOTE_WIDTH_FULL_ICON);
-    }
+    let icons = toolbar::take_built_fold_icons();
+    assert!(
+        !icons.is_empty(),
+        "the actual chrome constructor used the fold icon builder"
+    );
+    assert!(icons.contains(&brand::READER_COLLAPSE_ICON));
+    assert!(icons.contains(&brand::READER_EXPAND_ICON));
+    assert!(
+        icons
+            .iter()
+            .all(|path| *path != brand::NOTE_WIDTH_NORMAL_ICON
+                && *path != brand::NOTE_WIDTH_FULL_ICON)
+    );
 }
 
 #[gpui::test]
@@ -545,5 +553,53 @@ fn code2809_large_non_json_status_never_claims_a_formatted_alternative(cx: &mut 
             "9.0 MB is over the 4 MB editing limit"
         );
         assert_eq!(status.actions[0].id, "code-status-open");
+    });
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn code2809_file_identity_admission_precedes_any_storage_probe(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let (reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "data.json");
+    let vault = temp.path().join("vault");
+    std::fs::hard_link(vault.join("data.json"), vault.join("alias.json")).unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file("alias.json", window, cx)
+    });
+    settle(visual);
+    let _restore = Restore(vault.clone());
+    std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o500)).unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    settle(visual);
+    reader.read_with(visual, |reader, cx| {
+        assert!(reader.editing.is_none());
+        assert!(
+            reader
+                .link_notice
+                .as_ref()
+                .unwrap()
+                .contains("regular file"),
+            "existing identity policy wins before a folder probe"
+        );
+        let code = reader
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .as_ref()
+            .unwrap()
+            .read(cx);
+        assert!(
+            code.storage_reason.is_none(),
+            "identity failure cannot become a storage lock"
+        );
     });
 }

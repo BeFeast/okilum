@@ -825,6 +825,10 @@ impl Reader {
                 .session_directory
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("No recovery directory is available"))?;
+            let store = FileEditor::open(
+                &self.vault_root.join(self.selected_file()),
+                &state.join("editor-drafts"),
+            )?;
             if self
                 .file_preview
                 .as_ref()
@@ -832,10 +836,7 @@ impl Reader {
             {
                 reader_code_file::check_edit_location(&self.vault_root.join(self.selected_file()))?;
             }
-            FileEditor::open(
-                &self.vault_root.join(self.selected_file()),
-                &state.join("editor-drafts"),
-            )
+            Ok(store)
         })();
         let store = match result {
             Ok(store) => store,

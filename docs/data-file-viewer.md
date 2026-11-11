@@ -91,11 +91,13 @@ One `View` value owns Table, Tree, Formatted or Raw. Availability distinguishes
 available, disabled with a reason, and absent. The first bounded Raw text is
 shown before parsing/indexing begins. The raw document and formatting limits are
 then prepared on a worker; a formatted document is built only when requested
-(including the default Formatted view). Raw/Formatted snapshots are retained; switching, folding and paging never reparse or reset
+(including the default Formatted view). Raw/Formatted snapshots are retained;
+switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
 in unguarded files update the per-type map; Go to error, Go to Raw node navigation
-and background completion never write memory. The map covers (json, json-array, yaml, toml, xml;
-csv/tsv entries are reserved for the table step). Legacy `json_raw` migrates to
+and background completion never write memory. The map covers json, json-array,
+yaml, toml and xml;
+csv/tsv entries are reserved for the table step. Legacy `json_raw` migrates to
 the JSON-object entry and is omitted from subsequent writes.
 
 Size guards precede memory: over 8 MiB opens Raw without formatting; a line over
@@ -119,7 +121,8 @@ The table's inner rows and all edit chrome remain for their ordered steps.
 
 The name has a read-only lock with its reason and, independently, a warning that
 jumps to a JSON error. Storage writability is never inferred from opening a file;
-an explicit Edit attempt probes an empty temporary sibling in the document
+after the existing file-identity/storage-policy admission, an explicit Edit
+attempt probes an empty temporary sibling in the document
 directory, immediately removes it and records only that location's permission or
 read-only failure. Private recovery-state failures never mark the vault read-only.
 One bottom line chooses invalid JSON, formatting, large/raw or long-line,
