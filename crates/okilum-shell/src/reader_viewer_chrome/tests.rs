@@ -14,6 +14,7 @@ fn fixture<'a>(
         ("data.csv", "name,value\r\none,1\r\n"),
         ("source.rs", "fn main() {}\n"),
         ("text.txt", "hello שלום\r\n"),
+        ("Folder/text.txt", "nested text\n"),
         ("gateway.log", "2026-11-10T12:00:00Z INFO ready\n"),
         ("note.md", "# Note\n\nBody\n"),
         (
@@ -401,37 +402,198 @@ fn open_with_contains_platform_reveal_and_quick_look_only_on_macos() {
 #[gpui::test]
 fn open_with_button_opens_and_dismisses_the_same_header_menu(cx: &mut TestAppContext) {
     let (_, visual, _temp) = fixture(cx, "text.txt");
+    OPEN_WITH_ITEMS.with(|record| record.borrow_mut().take());
     let button = measured_bounds(visual, "viewer-open-with").unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            !gpui_base::GlobalState::native_overlays(window, cx).is_empty(),
+            "the popup actually mounted"
+        );
+        OPEN_WITH_ITEMS.with(|record| {
+            let record = record.borrow();
+            let (menu, labels) = record.as_ref().expect("Open with popup was built");
+            let menu = menu.upgrade().expect("mounted popup is alive");
+            assert!(menu.read(cx).focus_handle(cx).is_focused(window));
+            assert!(!menu.read(cx).is_empty());
+            let expected: Vec<SharedString> = open_commands()
+                .into_iter()
+                .map(|(label, _, _)| label.into())
+                .collect();
+            assert_eq!(
+                *labels, expected,
+                "mounted popup contains the platform commands"
+            );
+        });
+    });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            gpui_base::GlobalState::native_overlays(window, cx).is_empty(),
+            "popup was dismissed"
+        );
+        OPEN_WITH_ITEMS.with(|record| {
+            if let Some(menu) = record
+                .borrow()
+                .as_ref()
+                .and_then(|(menu, _)| menu.upgrade())
+            {
+                assert!(!menu.read(cx).focus_handle(cx).is_focused(window));
+            }
+        });
+    });
     assert_eq!(measured_bounds(visual, "viewer-open-with").unwrap(), button);
 }
 
 #[gpui::test]
-fn header_observes_viewer_notifications_without_a_vault_event(cx: &mut TestAppContext) {
+fn read_mode_find_keystrokes_do_not_notify_cached_side_panels(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
     struct Observer {
-        _subscription: Subscription,
+        _subscriptions: Vec<Subscription>,
     }
-    let (reader, visual, _temp) = fixture(cx, "source.rs");
-    let code = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
-    });
-    let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
-    let receipt = notifications.clone();
-    let _observer = visual.update(|_, cx| {
-        cx.new(|cx| Observer {
-            _subscription: cx.observe(&reader, move |_, _, _| receipt.set(receipt.get() + 1)),
-        })
+    let _cached = reader_side_panel::tests::CachedPanels::on();
+    let (reader, visual, temp) = fixture(cx, "note.md");
+    std::fs::write(
+        temp.path().join("vault/find.json"),
+        format!("{{\"payload\":\"{} target\"}}", "x".repeat(100_000)),
+    )
+    .unwrap();
+    reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file("find.json", window, cx)
     });
     visual.run_until_parked();
-    notifications.set(0);
-    code.update(visual, |_, cx| cx.notify());
+    let code = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    let start = std::time::Instant::now();
+    while code.read_with(visual, |code, _| code.document_snapshot().is_none()) {
+        visual.run_until_parked();
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    reader.update_in(visual, |reader, window, cx| reader.open_find(window, cx));
     visual.run_until_parked();
     assert!(
-        notifications.get() > 0,
-        "viewer state invalidates the Reader-owned header"
+        measured_bounds(visual, "data-whole-file-find").is_some(),
+        "whole-file Find is mounted"
+    );
+    visual.simulate_keystrokes("home");
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let panel_counts = Rc::new(std::cell::Cell::new([0; 2]));
+    let code_count = Rc::new(std::cell::Cell::new(0));
+    let panels = reader.read_with(visual, |reader, _| reader.side_panels.clone());
+    let _observer = visual.update(|_, cx| {
+        cx.new(|cx: &mut Context<Observer>| {
+            let mut subscriptions = Vec::new();
+            for (index, panel) in panels.into_iter().enumerate() {
+                let counts = panel_counts.clone();
+                subscriptions.push(cx.observe(&panel.unwrap(), move |_, _, _| {
+                    let mut value = counts.get();
+                    value[index] += 1;
+                    counts.set(value);
+                }));
+            }
+            let count = code_count.clone();
+            subscriptions.push(cx.observe(&code, move |_, _, _| count.set(count.get() + 1)));
+            Observer {
+                _subscriptions: subscriptions,
+            }
+        })
+    });
+    visual.simulate_input("target");
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.run_until_parked();
+    assert!(
+        code_count.get() > 0,
+        "positive control: actual whole-file Find notified the viewer"
+    );
+    assert_eq!(
+        panel_counts.get(),
+        [0, 0],
+        "read-mode Find must not notify either cached side panel"
+    );
+}
+
+#[gpui::test]
+fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _temp) = fixture(cx, "Folder/text.txt");
+    reader.update(visual, |reader, cx| {
+        reader.panels.close(reader_layout::Panel::Notes);
+        reader.panels.close(reader_layout::Panel::Backlinks);
+        cx.notify();
+    });
+    for (width, expanded) in [(1600., true), (520., false), (1600., true)] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        assert_eq!(
+            measured_bounds(visual, "reader-crumb-Folder").is_some(),
+            expanded
+        );
+        let title = measured_bounds(visual, "reader-document-root").unwrap();
+        assert!(
+            title.size.width >= px(50.),
+            "short file title remains legible"
+        );
+    }
+}
+
+#[gpui::test]
+fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (reader, visual, _temp) = fixture(cx, "document.pdf");
+    let first = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+    });
+    reader.update_in(visual, |reader, window, cx| {
+        reader.focus_handle.focus(window, cx)
+    });
+    let at = measured_bounds(visual, "pdf-zoom-in").unwrap().center();
+    visual.simulate_event(MouseMoveEvent {
+        position: at,
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    measured_bounds(visual, "pdf-zoom-in").unwrap();
+    let first_zoom = first.read_with(visual, |pdf, _| pdf.zoom_step());
+    reader.update_in(visual, |reader, window, cx| {
+        reader.preview_file("document.pdf", window, cx)
+    });
+    visual.run_until_parked();
+    let second = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+    });
+    assert_ne!(
+        first.entity_id(),
+        second.entity_id(),
+        "positive control: same file got a new viewer entity"
+    );
+    let start = std::time::Instant::now();
+    while second.read_with(visual, |pdf, _| pdf.page_count().is_none()) {
+        visual.run_until_parked();
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Preserve ordinary cache reuse: a full refresh would accidentally repair
+    // stale callbacks and make a missing entity-id key look correct.
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let second_zoom = second.read_with(visual, |pdf, _| pdf.zoom_step());
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        second.read_with(visual, |pdf, _| pdf.zoom_step()),
+        second_zoom + 1
+    );
+    assert_eq!(
+        first.read_with(visual, |pdf, _| pdf.zoom_step()),
+        first_zoom
     );
 }
 

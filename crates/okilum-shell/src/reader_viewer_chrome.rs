@@ -13,6 +13,7 @@ pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[cfg(test)]
 thread_local! {
+    static OPEN_WITH_ITEMS: std::cell::RefCell<Option<(WeakEntity<PopupMenu>, Vec<SharedString>)>> = const { std::cell::RefCell::new(None) };
     static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
 }
 
@@ -22,6 +23,7 @@ thread_local! {
 struct HeaderKey {
     file: (PathBuf, String, String),
     editing: Option<EntityId>,
+    viewers: Vec<EntityId>,
     geometry: (f32, reader_layout::Panels, reader_layout::Widths),
     navigation: (usize, usize, bool),
     labels: bool,
@@ -71,6 +73,27 @@ impl HeaderKey {
                 reader.selected_file().to_owned(),
                 reader.selected_title(),
             ),
+            viewers: reader
+                .file_preview
+                .as_ref()
+                .map(|preview| {
+                    // Callback ownership is presentation state even if two viewers
+                    // happen to have identical labels and capabilities.
+                    [
+                        preview.pdf.as_ref().map(Entity::entity_id),
+                        preview.code.as_ref().map(Entity::entity_id),
+                        preview.table.as_ref().map(Entity::entity_id),
+                        preview.archive.as_ref().map(Entity::entity_id),
+                        preview.audio.as_ref().map(Entity::entity_id),
+                        preview.canvas.as_ref().map(Entity::entity_id),
+                        preview.log.as_ref().map(Entity::entity_id),
+                        preview.virtual_log.as_ref().map(Entity::entity_id),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+                })
+                .unwrap_or_default(),
             editing: reader
                 .editing
                 .as_ref()
@@ -284,6 +307,7 @@ struct HeaderLayout {
     editable: bool,
     editing: bool,
     width_applies: bool,
+    collapse_parents: bool,
 }
 
 impl HeaderLayout {
@@ -470,6 +494,42 @@ impl Reader {
             + (toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window) - 120.)
                 .max(0.);
         let states = layout(width, 128., title_budget, &items);
+        let parent_width = self
+            .selected_file()
+            .rsplit_once('/')
+            .map_or(0., |(dir, _)| {
+                dir.split('/')
+                    .map(|part| toolbar_text_width(part, FontWeight::NORMAL, window) + 24.)
+                    .sum::<f32>()
+            });
+        let compact_parent = if parent_width > 0. { 32. } else { 0. };
+        let controls: f32 = items
+            .iter()
+            .zip(&states)
+            .map(|(item, state)| match state {
+                Disposition::Menu => 0.,
+                Disposition::Shown => item.width + 4.,
+                Disposition::Collapsed => {
+                    item.steps
+                        .iter()
+                        .filter(|step| step.disposition == Disposition::Collapsed)
+                        .map(|step| step.width.max(item.minimum_width))
+                        .last()
+                        .unwrap_or(item.minimum_width)
+                        + 4.
+                }
+            })
+            .sum();
+        let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
+        let spare = width
+            - 128.
+            - controls
+            - title_width
+            - 16.
+            - compact_parent
+            - if chrome.state.is_some() { 32. } else { 0. };
+        let collapse_parents = parent_width > compact_parent + spare.max(0.);
+
         let plan = HeaderLayout {
             items,
             states,
@@ -477,6 +537,7 @@ impl Reader {
             editable,
             editing,
             width_applies,
+            collapse_parents,
         };
         h_flex()
             .id("document-header")
@@ -489,7 +550,7 @@ impl Reader {
             .gap_1()
             .overflow_hidden()
             .child(navigation_slot(self, &plan, cx))
-            .child(name_slot(self, &chrome, cx))
+            .child(name_slot(self, &chrome, &plan, cx))
             .child(find_slot(&chrome))
             .child(views_slot(&chrome))
             .child(viewer_actions_slot(&chrome, &plan, cx))
@@ -566,7 +627,12 @@ fn navigation_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Reader
 }
 
 #[inline(never)]
-fn name_slot(reader: &Reader, chrome: &ViewerChrome, cx: &mut Context<Reader>) -> AnyElement {
+fn name_slot(
+    reader: &Reader,
+    chrome: &ViewerChrome,
+    plan: &HeaderLayout,
+    cx: &mut Context<Reader>,
+) -> AnyElement {
     let nested = reader.selected_file().contains('/');
     h_flex()
         .debug_selector(|| "viewer-name-slot".into())
@@ -575,7 +641,7 @@ fn name_slot(reader: &Reader, chrome: &ViewerChrome, cx: &mut Context<Reader>) -
             + if nested { 32. } else { 0. }
             + if chrome.state.is_some() { 32. } else { 0. }))
         .overflow_hidden()
-        .child(reader.render_breadcrumbs(nested, cx))
+        .child(reader.render_breadcrumbs(plan.collapse_parents, cx))
         .children(chrome.state.as_ref().map(|state| state.button(true)))
         .into_any_element()
 }
@@ -825,21 +891,29 @@ fn open_menu(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    #[cfg(test)]
+    let mut rendered_labels = Vec::new();
     for (index, (label, action, command)) in open_commands().into_iter().enumerate() {
         if index == 1 {
             menu = open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
         }
         let target = reader.clone();
-        menu = menu.item(
-            PopupMenuItem::new(label)
-                .action(command)
-                .on_click(move |_, w, cx| {
-                    let _ = target.update(cx, |r, cx| {
-                        reader_files::run(action, &r.vault_root, r.selected_file(), w, cx)
-                    });
-                }),
-        );
+        let item = PopupMenuItem::new(label)
+            .action(command)
+            .on_click(move |_, w, cx| {
+                let _ = target.update(cx, |r, cx| {
+                    reader_files::run(action, &r.vault_root, r.selected_file(), w, cx)
+                });
+            });
+        #[cfg(test)]
+        if let PopupMenuItem::Item { label, .. } = &item {
+            rendered_labels.push(label.clone());
+        }
+        menu = menu.item(item);
     }
+    #[cfg(test)]
+    OPEN_WITH_ITEMS
+        .with(|record| *record.borrow_mut() = Some((cx.entity().downgrade(), rendered_labels)));
     menu
 }
 
