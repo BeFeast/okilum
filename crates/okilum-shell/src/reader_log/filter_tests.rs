@@ -2,7 +2,11 @@
 fn filter_frame(visual: &mut VisualTestContext) {
     visual.run_until_parked();
     for _ in 0..2 {
-        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.update(|window, cx| {
+            // Cached header paint does not replay GPUI's test-only debug bounds.
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
         visual.run_until_parked();
     }
 }

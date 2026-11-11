@@ -10,11 +10,33 @@ pub(crate) mod tests;
 pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem, Order as OverflowOrder};
 
 pub(crate) type Invoke = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type BuildMenu =
+    Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 #[cfg(test)]
 thread_local! {
     static OPEN_WITH_ITEMS: std::cell::RefCell<Option<(WeakEntity<PopupMenu>, Vec<SharedString>)>> = const { std::cell::RefCell::new(None) };
     static HEADER_RENDERS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> = Default::default();
+    static RENDERED_ACTIONS: std::cell::RefCell<std::collections::HashMap<EntityId, Vec<RenderedAction>>> = Default::default();
+}
+
+#[cfg(test)]
+pub(crate) fn header_renders(reader: EntityId) -> usize {
+    HEADER_RENDERS.with(|counts| counts.borrow().get(&reader).copied().unwrap_or(0))
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct RenderedAction {
+    pub id: &'static str,
+    pub label: SharedString,
+    pub filled: bool,
+    pub tooltip: SharedString,
+}
+
+#[cfg(test)]
+pub(crate) fn rendered_actions(reader: EntityId) -> Vec<RenderedAction> {
+    RENDERED_ACTIONS.with(|states| states.borrow().get(&reader).cloned().unwrap_or_default())
 }
 
 /// Only presentation state invalidates the cached slot builders. A Reader
@@ -47,6 +69,8 @@ struct ActionKey {
     reason: Option<SharedString>,
     flags: (bool, bool, bool, bool, bool, bool),
     priority: (u16, u16),
+    menu: (bool, bool),
+    minimum_width: f32,
 }
 impl From<&ViewerAction> for ActionKey {
     fn from(action: &ViewerAction) -> Self {
@@ -64,6 +88,8 @@ impl From<&ViewerAction> for ActionKey {
                 action.never_dropped,
             ),
             priority: (action.priority, action.collapse_priority),
+            menu: (action.menu.is_some(), action.caret),
+            minimum_width: action.minimum_width,
         }
     }
 }
@@ -293,6 +319,9 @@ pub(crate) struct ViewerAction {
     pub never_dropped: bool,
     pub shortcut: Option<Rc<dyn Action>>,
     pub invoke: Invoke,
+    pub menu: Option<BuildMenu>,
+    pub caret: bool,
+    pub minimum_width: f32,
 }
 
 impl ViewerAction {
@@ -319,6 +348,9 @@ impl ViewerAction {
             never_dropped: false,
             shortcut: None,
             invoke,
+            menu: None,
+            caret: false,
+            minimum_width: 28.,
         }
     }
 
@@ -336,7 +368,8 @@ impl ViewerAction {
             .icon(self.icon.clone())
             .h(px(28.))
             .rounded(px(6.))
-            .when(collapsed || !self.labelled, |b| b.w(px(28.)))
+            .when(collapsed || !self.labelled, |b| b.w(px(self.minimum_width)))
+            .dropdown_caret(self.caret)
             .when(!collapsed && self.labelled, |b| b.label(self.label.clone()))
             .accessibility_label(self.label.clone())
             .tooltip(
@@ -350,12 +383,33 @@ impl ViewerAction {
                 let id = self.id;
                 move || id.into()
             })
-            .on_click(move |_, window, cx| invoke(window, cx))
+            .when(self.menu.is_none(), |button| {
+                button.on_click(move |_, window, cx| invoke(window, cx))
+            })
+    }
+
+    pub(crate) fn render_button(&self, collapsed: bool) -> AnyElement {
+        let button = self.button(collapsed);
+        if let Some(menu) = self.menu.clone() {
+            button
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |m, w, cx| menu(m, w, cx))
+                .into_any_element()
+        } else {
+            button.into_any_element()
+        }
     }
 
     pub(crate) fn menu_item(&self) -> PopupMenuItem {
         let invoke = self.invoke.clone();
-        let mut item = PopupMenuItem::new(self.label.clone())
+        let label = if !self.enabled {
+            self.disabled_reason
+                .as_ref()
+                .map(|reason| format!("{} — {reason}", self.label).into())
+                .unwrap_or_else(|| self.label.clone())
+        } else {
+            self.label.clone()
+        };
+        let mut item = PopupMenuItem::new(label)
             .icon(self.icon.clone())
             .checked(self.toggled)
             .disabled(!self.enabled)
@@ -364,6 +418,52 @@ impl ViewerAction {
             item = item.action(shortcut.boxed_clone());
         }
         item
+    }
+
+    fn layout_item(&self, labels: bool, window: &Window) -> LayoutItem {
+        let wide = if (labels || self.label_by_default) && self.labelled {
+            // Toolkit Medium buttons use a 1rem label, 20px padding, a
+            // 16px icon and an 8px gap. A caret adds another 16px + 8px.
+            toolbar_text_width(&self.label, FontWeight::MEDIUM, window) * window.rem_size().as_f32()
+                / brand::READER_CHROME_FONT_SIZE
+                + 44.
+                + if self.caret { 24. } else { 0. }
+        } else {
+            self.minimum_width
+        };
+        let mut item = LayoutItem::action(
+            self.id,
+            wide,
+            self.minimum_width,
+            self.priority,
+            self.never_dropped,
+        );
+        for step in &mut item.steps {
+            if step.disposition == Disposition::Collapsed {
+                step.priority = self.collapse_priority;
+            }
+        }
+        item
+    }
+
+    pub(crate) fn append_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        if let Some(build) = &self.menu {
+            let build = build.clone();
+            menu.submenu_with_icon(
+                Some(self.icon.clone()),
+                self.label.clone(),
+                window,
+                cx,
+                move |m, w, cx| build(m, w, cx),
+            )
+        } else {
+            menu.item(self.menu_item())
+        }
     }
 }
 
@@ -384,6 +484,7 @@ pub(crate) struct ViewerChrome {
     pub action_text: Option<SharedString>,
     pub action_text_after: Option<&'static str>,
     pub copy_actions: Vec<ViewerAction>,
+    pub copy_in_menu: bool,
     pub open_actions: Vec<ViewerAction>,
     pub status: Option<reader_status_line::StatusLine>,
     pub state: Option<ViewerAction>,
@@ -549,6 +650,9 @@ impl Reader {
         let Some(preview) = &self.file_preview else {
             return ViewerChrome::default();
         };
+        if let Some(log) = &preview.log {
+            return reader_log::chrome::describe(log, cx);
+        }
         if let Some(pdf) = &preview.pdf {
             return reader_pdf::chrome(pdf, cx);
         }
@@ -601,6 +705,24 @@ impl Reader {
             };
         let chrome = self.viewer_chrome(cx);
         let plan = self.header_layout(&chrome, width, window, cx);
+        // A test observes the values actually handed to the slot builders,
+        // not a fresh description that could hide an incorrectly cached Header.
+        #[cfg(test)]
+        RENDERED_ACTIONS.with(|states| {
+            states.borrow_mut().insert(
+                cx.entity_id(),
+                chrome
+                    .actions
+                    .iter()
+                    .map(|action| RenderedAction {
+                        id: action.id,
+                        label: action.label.clone(),
+                        filled: action.filled,
+                        tooltip: action.tooltip.clone(),
+                    })
+                    .collect(),
+            );
+        });
         h_flex()
             .id("document-header")
             .debug_selector(|| "document-header".into())
@@ -636,25 +758,16 @@ impl Reader {
         let width_applies = self
             .file_preview
             .as_ref()
-            .is_some_and(|p| p.code.is_some() || p.text.is_some());
+            .is_some_and(|p| p.log.is_none() && (p.code.is_some() || p.text.is_some()));
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
         let order = chrome.overflow_order;
         let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
-        for action in &chrome.actions {
-            let wide = if (labels || action.label_by_default) && action.labelled {
-                toolbar_text_width(&action.label, FontWeight::MEDIUM, window) + 44.
-            } else {
-                28.
-            };
-            let mut item =
-                LayoutItem::action(action.id, wide, 28., action.priority, action.never_dropped);
-            for step in &mut item.steps {
-                if step.disposition == Disposition::Collapsed {
-                    step.priority = action.collapse_priority;
-                }
-            }
-            items.push(item);
-        }
+        items.extend(
+            chrome
+                .actions
+                .iter()
+                .map(|action| action.layout_item(labels, window)),
+        );
         if chrome.action_text.is_some() {
             items.push(LayoutItem::optional(
                 "viewer-action-text",
@@ -680,12 +793,14 @@ impl Reader {
             }
             items.push(item);
         }
-        items.push(LayoutItem::optional(
-            "copy",
-            if labels { 90. } else { 40. },
-            40.,
-            order.copy,
-        ));
+        if !chrome.copy_in_menu {
+            items.push(LayoutItem::optional(
+                "copy",
+                if labels { 90. } else { 40. },
+                40.,
+                order.copy,
+            ));
+        }
         if editable {
             items.push(LayoutItem::pinned(
                 "edit",
@@ -935,7 +1050,9 @@ fn viewer_actions_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> 
         .children(actions.into_iter().map(|a| {
             h_flex()
                 .gap_1()
-                .child(a.button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id)))
+                .child(
+                    a.render_button((!plan.labels && !a.label_by_default) || plan.collapsed(a.id)),
+                )
                 .when(
                     plan.shows("viewer-action-text") && chrome.action_text_after == Some(a.id),
                     |row| row.child(text()),
@@ -1264,7 +1381,7 @@ fn window_slot(
                     m = m.menu("Maximize / restore", Box::new(MaximizeNote));
                 }
                 for action in &overflow {
-                    m = m.item(action.menu_item());
+                    m = action.append_menu(m, w, cx);
                 }
                 if let Some(path) = table.clone() {
                     let no_header = !reader_ui_state::delimited_header(&path, cx);
@@ -1317,4 +1434,98 @@ fn window_slot(
             }),
     )
     .into_any_element()
+}
+
+/// Hosts without a document header reserve Find and draw the same erased action
+/// slot and overflow menus. They do not invent another set of log controls.
+#[inline(never)]
+pub(crate) fn render_compact_header(
+    chrome: &ViewerChrome,
+    width: f32,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
+    let mut items: Vec<_> = chrome
+        .actions
+        .iter()
+        .map(|action| action.layout_item(labels, window))
+        .collect();
+    if let Some(find) = &chrome.find {
+        let mut item = LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
+        item.steps = vec![overflow::OverflowStep {
+            priority: chrome.overflow_order.find_narrow,
+            width: 128.,
+            disposition: Disposition::Collapsed,
+        }];
+        if !find.large_file {
+            item.steps.push(overflow::OverflowStep {
+                priority: chrome.overflow_order.find_icon,
+                width: 28.,
+                disposition: Disposition::Collapsed,
+            });
+        }
+        items.push(item);
+    }
+    items.push(LayoutItem::pinned("more", 28., 28.));
+    let (states, widths) = layout_with_widths(width, 32., 0., &items);
+    let plan = HeaderLayout {
+        items,
+        states,
+        widths,
+        labels,
+        editable: false,
+        editing: false,
+        width_applies: false,
+        collapse_parents: false,
+    };
+    let find = chrome.find.as_ref().map(|target| {
+        reader_find_field::render(
+            target,
+            reader_find_field::Presentation::Header {
+                width: plan.width("find"),
+                focused: target.input.read(cx).focus_handle(cx).is_focused(window),
+                max_width: plan.width("find"),
+            },
+            cx,
+        )
+    });
+    let overflow: Vec<_> = chrome
+        .actions
+        .iter()
+        .filter(|action| !plan.shows(action.id))
+        .cloned()
+        .collect();
+    let copies = chrome.copy_actions.clone();
+    h_flex()
+        .debug_selector(|| "viewer-compact-header".into())
+        .w_full()
+        .flex_none()
+        .min_w_0()
+        .h(px(48.))
+        .px_3()
+        .gap_1()
+        .children(find)
+        .child(viewer_actions_slot(chrome, &plan, cx))
+        .child(div().flex_1())
+        .child(
+            reader_icon_button("log-more", IconName::Ellipsis, "Log actions", cx)
+                .debug_selector(|| "log-more".into())
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
+                    for action in &overflow {
+                        menu = action.append_menu(menu, window, cx);
+                    }
+                    if !copies.is_empty() {
+                        let copies = copies.clone();
+                        menu = menu.submenu("Copy", window, cx, move |mut menu, window, cx| {
+                            for action in &copies {
+                                menu = action.append_menu(menu, window, cx);
+                            }
+                            menu
+                        });
+                    }
+                    menu
+                }),
+        )
+        .into_any_element()
 }

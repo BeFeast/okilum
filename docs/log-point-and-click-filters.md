@@ -7,6 +7,21 @@ all enabled chips. A valid manual edit is split back into recognized chips and
 advanced conditions. Invalid text retains the last applied query and reports its
 parse error. Clear all also clears disabled chips, free text, level and time.
 
+## Header and query row
+
+Reader-hosted logs put Find in records, Level, Time range, Follow and menu actions
+in the pinned document header. Standalone log hosts use the same descriptors in
+their own compact header. Find narrows text without case sensitivity; Enter keeps
+the filter and focuses rows, Esc clears and returns. FocusLogFilter remains the
+alias for existing user bindings.
+
+Query opens the single secondary row. A query, any chip (even disabled), regex
+editing/error or an investigation keeps it present. That row owns the query
+field/error, Recent queries, Regex, chips and the only Clear all. At narrow widths
+chips open from one counter. Counter and source/scope notices are in the bottom
+bar; the message-field chooser is in Columns. Copy raw line and whole-file/path
+commands are under Document actions > Copy, with no separate Copy button.
+
 ## Contracts for remote sources
 
 Public types live in okilum_core::log::chips:
