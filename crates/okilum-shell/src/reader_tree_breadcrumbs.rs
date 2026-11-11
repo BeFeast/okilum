@@ -146,7 +146,7 @@ impl Reader {
         let open_root = root.clone();
         let open_path = path.clone();
         let tooltip = path.as_ref().map_or_else(
-            || "No unambiguous _index.md in this vault".to_owned(),
+            || "No unambiguous index note in this vault".to_owned(),
             |path| format!("{path}\n{}", root.join(path).display()),
         );
         let pinned = path

@@ -190,7 +190,7 @@ fn is_folder_note(path: &str) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     is_markdown(path)
-        && ["_index", "index", "readme"]
+        && ["_index", "@index", "index", "readme"]
             .iter()
             .any(|name| stem.eq_ignore_ascii_case(name))
 }
@@ -3800,6 +3800,17 @@ canaryhidden [[Target]]",
         });
         for (path, body) in &sources {
             assert_eq!(&std::fs::read_to_string(root.join(path)).unwrap(), body);
+        }
+    }
+}
+
+#[cfg(test)]
+mod at_index_tests {
+    use super::*;
+    #[test]
+    fn at_indexes_take_folder_titles_in_all_cases() {
+        for path in ["Area/@index.md", "Area/@INDEX.md", "Area/_index.md"] {
+            assert!(is_folder_note(path));
         }
     }
 }

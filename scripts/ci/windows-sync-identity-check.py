@@ -97,6 +97,11 @@ def main():
     runpy.run_path(str(Path(__file__).with_name("windows-sync-readiness-check.py")))["check"]()
     runpy.run_path(str(Path(__file__).with_name("windows-sync-task-check.py")))["check"](client, notices)
     runpy.run_path(str(Path(__file__).with_name("windows-sync-shell-check.py")))["check"]()
+    command = ["cargo", "test", "--locked", "-p", "okilum-sync-controller", "--lib", "direct::shared_ignores::at_template_tests::"]
+    listing = subprocess.run([*command, "--", "--list"], text=True, stdout=subprocess.PIPE, check=True).stdout
+    if "windows_issue2821_at_schema_template_precedes_legacy_with_missing_file_fallback: test" not in listing:
+        raise RuntimeError("Native @Schema template control was not discovered")
+    subprocess.run([*command, "--", "--nocapture", "--test-threads=1"], check=True)
     return 0
 
 if __name__ == "__main__":

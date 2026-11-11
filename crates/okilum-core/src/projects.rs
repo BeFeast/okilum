@@ -40,9 +40,10 @@ pub fn archived(path: &str) -> bool {
 }
 fn visible(path: &str) -> bool {
     !archived(path)
-        && !path
-            .split('/')
-            .any(|p| p.starts_with('.') || (p.starts_with('_') && p != "_index.md"))
+        && !path.split('/').any(|p| {
+            p.starts_with('.')
+                || (p.starts_with(['_', '@']) && !crate::vault_conventions::index_name(p))
+        })
 }
 impl Index {
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
@@ -67,47 +68,50 @@ impl Index {
         self.notes.remove(path);
     }
     pub fn replace(&mut self, path: &str, source: &str, modified: u128) {
-        if archived(path) {
+        if archived(path) || crate::vault_conventions::asset_content(path) {
             self.remove(path);
             return;
         }
-        let project = path.strip_suffix("/_index.md").and_then(|folder| {
-            let yaml = crate::properties::frontmatter_block(source)?;
-            let map: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
-            let scalar = |key: &str| {
-                map.get(serde_yaml::Value::String(key.into()))
-                    .and_then(serde_yaml::Value::as_str)
-            };
-            if !scalar("type")?.eq_ignore_ascii_case("project") {
-                return None;
-            }
-            let label = scalar("status").unwrap_or("Unspecified").trim();
-            let status = match label.to_lowercase().as_str() {
-                "active" | "in progress" | "in-progress" => Status::Active,
-                "planned" | "planning" => Status::Planned,
-                "done" | "closed" | "completed" | "cancelled" | "canceled" => Status::Done,
-                _ => Status::Other,
-            };
-            let first = folder.split('/').next().unwrap_or(folder);
-            let domain = (folder.contains('/')
-                && !matches!(
-                    first.to_lowercase().as_str(),
-                    "projects" | "areas" | "resources"
-                ))
-            .then(|| first.to_owned());
-            Some(Project {
-                path: path.into(),
-                title: scalar("title")
-                    .filter(|t| !t.trim().is_empty())
-                    .unwrap_or(folder.rsplit('/').next().unwrap_or(folder))
-                    .into(),
-                domain,
-                status,
-                status_label: label.into(),
-                open_tasks: 0,
-                modified,
-            })
-        });
+        let project = path
+            .rsplit_once('/')
+            .filter(|(_, name)| crate::vault_conventions::index_name(name))
+            .and_then(|(folder, _)| {
+                let yaml = crate::properties::frontmatter_block(source)?;
+                let map: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
+                let scalar = |key: &str| {
+                    map.get(serde_yaml::Value::String(key.into()))
+                        .and_then(serde_yaml::Value::as_str)
+                };
+                if !scalar("type")?.eq_ignore_ascii_case("project") {
+                    return None;
+                }
+                let label = scalar("status").unwrap_or("Unspecified").trim();
+                let status = match label.to_lowercase().as_str() {
+                    "active" | "in progress" | "in-progress" => Status::Active,
+                    "planned" | "planning" => Status::Planned,
+                    "done" | "closed" | "completed" | "cancelled" | "canceled" => Status::Done,
+                    _ => Status::Other,
+                };
+                let first = folder.split('/').next().unwrap_or(folder);
+                let domain = (folder.contains('/')
+                    && !matches!(
+                        first.to_lowercase().as_str(),
+                        "projects" | "areas" | "resources"
+                    ))
+                .then(|| first.to_owned());
+                Some(Project {
+                    path: path.into(),
+                    title: scalar("title")
+                        .filter(|t| !t.trim().is_empty())
+                        .unwrap_or(folder.rsplit('/').next().unwrap_or(folder))
+                        .into(),
+                    domain,
+                    status,
+                    status_label: label.into(),
+                    open_tasks: 0,
+                    modified,
+                })
+            });
         let tasks = if visible(path) {
             crate::tasks::parse(path, source)
                 .iter()
@@ -131,9 +135,22 @@ impl Index {
             .notes
             .values()
             .filter_map(|n| n.project.clone())
+            .filter(|project| {
+                let folder = project.path.rsplit_once('/').unwrap().0;
+                let candidates = crate::vault_conventions::index_candidates(
+                    self.notes
+                        .keys()
+                        .filter(|path| {
+                            path.rsplit_once('/')
+                                .is_some_and(|(parent, _)| parent == folder)
+                        })
+                        .map(String::as_str),
+                );
+                candidates.as_slice() == [project.path.as_str()]
+            })
             .collect();
         for project in &mut self.rows {
-            let prefix = project.path.strip_suffix("_index.md").unwrap();
+            let prefix = &project.path[..project.path.rfind('/').unwrap() + 1];
             for (_, note) in self
                 .notes
                 .range(prefix.to_owned()..)

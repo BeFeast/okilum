@@ -38,8 +38,7 @@ pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
 /// or navigation reveals them. They remain in inventory for links and search;
 /// service directories are excluded by the scanner.
 pub fn hidden(path: &str) -> bool {
-    path.split('/')
-        .any(|segment| segment.starts_with('_') || segment.starts_with('.'))
+    okilum_core::vault_conventions::hidden(path)
 }
 
 /// PARA archive folders, with or without a numeric prefix ("4 Archive").
@@ -232,7 +231,12 @@ impl Tree {
                 ..Self::default()
             };
             self.root = root.to_path_buf();
-            self.templates_folder = "_Assets/Templates".into();
+            self.templates_folder = okilum_core::note_templates::default_folder_from(|folder| {
+                entries
+                    .iter()
+                    .any(|entry| entry.path == folder && entry.kind == EntryKind::Directory)
+            })
+            .into();
         }
         self.children.clear();
         self.kinds.clear();
@@ -834,18 +838,19 @@ pub fn folder_index(folder: &str, entries: &[VaultEntry]) -> FolderIndex {
 }
 
 fn index_name(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("_index.md"))
+    okilum_core::vault_conventions::index_name(path)
 }
 
 /// The index note among one folder's direct children.
 fn index_among<'a>(children: impl Iterator<Item = &'a VaultEntry>) -> FolderIndex {
-    let mut found =
-        children.filter(|entry| entry.kind == EntryKind::Markdown && index_name(&entry.path));
-    match (found.next(), found.next()) {
-        (None, _) => FolderIndex::None,
-        (Some(entry), None) => FolderIndex::One(entry.path.clone()),
+    let found = okilum_core::vault_conventions::index_candidates(
+        children
+            .filter(|entry| entry.kind == EntryKind::Markdown)
+            .map(|entry| entry.path.as_str()),
+    );
+    match found.as_slice() {
+        [] => FolderIndex::None,
+        [path] => FolderIndex::One((*path).to_owned()),
         _ => FolderIndex::Several,
     }
 }

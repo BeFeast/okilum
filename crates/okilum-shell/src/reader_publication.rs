@@ -34,7 +34,7 @@ pub(super) fn snapshot_sources(
     Arc::new(
         state
             .snapshot
-            .source_paths()
+            .markdown_source_paths()
             .filter_map(|path| {
                 state.snapshot.source(path).map(|raw| {
                     (

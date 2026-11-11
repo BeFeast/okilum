@@ -27,7 +27,7 @@ impl CandidateIndex {
             revision: snapshot.id.clone(),
             ..Default::default()
         };
-        for path in snapshot.source_paths() {
+        for path in snapshot.markdown_source_paths() {
             if let Some(source) = snapshot.source(path) {
                 index.update(path, &source, snapshot.source_revision(path).cloned());
             }
@@ -149,7 +149,7 @@ impl CandidateIndex {
             }
         }
         let mut unchanged = BTreeMap::new();
-        for (count, note) in vault.notes.iter().enumerate() {
+        for (count, note) in vault.markdown_entries().enumerate() {
             checkpoint("Checking link index revisions", count)?;
             let stamp = SourceRevision::read(&root.join(&note.path)).ok();
             let reusable = stamp.as_ref().is_some_and(|stamp| stamp.is_precise())

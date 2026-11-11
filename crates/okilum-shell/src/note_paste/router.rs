@@ -970,7 +970,8 @@ fn save_data_image(
             .or(kind_of_mime(mime))?
             .extension()
     };
-    let folder = attachments::attachment_folder(vault_root, note_rel);
+    let folder =
+        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::Image);
     let wanted = attachments::pasted_name(stamp, 0, extension);
     super::image_import::save(&folder, &wanted, &bytes, options)
         .ok()
@@ -1042,7 +1043,8 @@ fn save_local_image(
         };
         files::sanitize_name(&named)
     };
-    let folder = attachments::attachment_folder(vault_root, note_rel);
+    let folder =
+        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::Image);
     super::image_import::save(&folder, &name, &bytes, options)
         .ok()
         .map(|saved| {
@@ -1095,7 +1097,11 @@ fn rich_routed(
         routed.follow_up = Some(FollowUp::RemoteImages {
             region: Region::at(&after, sel.start, inserted.len()),
             images: rich.remote,
-            folder: attachments::attachment_folder(cx.vault_root, note_rel),
+            folder: attachments::attachment_folder(
+                cx.vault_root,
+                note_rel,
+                attachments::AttachmentKind::Image,
+            ),
             vault_root: cx.vault_root.to_path_buf(),
             stamp: cx.stamp.to_string(),
             image_options: cx.image_options,
@@ -1355,9 +1361,9 @@ mod tests {
     }
     impl Note {
         fn new() -> Self {
-            Self {
-                vault: tempfile::tempdir().unwrap(),
-            }
+            let vault = tempfile::tempdir().unwrap();
+            std::fs::create_dir(vault.path().join("attachments")).unwrap();
+            Self { vault }
         }
         fn cx<'a>(
             &'a self,

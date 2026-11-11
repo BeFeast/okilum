@@ -13,7 +13,35 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Where pasted images go when the vault does not say.
-pub const DEFAULT_FOLDER: &str = "attachments";
+pub const DEFAULT_FOLDER: &str = "@Assets/Images";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Image,
+    File,
+}
+
+impl AttachmentKind {
+    pub fn of_path(path: &Path) -> Self {
+        use std::io::Read as _;
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(is_image_extension)
+        {
+            return Self::Image;
+        }
+        let mut head = [0; 16];
+        if std::fs::File::open(path)
+            .and_then(|mut file| file.read(&mut head))
+            .is_ok_and(|len| sniff_image(&head[..len]).is_some())
+        {
+            Self::Image
+        } else {
+            Self::File
+        }
+    }
+}
 /// Names tried in one folder before giving up.
 const MAX_SUFFIX: usize = 999;
 
@@ -66,7 +94,7 @@ pub struct SavedImage {
 
 /// The folder a pasted image is saved in, for `note_rel` (vault-relative,
 /// `/`-separated). Never outside the vault.
-pub fn attachment_folder(vault_root: &Path, note_rel: &str) -> PathBuf {
+pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind) -> PathBuf {
     let setting = std::fs::read(vault_root.join(".obsidian").join("app.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -81,7 +109,21 @@ pub fn attachment_folder(vault_root: &Path, note_rel: &str) -> PathBuf {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|setting| folder_from_setting(setting, &note_dir))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER));
+        .unwrap_or_else(|| {
+            let typed = match kind {
+                AttachmentKind::Image => DEFAULT_FOLDER,
+                AttachmentKind::File => "@Assets/Files",
+            };
+            if vault_root.join("@Assets").is_dir() {
+                PathBuf::from(typed)
+            } else if vault_root.join("_Assets/Attachments").is_dir() {
+                PathBuf::from("_Assets/Attachments")
+            } else if vault_root.join("attachments").is_dir() {
+                PathBuf::from("attachments")
+            } else {
+                PathBuf::from(typed)
+            }
+        });
     vault_root.join(relative)
 }
 
@@ -172,7 +214,7 @@ pub fn save_pasted_image_with(
     let _admission = okilum_write_authority::operation(vault_root)
         .map_err(|e| SaveError::Write(io::Error::other(e)))?;
     if options.enabled {
-        let folder = attachment_folder(vault_root, note_rel);
+        let folder = attachment_folder(vault_root, note_rel, AttachmentKind::Image);
         let wanted = pasted_name(stamp, 0, image.kind.extension());
         let saved = super::image_import::save(&folder, &wanted, &image.bytes, options)
             .map_err(SaveError::Webp)?;
@@ -189,7 +231,7 @@ pub fn save_pasted_image_with(
         });
     }
     let (bytes, kind) = normalize(image)?;
-    let folder = attachment_folder(vault_root, note_rel);
+    let folder = attachment_folder(vault_root, note_rel, AttachmentKind::Image);
     std::fs::create_dir_all(&folder).map_err(SaveError::Folder)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".okilum-paste-")
@@ -312,8 +354,8 @@ pub fn save_pasted_files_with(
     let mut saved = SavedFiles::default();
     let mut links = Vec::new();
     let root = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
-    let folder = attachment_folder(vault_root, note_rel);
     for source in files {
+        let folder = attachment_folder(vault_root, note_rel, AttachmentKind::of_path(source));
         let display = source
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -477,6 +519,7 @@ mod tests {
     #[test]
     fn image_becomes_a_file_and_an_obsidian_embed() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("attachments")).unwrap();
         let saved =
             save_pasted_image(vault.path(), "Daily/today.md", &png(), "20261023153000").unwrap();
         assert_eq!(saved.file_name, "Pasted image 20261023153000.png");
@@ -515,12 +558,19 @@ mod tests {
     #[test]
     fn attachment_folder_follows_app_json() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("attachments")).unwrap();
         let root = vault.path();
         let note = "Projects/Alpha/plan.md";
         // Absent app.json, absent key, empty value: vault-root attachments/.
-        assert_eq!(attachment_folder(root, note), root.join("attachments"));
+        assert_eq!(
+            attachment_folder(root, note, AttachmentKind::Image),
+            root.join("attachments")
+        );
         app_json(root, None);
-        assert_eq!(attachment_folder(root, note), root.join("attachments"));
+        assert_eq!(
+            attachment_folder(root, note, AttachmentKind::Image),
+            root.join("attachments")
+        );
         for (setting, expected) in [
             ("", root.join("attachments")),
             ("/", root.to_path_buf()),
@@ -535,14 +585,24 @@ mod tests {
             ("./../../../x", root.join("attachments")),
         ] {
             app_json(root, Some(setting));
-            assert_eq!(attachment_folder(root, note), expected, "{setting:?}");
+            assert_eq!(
+                attachment_folder(root, note, AttachmentKind::Image),
+                expected,
+                "{setting:?}"
+            );
         }
         // A note at the vault root with "./" saves next to it, at the root.
         app_json(root, Some("./"));
-        assert_eq!(attachment_folder(root, "top.md"), root.to_path_buf());
+        assert_eq!(
+            attachment_folder(root, "top.md", AttachmentKind::Image),
+            root.to_path_buf()
+        );
         // Unreadable JSON falls back to the default.
         std::fs::write(root.join(".obsidian/app.json"), b"{not json").unwrap();
-        assert_eq!(attachment_folder(root, note), root.join("attachments"));
+        assert_eq!(
+            attachment_folder(root, note, AttachmentKind::Image),
+            root.join("attachments")
+        );
     }
 
     #[test]
@@ -584,6 +644,7 @@ mod tests {
     #[test]
     fn pasted_files_are_copied_and_linked() {
         let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("attachments")).unwrap();
         let outside = tempfile::tempdir().unwrap();
         let cache = outside.path().join("com.raycast.macos/clipboard");
         std::fs::create_dir_all(&cache).unwrap();
@@ -710,6 +771,7 @@ mod tests {
     #[test]
     fn failure_writes_nothing() {
         let vault = tempfile::tempdir().unwrap();
+        app_json(vault.path(), Some("attachments"));
         // A file where the folder should be: no folder, no image, no embed.
         std::fs::write(vault.path().join("attachments"), b"file").unwrap();
         assert!(matches!(

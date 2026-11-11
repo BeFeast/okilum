@@ -853,7 +853,11 @@ impl Vault {
             if ext == "md" {
                 entries.push(VaultEntry {
                     path: rel.clone(),
-                    kind: EntryKind::Markdown,
+                    kind: if crate::vault_conventions::asset_content(&rel) {
+                        EntryKind::Attachment
+                    } else {
+                        EntryKind::Markdown
+                    },
                 });
                 let stem = path
                     .file_stem()
@@ -873,10 +877,12 @@ impl Vault {
                         .push(rel.clone());
                 }
                 path_map.insert(key.to_string(), rel.clone());
-                notes.push(Note {
-                    path: rel,
-                    title: stem,
-                });
+                if !crate::vault_conventions::asset_content(&rel) {
+                    notes.push(Note {
+                        path: rel,
+                        title: stem,
+                    });
+                }
             } else {
                 entries.push(VaultEntry {
                     path: rel,
@@ -968,16 +974,22 @@ impl Vault {
             self.non_directory_paths.insert(path.to_lowercase());
             self.entries.push(VaultEntry {
                 path: path.into(),
-                kind: EntryKind::Markdown,
+                kind: if crate::vault_conventions::asset_content(path) {
+                    EntryKind::Attachment
+                } else {
+                    EntryKind::Markdown
+                },
             });
-            self.notes.push(Note {
-                path: path.into(),
-                title: Path::new(path)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            });
+            if !crate::vault_conventions::asset_content(path) {
+                self.notes.push(Note {
+                    path: path.into(),
+                    title: Path::new(path)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
             let lower = path.to_lowercase();
             let key = lower.trim_end_matches(".md");
             self.path_map.insert(key.into(), path.into());
@@ -1103,12 +1115,18 @@ impl Vault {
             vault.path_map.insert(key.to_owned(), path.clone());
             vault.entries.push(VaultEntry {
                 path: path.clone(),
-                kind: EntryKind::Markdown,
+                kind: if crate::vault_conventions::asset_content(&path) {
+                    EntryKind::Attachment
+                } else {
+                    EntryKind::Markdown
+                },
             });
-            vault.notes.push(Note {
-                title: Self::title_of(&path),
-                path,
-            });
+            if !crate::vault_conventions::asset_content(&path) {
+                vault.notes.push(Note {
+                    title: Self::title_of(&path),
+                    path,
+                });
+            }
         }
         vault.notes.sort_by(|a, b| a.path.cmp(&b.path));
         for candidates in vault.suffix_map.values_mut() {
@@ -1203,6 +1221,17 @@ impl Vault {
     /// Used when the shell is started without `--note`: there is no
     /// vault-specific default note to fall back on, and an empty window is a
     /// worse first impression than an arbitrary real one.
+    /// Markdown document identities, including Markdown assets. Source operations
+    /// use this rather than the user-facing note list.
+    pub fn markdown_entries(&self) -> impl Iterator<Item = &VaultEntry> {
+        self.entries.iter().filter(|entry| {
+            entry.kind != EntryKind::Directory
+                && Path::new(&entry.path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        })
+    }
+
     pub fn first_note(&self) -> Option<String> {
         self.notes.first().map(|n| n.path.clone())
     }

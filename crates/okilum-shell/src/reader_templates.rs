@@ -5,7 +5,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 #[cfg(all(test, unix))]
 use std::io::Read as _;
 
-pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
+pub const DEFAULT_FOLDER: &str = okilum_core::note_templates::DEFAULT_FOLDER;
 #[cfg(all(test, unix))]
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
 
@@ -25,7 +25,13 @@ fn valid_folder(folder: &str) -> bool {
             .all(|p| matches!(p, std::path::Component::Normal(_)))
 }
 pub fn load(root: &Path, state: &Path) -> Result<String> {
-    Ok(configured_folder(root, state)?.unwrap_or_else(|| DEFAULT_FOLDER.into()))
+    if let Some(folder) = configured_folder(root, state)? {
+        return Ok(folder);
+    }
+    Ok(okilum_core::note_templates::Catalog::load(root)?
+        .folder
+        .to_string_lossy()
+        .into_owned())
 }
 pub(super) fn configured_folder(root: &Path, state: &Path) -> Result<Option<String>> {
     let path = preferences_path(root, state)?;

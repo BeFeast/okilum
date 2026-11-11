@@ -364,17 +364,17 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             };
             let result = crate::note_paste::image_import::import_file(
                 &item.source,
-                &work_plan.folder,
+                &item.folder,
                 file_name,
                 work_plan.image_options,
             )
             .and_then(|imported| match imported {
                 Some(saved) => Ok((saved.name, saved.paths)),
-                None => files::copy_into(&item.source, &work_plan.folder, file_name, &mut |n| {
+                None => files::copy_into(&item.source, &item.folder, file_name, &mut |n| {
                     progress.store(base + n, Ordering::Relaxed)
                 })
                 .map(|name| {
-                    let paths = vec![work_plan.folder.join(&name)];
+                    let paths = vec![item.folder.join(&name)];
                     (name, paths)
                 })
                 .map_err(|error| error.user_text(file_name)),
@@ -386,7 +386,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                     saved_files.extend(paths);
                     copied.push(Some(files::link_target(
                         &name,
-                        &work_plan.folder_rel,
+                        &work_plan.relative_folder(item),
                         &existing,
                     )));
                 }
@@ -572,7 +572,11 @@ fn convert_in_background(
         window,
         cx,
     );
-    let folder = attachments::attachment_folder(&job.vault_root, &job.note_rel);
+    let folder = attachments::attachment_folder(
+        &job.vault_root,
+        &job.note_rel,
+        attachments::AttachmentKind::Image,
+    );
     let vault_root = job.vault_root.clone();
     let stamp = job.stamp.clone();
     let image_options = job.image_options;

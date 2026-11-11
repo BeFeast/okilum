@@ -1,0 +1,31 @@
+{
+  "text": {
+    "@Index.md": "# Synthetic Vault Index\n",
+    "Area/@index.md": "---\ntype: project\nstatus: active\n---\n# Area\n\nUniqueindexneedle\n- [ ] Active task\n",
+    "Legacy/_index.md": "---\ntype: project\n---\n# Legacy\n",
+    "Mixed/_index.md": "---\ntype: project\n---\n# Legacy mixed\n",
+    "Mixed/@index.md": "---\ntype: project\n---\n# Current mixed\n",
+    "@Schema/Templates/Note.md": "# {{title}}\n",
+    "_Assets/Templates/Old.md": "# Legacy template\n",
+    "@AgentContract.md": "# Rules\n\nUse English for instructions.\n",
+    "AGENTS.md": "@@AgentContract.md\n@./@AgentContract.md\n",
+    "Area/Links.md": "# Links\n\n[[Area/@index]] [[@index]] [[@AgentContract]]\n\n![[@Assets/Images/a.png]] ![[a.png]]\n\n![[@Assets/Excalidraw/a.excalidraw.md]] ![[a.excalidraw.md]]\n\n![[@Assets/Clippings/Nested/clip.md]]\n",
+    "_Private/x.md": "# Legacy private\n",
+    "@Private/y.md": "# Current private\n\nOrdinaryatneedle\n",
+    "@Assets/Excalidraw/a.excalidraw.md": "---\nexcalidraw-plugin: parsed\n---\n# Synthetic drawing\nAssetonlyneedle\n\n%%\n## Drawing\n```json\n{\"type\":\"excalidraw\",\"version\":2,\"source\":\"synthetic\",\"elements\":[],\"appState\":{\"viewBackgroundColor\":\"#ffffff\"},\"files\":{}}\n```\n%%\n",
+    "@Assets/Clippings/Nested/clip.md": "# Clipping\n\nAssetonlyneedle\n",
+    "_Assets/Daily Notes/day.md": "# Legacy daily note\n",
+    "Visible/@data.csv": "a,b\n1,2\n",
+    "Visible/data.csv": "a,b\n1,2\n",
+    "@Assets/Files/sample.pdf": "%PDF-1.4\n%%EOF\n",
+    "@Schema/stignore.template": "// synthetic shared policy\ncache-generated\n",
+    "_Schema/stignore.template": "// synthetic legacy shared policy\nlegacy-generated\n"
+  },
+  "base64": {
+    "@Assets/Images/a.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII="
+  },
+  "case_sensitive": {
+    "Twice/@index.md": "# First case\n",
+    "Twice/@Index.md": "# Second case\n"
+  }
+}

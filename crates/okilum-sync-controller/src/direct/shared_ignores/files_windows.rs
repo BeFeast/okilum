@@ -61,15 +61,20 @@ impl Files {
     }
     pub fn template(&self) -> Result<Option<Vec<u8>>> {
         self.verify()?;
-        let path = self.root.child(OsStr::new("_Schema"))?;
-        let directory = match Directory::open(&path) {
-            Ok(directory) => directory,
-            Err(error) if missing(&error) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let bytes = read(&directory, "stignore.template")?;
+        for schema in ["@Schema", "_Schema"] {
+            let path = self.root.child(OsStr::new(schema))?;
+            let directory = match Directory::open(&path) {
+                Ok(directory) => directory,
+                Err(error) if missing(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(bytes) = read(&directory, "stignore.template")? {
+                self.verify()?;
+                return Ok(Some(bytes));
+            }
+        }
         self.verify()?;
-        Ok(bytes)
+        Ok(None)
     }
     pub fn policy(&self) -> Result<Option<Vec<u8>>> {
         let bytes = match self.settings(false)? {
