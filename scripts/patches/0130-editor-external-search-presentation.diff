@@ -17,7 +17,7 @@ index 854fc4db..80cab895 100644
 
 +    #[gpui::test]
 +    fn external_search_paints_real_match_paths_without_an_open_strip(cx: &mut gpui::TestAppContext) {
-+        use gpui::{Context, Render, VisualTestContext};
++        use gpui::{AppContext as _, Context, Render, VisualTestContext};
 +        use crate::input::EditorState;
 +        struct Fixture(Entity<EditorState>);
 +        impl Render for Fixture {
