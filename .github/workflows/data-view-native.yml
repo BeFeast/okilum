@@ -90,6 +90,12 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           cargo build --locked -p okilum-shell --bin okilum --features data-view-native-harness
+      - name: Probe Reader read and edit on main without toolbar changes
+        shell: bash
+        run: |
+          binary=target/debug/okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
+          python3 scripts/ci/reader-viewer-native-app.py "$binary"
       - name: Observe native event loop and system clipboard with 32 MiB files
         shell: bash
         run: |
@@ -111,6 +117,7 @@ jobs:
           path: |
             ${{ runner.temp }}/data-view-native-app.log
             ${{ runner.temp }}/data-table-native-app.log
+            ${{ runner.temp }}/reader-viewer-native-app.log
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/cache/save@v4

@@ -135,6 +135,8 @@ mod reader_right_panel;
 mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
+#[cfg(feature = "data-view-native-harness")]
+mod reader_viewer_native;
 #[cfg(test)]
 mod reader_viewer_tests;
 // One module for Linux and macOS: an `include!` wrapper made every name in
@@ -8586,6 +8588,10 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(feature = "data-view-native-harness")]
+    if reader_viewer_native::entry() {
+        return;
+    }
     if let Some(code) = reader_service_storage::command_line() {
         std::process::exit(code);
     }
