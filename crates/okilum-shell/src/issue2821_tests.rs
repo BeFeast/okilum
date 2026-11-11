@@ -295,4 +295,25 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
             "one @ index must suppress legacy ambiguity"
         );
     });
+    reader.update(visual, |view, _| {
+        let asset = "@Assets/Clippings/Nested/clip.md".to_owned();
+        let note = "@Private/y.md".to_owned();
+        view.sidebar.recent = vec![(asset.clone(), 1), (note.clone(), 1)];
+        view.sidebar.pinned = vec![asset.clone(), note.clone()];
+        view.tree.set_show_hidden(true);
+        for menu in [
+            reader_title_nav::Menu::Recent,
+            reader_title_nav::Menu::Pinned,
+        ] {
+            let listed = view.nav_entries(menu, 2);
+            assert!(
+                listed.iter().all(|entry| entry.path != asset),
+                "history cannot turn a Markdown asset into a note"
+            );
+            assert!(
+                listed.iter().any(|entry| entry.path == note),
+                "ordinary @ notes remain available with Show hidden on"
+            );
+        }
+    });
 }

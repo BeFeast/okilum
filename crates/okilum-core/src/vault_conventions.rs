@@ -48,3 +48,11 @@ pub fn uses_at(root: &Path) -> std::io::Result<bool> {
     }
     Ok(false)
 }
+
+/// Markdown assets never become note-list results, even through persisted history.
+pub fn markdown_asset(path: &str) -> bool {
+    asset_content(path)
+        && Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
