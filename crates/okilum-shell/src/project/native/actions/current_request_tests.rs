@@ -802,6 +802,12 @@ async fn approval_fallback_buttons_send_exact_decisions_and_only_server_resoluti
                 "T3 approval priority precedes questions"
             );
         }
+        let expected = Intent::Respond {
+            attachments_by_question_id: Default::default(),
+            request_id: id.clone(),
+            decision: Some((*decision).into()),
+            answers: None,
+        };
         ready.send((index + 1) as u64).unwrap();
         click(visual, &format!("approval-{id}-{index}"));
         let actions = view.read_with(visual, |view, _| view.native.actions.clone());
@@ -811,20 +817,14 @@ async fn approval_fallback_buttons_send_exact_decisions_and_only_server_resoluti
             .condition(&actions, |actions, _| {
                 actions
                     .records
-                    .get(index)
-                    .is_some_and(|record| record.sequence.is_some())
+                    .iter()
+                    .any(|record| record.command.intent == expected && record.sequence.is_some())
                     || actions.error.is_some()
             })
             .await;
         view.read_with(visual, |view, cx| {
             let actions = view.native.actions.read(cx);
             assert_eq!(actions.records.len(), index + 1);
-            let expected = Intent::Respond {
-                attachments_by_question_id: Default::default(),
-                request_id: id.clone(),
-                decision: Some((*decision).into()),
-                answers: None,
-            };
             let record = actions
                 .records
                 .iter()
