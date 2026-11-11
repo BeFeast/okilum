@@ -186,18 +186,30 @@ fn large2804_worker_cancel_keeps_source_and_ui_responsive(cx: &mut TestAppContex
     let original = document(true);
     let (f, visual) = open(cx, &original);
     let started = Instant::now();
+    // update_in flushes GPUI effects after its callback. Keep that enclosing
+    // update separate from the handler's preparation budget; real paint and
+    // Cancel are still checked below.
+    let mut handler_elapsed = None;
     f.reader.update_in(visual, |reader, window, cx| {
+        let handler_started = Instant::now();
         reader.code_operation(Action::Format, window, cx);
+        handler_elapsed = Some(handler_started.elapsed());
         assert!(reader.editing.as_ref().unwrap().operations.busy);
         assert!(cx
             .global::<JobGate>()
             .0
             .load(std::sync::atomic::Ordering::Acquire));
     });
-    assert!(
-        started.elapsed() < Duration::from_millis(100),
-        "button dispatch must not flatten/format a multi-MB target: {:?}",
+    let handler_elapsed = handler_elapsed.expect("operation handler was dispatched");
+    diagnostic_error!(
+        "LARGE2804_DISPATCH handler={:?} enclosing_update={:?}",
+        handler_elapsed,
         started.elapsed()
+    );
+    assert!(
+        handler_elapsed < Duration::from_millis(100),
+        "button handler must not flatten/format a multi-MB target: {:?}",
+        handler_elapsed
     );
     visual.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
