@@ -79,6 +79,19 @@ def provision(packages, source_root=Path('/etc/apt')):
             print(f'Hosted Ubuntu provisioning: {mirror} failed (status {status})',
                   file=sys.stderr, flush=True)
         print('Hosted Ubuntu provisioning: both official HTTPS routes failed', file=sys.stderr)
+        if source_root == Path('/etc/apt'):
+            # Read-only diagnostics for the actual ephemeral runner; fake-apt
+            # tests stay offline. Never turn transport probes into a verdict.
+            for mirror in ('azure.archive.ubuntu.com', 'archive.ubuntu.com'):
+                for family in ('--ipv4', '--ipv6'):
+                    print(f'Hosted Ubuntu transport probe: {mirror} {family}', flush=True)
+                    subprocess.run([
+                        'curl', family, '--head', '--silent', '--show-error',
+                        '--connect-timeout', '5', '--max-time', '10',
+                        '--output', os.devnull,
+                        '--write-out', 'remote_ip=%{remote_ip} http=%{http_code}\n',
+                        f'https://{mirror}/ubuntu/dists/noble/InRelease',
+                    ], check=False, timeout=15)
         return 1
 
 
