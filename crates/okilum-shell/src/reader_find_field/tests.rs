@@ -212,12 +212,22 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
             .clone()
             .unwrap()
     });
-    visual.update(|window, cx| {
-        assert!(
-            archive.read(cx).code_entry_find_is_focused(window, cx),
-            "nested Ctrl+F opens and focuses the entry's actual search"
-        )
-    });
+    let search_before = archive
+        .read_with(visual, |archive, cx| archive.code_entry_search_snapshot(cx))
+        .expect("nested Ctrl+F opens the entry's actual search");
+    visual.simulate_input("test");
+    visual.run_until_parked();
+    let search_after = archive
+        .read_with(visual, |archive, cx| archive.code_entry_search_snapshot(cx))
+        .unwrap();
+    assert_eq!(
+        search_after.0, "test",
+        "typing reaches the entry Find field"
+    );
+    assert_eq!(
+        search_after.1, search_before.1,
+        "Find never edits the entry"
+    );
     // The keyboard shortcut follows entry focus; the archive's own compact
     // Find icon still opens the archive filter when clicked.
     let mut compact = None;

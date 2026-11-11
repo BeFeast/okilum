@@ -219,13 +219,17 @@ impl ArchivePreview {
     }
 
     #[cfg(test)]
-    pub(crate) fn code_entry_find_is_focused(&self, window: &Window, cx: &App) -> bool {
+    pub(crate) fn code_entry_search_snapshot(&self, cx: &App) -> Option<(String, String)> {
         let Some(EntryView::Code(code)) = &self.entry else {
-            return false;
+            return None;
         };
-        code.read(cx).input().is_some_and(|input| {
-            input.read(cx).search_session().open
-                && input.read(cx).focus_handle(cx).is_focused(window)
+        let input = code.read(cx).input()?;
+        let input = input.read(cx);
+        input.search_session().open.then(|| {
+            (
+                input.search_session().query.clone(),
+                input.text().to_string(),
+            )
         })
     }
 
