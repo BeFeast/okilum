@@ -3787,8 +3787,14 @@ impl LogView {
                             .debug_selector(|| "log-regex-error".into())
                             .max_w(px(200.))
                             .truncate()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
                             .text_color(brand::palette(cx).danger)
-                            .child(error),
+                            .child(regex_error_summary(&error))
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(error.clone())
+                                    .build(window, cx)
+                            }),
                     )
                 });
         Some(
@@ -4720,6 +4726,19 @@ fn level_color(level: Level, cx: &App) -> Hsla {
         Level::Warn => palette.warning,
         Level::Error | Level::Fatal => palette.danger,
     }
+}
+
+/// Regex diagnostics include a multi-line source excerpt. Keep the cause on
+/// one line in the 40 px row; the tooltip retains the complete diagnostic.
+fn regex_error_summary(error: &str) -> String {
+    error
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(error)
+        .trim()
+        .trim_start_matches("error: ")
+        .to_owned()
 }
 
 /// A filter bar menu button: Reader icon-button height and radius, quiet at

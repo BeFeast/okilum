@@ -102,7 +102,8 @@ original combined titlebar and document controls:
   A single 40 px secondary row appears for an opened Query, nonempty query,
   chips (including disabled chips), regex editor/error or investigation. It
   contains query/error, Recent queries, Regex, chips and one Clear all; regex
-  editing occupies that same row. Investigation Back, breadcrumb and loaded
+  editing occupies that same row. Multi-line regex diagnostics show their cause
+  on one line and keep the full diagnostic in a tooltip. Investigation Back, breadcrumb and loaded
   count stay in it at 700 px too. Narrow chips use one counter popover.
   The message-field chooser lives in Columns. Logs have no Copy header button:
   Document actions > Copy contains raw line (with a reason while disabled),

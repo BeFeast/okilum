@@ -742,8 +742,13 @@ impl LogView {
                     div()
                         .debug_selector(|| "log-regex-error".into())
                         .text_color(brand::palette(cx).danger)
+                        .text_size(px(12.))
+                        .line_height(px(16.))
                         .truncate()
-                        .child(error)
+                        .child(regex_error_summary(&error))
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
+                        })
                 }))
                 .into_any_element(),
         )

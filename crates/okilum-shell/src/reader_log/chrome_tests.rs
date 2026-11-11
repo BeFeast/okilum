@@ -180,20 +180,44 @@ fn toolbar2808_query_and_regex_share_one_demand_row_and_one_clear(cx: &mut TestA
             });
     });
     visual.run_until_parked();
-    let row = bounds(visual, "log-query-row").unwrap();
-    for id in [
-        "log-regex-name",
-        "log-regex-pattern",
-        "log-regex-error",
-        "log-chips-clear",
-    ] {
+    view.read_with(visual, |view, _| {
+        let error = view.regex_editor.as_ref().unwrap().error.as_ref().unwrap();
         assert!(
-            row.contains(
-                &bounds(visual, id)
-                    .expect("regex editor stays inline")
-                    .center()
-            ),
-            "{id}"
+            error.contains('\n'),
+            "positive control: the real diagnostic is multi-line"
+        );
+        assert_eq!(
+            regex_error_summary(error),
+            "unclosed character class",
+            "the inline error names the actual failure"
+        );
+    });
+    for width in [1100., 700.] {
+        visual.simulate_resize(gpui::size(px(width), px(900.)));
+        let row = bounds(visual, "log-query-row").unwrap();
+        for id in [
+            "log-regex-name",
+            "log-regex-pattern",
+            "log-regex-error",
+            "log-chips-clear",
+        ] {
+            let control = bounds(visual, id).expect("regex editor stays inline");
+            assert!(
+                control.left() >= row.left()
+                    && control.right() <= row.right()
+                    && control.top() >= row.top()
+                    && control.bottom() <= row.bottom(),
+                "{id} stays fully inside the single regex row at {width}"
+            );
+        }
+        let error = bounds(visual, "log-regex-error").unwrap();
+        assert!(
+            error.size.width >= px(80.),
+            "the cause remains readable at {width}"
+        );
+        assert!(
+            error.size.height <= px(18.),
+            "the error is a single line at {width}"
         );
     }
     assert!(
