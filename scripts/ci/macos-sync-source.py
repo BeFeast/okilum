@@ -53,6 +53,7 @@ def main():
     for package, target, selected in (
         ("okilum-sync-supervisor", "--lib", "args::tests::"),
         ("okilum-sync-supervisor", "--lib", "serve::unix::tests::"),
+        ("okilum-sync-supervisor", "--test=serve", ""),
         ("okilum-sync-controller", "--lib", "direct::source::tests::"),
         ("okilum-sync-controller", "--lib", "direct::inventory::tests::"),
         ("okilum-sync-controller", "--lib", "managed_launch::macos::tests::"),
