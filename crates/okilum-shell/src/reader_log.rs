@@ -8,6 +8,7 @@
 //! `okilum_core::log::merge`, each with its colour and name, and any file can
 //! be hidden without indexing anything again.
 use super::*;
+pub(crate) mod chrome;
 mod filters;
 pub(crate) mod view_stack;
 use filters::FilterUi;
@@ -82,8 +83,7 @@ const FILTER_KEY: &str = "secondary-f";
 /// Filter bar controls follow the Reader's 28 px icon-button geometry.
 const BAR_CONTROL_HEIGHT: f32 = 28.;
 const BAR_HEIGHT: f32 = 40.;
-const TEXT_FILTER_WIDTH: f32 = 220.;
-const QUERY_MIN_WIDTH: f32 = 200.;
+const QUERY_MIN_WIDTH: f32 = 80.;
 const QUERY_ERROR_MAX_WIDTH: f32 = 260.;
 /// Level menu choices: the lowest severity shown.
 const LEVEL_CHOICES: [(Option<Level>, &str); 6] = [
@@ -107,7 +107,16 @@ actions!(
         ToggleMark,
         NextMark,
         PreviousMark,
-        InvestigationBack
+        InvestigationBack,
+        ToggleLogQuery,
+        ToggleLogFollow,
+        ClearLogFilters,
+        OpenLogLevels,
+        OpenLogTimeRange,
+        OpenLogSavedViews,
+        OpenLogColumns,
+        OpenLogExport,
+        OpenLogFiles
     ]
 );
 
@@ -537,6 +546,9 @@ fn source_color(source: usize, cx: &App) -> Hsla {
 
 pub(crate) struct LogView {
     state: State,
+    hosted_header: bool,
+    query_open: bool,
+    command_menu: Option<chrome::CommandMenu>,
     /// Entry index (into the log index) of the selected record.
     selected: Option<usize>,
     /// Where a range of selected rows started (#1169); `selected` is its other end.
@@ -734,7 +746,7 @@ impl LogView {
     }
 
     fn new(state: State, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let text_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter text…"));
+        let text_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in records"));
         let events = cx.subscribe_in(
             &text_input,
             window,
@@ -772,6 +784,9 @@ impl LogView {
         );
         Self {
             state,
+            hosted_header: false,
+            query_open: false,
+            command_menu: None,
             selected: None,
             anchor: None,
             marks: Default::default(),
@@ -2009,6 +2024,9 @@ impl LogView {
         self.query_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.query_text.clear();
+        self.query_open = false;
+        self.regex_editor = None;
+        self.regex_error = None;
         self.filter_ui.chips.clear();
         self.filter_ui.advanced.clear();
         self.query_error = None;
@@ -3598,229 +3616,6 @@ impl LogView {
         pane.child(header).child(body).into_any_element()
     }
 
-    /// One compact row above the list: text, level and time menus, chips,
-    /// and the match counter. Its height never changes, so filtering never
-    /// moves the rows.
-    fn render_filter_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let palette = brand::palette(cx);
-        let muted = cx.theme().muted_foreground;
-        let view = cx.entity().downgrade();
-        let level = self.filter.level;
-        let time = self.filter.time;
-        let timestamped = self
-            .data()
-            .is_some_and(|file| file.index().stats().timestamped > 0)
-            || self
-                .extra
-                .iter()
-                .any(|extra| extra.data.data().index().stats().timestamped > 0);
-        let text = div()
-            .flex_none()
-            .w(px(TEXT_FILTER_WIDTH))
-            .h(px(BAR_CONTROL_HEIGHT))
-            .flex()
-            .items_center()
-            .rounded(px(6.))
-            .bg(palette.surface_raised)
-            .child(
-                Input::new(&self.text_input)
-                    .appearance(false)
-                    .cleanable(true)
-                    .small()
-                    .prefix(Icon::new(IconName::Search).small().text_color(muted)),
-            );
-        let level_menu = {
-            let view = view.clone();
-            move |menu: gpui_component::menu::PopupMenu, _: &mut Window, _: &mut Context<_>| {
-                let mut menu = menu;
-                for (min, label) in LEVEL_CHOICES {
-                    let view = view.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(level.min == min)
-                            .on_click(move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.update_filter(|filter| filter.level.min = min, cx)
-                                });
-                            }),
-                    );
-                }
-                let view = view.clone();
-                menu.separator().item(
-                    PopupMenuItem::new("Include lines without a level")
-                        .checked(level.without_level)
-                        .on_click(move |_, _, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.update_filter(
-                                    |filter| {
-                                        filter.level.without_level = !filter.level.without_level
-                                    },
-                                    cx,
-                                )
-                            });
-                        }),
-                )
-            }
-        };
-        let level_button = bar_button("log-level", level.is_active())
-            .label(level_label(level))
-            .dropdown_caret(true)
-            .tooltip("Levels shown")
-            .debug_selector(|| "log-level".into())
-            .dropdown_menu_with_anchor(Anchor::TopLeft, level_menu);
-        let time_button = timestamped.then(|| {
-            let view = view.clone();
-            bar_button("log-time", time != TimeWindow::All)
-                .icon(Icon::default().path(brand::READER_CLOCK_ICON))
-                .label(time.label())
-                .dropdown_caret(true)
-                .tooltip("Time range, ending at the newest record")
-                .debug_selector(|| "log-time".into())
-                .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
-                    let mut menu = menu;
-                    for window in TimeWindow::ALL {
-                        let view = view.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(window.label())
-                                .checked(time == window)
-                                .on_click(move |_, _, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.update_filter(|filter| filter.time = window, cx)
-                                    });
-                                }),
-                        );
-                    }
-                    menu
-                })
-        });
-        let danger = palette.danger;
-        let error = self.query_error.clone();
-        let query = div()
-            .flex_1()
-            .min_w(px(QUERY_MIN_WIDTH))
-            .h(px(BAR_CONTROL_HEIGHT))
-            .flex()
-            .items_center()
-            .rounded(px(6.))
-            .bg(palette.surface_raised)
-            .debug_selector(|| "log-query".into())
-            .child(
-                Input::new(&self.query_input)
-                    .appearance(false)
-                    .cleanable(true)
-                    .small()
-                    .when_some(error, |input, (column, message)| {
-                        // The error sits inside the field, so the bar keeps
-                        // its height; the rows keep the last valid query.
-                        input.suffix(
-                            div()
-                                .id("log-query-error")
-                                .debug_selector(|| "log-query-error".into())
-                                .max_w(px(QUERY_ERROR_MAX_WIDTH))
-                                .truncate()
-                                .text_size(px(12.))
-                                .text_color(danger)
-                                .child(format!("Column {column}: {message}"))
-                                .tooltip(move |window, cx| {
-                                    gpui_component::tooltip::Tooltip::new(format!(
-                                        "Column {column}: {message}"
-                                    ))
-                                    .build(window, cx)
-                                }),
-                        )
-                    }),
-            );
-        let history = self
-            .history_key()
-            .map(|key| reader_ui_state::log_queries(&key, cx))
-            .filter(|queries| !queries.is_empty())
-            .map(|queries| {
-                let view = view.clone();
-                bar_button("log-query-history", false)
-                    .icon(Icon::default().path(brand::READER_CLOCK_ICON))
-                    .tooltip("Recent queries for this log")
-                    .debug_selector(|| "log-query-history".into())
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                        let mut menu = menu;
-                        for query in &queries {
-                            let view = view.clone();
-                            let text = query.clone();
-                            menu = menu.item(PopupMenuItem::new(query.clone()).on_click(
-                                move |_, window, cx| {
-                                    let text = text.clone();
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.replace_query(text, window, cx);
-                                        this.remember_query(cx);
-                                    });
-                                },
-                            ));
-                        }
-                        menu
-                    })
-            });
-        let counter = match_counter(
-            self.rows.as_ref().map(|rows| rows.len()),
-            self.total(),
-            self.filtering,
-        );
-        h_flex()
-            .id("log-filter-bar")
-            .flex_none()
-            .h(px(BAR_HEIGHT))
-            .px_3()
-            .gap_2()
-            .border_b_1()
-            .border_color(palette.border_subtle)
-            .child(text)
-            .child(level_button)
-            .children(time_button)
-            .child(query)
-            .children((!self.investigation.frames.is_empty()).then(|| {
-                bar_button("log-request-back", true)
-                    .label("Back")
-                    .icon(IconName::ArrowLeft)
-                    .tooltip("Back to the previous filter")
-                    .debug_selector(|| "log-request-back".into())
-                    .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
-            }))
-            .children(history)
-            .when(
-                !self.source_locked && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
-                |bar| bar.child(self.regex_button(cx)),
-            )
-            .child(self.saved_button(cx))
-            .when(!matches!(&self.state, State::Remote(_)), |bar| {
-                bar.child(self.export_button(cx))
-            })
-            .child(self.columns_button(cx))
-            .when(
-                !self.source_locked && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
-                |bar| bar.child(self.files_button(cx)),
-            )
-            // A compressed log does not grow (#1164).
-            .when(
-                !self.source_locked
-                    && !self.compressed()
-                    && !matches!(&self.state, State::Remote(_) | State::Stream(_)),
-                |bar| bar.child(self.follow_button(cx)),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(12.))
-                    .text_color(muted)
-                    .debug_selector(|| "log-match-counter".into())
-                    .child(counter.unwrap_or_default()),
-            )
-            .child(
-                reader_icon_button("log-clear-filters", IconName::CircleX, "Clear filters", cx)
-                    .when(!self.filter.is_active(), |button| button.invisible())
-                    .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
-            )
-            .into_any_element()
-    }
-
     fn begin_regex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Regex name"));
         let pattern = cx.new(|cx| {
@@ -3983,54 +3778,53 @@ impl LogView {
 
     fn render_regex_editor(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let editor = self.regex_editor.as_ref()?;
+        let pattern =
+            Input::new(&editor.pattern)
+                .small()
+                .when_some(editor.error.clone(), |input, error| {
+                    input.suffix(
+                        div()
+                            .debug_selector(|| "log-regex-error".into())
+                            .max_w(px(200.))
+                            .truncate()
+                            .text_color(brand::palette(cx).danger)
+                            .child(error),
+                    )
+                });
         Some(
-            v_flex()
-                .flex_none()
-                .px_3()
-                .py_2()
-                .gap_2()
-                .child("Named groups ts, level and msg fill the columns. Other named groups become fields.")
-                .child("One saved regex applies to Plain text files automatically. With several saved, choose one from Regex. Applying reopens this file and stops follow.")
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
                 .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .w(px(180.))
-                                .debug_selector(|| "log-regex-name".into())
-                                .child(Input::new(&editor.name).small()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .debug_selector(|| "log-regex-pattern".into())
-                                .child(Input::new(&editor.pattern).small()),
-                        )
-                        .child(
-                            Button::new("log-regex-save")
-                                .small()
-                                .label("Save and apply")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.save_regex(window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("log-regex-cancel")
-                                .small()
-                                .label("Cancel")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.regex_editor = None;
-                                    this.focus.focus(window, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .children(editor.error.clone().map(|error| {
                     div()
-                        .debug_selector(|| "log-regex-error".into())
-                        .text_color(brand::palette(cx).danger)
-                        .child(error)
-                }))
+                        .w(px(120.))
+                        .debug_selector(|| "log-regex-name".into())
+                        .child(Input::new(&editor.name).small()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(80.))
+                        .debug_selector(|| "log-regex-pattern".into())
+                        .child(pattern),
+                )
+                .child(
+                    Button::new("log-regex-save")
+                        .small()
+                        .label("Save and apply")
+                        .on_click(cx.listener(|this, _, window, cx| this.save_regex(window, cx))),
+                )
+                .child(
+                    Button::new("log-regex-cancel")
+                        .small()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.regex_editor = None;
+                            this.focus.focus(window, cx);
+                            cx.notify();
+                        })),
+                )
                 .into_any_element(),
         )
     }
@@ -4202,10 +3996,10 @@ impl LogView {
                 .id("log-saving")
                 .debug_selector(|| "log-saving".into())
                 .flex_none()
-                .h(px(BAR_HEIGHT))
+                .h(px(28.))
                 .px_3()
                 .gap_2()
-                .border_b_1()
+                .border_t_1()
                 .border_color(palette.border_subtle)
                 .key_context("LogSaving")
                 .child(
@@ -4213,12 +4007,13 @@ impl LogView {
                         .flex_none()
                         .text_size(px(12.))
                         .text_color(muted)
-                        .child("Save the shown filter for every log as"),
+                        .child("Save view"),
                 )
                 .child(
                     div()
-                        .flex_none()
-                        .w(px(260.))
+                        .flex_1()
+                        .min_w(px(80.))
+                        .max_w(px(260.))
                         .h(px(BAR_CONTROL_HEIGHT))
                         .flex()
                         .items_center()
@@ -4261,65 +4056,6 @@ impl LogView {
     }
 
     /// The saved filters: apply one, save the shown filter, delete one.
-    fn saved_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let view = cx.entity().downgrade();
-        let names: Vec<String> = reader_ui_state::saved_log_filters(cx)
-            .sorted()
-            .iter()
-            .map(|query| query.name.clone())
-            .collect();
-        let can_save = self.data().is_some();
-        bar_button("log-saved", false)
-            .icon(IconName::Star)
-            .tooltip("Saved views")
-            .debug_selector(|| "log-saved".into())
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
-                let mut menu = menu;
-                for name in &names {
-                    let (view, name) = (view.clone(), name.clone());
-                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
-                        move |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| this.apply_saved(&name, window, cx));
-                        },
-                    ));
-                }
-                if names.is_empty() {
-                    menu = menu.item(PopupMenuItem::new("No saved views yet").disabled(true));
-                }
-                let save_view = view.clone();
-                menu = menu.separator().item(
-                    PopupMenuItem::new("Save current view…")
-                        .disabled(!can_save)
-                        .on_click(move |_, window, cx| {
-                            let _ = save_view.update(cx, |this, cx| this.begin_saving(window, cx));
-                        }),
-                );
-                if !names.is_empty() {
-                    let (view, names) = (view.clone(), names.clone());
-                    menu = menu.submenu("Delete", window, cx, move |menu, _, _| {
-                        let mut menu = menu;
-                        for name in &names {
-                            let (view, name) = (view.clone(), name.clone());
-                            menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
-                                move |_, window, cx| {
-                                    reader_ui_state::delete_log_filter(&name, cx);
-                                    reader_toast::transient(
-                                        format!("Deleted “{name}”"),
-                                        window,
-                                        cx,
-                                    );
-                                    let _ = view.update(cx, |_, cx| cx.notify());
-                                },
-                            ));
-                        }
-                        menu
-                    });
-                }
-                menu
-            })
-            .into_any_element()
-    }
 
     /// The files and rows an export would write now, or `None` when a file
     /// of the view cannot be read.
@@ -4451,155 +4187,13 @@ impl LogView {
     }
 
     /// Export of the shown rows, or of a selection of several.
-    fn export_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let view = cx.entity().downgrade();
-        let shown = self.visible_len();
-        let selected = self.selection().map_or(0, |rows| rows.len());
-        let marked = self.marked_rows().len();
-        let csv = ExportFormat::Csv(self.csv_columns(cx));
-        let raw_values = self.csv_raw_values;
-        bar_button("log-export", false)
-            .icon(IconName::ArrowDown)
-            .tooltip("Export rows")
-            .debug_selector(|| "log-export".into())
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                let mut menu = menu;
-                let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
-                if selected > 1 {
-                    scopes.push((ExportScope::Selected, selected, "selected"));
-                }
-                if marked > 0 {
-                    scopes.push((ExportScope::Marked, marked, "marked"));
-                }
-                for (at, (scope, count, what)) in scopes.into_iter().enumerate() {
-                    if at > 0 {
-                        menu = menu.separator();
-                    }
-                    for (format, how) in [
-                        (ExportFormat::Raw, "raw lines"),
-                        (ExportFormat::JsonLines, "JSON lines"),
-                        (csv.clone(), "CSV"),
-                    ] {
-                        let view = view.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(format!(
-                                "Export {} {what} as {how}…",
-                                grouped(count as u64)
-                            ))
-                            .disabled(count == 0)
-                            .on_click(move |_, window, cx| {
-                                let format = format.clone();
-                                let _ = view.update(cx, |this, cx| {
-                                    this.export_rows(scope, format, window, cx)
-                                });
-                            }),
-                        );
-                    }
-                }
-                // A spreadsheet runs a cell that starts with = + - @ as a
-                // formula; CSV cells get an apostrophe there unless this is on.
-                let view = view.clone();
-                menu.separator().item(
-                    PopupMenuItem::new("Raw values in CSV")
-                        .checked(raw_values)
-                        .on_click(move |_, _, cx| {
-                            let _ = view
-                                .update(cx, |this, cx| this.set_csv_raw_values(!raw_values, cx));
-                        }),
-                )
-            })
-            .into_any_element()
-    }
 
     /// The files of this view: show or hide each, or add more (#1160).
-    fn files_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let view = cx.entity().downgrade();
-        let sources: Vec<(usize, String, bool)> = (0..self.source_count())
-            .map(|source| {
-                (
-                    source,
-                    self.source_name(source),
-                    self.source_enabled(source),
-                )
-            })
-            .collect();
-        let several = sources.len() > 1;
-        let hidden = sources.iter().any(|(_, _, enabled)| !enabled);
-        bar_button("log-files", several && hidden)
-            .label(if several {
-                format!("{} files", sources.len())
-            } else {
-                "Files".to_owned()
-            })
-            .dropdown_caret(true)
-            .tooltip("Files in this view")
-            .debug_selector(|| "log-files".into())
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                let mut menu = menu;
-                for (source, name, enabled) in &sources {
-                    let (view, source, enabled) = (view.clone(), *source, *enabled);
-                    menu = menu.item(PopupMenuItem::new(name.clone()).checked(enabled).on_click(
-                        move |_, _, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.set_source_enabled(source, !enabled, cx)
-                            });
-                        },
-                    ));
-                }
-                let view = view.clone();
-                menu.separator()
-                    .item(PopupMenuItem::new("Add file…").on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |this, cx| this.prompt_add_files(cx));
-                    }))
-            })
-            .into_any_element()
-    }
 
     /// Fields of the first records as columns, with the shown ones checked.
-    fn columns_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let view = cx.entity().downgrade();
-        let shown = self.columns(cx);
-        bar_button("log-columns-menu", !shown.is_empty())
-            .icon(IconName::LayoutDashboard)
-            .tooltip("Columns")
-            .debug_selector(|| "log-columns-menu".into())
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
-                let Some(this) = view.upgrade() else {
-                    return menu;
-                };
-                let names = this.read(cx).field_names();
-                let mut menu = menu;
-                for name in names {
-                    let (view, checked) = (view.clone(), shown.contains(&name));
-                    menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
-                        move |_, _, cx| {
-                            let _ = view.update(cx, |this, cx| this.toggle_column(&name, cx));
-                        },
-                    ));
-                }
-                menu
-            })
-            .into_any_element()
-    }
-
-    fn follow_button(&self, cx: &mut Context<Self>) -> Button {
-        let following = self.following();
-        bar_button("log-follow", following)
-            .label(if following { "Following" } else { "Follow" })
-            .tooltip(if following {
-                "Stop following new records"
-            } else {
-                "Show records as they are written"
-            })
-            .debug_selector(|| "log-follow".into())
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx)))
-    }
 
     /// The truncation or rotation follow mode saw last, above the rows.
-    fn render_reset(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn reset_notice(&self) -> Option<String> {
         let (reason, earlier) = self.follow.as_ref()?.reset?;
         let what = match reason {
             ResetReason::Truncated => "The file was truncated",
@@ -4619,20 +4213,7 @@ impl LogView {
                 grouped(n as u64)
             ),
         };
-        Some(
-            div()
-                .debug_selector(|| "log-follow-reset".into())
-                .flex_none()
-                .px_3()
-                .py_1()
-                .border_b_1()
-                .border_color(brand::palette(cx).border_subtle)
-                .bg(brand::palette(cx).surface_raised)
-                .text_size(px(12.))
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("{what}{earlier}; following the new content"))
-                .into_any_element(),
-        )
+        Some(format!("{what}{earlier}; following the new content"))
     }
 
     /// "N new" while following is paused by scrolling up.
@@ -4733,18 +4314,81 @@ impl LogView {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(saving) = self.render_saving(cx) {
+            return saving;
+        }
         let mut text = self.status();
         if self.following() || self.investigation.live {
             if let Some(last) = &self.investigation.last_update {
                 text.push_str(&format!(" · Live · last update {last}"));
             }
         }
-        reader_status_line::render(
-            &reader_status_line::StatusLine {
-                text: text.into(),
-                ..Default::default()
-            },
+        let counter = match_counter(
+            self.rows.as_ref().map(|rows| rows.len()),
+            self.total(),
+            self.filtering,
+        );
+        let source = self
+            .history_key()
+            .filter(|_| !matches!(self.state, State::Remote(_) | State::Stream(_)))
+            .map(|path| format!("Log source: {path}"));
+        let notice = self.window_notice();
+        let reset = self.reset_notice();
+        let mut full = text.clone();
+        for part in [
+            counter.as_ref(),
+            source.as_ref(),
+            notice.as_ref(),
+            reset.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            full.push_str(" · ");
+            full.push_str(part);
+        }
+        let trailing = h_flex()
+            .debug_selector(|| "log-status".into())
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .overflow_hidden()
+            .children(counter.map(|counter| {
+                div()
+                    .flex_none()
+                    .debug_selector(|| "log-match-counter".into())
+                    .child(counter)
+            }))
+            .child(div().truncate().child(text))
+            .children(source.map(|source| {
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector(|| "log-view-source".into())
+                    .child(source)
+            }))
+            .children(notice.map(|notice| {
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector(|| "log-window-scope".into())
+                    .child(notice)
+            }))
+            .children(reset.map(|reset| {
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector(|| "log-follow-reset".into())
+                    .child(reset)
+            }))
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+            })
+            .into_any_element();
+        reader_status_line::render_with_content(
+            &reader_status_line::StatusLine::default(),
             "log-status",
+            Some(trailing),
             None,
             cx,
         )
@@ -4752,7 +4396,7 @@ impl LogView {
 }
 
 impl Render for LogView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_pin();
         // A request to scroll to the newest row is placed with the row height
         // the list knew at that moment, which is not yet measured when the
@@ -4761,11 +4405,6 @@ impl Render for LogView {
         // layout, which has measured the rows, place it.
         self.keep_pinned();
         let count = self.visible_len();
-        // Any file with records keeps the bar, even with every file hidden.
-        let has_entries = (0..self.source_count()).any(|source| {
-            self.source(source)
-                .is_some_and(|data| !data.index().is_empty())
-        });
         let list = div().relative().flex_1().min_h_0().w_full();
         let columns = self.columns(cx);
         let list = if count > 0 {
@@ -4985,6 +4624,34 @@ impl Render for LogView {
                     this.request_back(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &FindInNote, window, cx| this.focus_filter(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleLogQuery, window, cx| this.toggle_query(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ToggleLogFollow, _, cx| this.toggle_follow(cx)))
+            .on_action(
+                cx.listener(|this, _: &ClearLogFilters, window, cx| this.clear_filters(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenLogLevels, window, cx| {
+                this.show_menu(chrome::MenuKind::Level, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLogTimeRange, window, cx| {
+                this.show_menu(chrome::MenuKind::Time, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLogSavedViews, window, cx| {
+                this.show_menu(chrome::MenuKind::Saved, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLogColumns, window, cx| {
+                this.show_menu(chrome::MenuKind::Columns, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLogExport, window, cx| {
+                this.show_menu(chrome::MenuKind::Export, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLogFiles, window, cx| {
+                this.show_menu(chrome::MenuKind::Files, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleMark, _, cx| this.toggle_mark(cx)))
             .on_action(
                 cx.listener(|this, _: &NextMark, window, cx| this.step_mark(true, window, cx)),
@@ -4999,59 +4666,11 @@ impl Render for LogView {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.drop_files(paths, window, cx)
             }))
-            .when(has_entries || self.follow.is_some(), |view| {
-                view.child(self.render_filter_bar(cx))
+            .when(!self.hosted_header, |view| {
+                view.child(self.render_own_header(window, cx))
             })
-            .children(self.window_notice().map(|text| {
-                div()
-                    .id("log-window-scope")
-                    .debug_selector(|| "log-window-scope".into())
-                    .flex_none()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .child(text)
-            }))
-            .children(self.render_regex_editor(cx))
-            .children(self.regex_error.clone().map(|error| {
-                div()
-                    .text_sm()
-                    .text_color(brand::palette(cx).danger)
-                    .child(error)
-            }))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .px_3()
-                    .gap_2()
-                    .min_w_0()
-                    .child(self.message_button(cx))
-                    .children(
-                        self.history_key()
-                            .filter(|_| !matches!(self.state, State::Remote(_) | State::Stream(_)))
-                            .map(|path| {
-                                let text = format!("Log source: {path}");
-                                div()
-                                    .id("log-view-source")
-                                    .debug_selector(|| "log-view-source".into())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(text.clone())
-                                    .tooltip(move |window, cx| {
-                                        gpui_component::tooltip::Tooltip::new(text.clone())
-                                            .build(window, cx)
-                                    })
-                            }),
-                    ),
-            )
-            .children(self.render_investigation(cx))
-            .children(self.render_chip_bar(cx))
-            .children(self.render_saving(cx))
+            .children(self.render_secondary(window, cx))
             .children(self.render_histogram(cx))
-            .children(self.render_reset(cx))
             .child(reader_split::vertical(
                 &self.detail_split,
                 |view: &mut Self| &mut view.detail_split,
@@ -5061,6 +4680,7 @@ impl Render for LogView {
             ))
             .child(self.render_status(cx))
             .children(self.render_cell_menu())
+            .children(self.render_command_menu())
     }
 }
 
@@ -5484,7 +5104,7 @@ impl Reader {
             .and_then(|previous| previous.log.as_ref())
             .map(|previous| previous.read(cx).filter_view_state());
         let view = cx.new(|cx| {
-            let mut view = LogView::ready(document, window, cx);
+            let mut view = LogView::ready(document, window, cx).without_header();
             if let Some(filters) = filters {
                 view.restore_filter_view(filters, window, cx);
             }
@@ -5529,6 +5149,7 @@ mod tests {
     use super::*;
     include!("reader_log/filter_tests.rs");
     include!("reader_log/investigation_tests.rs");
+    include!("reader_log/chrome_tests.rs");
     use ::core::prelude::v1::test;
 
     // GPUI's TestPlatform::quit is a no-op. Explicit shutdown also runs the

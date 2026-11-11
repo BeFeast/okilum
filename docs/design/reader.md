@@ -74,7 +74,9 @@ original combined titlebar and document controls:
   after Back/Forward. The field remains inside the header; neighboring controls
   and content do not move. The cached header reserves the slot while the live
   Find controls mount as a measured sibling overlay, like Save. Query, count,
-  case and focus changes do not invalidate the cached header slots or SidePanels. ZIP is the first file target: Find in entries,
+  case changes do not invalidate the cached header slots or SidePanels. GPUI focus
+  changes still re-render the header; text typing does not. ZIP is the first file
+  target: Find in entries,
   no count/case/steps, Enter returns to the list retaining the filter, and Esc
   clears and returns in one press. With entry-pane focus Find belongs to that
   pane. The entry's 48 px compact bar contains its archive/entry crumb and PDF

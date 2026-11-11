@@ -538,10 +538,9 @@ impl LogView {
         Some(
             h_flex()
                 .debug_selector(|| "log-chip-bar".into())
-                .flex_wrap()
+                .min_w_0()
+                .overflow_x_scrollbar()
                 .gap_2()
-                .px_3()
-                .py_1()
                 .children(self.filter_ui.chips.iter().enumerate().map(|(at, chip)| {
                     h_flex()
                         .gap_1()
@@ -591,16 +590,6 @@ impl LogView {
                                 })),
                         )
                 }))
-                .child(
-                    Button::new("log-chips-clear")
-                        .debug_selector(|| "log-chips-clear".into())
-                        .ghost()
-                        .small()
-                        .label("Clear all")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.clear_filters(window, cx)),
-                        ),
-                )
                 .into_any_element(),
         )
     }
