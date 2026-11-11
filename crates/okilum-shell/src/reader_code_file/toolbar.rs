@@ -141,8 +141,10 @@ impl CodePreview {
             Rc::new(move |window, cx| target.update(cx, |this, cx| this.copy_node(window, cx))),
         )
         .with_action(CopyNode, cx);
-        node.enabled = self.document.as_ref().is_some_and(|doc| doc.parses)
-            && language(&self.rel) != Some("text");
+        node.enabled = self.node_copy_range(cx).is_some();
+        if !node.enabled {
+            node.disabled_reason = Some("No parsed node at the caret".into());
+        }
         chrome.copy_actions.push(node);
         if let Some(reason) = self.readonly_reason() {
             let mut lock = ViewerAction::new(
@@ -283,7 +285,7 @@ impl CodePreview {
     }
 
     #[inline(never)]
-    pub(super) fn bottom_line(&self, _: &ViewerChrome, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn bottom_line(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut status = self.status(cx.entity(), cx);
         let trailing = (self.view != View::Tree
             && self.view != View::Table

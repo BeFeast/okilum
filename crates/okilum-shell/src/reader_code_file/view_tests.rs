@@ -482,12 +482,9 @@ fn code2809_find_and_paging_render_zero_header_slots_and_notify_zero_side_panels
 ) {
     cx.executor().allow_parking();
     let _cached = reader_side_panel::tests::CachedPanels::on();
-    let (reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "note.md");
     let source = format!("{{\"payload\":\"{} target\"}}", "x".repeat(150_000));
-    std::fs::write(temp.path().join("vault/find.json"), source).unwrap();
-    reader.update_in(visual, |reader, window, cx| {
-        reader.preview_file("find.json", window, cx)
-    });
+    let (reader, visual, _temp) =
+        reader_viewer_chrome::tests::fixture_with_files(cx, "find.json", &[("find.json", &source)]);
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
         reader.file_preview.as_ref().unwrap().code.clone().unwrap()
@@ -499,6 +496,7 @@ fn code2809_find_and_paging_render_zero_header_slots_and_notify_zero_side_panels
         std::thread::sleep(Duration::from_millis(10));
     }
     code.update_in(visual, |code, window, cx| code.open_find(window, cx));
+    visual.simulate_keystrokes("home");
     settle(visual);
     let panels = reader.read_with(visual, |reader, _| reader.side_panels.clone());
     assert_eq!(panels.iter().flatten().count(), 2);

@@ -6,6 +6,14 @@ pub(crate) fn fixture<'a>(
     cx: &'a mut TestAppContext,
     name: &str,
 ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
+    fixture_with_files(cx, name, &[])
+}
+
+pub(crate) fn fixture_with_files<'a>(
+    cx: &'a mut TestAppContext,
+    name: &str,
+    files: &[(&str, &str)],
+) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
     std::fs::create_dir_all(root.join("Folder/A long parent folder name")).unwrap();
@@ -34,6 +42,9 @@ pub(crate) fn fixture<'a>(
         ),
     ] {
         std::fs::write(root.join(name), value).unwrap();
+    }
+    for (name, text) in files {
+        std::fs::write(root.join(name), text).unwrap();
     }
     std::fs::write(root.join("image.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"600\" height=\"4000\"><rect width=\"600\" height=\"4000\" fill=\"blue\"/></svg>").unwrap();
     image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
@@ -141,7 +152,15 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
         }
         // Keyboard selection exercises the actual dropdown click handler.
         // In logs the unselected raw-line command is disabled and skipped.
-        visual.simulate_keystrokes("down enter");
+        let preceding = reader.read_with(visual, |reader, cx| {
+            reader
+                .viewer_chrome(cx)
+                .copy_actions
+                .iter()
+                .filter(|action| action.enabled)
+                .count()
+        });
+        visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(preceding + 1)));
         visual.run_until_parked();
         assert_eq!(
             clipboard(visual).as_deref(),

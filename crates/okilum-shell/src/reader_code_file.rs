@@ -445,21 +445,26 @@ impl CodePreview {
         }
     }
 
-    fn copy_node(&self, window: &mut Window, cx: &mut App) {
+    fn node_copy_range(&self, cx: &App) -> Option<std::ops::Range<usize>> {
         let (Some(doc), State::Content(input)) = (&self.document, &self.state) else {
-            return;
+            return None;
         };
-        let offset = doc.pages[self.page].start + input.read(cx).cursor();
-        let range = if self.view == View::Tree {
+        if self.view == View::Table {
+            return None;
+        }
+        if self.view == View::Tree {
             self.structure
                 .selected
                 .and_then(|i| doc.structure.get(i))
                 .map(|row| row.range.clone())
         } else {
+            let offset = doc.pages[self.page].start + input.read(cx).cursor();
             doc.node_range(offset)
-        };
-        if let Some(range) = range {
-            copy_text_node(&doc.text[range], window, cx);
+        }
+    }
+    fn copy_node(&self, window: &mut Window, cx: &mut App) {
+        if let Some(range) = self.node_copy_range(cx) {
+            copy_text_node(&self.document.as_ref().unwrap().text[range], window, cx);
         }
     }
 
@@ -587,12 +592,8 @@ impl Render for CodePreview {
         native_trace("preview.render.begin");
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.begin");
-        let chrome = if self.own_header {
-            self.compact_chrome(cx.entity(), cx)
-        } else {
-            self.chrome(cx.entity(), cx)
-        };
         let header = self.own_header.then(|| {
+            let chrome = self.compact_chrome(cx.entity(), cx);
             reader_viewer_chrome::render_compact_header(
                 &chrome,
                 window.viewport_size().width.as_f32(),
@@ -603,7 +604,7 @@ impl Render for CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.end");
         let content = self.render_content(cx);
-        let footer = self.bottom_line(&chrome, cx);
+        let footer = self.bottom_line(cx);
         let view = v_flex()
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
