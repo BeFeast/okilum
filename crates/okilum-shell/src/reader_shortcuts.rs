@@ -34,6 +34,8 @@ struct Entry {
     action: &'static str,
     label: &'static str,
     group: Group,
+    #[cfg(test)]
+    default_binding: bool,
 }
 
 fn entry<A: Action>(label: &'static str, group: Group) -> Entry {
@@ -41,11 +43,23 @@ fn entry<A: Action>(label: &'static str, group: Group) -> Entry {
         action: A::name_for_type(),
         label,
         group,
+        #[cfg(test)]
+        default_binding: true,
     }
 }
 
-/// Every Reader action that has a key binding, in sheet order. A binding whose
-/// action is missing here fails `every_bound_reader_action_is_listed`.
+/// Menu actions are catalogued for labels and future user bindings, but must
+/// not acquire an unsolicited default shortcut.
+fn menu_entry<A: Action>(label: &'static str, group: Group) -> Entry {
+    Entry {
+        #[cfg(test)]
+        default_binding: false,
+        ..entry::<A>(label, group)
+    }
+}
+
+/// Reader actions with default bindings and explicit menu actions, in sheet order.
+/// A binding whose action is missing here fails `every_bound_reader_action_is_listed`.
 fn catalog() -> Vec<Entry> {
     use Group::*;
     vec![
@@ -113,7 +127,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
-        entry::<CopyFileContent>("Copy file content", Notes),
+        menu_entry::<CopyFileContent>("Copy file content", Notes),
         entry::<CopyFilePath>("Copy path", Notes),
         entry::<CopyFileWikilink>("Copy wikilink", Notes),
         entry::<OpenFileDefault>("Open with default app", Notes),
@@ -615,17 +629,40 @@ mod tests {
     fn listed_actions_are_bound_and_unique(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);
         // Quick Look exists only on macOS; Windows lacks the Unix-only editing
-        // actions. Every other listed action must have a key, or the catalog
-        // has gone stale.
+        // actions. Every ordinary entry still requires a key; explicitly
+        // declared menu entries must stay unbound by default.
         let platform_only = [QuickLookFile::name_for_type()];
         let mut seen = BTreeSet::new();
         for entry in catalog() {
             assert!(seen.insert(entry.action), "{} listed twice", entry.action);
             let bound = !keys_for(&keymap, entry.action, Os::CURRENT).is_empty();
-            if cfg!(target_os = "macos") || (cfg!(unix) && !platform_only.contains(&entry.action)) {
+            if !entry.default_binding {
+                assert!(
+                    !bound,
+                    "{} unexpectedly acquired a default shortcut",
+                    entry.action
+                );
+            } else if cfg!(target_os = "macos")
+                || (cfg!(unix) && !platform_only.contains(&entry.action))
+            {
                 assert!(bound, "{} is listed but not bound", entry.action);
             }
         }
+    }
+
+    #[gpui::test]
+    fn file_content_copy_is_catalogued_without_an_unsolicited_shortcut(cx: &mut TestAppContext) {
+        let keymap = reader_keymap(cx);
+        let copy = catalog()
+            .into_iter()
+            .find(|entry| entry.action == CopyFileContent::name_for_type())
+            .expect("menu action is registered for live labels and user bindings");
+        assert_eq!(copy.label, "Copy file content");
+        assert!(!copy.default_binding);
+        assert!(keys_for(&keymap, copy.action, Os::CURRENT).is_empty());
+        assert!(!rows(&keymap, Os::CURRENT)
+            .iter()
+            .any(|row| row.label == copy.label));
     }
 
     #[gpui::test]
