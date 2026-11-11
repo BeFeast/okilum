@@ -17,6 +17,10 @@ pub(crate) fn fixture<'a>(
         ("Folder/text.txt", "nested text\n"),
         ("Folder/A long parent folder name/file.txt", "nested text\n"),
         ("gateway.log", "2026-11-10T12:00:00Z INFO ready\n"),
+        (
+            "columns.log",
+            "{\"ts\":\"2026-11-10T12:00:00Z\",\"level\":\"warn\",\"msg\":\"ready\",\"status\":502}\n",
+        ),
         ("note.md", "# Note\n\nBody\n"),
         (
             "Folder/A very long attachment name that must keep a usable title.txt",
@@ -995,17 +999,21 @@ fn focused_find_stays_inside_minimum_width_header_and_clear_of_history(cx: &mut 
 #[gpui::test]
 fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
-    let (reader, visual, temp) = fixture(cx, "note.md");
-    let log_path = temp.path().join("vault/gateway.log");
-    std::fs::write(
-        &log_path,
-        "{\"ts\":\"2026-11-10T12:00:00Z\",\"level\":\"warn\",\"msg\":\"ready\",\"status\":502}\n",
-    )
-    .unwrap();
-    reader.update_in(visual, |reader, window, cx| {
-        reader.preview_file("gateway.log", window, cx)
+    // Create the structured log before Reader starts its file watcher. The
+    // settings key must be the loaded preview path: macOS canonicalizes /var
+    // to /private/var, while tempfile can retain the /var spelling.
+    let (reader, visual, temp) = fixture(cx, "columns.log");
+    let log_path = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().path.clone()
     });
-    visual.run_until_parked();
+    assert_eq!(
+        log_path.canonicalize().unwrap(),
+        temp.path()
+            .join("vault/columns.log")
+            .canonicalize()
+            .unwrap(),
+        "positive control: the settings key names the actual fixture"
+    );
     reader.update_in(visual, |reader, window, cx| {
         let chrome = reader.viewer_chrome(cx);
         for width in (600..=1600).step_by(4) {
