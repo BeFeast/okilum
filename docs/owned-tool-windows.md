@@ -14,6 +14,12 @@ window opens its own Settings/About instead of activating the first owner.
 New tools use their owner's display and open centered over its bounds, constrained
 to that display's visible work area. They cannot be minimized independently.
 
+Settings navigation keeps every section label on one readable line (#2798).
+Its column grows from the shaped label widths plus icon, gap and button/sidebar
+padding instead of clipping labels to a fixed width. The same rule applies on
+Mac, Linux and Windows, at both the default 780×520 and minimum 700×440 Settings
+size; the content column uses the remaining width.
+
 - Windows: an explicit native HWND owner and `WS_EX_TOOLWINDOW`, without
   `WS_EX_APPWINDOW`, keep the tool above its owner and out of the taskbar/Alt+Tab.
   Ownership is installed before the first show. Windows handles owner

@@ -503,6 +503,22 @@ enum Section {
     Sync,
 }
 impl Section {
+    const NAVIGATION: &'static [Self] = &[
+        Self::Features,
+        Self::Appearance,
+        Self::Editor,
+        Self::Keyboard,
+        Self::Vaults,
+        Self::T3,
+        Self::Updates,
+        Self::Inbox,
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        Self::Sync,
+        // Developer options sit low (#1355); About comes last (#995).
+        Self::Logs,
+        Self::About,
+    ];
+
     fn available(self, cx: &App) -> bool {
         match self {
             Self::T3 => reader_features::enabled(reader_features::Feature::Agents, cx),
@@ -574,6 +590,40 @@ impl Section {
             Self::Sync => "Sync",
         }
     }
+}
+
+fn navigation_label_width(section: Section, window: &Window) -> Pixels {
+    let text = section.label();
+    window
+        .text_system()
+        .shape_line(
+            text.into(),
+            rems(0.875).to_pixels(window.rem_size()),
+            &[TextRun {
+                len: text.len(),
+                font: gpui::font(brand::SANS_FONT),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+        .width()
+}
+
+/// Keep a complete, single-line label on every platform (#2798). Reserve both
+/// sidebar paddings (p_3), both normal Button paddings (px_2p5), the icon and
+/// gap_2; two pixels cover button borders and fractional font rounding. The
+/// column grows for the actual shaped font instead of clipping to 176px.
+fn navigation_width(window: &Window) -> Pixels {
+    let widest = Section::NAVIGATION
+        .iter()
+        .map(|section| navigation_label_width(*section, window).as_f32())
+        .fold(0., f32::max);
+    px((widest + window.rem_size().as_f32() * 4.25 + 2.)
+        .ceil()
+        .max(176.))
 }
 struct Settings {
     caption: caption::Caption,
@@ -2058,53 +2108,60 @@ impl Render for Settings {
             .items_start()
             .child(
                 v_flex()
-                    .w(px(176.))
+                    .id("settings-navigation")
+                    .debug_selector(|| "settings-navigation".into())
+                    .w(navigation_width(window))
                     .h_full()
+                    .overflow_y_scroll()
                     .flex_none()
                     .p_3()
                     .gap_1()
                     .children(
-                        [
-                            Section::Features,
-                            Section::Appearance,
-                            Section::Editor,
-                            Section::Keyboard,
-                            Section::Vaults,
-                            Section::T3,
-                            Section::Updates,
-                            Section::Inbox,
-                            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                            Section::Sync,
-                            // Developer options sit low (#1355).
-                            Section::Logs,
-                            // Platform convention: About comes last (#995).
-                            Section::About,
-                        ]
-                        .into_iter()
-                        .filter(|section| section.available(cx))
-                        .map(|section| {
-                            div()
-                                .debug_selector(move || {
-                                    format!("settings-section-{}", section.label())
-                                })
-                                .child(
-                                    Button::new(section.label())
-                                        .w_full()
-                                        .ghost()
-                                        .accessibility_label(section.label())
-                                        .child(
-                                            h_flex()
-                                                .w_full()
-                                                .gap_2()
-                                                .child(section.icon().size_4())
-                                                .child(section.label()),
-                                        )
-                                        .selected(self.section == section)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.select_section(section, cx);
-                                        })),
-                                )
-                        }),
+                        Section::NAVIGATION
+                            .iter()
+                            .copied()
+                            .filter(|section| section.available(cx))
+                            .map(|section| {
+                                div()
+                                    .debug_selector(move || {
+                                        format!("settings-section-{}", section.label())
+                                    })
+                                    .child(
+                                        Button::new(section.label())
+                                            .w_full()
+                                            .ghost()
+                                            .accessibility_label(section.label())
+                                            .child(
+                                                h_flex()
+                                                    .w_full()
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .child(section.icon().size_4()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .debug_selector(move || {
+                                                                format!(
+                                                                    "settings-label-{}",
+                                                                    section.key()
+                                                                )
+                                                            })
+                                                            .flex_none()
+                                                            .font_family(brand::SANS_FONT)
+                                                            .font_weight(FontWeight::NORMAL)
+                                                            .text_sm()
+                                                            .whitespace_nowrap()
+                                                            .child(section.label()),
+                                                    ),
+                                            )
+                                            .selected(self.section == section)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.select_section(section, cx);
+                                            })),
+                                    )
+                            }),
                     ),
             )
             .child(
@@ -2285,6 +2342,62 @@ pub(crate) fn render_update_status(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn issue2798_settings_navigation_fits_every_label_at_default_and_minimum_width(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
+        });
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        for viewport in [size(px(780.), px(520.)), size(px(700.), px(440.))] {
+            visual.simulate_resize(viewport);
+            visual.run_until_parked();
+            let navigation = visual.debug_bounds("settings-navigation").unwrap();
+            let content = visual.debug_bounds("settings-content").unwrap();
+            assert!(navigation.right() <= content.left());
+            assert!(content.size.width > px(0.));
+            for section in Section::NAVIGATION {
+                let label = visual
+                    .debug_bounds(format!("settings-label-{}", section.key()).leak())
+                    .expect("every Settings navigation label is rendered");
+                let button = visual
+                    .debug_bounds(format!("settings-section-{}", section.label()).leak())
+                    .unwrap();
+                let (intrinsic, padding) = visual.update(|window, _| {
+                    (
+                        navigation_label_width(*section, window),
+                        window.rem_size() * 0.625,
+                    )
+                });
+                assert!(
+                    label.size.width + px(0.5) >= intrinsic,
+                    "{} must keep its complete shaped text: {label:?}, needs {intrinsic:?}",
+                    section.label()
+                );
+                assert!(
+                    label.left() >= button.left() + padding
+                        && label.right() <= button.right() - padding,
+                    "{} must fit inside the button clip at {viewport:?}: {label:?}, button {button:?}",
+                    section.label()
+                );
+                assert!(button.left() >= navigation.left() && button.right() <= navigation.right());
+            }
+            // A visible full label must still activate its actual destination.
+            let keyboard = visual.debug_bounds("settings-label-keyboard").unwrap();
+            visual.simulate_click(keyboard.center(), Modifiers::default());
+            visual.run_until_parked();
+            root.read_with(visual, |root, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                assert!(settings.read(cx).section == Section::Keyboard);
+            });
+        }
+    }
 
     #[gpui::test]
     fn feature_switches_apply_on_click_and_hide_disabled_module_settings(cx: &mut TestAppContext) {
