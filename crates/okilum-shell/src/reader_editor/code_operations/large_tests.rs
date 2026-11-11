@@ -98,13 +98,20 @@ fn large2804_plain_json_format_growth_retires_small_read_preview(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestAppContext) {
+fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestAppContext) {
     let source = format!(
         "{{\"values\":[\n{}\"tail\"]}}",
         format!("\"{}\",\n", "x".repeat(2048)).repeat(3000)
     );
     assert!(source.len() > 5 * 1024 * 1024);
-    let (f, visual) = open_file(cx, &source, "large.JSON");
+    // Admission now has a 4 MiB UI cap (#2809). An existing editing session
+    // can still grow beyond it without losing the full source-tool budget.
+    let seed = "{\"seed\":0}";
+    let (f, visual) = open_file(cx, seed, "large.JSON");
+    f.input.update_in(visual, |input, window, cx| {
+        input.replace_source_range(0..seed.len(), &source, window, cx);
+    });
+    settle(visual);
     f.reader.read_with(visual, |reader, cx| {
         assert!(
             reader.code_view_input(cx).is_none(),
@@ -135,6 +142,13 @@ fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestA
         .input
         .read_with(visual, |input, _| input.value().to_string());
     assert_ne!(formatted, source);
+    visual.dispatch_action(Undo);
+    settle(visual);
+    f.reader
+        .read_with(visual, |_, cx| assert_eq!(value(&f, cx), source));
+    click(visual, "source-code-format");
+    f.reader
+        .read_with(visual, |_, cx| assert_eq!(value(&f, cx), formatted));
     f.reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx)
     });
@@ -142,8 +156,8 @@ fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestA
     f.reader.read_with(visual, |reader, cx| {
         assert!(reader.editing.is_none());
         assert!(
-            reader.code_file_editable(cx),
-            "formatted large JSON can reopen in Edit"
+            !reader.code_file_editable(cx),
+            "the saved file above 4 MiB is view-only under the new UI cap"
         );
         assert!(
             !reader.code_view_input(cx).unwrap().read(cx).is_editable(),
@@ -158,12 +172,49 @@ fn large2804_plain_json_above_four_mib_formats_reopens_and_undoes(cx: &mut TestA
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
-    f.reader.read_with(visual, |reader, cx| {
+    f.reader.read_with(visual, |reader, _| {
         assert!(
-            reader.code_view_input(cx).is_none(),
-            "reopened large Source retires the rebuilt read preview"
+            reader.editing.is_none(),
+            "the keyboard cannot bypass the cap"
         );
     });
+    assert_eq!(
+        std::fs::read_to_string(f.directory.path().join("vault/large.JSON")).unwrap(),
+        formatted,
+        "refused re-entry preserves the saved source"
+    );
+}
+
+#[gpui::test]
+fn large2804_plain_json_below_cap_reopens_and_undoes_format(cx: &mut TestAppContext) {
+    let source = format!(
+        "{{\"values\":[\n{}\"tail\"]}}",
+        format!("\"{}\",\n", "x".repeat(2048)).repeat(1000)
+    );
+    assert!(source.len() > 1024 * 1024 && source.len() < 4 * 1024 * 1024);
+    let (f, visual) = open_file(cx, &source, "reopen.JSON");
+    click(visual, "source-code-format");
+    let formatted = f
+        .input
+        .read_with(visual, |input, _| input.value().to_string());
+    assert_ne!(formatted, source);
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(reader.editing.is_none());
+        assert!(reader.code_file_editable(cx), "below-cap re-entry positive");
+        assert!(!reader.code_view_input(cx).unwrap().read(cx).is_editable());
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.directory.path().join("vault/reopen.JSON")).unwrap(),
+        formatted
+    );
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
     visual.dispatch_action(Undo);
     settle(visual);
     f.reader.read_with(visual, |reader, cx| {
