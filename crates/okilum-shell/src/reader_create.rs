@@ -1881,6 +1881,14 @@ mod tests {
             std::fs::read_to_string(root.join("_Assets/Templates/Meeting.md")).unwrap(),
             "Meeting {{title}} {{date:YYYY-MM-DD}}"
         );
+        // Keep the missing-folder control on the explicitly selected legacy
+        // path: an absent default now falls back to @Schema/Templates.
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::write(
+            root.join(".obsidian/templates.json"),
+            r#"{"folder":"_Assets/Templates"}"#,
+        )
+        .unwrap();
         std::fs::remove_dir_all(root.join("_Assets/Templates")).unwrap();
         reader.update_in(visual, |reader, window, cx| {
             reader.new_note(Some("_Assets/Templates"), window, cx);
