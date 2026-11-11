@@ -76,58 +76,79 @@ fn code2809_navigation_never_changes_view_memory_even_after_restart(cx: &mut Tes
 fn code2809_first_text_precedes_full_parse_and_format_on_three_point_five_mb(
     cx: &mut TestAppContext,
 ) {
-    let temp = tempfile::tempdir().unwrap();
-    let text = format!("{{\"payload\":\"{}\"}}", "x".repeat(3_500_000));
-    let path = temp.path().join("large.json");
-    std::fs::write(&path, &text).unwrap();
-    cx.update(crate::test_init);
-    let (release, gate) = futures::channel::oneshot::channel();
-    let mut code = None;
-    let (_, visual) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| {
-            let mut view =
-                CodePreview::new(temp.path().into(), "large.json".into(), path, window, cx);
-            view.preparation_gate = Some(gate);
-            view
+    use std::sync::atomic::Ordering;
+    for (index, text) in [
+        format!(
+            "{{\"code2809_ordering_large\":\"{}\"}}",
+            "x".repeat(3_500_000)
+        ),
+        format!(
+            "{{\n\"code2809_ordering_small\":[\n{}0]}}",
+            "1,\n".repeat(50_000)
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.json");
+        std::fs::write(&path, &text).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_ui_state::install(&temp.path().join("state"), cx);
+            // Exercise the old single-page eager-format branch without a
+            // default Formatted request obscuring whether it was lazy.
+            reader_ui_state::set_code_view("json", View::Raw, cx);
         });
-        code = Some(view.clone());
-        Root::new(cx.new(|_| Surface(view)), window, cx)
-    });
-    visual.run_until_parked();
-    let code = code.unwrap();
-    code.read_with(visual, |code, cx| {
-        assert_eq!(
-            code.input()
-                .expect("text is available while the parser is held")
-                .read(cx)
-                .value()
-                .as_ref(),
-            &text[document::first_page(&text)]
-        );
-        assert!(
-            code.document.is_none() && code.raw_document.is_none() && code.json.is_none(),
-            "first content must not wait for a Document or formatted tree"
-        );
-        assert!(
-            code.first_content_ms.unwrap() < 1_000,
-            "first bounded text takes {:?} ms",
-            code.first_content_ms
-        );
-    });
-    assert!(visual.debug_bounds("reader-code-file").is_some());
-    release.send(()).unwrap();
-    settle(visual);
-    code.read_with(visual, |code, _| {
-        assert_eq!(code.view, View::Tree);
-        assert!(
-            code.document.is_some(),
-            "positive control: the held parser completed"
-        );
-        assert!(
-            code.json.as_ref().unwrap().pretty.is_none(),
-            "Tree never allocates a second formatted Document"
-        );
-    });
+        document::ORDERING_PARSES[index].store(0, Ordering::SeqCst);
+        let (release, gate) = futures::channel::oneshot::channel();
+        let mut code = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    CodePreview::new(temp.path().into(), "large.json".into(), path, window, cx);
+                view.preparation_gate = Some(gate);
+                view
+            });
+            code = Some(view.clone());
+            Root::new(cx.new(|_| Surface(view)), window, cx)
+        });
+        visual.run_until_parked();
+        let code = code.unwrap();
+        code.read_with(visual, |code, cx| {
+            assert_eq!(
+                code.input()
+                    .expect("text before parser")
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                &text[document::first_page(&text)]
+            );
+            assert_eq!(
+                document::ORDERING_PARSES[index].load(Ordering::SeqCst),
+                0,
+                "the actual full parser must not run before first text"
+            );
+            assert!(code.document.is_none() && code.raw_document.is_none() && code.json.is_none());
+            assert!(code.first_content_ms.unwrap() < 1_000);
+        });
+        assert!(visual.debug_bounds("reader-code-file").is_some());
+        release.send(()).unwrap();
+        settle(visual);
+        code.read_with(visual, |code, _| {
+            assert_eq!(code.view, if index == 0 { View::Tree } else { View::Raw });
+            assert!(
+                code.document.is_some(),
+                "positive control: parser completed"
+            );
+            assert_eq!(
+                document::ORDERING_PARSES[index].load(Ordering::SeqCst),
+                1,
+                "one raw Document, no eager formatted Document"
+            );
+            assert!(code.json.as_ref().unwrap().pretty.is_none());
+        });
+    }
 }
 
 #[gpui::test]
@@ -197,10 +218,8 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
                 code.view,
                 if switch_away {
                     View::Raw
-                } else if formatted_paged {
-                    View::Formatted
                 } else {
-                    View::Tree
+                    View::Formatted
                 }
             );
             assert!(
@@ -223,20 +242,6 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
             assert_eq!(code.find.read(cx).value().as_ref(), "payload");
             assert_eq!(code.matches.len(), 1, "the mounted Find remains usable");
         });
-        if !switch_away && !formatted_paged {
-            code.update_in(visual, |code, window, cx| {
-                code.set_view(View::Formatted, window, cx);
-                assert_eq!(
-                    code.view,
-                    View::Formatted,
-                    "explicit retry uses the retained result"
-                );
-                assert!(
-                    code.focus.is_focused(window),
-                    "explicit removal of Find leaves a live Reader target"
-                );
-            });
-        }
     }
 }
 

@@ -1896,6 +1896,7 @@ impl Reader {
         }
         self.remember_source_mode();
         self.editing = None;
+        self.resume_code_presentation(cx);
         true
     }
 
@@ -2311,6 +2312,7 @@ impl Reader {
         }
         self.remember_source_mode();
         self.editing = None;
+        self.resume_code_presentation(cx);
         self.outline_list
             .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
         true
@@ -2643,6 +2645,7 @@ impl Reader {
         {
             Ok(()) => {
                 self.editing = None;
+                self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
@@ -2812,6 +2815,7 @@ impl Reader {
                                     "Close, keeping draft",
                                     cx,
                                 )
+                                .debug_selector(|| "source-park".into())
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.park_source(window, cx)),
                                 ),

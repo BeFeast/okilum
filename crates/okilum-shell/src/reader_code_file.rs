@@ -7,6 +7,8 @@ use std::time::Instant;
 
 pub(crate) mod document;
 mod loading;
+#[cfg(test)]
+mod loading_tests;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
 #[cfg(test)]
@@ -113,6 +115,7 @@ enum State {
 pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
+    opened_at: Instant,
     state: State,
     source_bytes: Option<usize>,
     storage_reason: Option<String>,
@@ -132,6 +135,10 @@ pub(crate) struct CodePreview {
     document_revision: u64,
     applied_page: Option<(u64, usize)>,
     read_active: bool,
+    automatic_view: bool,
+    provisional_interacted: std::rc::Rc<std::cell::Cell<bool>>,
+    provisional_subscription: Option<Subscription>,
+    retain_find: bool,
     node_copy_cache: std::cell::RefCell<Option<(NodeCopyKey, Option<std::ops::Range<usize>>)>>,
     #[cfg(test)]
     preparation_gate: Option<futures::channel::oneshot::Receiver<()>>,
@@ -306,6 +313,7 @@ impl CodePreview {
                             this.first_content_ms = Some(started.elapsed().as_millis());
                         }
                         timing(&input, started, cx);
+                        this.watch_provisional(&input, cx);
                         // Text is available before any full-file parse/index or
                         // formatted snapshot. Those run on subsequent workers.
                         this.prepare_loaded(text, table_path.clone(), json, window, cx);
@@ -352,6 +360,7 @@ impl CodePreview {
         Self {
             root,
             rel,
+            opened_at: started,
             state: State::Loading,
             source_bytes: None,
             storage_reason: None,
@@ -370,6 +379,10 @@ impl CodePreview {
             document_revision: 0,
             applied_page: None,
             read_active: true,
+            automatic_view: true,
+            provisional_interacted: Default::default(),
+            provisional_subscription: None,
+            retain_find: false,
             node_copy_cache: Default::default(),
             #[cfg(test)]
             preparation_gate: None,
@@ -530,12 +543,13 @@ impl CodePreview {
 
     /// Find targets the visible table or the whole-file paged presentation.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.provisional_interacted.set(true);
         if self.view == View::Table {
             if let Some(table) = self.table.as_ref().filter(|table| table.read(cx).ready()) {
                 return table.update(cx, |table, cx| table.focus_filter(window, cx));
             }
         }
-        if self.view == View::Tree || self.paged {
+        if self.view == View::Tree || self.paged || self.retain_find {
             if let Some(input) = self.input() {
                 input.update(cx, |input, cx| input.close_search(cx));
             }
@@ -672,6 +686,12 @@ impl Render for CodePreview {
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
+            .when(self.provisional_subscription.is_some(), |view| {
+                let clicked = self.provisional_interacted.clone();
+                let keyed = clicked.clone();
+                view.capture_any_mouse_down(move |_, _, _| clicked.set(true))
+                    .capture_key_down(move |_, _, _| keyed.set(true))
+            })
             .debug_selector(|| "reader-code-file".into())
             .on_action(cx.listener(|this, _: &CopyNode, window, cx| this.copy_node(window, cx)))
             .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy_selection(cx)))
@@ -730,9 +750,10 @@ impl CodePreview {
             State::Loading => view.child(div().child("Opening file…")).into_any_element(),
             State::Message(message) => view.child(self.message(message, cx)).into_any_element(),
             State::Content(input) => view
-                .when(self.view == View::Tree || self.paged, |view| {
-                    view.child(self.search_row(cx))
-                })
+                .when(
+                    self.view == View::Tree || self.paged || self.retain_find,
+                    |view| view.child(self.search_row(cx)),
+                )
                 .child(if self.view == View::Tree {
                     self.structure_element(cx)
                 } else {
@@ -801,6 +822,21 @@ impl Reader {
                 code.update(cx, |code, cx| code.step_part(true, window, cx));
             }
         }))
+    }
+    pub(super) fn resume_code_presentation(&self, cx: &mut App) {
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+        {
+            code.update(cx, |code, cx| {
+                code.read_active = true;
+                if let Some(input) = code.input() {
+                    code.apply_diagnostics(&input, cx);
+                }
+                cx.notify();
+            });
+        }
     }
     fn read_code_view(&self) -> Option<Entity<CodePreview>> {
         if self.editing.is_some() {

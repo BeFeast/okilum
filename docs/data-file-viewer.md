@@ -91,7 +91,12 @@ One `View` value owns Table, Tree, Formatted or Raw. Availability distinguishes
 available, disabled with a reason, and absent. The first bounded Raw text is
 shown before parsing/indexing begins. The raw document and formatting limits are
 then prepared on a worker; a formatted document is built only when requested
-(including the default Formatted view). Raw/Formatted snapshots are retained;
+(including the default Formatted view). The default presentation is applied only
+while that provisional text remains untouched. Scroll, selection, caret, Find
+or an explicit view command pins Raw for this open, including interaction while
+the default formatter is still running; this never changes per-type memory.
+If an untouched default unmounts a programmatically focused text Input, focus
+moves to the mounted CodePreview target. Raw/Formatted snapshots are retained;
 switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
 in unguarded files update the per-type map; Go to error, Go to Raw node navigation
@@ -130,9 +135,10 @@ then size/storage read-only in that order; a view-only format such as XML uses
 only the name lock. The lock always retains the read-only reason. View switches
 never focus the read-only text Input; Tree retains a mounted CodePreview target.
 Async formatting preserves focus and never applies after Edit entry or a newer
-view request. A result that would unmount a focused whole-file Find is retained
-until a later explicit view choice; that choice leaves a live Reader focus
-target. Part commands apply only to changed Raw/Formatted pages. Copy-node
+view request. An explicit Formatted request completes even if Find gains focus:
+the same whole-file Find remains mounted and usable without moving focus.
+Edit teardown, including Close, keeping draft after a conflict, resumes any
+retained CodePreview; the recovery draft and incoming file stay separate. Part commands apply only to changed Raw/Formatted pages. Copy-node
 enablement caches tree-sitter lookup by snapshot, page and caret. Error-tolerant
 source grammars keep any fold ranges the editor can fold.
 Raw and Formatted show position controls when paged. The right sidebar remains

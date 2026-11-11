@@ -2,6 +2,47 @@
 use super::*;
 
 impl CodePreview {
+    /// Observe only the provisional editor. Never forward Input notifications:
+    /// blinking/highlighting must not invalidate cached Reader side panels.
+    pub(super) fn watch_provisional(
+        &mut self,
+        input: &Entity<EditorState>,
+        cx: &mut Context<Self>,
+    ) {
+        let state = input.read(cx);
+        let initial = (
+            state.selected_range(),
+            state.scroll_offset(),
+            state.search_activation_revision(),
+        );
+        self.provisional_subscription = Some(cx.observe(input, move |this, input, cx| {
+            let state = input.read(cx);
+            if (
+                state.selected_range(),
+                state.scroll_offset(),
+                state.search_activation_revision(),
+            ) != initial
+            {
+                this.provisional_interacted.set(true);
+            }
+        }));
+    }
+
+    pub(super) fn initial_view_timing(&self) {
+        if std::env::var("OKILUM_CODE_TIMING").as_deref() == Ok("1") {
+            diagnostic_error!(
+                "code_preview initial_view_ready_ms={} view={:?}",
+                self.opened_at.elapsed().as_millis(),
+                self.view
+            );
+        }
+    }
+
+    pub(super) fn finish_automatic_view(&mut self) {
+        self.automatic_view = false;
+        self.provisional_subscription = None;
+    }
+
     pub(super) fn prepare_loaded(
         &mut self,
         text: String,
@@ -63,7 +104,22 @@ impl CodePreview {
                 if let Some(input) = this.input() {
                     this.apply_diagnostics(&input, cx);
                 }
-                this.apply_view(this.first_view(cx), window, cx);
+                if this.automatic_view && !this.provisional_interacted.get() {
+                    this.apply_view(this.first_view(cx), window, cx);
+                    // Only repair focus if the default actually unmounted its
+                    // Input. A user mouse/selection/scroll/Find keeps Raw.
+                    if matches!(this.view, View::Tree | View::Table)
+                        && this
+                            .input()
+                            .is_some_and(|input| input.focus_handle(cx).is_focused(window))
+                    {
+                        this.focus.focus(window, cx);
+                    }
+                }
+                if !this.json.as_ref().is_some_and(|json| json.formatting) {
+                    this.initial_view_timing();
+                    this.finish_automatic_view();
+                }
                 this.search(window, cx);
                 cx.notify();
             });

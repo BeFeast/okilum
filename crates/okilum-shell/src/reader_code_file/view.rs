@@ -170,15 +170,18 @@ impl CodePreview {
     }
     /// Only the explicit segment/menu/ShowView commands remember a choice.
     pub(crate) fn set_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        self.provisional_interacted.set(true);
         if !self.read_active || !self.availability(view).available() {
             return;
         }
+        self.finish_automatic_view();
         if !self.guarded() {
             if let Some(kind) = self.type_key() {
                 reader_ui_state::set_code_view(kind, view, cx);
             }
         }
         let focused_find = self.find.focus_handle(cx).is_focused(window);
+        self.retain_find = false;
         self.apply_view(view, window, cx);
         let keeps_find = self.view == View::Tree || (self.view != View::Table && self.paged);
         if focused_find && (!keeps_find || view != self.view) {
@@ -227,7 +230,6 @@ impl CodePreview {
             });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
-                let keeps_find = result.as_ref().is_ok_and(|doc| doc.pages.len() > 1);
                 let _ = this.update_in(cx, |this, window, cx| {
                     let Some(json) = &mut this.json else {
                         return;
@@ -235,13 +237,17 @@ impl CodePreview {
                     json.formatting = false;
                     json.pretty = Some(result);
                     let requested_formatted = json.requested == View::Formatted;
-                    let hide_focused_find =
-                        !keeps_find && this.find.focus_handle(cx).is_focused(window);
-                    // Keep the result, but never unmount the Find the user is
-                    // currently typing into. A later explicit choice applies it.
-                    if requested_formatted && this.read_active && !hide_focused_find {
+                    let keep_raw = this.automatic_view && this.provisional_interacted.get();
+                    if requested_formatted && this.read_active && !keep_raw {
+                        // Honor an explicit choice without unmounting the Find
+                        // the user focused while its worker was running.
+                        this.retain_find = this.find.focus_handle(cx).is_focused(window);
                         this.apply_view(View::Formatted, window, cx);
                     }
+                    if this.automatic_view {
+                        this.initial_view_timing();
+                    }
+                    this.finish_automatic_view();
                     cx.notify();
                 });
             })
@@ -281,6 +287,8 @@ impl CodePreview {
 
     pub(crate) fn suspend_presentation(&mut self) {
         self.read_active = false;
+        self.provisional_interacted.set(true);
+        self.finish_automatic_view();
         if let Some(json) = &mut self.json {
             json.requested = self.view;
         }

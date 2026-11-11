@@ -5,6 +5,14 @@ use std::{ops::Range, sync::Arc};
 
 mod json_tree;
 
+// Reserved, per-fixture counters prove the real parser ordering. Other tests
+// cannot affect them, including concurrently running editor/highlighter work.
+#[cfg(test)]
+pub(super) static ORDERING_PARSES: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
+
 const LONG_LINE: usize = 64 * 1024;
 const PAGE_BYTES: usize = 32 * 1024;
 
@@ -123,6 +131,21 @@ impl Document {
     }
 
     pub fn for_file(text: String, language: &str, json: bool) -> Self {
+        #[cfg(test)]
+        for (index, tag) in [
+            b"code2809_ordering_large".as_slice(),
+            b"code2809_ordering_small".as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if text.as_bytes()[..text.len().min(128)]
+                .windows(tag.len())
+                .any(|part| part == tag)
+            {
+                ORDERING_PARSES[index].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         let first = first_page(&text);
         let mut pages = vec![first];
         while pages.last().unwrap().end < text.len() {
