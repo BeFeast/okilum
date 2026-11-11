@@ -1,6 +1,10 @@
 //! Run the actual Feedback payload/transport tests without linking GPUI.
 //! Rendering and diagnostic-file persistence remain shell/native acceptance.
 //! Every HTTP request in this target uses an injected loopback mock endpoint.
+#[macro_use]
+#[path = "../../okilum-core/src/diagnostic_io.rs"]
+mod diagnostic_io;
+
 #[allow(dead_code)]
 #[path = "../../okilum-shell/src/reader_feedback/model.rs"]
 mod model;

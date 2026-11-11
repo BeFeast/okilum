@@ -56,7 +56,9 @@ class SharedSuitesTests(unittest.TestCase):
         self.assertIn('| Workspace Rust tests | FAIL | 42 |', receipt)
         self.assertIn('| CI Python tests | FAIL | 42 |', receipt)
         self.assertIn('| Updater Python tests | PASS | 0 |', receipt)
-        self.assertEqual(events[2][1][-3:], ['--', '--skip', 'platform::'])
+        self.assertEqual(events[2][1], [
+            'test', '--workspace', '--locked', '--no-fail-fast', '--',
+            '--test-threads=4', '--skip', 'platform::'])
 
     def test_lint_failure_does_not_hide_rust_or_python_results(self):
         result, receipt, _ = self.invoke(['fmt', 'clippy'])
