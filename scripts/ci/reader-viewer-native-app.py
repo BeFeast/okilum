@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mount every viewer in a real Reader on the native debug main stack."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
