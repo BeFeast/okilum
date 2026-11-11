@@ -4260,6 +4260,15 @@ impl Reader {
     }
 
     fn render_breadcrumbs(&self, collapse_parents: bool, cx: &mut Context<Self>) -> AnyElement {
+        self.render_breadcrumbs_with_state(collapse_parents, None, cx)
+    }
+
+    fn render_breadcrumbs_with_state(
+        &self,
+        collapse_parents: bool,
+        state: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         #[cfg(any(unix, windows))]
         if let Some(rename) = self.renaming.as_ref().filter(|r| r.in_header) {
             return v_flex()
@@ -4418,6 +4427,7 @@ impl Reader {
                         )
                     }),
             )
+            .children(state)
             .when(deleted, |row| {
                 row.child(
                     div()

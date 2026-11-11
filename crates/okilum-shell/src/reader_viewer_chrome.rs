@@ -781,8 +781,16 @@ fn name_slot(
             + if nested { 32. } else { 0. }
             + if chrome.state.is_some() { 32. } else { 0. }))
         .overflow_hidden()
-        .child(reader.render_breadcrumbs(plan.collapse_parents, cx))
-        .children(chrome.state.as_ref().map(|state| state.button(true)))
+        .child(
+            reader.render_breadcrumbs_with_state(
+                plan.collapse_parents,
+                chrome
+                    .state
+                    .as_ref()
+                    .map(|state| state.button(true).into_any_element()),
+                cx,
+            ),
+        )
         .into_any_element()
 }
 

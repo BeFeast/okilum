@@ -4,6 +4,28 @@ use ::core::prelude::v1::test;
 use reader_viewer_chrome::tests::measured_bounds;
 
 #[gpui::test]
+fn canvas_state_badge_is_visible_next_to_the_title_at_both_widths(cx: &mut TestAppContext) {
+    let (_reader, visual, _temp) = reader_viewer_chrome::tests::fixture(cx, "scene.canvas");
+    for width in [1440., 700.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let title = measured_bounds(visual, "reader-document-root").unwrap();
+        let name = measured_bounds(visual, "viewer-name-slot").unwrap();
+        let badge = measured_bounds(visual, "canvas-read-only").unwrap();
+        assert!(badge.left() >= title.right());
+        assert!(
+            badge.left() - title.right() <= px(8.),
+            "state badge stays next to the title"
+        );
+        assert!(
+            badge.right() <= name.right(),
+            "state badge is not clipped by the name slot"
+        );
+        assert!(badge.size.width >= px(28.) && badge.size.height >= px(28.));
+    }
+}
+
+#[gpui::test]
 fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut TestAppContext) {
     struct Field {
         target: Target,

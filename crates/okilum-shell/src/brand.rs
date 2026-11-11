@@ -45,7 +45,12 @@ pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
 /// Note width toggle: shown in full width (back to normal) and in normal width.
 pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
 pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
-const IMAGES: [(&str, &[u8]); 43] = [
+const IMAGES: [(&str, &[u8]); 45] = [
+    (READER_LOCK_ICON, include_bytes!("../assets/icons/lock.svg")),
+    (
+        READER_DOWNLOAD_ICON,
+        include_bytes!("../assets/icons/download.svg"),
+    ),
     (
         "icons/providers/openai.svg",
         include_bytes!("../assets/icons/providers/openai.svg"),
@@ -928,6 +933,28 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::IconNamed;
     use gpui_component::ThemeMode;
+
+    #[test]
+    fn viewer_state_and_extract_glyphs_are_embedded_in_runtime_assets() {
+        use resvg::{tiny_skia, usvg};
+        for path in [READER_LOCK_ICON, READER_DOWNLOAD_ICON] {
+            let bytes = Assets
+                .load(path)
+                .unwrap()
+                .expect("viewer glyph is embedded");
+            let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).unwrap();
+            let mut pixels = tiny_skia::Pixmap::new(24, 24).unwrap();
+            resvg::render(
+                &tree,
+                tiny_skia::Transform::identity(),
+                &mut pixels.as_mut(),
+            );
+            assert!(
+                pixels.pixels().iter().any(|pixel| pixel.alpha() > 0),
+                "{path} paints visible pixels"
+            );
+        }
+    }
 
     /// OS/2 fsSelection from a TrueType file's table directory.
     fn fs_selection(font: &[u8]) -> u16 {
