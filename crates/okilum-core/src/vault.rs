@@ -759,7 +759,10 @@ impl Vault {
             {
                 false
             }
-            Err(error) => return Err(error).context("Inspect vault writer location"),
+            // Ancestor/reparse restrictions belong to source mutation, not
+            // metadata reading. Authority retains its canonical-root identity
+            // and binding checks, including for readable directory aliases.
+            Err(_) => true,
         };
         #[cfg(not(windows))]
         let register_writer = true;

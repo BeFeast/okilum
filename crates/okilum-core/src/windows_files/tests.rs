@@ -654,3 +654,22 @@ fn windows_read_only_inventory_does_not_require_mutation_identity() {
         assert!(okilum_write_authority::Authority::for_root(root.path()).is_err());
     }
 }
+
+#[test]
+fn windows_inventory_reads_root_alias_without_relaxing_mutation_admission() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("target");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("note.md"), b"# Readable alias\r\n").unwrap();
+    let alias = temp.path().join("alias");
+    std::os::windows::fs::symlink_dir(&root, &alias).unwrap();
+    assert!(Directory::open(&alias).is_err());
+    let vault = crate::vault::Vault::scan_metadata(&alias).unwrap();
+    assert_eq!(vault.notes.len(), 1);
+    assert_eq!(vault.notes[0].path, "note.md");
+    assert_eq!(
+        fs::read(root.join("note.md")).unwrap(),
+        b"# Readable alias\r\n"
+    );
+    assert!(Directory::open(&alias).is_err());
+}
