@@ -242,7 +242,7 @@ fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
     cx: &mut TestAppContext,
 ) {
     for (name, text) in [
-        ("source.rs", "fn main() {\n    println!(\"hi\");\n}\n"),
+        ("source.rs", "fn main() {\n    let greeting = \"hi\";\n}\n"),
         ("text.txt", "plain text"),
         ("data.yaml", "a:\n  b: 1\n"),
         ("data.toml", "[a]\nb=1\n"),
