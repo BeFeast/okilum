@@ -556,7 +556,7 @@ impl Reader {
         &self,
         chrome: &ViewerChrome,
         width: f32,
-        window: &mut Window,
+        window: &Window,
         cx: &App,
     ) -> HeaderLayout {
         let editing = self.editing.is_some();
