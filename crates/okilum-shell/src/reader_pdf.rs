@@ -881,57 +881,67 @@ impl Reader {
             viewer.update(cx, |viewer, cx| viewer.zoom(zoom, cx));
         }
     }
+}
 
-    /// Glyph controls for the document header while a PDF is shown.
-    pub(crate) fn render_pdf_controls(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        // Shown while the file opens too, so the header does not shift when
-        // the first page arrives; hidden only when there is nothing to zoom.
-        let viewer = self.pdf_viewer()?;
-        if !viewer.read(cx).is_available() {
-            return None;
+/// PDF is the first client of the shared viewer-action slot. Callbacks retain
+/// the viewer entity, so zoom remains local even for a nested archive preview.
+pub(crate) fn chrome(viewer: &Entity<PdfViewer>, cx: &App) -> reader_viewer_chrome::ViewerChrome {
+    use reader_viewer_chrome::{ViewerAction, ViewerChrome};
+    if !viewer.read(cx).is_available() {
+        return ViewerChrome::default();
+    }
+    let actions = [
+        (
+            "pdf-zoom-out",
+            Icon::new(IconName::Minus),
+            "Zoom out",
+            reader_shortcuts::hint("Zoom out", &PdfZoomOut, cx),
+            Zoom::Out,
+        ),
+        (
+            "pdf-zoom-fit",
+            Icon::default().path(brand::NOTE_WIDTH_FULL_ICON),
+            "Fit to width",
+            reader_shortcuts::hint("Fit to width", &PdfZoomFit, cx),
+            Zoom::Fit,
+        ),
+        (
+            "pdf-zoom-in",
+            Icon::new(IconName::Plus),
+            "Zoom in",
+            reader_shortcuts::hint("Zoom in", &PdfZoomIn, cx),
+            Zoom::In,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, icon, label, tooltip, zoom)| {
+        let target = viewer.clone();
+        ViewerAction {
+            id,
+            icon,
+            label: label.into(),
+            tooltip,
+            enabled: true,
+            disabled_reason: None,
+            toggled: false,
+            priority: 30,
+            labelled: false,
+            label_by_default: false,
+            collapse_priority: 0,
+            filled: false,
+            never_dropped: false,
+            shortcut: Some(match zoom {
+                Zoom::Out => std::rc::Rc::new(PdfZoomOut) as std::rc::Rc<dyn Action>,
+                Zoom::Fit => std::rc::Rc::new(PdfZoomFit),
+                Zoom::In => std::rc::Rc::new(PdfZoomIn),
+            }),
+            invoke: std::rc::Rc::new(move |_, cx| target.update(cx, |p, cx| p.zoom(zoom, cx))),
         }
-        let mac = cfg!(target_os = "macos");
-        let buttons = [
-            (
-                "pdf-zoom-out",
-                IconName::Minus,
-                if mac {
-                    "Zoom out ⌘−"
-                } else {
-                    "Zoom out Ctrl+−"
-                },
-                Zoom::Out,
-            ),
-            (
-                "pdf-zoom-fit",
-                IconName::RotateCw,
-                if mac {
-                    "Fit to width ⌘0"
-                } else {
-                    "Fit to width Ctrl+0"
-                },
-                Zoom::Fit,
-            ),
-            (
-                "pdf-zoom-in",
-                IconName::Plus,
-                if mac {
-                    "Zoom in ⌘+"
-                } else {
-                    "Zoom in Ctrl++"
-                },
-                Zoom::In,
-            ),
-        ];
-        Some(
-            h_flex()
-                .gap_1()
-                .children(buttons.map(|(id, icon, tip, zoom)| {
-                    reader_icon_button(id, icon, tip, cx)
-                        .debug_selector(move || id.into())
-                        .on_click(cx.listener(move |this, _, _, cx| this.pdf_zoom(zoom, cx)))
-                })),
-        )
+    })
+    .collect();
+    ViewerChrome {
+        actions,
+        ..Default::default()
     }
 }
 

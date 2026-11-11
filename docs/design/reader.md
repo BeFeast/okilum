@@ -43,6 +43,33 @@ original combined titlebar and document controls:
   and note More follow (#1909). Maximize sits beside width in this document
   header; its shortcut and reversible panel state remain unchanged. Save
   appears only while dirty; save/conflict feedback keeps its existing behavior.
+- **File headers (Variant A, #2795 / #2806).** The same pinned 48 px mount
+  has seven erased slots: navigation, name and state, Find, view switch,
+  viewer actions and Copy, file actions (Edit/Read, dirty Save, Open with),
+  window actions (width, Maximize, Document actions). Slots 3 and 4 are empty
+  until their viewer opts in. Viewers provide read-only `ViewerChrome` values
+  and entity callbacks; shared builders do not match on viewer types.
+  Every header control is at least 28 px high. Thin token dividers separate
+  groups. Copy holds path, vault path, wikilink and, for text viewers only,
+  file content. Content comes from exact UTF-8 disk text read on a worker
+  (64 MiB maximum, including a file growing during the read), or the unsaved
+  editor buffer. The toast names its size; no formatted preview is copied.
+  Open with holds the default app, installed editors under Open in, the
+  platform file manager, and Quick Look on macOS only.
+  Labels are opt-in from about 1,400 px of document width. The pure overflow
+  policy drops labels, Reveal in sidebar, width and Maximize, viewer actions,
+  Open with and Copy (as submenus), then narrows Find to 128 px and an icon
+  (large files keep a field), then collapses the view switch. It protects
+  120 px of file name. Edit/Read, dirty Save and Document actions never leave
+  the row. Notes retain their existing layout and pinned Maximize.
+  PDF supplies zoom out, fit to width (width glyph), zoom in to slot 5;
+  their tooltips use live bindings and their overflow items remain functional.
+- **Viewer bottom status line.** Empty descriptions render nothing. Otherwise
+  it is 28 px high with a top `border-subtle`, a leading icon, a bold label,
+  12/16 muted text, at most two actions and an optional trailing control.
+  Truncated text has a full tooltip. Warning uses `warning-tint` with `text`
+  on it (AA, AAA for High contrast); neutral uses `surface`. Logs first reuse
+  the component without changing their existing text or controls.
 - **Labels.** Glyphs are the default. Settings → Appearance → “Show labels on
   toolbar buttons” persists globally; mode labels appear only when the measured
   title and controls fit. Find yields to More before the title truncates, labels
@@ -217,6 +244,7 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | `code-border` | `#eceef0` | `#30333a` | |
 | `callout-bg` | `#fffaeb` | `#2a2720` | warning callout fill |
 | `callout-border` | `#f3e3b5` | `#4a3f2a` | |
+| `warning-tint` | `#fbf5e6` | `#3a3220` | warning bottom line; theme-derived warning over surface |
 | `find-match` | `#fde68a` | `#5c4f1c` | find marks |
 | `find-current` | `#fbbf24` | `#8a7420` | current find mark |
 | `find-current-ring` | `#d97706` | `#facc15` | |
@@ -660,8 +688,9 @@ Wheel and keyboard scrolling move only the document; fresh and restored sessions
 use the same 48 px header, with no collapse or restore-only exception.
 Source mode adds a Save glyph (⌘S / Ctrl+S tooltip)
 and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
-tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
-Reveal and Copy path glyphs alongside More.
+tooltips. Attachment headers use Copy and Open with menus alongside
+Document actions, following the file-slot and overflow rules above. Quick Look
+is a macOS-only item in Open with.
 
 Reveal uses the platform's name for the file manager: «Reveal in Finder» on
 macOS, «Show in Explorer» on Windows and «Show in File Manager» on Linux, where

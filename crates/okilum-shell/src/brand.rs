@@ -374,6 +374,8 @@ pub struct Palette {
 /// components read colors from here or from `Palette`, never from literals.
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderPalette {
+    /// Quiet warning status-line surface; text uses the theme's AA/AAA text.
+    pub warning_tint: Hsla,
     pub text_faint: Hsla,
     pub hover: Hsla,
     pub missing_link: Hsla,
@@ -468,6 +470,7 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 on_status: color("onStatus"),
             },
             ReaderPalette {
+                warning_tint: color("warningTint"),
                 text_faint: color("textFaint"),
                 hover: color("hover"),
                 missing_link: color("missingLink"),
@@ -1359,6 +1362,7 @@ mod tests {
                     check(&format!("text on {name}"), p.text, bg, reading);
                 }
                 check("on-accent on accent", p.on_accent, p.accent, 4.5);
+                check("text on warning-tint", p.text, r.warning_tint, reading);
                 // Counts and hints are supplementary; still never below 3:1.
                 let faint = if theme == ThemeId::HighContrast {
                     4.5

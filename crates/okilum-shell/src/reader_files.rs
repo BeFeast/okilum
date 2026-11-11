@@ -570,7 +570,7 @@ impl Reader {
                 .when(preview.code.is_some(), |view| {
                     view.key_context(reader_code_file::KEY_CONTEXT)
                 })
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(self.render_source(window, cx))
                 .into_any_element();
         }
@@ -578,14 +578,14 @@ impl Reader {
             return v_flex()
                 .size_full()
                 .min_h_0()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(div().flex_1().min_h_0().child(virtual_log.clone()))
                 .into_any_element();
         }
         if let Some(audio) = &preview.audio {
             return v_flex()
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(div().p_6().child(audio.clone()))
                 .into_any_element();
         }
@@ -596,7 +596,7 @@ impl Reader {
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(
                     div()
                         .px_6()
@@ -613,7 +613,7 @@ impl Reader {
                 .track_focus(&self.focus_handle)
                 .size_full()
                 .min_h_0()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(archive.clone())
                 .into_any_element();
         }
@@ -621,7 +621,7 @@ impl Reader {
             return v_flex()
                 .size_full()
                 .min_h_0()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(div().flex_1().min_h_0().child(canvas.clone()))
                 .into_any_element();
         }
@@ -629,7 +629,7 @@ impl Reader {
             return v_flex()
                 .size_full()
                 .min_h_0()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(table.clone())
                 .into_any_element();
         }
@@ -642,7 +642,7 @@ impl Reader {
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(text.clone())
                 .into_any_element();
         }
@@ -652,14 +652,14 @@ impl Reader {
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(code.clone())
                 .into_any_element();
         }
         if reader_media::is_video(&preview.path) {
             return v_flex()
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(div().p_6().child(reader_media::video_card(
                     &self.vault_root,
                     &preview.path,
@@ -668,20 +668,27 @@ impl Reader {
                 .into_any_element();
         }
         if okilum_core::excalidraw::is_drawing(&preview.rel) {
-            return div()
+            return v_flex()
                 .id("reader-drawing-preview")
                 .size_full()
-                .overflow_y_scroll()
+                .min_h_0()
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
-                .child(self.render_document_header(window, cx))
-                .child(reader_drawing::render(
-                    &self.vault_root,
-                    &preview.path,
-                    None,
-                    window,
-                    cx,
-                ))
+                .child(self.render_file_header_viewport(window, cx))
+                .child(
+                    div()
+                        .id("reader-drawing-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(reader_drawing::render(
+                            &self.vault_root,
+                            &preview.path,
+                            None,
+                            window,
+                            cx,
+                        )),
+                )
                 .into_any_element();
         }
         if let Some(pdf) = &preview.pdf {
@@ -701,7 +708,7 @@ impl Reader {
                     this.pdf_zoom(reader_pdf::Zoom::Fit, cx)
                 }))
                 .size_full()
-                .child(self.render_document_header(window, cx))
+                .child(self.render_file_header_viewport(window, cx))
                 .child(div().flex_1().min_h_0().w_full().child(pdf.clone()))
                 .into_any_element();
         }
@@ -712,32 +719,40 @@ impl Reader {
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .overflow_y_scroll()
-                .gap_3()
-                .child(self.render_document_header(window, cx))
+                .min_h_0()
+                .child(self.render_file_header_viewport(window, cx))
                 .child(
-                    v_flex()
-                        .flex_none()
-                        .px_6()
-                        .pb_6()
-                        .gap_3()
-                        .child(thumbnail.clone())
+                    div()
+                        .id("reader-thumbnail-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .pt_3()
+                        .overflow_y_scroll()
                         .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(preview.details.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Quick Look preview · Space to open"),
+                            v_flex()
+                                .flex_none()
+                                .px_6()
+                                .pb_6()
+                                .gap_3()
+                                .child(thumbnail.clone())
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(preview.details.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Quick Look preview · Space to open"),
+                                ),
                         ),
                 )
                 .into_any_element();
         }
         let mut view = v_flex()
+            .debug_selector(|| "reader-file-content".into())
             .flex_none()
             .px_6()
             .pb_6()
@@ -779,10 +794,17 @@ impl Reader {
             .key_context("ReaderFile")
             .track_focus(&self.focus_handle)
             .size_full()
-            .overflow_y_scroll()
-            .gap_3()
-            .child(self.render_document_header(window, cx))
-            .child(view)
+            .min_h_0()
+            .child(self.render_file_header_viewport(window, cx))
+            .child(
+                div()
+                    .id("reader-file-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .pt_3()
+                    .overflow_y_scroll()
+                    .child(view),
+            )
             .into_any_element()
     }
 }

@@ -34,6 +34,8 @@ struct Entry {
     action: &'static str,
     label: &'static str,
     group: Group,
+    #[cfg(test)]
+    default_binding: bool,
 }
 
 fn entry<A: Action>(label: &'static str, group: Group) -> Entry {
@@ -41,11 +43,23 @@ fn entry<A: Action>(label: &'static str, group: Group) -> Entry {
         action: A::name_for_type(),
         label,
         group,
+        #[cfg(test)]
+        default_binding: true,
     }
 }
 
-/// Every Reader action that has a key binding, in sheet order. A binding whose
-/// action is missing here fails `every_bound_reader_action_is_listed`.
+/// Menu actions are catalogued for labels and future user bindings, but must
+/// not acquire an unsolicited default shortcut.
+fn menu_entry<A: Action>(label: &'static str, group: Group) -> Entry {
+    Entry {
+        #[cfg(test)]
+        default_binding: false,
+        ..entry::<A>(label, group)
+    }
+}
+
+/// Reader actions with default bindings and explicit menu actions, in sheet order.
+/// A binding whose action is missing here fails `every_bound_reader_action_is_listed`.
 fn catalog() -> Vec<Entry> {
     use Group::*;
     vec![
@@ -113,6 +127,10 @@ fn catalog() -> Vec<Entry> {
         entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
+        menu_entry::<CopyFileContent>("Copy file content", Notes),
+        menu_entry::<CopyFilePath>("Copy path", Notes),
+        menu_entry::<CopyFileWikilink>("Copy wikilink", Notes),
+        menu_entry::<OpenFileDefault>("Open with default app", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
@@ -154,7 +172,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<MaximizeNote>("Maximize / restore note", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
-        entry::<ToggleSoftWrap>("Soft wrap in code files", View),
+        entry::<ToggleSoftWrap>("Wrap long lines", View),
         entry::<ToggleNoteWidth>("Full / normal note width", View),
         entry::<ToggleFocusMode>("Focus mode", View),
         entry::<ToggleTypewriterMode>("Typewriter mode", View),
@@ -611,16 +629,46 @@ mod tests {
     fn listed_actions_are_bound_and_unique(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);
         // Quick Look exists only on macOS; Windows lacks the Unix-only editing
-        // actions. Every other listed action must have a key, or the catalog
-        // has gone stale.
+        // actions. Every ordinary entry still requires a key; explicitly
+        // declared menu entries must stay unbound by default.
         let platform_only = [QuickLookFile::name_for_type()];
         let mut seen = BTreeSet::new();
         for entry in catalog() {
             assert!(seen.insert(entry.action), "{} listed twice", entry.action);
             let bound = !keys_for(&keymap, entry.action, Os::CURRENT).is_empty();
-            if cfg!(target_os = "macos") || (cfg!(unix) && !platform_only.contains(&entry.action)) {
+            if !entry.default_binding {
+                assert!(
+                    !bound,
+                    "{} unexpectedly acquired a default shortcut",
+                    entry.action
+                );
+            } else if cfg!(target_os = "macos")
+                || (cfg!(unix) && !platform_only.contains(&entry.action))
+            {
                 assert!(bound, "{} is listed but not bound", entry.action);
             }
+        }
+    }
+
+    #[gpui::test]
+    fn file_menu_actions_are_catalogued_without_unsolicited_shortcuts(cx: &mut TestAppContext) {
+        let keymap = reader_keymap(cx);
+        for (action, label) in [
+            (CopyFileContent::name_for_type(), "Copy file content"),
+            (CopyFilePath::name_for_type(), "Copy path"),
+            (CopyFileWikilink::name_for_type(), "Copy wikilink"),
+            (OpenFileDefault::name_for_type(), "Open with default app"),
+        ] {
+            let item = catalog()
+                .into_iter()
+                .find(|entry| entry.action == action)
+                .expect("menu action is registered for live labels and user bindings");
+            assert_eq!(item.label, label);
+            assert!(!item.default_binding);
+            assert!(keys_for(&keymap, action, Os::CURRENT).is_empty());
+            assert!(!rows(&keymap, Os::CURRENT)
+                .iter()
+                .any(|row| row.label == label));
         }
     }
 

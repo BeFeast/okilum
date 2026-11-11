@@ -36,6 +36,8 @@ assert run(*base, 'data_table_2735_', '--', '--nocapture', '--test-threads=1').r
 print('DATA_TABLE_2735_RESTORED_NATIVE_SUITE_PASS', flush=True)
 # Preserve the real selection/edit/recovery/image contracts exercised by full Linux.
 for regression in [
+    'reader_viewer_chrome::',
+    'reader_status_line::',
     'reader_editor::mode_navigation_tests::',
     'reader_loading::quick_view_tests::window_mode_switch_keeps_typed_preview_entities_in_both_directions',
     'reader_files::tests::delimited_attachment_edit_saves_only_changed_bytes_and_conflicts_keep_drafts',
