@@ -746,21 +746,25 @@ mod tests {
     }
 
     #[test]
-    fn archive_symlinks_are_listed_but_never_read_or_extracted() {
+    fn archive_symlinks_with_huge_declared_sizes_are_never_read_or_extracted() {
         let dir = tempfile::tempdir().unwrap();
-        let archive = write(
-            dir.path(),
-            "links.zip",
-            &with_unix_modes(
-                stored_zip(&[
-                    (b"link", true, false, b"../outside"),
-                    (b"plain.txt", true, false, b"safe"),
-                ]),
-                &[0o120777, 0o100644],
-            ),
+        let mut bytes = with_unix_modes(
+            stored_zip(&[
+                (b"link", true, false, b"../outside"),
+                (b"plain.txt", true, false, b"safe"),
+            ]),
+            &[0o120777, 0o100644],
         );
+        let central =
+            u32::from_le_bytes(bytes[bytes.len() - 6..bytes.len() - 2].try_into().unwrap())
+                as usize;
+        // An untrusted symlink must not allocate from its declared target size.
+        let declared_size = u32::MAX - 1;
+        bytes[central + 24..central + 28].copy_from_slice(&declared_size.to_le_bytes());
+        let archive = write(dir.path(), "links.zip", &bytes);
         let listing = list(&archive, Limits::default()).unwrap();
         assert_eq!(listing.entries[0].kind, Kind::Symlink);
+        assert_eq!(listing.entries[0].size, u64::from(declared_size));
         assert_eq!(
             refused(read_entry(&archive, 0, Limits::default()).unwrap_err()),
             Refused::Symlink("link".into())
