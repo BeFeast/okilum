@@ -16,7 +16,7 @@ pub(super) struct DigitGlyphs(Rc<RefCell<Option<Key>>>);
 
 #[cfg(test)]
 thread_local! {
-    pub(in super::super) static REQUESTS: RefCell<Vec<(GlyphId, u8, u8, Pixels)>> = const { RefCell::new(Vec::new()) };
+    pub(in super::super) static REQUESTS: RefCell<Vec<(char, u8, u8, Pixels)>> = const { RefCell::new(Vec::new()) };
 }
 
 impl DigitGlyphs {
@@ -69,9 +69,12 @@ impl DigitGlyphs {
                                             );
                                             #[cfg(test)]
                                             REQUESTS.with(|requests| {
-                                                requests
-                                                    .borrow_mut()
-                                                    .push((glyph.id, x, y, key.size))
+                                                requests.borrow_mut().push((
+                                                    line.text.as_bytes()[glyph.index] as char,
+                                                    x,
+                                                    y,
+                                                    key.size,
+                                                ))
                                             });
                                             window.paint_glyph(
                                                 origin,
