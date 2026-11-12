@@ -209,3 +209,10 @@ native CPU draw work (layout/prepaint/paint, excluding compositor/vsync). Openin
 paths must finish within 100 ms; all 48 scroll samples per marks state must stay
 within 16 ms. This independent step runs even when a baseline native app probe
 fails. It changes neither existing event-loop thresholds nor the Windows stack.
+
+The native toolbar gate keeps two distinct profiles: the debug native Reader
+smoke exercises Tree rendering and scrolling on the OS main stack; an independent
+production release job enforces the 3.5 MB / 414-path CPU budgets (100 ms open,
+16 ms per draw, 48 moving frames with marks and 48 without). Both require actual
+row builds and viewport movement. A debug smoke receipt cannot satisfy the
+release budget runner. Neither gate changes the Windows stack reserve.

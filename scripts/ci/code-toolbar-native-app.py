@@ -24,6 +24,7 @@ def fixture():
 
 def main():
     binary = str(Path(sys.argv[1]).resolve())
+    smoke = '--smoke' in sys.argv[2:]
     parent = Path(os.environ['RUNNER_TEMP'])
     with tempfile.TemporaryDirectory(prefix='code-toolbar-2810-', dir=parent) as temp:
         root = Path(temp)
@@ -33,24 +34,31 @@ def main():
         before = hashlib.sha256(path.read_bytes()).hexdigest()
         log_path = parent / 'code-toolbar-native-app.log'
         with log_path.open('w') as log:
-            process = subprocess.run([binary], env=dict(os.environ, OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE=str(root)),
+            env = dict(os.environ, OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE=str(root))
+            env.pop('OKILUM_CODE_TOOLBAR_NATIVE_SMOKE', None)
+            if smoke:
+                env['OKILUM_CODE_TOOLBAR_NATIVE_SMOKE'] = '1'
+            process = subprocess.run([binary], env=env,
                                      stdout=log, stderr=subprocess.STDOUT, timeout=180)
         assert process.returncode == 0, log_path.read_text(encoding='utf-8')[-14000:]
         receipt = json.loads((root / 'toolbar-receipt.json').read_text())
         assert receipt['real_native_platform'] and receipt['mounted'] == 'Reader'
         assert receipt['bytes'] == 3_500_000 and receipt['paths_keys'] == 414
-        assert receipt['open_ms'] <= 100
+        assert receipt['measurement'] == ('debug-smoke' if smoke else 'production-release')
+        if not smoke:
+            assert receipt['open_ms'] <= 100
         for marked in [False, True]:
             frames = [f for f in receipt['frames'] if f['marks'] == marked]
             assert len(frames) == 48
-            assert max(f['cpu_draw_ms'] for f in frames) <= 16
+            if not smoke:
+                assert max(f['cpu_draw_ms'] for f in frames) <= 16
             assert all(f['rows_built'] > 0 for f in frames)
             assert len({f['scroll_y'] for f in frames}) == 48
         assert hashlib.sha256(path.read_bytes()).hexdigest() == before
         receipt['fixture_sha256'] = before
         (parent / 'code-toolbar-native-receipt.json').write_text(json.dumps(receipt, indent=2))
         print(json.dumps(receipt), flush=True)
-        print('CODE2810_NATIVE_READER_BUDGET_PASS', flush=True)
+        print('CODE2810_NATIVE_READER_STACK_SMOKE_PASS' if smoke else 'CODE2810_NATIVE_READER_BUDGET_PASS', flush=True)
 
 
 if __name__ == '__main__':

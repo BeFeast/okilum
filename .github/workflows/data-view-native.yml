@@ -99,13 +99,13 @@ jobs:
           python3 scripts/ci/data-view-native-app.py "$binary"
           python3 scripts/ci/data-table-native-app.py "$binary"
           python3 scripts/ci/reader-viewer-native-app.py "$binary"
-      - name: Exercise Reader Tree open and scroll budgets
+      - name: Exercise Reader Tree on the native debug main stack
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         shell: bash
         run: |
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
-          python3 scripts/ci/code-toolbar-native-app.py "$binary"
+          python3 scripts/ci/code-toolbar-native-app.py "$binary" --smoke
       # A known app-probe failure must not hide independent Rust regressions.
       # The failed probe still fails the job; no threshold or reserve changes.
       - name: Exercise read-only data viewing and compiled negative controls
@@ -169,4 +169,77 @@ jobs:
           name: windows-atlas-upload-controls
           path: target/windows-atlas-upload-controls/
           if-no-files-found: ignore
+          retention-days: 7
+
+
+  tree-budget:
+    needs: icon
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      # Keep debug main-stack smoke/controls above independent of CPU budgets.
+      CARGO_TARGET_DIR: target/code-toolbar-release
+    steps:
+      - name: Keep source and vendor patches in LF format
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: code-toolbar-release-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}-${{ github.sha }}
+          restore-keys: |
+            code-toolbar-release-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}-
+            code-toolbar-release-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-windows-icon
+          path: target/windows-dist
+      - name: Verify exact source and prepare native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            test "$(uname -m)" = arm64
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+          fi
+      - name: Build production release for CPU budgets
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          cargo build --locked --release -p okilum-shell --bin okilum --features data-view-native-harness
+      - name: Require Reader Tree open and scroll budgets in release
+        shell: bash
+        run: |
+          binary="$CARGO_TARGET_DIR/release/okilum"
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
+          python3 scripts/ci/code-toolbar-native-app.py "$binary"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-toolbar-release-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/code-toolbar-native-app.log
+            ${{ runner.temp }}/code-toolbar-native-receipt.json
+          if-no-files-found: error
           retention-days: 7
