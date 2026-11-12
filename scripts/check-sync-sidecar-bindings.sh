@@ -38,5 +38,5 @@ PY
 # rustup resolves from the current directory, not --manifest-path.
 cd "$probe"
 for target in aarch64-apple-darwin x86_64-pc-windows-msvc; do
-    cargo clippy --manifest-path "$probe/Cargo.toml" --target "$target" --tests -- -D warnings
+    cargo clippy --target "$target" --tests -- -D warnings
 done
