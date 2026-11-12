@@ -92,6 +92,56 @@ package's successful footer, a child fixture's earlier result, a missing
 target or an empty parent cannot satisfy it. All original filters, integration
 targets, test bodies and profile/deadline settings remain enabled.
 
+The write-authority and T3 admission queries use `--lib`, matching their
+original target scope. Selecting four packages without that flag also asks
+Cargo to compile unrelated core integration harnesses, even though their
+filters run zero cases. The explicit core integration group and shell binary
+groups remain separate and mandatory.
+
+Canonical `shared-local` and `linux-local` compilation uses the existing
+`heavy` runner label. The generic `ubuntu-latest` label also matches light and
+interactive pools, so it does not specify sufficient compile resources.
+The cold diagnostic reproduced the original 900-second timeout on the same
+light runner as failed canonical main: a 5 GiB memory limit, shell test rustc
+at the limit, repeated memory-limit events and substantial I/O stalls. A
+same-job pair on the registered heavy runner completed all seven original
+groups from separate cold targets on both baseline and candidate. This is
+evidence for explicit workload routing, not a reason to relax deadlines or
+change host configuration. A scheduler eligibility regression rejects either
+compile job or the diagnostic becoming eligible for light/interactive pools.
+
+`cold-writer-diagnostic.yml` is a manual, source-pinned measurement on the
+same `heavy` runner class as canonical Linux. It checks out diagnostic
+tools and the measured source separately. The measured checkout begins without
+a target cache and reproduces the observed unavailable compiler wrapper. Its
+original `check-linux.sh` prelude runs unchanged; a source-directory-qualified
+shell boundary replaces only the transition to `linux-rust-tests.sh` with
+that source's original first local-writer group under the existing 900-second
+supervisor. A guarded `BASH_ENV` function exists only in the top-level script;
+PATH still resolves the real Bash executable, preserving the original restart
+fixture's executable identity. Child shells retain ordinary Bash dispatch.
+Subsequent filters do not repeatedly restart a timed-out build.
+No product compilation is inserted outside its original prelude or admission.
+A missing boundary invocation fails even if the prelude exits successfully.
+
+Five-second owned-process command lines and CPU/RSS/I/O plus cgroup
+quota, throttling, memory and pressure samples go directly to the job log,
+including a terminal snapshot. Cargo keeps its original verbosity and target
+headers so the measured source's strict parent-target guards remain effective.
+Compiler/linker versions, source identities,
+affinity and configured jobs are recorded; unset jobs is not labelled as a
+measured concurrency count. This is a diagnostic, not full Linux acceptance,
+and neither a warmed hosted pass nor a successful probe establishes canonical
+main GREEN. The original baseline source can be measured while tools contain
+a candidate scope correction; receipts distinguish those two commits.
+An optional exact `candidate` SHA runs after the baseline on the same job's
+runner, with a separate checkout and cold target directory. Each source runs
+its own unchanged prelude and compile-inclusive 900-second admission. Baseline
+failure does not prevent observing the candidate, but the final diagnostic
+retains both outcomes and fails if either measurement failed. The job's
+60-minute cap stays unchanged. Large process samples use ordered JSON chunks
+to survive the runner's log-line limit without discarding compiler arguments.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a

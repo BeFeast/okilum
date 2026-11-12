@@ -112,7 +112,8 @@ jobs:
   shared-local:
     needs: [shared-select]
     if: needs.shared-select.outputs.lane == 'local'
-    runs-on: ubuntu-latest
+    # ubuntu-latest also matches light runners capped below shell test RSS.
+    runs-on: heavy
     timeout-minutes: 60
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
     # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
@@ -296,7 +297,8 @@ jobs:
       github.event.pull_request.head.repo.full_name != github.repository ||
       (vars.OKILUM_LINUX_LANE != 'hosted' &&
        vars.OKILUM_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
-    runs-on: ubuntu-latest
+    # Keep compile-inclusive admission on the measured heavy resource class.
+    runs-on: heavy
     # Vendored gpui-kit tests (vendor-tests.sh) add ~25 min when the patch stack changes.
     timeout-minutes: 80
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
