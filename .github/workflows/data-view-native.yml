@@ -1,4 +1,4 @@
-# Diagnostic only: fixed five paired runs on one hosted Windows VM.
+# Diagnostic only: capture scheduling around the retained legacy executable.
 name: data-view-native
 on:
   push:
@@ -7,32 +7,44 @@ permissions:
   contents: read
   actions: read
 jobs:
-  paired-reader:
+  scheduling:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: 43209282518
-          name: toolbar-main-baseline-windows
-          path: inputs/main
       - uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
           run-id: 43208354080
           name: code-toolbar-release-windows-binary
           path: inputs/toolbar
-      - name: Compare five fixed pairs without changing any budget
-        run: python scripts/ci/paired-reader-budget.py
+      - name: Capture kernel scheduling without changing the frame gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force diagnostics/scheduling | Out-Null
+          Get-Command wpr.exe,xperf.exe,wpaexporter.exe -ErrorAction SilentlyContinue | Format-List *
+          wpr.exe -profiles
+          wpr.exe -profiledetails GeneralProfile
+          wpr.exe -start GeneralProfile -filemode
+          if ($LASTEXITCODE) { throw 'Could not start WPR' }
+          try {
+            $env:RUNNER_TEMP = "$pwd/diagnostics/scheduling"
+            $env:OKILUM_SOURCE_COMMIT = '4f4049ac78ef16d605f689e5d52fa7f0296c47fa'
+            python scripts/ci/code-toolbar-native-app.py inputs/toolbar/okilum.exe *> diagnostics/scheduling/runner.log
+            $nativeExit = $LASTEXITCODE
+          } finally {
+            wpr.exe -stop diagnostics/scheduling/reader.etl
+          }
+          Set-Content diagnostics/scheduling/runner-exit.txt $nativeExit
+          tracerpt.exe diagnostics/scheduling/reader.etl -of XML -o diagnostics/scheduling/reader.xml -y
+          if ($LASTEXITCODE) { throw 'Could not decode ETW' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: paired-reader-budget
-          path: diagnostics/paired-reader
+          name: reader-scheduling
+          path: diagnostics/scheduling
           if-no-files-found: error
           retention-days: 7
