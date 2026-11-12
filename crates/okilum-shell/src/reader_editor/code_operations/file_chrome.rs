@@ -67,9 +67,13 @@ struct Part {
 }
 
 #[cfg(test)]
+type DrawnStatus = (usize, String, Vec<&'static str>);
+#[cfg(test)]
+type PopupState = Option<(WeakEntity<PopupMenu>, Vec<(String, bool)>)>;
+#[cfg(test)]
 thread_local! {
-    static DRAWN_STATUS: std::cell::RefCell<std::collections::HashMap<EntityId, (usize, String, Vec<&'static str>)>> = Default::default();
-    static FORMAT_POPUP: std::cell::RefCell<Option<(WeakEntity<PopupMenu>, Vec<(String, bool)>)>> = const { std::cell::RefCell::new(None) };
+    static DRAWN_STATUS: std::cell::RefCell<std::collections::HashMap<EntityId, DrawnStatus>> = Default::default();
+    static FORMAT_POPUP: std::cell::RefCell<PopupState> = const { std::cell::RefCell::new(None) };
     static DRAWN_FORMAT: std::cell::RefCell<std::collections::HashMap<EntityId, Option<String>>> = Default::default();
 }
 
@@ -111,11 +115,11 @@ impl Render for Part {
             return div().into_any_element();
         }
         match self.kind {
-            Kind::Format => format_control(&reader, state, cx),
-            Kind::Language => language_control(&reader, state, cx),
-            Kind::Badge => badge(&reader, state, cx),
-            Kind::Bottom => bottom(&reader, state, cx),
-            Kind::Sheet => sheet(&reader, window, cx),
+            Kind::Format => format_control(reader, state, cx),
+            Kind::Language => language_control(reader, state, cx),
+            Kind::Badge => badge(reader, state, cx),
+            Kind::Bottom => bottom(reader, state, cx),
+            Kind::Sheet => sheet(reader, window, cx),
         }
     }
 }
