@@ -551,6 +551,8 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(18);
         let find = self.viewer_header_chrome(cx).find.map(|target| {
             let mut cached = self.viewer_find_controls.borrow_mut();
             if cached
@@ -663,6 +665,8 @@ impl Reader {
         self.viewer_chrome(cx).find
     }
     fn viewer_header_chrome(&self, cx: &App) -> ViewerChrome {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(20);
         if let Some(code) = self
             .file_preview
             .as_ref()
@@ -676,6 +680,8 @@ impl Reader {
     /// Only this adapter knows where the active viewer lives. Slot builders
     /// render the resulting description without matching on a viewer kind.
     pub(crate) fn viewer_chrome(&self, cx: &App) -> ViewerChrome {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(19);
         let Some(preview) = &self.file_preview else {
             return ViewerChrome::default();
         };

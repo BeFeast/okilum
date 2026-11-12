@@ -2,10 +2,10 @@
 use super::*;
 
 thread_local! {
-    static WORK: std::cell::RefCell<[(u64, u64); 14]> = const { std::cell::RefCell::new([(0, 0); 14]) };
+    static WORK: std::cell::RefCell<[(u64, u64); 25]> = const { std::cell::RefCell::new([(0, 0); 25]) };
 }
 pub(super) fn reset() {
-    WORK.with(|work| *work.borrow_mut() = [(0, 0); 14]);
+    WORK.with(|work| *work.borrow_mut() = [(0, 0); 25]);
 }
 pub(super) fn report() -> serde_json::Value {
     let names = [
@@ -23,6 +23,17 @@ pub(super) fn report() -> serde_json::Value {
         "label_paint",
         "code_render",
         "row_build",
+        "reader_prelude",
+        "reader_layout",
+        "reader_root_actions",
+        "reader_document",
+        "reader_file_header",
+        "reader_live_chrome",
+        "reader_header_chrome",
+        "reader_title_header",
+        "reader_toasts",
+        "reader_root_total",
+        "reader_panels",
     ];
     WORK.with(|work| {
         names
@@ -38,9 +49,9 @@ pub(super) fn report() -> serde_json::Value {
             .into()
     })
 }
-pub(in super::super) struct Work(usize, Instant);
+pub(crate) struct Work(usize, Instant);
 impl Work {
-    pub(in super::super) fn start(kind: usize) -> Self {
+    pub(crate) fn start(kind: usize) -> Self {
         Self(kind, Instant::now())
     }
 }

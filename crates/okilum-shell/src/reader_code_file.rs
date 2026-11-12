@@ -19,7 +19,7 @@ mod review_tests;
 mod structure;
 mod toolbar;
 #[cfg(feature = "data-view-native-harness")]
-mod toolbar_native;
+pub(crate) mod toolbar_native;
 mod view;
 #[cfg(test)]
 mod view_tests;

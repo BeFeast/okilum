@@ -17,6 +17,8 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(17);
         if self.project_navigation.section != reader_project_navigation::Section::Reader {
             return self.render_app_section(cx);
         }

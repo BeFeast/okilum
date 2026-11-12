@@ -295,6 +295,8 @@ impl Reader {
 
     /// Existing error producers retain their state; presentation never takes a layout row.
     pub(super) fn sync_notice_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(22);
         crate::updater::ready_notice(window, cx);
         self.sync_recovery_toast(window, cx);
         self.sync_deleted_notice(window, cx);

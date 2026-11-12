@@ -1,7 +1,7 @@
 //! Opt-in real Reader timing gate for toolbar step 5. No test-support platform.
 use super::*;
 use std::time::Duration;
-pub(super) mod trace;
+pub(crate) mod trace;
 
 fn submit_frame(window: &mut Window) -> f64 {
     let mut frames = gpui::profiler::FrameTimingCollector::new();
