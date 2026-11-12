@@ -65,6 +65,8 @@ def main():
                 assert (directory / 'complete').exists(), 'Reader harness never completed'
                 output = log_path.read_text(encoding='utf-8')
                 assert_restored_source_scope(output)
+                stages = re.findall(r'FILE_EDIT_NATIVE stage=(\d+) mounted=Reader', output)
+                assert stages == [str(i) for i in range(6)], f'file Edit native flow incomplete: {stages!r}' 
                 for name in names:
                     assert f'file={name} mode=read mounted=Reader' in output, name
                 for name in ['data.json', 'array.json', 'data.csv', 'source.rs', 'note.md']:

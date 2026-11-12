@@ -532,7 +532,8 @@ impl Reader {
                 .and_then(|(_, _, _, s)| location(s))
         };
         if offset.is_some() || position.is_some() {
-            state.find.update(cx, |f, _| f.preserve_selection());
+            let find = state.find.clone();
+            find.update(cx, |f, _| f.preserve_selection());
             editing.input.update(cx, |i, cx| {
                 use gpui_base::input::RopeExt;
                 let at = offset.unwrap_or_else(|| {
@@ -1198,3 +1199,6 @@ fn sheet(reader: &Reader, window: &Window, cx: &App) -> AnyElement {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "data-view-native-harness")]
+mod native;
