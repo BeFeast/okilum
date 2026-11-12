@@ -29,6 +29,7 @@ verify_only=0
 # Canonical Markdown parser API patch; independently pinned and verified.
 python3 "$ROOT/scripts/comrak-setup.py" "$@"
 python3 "$ROOT/scripts/velopack-setup.py" "$@"
+python3 "$ROOT/scripts/gpui-pre-windows-setup.py" "$@"
 
 if [ ! -d "$VENDOR/.git" ]; then
     if [ "$verify_only" = 1 ]; then
