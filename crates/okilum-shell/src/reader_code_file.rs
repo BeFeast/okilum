@@ -652,6 +652,8 @@ impl Render for CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
         #[cfg(feature = "data-view-native-harness")]
+        let _work = toolbar_native::trace::Work::start(9);
+        #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.begin");
         let header = self.own_header.then(|| {
             let chrome = self.compact_chrome(cx.entity(), cx);
@@ -718,7 +720,10 @@ impl Render for CodePreview {
             .child(footer);
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.end");
-        view.into_any_element()
+        let view = view.into_any_element();
+        #[cfg(feature = "data-view-native-harness")]
+        let view = toolbar_native::trace::Trace::new(view, 0).into_any_element();
+        view
     }
 }
 

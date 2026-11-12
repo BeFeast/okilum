@@ -213,7 +213,7 @@ impl CodePreview {
             .match_node
             .and_then(|i| visible.binary_search(&i).ok())
             .map(|i| i as f32 / visible.len().max(1) as f32);
-        div()
+        let tree = div()
             .id("data-tree")
             .key_context("ReaderStructure")
             .track_focus(&self.focus)
@@ -271,7 +271,10 @@ impl CodePreview {
                 .absolute()
                 .size_full(),
             )
-            .into_any_element()
+            .into_any_element();
+        #[cfg(feature = "data-view-native-harness")]
+        let tree = toolbar_native::trace::Trace::new(tree, 1).into_any_element();
+        tree
     }
 
     fn row_highlights(
@@ -338,6 +341,8 @@ impl CodePreview {
     fn structure_row(&self, visible: usize, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(feature = "data-view-native-harness")]
         NATIVE_ROW_BUILDS.with(|count| count.set(count.get() + 1));
+        #[cfg(feature = "data-view-native-harness")]
+        let _work = toolbar_native::trace::Work::start(10);
         let doc = self.document.as_ref().unwrap();
         let index = self.structure.visible[visible];
         let row = &doc.structure[index];
@@ -356,7 +361,7 @@ impl CodePreview {
         let raw = entity.clone();
         let menu = entity.clone();
         let group: SharedString = format!("data-row-{index}").into();
-        h_flex()
+        let element = h_flex()
             .id(("data-structure-row", index))
             .group(group.clone())
             .debug_selector(move || format!("data-structure-row-{index}"))
@@ -472,7 +477,10 @@ impl CodePreview {
                 menu.update(cx, |s, _| s.structure.selected = Some(index));
                 Self::tree_menu(m, w, cx)
             })
-            .into_any_element()
+            .into_any_element();
+        #[cfg(feature = "data-view-native-harness")]
+        let element = toolbar_native::trace::Trace::new(element, 2).into_any_element();
+        element
     }
     fn tree_menu(menu: PopupMenu, _: &mut Window, _cx: &mut Context<PopupMenu>) -> PopupMenu {
         let items = [
