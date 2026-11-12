@@ -114,7 +114,7 @@ jobs:
           $env:RUST_BACKTRACE = 'full'
           $cdb = Get-ChildItem 'C:/Program Files (x86)/Windows Kits' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
           if ($cdb) {
-            & $cdb.FullName -o -g -G -c "sxe sov;g;kv 100;.dump /ma $root/overflow.dmp;q" target/debug/okilum.exe 2>&1 | Tee-Object "$root/debugger.log"
+            & $cdb.FullName -o -G -c "sxe sov;g;kv 100;.dump /ma $root/overflow.dmp;q" target/debug/okilum.exe 2>&1 | Tee-Object "$root/debugger.log"
           } else {
             Invoke-WebRequest https://live.sysinternals.com/procdump64.exe -OutFile "$env:RUNNER_TEMP/procdump64.exe"
             & "$env:RUNNER_TEMP/procdump64.exe" -accepteula -ma -e 1 -f C00000FD -x $root "$pwd/target/debug/okilum.exe" 2>&1 | Tee-Object "$root/debugger.log"
