@@ -53,6 +53,51 @@ fn thread_cpu_ms() -> Option<f64> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn memory_and_cycles() -> (u32, usize, u64) {
+    #[repr(C)]
+    struct Counters {
+        cb: u32,
+        faults: u32,
+        sizes: [usize; 8],
+    }
+    #[link(name = "psapi")]
+    unsafe extern "system" {
+        fn GetProcessMemoryInfo(
+            process: *mut std::ffi::c_void,
+            counters: *mut Counters,
+            size: u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32;
+    }
+    let mut counters = Counters {
+        cb: std::mem::size_of::<Counters>() as u32,
+        faults: 0,
+        sizes: [0; 8],
+    };
+    let mut cycles = 0;
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread};
+        assert_ne!(
+            GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters,
+                std::mem::size_of::<Counters>() as u32
+            ),
+            0
+        );
+        assert_ne!(QueryThreadCycleTime(GetCurrentThread(), &mut cycles), 0);
+    }
+    (counters.faults, counters.sizes[1], cycles)
+}
+#[cfg(not(target_os = "windows"))]
+fn memory_and_cycles() -> (u32, usize, u64) {
+    (0, 0, 0)
+}
+
 pub(super) fn entry() -> bool {
     let Some(directory) = std::env::var_os("OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE") else {
         return false;
@@ -142,6 +187,7 @@ pub(super) fn entry() -> bool {
                         let rows_before=structure::native_row_builds();
                         let offset_before=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
                         let cpu_before=thread_cpu_ms();
+                        let memory_before=memory_and_cycles();
                         let text_probe=platform::text_diagnostics::Probe::start();
                         let frame=Instant::now();
                         code.update(cx,|p,cx|{
@@ -167,8 +213,10 @@ pub(super) fn entry() -> bool {
                         assert!(rows>0,"scroll sample must build real visible Tree rows");
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
                         let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
+                        let memory_after=memory_and_cycles();
                         let text_work=text_probe.report();
-                        let subtree_work=trace::report();
+                        let mut subtree_work=trace::report();
+                        subtree_work["native_memory_and_cycles"]=serde_json::json!({"process_page_faults":memory_after.0.saturating_sub(memory_before.0),"working_set":memory_after.1,"thread_cycles":memory_after.2.saturating_sub(memory_before.2)});
                         let present_ms=submit_frame(w);
                         (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_work,subtree_work,present_ms)
                     }).unwrap();

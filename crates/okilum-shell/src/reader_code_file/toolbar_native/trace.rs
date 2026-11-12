@@ -2,10 +2,12 @@
 use super::*;
 
 thread_local! {
-    static WORK: std::cell::RefCell<[(u64, u64); 25]> = const { std::cell::RefCell::new([(0, 0); 25]) };
+    static WORK: std::cell::RefCell<[(u64, u64); 26]> = const { std::cell::RefCell::new([(0, 0); 26]) };
+    static LAYOUT_GAPS: std::cell::RefCell<Vec<(Option<usize>, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 pub(super) fn reset() {
-    WORK.with(|work| *work.borrow_mut() = [(0, 0); 25]);
+    LAYOUT_GAPS.with(|gaps| gaps.borrow_mut().clear());
+    WORK.with(|work| *work.borrow_mut() = [(0, 0); 26]);
 }
 pub(super) fn report() -> serde_json::Value {
     let names = [
@@ -34,6 +36,7 @@ pub(super) fn report() -> serde_json::Value {
         "reader_toasts",
         "reader_root_total",
         "reader_panels",
+        "row_layout_gap",
     ];
     WORK.with(|work| {
         names
@@ -45,6 +48,10 @@ pub(super) fn report() -> serde_json::Value {
                     serde_json::json!({"calls": calls, "ms": *nanos as f64 / 1_000_000.}),
                 )
             })
+            .chain(std::iter::once((
+                "row_layout_gap_samples".to_owned(),
+                LAYOUT_GAPS.with(|gaps| serde_json::json!(*gaps.borrow())),
+            )))
             .collect::<serde_json::Map<_, _>>()
             .into()
     })
@@ -74,10 +81,14 @@ impl Drop for Work {
         }
     }
 }
-pub(in super::super) struct Trace(AnyElement, usize);
+pub(in super::super) struct Trace(AnyElement, usize, Option<usize>);
 impl Trace {
+    pub(in super::super) fn with_row(mut self, row: usize) -> Self {
+        self.2 = Some(row);
+        self
+    }
     pub(in super::super) fn new(child: AnyElement, kind: usize) -> Self {
-        Self(child, kind)
+        Self(child, kind, None)
     }
 }
 impl IntoElement for Trace {
@@ -87,7 +98,7 @@ impl IntoElement for Trace {
     }
 }
 impl gpui::Element for Trace {
-    type RequestLayoutState = ();
+    type RequestLayoutState = Option<Instant>;
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
         None
@@ -101,19 +112,36 @@ impl gpui::Element for Trace {
         _: Option<&gpui::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (gpui::LayoutId, ()) {
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
         let _work = Work::start(self.1 * 3);
-        (self.0.request_layout(window, cx), ())
+        (
+            self.0.request_layout(window, cx),
+            (self.1 == 2).then(Instant::now),
+        )
     }
     fn prepaint(
         &mut self,
         _: Option<&gpui::GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(started) = layout.take() {
+            let elapsed = started.elapsed();
+            WORK.with(|work| {
+                let mut work = work.borrow_mut();
+                work[25].0 += 1;
+                work[25].1 += elapsed.as_nanos() as u64;
+            });
+            if elapsed.as_millis() >= 5 {
+                LAYOUT_GAPS.with(|gaps| {
+                    gaps.borrow_mut()
+                        .push((self.2, elapsed.as_secs_f64() * 1000.))
+                });
+            }
+        }
         let _work = Work::start(self.1 * 3 + 1);
         self.0.prepaint(window, cx);
     }
@@ -122,7 +150,7 @@ impl gpui::Element for Trace {
         _: Option<&gpui::GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        _: &mut Self::RequestLayoutState,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,

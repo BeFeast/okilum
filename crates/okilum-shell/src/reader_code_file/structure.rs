@@ -478,7 +478,7 @@ impl CodePreview {
             })
             .into_any_element();
         #[cfg(feature = "data-view-native-harness")]
-        let element = toolbar_native::trace::Trace::new(element, 2).into_any_element();
+        let element = toolbar_native::trace::Trace::new(element, 2).with_row(index).into_any_element();
         element
     }
     #[inline(never)]
