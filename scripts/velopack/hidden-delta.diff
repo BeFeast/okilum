@@ -28,3 +28,16 @@
 @@ -164 +164 @@
 -version = "8.6"
 +version = "9.5"
+--- a/src/bundle.rs
++++ b/src/bundle.rs
+@@ -131,2 +131 @@
+-                let name = file.name();
+-                if predicate(name) {
++                if file.name().is_ok_and(|name| predicate(&name)) {
+@@ -235,2 +234 @@
+-            let key = file.name();
+-            files.push(key.to_string());
++            files.push(file.name()?.into_owned());
+@@ -281 +279 @@
+-                Ok(f) => f.name().to_string(),
++                Ok(f) => f.name()?.into_owned(),

@@ -136,7 +136,7 @@ fn describe<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, index: usize) 
     // ZIP 9 exposes central-directory metadata without opening the entry reader:
     // listing needs neither local-file I/O, decryption nor inflation.
     let file = archive.by_index_data(index)?;
-    let name = file.name().to_owned();
+    let name = file.name()?.into_owned();
     let raw = file.name_raw();
     let kind = if file.is_symlink() {
         Kind::Symlink
