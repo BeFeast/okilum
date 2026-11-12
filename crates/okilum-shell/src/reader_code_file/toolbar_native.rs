@@ -1,6 +1,7 @@
 //! Opt-in real Reader timing gate for toolbar step 5. No test-support platform.
 use super::*;
 use std::time::Duration;
+pub(super) mod trace;
 
 // Diagnostic only: retain the hard wall-clock frame gate, but distinguish
 // actual UI work from scheduler/OS stalls in native Windows failures.
@@ -124,6 +125,7 @@ pub(super) fn entry() -> bool {
                             cx.notify();
                         });
                         let update_ms=frame.elapsed().as_secs_f64()*1000.;
+                        trace::reset();
                         let draw_start=Instant::now();
                         let arena=w.draw(cx);
                         let draw_ms=draw_start.elapsed().as_secs_f64()*1000.;
@@ -136,10 +138,10 @@ pub(super) fn entry() -> bool {
                         assert!(rows>0,"scroll sample must build real visible Tree rows");
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
                         let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
-                        (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_probe.report())
+                        (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_probe.report(),trace::report())
                     }).unwrap();
-                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7}));
-                    diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7);
+                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7,"subtree_work":ms.8}));
+                    diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={} subtree_work={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7,ms.8);
                     let ms=ms.0;
                     assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
