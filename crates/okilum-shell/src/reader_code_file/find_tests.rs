@@ -707,7 +707,7 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
         let requests = requests.borrow();
         assert_eq!(
             requests.len(),
-            structure::digit_glyphs::LABEL_GLYPHS.len()
+            structure::digit_glyphs::LABEL_GLYPHS.chars().count()
                 * phases
                 * requests
                     .iter()
@@ -724,9 +724,15 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
         let glyphs: std::collections::HashSet<_> = requests.iter().map(|r| r.0).collect();
         assert_eq!(
             glyphs.len(),
-            structure::digit_glyphs::LABEL_GLYPHS.len(),
+            structure::digit_glyphs::LABEL_GLYPHS.chars().count(),
             "positive control: all source glyphs are prepared (TestPlatform aliases glyph IDs)"
         );
+        for glyph in ['…', '·', ',', '.', '-'] {
+            assert!(
+                glyphs.contains(&glyph),
+                "generated labels must prepare {glyph}"
+            );
+        }
         for glyph in glyphs {
             let variants: std::collections::HashSet<_> = requests
                 .iter()

@@ -110,7 +110,7 @@ original combined titlebar and document controls:
   count. Empty containers use `{ }` / `[ ]`. Chevron buttons, 32 px rows and a
   fixed 60 px two-action slot follow the app's component sizes. Keys use regular
   code text, scalar values the active syntax theme and counts the faint token.
-  Before the first Tree paint, a bounded printable ASCII set is prepared at
+  Before the first Tree paint, a bounded printable ASCII plus generated ellipsis/middle-dot glyphs set is prepared at
   GPUI's finite subpixel phases under an empty content mask, in every foreground,
   count and syntax-value colour used by Tree. This covers macOS colour-dependent
   dilation as well as numeric punctuation and varied ASCII keys. The cache is

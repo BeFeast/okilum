@@ -1,4 +1,4 @@
-//! Prepare bounded printable ASCII phases in every colour used by Tree labels.
+//! Prepare bounded label glyph phases in every colour used by Tree labels.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -22,7 +22,7 @@ thread_local! {
     pub(in super::super) static REQUESTS: RefCell<Vec<GlyphRequest>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(in super::super) const LABEL_GLYPHS: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+pub(in super::super) const LABEL_GLYPHS: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…·";
 
 impl DigitGlyphs {
     #[inline(never)]
@@ -66,7 +66,7 @@ impl DigitGlyphs {
                     if prepared.borrow().as_ref() == Some(&key) {
                         return;
                     }
-                    // No document walk: bounded ASCII at GPUI's finite subpixel
+                    // No document walk: bounded label glyphs at GPUI's finite subpixel
                     // phases in actual foreground/count/syntax colours. macOS
                     // includes colour-dependent dilation in its atlas key. Row text
                     // keeps its exact size, shaping and positions. An empty
@@ -98,7 +98,10 @@ impl DigitGlyphs {
                                                 #[cfg(test)]
                                                 REQUESTS.with(|requests| {
                                                     requests.borrow_mut().push((
-                                                        line.text.as_bytes()[glyph.index] as char,
+                                                        line.text[glyph.index..]
+                                                            .chars()
+                                                            .next()
+                                                            .unwrap(),
                                                         x,
                                                         y,
                                                         key.size,
