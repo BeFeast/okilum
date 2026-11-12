@@ -117,6 +117,16 @@ impl gpui::Element for Trace {
         cx: &mut App,
     ) {
         let _work = Work::start(self.1 * 3 + 2);
+        let glyphs = (self.1 == 1 && std::env::var_os("OKILUM_CODE_TOOLBAR_PHASE_TRACE").is_some())
+            .then(platform::text_diagnostics::Probe::start);
         self.0.paint(window, cx);
+        if let Some(glyphs) = glyphs {
+            let calls = glyphs.report()["work"]["glyph_bitmap"]["calls"]
+                .as_u64()
+                .unwrap();
+            if calls > 0 {
+                diagnostic_println!("CODE2810_TREE_GLYPH_BITMAPS calls={calls}");
+            }
+        }
     }
 }

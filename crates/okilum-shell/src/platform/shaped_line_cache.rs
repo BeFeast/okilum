@@ -311,6 +311,7 @@ impl PlatformTextSystem for ShapedLineCache {
         raster_bounds: gpui::Bounds<DevicePixels>,
     ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
         let _timing = text_diagnostics::time(Work::GlyphRaster);
+        let _bitmap_timing = text_diagnostics::time(Work::GlyphBitmap);
         self.shaper.rasterize_glyph(params, raster_bounds)
     }
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {

@@ -17,8 +17,8 @@ spec.loader.exec_module(probe)
 
 def receipt(mode='production-release'):
     return {'real_native_platform': True, 'mounted': 'Reader', 'bytes': 3_500_000,
-            'paths_keys': 414, 'measurement': mode, 'open_ms': 5, 'source_sha': 'a' * 40,
-            'frames': [{'marks': marks, 'cpu_draw_ms': 4, 'present_ms': 1, 'rows_built': 24, 'scroll_y': -32 * (sample + 1)}
+            'paths_keys': 414, 'initial_rasterizations': 40, 'measurement': mode, 'open_ms': 5, 'source_sha': 'a' * 40,
+            'frames': [{'marks': marks, 'cpu_draw_ms': 4, 'present_ms': 1, 'rows_built': 24, 'text_work': {'work': {'glyph_bitmap': {'calls': 0}}}, 'scroll_y': -32 * (sample + 1)}
                        for marks in [False, True] for sample in range(48)]}
 
 
@@ -37,7 +37,7 @@ class NativeToolbarReceiptTests(unittest.TestCase):
 
     def test_release_enforces_open_frame_and_actual_work_budgets(self):
         self.run_probe(receipt())
-        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile', 'source', 'present']:
+        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile', 'source', 'present', 'raster', 'unfired-raster']:
             with self.subTest(mutation=mutation):
                 result = copy.deepcopy(receipt())
                 if mutation == 'open':
@@ -52,8 +52,12 @@ class NativeToolbarReceiptTests(unittest.TestCase):
                     result['measurement'] = 'debug-smoke'
                 elif mutation == 'source':
                     result['source_sha'] = 'b' * 40
-                else:
+                elif mutation == 'present':
                     del result['frames'][0]['present_ms']
+                elif mutation == 'raster':
+                    result['frames'][0]['text_work']['work']['glyph_bitmap']['calls'] = 2
+                else:
+                    result['initial_rasterizations'] = 0
                 with self.assertRaises(AssertionError):
                     self.run_probe(result)
 

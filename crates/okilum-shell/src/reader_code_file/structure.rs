@@ -4,9 +4,12 @@ use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use std::collections::HashSet;
 
+pub(super) mod digit_glyphs;
+
 #[derive(Default)]
 pub(super) struct Structure {
     collapsed: bool,
+    digit_glyphs: digit_glyphs::DigitGlyphs,
     exceptions: HashSet<usize>,
     find_opened: HashSet<usize>,
     pub selected: Option<usize>,
@@ -228,6 +231,7 @@ impl CodePreview {
             .flex_1()
             .min_h_0()
             .w_full()
+            .child(self.structure.digit_glyphs.element(cx))
             .child(
                 uniform_list(
                     "data-structure-rows",
