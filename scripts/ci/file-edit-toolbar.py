@@ -17,6 +17,12 @@ OUT = ROOT / 'target/file-edit-toolbar-controls'
 OUT.mkdir(parents=True, exist_ok=True)
 BASE = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum',
         '--features', 'data-view-native-harness']
+if '--release' in sys.argv:
+    BASE.append('--release')
+if '--linux-sprint' in sys.argv:
+    BASE[BASE.index('data-view-native-harness')] = 'linux-sprint,data-view-native-harness'
+if '--shell-no-opt' in sys.argv:
+    BASE.extend(['--config', 'profile.release.package.okilum-shell.opt-level=0'])
 ENV = {k: v for k, v in os.environ.items() if k != 'OKILUM_FILE2811_CONTROL'}
 original = {}
 patch = []
