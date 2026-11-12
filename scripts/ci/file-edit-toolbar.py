@@ -65,6 +65,7 @@ CONTROLS = [
     ('editing-fold', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('query-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('source-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
+    ('source-panels', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('live-json', 'file2811_live_json_badge_and_bottom_follow_one_revision_without_refresh'),
     ('json-debounce', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
     ('json-cancel', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
@@ -103,12 +104,14 @@ fn main() {''')
     edit('reader_viewer_chrome.rs', 'reader.selected_title(),', '''reader.selected_title()+&if crate::file2811_control("query-header") || crate::file2811_control("source-header") {
 reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {format!("{:?}", e.input.read(cx).source_stamp())} else { reader.file_editor_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default() }).unwrap_or_default()
 } else {String::new()},''')
+    edit('reader_editor.rs', 'if operation_changed && editing.markdown {',
+         'if operation_changed && editing.markdown || crate::file2811_control("source-panels") {')
     edit(base, 'if file.json {\n                file.schedule(cx);', 'if file.json && !crate::file2811_control("live-json") {\n                file.schedule(cx);')
     edit(base, 'Duration::from_millis(120)', 'Duration::from_millis(if crate::file2811_control("json-debounce") {0} else {120})')
     edit(base, 'self.control.cancel();', 'if !crate::file2811_control("json-cancel") {self.control.cancel();}', 2)
     edit(base, '    let Some(snapshot) = &state.current else {',
          '    if crate::file2811_control("json-badge") {return div().into_any_element();}\n    let Some(snapshot) = &state.current else {')
-    edit(base, 'Kind::Bottom => bottom(&reader, state, cx),',
+    edit(base, 'Kind::Bottom => bottom(reader, state, cx),',
          'Kind::Bottom => if crate::file2811_control("bottom-line") {div().into_any_element()} else {bottom(&reader,state,cx)},')
     edit(base, 'if editing.conflict_detected {',
          'if editing.conflict_detected && !crate::file2811_control("conflict-enabled") {')

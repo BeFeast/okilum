@@ -312,6 +312,13 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
     });
     visual.simulate_keystrokes("home");
     frame(visual);
+    visual.update(|w, cx| {
+        assert!(
+            w.is_window_active(),
+            "guard models typing in an active window, independently of focus-loss Save"
+        );
+        assert!(input.focus_handle(cx).is_focused(w));
+    });
     let initial = crate::reader_viewer_chrome::header_renders(reader.entity_id());
     counts.set([0, 0]);
     for _ in 0..5 {
@@ -329,6 +336,13 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
             "typing and live parse notify zero panels"
         );
     }
+    reader.update(visual, |_, cx| cx.notify());
+    frame(visual);
+    assert_eq!(
+        counts.get(),
+        [1, 1],
+        "positive control: both cached panel observers are live"
+    );
 }
 
 fn open_menu(visual: &mut VisualTestContext) -> (Entity<PopupMenu>, Vec<(String, bool)>) {
