@@ -1,0 +1,25 @@
+name: legacy-wal-fixture
+on:
+  push:
+    branches: ['legacy-wal-fixture/**']
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate with the actual pre-upgrade Store and SQLite
+        run: |
+          cargo update --manifest-path inbox/Cargo.toml -p rusqlite --precise 0.37.0
+          cargo tree --manifest-path inbox/Cargo.toml -p rusqlite
+          LEGACY_FIXTURE_OUTPUT="$RUNNER_TEMP/legacy-fixtures" cargo run --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --example legacy_fixture
+          sha256sum "$RUNNER_TEMP"/legacy-fixtures/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-wal-fixtures
+          path: ${{ runner.temp }}/legacy-fixtures/
+          if-no-files-found: error
