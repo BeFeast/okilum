@@ -18,7 +18,7 @@ spec.loader.exec_module(probe)
 def receipt(mode='production-release'):
     return {'real_native_platform': True, 'mounted': 'Reader', 'bytes': 3_500_000,
             'paths_keys': 414, 'measurement': mode, 'open_ms': 5, 'source_sha': 'a' * 40,
-            'frames': [{'marks': marks, 'cpu_draw_ms': 4, 'rows_built': 24, 'scroll_y': -32 * (sample + 1)}
+            'frames': [{'marks': marks, 'cpu_draw_ms': 4, 'present_ms': 1, 'rows_built': 24, 'scroll_y': -32 * (sample + 1)}
                        for marks in [False, True] for sample in range(48)]}
 
 
@@ -37,7 +37,7 @@ class NativeToolbarReceiptTests(unittest.TestCase):
 
     def test_release_enforces_open_frame_and_actual_work_budgets(self):
         self.run_probe(receipt())
-        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile', 'source']:
+        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile', 'source', 'present']:
             with self.subTest(mutation=mutation):
                 result = copy.deepcopy(receipt())
                 if mutation == 'open':
@@ -50,8 +50,10 @@ class NativeToolbarReceiptTests(unittest.TestCase):
                     result['frames'][1]['scroll_y'] = result['frames'][0]['scroll_y']
                 elif mutation == 'profile':
                     result['measurement'] = 'debug-smoke'
-                else:
+                elif mutation == 'source':
                     result['source_sha'] = 'b' * 40
+                else:
+                    del result['frames'][0]['present_ms']
                 with self.assertRaises(AssertionError):
                     self.run_probe(result)
 

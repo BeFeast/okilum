@@ -3,6 +3,23 @@ use super::*;
 use std::time::Duration;
 pub(super) mod trace;
 
+fn submit_frame(window: &mut Window) -> f64 {
+    let mut frames = gpui::profiler::FrameTimingCollector::new();
+    let started = Instant::now();
+    window.present_if_needed();
+    let present_ms = started.elapsed().as_secs_f64() * 1000.;
+    assert!(
+        frames.collect_unseen().iter().any(|event| matches!(
+            event,
+            gpui::profiler::FrameEvent::Present(frame)
+                if frame.window_id == window.window_handle().window_id()
+                    && frame.present_start >= started
+        )),
+        "native budget must submit each newly drawn frame"
+    );
+    present_ms
+}
+
 // Diagnostic only: retain the hard wall-clock frame gate, but distinguish
 // actual UI work from scheduler/OS stalls in native Windows failures.
 #[cfg(target_os = "windows")]
@@ -53,6 +70,7 @@ pub(super) fn entry() -> bool {
         crate::bind_keys(cx); source_presentation::code_languages::install();
         brand::load_fonts(cx).unwrap(); brand::apply_theme(cx);
         reader_ui_state::install(&directory.join("state"), cx);
+        gpui::profiler::set_trace_enabled(true);
         cx.activate(true);
         let mut reader = None;
         let handle = cx.open_window(WindowOptions {
@@ -74,7 +92,7 @@ pub(super) fn entry() -> bool {
                 }
             };
             // Drain one real native draw after the worker installed its snapshot.
-            window.update(cx,|_,w,cx|{w.refresh();w.draw(cx).clear(cx);}).unwrap();
+            window.update(cx,|_,w,cx|{w.refresh();w.draw(cx).clear(cx);submit_frame(w);}).unwrap();
             let (paths,bytes)=cx.update(|cx|{
                 let doc=code.read(cx).document.as_ref().unwrap();
                 let paths=(0..doc.structure.len()).find(|i|doc.key_text(*i)==Some("paths")).unwrap();
@@ -85,7 +103,9 @@ pub(super) fn entry() -> bool {
                 let start=Instant::now();
                 code.update(cx,|p,cx|{p.structure.toggle(paths,p.document.as_ref().unwrap());cx.notify();});
                 w.draw(cx).clear(cx);
-                start.elapsed().as_secs_f64()*1000.
+                let ms=start.elapsed().as_secs_f64()*1000.;
+                submit_frame(w);
+                ms
             }).unwrap();
             diagnostic_println!("CODE2810_OPEN wall_ms={open_ms}");
             assert!(smoke || open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
@@ -133,15 +153,22 @@ pub(super) fn entry() -> bool {
                         arena.clear(cx);
                         let clear_ms=clear_start.elapsed().as_secs_f64()*1000.;
                         let ms=frame.elapsed().as_secs_f64()*1000.;
+                        // Window::draw only builds the scene. Without submission,
+                        // native GPU atlas commands can accumulate across samples;
+                        // the production event loop always presents after drawing.
+                        // Keep the full update/draw/clear CPU budget unchanged.
                         let rows=structure::native_row_builds()-rows_before;
                         let offset=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
                         assert!(rows>0,"scroll sample must build real visible Tree rows");
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
                         let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
-                        (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_probe.report(),trace::report())
+                        let text_work=text_probe.report();
+                        let subtree_work=trace::report();
+                        let present_ms=submit_frame(w);
+                        (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_work,subtree_work,present_ms)
                     }).unwrap();
-                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7,"subtree_work":ms.8}));
-                    diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={} subtree_work={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7,ms.8);
+                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7,"subtree_work":ms.8,"present_ms":ms.9}));
+                    diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={} subtree_work={} present_ms={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7,ms.8,ms.9);
                     let ms=ms.0;
                     assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
@@ -153,4 +180,23 @@ pub(super) fn entry() -> bool {
         }).detach();
     });
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn code2810_native_budget_submits_each_draw_before_next_sample(cx: &mut TestAppContext) {
+        let (_, visual, _temp) =
+            super::super::view_tests::fixture(cx, "data.json", "{\"answer\":42}");
+        gpui::profiler::set_trace_enabled(true);
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            submit_frame(window);
+        });
+        gpui::profiler::set_trace_enabled(false);
+    }
 }
