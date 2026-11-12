@@ -92,6 +92,15 @@ package's successful footer, a child fixture's earlier result, a missing
 target or an empty parent cannot satisfy it. All original filters, integration
 targets, test bodies and profile/deadline settings remain enabled.
 
+Later default-feature Linux filters keep these same four roots alongside their
+original selected package and target. Canonical26469 passed cold admission in
+509 seconds, then rebuilt the core dependency graph for the single-package
+Sync controller and rebuilt the GUI for single-package Settings/Feedback,
+exhausting the existing120s/300s groups before their tests. Keeping admission's
+feature union avoids that repeated compilation without adding a precompile or
+moving work outside the original deadlines. AppImage all-features, HTTP updates,
+Sprint and portable/no-default checks retain their separate root/feature policy.
+
 The write-authority and T3 admission queries use `--lib`, matching their
 original target scope. Selecting four packages without that flag also asks
 Cargo to compile unrelated core integration harnesses, even though their
@@ -197,6 +206,17 @@ managed-launch NOFOLLOW guard; production still refuses substituted symlinks.
 The same canonical run exposed these two environment-dependent fixture errors,
 while its Mac, Windows and supplementary perf jobs passed. Earlier perf
 NO_EVIDENCE remains a failed observation, not an accepted latency measurement.
+
+Canonical26469 subsequently passed all49 serial AppImage cases and the lifecycle
+fixtures. Its shared census accounted for5518 cases; later Sync UI assertions
+and one Linux frame-timing assertion remained failures. Mounted Sync fixtures
+explicitly draw after draining tasks, before reading hitboxes or simulating
+input, as GPUI's event-simulation API requires. No callback is invoked directly
+and no click/state assertion is removed. The native cached-frame measurement
+runs after the concurrent workspace processes finish, retaining its ten frames, cache
+invalidation controls and300ms assertion inside the same outer group deadline.
+Its census partition and any failure are mandatory; Linux private reveal still
+runs afterwards. These changes require a new exact-source native result.
 
 This prevents unrelated ephemeral vault fixtures from contending on or scanning
 one accumulating account-wide authority registry. The first heavy runtime

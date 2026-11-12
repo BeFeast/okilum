@@ -930,7 +930,15 @@ fn guided_worker(
     calls
 }
 
+// Draining executor tasks does not promise a frame: hitboxes and debug bounds
+// come from draw, which the GPUI event-simulation API requires before input.
+pub(super) fn draw_sync_fixture(visual: &mut VisualTestContext) {
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+}
+
 fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
+    draw_sync_fixture(visual);
     let panel = visual
         .debug_bounds("sync-panel")
         .expect("Sync panel is rendered");
@@ -1068,7 +1076,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     });
     let mut visual = VisualTestContext::from_window(settings, cx);
     visual.simulate_resize(size(px(700.), px(440.)));
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_eq!(
         visual.update(|window, _| window.viewport_size()),
         size(px(700.), px(440.)),
@@ -1084,13 +1092,13 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
             .update(cx, |input, cx| input.set_value("Desktop", window, cx));
         cx.notify();
     });
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     let add = visual.debug_bounds("sync-add-computer").unwrap();
     visual.simulate_click(add.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     let create = visual.debug_bounds("sync-create-link").unwrap();
     visual.simulate_click(create.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-copy-url");
     assert_visible(&mut visual, "sync-pairing-url");
     view.update(&mut visual, |view, cx| {
@@ -1098,7 +1106,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         cx.notify();
     });
     visual.executor().advance_clock(Duration::from_secs(1));
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-approve-computer");
     assert!(
         visual.debug_bounds("sync-copy-url").is_none(),
@@ -1106,7 +1114,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     );
     let confirm = visual.debug_bounds("sync-approve-computer").unwrap();
     visual.simulate_click(confirm.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-status");
     assert_visible(&mut visual, "sync-catalog-0");
     assert!(visual.debug_bounds("sync-approve-computer").is_none());
@@ -1120,7 +1128,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         view.error = Some("Could not connect. Check both computers and try again.".into());
         cx.notify();
     });
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-error");
 }
 
@@ -2227,11 +2235,11 @@ fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext)
         });
         Root::new(view, window, cx)
     });
-    visual.run_until_parked();
+    draw_sync_fixture(visual);
     assert_visible(visual, "sync-reject-computer");
     let reject = visual.debug_bounds("sync-reject-computer").unwrap();
     visual.simulate_click(reject.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(visual);
     assert_eq!(*calls.lock().unwrap(), vec!["other"]);
     assert!(visual.debug_bounds("sync-new-link").is_none());
     assert!(visual.debug_bounds("sync-modal").is_none());
