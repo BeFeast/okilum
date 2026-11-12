@@ -31,7 +31,7 @@ for name, source in cases:
     script = subprocess.check_output(['git', 'show', source + ':scripts/ci/code-toolbar-native-app.py'])
     (output / (name + '-runner.py')).write_bytes(script)
     fixtures.append(ast.dump(next(n for n in ast.parse(script).body if isinstance(n, ast.FunctionDef) and n.name == 'fixture')))
-assert fixtures[0] == fixtures[1], 'The two executables must receive the identical fixture' 
+assert fixtures[0] == fixtures[1], 'The two executables must receive the identical fixture'
 for iteration in range(5):
     for name, source in (cases if iteration % 2 == 0 else cases[::-1]):
         directory = output / f'{iteration}-{name}'
