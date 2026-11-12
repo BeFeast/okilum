@@ -279,7 +279,9 @@ impl CodePreview {
         self.read_active = false;
         self.cancel_search();
         self.search_revision += 1;
-        self.search_key = None;
+        if self.searching {
+            self.search_key = None;
+        }
         self.searching = false;
         if let Some(editor) = &self.editor_find {
             editor.update(cx, |editor, cx| editor.set_active(false, cx));

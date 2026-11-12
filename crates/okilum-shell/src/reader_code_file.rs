@@ -847,8 +847,22 @@ impl Reader {
                 if let Some(input) = code.input() {
                     code.apply_diagnostics(&input, cx);
                 }
+                if suspended && !code.whole_find() && code.view != View::Table {
+                    if let Some(editor) = &code.editor_find {
+                        editor.update(cx, |editor, cx| editor.resume(cx));
+                    }
+                }
                 cx.notify();
-                suspended && !code.find.read(cx).value().is_empty()
+                let query = code.find.read(cx).value();
+                let current = code
+                    .search_key
+                    .as_ref()
+                    .is_some_and(|(revision, old, case)| {
+                        *revision == code.document_revision
+                            && old.as_str() == query.as_ref()
+                            && *case == code.case_sensitive.get()
+                    });
+                suspended && code.whole_find() && !query.is_empty() && !current
             });
             if resume_find {
                 let code = code.clone();

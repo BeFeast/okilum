@@ -111,6 +111,12 @@ impl EditorTarget {
         }
     }
 
+    /// Returning from Edit refreshes results without replaying first-hit navigation.
+    pub(crate) fn resume(&mut self, cx: &mut Context<Self>) {
+        self.active = true;
+        self.apply_query(false, cx);
+    }
+
     pub(crate) fn target(entity: &Entity<Self>, cx: &App) -> super::Target {
         let state = entity.read(cx);
         let (current, total) = state.count(cx);

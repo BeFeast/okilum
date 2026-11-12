@@ -387,7 +387,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
     let (reader, visual, temp) = crate::reader_viewer_chrome::tests::fixture_with_files(
         cx,
         "data.json",
-        &[("data.json", r#"{"value":"needle other"}"#)],
+        &[("data.json", r#"{"value":"needle other needle"}"#)],
     );
     let code = reader.read_with(visual, |r, _| {
         r.file_preview.as_ref().unwrap().code.clone().unwrap()
@@ -439,7 +439,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
         input.update(cx, |input, cx| input.replace_source_range(0..0, " ", w, cx));
         std::fs::write(
             temp.path().join("vault/data.json"),
-            r#"{"incoming":"needle other"}"#,
+            r#"{"incoming":"needle other needle"}"#,
         )
         .unwrap();
         assert!(!r.save_source(cx), "real conflict enables draft parking");
@@ -458,9 +458,34 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
         assert_eq!(s.search_installs, before.1 + 1);
         assert_eq!(
             s.matches.len(),
-            1,
+            2,
             "Read resumes the retained pending query"
         );
+    });
+    // A completed search, unlike a pending one, must retain its current hit.
+    code.update_in(visual, |s, w, cx| s.step_match(1, w, cx));
+    reader.update_in(visual, |r, w, cx| {
+        r.toggle_source(w, cx);
+        let input = r.editing.as_ref().unwrap().input().clone();
+        input.update(cx, |input, cx| input.replace_source_range(0..0, " ", w, cx));
+        std::fs::write(
+            temp.path().join("vault/data.json"),
+            r#"{"later":"needle other needle"}"#,
+        )
+        .unwrap();
+        assert!(!r.save_source(cx));
+    });
+    settle(visual);
+    let park = visual.debug_bounds("source-park").unwrap().center();
+    visual.simulate_click(park, Modifiers::default());
+    settle(visual);
+    code.read_with(visual, |s, _| {
+        assert_eq!(
+            s.search_scans_started.load(Ordering::SeqCst),
+            before.0 + 1,
+            "completed query is not rescanned on retained Read exit"
+        );
+        assert_eq!(s.match_index, 1, "completed Find keeps its current hit");
     });
 }
 
