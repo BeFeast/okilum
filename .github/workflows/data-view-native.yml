@@ -126,17 +126,6 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/data-view-native.py
-      - name: Exercise real DirectX atlas uploads and compiled controls
-        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && runner.os == 'Windows' }}
-        shell: bash
-        run: python3 scripts/ci/windows-atlas-upload.py
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() && runner.os == 'Windows' }}
-        with:
-          name: windows-atlas-upload-controls
-          path: target/windows-atlas-upload-controls/
-          if-no-files-found: ignore
-          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -250,3 +239,35 @@ jobs:
             vendor/gpui-component/
             vendor/comrak-0.47.0/
           key: ${{ steps.release_cache.outputs.cache-primary-key }}
+
+  windows-atlas:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Preserve exact vendor patch bytes
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-atlas-upload-v1
+          cache-on-failure: true
+      - name: Prepare checksum-pinned DirectX backend
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Exercise real WARP uploads and five compiled runtime controls
+        shell: bash
+        run: python3 scripts/ci/windows-atlas-upload.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-atlas-upload-controls
+          path: target/windows-atlas-upload-controls/
+          if-no-files-found: ignore
+          retention-days: 7
