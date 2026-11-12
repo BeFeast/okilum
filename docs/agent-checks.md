@@ -400,6 +400,9 @@ Mac Sprint incremental cache first, then that profile if needed, before Cargo
 and after bundle staging. Other target profiles remain untouched; excess there
 stops the build. It reports target size and volume free space, warns below
 50 GiB, and preserves a caller's `CARGO_INCREMENTAL` (default `1`).
+When it is `0`, the same locked pass also removes Cargo's empty incremental
+directory scaffold. A populated cache below the cap stays intact; disabling
+compilation does not silently discard a previous branch's warm cache.
 Existing build-script cache repair compares canonical paths, so macOS aliases
 such as `/var` and `/private/var` preserve valid warm outputs.
 

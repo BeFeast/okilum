@@ -206,6 +206,15 @@ def trim_target(root):
             shutil.rmtree(path)
             removed.append(str(path.relative_to(target)))
             after = size()
+    # Cargo can recreate the empty scaffold even with incremental compilation
+    # disabled. Remove only that empty directory under the same build lock;
+    # an existing populated warm cache still follows the cap policy above.
+    incremental = profile / 'incremental'
+    if (os.environ.get('CARGO_INCREMENTAL') == '0' and incremental.is_dir()
+            and not any(incremental.iterdir())):
+        incremental.rmdir()
+        removed.append(str(incremental.relative_to(target)) + '(empty)')
+        after = size()
     print(f'Sprint target: before_kib={before} after_kib={after} cap_gib={cap} '
           f'removed={",".join(removed) or "none"}', flush=True)
     if after > cap_kib:

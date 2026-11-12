@@ -332,6 +332,41 @@ class SprintTargetTests(unittest.TestCase):
             self.assertTrue(inc.exists())
             self.assert_kept(root, outside)
 
+    def test_disabled_incremental_removes_only_its_empty_cargo_scaffold(self):
+        for setting in ['0', '1', None]:
+            with self.subTest(setting=setting), self.tree() as (root, helper, outside):
+                inc = root / 'target/aarch64-apple-darwin/sprint/incremental'
+                inc.mkdir(parents=True)
+                other = root / 'target/other-triple/debug/incremental'
+                other.mkdir(parents=True)
+                deps = self.fill(root, 'aarch64-apple-darwin/sprint/deps/warm', 16)
+                env = dict(os.environ)
+                env.pop('CARGO_INCREMENTAL', None)
+                env.pop('OKILUM_SPRINT_TARGET_CAP_GIB', None)
+                if setting is not None:
+                    env['CARGO_INCREMENTAL'] = setting
+                result = subprocess.run(['python3', str(helper), '--trim-target', str(root)],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(inc.exists(), setting != '0')
+                if setting == '0':
+                    self.assertIn('removed=aarch64-apple-darwin/sprint/incremental(empty)', result.stdout)
+                self.assertTrue(other.is_dir())
+                self.assertEqual(deps.stat().st_size, 16 * 1024)
+                self.assert_kept(root, outside)
+
+    def test_disabled_incremental_keeps_existing_nonempty_cache_below_cap(self):
+        with self.tree() as (root, helper, outside):
+            inc = self.fill(root, 'aarch64-apple-darwin/sprint/incremental/warm', 16)
+            before = inc.read_bytes()
+            env = dict(os.environ, CARGO_INCREMENTAL='0', OKILUM_SPRINT_TARGET_CAP_GIB='20')
+            result = subprocess.run(['python3', str(helper), '--trim-target', str(root)],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(inc.read_bytes(), before)
+            self.assertIn('removed=none', result.stdout)
+            self.assert_kept(root, outside)
+
     def test_cli_refuses_oversized_other_outputs_without_deleting_them(self):
         with self.tree() as (root, helper, outside):
             other = self.fill(root, 'other-triple/debug/keep', 256)
