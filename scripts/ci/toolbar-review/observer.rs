@@ -25,7 +25,7 @@ fn native_thread_id() -> u64 {
 #[cfg(target_os = "macos")]
 fn native_thread_id() -> u64 {
     let mut value = 0;
-    assert_eq!(unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &mut value) }, 0);
+    assert_eq!(unsafe { libc::pthread_threadid_np(0, &mut value) }, 0);
     value
 }
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

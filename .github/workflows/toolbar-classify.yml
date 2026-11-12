@@ -1,4 +1,4 @@
-name: toolbar-classify
+name: toolbar-classify-mac
 on:
   push:
     branches: ['diagnostic-toolbar/**']
@@ -29,9 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
-            kind: main
-          - os: windows-2022
+          - os: macos-15
             kind: toolbar
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
@@ -100,9 +98,9 @@ jobs:
             ~/.cargo/git/
             target/code-toolbar-release/
           key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
-  windows:
+  mac:
     needs: build
-    runs-on: windows-2022
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -110,32 +108,22 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: capsule-Windows-main
-          path: inputs/main
-      - uses: actions/download-artifact@v4
-        with:
-          name: capsule-Windows-toolbar
+          name: capsule-macOS-toolbar
           path: inputs/toolbar
-      - name: Five alternating pairs with precise scheduling capture
-        shell: pwsh
+      - name: Fixed census with per-thread CPU clock
         run: |
-          New-Item -ItemType Directory -Force diagnostics | Out-Null
-          xperf.exe -on PROC_THREAD+CSWITCH+DISPATCHER -BufferSize 1024 -MinBuffers 64 -MaxBuffers 256 -f diagnostics/kernel.etl
-          if ($LASTEXITCODE) { throw 'Unable to start precise kernel scheduling trace' }
-          try {
-            python scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/pairs --mode pairs
-            if ($LASTEXITCODE) { throw 'Incomplete native census' }
-          } finally {
-            xperf.exe -d diagnostics/pairs/reader.etl
-          }
-          tracerpt.exe diagnostics/pairs/reader.etl -of XML -o diagnostics/pairs/reader.xml -y
-          if ($LASTEXITCODE) { throw 'Trace decode failed' }
-          python scripts/ci/toolbar-review/correlate.py diagnostics/pairs
-          if ($LASTEXITCODE) { throw 'Scheduling correlation failed' }
+          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
+          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/mac --mode mac
+      - name: Separate Time Profiler capture
+        if: always()
+        continue-on-error: true
+        run: |
+          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
+          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/profiler --mode mac-profiler
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: exact-Windows
+          name: exact-macOS
           path: diagnostics/
           if-no-files-found: error
           retention-days: 7
