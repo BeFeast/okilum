@@ -2,6 +2,12 @@
 # Observe the failed runtime groups after a successful original cold admission.
 set -euo pipefail
 tools=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ ${1:-linux} == shared ]]; then
+    # The original entrypoint retains formatting, lint, every workspace target,
+    # serial Log, portable reader and all Python/manifest/update gates.
+    exec env OKILUM_WORKSPACE_ORDINARY_SHARDS=4 bash scripts/ci/check-shared.sh
+fi
+[[ ${1:-linux} == linux ]] || exit 2
 packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
 status=0
 guarded() {

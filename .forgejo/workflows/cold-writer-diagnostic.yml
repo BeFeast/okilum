@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       runtime:
-        description: 'true runs targeted runtime fixtures and complete workspace after successful admission; no paired candidate'
+        description: 'false, true (Linux runtime groups), or shared (complete shared gate) after admission; no paired candidate'
         required: false
         default: 'false'
         type: string
@@ -41,8 +41,8 @@ jobs:
         run: |
           [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
           [[ -z "$CANDIDATE" || "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${RUNTIME:-false}" == false || "$RUNTIME" == true ]]
-          [[ "${RUNTIME:-false}" != true || -z "$CANDIDATE" ]]
+          case "${RUNTIME:-false}" in false|true|shared) ;; *) exit 1;; esac
+          [[ "${RUNTIME:-false}" == false || -z "$CANDIDATE" ]]
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
@@ -112,9 +112,16 @@ jobs:
           python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
       - name: Observe runtime fixtures and the full workspace within original budgets
         id: runtime
-        if: inputs.runtime == 'true' && steps.baseline.outcome == 'success'
+        if: (inputs.runtime == 'true' || inputs.runtime == 'shared') && steps.baseline.outcome == 'success'
         working-directory: source
-        run: bash ../diagnostic-tools/scripts/ci/runtime-fixture-diagnostic.sh
+        env:
+          MODE: ${{ inputs.runtime }}
+        run: |
+          if [[ "$MODE" == shared ]]; then
+            bash ../diagnostic-tools/scripts/ci/runtime-fixture-diagnostic.sh shared
+          else
+            bash ../diagnostic-tools/scripts/ci/runtime-fixture-diagnostic.sh
+          fi
       - name: Preserve both measurement outcomes
         if: always()
         env:
@@ -127,4 +134,4 @@ jobs:
           printf 'COLD_WRITER_PAIR baseline=%s candidate=%s\n' "$BASELINE" "$CANDIDATE"
           test "$BASELINE" = success
           if [[ -n "$CANDIDATE_SOURCE" ]]; then test "$CANDIDATE" = success; fi
-          if [[ "$RUNTIME_REQUESTED" == true ]]; then test "$RUNTIME" = success; fi
+          if [[ "$RUNTIME_REQUESTED" == true || "$RUNTIME_REQUESTED" == shared ]]; then test "$RUNTIME" = success; fi
