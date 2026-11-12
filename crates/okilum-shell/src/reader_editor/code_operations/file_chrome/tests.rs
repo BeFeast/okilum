@@ -1042,11 +1042,22 @@ fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mu
             "positive control: strict validation debounce is still pending"
         );
     });
+    let weak_file = file.downgrade();
+    let weak_input = input.downgrade();
+    assert!(weak_file.upgrade().is_some() && weak_input.upgrade().is_some());
     visual.update(|w, _| w.remove_window());
     drop(reader);
     drop(file);
     drop(input);
     app.run_until_parked();
+    assert!(
+        weak_file.upgrade().is_none(),
+        "closing the window releases its live parts before App shutdown"
+    );
+    assert!(
+        weak_input.upgrade().is_none(),
+        "pending validation never retains the source editor"
+    );
     app.quit();
     drop(app);
     cx.run_until_parked();
