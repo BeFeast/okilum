@@ -1,0 +1,45 @@
+name: toolbar-2811-perf
+on:
+  push:
+    branches: ['diagnostic-toolbar-2811/**']
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  capture:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-toolbar-release-windows-binary
+          run-id: 43326565102
+          github-token: ${{ github.token }}
+          path: exact-binary
+      - name: One exact-binary native capture with unchanged assertions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diagnostics | Out-Null
+          xperf.exe -on PROC_THREAD+CSWITCH+DISPATCHER+FILE_IO+FILE_IO_INIT -BufferSize 1024 -MinBuffers 64 -MaxBuffers 256 -f diagnostics/kernel.etl
+          if ($LASTEXITCODE) { throw 'Unable to start kernel scheduling/FileIO capture' }
+          try {
+            python scripts/ci/perf-2811/run-exact.py exact-binary/okilum.exe diagnostics/case
+            if ($LASTEXITCODE) { throw 'Exact-binary diagnostic setup or collection failed' }
+          } finally {
+            xperf.exe -d diagnostics/reader.etl
+          }
+          tracerpt.exe diagnostics/reader.etl -of XML -o diagnostics/reader.xml -y
+          if ($LASTEXITCODE) { throw 'Trace decode failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-cc4-etw
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7
