@@ -39,6 +39,7 @@ jobs:
             inbox/Cargo.lock
           if-no-files-found: error
       - name: Archive policy and limits
-        run: cargo test --locked -p okilum-core archive:: -- --nocapture
+        run: |
+          cargo test --locked -p okilum-core archive:: -- --nocapture
       - name: Full Inbox suite including old database migration
         run: cargo test --locked --manifest-path inbox/Cargo.toml --workspace
