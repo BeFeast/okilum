@@ -212,6 +212,12 @@ exec cat
             # Velopack is another independent pinned dependency, unrelated to
             # the generated GPUI clone reset exercised by this fixture.
             (scripts / 'velopack-setup.py').write_text('pass\n')
+            # The independently pinned Windows backend participates in setup
+            # and verification without changing this GPUI-clone reset fixture.
+            (scripts / 'gpui-pre-windows-setup.py').write_text(
+                'from pathlib import Path\nimport json, sys\n'
+                'with Path(__file__).with_name("atlas-calls.jsonl").open("a") as log:\n'
+                '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             def patch(value):
                 (patches / '0001.diff').write_text('--- a/crates/base/src/text/selection_adapter.rs\n+++ b/crates/base/src/text/selection_adapter.rs\n@@ -1 +1 @@\n-pristine\n+' + value + '\n')
             patch('branch A')
@@ -231,6 +237,9 @@ exec cat
             subprocess.run(['bash', str(setup)], check=True, capture_output=True)
             self.assertEqual(
                 [json.loads(line) for line in (scripts / 'parser-calls.jsonl').read_text().splitlines()],
+                [[], ['--verify'], [], ['--verify'], []])
+            self.assertEqual(
+                [json.loads(line) for line in (scripts / 'atlas-calls.jsonl').read_text().splitlines()],
                 [[], ['--verify'], [], ['--verify'], []])
 
 

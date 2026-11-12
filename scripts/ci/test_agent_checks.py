@@ -46,7 +46,8 @@ def receipt():
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
-                "Run native Windows delta console controls", "Run native Windows Sync identity controls")]}]}
+                "Run native Windows delta console controls", "Run native Windows Sync identity controls",
+                "Run native Windows atlas upload controls")]}]}
 
 
 class VerdictTests(unittest.TestCase):
@@ -154,6 +155,23 @@ class VerdictTests(unittest.TestCase):
         data["conclusion"] = "failure"
         data["jobs"][1]["conclusion"] = "failure"
         self.assertEqual(helper.verdict(data, SHA), 1)
+
+    def test_windows_atlas_controls_are_required_in_the_routine_gate(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA), 0)
+        native = data["jobs"][1]["steps"]
+        atlas = next(step for step in native if step["name"] == "Run native Windows atlas upload controls")
+        for state in ("skipped", "failure"):
+            atlas["conclusion"] = state
+            self.assertEqual(helper.verdict(data, SHA), 75)
+        native.remove(atlas)
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        step = next(step for step in workflow["jobs"]["windows-recovery"]["steps"]
+                    if step.get("name") == "Run native Windows atlas upload controls")
+        self.assertNotIn("if", step)
+        self.assertIn("python scripts/ci/windows-atlas-upload.py", step["run"])
+        self.assertIn("exit $LASTEXITCODE", step["run"])
 
     def test_vault_regression_control_must_run_for_normal_worker_checks(self):
         info = receipt()
