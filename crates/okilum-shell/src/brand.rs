@@ -7,7 +7,7 @@ use std::{borrow::Cow, sync::OnceLock};
 
 #[cfg(all(unix, feature = "brain"))]
 use gpui::ElementId;
-use gpui::{App, AssetSource, Hsla, SharedString, Styled, Svg, px, rgb, svg};
+use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::{Colorize as _, Theme};

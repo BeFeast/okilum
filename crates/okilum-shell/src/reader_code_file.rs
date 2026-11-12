@@ -27,7 +27,7 @@ mod view;
 mod view_tests;
 use document::Document;
 use view::copy_text_node;
-pub(crate) use view::{Availability, View, bind_keys};
+pub(crate) use view::{bind_keys, Availability, View};
 
 /// Bounded preview loading; UI editing has its own smaller admission cap.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;

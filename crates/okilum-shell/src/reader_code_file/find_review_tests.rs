@@ -220,12 +220,10 @@ fn code2810_scrollbar_uses_visible_dedicated_roles_and_track(cx: &mut TestAppCon
                     paints.contains(&(role, color)),
                     "the real track/ticks/current paint requests must exist"
                 );
-                assert!(
-                    paints
-                        .iter()
-                        .filter(|(r, _)| *r == role)
-                        .all(|(_, actual)| *actual == color)
-                );
+                assert!(paints
+                    .iter()
+                    .filter(|(r, _)| *r == role)
+                    .all(|(_, actual)| *actual == color));
             }
         });
     });

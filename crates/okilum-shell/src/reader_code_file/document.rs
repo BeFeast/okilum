@@ -400,9 +400,11 @@ impl Document {
     }
 
     /// Literal Unicode Find, counted over the complete snapshot, never just a page.
+    #[cfg(any(test, feature = "data-view-native-harness"))]
     pub fn find(&self, query: &str) -> Vec<Range<usize>> {
         self.find_case(query, false)
     }
+    #[cfg(any(test, feature = "data-view-native-harness"))]
     pub fn find_case(&self, query: &str, sensitive: bool) -> Vec<Range<usize>> {
         crate::reader_find_field::editor::literal_matches(&self.text, query, sensitive)
     }

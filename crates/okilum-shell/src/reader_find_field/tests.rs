@@ -302,11 +302,9 @@ fn archive_header_find_expands_left_without_moving_other_controls_or_content(
     visual.run_until_parked();
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert!(
-        target
-            .input
-            .read_with(visual, |input, _| input.value().is_empty())
-    );
+    assert!(target
+        .input
+        .read_with(visual, |input, _| input.value().is_empty()));
     visual.update(|window, cx| assert!(!target.input.read(cx).focus_handle(cx).is_focused(window)));
 }
 
@@ -523,7 +521,7 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
 
 #[gpui::test]
 fn drawing_details_remains_actionable_from_overflow(cx: &mut TestAppContext) {
-    use gpui_component::{WindowExt as _, menu::PopupMenuItem};
+    use gpui_component::{menu::PopupMenuItem, WindowExt as _};
     cx.executor().allow_parking();
     let (reader, visual, _temp) = reader_viewer_chrome::tests::fixture(cx, "drawing.excalidraw");
     let started = std::time::Instant::now();
