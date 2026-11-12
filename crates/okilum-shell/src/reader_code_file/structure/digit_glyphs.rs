@@ -1,4 +1,4 @@
-//! Keep virtualized numeric keys/counts from inserting cold glyph phases on scroll.
+//! Prepare bounded printable ASCII phases in every colour used by Tree labels.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -8,21 +8,41 @@ struct Key {
     font: Font,
     size: Pixels,
     scale: f32,
-    color: Hsla,
+    colors: Vec<Hsla>,
 }
 
 #[derive(Default)]
 pub(super) struct DigitGlyphs(Rc<RefCell<Option<Key>>>);
 
 #[cfg(test)]
+pub(in super::super) type GlyphRequest = (char, u8, u8, Pixels, Hsla);
+
+#[cfg(test)]
 thread_local! {
-    pub(in super::super) static REQUESTS: RefCell<Vec<(char, u8, u8, Pixels)>> = const { RefCell::new(Vec::new()) };
+    pub(in super::super) static REQUESTS: RefCell<Vec<GlyphRequest>> = const { RefCell::new(Vec::new()) };
 }
+
+pub(in super::super) const LABEL_GLYPHS: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 
 impl DigitGlyphs {
     #[inline(never)]
     pub(super) fn element(&self, cx: &App) -> AnyElement {
         let prepared = self.0.clone();
+        let mut colors = vec![brand::reader_palette(cx).text_faint];
+        for name in ["string", "number", "boolean", "constant"] {
+            if let Some(color) = cx
+                .theme()
+                .highlight_theme
+                .style
+                .syntax
+                .style(name)
+                .and_then(|style| style.color)
+            {
+                if !colors.contains(&color) {
+                    colors.push(color);
+                }
+            }
+        }
         div()
             .absolute()
             .font_family(reader_fonts::code(cx))
@@ -32,24 +52,29 @@ impl DigitGlyphs {
                 |_, _, _| (),
                 move |_, _, window, _| {
                     let style = window.text_style();
+                    let mut colors = colors.clone();
+                    if !colors.contains(&style.color) {
+                        colors.push(style.color);
+                    }
                     let key = Key {
                         window: window.window_handle().window_id(),
                         font: style.font(),
                         size: style.font_size.to_pixels(window.rem_size()),
                         scale: window.scale_factor(),
-                        color: style.color,
+                        colors,
                     };
                     if prepared.borrow().as_ref() == Some(&key) {
                         return;
                     }
-                    // No document walk: ten digits at GPUI's finite subpixel
-                    // phases, once per window/font/size/scale/color. Row text
+                    // No document walk: bounded ASCII at GPUI's finite subpixel
+                    // phases in actual foreground/count/syntax colours. macOS
+                    // includes colour-dependent dilation in its atlas key. Row text
                     // keeps its exact size, shaping and positions. An empty
                     // content mask prevents these cache fills from painting.
                     let line = window.text_system().shape_line(
-                        "0123456789".into(),
+                        LABEL_GLYPHS.into(),
                         key.size,
-                        &[style.to_run(10)],
+                        &[style.to_run(LABEL_GLYPHS.len())],
                         None,
                     );
                     let mask = ContentMask {
@@ -57,32 +82,37 @@ impl DigitGlyphs {
                     };
                     let result: anyhow::Result<()> =
                         window.with_content_mask(Some(mask), |window| {
-                            for run in &line.runs {
-                                for glyph in &run.glyphs {
-                                    for y in 0..SUBPIXEL_VARIANTS_Y {
-                                        for x in 0..SUBPIXEL_VARIANTS_X {
-                                            let origin = point(
-                                                px(100. + x as f32 / SUBPIXEL_VARIANTS_X as f32)
-                                                    / key.scale,
-                                                px(100. + y as f32 / SUBPIXEL_VARIANTS_Y as f32)
-                                                    / key.scale,
-                                            );
-                                            #[cfg(test)]
-                                            REQUESTS.with(|requests| {
-                                                requests.borrow_mut().push((
-                                                    line.text.as_bytes()[glyph.index] as char,
-                                                    x,
-                                                    y,
+                            for color in &key.colors {
+                                for run in &line.runs {
+                                    for glyph in &run.glyphs {
+                                        for y in 0..SUBPIXEL_VARIANTS_Y {
+                                            for x in 0..SUBPIXEL_VARIANTS_X {
+                                                let origin = point(
+                                                    px(100.
+                                                        + x as f32 / SUBPIXEL_VARIANTS_X as f32)
+                                                        / key.scale,
+                                                    px(100.
+                                                        + y as f32 / SUBPIXEL_VARIANTS_Y as f32)
+                                                        / key.scale,
+                                                );
+                                                #[cfg(test)]
+                                                REQUESTS.with(|requests| {
+                                                    requests.borrow_mut().push((
+                                                        line.text.as_bytes()[glyph.index] as char,
+                                                        x,
+                                                        y,
+                                                        key.size,
+                                                        *color,
+                                                    ))
+                                                });
+                                                window.paint_glyph(
+                                                    origin,
+                                                    run.font_id,
+                                                    glyph.id,
                                                     key.size,
-                                                ))
-                                            });
-                                            window.paint_glyph(
-                                                origin,
-                                                run.font_id,
-                                                glyph.id,
-                                                key.size,
-                                                key.color,
-                                            )?;
+                                                    *color,
+                                                )?;
+                                            }
                                         }
                                     }
                                 }
@@ -91,7 +121,7 @@ impl DigitGlyphs {
                         });
                     match result {
                         Ok(()) => *prepared.borrow_mut() = Some(key),
-                        Err(error) => log::warn!("Tree digit glyph preparation failed: {error:#}"),
+                        Err(error) => log::warn!("Tree label glyph preparation failed: {error:#}"),
                     }
                 },
             ))

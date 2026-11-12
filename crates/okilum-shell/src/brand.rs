@@ -7,7 +7,7 @@ use std::{borrow::Cow, sync::OnceLock};
 
 #[cfg(all(unix, feature = "brain"))]
 use gpui::ElementId;
-use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
+use gpui::{App, AssetSource, Hsla, SharedString, Styled, Svg, px, rgb, svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::{Colorize as _, Theme};
@@ -410,6 +410,10 @@ pub struct ReaderPalette {
     /// Literal Find match and current-match backgrounds from reader tokens.
     pub find_match: Hsla,
     pub find_current: Hsla,
+    /// High-contrast non-text scrollbar roles, separate from text highlights.
+    pub find_mark: Hsla,
+    pub find_mark_current: Hsla,
+    pub find_mark_track: Hsla,
     /// Dims the document under an overlay.
     pub scrim: Hsla,
 }
@@ -506,6 +510,9 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 highlight: color("highlight"),
                 find_match: color("findMatch"),
                 find_current: color("findCurrent"),
+                find_mark: color("findMark"),
+                find_mark_current: color("findMarkCurrent"),
+                find_mark_track: color("findMarkTrack"),
                 scrim: color("scrim"),
             },
         )
@@ -1090,6 +1097,29 @@ mod tests {
     fn contrast(a: Hsla, b: Hsla) -> f32 {
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn code2810_scrollbar_mark_roles_have_contrast_in_every_theme() {
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let (palette, reader) = tokens(theme, dark);
+                for mark in [reader.find_mark, reader.find_mark_current] {
+                    assert!(
+                        contrast_ratio(mark, reader.find_mark_track) >= 3.,
+                        "{} dark={dark}: track",
+                        theme.key()
+                    );
+                    assert!(
+                        contrast_ratio(mark, palette.canvas) >= 3.,
+                        "{} dark={dark}: canvas",
+                        theme.key()
+                    );
+                }
+                assert_ne!(reader.find_mark, reader.find_match);
+                assert_ne!(reader.find_mark_current, reader.find_current);
+            }
+        }
     }
 
     #[test]

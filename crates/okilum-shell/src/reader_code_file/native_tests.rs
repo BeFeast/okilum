@@ -258,6 +258,10 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         p.search(window, cx);
     });
     visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(70));
+    visual.run_until_parked();
     preview.update_in(visual, |p, window, cx| {
         assert_eq!(p.matches.len(), 1);
         assert!(p.view == View::Tree, "Find retains the whole-file Tree");
@@ -351,6 +355,10 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
     });
     visual.simulate_input("NEEDLE");
     visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(70));
+    visual.run_until_parked();
     preview.read_with(visual, |p, _| {
         assert_eq!(p.matches.len(), 1);
         let shared = p.document_snapshot().unwrap();
@@ -442,6 +450,10 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         p.set_view(View::Raw, window, cx);
         p.show_match(window, cx);
     });
+    visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(70));
     visual.run_until_parked();
     preview.read_with(visual, |p, cx| {
         assert!(p.view != View::Tree);

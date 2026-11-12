@@ -12,7 +12,11 @@ pub(crate) struct EditorTarget {
     active: bool,
     generation: u64,
     task: Option<Task<()>>,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Option<Subscription>; 2],
+    #[cfg(test)]
+    pub(crate) worker_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    pub(crate) scans_started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub(crate) fn literal_matches(
@@ -55,7 +59,7 @@ impl EditorTarget {
         cx: &mut Context<Self>,
     ) -> Self {
         let changed = cx.subscribe(&query, |this, _, event: &InputEvent, cx| match event {
-            InputEvent::Change => this.apply_query(cx),
+            InputEvent::Change => this.apply_query(true, cx),
             InputEvent::PressEnter { shift, .. } if this.active => {
                 this.step(if *shift { -1 } else { 1 }, cx)
             }
@@ -63,7 +67,7 @@ impl EditorTarget {
         });
         let mutated = cx.subscribe(&source, |this, _, _: &SourceMutation, cx| {
             if this.active && !this.query.read(cx).value().is_empty() {
-                this.apply_query(cx);
+                this.apply_query(false, cx);
             }
         });
         Self {
@@ -73,7 +77,11 @@ impl EditorTarget {
             active: true,
             generation: 0,
             task: None,
-            _subscriptions: [changed, mutated],
+            _subscriptions: [Some(changed), Some(mutated)],
+            #[cfg(test)]
+            worker_gate: None,
+            #[cfg(test)]
+            scans_started: Default::default(),
         }
     }
 
@@ -85,7 +93,7 @@ impl EditorTarget {
         self.generation += 1;
         self.task = None;
         if active {
-            self.apply_query(cx);
+            self.apply_query(true, cx);
         }
     }
 
@@ -124,7 +132,7 @@ impl EditorTarget {
         }
     }
 
-    fn apply_query(&mut self, cx: &mut Context<Self>) {
+    fn apply_query(&mut self, reveal_first: bool, cx: &mut Context<Self>) {
         self.generation += 1;
         self.task = None;
         if !self.active {
@@ -150,6 +158,9 @@ impl EditorTarget {
         // while the replacement worker is pending. This does no matching.
         self.source
             .update(cx, |s, cx| s.set_external_search_presentation(true, cx));
+        // A node jump or caret/selection move after this request takes priority
+        // over Find's asynchronous first-hit navigation.
+        let requested_selection = self.source.read(cx).selected_range();
         let generation = self.generation;
         let sensitive = self.case_sensitive.get();
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -162,7 +173,20 @@ impl EditorTarget {
             }) else {
                 return;
             };
+            #[cfg(test)]
+            let (gate, started) =
+                match this.update(cx, |s, _| (s.worker_gate.take(), s.scans_started.clone())) {
+                    Ok(values) => values,
+                    Err(_) => return,
+                };
             let work = cx.background_executor().spawn(async move {
+                #[cfg(test)]
+                {
+                    started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(gate) = gate {
+                        let _ = gate.await;
+                    }
+                }
                 let ranges = literal_matches(&text.to_string(), &query, sensitive);
                 (query, ranges)
             });
@@ -175,10 +199,21 @@ impl EditorTarget {
                     return;
                 }
                 s.source.update(cx, |source, cx| {
-                    let first = ranges.first().cloned();
-                    source.set_external_search_results(query, !sensitive, ranges, 0, cx);
-                    if let Some(range) = first {
-                        Self::reveal(source, range, cx);
+                    let selection = source.selected_range();
+                    let reveal = reveal_first && selection == requested_selection;
+                    let current = if reveal {
+                        0
+                    } else {
+                        ranges
+                            .partition_point(|r| r.start < selection.start)
+                            .min(ranges.len().saturating_sub(1))
+                    };
+                    let first = ranges.get(current).cloned();
+                    source.set_external_search_results(query, !sensitive, ranges, current, cx);
+                    if reveal {
+                        if let Some(range) = first {
+                            Self::reveal(source, range, cx);
+                        }
                     }
                 });
                 // Dirty the live sibling field, never Reader or cached slots.
@@ -189,10 +224,22 @@ impl EditorTarget {
     }
 
     #[cfg(test)]
+    pub(crate) fn disconnect_source_updates_for_test(&mut self) {
+        self._subscriptions[1] = None;
+    }
+    #[cfg(test)]
+    pub(crate) fn detach_pending_for_test(&mut self) {
+        self.task
+            .take()
+            .expect("a worker must be in flight")
+            .detach();
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.query
             .update(cx, |i, cx| i.set_value(query, window, cx));
-        self.apply_query(cx);
+        self.apply_query(true, cx);
     }
     pub(crate) fn set_case_sensitive(&mut self, sensitive: bool, cx: &mut Context<Self>) {
         if self.case_sensitive.get() == sensitive {
@@ -200,7 +247,7 @@ impl EditorTarget {
         }
         self.case_sensitive.set(sensitive);
         crate::reader_ui_state::remember_find_case_sensitive(sensitive, cx);
-        self.apply_query(cx);
+        self.apply_query(true, cx);
     }
     pub(crate) fn count(&self, cx: &App) -> (usize, usize) {
         let m = &self.source.read(cx).search_session().matcher;
@@ -234,7 +281,7 @@ impl EditorTarget {
     }
     pub(crate) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query.update(cx, |i, cx| i.set_value("", window, cx));
-        self.apply_query(cx);
+        self.apply_query(true, cx);
         self.source.update(cx, |s, cx| s.focus(window, cx));
     }
 }

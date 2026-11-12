@@ -33,7 +33,10 @@
       "scrim": "#0000002e",
       "findMatch": "#fde68a",
       "findCurrent": "#fbbf24",
-      "onStatus": "#ffffff"
+      "onStatus": "#ffffff",
+      "findMarkTrack": "#f1f1f1",
+      "findMark": "#8a5a00",
+      "findMarkCurrent": "#0b57d0"
     },
     "dark": {
       "canvas": "#1c1c1c",
@@ -63,7 +66,10 @@
       "scrim": "#00000073",
       "findMatch": "#5c4f1c",
       "findCurrent": "#8a7420",
-      "onStatus": "#1c1c1c"
+      "onStatus": "#1c1c1c",
+      "findMarkTrack": "#262626",
+      "findMark": "#f2c14e",
+      "findMarkCurrent": "#8ab4f8"
     }
   }
 }

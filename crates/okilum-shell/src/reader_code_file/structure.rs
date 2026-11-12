@@ -26,6 +26,9 @@ impl Structure {
     pub fn reset(&mut self, doc: &Document) {
         self.collapsed = true;
         self.exceptions.clear();
+        if !doc.json_tree && !doc.structure.is_empty() {
+            self.exceptions.insert(0);
+        }
         self.find_opened.clear();
         self.selected = if doc.json_tree {
             doc.children(0).next()
@@ -86,6 +89,12 @@ impl Structure {
         let Some(index) = doc.row_at(range) else {
             return;
         };
+        // Separators/outer whitespace belong only to the hidden JSON root.
+        // Keep the current visible selection; no other row owns this hit.
+        if index < Self::start(doc) {
+            self.match_node = None;
+            return;
+        }
         let mut parent = doc.parent(index);
         while let Some(i) = parent {
             if self.folded(i) {
@@ -94,8 +103,7 @@ impl Structure {
             }
             parent = doc.parent(i);
         }
-        // A root-spanning hit selects the first real row instead.
-        self.selected = Some(index.max(Self::start(doc))).filter(|i| *i < doc.structure.len());
+        self.selected = Some(index);
         self.match_node = self.selected;
         self.rebuild(doc);
         self.scroll_selected();
@@ -211,8 +219,9 @@ impl CodePreview {
                 at as f32 / visible.len().max(1) as f32
             })
             .collect();
-        let current_mark = brand::reader_palette(cx).find_current;
-        let highlight = brand::reader_palette(cx).find_match;
+        let current_mark = brand::reader_palette(cx).find_mark_current;
+        let highlight = brand::reader_palette(cx).find_mark;
+        let track_color = brand::reader_palette(cx).find_mark_track;
         let current = self
             .structure
             .match_node
@@ -243,39 +252,68 @@ impl CodePreview {
                 .track_scroll(&self.structure.scroll)
                 .size_full(),
             )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(2.))
+                    .w(px(8.))
+                    .child(
+                        canvas(
+                            |bounds, _, _| bounds,
+                            move |bounds, _, window, _| {
+                                paint_find_quad(window, bounds, track_color, 0);
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .debug_selector(|| "data-find-mark-track".into())
+                    .when(fractions.is_empty(), |track| track.invisible()),
+            )
+            // The track is below the draggable thumb; ticks remain above it.
             .vertical_scrollbar(&self.structure.scroll)
             .child(
                 canvas(
                     |bounds, _, _| bounds,
                     move |bounds, _, w, _| {
                         for fraction in &fractions {
-                            w.paint_quad(fill(
+                            paint_find_quad(
+                                w,
                                 Bounds::new(
                                     point(
-                                        bounds.right() - px(8.),
-                                        bounds.top() + bounds.size.height * *fraction,
+                                        bounds.left(),
+                                        (bounds.top() + bounds.size.height * *fraction)
+                                            .min(bounds.bottom() - px(3.)),
                                     ),
-                                    size(px(5.), px(2.)),
+                                    size(px(6.), px(3.)),
                                 ),
                                 highlight,
-                            ));
+                                1,
+                            );
                         }
                         if let Some(fraction) = current {
-                            w.paint_quad(fill(
+                            paint_find_quad(
+                                w,
                                 Bounds::new(
                                     point(
-                                        bounds.right() - px(8.),
-                                        bounds.top() + bounds.size.height * fraction,
+                                        bounds.left(),
+                                        (bounds.top() + bounds.size.height * fraction)
+                                            .min(bounds.bottom() - px(4.)),
                                     ),
-                                    size(px(5.), px(3.)),
+                                    size(px(6.), px(4.)),
                                 ),
                                 current_mark,
-                            ));
+                                2,
+                            );
                         }
                     },
                 )
                 .absolute()
-                .size_full(),
+                .top_0()
+                .bottom_0()
+                .right(px(2.))
+                .w(px(8.)),
             )
             .into_any_element();
         #[cfg(feature = "data-view-native-harness")]
@@ -375,6 +413,7 @@ impl CodePreview {
             .flex_none()
             .overflow_hidden()
             .items_center()
+            .pr(px(12.))
             .gap_1()
             .pl(px(
                 row.depth.saturating_sub(usize::from(doc.json_tree)).min(16) as f32 * 16.,
@@ -752,4 +791,15 @@ pub(super) fn action_builds() -> usize {
 #[cfg(test)]
 thread_local! {
     pub(super) static LABEL_WEIGHTS: std::cell::RefCell<Vec<FontWeight>> = const {std::cell::RefCell::new(Vec::new())};
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static MARK_PAINTS: std::cell::RefCell<Vec<(u8,Hsla)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn paint_find_quad(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla, _role: u8) {
+    window.paint_quad(fill(bounds, color));
+    #[cfg(test)]
+    MARK_PAINTS.with(|paints| paints.borrow_mut().push((_role, color)));
 }

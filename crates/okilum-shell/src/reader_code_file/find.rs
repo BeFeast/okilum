@@ -3,6 +3,13 @@ use super::*;
 use std::rc::Rc;
 
 impl CodePreview {
+    fn cancel_search(&mut self) {
+        self.search_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.search_task = None;
+        self.search_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    }
+
     fn large_find(&self) -> bool {
         self.paged
             || self
@@ -35,6 +42,8 @@ impl CodePreview {
                 || (self.document.is_none() && !matches!(self.state, State::Message(_)))
             {
                 "Searching…".into()
+            } else if let Some(error) = &self.search_error {
+                error.to_string()
             } else if self.matches.is_empty() {
                 "No matches".into()
             } else {
@@ -118,8 +127,6 @@ impl CodePreview {
         };
         self.find
             .update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
-        self.search_revision += 1;
-        let revision = self.search_revision;
         let whole = self.whole_find();
         if let Some(editor) = &self.editor_find {
             editor.update(cx, |editor, cx| {
@@ -129,7 +136,12 @@ impl CodePreview {
                 }
             });
         }
-        if !whole {
+        if !whole || !self.read_active {
+            self.cancel_search();
+            if self.searching {
+                self.search_key = None;
+                self.searching = false;
+            }
             return;
         }
         let Some(doc) = self.document.clone() else {
@@ -141,11 +153,17 @@ impl CodePreview {
             query.clone(),
             self.case_sensitive.get(),
         );
-        if self.search_key.as_ref() == Some(&key) && !self.searching {
-            self.show_match(window, cx);
+        if self.search_key.as_ref() == Some(&key) {
+            if !self.searching {
+                self.show_match(window, cx);
+            }
             return;
         }
+        self.cancel_search();
+        self.search_revision += 1;
+        let revision = self.search_revision;
         self.search_key = Some(key);
+        self.search_error = None;
         if query.is_empty() {
             self.structure.finish_find(&doc);
             if let Some(input) = self.input() {
@@ -167,47 +185,46 @@ impl CodePreview {
         self.scrollbar_marks.clear();
         self.structure.match_node = None;
         self.searching = !query.is_empty();
+        self.find.update(cx, |_, cx| cx.notify());
+        cx.notify();
+        if query.is_empty() {
+            return;
+        }
         let sensitive = self.case_sensitive.get();
-        let task = cx.background_executor().spawn(async move {
-            let pattern = (!query.is_empty()).then(|| {
-                regex::RegexBuilder::new(&regex::escape(&query))
-                    .case_insensitive(!sensitive)
-                    .build()
-                    .unwrap()
-            });
-            let matches = if sensitive {
-                doc.find_case(&query, true)
-            } else {
-                doc.find(&query)
-            };
-            let mut rows = std::collections::HashMap::new();
-            for hit in &matches {
-                if let Some(row) = doc.row_at(hit) {
-                    rows.entry(row).or_insert_with(|| hit.clone());
+        let cancelled = self.search_cancel.clone();
+        #[cfg(test)]
+        let scans = self.search_scans.clone();
+        self.search_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(60))
+                .await;
+            let task = cx.background_executor().spawn(async move {
+                let result = scan_snapshot(&doc, &query, sensitive, &cancelled);
+                #[cfg(test)]
+                if result.is_some() {
+                    scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
-            }
-            let marks = sample_marks(&matches, &doc);
-            (matches, rows, marks, pattern)
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let (matches, rows, marks, pattern) = task.await;
+                result
+            });
+            let Some(result) = task.await else {
+                return;
+            };
             let _ = this.update_in(cx, |s, window, cx| {
-                if s.search_revision != revision {
+                if s.search_revision != revision || !s.whole_find() {
                     return;
                 }
                 s.searching = false;
-                s.matches = matches;
-                s.match_pattern = pattern;
-                s.match_rows = rows;
-                s.scrollbar_marks = marks;
+                s.matches = result.matches;
+                s.match_pattern = result.pattern;
+                s.match_rows = result.rows;
+                s.scrollbar_marks = result.marks;
+                s.search_error = result.error;
                 s.match_index = 0;
                 s.show_match(window, cx);
                 s.find.update(cx, |_, cx| cx.notify());
                 cx.notify();
             });
-        })
-        .detach();
-        cx.notify();
+        }));
     }
 
     pub(super) fn step_match(
@@ -239,16 +256,12 @@ impl CodePreview {
         }
         self.show_page(doc.page_at(range.start), window, cx);
         let page = self.document.as_ref().unwrap().pages[self.page].clone();
-        let ranges: Vec<_> = self
-            .matches
+        let span = page_matches(&self.matches, &page);
+        let current = self.match_index.saturating_sub(span.start);
+        let ranges = self.matches[span]
             .iter()
-            .filter(|r| r.start < page.end && r.end > page.start)
             .map(|r| r.start.saturating_sub(page.start)..r.end.min(page.end) - page.start)
             .collect();
-        let current = ranges
-            .iter()
-            .position(|r| r.start == range.start.saturating_sub(page.start))
-            .unwrap_or(0);
         let query = self.find.read(cx).value().to_string();
         if let State::Content(input) = &self.state {
             input.update(cx, |s, cx| {
@@ -281,4 +294,87 @@ pub(super) fn sample_marks(matches: &[std::ops::Range<usize>], doc: &Document) -
             doc.row_at(&matches[at]).unwrap_or(0)
         })
         .collect()
+}
+
+/// Matches are sorted and disjoint. Only the visible page slice is visited on
+/// Enter, independently of the number of hits in the complete document.
+fn page_matches(
+    matches: &[std::ops::Range<usize>],
+    page: &std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let lo = matches.partition_point(|r| {
+        page_probe();
+        r.end <= page.start
+    });
+    let hi = matches.partition_point(|r| {
+        page_probe();
+        r.start < page.end
+    });
+    lo..hi
+}
+
+pub(super) struct ScanResult {
+    pub(super) matches: Vec<std::ops::Range<usize>>,
+    rows: std::collections::HashMap<usize, std::ops::Range<usize>>,
+    marks: Vec<usize>,
+    pattern: Option<regex::Regex>,
+    error: Option<SharedString>,
+}
+
+pub(super) fn scan_snapshot(
+    doc: &Document,
+    query: &str,
+    sensitive: bool,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Option<ScanResult> {
+    use std::sync::atomic::Ordering;
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
+    let pattern = match regex::RegexBuilder::new(&regex::escape(query))
+        .case_insensitive(!sensitive)
+        .build()
+    {
+        Ok(pattern) => pattern,
+        Err(_) => {
+            return Some(ScanResult {
+                matches: vec![],
+                rows: Default::default(),
+                marks: vec![],
+                pattern: None,
+                error: Some("Query is too long".into()),
+            });
+        }
+    };
+    let mut matches = Vec::new();
+    let mut rows = std::collections::HashMap::new();
+    for hit in pattern.find_iter(&doc.text) {
+        if cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        let range = hit.range();
+        if let Some(row) = doc.row_at(&range) {
+            rows.entry(row).or_insert_with(|| range.clone());
+        }
+        matches.push(range);
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
+    let marks = sample_marks(&matches, doc);
+    Some(ScanResult {
+        matches,
+        rows,
+        marks,
+        pattern: Some(pattern),
+        error: None,
+    })
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static PAGE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[inline]
+fn page_probe() {
+    #[cfg(test)]
+    PAGE_PROBES.with(|probes| probes.set(probes.get() + 1));
 }

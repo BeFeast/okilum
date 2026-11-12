@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 CONTROL = 'OKILUM_DATA_VIEW_NATIVE_CONTROL'
-BASE = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum']
+BASE = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum', '--features', 'data-view-native-harness']
 
 
 def run(*args, control=None):

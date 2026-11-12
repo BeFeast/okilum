@@ -77,12 +77,15 @@ impl Label {
 
     pub fn display_hit(&self, text: &str, range: &Range<usize>, hit: &Range<usize>) -> String {
         let label = self.display(text, range);
+        if hit.start < range.start || hit.end > range.end || text.get(hit.clone()).is_none() {
+            return label;
+        }
         if label.contains(&text[hit.clone()]) {
             return label;
         }
         let prefix = match self {
             Self::Json { key: Some(key), .. } => {
-                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 32))
+                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 48))
             }
             Self::Json {
                 ordinal: Some(index),
@@ -93,8 +96,8 @@ impl Label {
             } => format!("{label} · "),
             _ => String::new(),
         };
-        let mut start = hit.start.saturating_sub(16).max(range.start);
-        while !text.is_char_boundary(start) {
+        let mut start = hit.start.saturating_sub(16).max(range.start).min(range.end);
+        while start < range.end && !text.is_char_boundary(start) {
             start += 1;
         }
         let ellipsis = if start > range.start { "…" } else { "" };

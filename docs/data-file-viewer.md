@@ -60,10 +60,11 @@ Copy selection is exact within the displayed page; Copy node can cross any numbe
 of pages. Search can match across a page boundary. A spanning match selects its
 part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
 Structured long-line files below the 8 MiB automatic threshold initially show a virtualized Tree over the
-complete AST, with original source line numbers, individual node folding, Fold
-all/Unfold all, exact whole-node Copy and Go to Raw navigation. Valid JSON has a
-semantic Tree in both Raw and Pretty: the root, named properties and indexed
-array items, including scalar items. Containers show their type and child count;
+complete AST, with individual node folding, Fold all/Unfold all, exact
+whole-node Copy and Show in raw text navigation. Valid JSON has a semantic Tree
+with named properties and indexed array items, including scalar items; its
+synthetic root is hidden and Tree is absent for a childless root. Rows show a key
+and child count or short value, without a source-line column or type words;
 only expanded rows are visible and only the viewport is rendered. The index is
 built iteratively on a worker from the complete immutable parse, within the
 existing 64 MiB file preview limit. Pretty's formatting bounds remain separate.
@@ -99,7 +100,7 @@ If an untouched default unmounts a programmatically focused text Input, focus
 moves to the mounted CodePreview target. Raw/Formatted snapshots are retained;
 switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
-in unguarded files update the per-type map; Go to error, Go to Raw node navigation
+in unguarded files update the per-type map; Go to error, Show in raw text node navigation
 and background completion never write memory. The map covers json, json-array,
 yaml, toml and xml;
 csv/tsv entries are reserved for the table step. Legacy `json_raw` migrates to

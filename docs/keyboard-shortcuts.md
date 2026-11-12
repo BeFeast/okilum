@@ -118,3 +118,7 @@ or enter a child, Left to collapse or select its parent, and Enter to show the
 selected node in Raw. Copy node uses Ctrl+Shift+C on Linux, Windows **and Mac**;
 Copy as Markdown keeps its existing note contexts. Row menus/tooltips resolve
 these commands from the active keymap.
+
+The Mac Copy node binding intentionally follows parent manager default 17
+(Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The
+platform acceptance uses this recorded default and the live keymap.

@@ -86,7 +86,9 @@ impl CodePreview {
             return Availability::Disabled("Not available: the file is not valid JSON".into());
         }
         if view == View::Tree {
-            return if !raw.structure.is_empty() {
+            return if !raw.structure.is_empty()
+                && (!raw.json_tree || raw.children(0).next().is_some())
+            {
                 Availability::Available
             } else {
                 Availability::Absent
@@ -264,7 +266,6 @@ impl CodePreview {
             if changed {
                 self.document_revision += 1;
                 self.show_page(0, window, cx);
-                self.search(window, cx);
             }
         }
         self.search(window, cx);

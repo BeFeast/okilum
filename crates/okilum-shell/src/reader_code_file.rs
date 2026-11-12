@@ -8,6 +8,8 @@ use std::time::Instant;
 pub(crate) mod document;
 mod find;
 #[cfg(test)]
+mod find_review_tests;
+#[cfg(test)]
 mod find_tests;
 mod loading;
 #[cfg(test)]
@@ -25,7 +27,7 @@ mod view;
 mod view_tests;
 use document::Document;
 use view::copy_text_node;
-pub(crate) use view::{bind_keys, Availability, View};
+pub(crate) use view::{Availability, View, bind_keys};
 
 /// Bounded preview loading; UI editing has its own smaller admission cap.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -166,6 +168,11 @@ pub(crate) struct CodePreview {
     search_revision: u64,
     search_key: Option<(u64, String, bool)>,
     searching: bool,
+    search_error: Option<SharedString>,
+    search_task: Option<Task<()>>,
+    search_cancel: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    search_scans: Arc<std::sync::atomic::AtomicUsize>,
     focus: FocusHandle,
     _find_subscription: Subscription,
 }
@@ -442,6 +449,11 @@ impl CodePreview {
             search_revision: 0,
             search_key: None,
             searching: false,
+            search_error: None,
+            search_task: None,
+            search_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            search_scans: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             focus: cx.focus_handle(),
             _find_subscription: find_subscription,
         }

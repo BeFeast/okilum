@@ -459,7 +459,7 @@ fn code2810_header_typing_renders_zero_slots_and_notifies_zero_panels(cx: &mut T
 }
 
 #[gpui::test]
-fn code2810_editor_find_debounces_mutations_and_rejects_stale_results(cx: &mut TestAppContext) {
+fn code2810_editor_find_debounces_mutations_and_refreshes_source(cx: &mut TestAppContext) {
     let (code, v, _temp) = fixture(cx, "code.rs", "needle");
     let input = code.read_with(v, |s, _| s.input().unwrap());
     let adapter = code.read_with(v, |s, _| s.editor_find.clone().unwrap());
@@ -501,7 +501,7 @@ fn code2810_editor_find_debounces_mutations_and_rejects_stale_results(cx: &mut T
     assert_eq!(
         adapter.read_with(v, |s, cx| s.count(cx).1),
         0,
-        "late results for replaced text cannot win"
+        "a completed refresh reflects the replacement source"
     );
     input.read_with(v, |s, _| assert_eq!(s.value().as_ref(), "different text"));
 }
@@ -707,14 +707,25 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
         let requests = requests.borrow();
         assert_eq!(
             requests.len(),
-            10 * phases,
-            "all numeric glyph phases prepared before scroll"
+            structure::digit_glyphs::LABEL_GLYPHS.len()
+                * phases
+                * requests
+                    .iter()
+                    .map(|r| r.4)
+                    .fold(Vec::<Hsla>::new(), |mut colors, color| {
+                        if !colors.contains(&color) {
+                            colors.push(color);
+                        }
+                        colors
+                    })
+                    .len(),
+            "all printable label phases and colours prepared before scroll"
         );
         let glyphs: std::collections::HashSet<_> = requests.iter().map(|r| r.0).collect();
         assert_eq!(
             glyphs.len(),
-            10,
-            "positive control: all ten source digits are prepared (TestPlatform aliases glyph IDs)"
+            structure::digit_glyphs::LABEL_GLYPHS.len(),
+            "positive control: all source glyphs are prepared (TestPlatform aliases glyph IDs)"
         );
         for glyph in glyphs {
             let variants: std::collections::HashSet<_> = requests
@@ -725,10 +736,36 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
             assert_eq!(
                 variants.len(),
                 phases,
-                "each digit has every subpixel phase"
+                "each printable label glyph has every subpixel phase"
             );
         }
         requests.len()
+    });
+    v.update(|_, cx| {
+        let faint = brand::reader_palette(cx).text_faint;
+        let number = cx
+            .theme()
+            .highlight_theme
+            .style
+            .syntax
+            .style("number")
+            .and_then(|style| style.color)
+            .unwrap();
+        REQUESTS.with(|requests| {
+            for color in [faint, number] {
+                for glyph in structure::digit_glyphs::LABEL_GLYPHS.chars() {
+                    assert_eq!(
+                        requests
+                            .borrow()
+                            .iter()
+                            .filter(|r| r.0 == glyph && r.4 == color)
+                            .count(),
+                        phases,
+                        "all actual Tree colours include every glyph phase"
+                    );
+                }
+            }
+        });
     });
     let label = v.debug_bounds("data-node-label-2").unwrap();
     let row = v.debug_bounds("data-structure-row-2").unwrap();

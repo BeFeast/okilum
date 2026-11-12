@@ -13,7 +13,12 @@ def fixture():
     doc = {
         'components': {'schemas': {f'Type{i:04}': {'type': 'object', 'description': 'Public fixture ' + 'x' * 2100} for i in range(1214)},
                        'securitySchemes': {'bearerAuth': {'type': 'http', 'scheme': 'bearer'}}},
-        'paths': {f'/v1/path-{i:04}': {'get': {'description': 'Public route ' + 'x' * 1800, 'responses': {'200': {'description': 'OK'}}}} for i in range(414)},
+        'paths': {f'/v1/{chr(65 + i % 26)}.{chr(97 + (i * 7) % 26)}-{i:04}': (
+            {f'field{n}': n for n in range(1214)} if i == 0 else
+            -(i + 0.125) if i % 3 == 0 else
+            'Public value ' + 'x' * 96 if i % 3 == 1 else
+            {'description': 'Public route ' + 'x' * 1800, 'responses': {'200': {'description': 'OK'}}}
+        ) for i in range(414)},
         'security': [{'bearerAuth': []}], '_padding': ''}
     text = json.dumps(doc, separators=(',', ':'))
     doc['_padding'] = 'x' * (3_500_000 - len(text))

@@ -197,7 +197,10 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     assert_eq!(target.read_with(visual, |target, cx| target.count(cx).0), 1);
-    assert!(input.read_with(visual, |input, _| input.folded_ranges().len()) < 2);
+    assert_eq!(
+        input.read_with(visual, |input, _| input.folded_ranges().len()),
+        1
+    );
     target.update(visual, |target, cx| target.step(-1, cx));
     visual.run_until_parked();
     visual.executor().advance_clock(Duration::from_millis(70));
@@ -212,6 +215,12 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         target.read_with(visual, |target, cx| target.count(cx).0),
         2,
         "previous wraps from zero to the last of three matches"
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        input.read_with(visual, |input, _| input.folded_ranges().len()),
+        0,
+        "the wrapped step must unfold the second region"
     );
     target.update(visual, |target, cx| target.set_case_sensitive(true, cx));
     visual.run_until_parked();
@@ -293,9 +302,11 @@ fn archive_header_find_expands_left_without_moving_other_controls_or_content(
     visual.run_until_parked();
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert!(target
-        .input
-        .read_with(visual, |input, _| input.value().is_empty()));
+    assert!(
+        target
+            .input
+            .read_with(visual, |input, _| input.value().is_empty())
+    );
     visual.update(|window, cx| assert!(!target.input.read(cx).focus_handle(cx).is_focused(window)));
 }
 
@@ -512,7 +523,7 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
 
 #[gpui::test]
 fn drawing_details_remains_actionable_from_overflow(cx: &mut TestAppContext) {
-    use gpui_component::{menu::PopupMenuItem, WindowExt as _};
+    use gpui_component::{WindowExt as _, menu::PopupMenuItem};
     cx.executor().allow_parking();
     let (reader, visual, _temp) = reader_viewer_chrome::tests::fixture(cx, "drawing.excalidraw");
     let started = std::time::Instant::now();
