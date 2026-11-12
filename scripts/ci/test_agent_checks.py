@@ -94,19 +94,24 @@ class VerdictTests(unittest.TestCase):
                 self.assertCountEqual(seen, names)
 
     def test_shared_census_preserves_workspace_selection_and_exclusions(self):
-        names = [f'case::{i}' for i in range(80)] + ['case::0', 'case::0::nested']
-        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
-            name + ': test\n' for name in names), stderr='')
+        ordinary = [f'case::{i}' for i in range(80)] + ['case::0', 'case::0::nested']
+        names = ordinary + ['tests::appimage']
+        inventory = subprocess.CompletedProcess([], 0, stdout=(
+            'Running unittests src/lib.rs (target/debug/deps/okilum_core-abcdef)\n'
+            + ''.join(name + ': test\n' for name in ordinary)
+            + 'Running unittests src/lib.rs (target/debug/deps/okilum_appimage-fedcba)\n'
+              'tests::appimage: test\n'), stderr='')
         for failed in (None, 'ordinary-2'):
             seen = []
-            barrier = threading.Barrier(4)
+            barrier = threading.Barrier(5)
             lock = threading.Lock()
 
             def execute(name, arguments, expected, *, command, limit):
                 self.assertEqual(limit, 3600)
                 self.assertEqual(command, ['cargo', 'test', '--workspace', '--locked',
                                            '--no-fail-fast', '--'])
-                self.assertIn('--test-threads=2', arguments)
+                self.assertIn('--test-threads=1' if name == 'appimage'
+                              else '--test-threads=2', arguments)
                 self.assertIn('--exact', arguments)
                 self.assertEqual(arguments[-4:], ['--skip', 'platform::', '--skip', 'reader_log'])
                 selected = [item for item in names if item in arguments]
@@ -125,6 +130,15 @@ class VerdictTests(unittest.TestCase):
                     'cargo', 'test', '--workspace', '--locked', '--no-fail-fast', '--',
                     '--list', '--skip', 'platform::', '--skip', 'reader_log'])
             self.assertCountEqual(seen, names)
+
+    def test_shared_census_refuses_unfired_appimage_serial_partition(self):
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            f'case::{i}: test\n' for i in range(80)), stderr='')
+        with patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                patch.object(workspace, 'run') as execute:
+            with self.assertRaisesRegex(AssertionError, 'AppImage serial inventory must fire'):
+                workspace.main(shared=True)
+        execute.assert_not_called()
 
     def test_canonical_compile_jobs_do_not_match_light_or_interactive_runners(self):
         # The shared ubuntu-latest label spans incompatible resource classes.
@@ -145,6 +159,55 @@ class VerdictTests(unittest.TestCase):
                     eligible = [pool for pool, available in pools.items()
                                 if required <= available]
                     self.assertEqual(eligible, ['heavy'])
+
+    def test_appimage_fork_cases_are_serial_without_losing_duplicate_names_or_failures(self):
+        ordinary = [f'ordinary::case{i}' for i in range(80)] + ['tests::lock::nested']
+        serial = ['tests::lock', 'tests::restart', 'tests::lock']
+        for shared in (False, True):
+            resources = [] if shared else ['reader_log::case', 'platform::reveal::tests::case']
+            names = ordinary + serial + resources
+            inventory = subprocess.CompletedProcess([], 0, stdout=(
+                'Running unittests src/lib.rs (target/debug/deps/okilum_appimage-abcdef)\n'
+                'tests::lock: test\ntests::restart: test\n'
+                'Running unittests src/lib.rs (target/debug/deps/okilum_core-fedcba)\n'
+                + ''.join(name + ': test\n' for name in ordinary + ['tests::lock'] + resources)), stderr='')
+            for failed in (None, 'appimage', 'ordinary-1'):
+                with self.subTest(shared=shared, failed=failed):
+                    barrier = threading.Barrier(5 if shared else 6)
+                    seen, completed = [], set()
+                    lock = threading.Lock()
+
+                    def execute(name, arguments, expected, **options):
+                        if name.startswith('ordinary-') or name == 'appimage':
+                            self.assertIn('--exact', arguments)
+                            self.assertIn('--test-threads=1' if name == 'appimage'
+                                          else '--test-threads=2', arguments)
+                            selected = [item for item in names if item in arguments]
+                            if name == 'appimage':
+                                self.assertCountEqual(selected, serial)
+                            else:
+                                self.assertFalse(set(selected) & set(serial))
+                        else:
+                            selected = [item for item in names if arguments[0] in item]
+                        self.assertEqual(len(selected), expected)
+                        if name != 'reveal':
+                            barrier.wait(timeout=3)
+                        else:
+                            self.assertEqual(completed,
+                                             {f'ordinary-{i}' for i in range(4)} | {'appimage', 'logs'})
+                        with lock:
+                            seen.extend(selected)
+                            completed.add(name)
+                        return name != failed
+
+                    with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                            patch.object(workspace.subprocess, 'run', return_value=inventory) as census, \
+                            patch.object(workspace, 'run', side_effect=execute), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(workspace.main(shared=shared), int(failed is not None))
+                        self.assertEqual(census.call_args.kwargs['stderr'], subprocess.STDOUT)
+                        self.assertEqual(census.call_args.kwargs['stdout'], subprocess.PIPE)
+                    self.assertCountEqual(seen, names)
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
@@ -268,6 +331,13 @@ class VerdictTests(unittest.TestCase):
 
 
 class HelperFlowTests(unittest.TestCase):
+    def setUp(self):
+        # These synthetic inventories exercise the two-shard hosted policy;
+        # native heavy discovery inherits four shards from the real workflow.
+        ambient = patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='2')
+        ambient.start()
+        self.addCleanup(ambient.stop)
+
     def test_discovery_rejects_another_source_workflow_branch_or_event(self):
         good = dict(id=7, head_sha=SHA, head_branch="agent-checks/topic", event="push",
                     path=".github/workflows/agent-checks.yml")

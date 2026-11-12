@@ -63,26 +63,44 @@ def main(*, shared=False):
     command = (["cargo", "test", "--workspace", "--locked", "--no-fail-fast", "--"]
                if shared else COMMAND)
     skips = ["--skip", "platform::", "--skip", LOG] if shared else []
-    inventory = subprocess.run(command + ["--list", *skips], capture_output=True, text=True)
+    # Keep Cargo's target headers and libtest's names in one ordered stream.
+    # AppImage fixtures fork/exec while holding installation locks, so a
+    # sibling test in the same process can inherit those FDs before exec.
+    inventory = subprocess.run(command + ["--list", *skips], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
     if inventory.returncode:
         print(inventory.stdout, end="")
-        print(inventory.stderr, end="", file=sys.stderr)
         return 1
-    names = [line[:-6] for raw in inventory.stdout.splitlines()
-             if (line := ANSI.sub("", raw).strip()).endswith(": test")]
+    names = []
+    serial_names = set()
+    appimage = False
+    for raw in inventory.stdout.splitlines():
+        line = ANSI.sub("", raw).strip()
+        if line.startswith(("Running unittests ", "Running tests/", "Doc-tests ")):
+            appimage = bool(re.search(r'/okilum_appimage-[0-9a-f]+\)', line))
+        elif line.endswith(": test"):
+            name = line[:-6]
+            names.append(name)
+            if appimage:
+                serial_names.add(name)
     assert names, "workspace test inventory must not be empty"
     assert not any(LOG in name and REVEAL in name for name in names), "resource groups must be disjoint"
     logs = sum(LOG in name for name in names)
     reveals = sum(REVEAL in name for name in names)
-    ordinary = len(names) - logs - reveals
+    # A duplicate full name in another target belongs to this same exact
+    # partition too; every occurrence still runs once with the same packages.
+    serial = sum(name in serial_names for name in names)
+    assert not any(LOG in name or REVEAL in name for name in serial_names)
+    ordinary = len(names) - logs - reveals - serial
     assert ordinary > 0, "ordinary inventory must fire"
     if shared:
         assert logs == reveals == 0, "shared excludes platform and separately runs Log"
+        assert serial_names, "shared AppImage serial inventory must fire"
     else:
         assert logs > 0 and reveals > 0, "every measured group must fire"
     shards = [[] for _ in range(shard_count)]
     for name in names:
-        if LOG not in name and REVEAL not in name:
+        if LOG not in name and REVEAL not in name and name not in serial_names:
             # Identical names in different targets must stay in one shard;
             # libtest exact matching runs every occurrence there, once only.
             shards[hashlib.sha256(name.encode()).digest()[0] % shard_count].append(name)
@@ -91,12 +109,15 @@ def main(*, shared=False):
         (f"ordinary-{index}", ["--nocapture", "--test-threads=2", "--exact", *sorted(set(shard)), *skips], len(shard))
         for index, shard in enumerate(shards)
     ]
+    if serial_names:
+        parts.append(("appimage", ["--nocapture", "--test-threads=1", "--exact",
+                                  *sorted(serial_names), *skips], serial))
     if not shared:
         parts += [
             ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
             ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
         ]
-    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals}",
+    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial}",
           flush=True)
     # Separate processes retain separate Log pools. Hosted keeps four ordinary
     # threads; the existing heavy resource class can run eight. Overlap serial
