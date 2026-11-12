@@ -20,6 +20,19 @@ spec.loader.exec_module(probe)
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux proc/cgroup probe')
 class ColdWriterControls(unittest.TestCase):
+    def test_large_process_sample_survives_job_log_line_limits(self):
+        sample = {'processes': [{'command': ['rustc', 'x' * 90000]}]}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            probe.emit('COLD_WRITER_SAMPLE', sample)
+        lines = output.getvalue().splitlines()
+        self.assertTrue(all(len(line.encode()) < 16000 for line in lines))
+        chunks = [json.loads(line.split(' ', 1)[1]) for line in lines]
+        self.assertTrue(all(line.startswith('COLD_WRITER_SAMPLE_CHUNK ') for line in lines))
+        self.assertEqual([chunk['index'] for chunk in chunks], list(range(len(chunks))))
+        self.assertTrue(all(chunk['count'] == len(chunks) for chunk in chunks))
+        self.assertEqual(json.loads(''.join(chunk['data'] for chunk in chunks)), sample)
+
     def test_samples_actual_owned_child_and_preserves_failure(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

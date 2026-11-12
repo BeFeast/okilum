@@ -122,6 +122,13 @@ measured concurrency count. This is a diagnostic, not full Linux acceptance,
 and neither a warmed hosted pass nor a successful probe establishes canonical
 main GREEN. The original baseline source can be measured while tools contain
 a candidate scope correction; receipts distinguish those two commits.
+An optional exact `candidate` SHA runs after the baseline on the same job's
+runner, with a separate checkout and cold target directory. Each source runs
+its own unchanged prelude and compile-inclusive 900-second admission. Baseline
+failure does not prevent observing the candidate, but the final diagnostic
+retains both outcomes and fails if either measurement failed. The job's
+60-minute cap stays unchanged. Large process samples use ordered JSON chunks
+to survive the runner's log-line limit without discarding compiler arguments.
 
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new

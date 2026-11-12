@@ -6,6 +6,10 @@ on:
         description: 'Exact baseline source SHA; never an admission or release verdict'
         required: true
         type: string
+      candidate:
+        description: 'Optional exact candidate SHA for a second cold measurement on the SAME runner'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -27,7 +31,10 @@ jobs:
       - name: Validate source
         env:
           SOURCE: ${{ inputs.source }}
-        run: '[[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ -z "$CANDIDATE" || "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
@@ -38,6 +45,12 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.source }}
           path: source
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        if: inputs.candidate != ''
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate }}
+          path: candidate
       - name: Install canonical system libraries
         run: |
           sudo apt-get update -qq
@@ -52,16 +65,23 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/cargo" --version
       - name: Prepare exact source and Python dependencies
-        working-directory: source
         env:
           SOURCE: ${{ inputs.source }}
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE"
-          test ! -d target
-          scripts/vendor-setup.sh
-          scripts/vendor-setup.sh --verify
-          bash scripts/ci/setup-python-tests.sh
+          prepare() (
+            cd "$1"
+            test "$(git rev-parse HEAD)" = "$2"
+            test ! -d target
+            scripts/vendor-setup.sh
+            scripts/vendor-setup.sh --verify
+            bash scripts/ci/setup-python-tests.sh
+          )
+          prepare source "$SOURCE"
+          if [[ -n "$CANDIDATE" ]]; then prepare candidate "$CANDIDATE"; fi
       - name: Observe original prelude and cold writer within 900 seconds
+        id: baseline
+        continue-on-error: true
         working-directory: source
         env:
           SOURCE: ${{ inputs.source }}
@@ -71,3 +91,24 @@ jobs:
           # any host cache/server or adding a compiled-target restore.
           unset RUSTC_WRAPPER
           python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
+      - name: Observe candidate cold writer on the same runner within 900 seconds
+        id: candidate
+        if: inputs.candidate != ''
+        working-directory: candidate
+        env:
+          SOURCE: ${{ inputs.candidate }}
+        run: |
+          export TMPDIR="${RUNNER_TEMP:?}"
+          unset RUSTC_WRAPPER
+          test ! -d target
+          python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
+      - name: Preserve both measurement outcomes
+        if: always()
+        env:
+          BASELINE: ${{ steps.baseline.outcome }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+          CANDIDATE_SOURCE: ${{ inputs.candidate }}
+        run: |
+          printf 'COLD_WRITER_PAIR baseline=%s candidate=%s\n' "$BASELINE" "$CANDIDATE"
+          test "$BASELINE" = success
+          if [[ -n "$CANDIDATE_SOURCE" ]]; then test "$CANDIDATE" = success; fi

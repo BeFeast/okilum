@@ -62,7 +62,16 @@ def snapshot():
 
 
 def emit(kind, value):
-    print(kind + ' ' + json.dumps(value, sort_keys=True), flush=True)
+    payload = json.dumps(value, sort_keys=True)
+    # Concurrent rustc argv can exceed the runner's 64 KiB log-line limit.
+    # Preserve the full sample in ordered, independently valid JSON chunks.
+    if len(payload) > 12000:
+        chunks = [payload[start:start + 4096] for start in range(0, len(payload), 4096)]
+        for index, data in enumerate(chunks):
+            print(kind + '_CHUNK ' + json.dumps(dict(index=index, count=len(chunks), data=data)),
+                  flush=True)
+    else:
+        print(kind + ' ' + payload, flush=True)
 
 
 def observe(command, env, interval=5):
