@@ -165,6 +165,7 @@ fn code2810_every_read_format_uses_header_field_and_unfolds_first_hit(cx: &mut T
     for (name, text) in [
         ("code.rs", "fn first() {\n    target();\n}\n"),
         ("data.yaml", "root:\n  child: target\n"),
+        ("data.toml", "[root]\nchild = \"target\"\n"),
         ("data.xml", "<root>\n  <child>target</child>\n</root>\n"),
         ("plain.txt", "one target two target three TARGET"),
         ("data.json", "{\"root\":{\"value\":\"target\"}}"),

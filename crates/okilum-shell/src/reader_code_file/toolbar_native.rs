@@ -7,6 +7,12 @@ pub(super) fn entry() -> bool {
         return false;
     };
     assert!(!build_info::gpui_test_support());
+    let smoke = std::env::var_os("OKILUM_CODE_TOOLBAR_NATIVE_SMOKE").is_some();
+    assert_eq!(
+        smoke,
+        cfg!(debug_assertions),
+        "native stack smoke requires debug; CPU budgets require production release"
+    );
     let directory = PathBuf::from(directory);
     platform::text_platform::application().with_assets(Assets).run(move |cx| {
         reader_features::install_defaults(cx); gpui_component::init(cx);
@@ -47,7 +53,7 @@ pub(super) fn entry() -> bool {
                 w.draw(cx).clear(cx);
                 start.elapsed().as_secs_f64()*1000.
             }).unwrap();
-            assert!(open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
+            assert!(smoke || open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
             let mut frames=Vec::new();
             for marked in [false,true] {
                 window.update(cx,|_,w,cx|{
@@ -91,10 +97,10 @@ pub(super) fn entry() -> bool {
                     }).unwrap();
                     frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2}));
                     let ms=ms.0;
-                    assert!(ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
+                    assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
             }
-            let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT")});
+            let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT"),"measurement":if smoke {"debug-smoke"} else {"production-release"}});
             std::fs::write(directory.join("toolbar-receipt.json"),receipt.to_string()).unwrap();
             diagnostic_println!("CODE2810_NATIVE_READER_PASS {receipt}");
             cx.update(|cx|cx.quit());
