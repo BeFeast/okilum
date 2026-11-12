@@ -17,7 +17,7 @@ spec.loader.exec_module(probe)
 
 def receipt(mode='production-release'):
     return {'real_native_platform': True, 'mounted': 'Reader', 'bytes': 3_500_000,
-            'paths_keys': 414, 'measurement': mode, 'open_ms': 5,
+            'paths_keys': 414, 'measurement': mode, 'open_ms': 5, 'source_sha': 'a' * 40,
             'frames': [{'marks': marks, 'cpu_draw_ms': 4, 'rows_built': 24, 'scroll_y': -32 * (sample + 1)}
                        for marks in [False, True] for sample in range(48)]}
 
@@ -30,14 +30,14 @@ class NativeToolbarReceiptTests(unittest.TestCase):
             (root / 'toolbar-receipt.json').write_text(json.dumps(result))
             return SimpleNamespace(returncode=0)
         with tempfile.TemporaryDirectory(prefix='toolbar-receipt-') as parent:
-            with patch.dict(os.environ, {'RUNNER_TEMP': parent, 'OKILUM_CODE_TOOLBAR_NATIVE_SMOKE': 'inherited'}), \
+            with patch.dict(os.environ, {'RUNNER_TEMP': parent, 'OKILUM_CODE_TOOLBAR_NATIVE_SMOKE': 'inherited', 'OKILUM_SOURCE_COMMIT': 'a' * 40}), \
                     patch.object(sys, 'argv', ['probe', str(Path(parent) / 'app'), *(['--smoke'] if smoke else [])]), \
                     patch.object(probe.subprocess, 'run', side_effect=app), patch('builtins.print'):
                 probe.main()
 
     def test_release_enforces_open_frame_and_actual_work_budgets(self):
         self.run_probe(receipt())
-        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile']:
+        for mutation in ['open', 'frame', 'rows', 'scroll', 'profile', 'source']:
             with self.subTest(mutation=mutation):
                 result = copy.deepcopy(receipt())
                 if mutation == 'open':
@@ -48,8 +48,10 @@ class NativeToolbarReceiptTests(unittest.TestCase):
                     result['frames'][0]['rows_built'] = 0
                 elif mutation == 'scroll':
                     result['frames'][1]['scroll_y'] = result['frames'][0]['scroll_y']
-                else:
+                elif mutation == 'profile':
                     result['measurement'] = 'debug-smoke'
+                else:
+                    result['source_sha'] = 'b' * 40
                 with self.assertRaises(AssertionError):
                     self.run_probe(result)
 

@@ -435,8 +435,8 @@ impl CodePreview {
                 h_flex()
                     .w(px(60.))
                     .flex_none()
-                    .opacity(if selected { 1. } else { 0. })
-                    .group_hover(group, |s| s.opacity(1.))
+                    .when(!selected, |s| s.invisible())
+                    .group_hover(group, |s| s.visible())
                     .child(
                         reader_icon_button(
                             ("data-node-copy", index),

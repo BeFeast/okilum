@@ -2,6 +2,39 @@
 use super::*;
 use std::time::Duration;
 
+// Diagnostic only: retain the hard wall-clock frame gate, but distinguish
+// actual UI work from scheduler/OS stalls in native Windows failures.
+#[cfg(target_os = "windows")]
+fn thread_cpu_ms() -> Option<f64> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentThread, GetThreadTimes},
+    };
+    let empty = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (empty, empty, empty, empty);
+    // SAFETY: the current-thread pseudo handle is valid and all outputs point
+    // to live FILETIME storage for the duration of this synchronous call.
+    let ok = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    assert_ne!(ok, 0, "GetThreadTimes failed on the native UI thread");
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    Some((ticks(kernel) + ticks(user)) as f64 / 10_000.)
+}
+#[cfg(not(target_os = "windows"))]
+fn thread_cpu_ms() -> Option<f64> {
+    None
+}
+
 pub(super) fn entry() -> bool {
     let Some(directory) = std::env::var_os("OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE") else {
         return false;
@@ -53,6 +86,7 @@ pub(super) fn entry() -> bool {
                 w.draw(cx).clear(cx);
                 start.elapsed().as_secs_f64()*1000.
             }).unwrap();
+            diagnostic_println!("CODE2810_OPEN wall_ms={open_ms}");
             assert!(smoke || open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
             let mut frames=Vec::new();
             for marked in [false,true] {
@@ -81,21 +115,25 @@ pub(super) fn entry() -> bool {
                     let ms=window.update(cx,|_,w,cx|{
                         let rows_before=structure::native_row_builds();
                         let offset_before=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
+                        let cpu_before=thread_cpu_ms();
                         let frame=Instant::now();
                         code.update(cx,|p,cx|{
                             let at=p.structure.visible.binary_search(&paths).unwrap();
                             p.structure.scroll.scroll_to_item_strict(at+1+(sample*7)%390,ScrollStrategy::Top);
                             cx.notify();
                         });
+                        let update_ms=frame.elapsed().as_secs_f64()*1000.;
                         w.draw(cx).clear(cx);
                         let ms=frame.elapsed().as_secs_f64()*1000.;
                         let rows=structure::native_row_builds()-rows_before;
                         let offset=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
                         assert!(rows>0,"scroll sample must build real visible Tree rows");
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
-                        (ms,rows,offset.as_f32())
+                        let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
+                        (ms,rows,offset.as_f32(),update_ms,cpu_ms)
                     }).unwrap();
-                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2}));
+                    frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4}));
+                    diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?}",ms.0,ms.3,ms.4);
                     let ms=ms.0;
                     assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
