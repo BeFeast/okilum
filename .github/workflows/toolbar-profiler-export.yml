@@ -1,0 +1,33 @@
+name: toolbar-profiler-export
+on:
+  push:
+    branches: ['diagnostic-toolbar-profiler/**']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  export:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: exact-macOS
+          run-id: 43264140890
+          github-token: ${{ github.token }}
+          path: inputs
+      - name: Export existing trace tables without rerunning the app
+        run: |
+          mkdir -p diagnostics
+          xcrun xctrace export --input inputs/profiler/0-toolbar/reader.trace --toc --output diagnostics/toc.xml
+          python3 scripts/ci/toolbar-review/export-profiler.py inputs/profiler/0-toolbar/reader.trace diagnostics
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profiler-export
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7
