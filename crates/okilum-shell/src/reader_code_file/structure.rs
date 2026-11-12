@@ -342,7 +342,7 @@ impl CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         NATIVE_ROW_BUILDS.with(|count| count.set(count.get() + 1));
         #[cfg(feature = "data-view-native-harness")]
-        let _work = toolbar_native::trace::Work::start(10);
+        let _work = toolbar_native::trace::Work::start(13);
         let doc = self.document.as_ref().unwrap();
         let index = self.structure.visible[visible];
         let row = &doc.structure[index];
@@ -421,8 +421,8 @@ impl CodePreview {
                         cx.notify();
                     })),
             )
-            .child(
-                div()
+            .child({
+                let label = div()
                     .id(("data-node-label", index))
                     .debug_selector(move || format!("data-node-label-{index}"))
                     .when(self.match_rows.contains_key(&index), |d| {
@@ -434,8 +434,12 @@ impl CodePreview {
                     .text_size(text_size(cx))
                     .font_weight(FontWeight::MEDIUM)
                     .font_family(reader_fonts::code(cx))
-                    .child(StyledText::new(label).with_highlights(highlights)),
-            )
+                    .child(StyledText::new(label).with_highlights(highlights))
+                    .into_any_element();
+                #[cfg(feature = "data-view-native-harness")]
+                let label = toolbar_native::trace::Trace::new(label, 3).into_any_element();
+                label
+            })
             .child(
                 h_flex()
                     .w(px(60.))

@@ -652,7 +652,7 @@ impl Render for CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
         #[cfg(feature = "data-view-native-harness")]
-        let _work = toolbar_native::trace::Work::start(9);
+        let _work = toolbar_native::trace::Work::start(12);
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.begin");
         let header = self.own_header.then(|| {

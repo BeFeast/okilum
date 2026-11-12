@@ -2,10 +2,10 @@
 use super::*;
 
 thread_local! {
-    static WORK: std::cell::RefCell<[(u64, u64); 11]> = const { std::cell::RefCell::new([(0, 0); 11]) };
+    static WORK: std::cell::RefCell<[(u64, u64); 14]> = const { std::cell::RefCell::new([(0, 0); 14]) };
 }
 pub(super) fn reset() {
-    WORK.with(|work| *work.borrow_mut() = [(0, 0); 11]);
+    WORK.with(|work| *work.borrow_mut() = [(0, 0); 14]);
 }
 pub(super) fn report() -> serde_json::Value {
     let names = [
@@ -18,6 +18,9 @@ pub(super) fn report() -> serde_json::Value {
         "row_layout",
         "row_prepaint",
         "row_paint",
+        "label_layout",
+        "label_prepaint",
+        "label_paint",
         "code_render",
         "row_build",
     ];
@@ -43,11 +46,21 @@ impl Work {
 }
 impl Drop for Work {
     fn drop(&mut self) {
+        let elapsed = self.1.elapsed();
         WORK.with(|work| {
             let mut work = work.borrow_mut();
             work[self.0].0 += 1;
-            work[self.0].1 += self.1.elapsed().as_nanos() as u64;
+            work[self.0].1 += elapsed.as_nanos() as u64;
         });
+        if self.0 == 11
+            && elapsed.as_millis() >= 5
+            && std::env::var_os("OKILUM_CODE_TOOLBAR_PHASE_TRACE").is_some()
+        {
+            diagnostic_println!(
+                "CODE2810_NATIVE_LABEL_PAINT ms={}",
+                elapsed.as_secs_f64() * 1000.
+            );
+        }
     }
 }
 pub(in super::super) struct Trace(AnyElement, usize);
