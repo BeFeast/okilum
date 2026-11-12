@@ -179,6 +179,25 @@ durable records are untouched. Serial shared Log uses its own group account.
 Shards retain the original outer 1320-second Linux / 60-minute shared caps;
 nested supervision never extends those deadlines.
 
+The shared census also discovers AppImage unit-case names from Cargo's ordered
+target headers and runs that exact partition in a separate serial process.
+Every invocation still selects the complete workspace. Identical full names
+in other targets stay in the same partition, so no occurrence is omitted or
+run twice; prefix-related names remain distinct. This preserves the standalone
+AppImage fixture policy: another concurrent test's fork must not inherit an
+installation-lock FD before exec. Canonical run26452 reproduced that lock
+failure while all5518 shared cases were accounted for. Serial execution does
+not weaken lock, cancellation, cleanup or retry assertions.
+
+Synthetic two-shard controls explicitly select their own fixture policy instead
+of inheriting the heavy workflow's four-shard environment. The four-shard
+controls retain their independent overlap and failure checks. Linux lifecycle
+fixtures resolve coreutils aliases before supplying executables to the actual
+managed-launch NOFOLLOW guard; production still refuses substituted symlinks.
+The same canonical run exposed these two environment-dependent fixture errors,
+while its Mac, Windows and supplementary perf jobs passed. Earlier perf
+NO_EVIDENCE remains a failed observation, not an accepted latency measurement.
+
 This prevents unrelated ephemeral vault fixtures from contending on or scanning
 one accumulating account-wide authority registry. The first heavy runtime
 probe confirmed both corrected warm-reader fixtures, but four-way scheduling
