@@ -19,6 +19,8 @@ jobs:
         env:
           LEGACY_FIXTURE_OUTPUT: ${{ runner.temp }}/legacy-databases
         run: |
+          cargo update --manifest-path inbox/Cargo.toml -p rusqlite --precise 0.37.0
+          cargo tree --locked --manifest-path inbox/Cargo.toml -p rusqlite
           cargo run --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --example legacy_fixture
           sha256sum "$LEGACY_FIXTURE_OUTPUT"/*.db
       - uses: actions/upload-artifact@v4
