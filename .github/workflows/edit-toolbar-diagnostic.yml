@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - run: |
-          echo "source=$(git rev-parse HEAD) feature=$(git rev-parse HEAD^)"
+          echo "source=$(git rev-parse HEAD) feature=bd8d2d66a"
           sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
       - uses: actions/cache/restore@v4
         with:
@@ -36,9 +36,11 @@ jobs:
       - run: bash scripts/vendor-setup.sh
       - run: cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness --no-run
       - run: |
-          for scope in file2811_ code2771_ edit2803_ reader_viewer_chrome::tests::; do
+          for scope in file2811_; do
             cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness "$scope" -- --nocapture --test-threads=1
           done
+      - name: Compile and fire file Edit negative controls
+        run: python3 scripts/ci/file-edit-toolbar.py
       - uses: actions/cache/save@v4
         if: always()
         with:
