@@ -714,7 +714,7 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
         assert_eq!(
             glyphs.len(),
             10,
-            "positive control: ten different shaped digits"
+            "positive control: all ten source digits are prepared (TestPlatform aliases glyph IDs)"
         );
         for glyph in glyphs {
             let variants: std::collections::HashSet<_> = requests
