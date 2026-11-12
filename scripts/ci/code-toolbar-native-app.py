@@ -54,6 +54,7 @@ def main():
             if not smoke:
                 assert max(f['cpu_draw_ms'] for f in frames) <= 16
             assert all(f['rows_built'] > 0 for f in frames)
+            assert all(f.get('present_ms', -1) >= 0 for f in frames)
             assert len({f['scroll_y'] for f in frames}) == 48
         assert hashlib.sha256(path.read_bytes()).hexdigest() == before
         receipt['fixture_sha256'] = before

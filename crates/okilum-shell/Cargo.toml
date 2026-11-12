@@ -21,7 +21,9 @@ appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 updater-ui-harness = []
 # Synthetic native clipboard/Finder/Explorer acceptance; never a release feature.
 embed-native-harness = []
-data-view-native-harness = []
+# Synchronous native measurements must submit each scene like the OS frame
+# loop. This exposes GPUI's public present_if_needed, not its test platform.
+data-view-native-harness = ["gpui/bench-support"]
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
 
