@@ -476,6 +476,10 @@ mod tests {
             assert_eq!(&bytes[offset..offset + 4], &0x02014b50u32.to_le_bytes());
             bytes[offset + 4..offset + 6].copy_from_slice(&((3u16 << 8) | 20).to_le_bytes());
             bytes[offset + 38..offset + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+            assert_eq!(
+                u32::from_le_bytes(bytes[offset + 38..offset + 42].try_into().unwrap()) >> 16,
+                *mode
+            );
             let field_len = |index| {
                 u16::from_le_bytes(
                     bytes[offset + index..offset + index + 2]
@@ -800,12 +804,13 @@ mod tests {
                 &[0o047777, 0o107777],
             ),
         );
-        // Positive fixture control: privileged bits really reached the ZIP metadata.
+        // The raw fixture contains privilege bits (checked by with_unix_modes).
+        // ZIP 9 must mask them in metadata while preserving ordinary permission bits.
         let raw = open(&archive).unwrap();
         for index in 0..2 {
             assert_eq!(
-                raw.by_index_data(index).unwrap().unix_mode().unwrap() & 0o7000,
-                0o7000
+                raw.by_index_data(index).unwrap().unix_mode().unwrap() & 0o7777,
+                0o777
             );
         }
         let out = tempfile::tempdir().unwrap();
