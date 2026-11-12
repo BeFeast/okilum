@@ -274,6 +274,10 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
                 .map(|(n, p)| {
                     let counts = counts.clone();
                     cx.observe(&p.unwrap(), move |_, _, _| {
+                        eprintln!(
+                            "FILE2811_PANEL_NOTIFY panel={n} trace={}",
+                            std::backtrace::Backtrace::force_capture()
+                        );
                         let mut c = counts.get();
                         c[n] += 1;
                         counts.set(c);
