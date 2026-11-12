@@ -1,0 +1,35 @@
+name: deps-cache-benchmark
+on:
+  push:
+    branches: ['deps-resolution/cache-benchmark-*']
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare native Linux dependencies
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh install mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Measure both cache versions on this VM
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/cache-benchmark
+          TMPDIR: ${{ runner.temp }}
+        run: python3 deps-cache-benchmark.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: same-host-cache-benchmark
+          path: ${{ runner.temp }}/cache-benchmark/
+          if-no-files-found: error
