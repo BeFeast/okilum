@@ -1093,8 +1093,11 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
         r.link_notice = None;
         cx.notify();
     });
-    // The positive-control notification leaves through its real animation.
-    tick(visual, 301);
+    frame(visual);
+    // Retire only the unrelated positive-control fixture before the conflict.
+    // The conflict below must keep the notification host empty on its own.
+    visual.update(|w, cx| w.clear_notifications(cx));
+    frame(visual);
     assert!(visual.update(|w, cx| w.notifications(cx).is_empty()));
     input.update_in(visual, |i, w, cx| i.replace_source_range(0..0, " ", w, cx));
     let path = temp.path().join("vault/test1.json");
