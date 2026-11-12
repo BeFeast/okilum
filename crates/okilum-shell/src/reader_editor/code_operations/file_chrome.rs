@@ -467,7 +467,7 @@ impl Reader {
             }
         }
         if Path::new(self.selected_file()).extension().is_none()
-            || crate::reader_code_file::language(self.selected_file()).is_none()
+            || crate::reader_code_file::language(self.selected_file()).is_none_or(|l| l == "text")
         {
             let mut language = ViewerAction::new(
                 "file-edit-language",
@@ -674,6 +674,7 @@ fn language_control(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement
         .unwrap_or_else(|| "text".into());
     let owner = state.reader.clone();
     Button::new("file-language")
+        .w_full()
         .small()
         .outline()
         .h(px(28.))
@@ -837,7 +838,7 @@ fn location(text: &str) -> Option<(usize, usize)> {
 
 /// Translate legacy operation outcomes at the file host, leaving note wording
 /// and every source-operation result/guard unchanged.
-fn status_text(text: &str, language: &str, operation: Option<Action>) -> String {
+fn status_text(text: &str, language: &str, operation: Option<Action>, bytes: usize) -> String {
     if text == "Valid strict JSON" {
         return "Valid JSON.".into();
     }
@@ -860,6 +861,14 @@ fn status_text(text: &str, language: &str, operation: Option<Action>) -> String 
             );
         }
     }
+    if text.starts_with("Validation unavailable above 256 KiB")
+        || text.starts_with("Syntax validation for")
+    {
+        return format!(
+            "Too large to validate. {} KB is over the 256 KB limit.",
+            bytes.div_ceil(1024)
+        );
+    }
     if text.starts_with("Validation unavailable") {
         return format!(
             "Validation is not available for {}. Nothing was checked.",
@@ -874,9 +883,6 @@ fn status_text(text: &str, language: &str, operation: Option<Action>) -> String 
     }
     if text.starts_with("Syntax check exceeded") {
         return "Syntax check stopped: it took too long. Nothing was changed.".into();
-    }
-    if text.starts_with("Syntax validation for") {
-        return format!("Too large to validate. Syntax checks have a 256 KB limit. {text}");
     }
     if text == "Validation not checked for this revision" {
         return "Not validated since your last change.".into();
@@ -937,7 +943,19 @@ fn bottom(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
         cancel.labelled = true;
         status.actions.push(cancel);
     } else if let Some(notice) = &ops.notice {
-        status.text = status_text(notice, &language, ops.last_action).into();
+        status.text = status_text(
+            notice,
+            &language,
+            ops.last_action,
+            state.source.read(cx).text().len(),
+        )
+        .into();
+    } else if let Some((_, _, _, result)) = ops.status.as_ref().filter(|(stamp, _, _, result)| {
+        *stamp == state.source.read(cx).source_stamp()
+            && !result.starts_with("Valid strict JSON")
+            && !result.starts_with("Invalid JSON")
+    }) {
+        status.text = status_text(result, &language, None, state.source.read(cx).text().len()).into();
     } else if state.json {
         match state.current.as_ref().map(|s| &s.verdict) {
             Some(Ok(Ok(()))) => {
@@ -964,7 +982,8 @@ fn bottom(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
             .filter(|(stamp, _, _, _)| *stamp == state.source.read(cx).source_stamp())
             .map(|(_, _, _, s)| s.as_str())
             .unwrap_or("Validation not checked for this revision");
-        status.text = status_text(current, &language, None).into();
+        status.text =
+            status_text(current, &language, None, state.source.read(cx).text().len()).into();
         if current == "Validation not checked for this revision" {
             let owner = state.reader.clone();
             let mut validate = ViewerAction::new(
