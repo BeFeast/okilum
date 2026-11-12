@@ -1639,7 +1639,10 @@ fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut Tes
 }
 
 #[gpui::test]
-fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut TestAppContext) {
+async fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     let directory = tempfile::tempdir().unwrap();
     let peer = uuid::Uuid::new_v4();
@@ -1692,7 +1695,10 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
-    visual.run_until_parked();
+    visual
+        .condition(&view, |view, _| !view.busy && view.snapshot.is_some())
+        .await;
+    draw_sync_fixture(visual);
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
     assert!(visual.did_prompt_for_paths());
@@ -1700,10 +1706,16 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
         assert!(options.directories && !options.files && !options.multiple);
         Some(vec![directory.path().join("absent/Notes")])
     });
-    visual.run_until_parked();
+    visual
+        .condition(&view, |view, _| {
+            view.presentation.destinations.contains_key("notes")
+        })
+        .await;
+    draw_sync_fixture(visual);
     let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
     visual.simulate_click(start.center(), Modifiers::default());
-    visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
+    draw_sync_fixture(visual);
     assert_eq!(*calls.lock().unwrap(), vec!["read", "attach"]);
     assert!(visual.debug_bounds("sync-destination-error-0").is_some());
     view.read_with(visual, |view, _| {
@@ -1712,7 +1724,8 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
         assert!(view.awaiting_open.is_none());
     });
     view.update(visual, |view, cx| view.run(Operation::Read, cx));
-    visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
+    draw_sync_fixture(visual);
     assert!(
         visual.debug_bounds("sync-destination-error-0").is_some(),
         "refresh preserves actionable failure"

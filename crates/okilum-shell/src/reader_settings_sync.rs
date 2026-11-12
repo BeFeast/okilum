@@ -186,8 +186,13 @@ impl Global for TestWorker {}
 // First-sync fixtures compile on Windows too; keep this outside Unix-only tests.
 #[cfg(test)]
 fn draw_sync_fixture(visual: &mut gpui::VisualTestContext) {
-    visual.run_until_parked();
-    visual.update(|window, cx| window.draw(cx).clear(cx));
+    // SyncSettings can mount its wizard in Root while rendering. The first
+    // draw publishes that layer; drain its notifications and draw the mounted
+    // layer before consuming its hitboxes. Neither pass advances worker time.
+    for _ in 0..2 {
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
 }
 
 struct Output {

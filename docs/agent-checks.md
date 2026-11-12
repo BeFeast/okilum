@@ -229,6 +229,16 @@ plain `cfg(test)` in the parent module so Windows first-sync tests do not depend
 on the Unix-only test module; the native Windows gate caught that portability
 error before merge. Neither correction has a native acceptance verdict yet.
 
+Run26495 accounted for all5518 shared cases and passed its native/perf bridge
+jobs, but both workspace gates still failed the cached-frame300ms assertion.
+Linux also missed two mounted Sync clicks. The fixture helper now drains/draws
+twice: SyncSettings can mount a Root dialog while rendering, so a single frame
+can describe the previous layer. The destination test waits for actual snapshot
+and destination readiness before drawing; backend/error/consent assertions still
+require real clicks. Cached-frame evidence now records existing native span
+counts/times and individual frame durations, printed only after the unchanged
+ten-frame measurement. Instrumentation is not a performance fix or acceptance.
+
 This prevents unrelated ephemeral vault fixtures from contending on or scanning
 one accumulating account-wide authority registry. The first heavy runtime
 probe confirmed both corrected warm-reader fixtures, but four-way scheduling
