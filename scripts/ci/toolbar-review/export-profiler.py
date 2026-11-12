@@ -12,7 +12,7 @@ for run in root.findall('.//run'):
     for table in run.findall('./data/table'):
         schema=table.attrib['schema']
         item={'run':run.attrib['number'],'schema':schema,'attributes':table.attrib,'exported':False}
-        if re.search(r'thread|sched|time-profile|context-switch|cpu-profile',schema,re.I):
+        if re.search(r'thread|sched|time-profile|context-switch|cpu-profile|cpu-state|core-state|clock',schema,re.I):
             path=out/('table-'+str(len(results))+'.xml')
             xpath='/trace-toc/run[@number="'+run.attrib['number']+'"]/data/table[@schema="'+schema+'"]'
             p=subprocess.run(['xcrun','xctrace','export','--input',str(trace),'--output',str(path),'--xpath',xpath],capture_output=True,text=True)

@@ -1,0 +1,51 @@
+# Exactly one kernel-observer attempt; reuse the compiled source-pinned capsule.
+name: toolbar-system-trace
+on:
+  push:
+    branches: ['diagnostic-toolbar-system-trace/**']
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  system-trace:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: capsule-macOS-toolbar
+          run-id: 43264140890
+          github-token: ${{ github.token }}
+          path: inputs/toolbar
+      - name: One System Trace case without privileges or retries
+        id: capture
+        continue-on-error: true
+        run: |
+          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
+          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/system-trace --mode mac-profiler --profiler-template 'System Trace'
+      - name: Export only after a successful capture
+        if: ${{ steps.capture.outcome == 'success' }}
+        run: |
+          mkdir -p diagnostics/export
+          xcrun xctrace export --input diagnostics/system-trace/0-toolbar/reader.trace --toc --output diagnostics/export/toc.xml
+          python3 scripts/ci/toolbar-review/export-profiler.py diagnostics/system-trace/0-toolbar/reader.trace diagnostics/export
+      - name: Preserve the single-attempt outcome
+        if: always()
+        env:
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+        run: |
+          mkdir -p diagnostics
+          python3 -c 'import json,os;from pathlib import Path;Path("diagnostics/attempt.json").write_text(json.dumps({"attempts":1,"template":"System Trace","capture_outcome":os.environ["CAPTURE_OUTCOME"],"build_run":43264140890,"normal_rate_pooling":False,"privilege_changes":False,"retry":False},indent=2))'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: system-trace-single-attempt
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7
