@@ -214,7 +214,7 @@ impl CodePreview {
     }
     pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {
         let visible = &self.structure.visible;
-        let fractions: Vec<_> = self
+        let mut fractions: Vec<_> = self
             .scrollbar_marks
             .iter()
             .map(|row| {
@@ -222,6 +222,9 @@ impl CodePreview {
                 at as f32 / visible.len().max(1) as f32
             })
             .collect();
+        // Folded branches map many hits to the same visible row. Painting the
+        // same opaque tick repeatedly adds no information and wastes a frame.
+        fractions.sort_unstable_by(f32::total_cmp);
         let current_mark = brand::reader_palette(cx).find_mark_current;
         let highlight = brand::reader_palette(cx).find_mark;
         let track_color = brand::reader_palette(cx).find_mark_track;
@@ -280,16 +283,12 @@ impl CodePreview {
                 canvas(
                     |bounds, _, _| bounds,
                     move |bounds, _, w, _| {
-                        for fraction in &fractions {
+                        for segment in mark_segments(&fractions, bounds) {
                             paint_find_quad(
                                 w,
                                 Bounds::new(
-                                    point(
-                                        bounds.left(),
-                                        (bounds.top() + bounds.size.height * *fraction)
-                                            .min(bounds.bottom() - px(3.)),
-                                    ),
-                                    size(px(6.), px(3.)),
+                                    point(bounds.left(), segment.start),
+                                    size(px(6.), segment.end - segment.start),
                                 ),
                                 highlight,
                                 1,
@@ -799,6 +798,26 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     pub(super) static MARK_PAINTS: std::cell::RefCell<Vec<(u8,Hsla)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Exact union of the same opaque 3px ticks, preserving every gap. Dense
+/// whole-file hits must not submit 1,000 overlapping quads on each scroll.
+pub(super) fn mark_segments(
+    fractions: &[f32],
+    bounds: Bounds<Pixels>,
+) -> Vec<std::ops::Range<Pixels>> {
+    let mut segments: Vec<std::ops::Range<Pixels>> = Vec::new();
+    for fraction in fractions {
+        let top = (bounds.top() + bounds.size.height * *fraction).min(bounds.bottom() - px(3.));
+        let end = top + px(3.);
+        match segments.last_mut() {
+            Some(previous) if previous.end >= top => {
+                previous.end = previous.end.max(end);
+            }
+            _ => segments.push(top..end),
+        }
+    }
+    segments
 }
 
 fn paint_find_quad(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla, _role: u8) {

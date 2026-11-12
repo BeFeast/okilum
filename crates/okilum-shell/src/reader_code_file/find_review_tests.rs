@@ -209,12 +209,21 @@ fn code2810_non_json_paged_tree_keeps_the_expanded_root() {
 
 #[gpui::test]
 fn code2810_scrollbar_uses_visible_dedicated_roles_and_track(cx: &mut TestAppContext) {
-    let (code, visual, _temp) = fixture(cx, "data.json", r#"{"value":"needle"}"#);
+    let source = format!("{{\"value\":\"{}\"}}", "needle ".repeat(1001));
+    let (code, visual, _temp) = fixture(cx, "data.json", &source);
     code.update_in(visual, |s, window, cx| s.set_view(View::Tree, window, cx));
     let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));
     visual.update(|window, cx| target.set_query("needle", window, cx));
-    structure::MARK_PAINTS.with(|paints| paints.borrow_mut().clear());
     settle(visual);
+    structure::MARK_PAINTS.with(|paints| paints.borrow_mut().clear());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    code.read_with(visual, |s, _| {
+        assert_eq!(s.matches.len(), 1001);
+        assert_eq!(s.scrollbar_marks.len(), 1000, "the sample cap is unchanged");
+    });
     let track = visual.debug_bounds("data-find-mark-track").unwrap();
     assert!(track.size.width >= px(6.));
     let action = visual
@@ -229,6 +238,13 @@ fn code2810_scrollbar_uses_visible_dedicated_roles_and_track(cx: &mut TestAppCon
         structure::MARK_PAINTS.with(|paints| {
             let paints = paints.borrow();
             assert!(!paints.is_empty());
+            let frames = paints.iter().filter(|(role, _)| *role == 0).count();
+            assert!(frames > 0);
+            assert_eq!(
+                paints.iter().filter(|(role, _)| *role == 1).count(),
+                frames,
+                "one opaque other-hit tick per coincident position, not 1000"
+            );
             for (role, color) in [
                 (0, palette.find_mark_track),
                 (1, palette.find_mark),
@@ -340,4 +356,24 @@ fn code2810_editor_worker_respects_a_later_explicit_selection(cx: &mut TestAppCo
     settle(visual);
     assert_eq!(adapter.read_with(visual, |s, cx| s.count(cx).1), 2);
     assert_eq!(input.read_with(visual, |s, _| s.selected_range()), 7..20);
+}
+
+#[test]
+fn code2810_mark_segments_preserve_the_exact_tick_union_and_gaps() {
+    let bounds = Bounds::new(point(px(0.), px(0.)), size(px(8.), px(32.)));
+    let fractions = [0., 0., 0.03125, 0.0625, 0.5, 0.53125, 1.];
+    let segments = structure::mark_segments(&fractions, bounds);
+    assert_eq!(
+        segments,
+        [px(0.)..px(5.), px(16.)..px(20.), px(29.)..px(32.)]
+    );
+    for quarter in 0..128 {
+        let y = px(quarter as f32 / 4.);
+        let original = fractions.iter().any(|fraction| {
+            let top = (bounds.size.height * *fraction).min(px(29.));
+            (top..top + px(3.)).contains(&y)
+        });
+        assert_eq!(segments.iter().any(|r| r.contains(&y)), original);
+    }
+    assert!(structure::mark_segments(&[], bounds).is_empty());
 }

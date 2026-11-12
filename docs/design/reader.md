@@ -126,7 +126,9 @@ original combined titlebar and document controls:
   sorted node lookup, capped at 1,000 evenly sampled hits. Their dedicated
   `findMark` / `findMarkCurrent` tokens have at least 3:1 contrast against both
   the `findMarkTrack` raised track and the canvas in every theme; text-highlight
-  backgrounds are not used for scrollbar ticks.
+  backgrounds are not used for scrollbar ticks. Overlapping opaque other-hit
+  ticks are painted as their exact union, preserving gaps and the 1,000-hit
+  sample while avoiding repeated quad submissions on each scroll.
 - **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
   a filled, pinned Extract all button. Its summary is in the bottom line.
   Canvas uses a 28 px read-only lock badge, header Fit/zoom and percentage;
