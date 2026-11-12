@@ -1,0 +1,51 @@
+name: edit-toolbar-diagnostic
+on:
+  push:
+    branches: ['toolbar-edit-diagnostic/**']
+permissions:
+  contents: read
+jobs:
+  scoped:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          echo "source=$(git rev-parse HEAD) feature=$(git rev-parse HEAD^)"
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            agent-v1-${{ runner.os }}-
+      - run: bash scripts/vendor-setup.sh
+      - run: cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness --no-run
+      - run: |
+          for scope in file2811_ code2771_ edit2803_ reader_viewer_chrome::tests::; do
+            cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness "$scope" -- --nocapture --test-threads=1
+          done
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
