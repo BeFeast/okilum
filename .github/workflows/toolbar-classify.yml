@@ -31,6 +31,10 @@ jobs:
         include:
           - os: windows-2022
             kind: main
+          - os: windows-2022
+            kind: toolbar
+          - os: macos-15
+            kind: toolbar
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
     env:
@@ -50,7 +54,16 @@ jobs:
             target/code-toolbar-release/
           key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
           restore-keys: |
+            classify-v1-${{ runner.os }}-${{ matrix.kind }}-
+            classify-v1-${{ runner.os }}-
             code-toolbar-release-v1-${{ runner.os }}-
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: classify-registry-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: classify-icon
@@ -83,6 +96,14 @@ jobs:
           cp "$CARGO_TARGET_DIR/release/$binary" "$GITHUB_WORKSPACE/out/"
           cp capsule-manifest.json capsule.diff "$GITHUB_WORKSPACE/out/"
           if [[ "$RUNNER_OS" = macOS ]]; then cp -R vendor/sparkle/Sparkle.framework "$GITHUB_WORKSPACE/out/"; fi
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
       - uses: actions/upload-artifact@v4
         with:
           name: capsule-${{ runner.os }}-${{ matrix.kind }}
@@ -104,8 +125,6 @@ jobs:
         with:
           name: capsule-Windows-toolbar
           path: inputs/toolbar
-          run-id: 43256438162
-          github-token: ${{ github.token }}
       - name: Five alternating pairs with precise scheduling capture
         shell: pwsh
         run: |
@@ -141,8 +160,6 @@ jobs:
         with:
           name: capsule-macOS-toolbar
           path: inputs/toolbar
-          run-id: 43256438162
-          github-token: ${{ github.token }}
       - name: Fixed census with per-thread CPU clock
         run: |
           export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
