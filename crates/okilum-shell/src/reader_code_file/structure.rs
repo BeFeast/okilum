@@ -207,6 +207,9 @@ impl CodePreview {
                 );
             });
         }
+        if let Some(editor) = &self.editor_find {
+            editor.update(cx, |editor, _| editor.preserve_selection());
+        }
         self.focus.focus(window, cx);
     }
     pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {

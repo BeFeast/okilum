@@ -163,6 +163,24 @@ fn code2810_active_find_raw_node_jump_survives_adapter_completion(cx: &mut TestA
             "the real adapter completed"
         );
     });
+    // The retained Raw input already selects this node on a second visit.
+    // Range equality alone cannot detect that explicit navigation happened.
+    code.update_in(visual, |s, window, cx| s.set_view(View::Tree, window, cx));
+    settle(visual);
+    code.update_in(visual, |s, window, cx| {
+        let doc = s.document.as_ref().unwrap();
+        let index = (0..doc.structure.len())
+            .find(|i| doc.key_text(*i) == Some("node"))
+            .unwrap();
+        assert_eq!(s.input().unwrap().read(cx).selected_range(), expected);
+        s.structure.selected = Some(index);
+        s.show_selected_raw(window, cx);
+    });
+    settle(visual);
+    code.read_with(visual, |s, cx| {
+        assert_eq!(s.input().unwrap().read(cx).selected_range(), expected);
+        assert_eq!(s.editor_find.as_ref().unwrap().read(cx).count(cx).1, 2);
+    });
 }
 
 #[gpui::test]

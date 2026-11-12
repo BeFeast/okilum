@@ -11,6 +11,7 @@ pub(crate) struct EditorTarget {
     case_sensitive: std::rc::Rc<std::cell::Cell<bool>>,
     active: bool,
     generation: u64,
+    navigation_revision: u64,
     task: Option<Task<()>>,
     _subscriptions: [Option<Subscription>; 2],
     #[cfg(test)]
@@ -76,6 +77,7 @@ impl EditorTarget {
             case_sensitive,
             active: true,
             generation: 0,
+            navigation_revision: 0,
             task: None,
             _subscriptions: [Some(changed), Some(mutated)],
             #[cfg(test)]
@@ -132,6 +134,11 @@ impl EditorTarget {
         }
     }
 
+    /// Explicit node navigation wins even when it reselects the same range.
+    pub(crate) fn preserve_selection(&mut self) {
+        self.navigation_revision += 1;
+    }
+
     fn apply_query(&mut self, reveal_first: bool, cx: &mut Context<Self>) {
         self.generation += 1;
         self.task = None;
@@ -161,6 +168,7 @@ impl EditorTarget {
         // A node jump or caret/selection move after this request takes priority
         // over Find's asynchronous first-hit navigation.
         let requested_selection = self.source.read(cx).selected_range();
+        let navigation_revision = self.navigation_revision;
         let generation = self.generation;
         let sensitive = self.case_sensitive.get();
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -200,7 +208,9 @@ impl EditorTarget {
                 }
                 s.source.update(cx, |source, cx| {
                     let selection = source.selected_range();
-                    let reveal = reveal_first && selection == requested_selection;
+                    let reveal = reveal_first
+                        && s.navigation_revision == navigation_revision
+                        && selection == requested_selection;
                     let current = if reveal {
                         0
                     } else {
