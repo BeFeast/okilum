@@ -65,6 +65,18 @@ original combined titlebar and document controls:
   the row. Notes retain their existing layout and pinned Maximize.
   PDF supplies zoom out, fit to width (width glyph), zoom in to slot 5;
   their tooltips use live bindings and their overflow items remain functional.
+- **Code/data header (#2809).** CodePreview supplies Table / Tree / Formatted /
+  Raw through the shared segmented control (28 px hit areas, token border and
+  semibold active label). The sidebar Tree / Now uses the same component.
+  Code view labels collapse to icons plus the active label before Fold/Unfold
+  overflow. The view switch and Document actions stay in the row. One-view
+  files omit the switch. ZIP combines its breadcrumb and one-button view menu
+  with the same compact action builders; it has no second code toolbar.
+  Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
+  large-file reasons and paged position/slider. Find remains an icon plus the
+  existing whole-file row until #2810. Edit and table inner chrome remain for
+  their own steps. Focus changes re-render the GPUI cached header; source edits,
+  query typing and page changes do not invalidate its slot key.
 - **One Find component (#2807).** Notes retain their floating bar, selectors,
   match count, case toggle, stepping and two-press Esc behavior. A file opts in
   with a target that owns its query, count/case/step capabilities and clear/focus
@@ -384,6 +396,12 @@ preferences contain the normal panel choices, so closing a maximized note
 does not leave a later window with permanently hidden panels.
 
 ## Icons
+
+Code view segments use the embedded `view-tree.svg` and `view-table.svg` outline
+glyphs; Raw uses `code-xml.svg` and Formatted uses `list.svg`. Segment glyphs keep
+the sidebar Tree / Now component’s 14 px size inside 28 px hit areas. Fold all /
+Unfold all use `chevrons-down-up.svg` / `chevrons-up-down.svg`, distinct from the
+adjacent reading-width toggle’s `fold-horizontal.svg` / `unfold-horizontal.svg`.
 
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
 hover. Toolkit names come from `gpui-component`'s `IconName`; the four missing

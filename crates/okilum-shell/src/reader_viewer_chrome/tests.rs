@@ -6,6 +6,14 @@ pub(crate) fn fixture<'a>(
     cx: &'a mut TestAppContext,
     name: &str,
 ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
+    fixture_with_files(cx, name, &[])
+}
+
+pub(crate) fn fixture_with_files<'a>(
+    cx: &'a mut TestAppContext,
+    name: &str,
+    files: &[(&str, &str)],
+) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
     std::fs::create_dir_all(root.join("Folder/A long parent folder name")).unwrap();
@@ -34,6 +42,9 @@ pub(crate) fn fixture<'a>(
         ),
     ] {
         std::fs::write(root.join(name), value).unwrap();
+    }
+    for (name, text) in files {
+        std::fs::write(root.join(name), text).unwrap();
     }
     std::fs::write(root.join("image.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"600\" height=\"4000\"><rect width=\"600\" height=\"4000\" fill=\"blue\"/></svg>").unwrap();
     image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
@@ -141,7 +152,15 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
         }
         // Keyboard selection exercises the actual dropdown click handler.
         // In logs the unselected raw-line command is disabled and skipped.
-        visual.simulate_keystrokes("down enter");
+        let preceding = reader.read_with(visual, |reader, cx| {
+            reader
+                .viewer_chrome(cx)
+                .copy_actions
+                .iter()
+                .filter(|action| action.enabled)
+                .count()
+        });
+        visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(preceding + 1)));
         visual.run_until_parked();
         assert_eq!(
             clipboard(visual).as_deref(),
@@ -611,6 +630,41 @@ fn nested_file_crumbs_expand_at_wide_width_and_collapse_before_title_truncation(
             "short file title remains legible"
         );
     }
+}
+
+#[gpui::test]
+fn code2809_warning_badge_consumes_breadcrumb_spare_width(cx: &mut TestAppContext) {
+    let name = "Folder/A long parent folder name/broken.json";
+    let (reader, visual, _temp) = fixture_with_files(cx, name, &[(name, "{broken}")]);
+    visual.run_until_parked();
+    let code = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    code.update(visual, |code, cx| {
+        code.source_bytes_for_layout_test(5_200_000);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        assert!(chrome.state.is_some());
+        assert_eq!(
+            chrome.badges.len(),
+            1,
+            "real invalid/oversize state has lock plus warning"
+        );
+        let mut without_warning = reader.viewer_chrome(cx);
+        without_warning.badges.clear();
+        let transition = (600..1800).find(|width| {
+            let with = reader.header_layout(&chrome, *width as f32, window, cx);
+            let without = reader.header_layout(&without_warning, *width as f32, window, cx);
+            with.states == without.states && with.collapse_parents && !without.collapse_parents
+        });
+        assert!(
+            transition.is_some(),
+            "an extra badge consumes spare width and makes parents collapse earlier"
+        );
+    });
 }
 
 #[gpui::test]
@@ -1101,4 +1155,114 @@ fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut 
         measured_bounds(visual, "log-field-cell-0-0").is_some(),
         "the selected field appears in the actual log grid"
     );
+}
+
+#[gpui::test]
+fn code2809_view_changes_invalidate_the_cached_header_without_refresh(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    let code = reader.read_with(visual, |reader, _| {
+        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    let draw = |visual: &mut VisualTestContext| {
+        for _ in 0..3 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    };
+    draw(visual);
+    let key = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |reader, cx| {
+            let header = reader.viewer_header.borrow();
+            let header = header.as_ref().unwrap();
+            (header.entity_id(), header.read(cx).key.views.clone())
+        })
+    };
+    let before = key(visual);
+    assert_eq!(before.1, [false, true, false]);
+    for (view, expected) in [
+        (reader_code_file::View::Tree, [true, false, false]),
+        (reader_code_file::View::Raw, [false, false, true]),
+        (reader_code_file::View::Formatted, [false, true, false]),
+    ] {
+        let previous = key(visual).0;
+        code.update_in(visual, |code, window, cx| code.set_view(view, window, cx));
+        draw(visual);
+        let current = key(visual);
+        assert_ne!(
+            current.0, previous,
+            "presentation state must replace the cached header"
+        );
+        assert_eq!(
+            current.1, expected,
+            "cached slots have the actual active view"
+        );
+    }
+}
+
+#[gpui::test]
+fn code2809_header_switch_and_more_stay_inside_the_pane_at_600(cx: &mut TestAppContext) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    for width in [1440., 700., 600.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let header = measured_bounds(visual, "document-header").unwrap();
+        for id in [
+            "code-view-tree",
+            "code-view-formatted",
+            "code-view-raw",
+            "code-header-find",
+            "document-more",
+        ] {
+            let control = visual
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("required control {id} at {width}"));
+            assert!(
+                control.left() >= header.left() && control.right() <= header.right(),
+                "{id}: {control:?} outside {header:?} at {width}"
+            );
+            assert_eq!(control.size.height, px(28.));
+        }
+        assert!(
+            visual.debug_bounds("viewer-compact-header").is_none(),
+            "Reader must not mount a second toolbar"
+        );
+        reader.read_with(visual, |reader, cx| {
+            assert!(reader.viewer_chrome(cx).views.len() == 3)
+        });
+    }
+}
+
+#[gpui::test]
+fn code2809_actual_overflow_plan_collapses_view_labels_before_fold_actions(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _temp) = fixture(cx, "data.json");
+    reader.update_in(visual, |reader, window, cx| {
+        let chrome = reader.viewer_chrome(cx);
+        assert_eq!(chrome.views.len(), 3);
+        let mut saw_icons = false;
+        let mut saw_fold_menu = false;
+        for width in (600..=1400).rev().step_by(4) {
+            let plan = reader.header_layout(&chrome, width as f32, window, cx);
+            assert!(plan.shows("views") && plan.shows("more") && plan.shows("code-header-find"));
+            saw_icons |= plan.collapsed("views");
+            if !plan.shows("code-fold-all") || !plan.shows("code-unfold-all") {
+                saw_fold_menu = true;
+                assert!(
+                    plan.collapsed("views"),
+                    "view labels collapse before folding actions leave the row at {width}"
+                );
+            }
+        }
+        assert!(
+            saw_icons && saw_fold_menu,
+            "actual CodePreview overflow stages fired"
+        );
+        let wide = reader.header_layout(&chrome, 1400., window, cx);
+        assert!(
+            !wide.collapsed("views")
+                && wide.shows("code-fold-all")
+                && wide.shows("code-unfold-all")
+        );
+    });
 }

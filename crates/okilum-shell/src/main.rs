@@ -147,6 +147,7 @@ mod reader_viewer_tests;
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
+mod reader_segmented;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
@@ -550,6 +551,7 @@ fn bind_keys(cx: &mut App) {
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
     reader_delimited::bind_keys(cx);
+    reader_code_file::bind_keys(cx);
     // App-level, so the key, the View menu and the toolbar all reach it.
     cx.on_action(|_: &ToggleNoteWidth, cx| toggle_note_width(cx));
     cx.bind_keys([
@@ -8010,7 +8012,17 @@ impl Render for Reader {
             .min_h_0()
             .relative()
             .key_context(
-                if self
+                if self.editing.is_none()
+                    && !self.quick_open.open
+                    && !self.shortcut_sheet.open
+                    && self.project_navigation.section == reader_project_navigation::Section::Reader
+                    && self
+                        .file_preview
+                        .as_ref()
+                        .is_some_and(|preview| preview.code.is_some())
+                {
+                    "Reader ReaderCode"
+                } else if self
                     .active_timeline()
                     .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
                     && !self.quick_open.open
@@ -8028,6 +8040,7 @@ impl Render for Reader {
                 },
             )
             .track_focus(&self.focus_handle)
+            .map(|view| self.code_action_listeners(view, cx))
             .on_action(
                 cx.listener(|this, _: &reader_read_menu::CopyAsMarkdown, window, cx| {
                     this.copy_read_markdown(window, cx)

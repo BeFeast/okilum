@@ -79,14 +79,13 @@ impl Structure {
 
 impl CodePreview {
     pub(super) fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
-        if let Some(doc) = self
-            .document
-            .as_ref()
-            .filter(|doc| !doc.structure.is_empty() && (self.structure_view || doc.pages.len() > 1))
-        {
-            self.structure_view = true;
-            self.requested_tree = Some(true);
-            self.structure.all(folded, doc);
+        if !self.fold_availability().available() {
+            return;
+        }
+        if self.view == View::Tree {
+            if let Some(doc) = &self.document {
+                self.structure.all(folded, doc);
+            }
         } else if let Some(input) = self.input() {
             input.update(cx, |s, cx| s.set_all_folded(folded, cx));
         }
@@ -213,23 +212,22 @@ impl CodePreview {
                     .ghost()
                     .label("Copy node")
                     .debug_selector(move || format!("data-node-copy-{index}"))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            node_source[range.clone()].to_owned(),
-                        ));
+                    .on_click(move |_, window, cx| {
+                        copy_text_node(&node_source[range.clone()], window, cx)
                     }),
             )
             .child(
                 Button::new(("data-node-source", index))
                     .small()
                     .ghost()
-                    .label("Source")
+                    .debug_selector(move || format!("data-node-source-{index}"))
+                    .label("Go to Raw")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let Some(doc) = &this.document else {
                             return;
                         };
                         let page = doc.page_at(source_offset);
-                        this.requested_tree = Some(false);
+                        this.apply_view(View::Raw, window, cx);
                         this.show_page(page, window, cx);
                     })),
             )
@@ -308,14 +306,14 @@ mod tests {
         });
         let preview = preview.unwrap();
         visual.run_until_parked();
-        preview.update_in(visual, |p, window, cx| p.show_json(false, window, cx));
+        preview.update_in(visual, |p, window, cx| p.set_view(View::Tree, window, cx));
         visual.run_until_parked();
         for width in [360., 640., 1200.] {
             visual.simulate_resize(size(px(width), px(600.)));
             visual.run_until_parked();
             visual.update(|window, cx| window.draw(cx).clear(cx));
             let visible = preview.read_with(visual, |p, _| {
-                assert!(p.structure_view);
+                assert!(p.view == View::Tree);
                 assert!(
                     p.outline_input().is_none(),
                     "a page is not an outline document"

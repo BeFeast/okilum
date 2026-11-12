@@ -825,15 +825,32 @@ impl Reader {
                 .session_directory
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("No recovery directory is available"))?;
-            FileEditor::open(
+            let store = FileEditor::open(
                 &self.vault_root.join(self.selected_file()),
                 &state.join("editor-drafts"),
-            )
+            )?;
+            if self
+                .file_preview
+                .as_ref()
+                .is_some_and(|preview| preview.code.is_some())
+            {
+                reader_code_file::check_edit_location(&self.vault_root.join(self.selected_file()))?;
+            }
+            Ok(store)
         })();
         let store = match result {
             Ok(store) => store,
             Err(error) => {
                 diagnostic_error!("Cannot edit: {error:#}");
+                // Record storage admission only after the existing edit attempt
+                // failed; a read must never probe writability for the header.
+                if let Some(code) = self
+                    .file_preview
+                    .as_ref()
+                    .and_then(|preview| preview.code.as_ref())
+                {
+                    code.update(cx, |code, cx| code.record_edit_failure(&error, cx));
+                }
                 // A read-only location explains itself and what still works.
                 let notice = location_notice(&error)
                     .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(&error)));
@@ -842,6 +859,13 @@ impl Reader {
                 return;
             }
         };
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+        {
+            code.update(cx, |code, _| code.suspend_presentation());
+        }
         // The editor opens at the Reader's place, not at the top (#1296). The
         // mapping parses the note (tens of ms for a long one), so it runs off
         // the UI thread; see place_editor_at_reader.
@@ -1872,6 +1896,7 @@ impl Reader {
         }
         self.remember_source_mode();
         self.editing = None;
+        self.resume_code_presentation(cx);
         true
     }
 
@@ -2287,6 +2312,7 @@ impl Reader {
         }
         self.remember_source_mode();
         self.editing = None;
+        self.resume_code_presentation(cx);
         self.outline_list
             .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
         true
@@ -2619,6 +2645,7 @@ impl Reader {
         {
             Ok(()) => {
                 self.editing = None;
+                self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
@@ -2788,6 +2815,7 @@ impl Reader {
                                     "Close, keeping draft",
                                     cx,
                                 )
+                                .debug_selector(|| "source-park".into())
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.park_source(window, cx)),
                                 ),

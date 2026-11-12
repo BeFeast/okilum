@@ -4,7 +4,7 @@ use super::*;
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use std::rc::Rc;
 
-mod overflow;
+pub(crate) mod overflow;
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) use overflow::{layout_with_widths, Disposition, LayoutItem, Order as OverflowOrder};
@@ -164,7 +164,9 @@ impl HeaderKey {
                 .actions
                 .iter()
                 .chain(chrome.views.iter().map(|view| &view.action))
+                .chain(chrome.find_trigger.iter())
                 .chain(chrome.state.iter())
+                .chain(chrome.badges.iter())
                 .map(ActionKey::from)
                 .collect(),
             views: chrome.views.iter().map(|view| view.active).collect(),
@@ -480,6 +482,7 @@ pub(crate) struct ViewerChrome {
     pub overflow_order: OverflowOrder,
     pub views: Vec<ViewerView>,
     pub find: Option<ViewerFindTarget>,
+    pub find_trigger: Option<ViewerAction>,
     pub actions: Vec<ViewerAction>,
     pub action_text: Option<SharedString>,
     pub action_text_after: Option<&'static str>,
@@ -488,6 +491,8 @@ pub(crate) struct ViewerChrome {
     pub open_actions: Vec<ViewerAction>,
     pub status: Option<reader_status_line::StatusLine>,
     pub state: Option<ViewerAction>,
+    pub badges: Vec<ViewerAction>,
+    pub compact_menu_id: Option<&'static str>,
 }
 
 struct HeaderLayout {
@@ -653,6 +658,13 @@ impl Reader {
         if let Some(log) = &preview.log {
             return reader_log::chrome::describe(log, cx);
         }
+        if let Some(code) = &preview.code {
+            return if self.editing.is_none() {
+                code.read(cx).chrome(code.clone(), cx)
+            } else {
+                ViewerChrome::default()
+            };
+        }
         if let Some(pdf) = &preview.pdf {
             return reader_pdf::chrome(pdf, cx);
         }
@@ -736,7 +748,7 @@ impl Reader {
             .child(navigation_slot(self, &plan, cx))
             .child(name_slot(self, &chrome, &plan, cx))
             .child(find_slot(self, &chrome, &plan))
-            .child(views_slot(&chrome))
+            .child(views_slot(&chrome, &plan, cx))
             .child(viewer_actions_slot(&chrome, &plan, cx))
             .child(file_actions_slot(self, &plan, cx))
             .child(window_slot(self, &chrome, &plan, cx))
@@ -762,6 +774,13 @@ impl Reader {
         let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
         let order = chrome.overflow_order;
         let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
+        items.extend(reader_segmented::layout(&chrome.views, window));
+        items.extend(
+            chrome
+                .find_trigger
+                .iter()
+                .map(|action| action.layout_item(false, window)),
+        );
         items.extend(
             chrome
                 .actions
@@ -832,7 +851,8 @@ impl Reader {
                 32.
             } else {
                 0.
-            } + if chrome.state.is_some() { 32. } else { 0. };
+            } + if chrome.state.is_some() { 32. } else { 0. }
+                + 32. * chrome.badges.len() as f32;
         // Optional controls yield before the name truncates. Once they have
         // yielded, the flex name slot may shrink down to its protected minimum.
         let title_budget = title_minimum
@@ -866,7 +886,8 @@ impl Reader {
             - title_width
             - 16.
             - compact_parent
-            - if chrome.state.is_some() { 32. } else { 0. };
+            - if chrome.state.is_some() { 32. } else { 0. }
+            - 32. * chrome.badges.len() as f32;
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
 
         HeaderLayout {
@@ -972,23 +993,28 @@ fn name_slot(
         .flex_1()
         .min_w(px(136.
             + if nested { 32. } else { 0. }
-            + if chrome.state.is_some() { 32. } else { 0. }))
+            + if chrome.state.is_some() { 32. } else { 0. }
+            + 32. * chrome.badges.len() as f32))
         .overflow_hidden()
-        .child(
-            reader.render_breadcrumbs_with_state(
-                plan.collapse_parents,
-                chrome
-                    .state
-                    .as_ref()
-                    .map(|state| state.button(true).into_any_element()),
-                cx,
-            ),
-        )
+        .child(reader.render_breadcrumbs_with_state(
+            plan.collapse_parents,
+            chrome.state.as_ref().map(|state| {
+                h_flex()
+                    .gap_1()
+                    .child(state.button(true))
+                    .children(chrome.badges.iter().map(|badge| badge.button(true)))
+                    .into_any_element()
+            }),
+            cx,
+        ))
         .into_any_element()
 }
 
 #[inline(never)]
 fn find_slot(reader: &Reader, chrome: &ViewerChrome, plan: &HeaderLayout) -> AnyElement {
+    if let Some(trigger) = &chrome.find_trigger {
+        return trigger.render_button(true);
+    }
     let Some(_) = &chrome.find else {
         return div().into_any_element();
     };
@@ -1010,16 +1036,16 @@ fn find_slot(reader: &Reader, chrome: &ViewerChrome, plan: &HeaderLayout) -> Any
 }
 
 #[inline(never)]
-fn views_slot(chrome: &ViewerChrome) -> AnyElement {
-    h_flex()
-        .flex_none()
-        .children(
-            chrome
-                .views
-                .iter()
-                .map(|view| view.action.button(false).selected(view.active)),
-        )
-        .into_any_element()
+fn views_slot(chrome: &ViewerChrome, plan: &HeaderLayout, cx: &App) -> AnyElement {
+    reader_segmented::render(
+        &chrome.views,
+        if plan.collapsed("views") {
+            reader_segmented::Form::Icons
+        } else {
+            reader_segmented::Form::Full
+        },
+        cx,
+    )
 }
 
 fn separator(cx: &App) -> AnyElement {
@@ -1445,12 +1471,30 @@ pub(crate) fn render_compact_header(
     window: &Window,
     cx: &App,
 ) -> AnyElement {
+    render_compact_header_with_leading(chrome, width, None, window, cx)
+}
+
+#[inline(never)]
+pub(crate) fn render_compact_header_with_leading(
+    chrome: &ViewerChrome,
+    width: f32,
+    leading: Option<AnyElement>,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    let has_leading = leading.is_some();
     let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
     let mut items: Vec<_> = chrome
         .actions
         .iter()
         .map(|action| action.layout_item(labels, window))
         .collect();
+    items.extend(
+        chrome
+            .find_trigger
+            .iter()
+            .map(|action| action.layout_item(false, window)),
+    );
     if let Some(find) = &chrome.find {
         let mut item = LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
         item.steps = vec![overflow::OverflowStep {
@@ -1467,8 +1511,26 @@ pub(crate) fn render_compact_header(
         }
         items.push(item);
     }
+    if chrome.views.len() > 1 {
+        let active = chrome
+            .views
+            .iter()
+            .find(|v| v.active)
+            .unwrap_or(&chrome.views[0]);
+        items.push(LayoutItem::pinned(
+            "views",
+            52. + toolbar_text_width(&active.action.label, FontWeight::MEDIUM, window),
+            80.,
+        ));
+    }
     items.push(LayoutItem::pinned("more", 28., 28.));
-    let (states, widths) = layout_with_widths(width, 32., 0., &items);
+    let state_width = 32. * (usize::from(chrome.state.is_some()) + chrome.badges.len()) as f32;
+    let (states, widths) = layout_with_widths(
+        width,
+        (if has_leading { 112. } else { 32. }) + state_width,
+        0.,
+        &items,
+    );
     let plan = HeaderLayout {
         items,
         states,
@@ -1497,6 +1559,8 @@ pub(crate) fn render_compact_header(
         .cloned()
         .collect();
     let copies = chrome.copy_actions.clone();
+    let opens = chrome.open_actions.clone();
+    let more_id = chrome.compact_menu_id.unwrap_or("log-more");
     h_flex()
         .debug_selector(|| "viewer-compact-header".into())
         .w_full()
@@ -1505,14 +1569,33 @@ pub(crate) fn render_compact_header(
         .h(px(48.))
         .px_3()
         .gap_1()
+        .children(leading)
+        .children(
+            chrome
+                .state
+                .iter()
+                .chain(chrome.badges.iter())
+                .map(|badge| badge.button(true)),
+        )
         .children(find)
+        .children(
+            chrome
+                .find_trigger
+                .as_ref()
+                .map(|trigger| trigger.render_button(true)),
+        )
+        .child(reader_segmented::render(
+            &chrome.views,
+            reader_segmented::Form::Menu,
+            cx,
+        ))
         .child(viewer_actions_slot(chrome, &plan, cx))
-        .child(div().flex_1())
+        .when(!has_leading, |row| row.child(div().flex_1()))
         .child(
-            reader_icon_button("log-more", IconName::Ellipsis, "Log actions", cx)
-                .debug_selector(|| "log-more".into())
+            reader_icon_button(more_id, IconName::Ellipsis, "Document actions", cx)
+                .debug_selector(move || more_id.into())
                 .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
-                    for action in &overflow {
+                    for action in overflow.iter().chain(opens.iter()) {
                         menu = action.append_menu(menu, window, cx);
                     }
                     if !copies.is_empty() {

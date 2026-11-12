@@ -191,6 +191,17 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<MaximizeNote>("Maximize / restore note", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
+        entry::<reader_code_file::ShowTable>("Table view", View),
+        entry::<reader_code_file::ShowTree>("Tree view", View),
+        entry::<reader_code_file::ShowFormatted>("Formatted view", View),
+        entry::<reader_code_file::ShowRaw>("Raw view", View),
+        entry::<reader_code_file::FoldAll>("Fold all", View),
+        entry::<reader_code_file::UnfoldAll>("Unfold all", View),
+        entry::<reader_code_file::PreviousPart>("Previous part", View),
+        entry::<reader_code_file::NextPart>("Next part", View),
+        entry::<reader_code_file::CopyNode>("Copy node", Notes),
+        menu_entry::<reader_code_file::CopySelection>("Copy selection", Notes),
+        menu_entry::<reader_code_file::GoToError>("Go to error", Navigation),
         entry::<ToggleSoftWrap>("Wrap long lines", View),
         entry::<ToggleNoteWidth>("Full / normal note width", View),
         entry::<ToggleFocusMode>("Focus mode", View),
@@ -601,15 +612,68 @@ mod tests {
             reader_read_menu::CopyAsMarkdown,
             None,
         );
-        let actions: Vec<_> = keymap
+        let key = expected.keystrokes().to_vec();
+        // Inspect every binding, including contexts these probes do not enter.
+        let mut actual: Vec<_> = keymap
             .bindings()
             .filter(|binding| binding.keystrokes() == expected.keystrokes())
             .map(|binding| binding.action().name())
             .collect();
+        let mut wanted = vec![reader_read_menu::CopyAsMarkdown::name_for_type(); 2];
+        if !cfg!(target_os = "macos") {
+            wanted.extend([reader_code_file::CopyNode::name_for_type(); 2]);
+        }
+        actual.sort();
+        wanted.sort();
+        assert_eq!(actual, wanted, "global copy collision coverage");
+        for contexts in [
+            vec!["Reader ReaderRead"],
+            vec!["Reader ReaderSource", "Input"],
+        ] {
+            let contexts: Vec<_> = contexts
+                .into_iter()
+                .map(|value| KeyContext::parse(value).unwrap())
+                .collect();
+            let bindings = keymap.bindings_for_input(&key, &contexts).0;
+            assert_eq!(
+                bindings.first().unwrap().action().name(),
+                reader_read_menu::CopyAsMarkdown::name_for_type()
+            );
+        }
+        let node_key = KeyBinding::new("ctrl-shift-c", reader_code_file::CopyNode, None);
+        let node_bindings: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| binding.keystrokes() == node_key.keystrokes())
+            .collect();
         assert_eq!(
-            actions,
-            [reader_read_menu::CopyAsMarkdown::name_for_type(); 2]
+            node_bindings
+                .iter()
+                .filter(|binding| binding.action().name()
+                    == reader_code_file::CopyNode::name_for_type())
+                .count(),
+            2
         );
+        for contexts in [
+            vec!["Reader", "ReaderCode"],
+            vec!["Reader", "ReaderCode", "Input"],
+        ] {
+            let contexts: Vec<_> = contexts
+                .into_iter()
+                .map(|value| KeyContext::parse(value).unwrap())
+                .collect();
+            let bindings = keymap
+                .bindings_for_input(node_key.keystrokes(), &contexts)
+                .0;
+            assert_eq!(
+                bindings.first().unwrap().action().name(),
+                reader_code_file::CopyNode::name_for_type()
+            );
+            #[cfg(target_os = "macos")]
+            assert!(
+                keymap.bindings_for_input(&key, &contexts).0.is_empty(),
+                "Command-Shift-C has no code-view binding on Mac"
+            );
+        }
     }
 
     #[gpui::test]

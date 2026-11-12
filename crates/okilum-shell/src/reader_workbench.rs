@@ -253,59 +253,33 @@ impl Reader {
     }
 
     pub(super) fn render_left_modes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let reader = cx.entity().downgrade();
-        let tokens = brand::palette(cx);
-        h_flex()
-            .flex_none()
-            .gap_1()
-            .p(px(2.))
-            .rounded(px(6.))
-            .bg(tokens.border_subtle.opacity(0.5))
-            .children(
-                [
-                    ("left-mode-tree", "Tree", LeftMode::Tree),
-                    ("left-mode-now", "Now", LeftMode::Now),
-                ]
-                .into_iter()
-                .map(|(id, label, mode)| {
-                    let reader = reader.clone();
-                    let active = self.sidebar.left_mode == mode;
-                    let icon = match mode {
-                        LeftMode::Now => Icon::default().path(brand::READER_CLOCK_ICON),
-                        LeftMode::Tree => Icon::default().path("icons/list.svg"),
-                    };
-                    Button::new(id)
-                        .ghost()
-                        .small()
-                        .w(px(62.))
-                        .h(px(24.))
-                        .px_1()
-                        .rounded(px(4.))
-                        .icon(icon.xsmall())
-                        .label(label)
-                        .selected(active)
-                        .text_size(px(11.))
-                        .text_color(if active {
-                            tokens.text
-                        } else {
-                            tokens.text_muted
-                        })
-                        .when(active, |button| {
-                            button
-                                .bg(tokens.surface_raised)
-                                .border_1()
-                                .border_color(tokens.border_subtle)
-                                .font_weight(FontWeight::SEMIBOLD)
-                        })
-                        .debug_selector(move || id.into())
-                        .tooltip(reader_shortcuts::hint("Now / Tree", &ToggleLeftMode, cx))
-                        .on_click(move |_, window, cx| {
-                            let _ =
-                                reader.update(cx, |this, cx| this.set_left_mode(mode, window, cx));
-                        })
+        let views: Vec<_> = [
+            ("left-mode-tree", "Tree", LeftMode::Tree),
+            ("left-mode-now", "Now", LeftMode::Now),
+        ]
+        .into_iter()
+        .map(|(id, label, mode)| {
+            let reader = cx.entity().downgrade();
+            let icon = match mode {
+                LeftMode::Now => Icon::default().path(brand::READER_CLOCK_ICON),
+                LeftMode::Tree => Icon::default().path("icons/list.svg"),
+            };
+            let mut action = reader_viewer_chrome::ViewerAction::new(
+                id,
+                icon,
+                label,
+                std::rc::Rc::new(move |window, cx| {
+                    let _ = reader.update(cx, |this, cx| this.set_left_mode(mode, window, cx));
                 }),
-            )
-            .into_any_element()
+            );
+            action.tooltip = reader_shortcuts::hint("Now / Tree", &ToggleLeftMode, cx);
+            reader_viewer_chrome::ViewerView {
+                action,
+                active: self.sidebar.left_mode == mode,
+            }
+        })
+        .collect();
+        reader_segmented::render(&views, reader_segmented::Form::Full, cx)
     }
 
     pub(super) fn render_now_offer(&self, cx: &mut Context<Self>) -> AnyElement {

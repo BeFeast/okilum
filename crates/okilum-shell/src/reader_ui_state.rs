@@ -166,8 +166,10 @@ struct Saved {
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
     image_import: crate::note_paste::image_import::Options,
-    /// JSON files show their raw text instead of a pretty-printed view (#1131).
-    json_raw: bool,
+    /// Explicit read-mode choices, independently remembered for each file type.
+    code_views: BTreeMap<String, reader_code_file::View>,
+    #[serde(default, skip_serializing)]
+    json_raw: Option<bool>,
     /// Where log source locations open (#1165): vscode, cursor, zed,
     /// jetbrains or custom, and the custom command line.
     log_editor: String,
@@ -232,7 +234,8 @@ impl Default for Saved {
             emoji_completion: true,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             image_import: Default::default(),
-            json_raw: false,
+            code_views: BTreeMap::new(),
+            json_raw: None,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
             source_maps: Default::default(),
@@ -278,7 +281,7 @@ struct Store {
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
-    json_raw_changed: bool,
+    code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
@@ -325,6 +328,13 @@ fn read(path: &Path) -> anyhow::Result<Saved> {
     );
     let mut saved: Saved = serde_json::from_slice(&std::fs::read(path)?)?;
     anyhow::ensure!(saved.version == VERSION, "Unsupported UI state version");
+    if let Some(raw) = saved.json_raw.take() {
+        saved.code_views.entry("json".into()).or_insert(if raw {
+            reader_code_file::View::Raw
+        } else {
+            reader_code_file::View::Formatted
+        });
+    }
     // #2572: both old panes now open the unified Vaults pane. Normalize on
     // every read so merging another process's state cannot resurrect the key.
     saved.settings_section = migrated_settings_section(&saved.settings_section).into();
@@ -386,7 +396,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         emoji_completion_changed: false,
         paste_ask_changed: false,
         image_import_changed: false,
-        json_raw_changed: false,
+        code_views_changed: BTreeSet::new(),
         log_editor_changed: false,
         source_maps_changed: Default::default(),
         splits_changed: Default::default(),
@@ -623,7 +633,7 @@ struct WriteJob {
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
-    json_raw_changed: bool,
+    code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
     source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
@@ -746,8 +756,10 @@ impl WriteJob {
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
         }
-        if self.json_raw_changed {
-            latest.json_raw = self.saved.json_raw;
+        for key in &self.code_views_changed {
+            if let Some(view) = self.saved.code_views.get(key) {
+                latest.code_views.insert(key.clone(), *view);
+            }
         }
         for root in &self.source_maps_changed {
             match self.saved.source_maps.get(root) {
@@ -883,7 +895,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.close_code_fences_changed
             && !state.emoji_completion_changed
             && !state.paste_ask_changed
-            && !state.json_raw_changed
+            && state.code_views_changed.is_empty()
             && !state.log_editor_changed
             && state.source_maps_changed.is_empty()
             && state.splits_changed.is_empty()
@@ -926,7 +938,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         emoji_completion_changed: state.emoji_completion_changed,
         paste_ask_changed: state.paste_ask_changed,
         image_import_changed: state.image_import_changed,
-        json_raw_changed: state.json_raw_changed,
+        code_views_changed: state.code_views_changed.clone(),
         log_editor_changed: state.log_editor_changed,
         source_maps_changed: state.source_maps_changed.clone(),
         splits_changed: state.splits_changed.clone(),
@@ -1702,10 +1714,9 @@ pub(crate) fn set_image_import_options(
     cx.refresh_windows();
 }
 
-/// Pretty-printed JSON is the default (#1131); this remembers Raw.
-pub(crate) fn json_raw(cx: &App) -> bool {
+pub(crate) fn code_view(kind: &str, cx: &App) -> Option<reader_code_file::View> {
     cx.try_global::<Store>()
-        .is_some_and(|state| state.saved.json_raw)
+        .and_then(|state| state.saved.code_views.get(kind).copied())
 }
 
 /// The remembered pane size of a list/detail split (#1156).
@@ -2017,15 +2028,14 @@ pub(crate) fn set_source_maps(
     cx.refresh_windows();
 }
 
-pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
-    if !installed(cx) || json_raw(cx) == value {
+pub(crate) fn set_code_view(kind: &str, view: reader_code_file::View, cx: &mut App) {
+    if !installed(cx) || code_view(kind, cx) == Some(view) {
         return;
     }
     let state = cx.global_mut::<Store>();
-    state.saved.json_raw = value;
-    state.json_raw_changed = true;
+    state.saved.code_views.insert(kind.into(), view);
+    state.code_views_changed.insert(kind.into());
     schedule(cx);
-    cx.refresh_windows();
 }
 
 pub(crate) fn delimited_header(path: &Path, cx: &App) -> bool {
@@ -2188,7 +2198,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.emoji_completion_changed = false;
         state.paste_ask_changed = false;
         state.image_import_changed = false;
-        state.json_raw_changed = false;
+        state.code_views_changed.clear();
         state.log_editor_changed = false;
         state.source_maps_changed.clear();
         state.splits_changed.clear();
@@ -2206,6 +2216,63 @@ fn mark_saved(generation: u64, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    fn code2809_view_memory_survives_restart_and_merges_independent_types(cx: &mut TestAppContext) {
+        use reader_code_file::View;
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            set_code_view("json", View::Raw, cx);
+            let mut other = job(cx).unwrap();
+            other.saved.code_views = BTreeMap::from([("json-array".into(), View::Tree)]);
+            other.code_views_changed = BTreeSet::from(["json-array".into()]);
+            other.serial = Arc::new(AtomicU64::new(other.generation));
+            flush(cx);
+            other.run().unwrap();
+            install(directory.path(), cx);
+            assert_eq!(code_view("json", cx), Some(View::Raw));
+            assert_eq!(code_view("json-array", cx), Some(View::Tree));
+            assert_eq!(code_view("yaml", cx), None);
+        });
+    }
+
+    #[gpui::test]
+    fn code2809_legacy_json_raw_migrates_without_overwriting_per_type_choice(
+        cx: &mut TestAppContext,
+    ) {
+        use reader_code_file::View;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        for (legacy, entry, expected) in [
+            (true, None, View::Raw),
+            (false, None, View::Formatted),
+            (true, Some(View::Tree), View::Tree),
+        ] {
+            let mut data =
+                serde_json::json!({"version": VERSION, "json_raw": legacy, "appearance": "dark"});
+            if let Some(view) = entry {
+                data["code_views"] = serde_json::json!({"json": view});
+            }
+            std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+            cx.update(|cx| {
+                install(directory.path(), cx);
+                assert_eq!(code_view("json", cx), Some(expected));
+                assert_eq!(code_view("json-array", cx), None);
+                set_code_view("xml", View::Raw, cx);
+                flush(cx);
+                install(directory.path(), cx);
+                assert_eq!(code_view("json", cx), Some(expected));
+            });
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(
+                saved.get("json_raw").is_none(),
+                "legacy field is deleted on save"
+            );
+            assert_eq!(saved["appearance"], "dark");
+        }
+    }
+
     #[test]
     fn legacy_layout_preserves_tree_preferences_without_inventing_project_state() {
         let legacy: Layout = serde_json::from_value(serde_json::json!({
@@ -3012,7 +3079,7 @@ mod tests {
                 emoji_completion_changed: false,
                 paste_ask_changed: false,
                 image_import_changed: false,
-                json_raw_changed: false,
+                code_views_changed: BTreeSet::new(),
                 log_editor_changed: false,
                 source_maps_changed: Default::default(),
                 splits_changed: Default::default(),

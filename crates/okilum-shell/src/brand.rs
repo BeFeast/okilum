@@ -46,7 +46,17 @@ pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
 /// Note width toggle: shown in full width (back to normal) and in normal width.
 pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
 pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
-const IMAGES: [(&str, &[u8]); 46] = [
+pub const CODE_VIEW_TABLE_ICON: &str = "icons/view-table.svg";
+pub const CODE_VIEW_TREE_ICON: &str = "icons/view-tree.svg";
+const IMAGES: [(&str, &[u8]); 48] = [
+    (
+        CODE_VIEW_TABLE_ICON,
+        include_bytes!("../assets/icons/view-table.svg"),
+    ),
+    (
+        CODE_VIEW_TREE_ICON,
+        include_bytes!("../assets/icons/view-tree.svg"),
+    ),
     (
         READER_FILTER_ICON,
         include_bytes!("../assets/icons/list-filter.svg"),
@@ -1028,7 +1038,7 @@ mod tests {
 
     #[test]
     fn toolbar_tree_and_caption_icons_are_embedded_even_with_debug_assertions() {
-        for icon in [
+        for path in [
             gpui_component::IconName::PanelLeft,
             gpui_component::IconName::PanelRight,
             gpui_component::IconName::ArrowLeft,
@@ -1045,8 +1055,11 @@ mod tests {
             gpui_component::IconName::WindowMaximize,
             gpui_component::IconName::WindowRestore,
             gpui_component::IconName::WindowClose,
-        ] {
-            let path = icon.path();
+        ]
+        .map(|icon| icon.path())
+        .into_iter()
+        .chain([CODE_VIEW_TABLE_ICON.into(), CODE_VIEW_TREE_ICON.into()])
+        {
             let data = Assets.load(&path).unwrap().expect("Embedded icon");
             assert!(
                 matches!(data, Cow::Borrowed(_)),

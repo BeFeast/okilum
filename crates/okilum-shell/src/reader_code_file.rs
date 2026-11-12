@@ -2,22 +2,46 @@
 //! read-only editor, the engine Markdown code blocks already use; edit mode
 //! opens the same file in a writable editor with the same language.
 use super::*;
-use gpui_component::button::ButtonGroup;
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, WrappingIndent};
 use std::time::Instant;
 
 pub(crate) mod document;
+mod loading;
+#[cfg(test)]
+mod loading_tests;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+#[cfg(test)]
+mod review_tests;
 mod structure;
 mod toolbar;
+mod view;
+#[cfg(test)]
+mod view_tests;
 use document::Document;
+use view::copy_text_node;
+pub(crate) use view::{bind_keys, Availability, View};
 
-/// Bounded text loading; explicit JSON editing shares the source-tool budget.
+/// Bounded preview loading; UI editing has its own smaller admission cap.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const EDIT_BYTES: usize = 4 * 1024 * 1024;
 
-actions!(reader_code_file, [CopyNode]);
+actions!(
+    reader_code_file,
+    [
+        CopyNode,
+        CopySelection,
+        ShowTable,
+        ShowTree,
+        ShowFormatted,
+        ShowRaw,
+        FoldAll,
+        UnfoldAll,
+        PreviousPart,
+        NextPart,
+        GoToError
+    ]
+);
 
 /// Key context of code views and code editors; ⌥Z / Alt+Z binds only here.
 pub(crate) const KEY_CONTEXT: &str = "ReaderCode";
@@ -85,25 +109,43 @@ pub(crate) fn editable_format(rel: &str) -> bool {
 enum State {
     Loading,
     Content(Entity<EditorState>),
-    Message(&'static str),
+    Message(String),
 }
 
 pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
+    opened_at: Instant,
     state: State,
     source_bytes: Option<usize>,
+    storage_reason: Option<String>,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
     table: Option<Entity<reader_delimited::TablePreview>>,
-    show_table: bool,
+    view: View,
+    own_header: bool,
+    raw_document: Option<Arc<Document>>,
+    scrubber: Entity<gpui_component::slider::SliderState>,
+    requested_page: Option<usize>,
+    page_scheduled: bool,
     document: Option<Arc<Document>>,
     page: usize,
     structure: structure::Structure,
-    structure_view: bool,
-    requested_tree: Option<bool>,
     paged: bool,
     document_revision: u64,
+    applied_page: Option<(u64, usize)>,
+    read_active: bool,
+    automatic_view: bool,
+    provisional_interacted: std::rc::Rc<std::cell::Cell<bool>>,
+    provisional_subscription: Option<Subscription>,
+    retain_find: bool,
+    node_copy_cache: std::cell::RefCell<Option<(NodeCopyKey, Option<std::ops::Range<usize>>)>>,
+    #[cfg(test)]
+    preparation_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    format_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    first_content_ms: Option<u128>,
     find: Entity<InputState>,
     matches: Vec<std::ops::Range<usize>>,
     match_index: usize,
@@ -126,15 +168,12 @@ impl Render for Surface {
 /// Above this a JSON file opens raw; Pretty formats it on a worker on request.
 const PRETTY_BYTES: usize = 8 * 1024 * 1024;
 
-type Pretty = Result<String, okilum_core::json_view::Error>;
-
 struct JsonText {
-    raw: String,
+    raw: Arc<Document>,
     /// None until formatted: large files wait for Pretty.
-    pretty: Option<Pretty>,
-    showing_pretty: bool,
+    pretty: Option<Result<Arc<Document>, okilum_core::json_view::Error>>,
     formatting: bool,
-    requested_pretty: bool,
+    requested: View,
 }
 
 /// `.json` only: JSONC allows comments and is never reformatted.
@@ -144,13 +183,65 @@ fn is_json(rel: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NodeCopyKey {
+    revision: u64,
+    page: usize,
+    cursor: usize,
+}
+
 enum Loaded {
-    Text(String, Option<Pretty>),
-    TooLarge,
+    Text(String),
+    TooLarge(u64),
     Unsupported,
 }
 
+/// Identifies a failure of the *document location*, not private recovery state.
+#[derive(Debug)]
+pub(crate) struct EditLocationError(std::io::Error);
+impl std::fmt::Display for EditLocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "This folder cannot be written: {}", self.0)
+    }
+}
+impl std::error::Error for EditLocationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// An explicit Edit attempt checks the same directory needed by atomic Save.
+/// Reads never probe storage. The empty sibling is removed immediately.
+pub(crate) fn check_edit_location(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("No parent directory"))?;
+    match tempfile::Builder::new()
+        .prefix(".okilum-edit-check-")
+        .tempfile_in(parent)
+    {
+        Ok(probe) => {
+            probe.close()?;
+            Ok(())
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            Err(EditLocationError(error).into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl CodePreview {
+    #[cfg(test)]
+    pub(crate) fn source_bytes_for_layout_test(&mut self, bytes: usize) {
+        self.source_bytes = Some(bytes);
+    }
+
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
@@ -181,9 +272,11 @@ impl CodePreview {
         let started = Instant::now();
         let json = is_json(&rel);
         let table_path = path.clone();
+        let language = language(&rel).unwrap_or("text");
         let task = cx.background_executor().spawn(async move {
-            if std::fs::metadata(&path)?.len() > MAX_BYTES {
-                return anyhow::Ok(Loaded::TooLarge);
+            let bytes = std::fs::metadata(&path)?.len();
+            if bytes > MAX_BYTES {
+                return anyhow::Ok(Loaded::TooLarge(bytes));
             }
             Ok(
                 match String::from_utf8({
@@ -193,76 +286,47 @@ impl CodePreview {
                         .take(MAX_BYTES + 1)
                         .read_to_end(&mut bytes)?;
                     if bytes.len() as u64 > MAX_BYTES {
-                        return Ok(Loaded::TooLarge);
+                        return Ok(Loaded::TooLarge(bytes.len() as u64));
                     }
                     bytes
                 }) {
-                    Ok(text) => {
-                        // Formatting runs here, off the UI thread, within a budget.
-                        let pretty = (json && text.len() <= PRETTY_BYTES)
-                            .then(|| okilum_core::json_view::pretty(&text));
-                        Loaded::Text(text, pretty)
-                    }
+                    Ok(text) => Loaded::Text(text),
                     Err(_) => Loaded::Unsupported,
                 },
             )
         });
         crate::source_presentation::code_languages::install();
-        let language = language(&rel).unwrap_or("text");
         // Each selection owns its own entity; a late read cannot reach a newer one.
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
-                    Ok(Loaded::Text(text, pretty)) => {
+                    Ok(Loaded::Text(text)) => {
                         this.source_bytes = Some(text.len());
-                        if json
-                            && text
-                                .trim_start_matches('\u{feff}')
-                                .trim_start()
-                                .starts_with('[')
+                        let range = document::first_page(&text);
+                        this.paged = range.end < text.len();
+                        let input = cx.new(|cx| editor(language, &text[range], window, cx));
+                        this.document_revision += 1;
+                        this.applied_page = Some((this.document_revision, 0));
+                        #[cfg(test)]
                         {
-                            let table = cx.new(|cx| {
-                                reader_delimited::TablePreview::new(table_path.clone(), cx)
-                            });
-                            cx.observe(&table, |_, _, cx| cx.notify()).detach();
-                            this.table = Some(table);
+                            this.first_content_ms = Some(started.elapsed().as_millis());
                         }
-                        let shown = if json {
-                            let showing_pretty =
-                                !reader_ui_state::json_raw(cx) && matches!(pretty, Some(Ok(_)));
-                            let json = this.json.insert(JsonText {
-                                raw: text,
-                                pretty,
-                                showing_pretty,
-                                formatting: false,
-                                requested_pretty: showing_pretty,
-                            });
-                            json.shown().to_owned()
-                        } else {
-                            text
-                        };
-                        let range = document::first_page(&shown);
-                        let apply_started = Instant::now();
-                        let input = cx.new(|cx| editor(language, &shown[range], window, cx));
-                        if shown.len() > EDIT_BYTES {
-                            diagnostic_error!(
-                                "DATA_VIEW_2669 bytes={} editor_apply_ms={}",
-                                shown.len(),
-                                apply_started.elapsed().as_millis()
-                            );
-                        }
-                        this.prepare_document(shown, window, cx);
                         timing(&input, started, cx);
+                        this.watch_provisional(&input, cx);
+                        // Text is available before any full-file parse/index or
+                        // formatted snapshot. Those run on subsequent workers.
+                        this.prepare_loaded(text, table_path.clone(), json, window, cx);
                         State::Content(input)
                     }
-                    Ok(Loaded::TooLarge) => {
-                        State::Message("This file exceeds the 64 MiB preview limit.")
-                    }
+                    Ok(Loaded::TooLarge(bytes)) => State::Message(format!(
+                        "Too large to preview. {}, the limit is 64 MB.",
+                        view::size(bytes as usize)
+                    )),
                     Ok(Loaded::Unsupported) => {
-                        State::Message("This file can’t be previewed as text.")
+                        State::Message("This file cannot be previewed as text.".into())
                     }
-                    Err(_) => State::Message("This file couldn’t be read."),
+                    Err(_) => State::Message("This file could not be read.".into()),
                 };
                 cx.notify();
             });
@@ -274,21 +338,58 @@ impl CodePreview {
                 this.search(window, cx);
             }
         });
+        let scrubber = cx.new(|_| {
+            gpui_component::slider::SliderState::new()
+                .min(0.)
+                .max(1.)
+                .step(0.001)
+        });
+        cx.subscribe_in(
+            &scrubber,
+            window,
+            |this, _, event: &gpui_component::slider::SliderEvent, window, cx| {
+                let (gpui_component::slider::SliderEvent::Change(value)
+                | gpui_component::slider::SliderEvent::Release(value)) = event;
+                let page = this.document.as_ref().map_or(0, |doc| {
+                    view::fraction_to_part(value.start(), doc.pages.len())
+                });
+                this.request_page(page, window, cx);
+            },
+        )
+        .detach();
         Self {
             root,
             rel,
+            opened_at: started,
             state: State::Loading,
             source_bytes: None,
+            storage_reason: None,
             json: None,
             table: None,
-            show_table: true,
+            view: View::Raw,
+            own_header: true,
+            raw_document: None,
+            scrubber,
+            requested_page: None,
+            page_scheduled: false,
             document: None,
             page: 0,
             structure: structure::Structure::default(),
-            structure_view: false,
-            requested_tree: None,
             paged: false,
             document_revision: 0,
+            applied_page: None,
+            read_active: true,
+            automatic_view: true,
+            provisional_interacted: Default::default(),
+            provisional_subscription: None,
+            retain_find: false,
+            node_copy_cache: Default::default(),
+            #[cfg(test)]
+            preparation_gate: None,
+            #[cfg(test)]
+            format_gate: None,
+            #[cfg(test)]
+            first_content_ms: None,
             find,
             matches: Vec::new(),
             match_index: 0,
@@ -299,102 +400,32 @@ impl CodePreview {
         }
     }
 
-    /// Pretty or Raw for this JSON file; Raw is remembered for the next one.
-    fn show_json(&mut self, pretty: bool, window: &mut Window, cx: &mut Context<Self>) {
-        reader_ui_state::set_json_raw(!pretty, cx);
-        let Some(json) = &mut self.json else {
-            return;
-        };
-        json.requested_pretty = pretty;
-        if pretty && json.pretty.is_none() {
-            // A large file: format on a worker, then show it.
-            if json.formatting {
-                return;
-            }
-            json.formatting = true;
-            let raw = json.raw.clone();
-            let task = cx
-                .background_executor()
-                .spawn(async move { okilum_core::json_view::pretty(&raw) });
-            cx.spawn_in(window, async move |this, cx| {
-                let pretty = task.await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    if let Some(json) = &mut this.json {
-                        json.formatting = false;
-                        json.pretty = Some(pretty);
-                    }
-                    // Raw chosen while formatting wins: keep the result, don't show it.
-                    let pretty = this.json.as_ref().is_some_and(|json| json.requested_pretty);
-                    this.show_json(pretty, window, cx);
-                });
-            })
-            .detach();
-            cx.notify();
-            return;
-        }
-        let showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
-        if json.showing_pretty == showing_pretty {
-            cx.notify();
-            return;
-        }
-        json.showing_pretty = showing_pretty;
-        let shown = json.shown().to_owned();
-        let range = document::first_page(&shown);
-        if let State::Content(input) = &self.state {
-            input.update(cx, |input, cx| {
-                input.set_value(shown[range].to_owned(), window, cx);
-                input.prepare_highlighting(window, cx);
-            });
-        }
-        self.prepare_document(shown, window, cx);
-        cx.notify();
-    }
-
-    fn prepare_document(&mut self, shown: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.page = 0;
-        self.paged = document::first_page(&shown).end < shown.len();
-        self.document = None;
-        self.structure_view = false;
-        self.matches.clear();
-        self.document_revision += 1;
-        self.search_revision += 1;
-        self.searching = false;
-        let revision = self.document_revision;
-        let language = language(&self.rel).unwrap_or("text");
-        let json = self.json.is_some();
-        let task = cx
-            .background_executor()
-            .spawn(async move { Arc::new(Document::for_file(shown, language, json)) });
-        cx.spawn_in(window, async move |this, cx| {
-            let document = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.document_revision != revision {
-                    return;
-                }
-                this.structure.reset(&document);
-                this.structure_view = this.requested_tree.unwrap_or(document.pages.len() > 1)
-                    && !document.structure.is_empty();
-                this.document = Some(document);
-                this.search(window, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn show_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = &self.document else {
             return;
         };
-        self.structure_view = false;
-        self.requested_tree = Some(false);
-        self.page = page.min(doc.pages.len() - 1);
+        let page = page.min(doc.pages.len() - 1);
+        if self.applied_page == Some((self.document_revision, page)) {
+            return;
+        }
+        self.page = page;
+        self.applied_page = Some((self.document_revision, page));
+        self.scrubber.update(cx, |slider, cx| {
+            slider.set_value(
+                self.page as f32 / (doc.pages.len().saturating_sub(1).max(1)) as f32,
+                window,
+                cx,
+            )
+        });
         let text = doc.text[doc.pages[self.page].clone()].to_owned();
         if let State::Content(input) = &self.state {
             input.update(cx, |state, cx| {
                 state.set_value(text, window, cx);
                 state.prepare_highlighting(window, cx);
             });
+        }
+        if let Some(input) = self.input() {
+            self.apply_diagnostics(&input, cx);
         }
         cx.notify();
     }
@@ -440,7 +471,7 @@ impl CodePreview {
         let Some(doc) = &self.document else {
             return;
         };
-        if self.structure_view {
+        if self.view == View::Tree {
             self.structure.reveal(&range, doc);
             cx.notify();
             return;
@@ -460,32 +491,68 @@ impl CodePreview {
         }
     }
 
-    fn copy_node(&self, cx: &mut App) {
-        let (Some(doc), State::Content(input)) = (&self.document, &self.state) else {
+    fn copy_selection(&self, cx: &mut App) {
+        if matches!(self.view, View::Tree | View::Table) {
             return;
+        }
+        if let Some(input) = self.input() {
+            let input = input.read(cx);
+            let range = input.selected_range();
+            if !range.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    input.text().slice(range).to_string(),
+                ));
+            }
+        }
+    }
+
+    fn node_copy_range(&self, cx: &App) -> Option<std::ops::Range<usize>> {
+        let (Some(doc), State::Content(input)) = (&self.document, &self.state) else {
+            return None;
         };
-        let offset = doc.pages[self.page].start + input.read(cx).cursor();
-        let range = if self.structure_view {
+        if self.view == View::Table {
+            return None;
+        }
+        if self.view == View::Tree {
             self.structure
                 .selected
                 .and_then(|i| doc.structure.get(i))
                 .map(|row| row.range.clone())
         } else {
-            doc.node_range(offset)
-        };
-        if let Some(range) = range {
-            cx.write_to_clipboard(ClipboardItem::new_string(doc.text[range].to_owned()));
+            let offset = doc.pages[self.page].start + input.read(cx).cursor();
+            let key = NodeCopyKey {
+                revision: self.document_revision,
+                page: self.page,
+                cursor: offset,
+            };
+            if let Some((cached_key, range)) = &*self.node_copy_cache.borrow() {
+                if *cached_key == key {
+                    return range.clone();
+                }
+            }
+            let range = doc.node_range(offset);
+            *self.node_copy_cache.borrow_mut() = Some((key, range.clone()));
+            range
+        }
+    }
+    fn copy_node(&self, window: &mut Window, cx: &mut App) {
+        if let Some(range) = self.node_copy_range(cx) {
+            copy_text_node(&self.document.as_ref().unwrap().text[range], window, cx);
         }
     }
 
     /// Find targets the visible table or the whole-file paged presentation.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
-        if self.show_table {
+        self.provisional_interacted.set(true);
+        if self.view == View::Table {
             if let Some(table) = self.table.as_ref().filter(|table| table.read(cx).ready()) {
                 return table.update(cx, |table, cx| table.focus_filter(window, cx));
             }
         }
-        if self.structure_view || self.paged {
+        if self.view == View::Tree || self.paged || self.retain_find {
+            if let Some(input) = self.input() {
+                input.update(cx, |input, cx| input.close_search(cx));
+            }
             self.find.update(cx, |input, cx| input.focus(window, cx));
             true
         } else {
@@ -493,97 +560,12 @@ impl CodePreview {
         }
     }
 
-    /// The Pretty / Raw switch and why a file stays raw.
-    fn json_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let json = self.json.as_ref()?;
-        let note = match &json.pretty {
-            _ if json.formatting => Some("Formatting…".to_owned()),
-            Some(Err(okilum_core::json_view::Error::Invalid(invalid))) => Some(format!(
-                "Not valid JSON — showing raw (line {}, column {})",
-                invalid.line, invalid.column
-            )),
-            Some(Err(okilum_core::json_view::Error::Limit { reason, limit })) => Some(format!(
-                "Pretty unavailable: {reason} limit {limit}; showing raw"
-            )),
-            None => Some("Large file — showing raw".to_owned()),
-            Some(Ok(_)) => None,
-        };
-        let entity = cx.entity().downgrade();
-        let raw_entity = entity.clone();
-        Some(
-            h_flex()
-                .gap_1()
-                .pb_2()
-                .items_center()
-                // The dashboard filter chips' style, so the shown mode reads as selected.
-                .child(
-                    ButtonGroup::new("json-mode")
-                        .child(
-                            Button::new("json-pretty")
-                                .small()
-                                .ghost()
-                                .label(if json.pretty.is_none() && !json.showing_pretty {
-                                    "Pretty-print anyway"
-                                } else {
-                                    "Pretty"
-                                })
-                                .selected(json.showing_pretty)
-                                // Invalid is a diagnostic, not an action gate.
-                                // The strict formatter refuses safely and keeps Raw.
-                                .disabled(json.formatting)
-                                .debug_selector(|| "json-pretty".into())
-                                .on_click(move |_, window, cx| {
-                                    let _ = entity
-                                        .update(cx, |this, cx| this.show_json(true, window, cx));
-                                }),
-                        )
-                        .child(
-                            Button::new("json-raw")
-                                .small()
-                                .ghost()
-                                .label("Raw")
-                                .selected(!json.showing_pretty)
-                                .debug_selector(|| "json-raw".into())
-                                .on_click(move |_, window, cx| {
-                                    let _ = raw_entity
-                                        .update(cx, |this, cx| this.show_json(false, window, cx));
-                                }),
-                        ),
-                )
-                .children(note.map(|note| {
-                    div()
-                        .pl_2()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .debug_selector(|| "json-note".into())
-                        .child(note)
-                }))
-                .into_any_element(),
-        )
-    }
-
-    /// JSON tools admit the same input sizes as the bounded viewer. Keep the
-    /// existing TXT editor and other code-format admission rules independent.
+    /// UI editing admission is independent of the 64 MiB source-tool budget.
     pub(crate) fn editable(&self) -> bool {
-        if Path::new(&self.rel)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
-        {
-            // TXT already had an independent FileEditor before this preview.
-            // Its own canonical read/recovery checks remain authoritative.
-            return true;
-        }
-        let edit_bytes = if Path::new(&self.rel)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-        {
-            okilum_core::code_operations::MAX_BYTES
-        } else {
-            EDIT_BYTES
-        };
         matches!(self.state, State::Content(_))
+            && self.storage_reason.is_none()
             && editable_format(&self.rel)
-            && self.source_bytes.is_some_and(|bytes| bytes <= edit_bytes)
+            && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
     }
 
     /// The file is still being read; whether it is editable is not known yet.
@@ -681,144 +663,196 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     .detach();
 }
 
-impl JsonText {
-    fn shown(&self) -> &str {
-        match &self.pretty {
-            Some(Ok(pretty)) if self.showing_pretty => pretty,
-            _ => &self.raw,
-        }
-    }
-}
-
 impl Render for CodePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
-        let table_ready = self
-            .table
-            .as_ref()
-            .is_some_and(|table| table.read(cx).ready());
-        let modes = table_ready.then(|| {
-            h_flex()
-                .px_4()
-                .py_1()
-                .gap_2()
-                .children([true, false].map(|table| {
-                    Button::new(if table { "json-table" } else { "json-source" })
-                        .debug_selector(move || {
-                            if table {
-                                "json-table".into()
-                            } else {
-                                "json-source".into()
-                            }
-                        })
-                        .small()
-                        .ghost()
-                        .label(if table { "Table" } else { "Source" })
-                        .selected(self.show_table == table)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.show_table = table;
-                            cx.notify();
-                        }))
-                }))
-                .into_any_element()
+        #[cfg(feature = "data-view-native-harness")]
+        native_trace("chrome.begin");
+        let header = self.own_header.then(|| {
+            let chrome = self.compact_chrome(cx.entity(), cx);
+            reader_viewer_chrome::render_compact_header(
+                &chrome,
+                window.viewport_size().width.as_f32(),
+                window,
+                cx,
+            )
         });
-        if table_ready && self.show_table {
-            return v_flex()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .children(modes)
-                .child(self.table.as_ref().unwrap().clone())
-                .into_any_element();
-        }
+        #[cfg(feature = "data-view-native-harness")]
+        native_trace("chrome.end");
+        let content = self.render_content(cx);
+        let footer = self.bottom_line(cx);
         let view = v_flex()
-            .children(modes)
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &CopyNode, _, cx| this.copy_node(cx)))
-            .on_action(cx.listener(|this, _: &FindInNote, window, cx| {
-                if !this.open_paged_find(window, cx) {
-                    if let Some(input) = this.input() {
-                        input.update(cx, |state, cx| {
-                            state.open_search(false, cx);
-                            state.focus(window, cx);
-                        });
-                    }
-                }
-            }))
+            .when(self.provisional_subscription.is_some(), |view| {
+                let clicked = self.provisional_interacted.clone();
+                let keyed = clicked.clone();
+                view.capture_any_mouse_down(move |_, _, _| clicked.set(true))
+                    .capture_key_down(move |_, _, _| keyed.set(true))
+            })
             .debug_selector(|| "reader-code-file".into())
+            .on_action(cx.listener(|this, _: &CopyNode, window, cx| this.copy_node(window, cx)))
+            .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy_selection(cx)))
+            .on_action(cx.listener(|this, _: &GoToError, window, cx| this.go_to_error(window, cx)))
+            .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowTable, window, cx| {
+                    this.set_view(View::Table, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowTree, window, cx| this.set_view(View::Tree, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowFormatted, window, cx| {
+                this.set_view(View::Formatted, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ShowRaw, window, cx| this.set_view(View::Raw, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
+            .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousPart, window, cx| this.step_part(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NextPart, window, cx| this.step_part(true, window, cx)),
+            )
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .children(header)
+            .child(content)
+            .child(footer);
+        #[cfg(feature = "data-view-native-harness")]
+        native_trace("preview.render.end");
+        view.into_any_element()
+    }
+}
+
+impl CodePreview {
+    #[inline(never)]
+    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.view == View::Table {
+            if let Some(table) = &self.table {
+                return table.clone().into_any_element();
+            }
+        }
+        let view = v_flex()
             .w_full()
             .max_w(px(reader_ui_state::note_column_width(cx)))
             .mx_auto()
             .flex_1()
             .min_h_0()
-            .px(px(READER_SIDE_PADDING))
-            .pb_6();
-        let result = match &self.state {
-            State::Loading => view.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Opening file…"),
-            ),
-            State::Message(message) => {
-                let root = self.root.clone();
-                let rel = self.rel.clone();
-                view.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(*message),
-                        )
-                        .child(
-                            reader_icon_button(
-                                "code-file-open",
-                                IconName::ExternalLink,
-                                "Open with default app",
-                                cx,
-                            )
-                            .on_click(move |_, window, cx| {
-                                reader_files::run(
-                                    reader_files::FileAction::Open,
-                                    &root,
-                                    &rel,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ),
-                )
-            }
+            .px(px(READER_SIDE_PADDING));
+        match &self.state {
+            State::Loading => view.child(div().child("Opening file…")).into_any_element(),
+            State::Message(message) => view.child(self.message(message, cx)).into_any_element(),
             State::Content(input) => view
-                .child(self.toolbar(cx))
-                .children(self.json_bar(cx))
-                .when(self.structure_view, |view| {
-                    view.child(self.structure_element(cx))
+                .when(
+                    self.view == View::Tree || self.paged || self.retain_find,
+                    |view| view.child(self.search_row(cx)),
+                )
+                .child(if self.view == View::Tree {
+                    self.structure_element(cx)
+                } else {
+                    Editor::new(input)
+                        .readonly(true)
+                        .context_menu(|menu, _, _| {
+                            text_menu(menu, false)
+                                .separator()
+                                .menu("Copy node", Box::new(CopyNode))
+                        })
+                        .appearance(false)
+                        .font_family(reader_fonts::code(cx))
+                        .text_size(text_size(cx))
+                        .size_full()
+                        .into_any_element()
                 })
-                .when(!self.structure_view, |view| {
-                    view.child(
-                        // The element applies its own flag to the state on every render.
-                        Editor::new(input)
-                            .readonly(true)
-                            .context_menu(|menu, _, _| {
-                                text_menu(menu, false)
-                                    .separator()
-                                    .menu("Copy node", Box::new(CopyNode))
-                            })
-                            .appearance(false)
-                            .font_family(reader_fonts::code(cx))
-                            .text_size(text_size(cx))
-                            .size_full(),
-                    )
-                }),
-        };
-        #[cfg(feature = "data-view-native-harness")]
-        native_trace("preview.render.end");
-        result.into_any_element()
+                .into_any_element(),
+        }
+    }
+}
+
+impl Reader {
+    #[inline(never)]
+    pub(crate) fn code_action_listeners(&self, view: Div, cx: &mut Context<Self>) -> Div {
+        if self.read_code_view().is_none() {
+            return view;
+        }
+        view.on_action(cx.listener(|this, _: &ShowTable, window, cx| {
+            this.change_code_view(View::Table, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowTree, window, cx| {
+            this.change_code_view(View::Tree, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowFormatted, window, cx| {
+            this.change_code_view(View::Formatted, window, cx)
+        }))
+        .on_action(
+            cx.listener(|this, _: &ShowRaw, window, cx| {
+                this.change_code_view(View::Raw, window, cx)
+            }),
+        )
+        .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_code_view(true, cx)))
+        .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_code_view(false, cx)))
+        .on_action(cx.listener(|this, _: &CopyNode, window, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.copy_node(window, cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &CopySelection, _, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.copy_selection(cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &GoToError, window, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.go_to_error(window, cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &PreviousPart, window, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.step_part(false, window, cx));
+            }
+        }))
+        .on_action(cx.listener(|this, _: &NextPart, window, cx| {
+            if let Some(code) = this.read_code_view() {
+                code.update(cx, |code, cx| code.step_part(true, window, cx));
+            }
+        }))
+    }
+    pub(super) fn resume_code_presentation(&self, cx: &mut App) {
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+        {
+            code.update(cx, |code, cx| {
+                code.read_active = true;
+                if let Some(input) = code.input() {
+                    code.apply_diagnostics(&input, cx);
+                }
+                cx.notify();
+            });
+        }
+    }
+    fn read_code_view(&self) -> Option<Entity<CodePreview>> {
+        if self.editing.is_some() {
+            return None;
+        }
+        self.file_preview.as_ref()?.code.clone()
+    }
+    fn change_code_view(&self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(code) = self.read_code_view() {
+            code.update(cx, |code, cx| code.set_view(view, window, cx));
+        }
+    }
+    fn fold_code_view(&self, folded: bool, cx: &mut Context<Self>) {
+        if let Some(code) = self.read_code_view() {
+            code.update(cx, |code, cx| code.fold_all(folded, cx));
+        }
     }
 }
 
@@ -908,17 +942,17 @@ mod tests {
                 "Find filters the displayed table"
             )
         });
-        let source_button = visual.debug_bounds("json-source").unwrap();
-        visual.simulate_click(source_button.center(), Modifiers::default());
+        preview.update_in(visual, |p, window, cx| {
+            p.set_view(View::Formatted, window, cx)
+        });
         visual.run_until_parked();
         preview.read_with(visual, |p, cx| {
-            assert!(!p.show_table);
+            assert!(p.view != View::Table);
             assert!(p.input().is_some_and(|input| !input.read(cx).is_editable()));
         });
-        assert!(visual.debug_bounds("json-pretty").is_some());
+        assert!(visual.debug_bounds("code-view-menu").is_some());
         assert!(visual.debug_bounds("table-duckdb").is_none());
-        let button = visual.debug_bounds("json-table").unwrap();
-        visual.simulate_click(button.center(), Modifiers::default());
+        preview.update_in(visual, |p, window, cx| p.set_view(View::Table, window, cx));
         visual.run_until_parked();
         assert!(visual.debug_bounds("table-duckdb").is_some());
         assert_eq!(std::fs::read_to_string(path).unwrap(), source);

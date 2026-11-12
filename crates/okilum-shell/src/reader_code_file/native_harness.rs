@@ -43,9 +43,14 @@ pub(crate) fn entry() -> bool {
                         && preview.read(cx).input().is_some_and(|input| !input.read(cx).highlighting_pending()));
                     if ready && ticks >= 6 { break; }
                 }
-                handle.update(cx, |_, _, cx| {
+                let initial_view = cx.update(|cx| preview.read(cx).view);
+                handle.update(cx, |_, window, cx| {
                     preview.update(cx, |p, cx| {
                         if name == "big.json" || name == "big.xml" {
+                            let initial = p.view;
+                            p.fold_all(true, cx);
+                            assert_eq!(p.view, initial, "Fold must not switch views");
+                            p.set_view(View::Tree, window, cx);
                             p.fold_all(true, cx);
                             assert_eq!(p.structure.visible, vec![0]);
                             p.fold_all(false, cx);
@@ -54,7 +59,7 @@ pub(crate) fn entry() -> bool {
                         let input = p.input().unwrap();
                         assert!(!input.read(cx).is_editable());
                         if name == "big.json" {
-                            assert!(p.structure_view, "minified native view uses the complete AST");
+                            assert!(p.view == View::Tree, "minified native view uses the complete AST");
                             assert_eq!(p.structure.visible.len(), 3);
                             assert!(doc.text.len() > 32 * 1024 * 1024);
                             assert!(input.read(cx).text().len() <= 32 * 1024);
@@ -63,7 +68,7 @@ pub(crate) fn entry() -> bool {
                             let range = doc.node_range(matches[0].start).unwrap();
                             cx.write_to_clipboard(ClipboardItem::new_string(doc.text[range].to_owned()));
                         } else if name == "big.xml" {
-                            assert!(p.structure_view);
+                            assert!(p.view == View::Tree);
                             assert!(doc.structure.len() > 100_000);
                             assert!(input.read(cx).text().len() <= 32 * 1024);
                             let matches = doc.find("NEEDLE");
@@ -77,7 +82,7 @@ pub(crate) fn entry() -> bool {
                                 s.set_all_folded(false, cx);
                                 s.set_selected_range(doc.text.find("שלום").unwrap()..doc.text.find("שלום").unwrap(), cx);
                             });
-                            p.copy_node(cx);
+                            p.copy_node(window, cx);
                         } else {
                             assert!(doc.text.len() >= 32 * 1024 * 1024 - 256);
                             assert_eq!(input.read(cx).text().len(), doc.text.len());
@@ -85,7 +90,8 @@ pub(crate) fn entry() -> bool {
                         }
                     });
                 }).unwrap();
-                let receipt = serde_json::json!({"file":name,"ticks":ticks,"max_event_loop_gap_ms":maximum.as_millis(),"ready_ms":started.elapsed().as_millis(),"real_native_platform":true});
+                let final_view = cx.update(|cx| preview.read(cx).view);
+                let receipt = serde_json::json!({"initial_view":initial_view,"final_view":final_view,"file":name,"ticks":ticks,"max_event_loop_gap_ms":maximum.as_millis(),"ready_ms":started.elapsed().as_millis(),"real_native_platform":true});
                 std::fs::write(directory.join(format!("ready-{name}")), receipt.to_string()).unwrap();
                 let start = Instant::now();
                 while !directory.join(format!("ack-{name}")).exists() {

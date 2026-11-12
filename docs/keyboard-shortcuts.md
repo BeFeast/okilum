@@ -96,3 +96,15 @@ contexts/global warnings, last-good behavior, atomic save conflict refusal,
 search/reset and same-session file reload. Native platform checks remain separate
 from installed tester acceptance; delivery is recorded with the first containing
 beta per OS in issue #2626.
+
+## Code and data views (#2809)
+
+In a read-only code/data viewer, Alt+1…4 selects Table, Tree, Formatted and Raw;
+on macOS use Control+1…4 to avoid the Option text-input layer. A view the file
+does not offer is a no-op. Ctrl+Shift+[ / ] folds/unfolds the active view without
+switching views. Linux accepts both unshifted bracket+Shift and the reported
+shifted character; macOS accepts Control+{ / } as reported by its event layer.
+Ctrl+Shift+C copies a node in the code context; notes retain Copy as Markdown
+on their existing platform shortcut. Alt/Option+PageUp and PageDown selects the
+previous/next text part. All commands are listed and rebindable; hints use the
+live keymap. macOS Mission Control priority requires installed-beta verification.
