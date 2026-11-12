@@ -1702,13 +1702,20 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let worker_reads = reads.clone();
         let (send, receive) = mpsc::channel();
+        let (ready, started) = mpsc::channel();
+        let (cancel, cancellation) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            // A failed deadline must not remove the worker's vault underneath
+            // an unfinished read or turn the original failure into SendError.
+            let _temp = temp;
             let result = reconcile_parallel_with_reader(
                 &root,
                 None,
                 false,
                 &mut |phase, _| {
                     if phase == "Checking notes" {
+                        ready.send(()).unwrap();
+                        cancellation.recv().unwrap();
                         let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
                         while worker_reads.load(Ordering::SeqCst) < SOURCE_READ_WORKERS * 3
                             && std::time::Instant::now() < until
@@ -1724,8 +1731,14 @@ mod tests {
                     std::fs::read(p)
                 },
             );
-            send.send(result.map(|_| ())).unwrap();
+            let _ = send.send(result.map(|_| ()));
         });
+        // Metadata/authority preparation is not the cancellation operation.
+        // The existing outer suite supervisor still bounds that preparation.
+        started
+            .recv()
+            .expect("reconciliation reached source workers");
+        cancel.send(()).unwrap();
         let error = receive
             .recv_timeout(std::time::Duration::from_secs(3))
             .expect("cancellation must not deadlock scoped workers")
@@ -3173,7 +3186,9 @@ mod tests {
         let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let read_gate = gate.clone();
         let work_root = root.clone();
+        let (ready, started) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let mut ready = Some(ready);
             reconcile_parallel_prioritized_with_reader(
                 &work_root,
                 None,
@@ -3184,7 +3199,14 @@ mod tests {
                     "link.md".into(),
                     "recent.md".into(),
                 ],
-                &mut |_, _| Ok(()),
+                &mut |phase, _| {
+                    if phase == "Checking notes" {
+                        if let Some(ready) = ready.take() {
+                            ready.send(()).unwrap();
+                        }
+                    }
+                    Ok(())
+                },
                 &|path| {
                     send.send(note_path(path.strip_prefix(&work_root).unwrap()))
                         .unwrap();
@@ -3196,22 +3218,21 @@ mod tests {
                     std::fs::read(path)
                 },
             )
-            .unwrap()
         });
-        let first: std::collections::BTreeSet<_> = (0..SOURCE_READ_WORKERS)
-            .map(|_| {
-                receive
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap()
-            })
+        started.recv().expect("priority source workers started");
+        let first: Result<std::collections::BTreeSet<_>, _> = (0..SOURCE_READ_WORKERS)
+            .map(|_| receive.recv_timeout(std::time::Duration::from_secs(5)))
             .collect();
+        // Release/join before assertions, including a failed read deadline, so
+        // no blocked reader outlives the fixture or hangs a later test.
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let (vault, snapshot, _) = worker.join().unwrap().unwrap();
+        let first = first.expect("priority first-wave source reads completed");
         assert_eq!(
             first, preferred,
             "all first-wave workers take priority paths; positive control includes rest notes"
         );
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
-        let (vault, snapshot, _) = worker.join().unwrap();
         let (serial, full, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
         assert_eq!(
             vault

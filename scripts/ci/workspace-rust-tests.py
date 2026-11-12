@@ -2,6 +2,7 @@
 """Run the complete workspace census with resource-sensitive cases isolated."""
 import re
 import hashlib
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +46,11 @@ def run(name, arguments, expected):
 
 
 def main():
+    shard_count = os.environ.get('OKILUM_WORKSPACE_ORDINARY_SHARDS', '2')
+    if shard_count not in ('2', '4'):
+        print('ordinary workspace shards must be 2 (hosted) or 4 (heavy)', file=sys.stderr)
+        return 2
+    shard_count = int(shard_count)
     # Keep the same four packages in EVERY invocation: Cargo feature unification,
     # test/doc targets, working directories and runtime environment stay intact.
     inventory = subprocess.run(COMMAND + ["--list"], capture_output=True, text=True)
@@ -60,13 +66,13 @@ def main():
     reveals = sum(REVEAL in name for name in names)
     ordinary = len(names) - logs - reveals
     assert ordinary > 0 and logs > 0 and reveals > 0, "every measured group must fire"
-    shards = [[], []]
+    shards = [[] for _ in range(shard_count)]
     for name in names:
         if LOG not in name and REVEAL not in name:
             # Identical names in different targets must stay in one shard;
             # libtest exact matching runs every occurrence there, once only.
-            shards[hashlib.sha256(name.encode()).digest()[0] % 2].append(name)
-    assert all(shards), "both ordinary shards must fire"
+            shards[hashlib.sha256(name.encode()).digest()[0] % shard_count].append(name)
+    assert all(shards), "every ordinary shard must fire"
     parts = [
         (f"ordinary-{index}", ["--nocapture", "--test-threads=2", "--exact", *sorted(set(shard))], len(shard))
         for index, shard in enumerate(shards)
@@ -76,13 +82,13 @@ def main():
     ]
     print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals}",
           flush=True)
-    # Separate processes retain separate Log pools. Split ordinary cases with
-    # the same total of four threads, and overlap serial Log I/O after inventory
-    # compilation. Exact filters prevent substring overlap between the shards.
+    # Separate processes retain separate Log pools. Hosted keeps four ordinary
+    # threads; the existing heavy resource class can run eight. Overlap serial
+    # Log I/O after inventory compilation. Exact filters prevent duplicate runs.
     # Reveal stays alone so its real D-Bus deadlines do not compete with either.
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(lambda part: run(*part), parts[:3]))
-    results.append(run(*parts[3]))
+    with ThreadPoolExecutor(max_workers=shard_count + 1) as pool:
+        results = list(pool.map(lambda part: run(*part), parts[:-1]))
+    results.append(run(*parts[-1]))
     passed = all(results)
     return 0 if passed else 1
 

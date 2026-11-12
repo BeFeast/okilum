@@ -65,7 +65,8 @@ suite board-peek-model 120 cargo test --locked -p okilum-t3 peek_2531_ -- --noca
 suite issue2486 120 env TZ=Pacific/Auckland cargo test --locked -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
 suite direct-origin-tests 120 cargo test --locked -p okilum-sync-controller --lib direct::origin::tests:: -- --nocapture
 suite source-presentation 120 cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
-suite reader-editor-live-preview 120 cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
+# Match hosted concurrency rather than starting a native fixture per heavy CPU.
+suite reader-editor-live-preview 120 cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture --test-threads=4
 suite input-anchor-tests 120 cargo test --locked -p okilum-shell --bin okilum input_anchor_tests:: -- --nocapture
 suite reader-editor-tables-grid 120 cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid:: -- --nocapture
 suite reader-editor-lists-key-tests 120 cargo test --locked -p okilum-shell --bin okilum reader_editor::lists::key_tests:: -- --nocapture
