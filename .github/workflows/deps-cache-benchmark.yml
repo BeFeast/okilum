@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - name: Prepare native Linux dependencies
         run: |
-          sudo bash scripts/ci/hosted-ubuntu-apt.sh install mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
       - name: Measure both cache versions on this VM
