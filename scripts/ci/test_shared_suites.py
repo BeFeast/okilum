@@ -13,6 +13,9 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 if Path(sys.argv[0]).name == 'python3':
+    if args[0].endswith('/test-group.py'):
+        assert args[1:5] == ['--isolated-writer-account', 'shared-log', '3600', 'cargo'], args
+        os.execvp(args[4], args[4:])
     name = args[args.index('-s') + 1] if '-s' in args else args[0]
     if name == 'scripts/ci/workspace-rust-tests.py':
         assert args == ['scripts/ci/workspace-rust-tests.py', '--shared'], args

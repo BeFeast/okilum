@@ -11,7 +11,9 @@ import math
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
+import tempfile
 import time
 
 GRACE = 30
@@ -53,6 +55,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kill-after', type=float, default=GRACE,
                         help='TERM grace in seconds, at most 30 (default: 30)')
+    parser.add_argument('--isolated-writer-account', action='store_true',
+                        help='private inherited XDG state until every descendant is reaped')
     parser.add_argument('group')
     parser.add_argument('limit', type=float, help='positive wall-clock seconds')
     parser.add_argument('command', nargs=argparse.REMAINDER)
@@ -67,7 +71,11 @@ def main():
         signal.signal(sig, lambda number, frame: cancelled.append(number))
     started = time.monotonic()
     print(f'TEST_GROUP_START group={args.group} limit={args.limit:g}s', flush=True)
-    process = subprocess.Popen(args.command, start_new_session=True)
+    state = tempfile.mkdtemp(prefix='okilum-writer-account-') if args.isolated_writer_account else None
+    options = dict(start_new_session=True)
+    if state:
+        options['env'] = dict(os.environ, XDG_STATE_HOME=state)
+    process = subprocess.Popen(args.command, **options)
     stopping = None
     timed_out = False
     terminated = set()
@@ -106,6 +114,13 @@ def main():
         if result is not None and not owned:
             break
         time.sleep(.05)
+    if state:
+        bindings = len(list((Path(state) / 'okilum/local-writers-v1').glob('*.json')))
+        # Only this newly allocated CI account is removed, after the same
+        # subreaper has collected every child that could still use it.
+        shutil.rmtree(state)
+        print(f'TEST_GROUP_WRITER_ACCOUNT group={args.group} bindings={bindings} cleanup=after-reap',
+              flush=True)
     status = 124 if timed_out else 128 + cancelled[0] if cancelled else result
     if status < 0:
         status = 128 - status
