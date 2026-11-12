@@ -8,7 +8,8 @@ publish.workspace = true
 anyhow = "1"
 okilum-sync = { path = "../../../crates/okilum-sync" }
 okilum-inbox-domain = { path = "../okilum-inbox-domain" }
-rusqlite = { version = "=0.42.0", features = ["bundled"] }
+# SQLite cursors/revisions use checked u64-to-INTEGER conversions, now opt-in.
+rusqlite = { version = "=0.42.0", features = ["bundled", "fallible_uint"] }
 uuid.workspace = true
 thiserror.workspace = true
 

@@ -100,3 +100,20 @@ fn old_sqlite_databases_open_migrate_and_preserve_durable_replay() {
             .unwrap());
     }
 }
+
+#[test]
+fn unsigned_sql_values_keep_checked_integer_conversions() {
+    let db = Connection::open_in_memory().unwrap();
+    let maximum = i64::MAX as u64;
+    assert_eq!(
+        db.query_row("SELECT ?1", [maximum], |r| r.get::<_, u64>(0))
+            .unwrap(),
+        maximum
+    );
+    assert!(db
+        .query_row("SELECT ?1", [maximum + 1], |r| r.get::<_, u64>(0))
+        .is_err());
+    assert!(db
+        .query_row("SELECT -1", [], |r| r.get::<_, u64>(0))
+        .is_err());
+}
