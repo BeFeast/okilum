@@ -3,12 +3,22 @@
 set -euo pipefail
 # shellcheck source=scripts/ci/test-nofile.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
+# Retain admission's package feature union in later default-feature filters.
+# Switching back to single-package roots otherwise recompiles the same GUI
+# and core dependencies inside short operation groups after cold admission.
+packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
 # Keep every failure, while allowing independent suites to finish their evidence.
 failed=0
 suite() {
     local group=$1 limit=$2
     local account=()
     shift 2
+    if [[ ${1:-} == cargo && ${2:-} == test ]]; then
+        case "$group" in
+            appimage|http-updates|sprint-distribution|portable-reader) ;;
+            *) set -- "$1" "$2" "${packages[@]}" "${@:3}" ;;
+        esac
+    fi
     printf '\nLinux suite: %s\n' "$*"
     if [[ "$group" == reader-editor-live-preview ]]; then
         account=(--isolated-writer-account)
@@ -66,7 +76,7 @@ suite board-peek-model 120 cargo test --locked -p okilum-t3 peek_2531_ -- --noca
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check
 # distinguish Local from Utc without mutating global environment in Rust tests.
-suite issue2486 120 env TZ=Pacific/Auckland cargo test --locked -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
+suite issue2486 120 env TZ=Pacific/Auckland cargo test --locked "${packages[@]}" -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
 suite direct-origin-tests 120 cargo test --locked -p okilum-sync-controller --lib direct::origin::tests:: -- --nocapture
 suite source-presentation 120 cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
 # Match hosted concurrency rather than starting a native fixture per heavy CPU.

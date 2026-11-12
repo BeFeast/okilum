@@ -527,6 +527,19 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertEqual(result.returncode, int(fail), result.stdout + result.stderr)
                 calls = log.read_text().splitlines()
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
+                for selection in ('direct::existing::tests::', 'reader_settings_sync::',
+                                  'reader_feedback::ui_tests::feedback2749_',
+                                  'reader_editor::live_preview::', 'issue2486_'):
+                    selected = [call for call in calls if selection in call]
+                    self.assertEqual(len(selected), 1, selection)
+                    for package in ('okilum-write-authority', 'okilum-core',
+                                    'okilum-shell', 'okilum-t3'):
+                        self.assertIn('-p ' + package, selected[0])
+                # Separate feature/no-default policies retain their own roots.
+                image = next(call for call in calls if '--all-features' in call)
+                portable = next(call for call in calls if '--test portable_reader' in call)
+                self.assertNotIn('-p okilum-shell', image)
+                self.assertNotIn('-p okilum-shell', portable)
                 self.assertTrue(any('sprint=1' in call for call in calls))
                 self.assertTrue(any('retired-sync.test.js' in call for call in calls))
                 self.assertIn('vendor-tests', calls)
@@ -549,6 +562,53 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+    def test_native_frame_measurement_waits_for_ordinary_cases_and_keeps_its_failure(self):
+        for shared in (False, True):
+            names = ['ordinary::case0', 'ordinary::case2', workspace.NATIVE_FRAME]
+            resources = ['tests::appimage'] if shared else [
+                'reader_log::case', 'platform::reveal::tests::case']
+            names += resources
+            inventory = subprocess.CompletedProcess([], 0, stdout=(
+                'Running unittests src/main.rs (target/debug/deps/okilum-abcdef)\n'
+                + ''.join(name + ': test\n' for name in names if name != 'tests::appimage')
+                + ('Running unittests src/lib.rs (target/debug/deps/okilum_appimage-abcdef)\n'
+                   'tests::appimage: test\n' if shared else '')), stderr='')
+            for failed in (None, 'native-frame', 'ordinary-0'):
+                with self.subTest(shared=shared, failed=failed):
+                    completed, seen = set(), []
+                    lock = threading.Lock()
+                    barrier = threading.Barrier(3)
+
+                    def execute(name, arguments, expected, **options):
+                        if name in ('native-frame', 'reveal'):
+                            earlier = {'ordinary-0', 'ordinary-1'} | ({'appimage'} if shared else {'logs'})
+                            if name == 'reveal':
+                                earlier.add('native-frame')
+                            self.assertEqual(completed, earlier)
+                        else:
+                            barrier.wait(timeout=3)
+                        if name.startswith('ordinary-') or name in ('native-frame', 'appimage'):
+                            self.assertIn('--exact', arguments)
+                            selected = [item for item in names if item in arguments]
+                            if name == 'native-frame':
+                                self.assertIn('--test-threads=1', arguments)
+                                self.assertEqual(selected, [workspace.NATIVE_FRAME])
+                            elif name.startswith('ordinary-'):
+                                self.assertNotIn(workspace.NATIVE_FRAME, arguments)
+                        else:
+                            selected = [item for item in names if arguments[0] in item]
+                        self.assertEqual(len(selected), expected)
+                        with lock:
+                            seen.extend(selected)
+                            completed.add(name)
+                        return name != failed
+
+                    with patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                            patch.object(workspace, 'run', side_effect=execute), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(workspace.main(shared=shared), int(failed is not None))
+                    self.assertCountEqual(seen, names)
 
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux process supervision')
