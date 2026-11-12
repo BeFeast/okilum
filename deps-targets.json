@@ -1,4 +1,5 @@
 {
+  "tree-sitter-sequel": "0.3.13",
   "rust-i18n-support": "4.2.4",
   "cc": "1.11.1",
   "crc32fast": "1.5.5",
