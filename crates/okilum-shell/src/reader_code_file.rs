@@ -11,6 +11,8 @@ mod loading;
 mod loading_tests;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+#[cfg(feature = "data-view-native-harness")]
+pub(crate) mod toolbar_native;
 #[cfg(test)]
 mod review_tests;
 mod structure;

@@ -10,7 +10,7 @@ pub(super) struct Structure {
     pub selected: Option<usize>,
     pub match_node: Option<usize>,
     pub visible: Vec<usize>,
-    scroll: UniformListScrollHandle,
+    pub(super) scroll: UniformListScrollHandle,
 }
 
 impl Structure {
@@ -46,7 +46,7 @@ impl Structure {
         self.rebuild(doc);
     }
 
-    fn toggle(&mut self, index: usize, doc: &Document) {
+    pub(super) fn toggle(&mut self, index: usize, doc: &Document) {
         if !self.exceptions.remove(&index) {
             self.exceptions.insert(index);
         }
@@ -120,6 +120,8 @@ impl CodePreview {
     }
 
     fn structure_row(&self, visible: usize, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "data-view-native-harness")]
+        NATIVE_ROWS.with(|count| count.set(count.get()+1));
         let doc = self.document.as_ref().unwrap();
         let index = self.structure.visible[visible];
         let row = &doc.structure[index];
@@ -207,7 +209,7 @@ impl CodePreview {
                     )
                     .into_any_element();
                 #[cfg(feature = "data-view-native-harness")]
-                let label = label_paint_probe::Trace::new(label, 3).into_any_element();
+                let label = toolbar_native::trace::Trace::new(label, 3).into_any_element();
                 label
             })
             .child(
@@ -343,3 +345,8 @@ mod tests {
         }
     }
 }
+
+#[cfg(feature = "data-view-native-harness")]
+thread_local! { static NATIVE_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "data-view-native-harness")]
+pub(super) fn native_row_builds()->usize {NATIVE_ROWS.with(|count|count.get())}

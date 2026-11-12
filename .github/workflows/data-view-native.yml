@@ -68,18 +68,17 @@ jobs:
           path: target/code-toolbar-release/release/okilum.exe
           if-no-files-found: error
           retention-days: 3
-      - name: Package unchanged native build inputs for VM-only atlas experiment
+      - name: Measure original main Reader unmarked open and scroll budgets
         shell: bash
-        run: python scripts/ci/toolbar-baseline-capsule.py
+        run: python scripts/ci/code-toolbar-native-app.py target/code-toolbar-release/release/okilum.exe
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: toolbar-main-baseline-build-inputs
+          name: main-reader-native-budget
           path: |
-            ${{ runner.temp }}/toolbar-baseline-workspace.tar.gz
-            ${{ runner.temp }}/toolbar-baseline-cargo.tar.gz
-          compression-level: 0
+            ${{ runner.temp }}/code-toolbar-native-app.log
+            ${{ runner.temp }}/code-toolbar-native-receipt.json
           if-no-files-found: error
-          retention-days: 3
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.baseline_cache.outputs.cache-hit != 'true' }}
         with:

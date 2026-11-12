@@ -4145,6 +4145,8 @@ impl Reader {
 
     /// docs/design/reader.md §Layout: icon controls, breadcrumbs, loading status.
     fn render_header(&self, available: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "data-view-native-harness")]
+        let _native = reader_code_file::toolbar_native::trace::Work::start(21);
         let notes_open = self
             .workspace_panels()
             .visible(reader_layout::Panel::Notes, available);
@@ -7779,6 +7781,8 @@ impl Render for Reader {
         }
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
+        #[cfg(feature = "data-view-native-harness")]
+        let _native_reader_prelude = reader_code_file::toolbar_native::trace::Work::start(14);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
@@ -7789,6 +7793,8 @@ impl Render for Reader {
         let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+        #[cfg(feature = "data-view-native-harness")]
+        drop(_native_reader_prelude);
         let sync_started = std::time::Instant::now();
         let sync_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::ReaderUiSync);
@@ -7816,6 +7822,8 @@ impl Render for Reader {
         }
         self.sync_outline_section(cx);
         drop(sync_timing);
+        #[cfg(feature = "data-view-native-harness")]
+        let _native_reader_layout = reader_code_file::toolbar_native::trace::Work::start(15);
         let diagnostics = self
             .loading
             .as_ref()
@@ -7884,6 +7892,10 @@ impl Render for Reader {
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
             .children(reader_text_zoom::hud(self, cx));
+        #[cfg(feature = "data-view-native-harness")]
+        drop(_native_reader_layout);
+        #[cfg(feature = "data-view-native-harness")]
+        let _native_reader_panels = reader_code_file::toolbar_native::trace::Work::start(24);
         let mut panel_bodies =
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
                 workspace_panels.visible(panel, available).then(|| {
@@ -8006,6 +8018,12 @@ impl Render for Reader {
                     .into_any_element()
             })
             .collect();
+        #[cfg(feature = "data-view-native-harness")]
+        drop(_native_reader_panels);
+        #[cfg(feature = "data-view-native-harness")]
+        let _native_root_total = reader_code_file::toolbar_native::trace::Work::start(23);
+        #[cfg(feature = "data-view-native-harness")]
+        let _native_root_actions = reader_code_file::toolbar_native::trace::Work::start(16);
         v_flex()
             .size_full()
             .min_w_0()
@@ -8318,6 +8336,8 @@ impl Render for Reader {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .map(|view| {
+                #[cfg(feature = "data-view-native-harness")]
+                drop(_native_root_actions);
                 #[cfg(target_os = "linux")]
                 let header = if self.board_manager_header_cache(available) {
                     self.header_cache
@@ -8651,6 +8671,10 @@ OPTIONS:
 fn main() {
     #[cfg(feature = "data-view-native-harness")]
     if reader_viewer_native::entry() {
+        return;
+    }
+    #[cfg(feature = "data-view-native-harness")]
+    if reader_code_file::toolbar_native::entry() {
         return;
     }
     if let Some(code) = reader_service_storage::command_line() {

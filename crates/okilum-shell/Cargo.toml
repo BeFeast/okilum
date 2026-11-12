@@ -21,7 +21,7 @@ appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 updater-ui-harness = []
 # Synthetic native clipboard/Finder/Explorer acceptance; never a release feature.
 embed-native-harness = []
-data-view-native-harness = []
+data-view-native-harness = ["gpui/bench-support"]
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
 
