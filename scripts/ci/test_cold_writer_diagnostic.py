@@ -20,6 +20,20 @@ spec.loader.exec_module(probe)
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux proc/cgroup probe')
 class ColdWriterControls(unittest.TestCase):
+    def test_shared_runtime_probe_executes_full_entrypoint_and_keeps_its_verdict(self):
+        for status in (0, 7):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / 'scripts/ci'
+                scripts.mkdir(parents=True)
+                (scripts / 'check-shared.sh').write_text(
+                    '[[ "$OKILUM_WORKSPACE_ORDINARY_SHARDS" == 4 ]] || exit 99\n'
+                    f'echo COMPLETE_SHARED_ENTRYPOINT\nexit {status}\n')
+                result = subprocess.run(['bash', str(HERE / 'runtime-fixture-diagnostic.sh'), 'shared'],
+                    cwd=root, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertIn('COMPLETE_SHARED_ENTRYPOINT', result.stdout)
+
     def test_runtime_probe_requires_real_target_receipts_and_retains_failures(self):
         for passed, cargo_status in [(1, 0), (0, 0), (1, 7)]:
             with self.subTest(passed=passed, status=cargo_status), tempfile.TemporaryDirectory() as directory:

@@ -14,6 +14,9 @@ from pathlib import Path
 args = sys.argv[1:]
 if Path(sys.argv[0]).name == 'python3':
     name = args[args.index('-s') + 1] if '-s' in args else args[0]
+    if name == 'scripts/ci/workspace-rust-tests.py':
+        assert args == ['scripts/ci/workspace-rust-tests.py', '--shared'], args
+        name = 'workspace'
 else:
     name = args[0]
     if name == 'test':
@@ -60,8 +63,7 @@ class SharedSuitesTests(unittest.TestCase):
         self.assertIn('| CI Python tests | FAIL | 42 |', receipt)
         self.assertIn('| Updater Python tests | PASS | 0 |', receipt)
         self.assertEqual(events[2][1], [
-            'test', '--workspace', '--locked', '--no-fail-fast', '--',
-            '--test-threads=4', '--skip', 'platform::', '--skip', 'reader_log'])
+            'scripts/ci/workspace-rust-tests.py', '--shared'])
 
     def test_log_pool_is_isolated_and_log_failure_still_fails_the_gate(self):
         result, _, events = self.invoke([], pool_conflict=True)
