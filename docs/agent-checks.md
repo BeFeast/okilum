@@ -142,6 +142,28 @@ retains both outcomes and fails if either measurement failed. The job's
 60-minute cap stays unchanged. Large process samples use ordered JSON chunks
 to survive the runner's log-line limit without discarding compiler arguments.
 
+For runtime diagnosis, `runtime: 'true'` (without a paired candidate) runs the
+two warm-reader fixtures, Live Preview, and the complete workspace after a
+successful original cold admission. Target fixtures retain positive parent
+receipts; the original 120/1320-second group budgets stay in effect. Every
+runtime stage runs even after an earlier runtime failure, and the final verdict
+retains that failure. This targeted diagnostic is not full canonical acceptance.
+
+The heavy Linux workspace selects four exact ordinary shards with two test
+threads each via `OKILUM_WORKSPACE_ORDINARY_SHARDS=4`; hosted keeps two shards.
+Serial Log I/O overlaps those shards in its own process, and private reveal
+runs alone afterwards. Duplicate/prefix names, nonempty census counts and
+failure propagation remain mandatory. The standalone Live Preview group caps
+native fixture concurrency at four instead of inheriting twelve host CPUs.
+These scheduling choices require actual heavy-runner timing; a hosted pass
+alone does not establish their canonical deadline result.
+
+Warm-reader fixture operation timers start after the coordinator reports
+`Checking notes`, so metadata/authority preparation does not consume the
+cancellation or priority-read deadline. Preparation remains bounded by the
+outer suite supervisor. Failed priority assertions release and join readers
+before removing the vault; a cancellation worker owns its temporary vault.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a

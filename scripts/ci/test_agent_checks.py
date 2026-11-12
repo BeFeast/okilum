@@ -51,6 +51,48 @@ def receipt():
 
 
 class VerdictTests(unittest.TestCase):
+    def setUp(self):
+        ambient = patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='2')
+        ambient.start()
+        self.addCleanup(ambient.stop)
+
+    def test_heavy_workspace_shards_keep_inventory_overlap_and_failure_verdict(self):
+        names = [f'ordinary::case{i}' for i in range(80)]
+        names += ['ordinary::case0', 'ordinary::case0::nested', 'reader_log::case',
+                  'platform::reveal::tests::case']
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            name + ': test\n' for name in names), stderr='')
+        for failed in (None, 'ordinary-3', 'logs', 'reveal'):
+            with self.subTest(failed=failed):
+                barrier = threading.Barrier(5)
+                seen = []
+                completed = set()
+                lock = threading.Lock()
+
+                def execute(name, arguments, expected):
+                    if name.startswith('ordinary-'):
+                        self.assertIn('--test-threads=2', arguments)
+                        self.assertIn('--exact', arguments)
+                        selected = [item for item in names if item in arguments]
+                    else:
+                        selected = [item for item in names if arguments[0] in item]
+                    self.assertEqual(len(selected), expected)
+                    if name != 'reveal':
+                        barrier.wait(timeout=3)
+                    else:
+                        self.assertEqual(completed, {f'ordinary-{i}' for i in range(4)} | {'logs'})
+                    with lock:
+                        seen.extend(selected)
+                        completed.add(name)
+                    return name != failed
+
+                with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                        patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                        patch.object(workspace, 'run', side_effect=execute), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(workspace.main(), int(failed is not None))
+                self.assertCountEqual(seen, names)
+
     def test_canonical_compile_jobs_do_not_match_light_or_interactive_runners(self):
         # The shared ubuntu-latest label spans incompatible resource classes.
         # Evaluate scheduler eligibility, including overlapping Docker labels.
