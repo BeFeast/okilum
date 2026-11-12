@@ -128,7 +128,7 @@ wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 # Smart paste on X11 reads CLIPBOARD targets GPUI 0.3.3 does not (#2006); already
 # locked through GPUI. `res` names the selection owner's process.
 x11rb = { version = "0.13.2", features = ["res"] }
-rustix = { version = "=1.1.4", features = ["event", "net", "pipe", "fs", "process"] }
+rustix = { version = "=1.1.6", features = ["event", "net", "pipe", "fs", "process"] }
 # Already in the graph through GPUI's portal client; used for FileManager1.ShowItems (#612).
 zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 # Runtime-independent deadline, including the D-Bus authentication handshake.
@@ -143,7 +143,7 @@ libc = "0.2"
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue", "NSGeometry", "objc2-core-foundation"] }
-rustix = { version = "=1.1.4", features = ["fs", "process"] }
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 okilum-sync-controller = { path = "../okilum-sync-controller" }
