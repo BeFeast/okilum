@@ -59,6 +59,7 @@ def positive(binary, filter_):
 
 
 CONTROLS = [
+    ('conflict-toast', 'file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast'),
     ('legacy-host', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('live-part-cycle', 'file2811_app_teardown_releases_live_parts_and_pending_json_validation'),
     ('missing-find', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
@@ -91,6 +92,8 @@ CONTROLS = [
 ]
 
 try:
+    edit('reader_toast.rs', '.filter(|notice| !self.file_conflict_in_status(notice))',
+         '.filter(|notice| !self.file_conflict_in_status(notice) || crate::file2811_control("conflict-toast"))')
     edit('main.rs', 'fn main() {', '''#[cfg(test)]
 fn file2811_control(name: &str) -> bool {
     std::env::var("OKILUM_FILE2811_CONTROL").is_ok_and(|v|v==name)

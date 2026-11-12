@@ -347,6 +347,12 @@ impl FileChrome {
 }
 
 impl Reader {
+    pub(crate) fn file_conflict_in_status(&self, notice: &str) -> bool {
+        self.file_editor_active()
+            && self.editing.as_ref().is_some_and(|e| e.conflict_detected)
+            && notice.starts_with(CONFLICT_NOTICE)
+    }
+
     pub(crate) fn file_editor_active(&self) -> bool {
         self.editing
             .as_ref()

@@ -1076,3 +1076,43 @@ fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mu
     cx.run_until_parked();
     drop(temp);
 }
+
+#[gpui::test]
+fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mut TestAppContext) {
+    let (reader, _file, input, visual, temp) = open(cx, "test1.json", "{\"a\":1}");
+    reader.update(visual, |r, cx| {
+        r.link_notice = Some("Unrelated notice remains visible".into());
+        cx.notify();
+    });
+    frame(visual);
+    assert!(
+        visual.update(|w, cx| !w.notifications(cx).is_empty()),
+        "positive control: the real persistent notice host is live"
+    );
+    reader.update(visual, |r, cx| {
+        r.link_notice = None;
+        cx.notify();
+    });
+    frame(visual);
+    assert!(visual.update(|w, cx| w.notifications(cx).is_empty()));
+    input.update_in(visual, |i, w, cx| i.replace_source_range(0..0, " ", w, cx));
+    let path = temp.path().join("vault/test1.json");
+    let remote = "{\"remote\":2}";
+    std::fs::write(&path, remote).unwrap();
+    reader.update(visual, |r, cx| {
+        assert!(!r.save_source(cx));
+        assert!(r.editing.as_ref().unwrap().conflict_detected);
+    });
+    frame(visual);
+    assert!(drawn(&input).1.contains("This file changed on disk"));
+    assert!(
+        visual.update(|w, cx| w.notifications(cx).is_empty()),
+        "the bottom-line conflict never mounts a second persistent toast"
+    );
+    click(visual, "source-park");
+    assert!(
+        reader.read_with(visual, |r, _| r.editing.is_none()),
+        "the actual Close, keeping draft action remains clickable"
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), remote);
+}
