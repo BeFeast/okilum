@@ -279,6 +279,13 @@ fn code2810_provisional_find_names_its_scope_and_keeps_the_pending_query(cx: &mu
     settle(visual);
     visual.simulate_input("NEEDLE");
     settle(visual);
+    code.read_with(visual, |state, cx| {
+        assert_eq!(
+            state.find_target(code.clone(), cx).count.unwrap().as_ref(),
+            "Searching…",
+            "an unfinished whole-file index cannot report No matches"
+        );
+    });
     release.send(()).unwrap();
     settle(visual);
     code.read_with(visual, |code, cx| {
