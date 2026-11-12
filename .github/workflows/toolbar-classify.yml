@@ -33,8 +33,6 @@ jobs:
             kind: main
           - os: windows-2022
             kind: toolbar
-          - os: macos-15
-            kind: toolbar
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
     env:
@@ -57,13 +55,6 @@ jobs:
             classify-v1-${{ runner.os }}-${{ matrix.kind }}-
             classify-v1-${{ runner.os }}-
             code-toolbar-release-v1-${{ runner.os }}-
-      - uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: classify-registry-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: classify-icon
@@ -96,6 +87,11 @@ jobs:
           cp "$CARGO_TARGET_DIR/release/$binary" "$GITHUB_WORKSPACE/out/"
           cp capsule-manifest.json capsule.diff "$GITHUB_WORKSPACE/out/"
           if [[ "$RUNNER_OS" = macOS ]]; then cp -R vendor/sparkle/Sparkle.framework "$GITHUB_WORKSPACE/out/"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capsule-${{ runner.os }}-${{ matrix.kind }}
+          path: out/
+          if-no-files-found: error
       - uses: actions/cache/save@v4
         if: always()
         with:
@@ -104,11 +100,6 @@ jobs:
             ~/.cargo/git/
             target/code-toolbar-release/
           key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: capsule-${{ runner.os }}-${{ matrix.kind }}
-          path: out/
-          if-no-files-found: error
   windows:
     needs: build
     runs-on: windows-2022
@@ -145,35 +136,6 @@ jobs:
         if: always()
         with:
           name: exact-Windows
-          path: diagnostics/
-          if-no-files-found: error
-          retention-days: 7
-  mac:
-    needs: build
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          name: capsule-macOS-toolbar
-          path: inputs/toolbar
-      - name: Fixed census with per-thread CPU clock
-        run: |
-          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
-          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/mac --mode mac
-      - name: Separate Time Profiler capture
-        if: always()
-        continue-on-error: true
-        run: |
-          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
-          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/profiler --mode mac-profiler
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: exact-macOS
           path: diagnostics/
           if-no-files-found: error
           retention-days: 7

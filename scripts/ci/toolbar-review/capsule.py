@@ -92,7 +92,7 @@ def prepare(destination, kind, in_place=False):
     harness = replace(harness, 'smoke || open_ms<=100.', 'smoke || census || open_ms<=100.')
     harness = replace(harness,
         '                    let target=code.read(cx).find_target(code.clone(),cx);\n                    target.set_query(if marked {"description"} else {""},w,cx);',
-        '                    code.read(cx).find.update(cx,|input,cx|{input.set_value(if marked {"description"} else {""},w,cx);cx.emit(gpui_component::input::InputEvent::Change);});')
+        '                    let find = code.read(cx).find.clone();\n                    find.update(cx,|input,cx|{input.set_value(if marked {"description"} else {""},w,cx);cx.emit(gpui_component::input::InputEvent::Change);});')
     harness = replace(harness,
         '                    if marked {assert_eq!(p.scrollbar_marks.len(),1000,"positive control: capped marks actually present");}\n                    else {assert!(p.scrollbar_marks.is_empty());}',
         '                    if marked {assert_eq!(p.matches.len(),1490,"same complete literal query in both capsules");}\n                    else {assert!(p.matches.is_empty());}')
