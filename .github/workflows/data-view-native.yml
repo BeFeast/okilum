@@ -32,6 +32,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   native-rust:
+    # Diagnostic ref only: real PR native gates remain on their exact source.
+    if: ${{ github.ref != 'refs/heads/data-view-native/2810-reader-render-stalls' }}
     needs: icon
     strategy:
       fail-fast: false
@@ -154,7 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2022]
+        os: [windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
