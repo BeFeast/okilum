@@ -67,6 +67,10 @@ pub(crate) fn entry() -> bool {
                             )
                         })
                         .unwrap();
+                    // Commands can publish notifications through Root. Do
+                    // not lease Root itself across a Reader action: native
+                    // event listeners run with an App context too.
+                    let handle: AnyWindowHandle = handle.into();
                     let reader = reader.unwrap();
                     let start = Instant::now();
                     let mut previous = start;

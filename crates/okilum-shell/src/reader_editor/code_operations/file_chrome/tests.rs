@@ -259,7 +259,11 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
     );
     reader.update_in(visual, |r, w, cx| r.open_find(w, cx));
     visual.simulate_keystrokes("home");
-    frame(visual);
+    // The independent initial Workbench publication notifies Reader after
+    // 500 ms. Finish startup before measuring notifications caused by typing;
+    // the trace control proved that publication occurred on the second key.
+    tick(visual, 501);
+    assert!(reader.read_with(visual, |r, _| r.workbench_ready.is_some()));
     let counts = Rc::new(std::cell::Cell::new([0; 2]));
     let panels = reader.read_with(visual, |r, _| r.side_panels.clone());
     let _watch = visual.update(|_, cx| {
@@ -1024,4 +1028,47 @@ fn file2811_conflicting_repair_closes_the_sheet_without_applying_or_writing(
         visual.update(|w, cx| !w.notifications(cx).is_empty()),
         "stale Apply has a real toast"
     );
+}
+
+#[gpui::test]
+fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mut TestAppContext) {
+    let mut app = cx.new_app();
+    let (reader, file, input, visual, temp) = open(&mut app, "test1.json", "{\"a\":1}");
+    input.update_in(visual, |i, w, cx| i.replace_source_range(6..6, ",", w, cx));
+    visual.run_until_parked();
+    file.read_with(visual, |s, _| {
+        assert!(
+            s.task.is_some() && !s.parsing,
+            "positive control: strict validation debounce is still pending"
+        );
+    });
+    let weak_file = file.downgrade();
+    let weak_input = input.downgrade();
+    assert!(weak_file.upgrade().is_some() && weak_input.upgrade().is_some());
+    visual.update(|w, cx| {
+        // VisualTestContext retains its TestWindow after close. Retire the
+        // platform input handler, as destroying a native window would do.
+        w.blur(cx);
+        w.draw(cx).clear(cx);
+        w.remove_window();
+    });
+    drop(reader);
+    drop(file);
+    drop(input);
+    // Entity drops enqueue releases; flush an App effect cycle after the last
+    // external owner is gone, before checking for a retained live-part cycle.
+    app.update(|_| {});
+    app.run_until_parked();
+    assert!(
+        weak_file.upgrade().is_none(),
+        "closing the window releases its live parts before App shutdown"
+    );
+    assert!(
+        weak_input.upgrade().is_none(),
+        "pending validation never retains the source editor"
+    );
+    app.quit();
+    drop(app);
+    cx.run_until_parked();
+    drop(temp);
 }
