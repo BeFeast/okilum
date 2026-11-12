@@ -1,6 +1,6 @@
 --- a/crates/base/src/input/editor/search.rs
 +++ b/crates/base/src/input/editor/search.rs
-@@ -106,6 +106,29 @@
+@@ -106,4 +106,27 @@
              self.search_session.external_presentation = external;
              cx.notify();
          }
@@ -28,5 +28,3 @@
 +        session.matcher.set_current_match_index(current);
 +        cx.notify();
      }
- 
-     pub fn search_session(&self) -> &SearchSession {

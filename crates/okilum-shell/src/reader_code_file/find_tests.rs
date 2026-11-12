@@ -569,4 +569,18 @@ fn code2810_bare_host_shares_case_between_whole_file_and_editor_adapters(cx: &mu
             assert_eq!(target.count.unwrap().as_ref(), "1 of 1");
         });
     }
+    // Exercise the reverse handoff too: a bare host has no persisted state
+    // through which independently allocated adapter cells could synchronize.
+    code.update_in(v, |s, w, cx| s.set_view(View::Formatted, w, cx));
+    settle(v);
+    let target = code.read_with(v, |s, cx| s.find_target(code.clone(), cx));
+    v.update(|w, cx| (target.match_case.unwrap().1)(w, cx));
+    settle(v);
+    code.update_in(v, |s, w, cx| s.set_view(View::Tree, w, cx));
+    settle(v);
+    code.read_with(v, |s, cx| {
+        let target = s.find_target(code.clone(), cx);
+        assert!(!target.match_case.as_ref().unwrap().0);
+        assert_eq!(target.count.unwrap().as_ref(), "1 of 2");
+    });
 }
