@@ -76,6 +76,7 @@ CONTROLS = [
     ('lost-page', 'file2811_raw_parts_and_async_formatted_restore_after_edit'),
     ('dead-shortcuts', 'file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host'),
     ('lost-toast', 'file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo'),
+    ('bom-body', 'file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo'),
     ('bottom-wording', 'file2811_real_refusals_and_syntax_verdicts_have_one_bottom_home'),
     ('language-fallback', 'file2811_ambiguous_language_has_a_button_then_a_narrow_menu'),
 ]
@@ -133,6 +134,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
          '    if crate::file2811_control("bottom-wording") {return text.into();}\n    if text == "Valid strict JSON" {')
     edit(base, 'if language_bounds.get().is_none() {',
          'if language_bounds.get().is_none() && !crate::file2811_control("language-fallback") {')
+    edit('reader_editor/code_operations.rs', 'usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3',
+         '(if crate::file2811_control("bom-body") {0} else {usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3})')
     (OUT / 'mutations.diff').write_text(''.join(patch))
     if '--check-mutations' in sys.argv:
         print('FILE2811_MUTATION_ANCHORS_VALID', len(CONTROLS))
