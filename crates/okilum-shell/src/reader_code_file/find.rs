@@ -229,6 +229,7 @@ impl CodePreview {
                 s.search_error = result.error;
                 s.match_index = 0;
                 s.show_match(window, cx);
+                s.finish_presentation_restore(window, cx);
                 s.find.update(cx, |_, cx| cx.notify());
                 cx.notify();
             });
@@ -264,6 +265,22 @@ impl CodePreview {
         }
         self.show_page(doc.page_at(range.start), window, cx);
         let page = self.document.as_ref().unwrap().pages[self.page].clone();
+        self.install_page_matches(cx);
+        if let State::Content(input) = &self.state {
+            input.update(cx, |s, cx| {
+                s.set_selected_range(
+                    range.start - page.start..range.end.min(page.end) - page.start,
+                    cx,
+                )
+            });
+        }
+    }
+
+    pub(super) fn install_page_matches(&self, cx: &mut App) {
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let page = doc.pages[self.page].clone();
         let span = page_matches(&self.matches, &page);
         let current = self.match_index.saturating_sub(span.start);
         let ranges = self.matches[span]
@@ -278,10 +295,6 @@ impl CodePreview {
                     !self.case_sensitive.get(),
                     ranges,
                     current,
-                    cx,
-                );
-                s.set_selected_range(
-                    range.start - page.start..range.end.min(page.end) - page.start,
                     cx,
                 );
             });

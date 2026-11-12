@@ -245,6 +245,7 @@ impl CodePreview {
                         this.initial_view_timing();
                     }
                     this.finish_automatic_view();
+                    this.restore_loaded_presentation(window, cx);
                     cx.notify();
                 });
             })

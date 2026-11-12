@@ -219,6 +219,21 @@ impl CodePreview {
             .with_action(GoToError, cx);
             action.labelled = true;
             status.actions.push(action);
+            let mut repair = ViewerAction::new(
+                "code-repair",
+                Icon::default().path("icons/wrench.svg"),
+                "Repair…",
+                Rc::new(|window, cx| {
+                    window.dispatch_action(Box::new(reader_editor::RepairCode), cx)
+                }),
+            )
+            .with_action(reader_editor::RepairCode, cx);
+            repair.labelled = true;
+            repair.enabled = self.editable();
+            if !repair.enabled {
+                repair.disabled_reason = self.readonly_reason().map(Into::into);
+            }
+            status.actions.push(repair);
         } else if self.json.as_ref().is_some_and(|json| json.formatting) {
             status.text = format!("Formatting {}…", view::size(raw.text.len())).into();
         } else if self.json.is_some() && raw.text.len() > PRETTY_BYTES && self.view == View::Raw {

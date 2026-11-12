@@ -317,6 +317,7 @@ impl Reader {
                     reader_shortcuts::hint("Find in note", &FindInNote, cx),
                     cx,
                 )
+                .debug_selector(|| "note-find".into())
                 .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
             );
         }

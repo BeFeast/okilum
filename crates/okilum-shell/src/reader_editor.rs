@@ -3,6 +3,7 @@ mod block_context;
 mod block_entry;
 mod code_comforts;
 mod code_operations;
+pub(crate) use code_operations::{FormatCode, RepairCode, ValidateCode};
 mod context_menu;
 mod external_edit;
 mod focus_save;
@@ -177,6 +178,7 @@ struct AutosaveSchedule {
 
 pub(super) struct Editing {
     operations: code_operations::State,
+    file_chrome: Option<Entity<code_operations::file_chrome::FileChrome>>,
     store: FileEditor,
     source_status: std::cell::Cell<Option<SourceStatus>>,
     live_preview: live_preview::LivePreview,
@@ -497,6 +499,7 @@ impl Editing {
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
             operations,
+            file_chrome,
             store,
             source_status: _,
             live_preview,
@@ -538,6 +541,7 @@ impl Editing {
         } = self;
         (store, move |store| Self {
             operations,
+            file_chrome,
             store,
             source_status: Default::default(),
             live_preview,
@@ -631,6 +635,13 @@ impl Reader {
     }
 
     pub(super) fn open_source_find(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.file_editor_find_target(cx) {
+            let owner = self.reader_window;
+            cx.defer(move |cx| {
+                let _ = owner.update(cx, |_, window, cx| target.focus(window, cx));
+            });
+            return;
+        }
         if let Some(editing) = &mut self.editing {
             if !editing.input.read(cx).search_session().open {
                 editing.live_preview.restore_after_find = editing.live_preview.enabled;
@@ -773,6 +784,7 @@ impl Reader {
             return;
         }
         if self.editing.is_some() {
+            let presentation = self.file_editor_read_state(cx);
             let file = self.selected_file().to_owned();
             let input = self.editing.as_ref().map(|editing| editing.input.clone());
             // The Reader opens where the editor was, not at the top (#1296).
@@ -791,6 +803,14 @@ impl Reader {
             if plain_file {
                 let rel = self.selected_file().to_owned();
                 self.preview_file(&rel, window, cx);
+                if let Some((code, saved)) = self
+                    .file_preview
+                    .as_ref()
+                    .and_then(|p| p.code.as_ref())
+                    .zip(presentation)
+                {
+                    code.update(cx, |code, cx| code.restore_presentation(saved, window, cx));
+                }
             } else {
                 let rel = self.current_rel.clone();
                 self.prepare_document_at_place(&rel, place, window, cx);
@@ -907,6 +927,11 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
+        let read_state = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+            .map(|code| code.read(cx).save_presentation(cx));
         if plain_file {
             self.retire_large_plain_preview(store.text().len());
         }
@@ -1088,8 +1113,16 @@ impl Reader {
             };
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
-            if editing.operations.source_changed(source_stamp) {
+            let stale_preview = editing.operations.preview_present();
+            let operation_changed = editing.operations.source_changed(source_stamp);
+            if !editing.markdown && stale_preview {
+                editing.operations.clear_notice();
+            }
+            if operation_changed && editing.markdown {
                 cx.notify();
+            }
+            if let Some(file) = &editing.file_chrome {
+                file.update(cx, |file, cx| file.source_changed(operation_changed, stale_preview, cx));
             }
             if editing.conflict_detected
                 && editing
@@ -1404,6 +1437,7 @@ impl Reader {
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         self.editing = Some(Editing {
             operations: Default::default(),
+            file_chrome: None,
             store,
             source_status: Default::default(),
             live_preview,
@@ -1451,6 +1485,9 @@ impl Reader {
                 pasted,
             ],
         });
+        if plain_file {
+            self.install_file_editor_chrome(read_state, window, cx);
+        }
         self.schedule_code_inventory(cx);
         // Back from the Reader to unchanged text: Undo continues (#1095).
         if let Some((file, history)) = self.retained_edit.take() {
@@ -1546,6 +1583,7 @@ impl Reader {
             .id("source-save-status")
             .flex_none()
             .px_2()
+            .when(self.file_preview.is_some(), |dot| dot.px_0().w(px(8.)))
             .text_color(if editing.conflict_detected || editing.save_failed {
                 cx.theme().warning
             } else {
@@ -2756,6 +2794,55 @@ impl Reader {
             .map(|editing| editing.input.read(cx).scroll_offset())
     }
 
+    #[inline(never)]
+    fn render_source_input(&self, window: &Window, cx: &App) -> AnyElement {
+        let editing = self.editing.as_ref().unwrap();
+        let editor = Editor::new(&editing.input)
+            .appearance(false)
+            .map(|editor| {
+                let (left, right) = self.note_text_margins(window, cx);
+                editor.text_margins(left, right)
+            })
+            .context_menu({
+                let facts = editing.menu_facts.clone();
+                let markdown = editing.markdown;
+                move |menu, _, cx| {
+                    let menu = context_menu::editor_menu(menu, &facts, markdown, cx);
+                    if markdown && facts.editable() {
+                        menu.separator().submenu(
+                            "Table",
+                            gpui_component::native_menu::NativeMenu::from(tables::menu()),
+                        )
+                    } else {
+                        menu
+                    }
+                }
+            })
+            .font_family(if editing.live_preview.enabled {
+                reader_fonts::note(cx)
+            } else {
+                reader_fonts::code(cx)
+            })
+            .text_size(px(if editing.live_preview.enabled {
+                reader_ui_state::font_size(cx)
+            } else {
+                13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE
+            }))
+            .size_full()
+            .into_any_element();
+        if editing.markdown {
+            editor
+        } else {
+            div()
+                .debug_selector(|| "file-edit-body".into())
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(editor)
+                .into_any_element()
+        }
+    }
+
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.refresh_live_preview_colors(cx);
         // Room below the last line for toasts, focus and typewriter (#1643).
@@ -2765,7 +2852,11 @@ impl Reader {
             grid.sync_presentation(editing.live_preview.enabled, window, cx);
         });
         let palette = brand::palette(cx);
-        let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
+        let column = v_flex()
+            .key_context("ReaderSource")
+            .size_full()
+            .min_w_0()
+            .when(!editing.markdown, |column| column.min_h_0().relative());
         // #1992: Enter, Tab and the comment key in a code block's body, before
         // the list keys; #1635: Enter, Tab and Backspace in lists, before the
         // input; #1636: the formatting keys.
@@ -2800,106 +2891,121 @@ impl Reader {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.drop_on_editor(paths, window, cx)
             }))
-            .when(editing.save_failed || editing.conflict_detected, |column| {
-                column.child(
-                    h_flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .px_4()
-                        .py_2()
-                        .when(editing.save_failed || editing.conflict_detected, |row| {
-                            row.child(
-                                reader_icon_button(
-                                    "source-park",
-                                    IconName::ArrowRight,
-                                    "Close, keeping draft",
-                                    cx,
-                                )
-                                .debug_selector(|| "source-park".into())
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.park_source(window, cx)),
-                                ),
-                            )
-                            .child(
-                                reader_icon_button(
-                                    "source-copy-draft",
-                                    IconName::Copy,
-                                    "Copy draft",
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        if let Some(editing) = &this.editing {
-                                            let text = editing.input.read(cx).value().to_string();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                        }
-                                    },
-                                )),
-                            )
-                        })
-                        .when(editing.conflict_detected, |row| {
-                            row.child(
-                                reader_icon_button(
-                                    "source-reload",
-                                    IconName::RotateCw,
-                                    "Reload from disk",
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| this.resolve_source(true, window, cx),
-                                )),
-                            )
-                            .child(
-                                reader_icon_button(
-                                    "source-keep",
-                                    IconName::Check,
-                                    "Keep my version",
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| this.resolve_source(false, window, cx),
-                                )),
-                            )
-                            .when(self.deleted_note.is_none(), |row| {
+            .when(
+                editing.markdown && (editing.save_failed || editing.conflict_detected),
+                |column| {
+                    column.child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .px_4()
+                            .py_2()
+                            .when(editing.save_failed || editing.conflict_detected, |row| {
                                 row.child(
                                     reader_icon_button(
-                                        "source-keep-both",
-                                        IconName::Copy,
-                                        "Keep both versions",
+                                        "source-park",
+                                        IconName::ArrowRight,
+                                        "Close, keeping draft",
                                         cx,
                                     )
-                                    .debug_selector(|| "source-keep-both".into())
+                                    .debug_selector(|| "source-park".into())
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.park_source(window, cx),
+                                    )),
+                                )
+                                .child(
+                                    reader_icon_button(
+                                        "source-copy-draft",
+                                        IconName::Copy,
+                                        "Copy draft",
+                                        cx,
+                                    )
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            this.save_source_explicit(cx);
+                                            if let Some(editing) = &this.editing {
+                                                let text =
+                                                    editing.input.read(cx).value().to_string();
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    text,
+                                                ));
+                                            }
                                         },
                                     )),
                                 )
                             })
-                            .child(
-                                reader_icon_button(
-                                    "source-compare",
-                                    IconName::PanelRight,
-                                    "Compare versions",
-                                    cx,
+                            .when(editing.conflict_detected, |row| {
+                                row.child(
+                                    reader_icon_button(
+                                        "source-reload",
+                                        IconName::RotateCw,
+                                        "Reload from disk",
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.resolve_source(true, window, cx),
+                                    )),
                                 )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        if let Some(editing) = &mut this.editing {
-                                            editing.compare = !editing.compare;
-                                            if let Some(current) = &editing.conflict {
-                                                editing.current_input.update(cx, |input, cx| {
-                                                    input.set_value(current.clone(), window, cx)
-                                                });
+                                .child(
+                                    reader_icon_button(
+                                        "source-keep",
+                                        IconName::Check,
+                                        "Keep my version",
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            this.resolve_source(false, window, cx)
+                                        },
+                                    )),
+                                )
+                                .when(self.deleted_note.is_none(), |row| {
+                                    row.child(
+                                        reader_icon_button(
+                                            "source-keep-both",
+                                            IconName::Copy,
+                                            "Keep both versions",
+                                            cx,
+                                        )
+                                        .debug_selector(|| "source-keep-both".into())
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_source_explicit(cx);
+                                            }),
+                                        ),
+                                    )
+                                })
+                                .child(
+                                    reader_icon_button(
+                                        "source-compare",
+                                        IconName::PanelRight,
+                                        "Compare versions",
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            if let Some(editing) = &mut this.editing {
+                                                editing.compare = !editing.compare;
+                                                if let Some(current) = &editing.conflict {
+                                                    editing.current_input.update(
+                                                        cx,
+                                                        |input, cx| {
+                                                            input.set_value(
+                                                                current.clone(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    );
+                                                }
                                             }
-                                        }
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                        }),
-                )
-            })
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            }),
+                    )
+                },
+            )
             .when(editing.compare, |column| {
                 column
                     .child(
@@ -2919,41 +3025,10 @@ impl Reader {
                             .h(px(220.)),
                     )
             })
-            .child(
-                Editor::new(&editing.input)
-                    .appearance(false)
-                    .map(|editor| {
-                        let (left, right) = self.note_text_margins(window, cx);
-                        editor.text_margins(left, right)
-                    })
-                    .context_menu({
-                        let facts = editing.menu_facts.clone();
-                        let markdown = editing.markdown;
-                        move |menu, _, cx| {
-                            let menu = context_menu::editor_menu(menu, &facts, markdown, cx);
-                            if markdown && facts.editable() {
-                                menu.separator().submenu(
-                                    "Table",
-                                    gpui_component::native_menu::NativeMenu::from(tables::menu()),
-                                )
-                            } else {
-                                menu
-                            }
-                        }
-                    })
-                    .font_family(if editing.live_preview.enabled {
-                        reader_fonts::note(cx)
-                    } else {
-                        reader_fonts::code(cx)
-                    })
-                    .text_size(px(if editing.live_preview.enabled {
-                        reader_ui_state::font_size(cx)
-                    } else {
-                        13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE
-                    }))
-                    .size_full(),
-            )
+            .child(self.render_source_input(window, cx))
             .children(self.render_link_complete(window, cx))
+            .children(self.file_editor_bottom(cx))
+            .children(self.file_editor_sheet(cx))
             .when(editing.live_preview.enabled, |column| {
                 column.child(editing.math_preview.clone())
             })

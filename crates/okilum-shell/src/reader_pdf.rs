@@ -917,6 +917,7 @@ pub(crate) fn chrome(viewer: &Entity<PdfViewer>, cx: &App) -> reader_viewer_chro
     .map(|(id, icon, label, tooltip, zoom)| {
         let target = viewer.clone();
         ViewerAction {
+            live: None,
             menu: None,
             caret: false,
             minimum_width: 28.,

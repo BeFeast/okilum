@@ -19,7 +19,42 @@ pub(super) struct Structure {
     pub(super) scroll: UniformListScrollHandle,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Saved {
+    collapsed: bool,
+    exceptions: HashSet<usize>,
+    find_opened: HashSet<usize>,
+    selected: Option<usize>,
+    match_node: Option<usize>,
+}
+
 impl Structure {
+    pub(super) fn save(&self) -> Saved {
+        Saved {
+            collapsed: self.collapsed,
+            exceptions: self.exceptions.clone(),
+            find_opened: self.find_opened.clone(),
+            selected: self.selected,
+            match_node: self.match_node,
+        }
+    }
+    pub(super) fn restore(&mut self, saved: Saved, doc: &Document) {
+        self.collapsed = saved.collapsed;
+        self.exceptions = saved
+            .exceptions
+            .into_iter()
+            .filter(|i| *i < doc.structure.len())
+            .collect();
+        self.find_opened = saved
+            .find_opened
+            .into_iter()
+            .filter(|i| *i < doc.structure.len())
+            .collect();
+        self.selected = saved.selected.filter(|i| *i < doc.structure.len());
+        self.match_node = saved.match_node.filter(|i| *i < doc.structure.len());
+        self.rebuild(doc);
+        self.scroll_selected();
+    }
     fn start(doc: &Document) -> usize {
         usize::from(doc.json_tree && !doc.structure.is_empty())
     }

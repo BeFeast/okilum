@@ -127,6 +127,14 @@ impl EditorTarget {
         } else {
             format!("{} of {total}", current + 1)
         };
+        let mut target = Self::descriptor(entity, cx);
+        target.count = Some(count.into());
+        target
+    }
+
+    /// Static header descriptors do not read the query or editor matcher.
+    pub(crate) fn descriptor(entity: &Entity<Self>, cx: &App) -> super::Target {
+        let state = entity.read(cx);
         let case = entity.clone();
         let step = entity.clone();
         let close = entity.clone();
@@ -134,7 +142,7 @@ impl EditorTarget {
             input: state.query.clone(),
             focus_override: None,
             scope: "Find".into(),
-            count: Some(count.into()),
+            count: None,
             match_case: Some((
                 state.case_sensitive.get(),
                 std::rc::Rc::new(move |_, cx| {

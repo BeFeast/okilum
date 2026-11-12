@@ -12,6 +12,8 @@ mod find_review_tests;
 #[cfg(test)]
 mod find_tests;
 mod loading;
+mod presentation;
+pub(crate) use presentation::PresentationState;
 #[cfg(test)]
 mod loading_tests;
 #[cfg(feature = "data-view-native-harness")]
@@ -147,6 +149,7 @@ pub(crate) struct CodePreview {
     document_revision: u64,
     applied_page: Option<(u64, usize)>,
     read_active: bool,
+    restored_presentation: Option<PresentationState>,
     automatic_view: bool,
     provisional_interacted: std::rc::Rc<std::cell::Cell<bool>>,
     provisional_subscription: Option<Subscription>,
@@ -430,6 +433,7 @@ impl CodePreview {
             document_revision: 0,
             applied_page: None,
             read_active: true,
+            restored_presentation: None,
             automatic_view: true,
             provisional_interacted: Default::default(),
             provisional_subscription: None,
@@ -820,6 +824,10 @@ impl Reader {
             }
         }))
         .on_action(cx.listener(|this, _: &GoToError, window, cx| {
+            if this.editing.is_some() {
+                this.file_editor_go_to_error(window, cx);
+                return;
+            }
             if let Some(code) = this.read_code_view() {
                 code.update(cx, |code, cx| code.go_to_error(window, cx));
             }

@@ -121,6 +121,7 @@ impl CodePreview {
                     this.finish_automatic_view();
                 }
                 this.search(window, cx);
+                this.restore_loaded_presentation(window, cx);
                 cx.notify();
             });
         })
