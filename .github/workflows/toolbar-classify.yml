@@ -4,9 +4,11 @@ on:
     branches: ['diagnostic-toolbar/**']
 permissions:
   contents: read
+  actions: read
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_BUILD_JOBS: '4'
+  PYTHONUTF8: '1'
   OKILUM_SOURCE_COMMIT: ${{ github.sha }}
 jobs:
   icon:
@@ -29,10 +31,6 @@ jobs:
         include:
           - os: windows-2022
             kind: main
-          - os: windows-2022
-            kind: toolbar
-          - os: macos-15
-            kind: toolbar
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
     env:
@@ -106,6 +104,8 @@ jobs:
         with:
           name: capsule-Windows-toolbar
           path: inputs/toolbar
+          run-id: 43256438162
+          github-token: ${{ github.token }}
       - name: Five alternating pairs with precise scheduling capture
         shell: pwsh
         run: |
@@ -141,6 +141,8 @@ jobs:
         with:
           name: capsule-macOS-toolbar
           path: inputs/toolbar
+          run-id: 43256438162
+          github-token: ${{ github.token }}
       - name: Fixed census with per-thread CPU clock
         run: |
           export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"

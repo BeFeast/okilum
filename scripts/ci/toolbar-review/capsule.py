@@ -26,7 +26,7 @@ def prepare(destination, kind, in_place=False):
     destination = destination.resolve()
     base = MAIN if kind == 'main' else TOOLBAR
     controller_sha = git('rev-parse','HEAD').decode().strip()
-    observer = (ROOT/'scripts/ci/toolbar-review/observer.rs').read_text()
+    observer = (ROOT/'scripts/ci/toolbar-review/observer.rs').read_text(encoding="utf-8")
     main_patch = (ROOT/'scripts/ci/toolbar-review-main-observers.diff').read_bytes()
     if in_place:
         assert destination == ROOT
@@ -43,7 +43,7 @@ def prepare(destination, kind, in_place=False):
         path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
 
     def edit(name, old, new):
-        write(name, replace((destination / name).read_text(), old, new))
+        write(name, replace((destination / name).read_text(encoding="utf-8"), old, new))
 
     # Match public benchmark support and its diagnostic counters, not viewer behavior.
     if kind == 'main':
@@ -62,7 +62,7 @@ def prepare(destination, kind, in_place=False):
         name = SRC+'reader_code_file/structure.rs'
         original.setdefault(name, (destination/name).read_bytes())
         subprocess.run(['git','apply','-'],input=main_patch,cwd=destination,check=True)
-        text = (destination/name).read_text()
+        text = (destination/name).read_text(encoding="utf-8")
         assert 'pub(super) fn folded(&self, index: usize) -> bool {' in text
         text = replace(text, '    pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {\n        div()',
                        '    pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {\n        let tree = div()')
@@ -117,7 +117,7 @@ def prepare(destination, kind, in_place=False):
         changes.append({'path':name,'before_sha256':hashlib.sha256(before).hexdigest(),
                         'after_sha256':hashlib.sha256(after).hexdigest()})
     diff = ''.join(''.join(difflib.unified_diff(before.decode().splitlines(True),
-            (destination/name).read_text().splitlines(True),fromfile=name,tofile=name))
+            (destination/name).read_text(encoding="utf-8").splitlines(True),fromfile=name,tofile=name))
             for name,before in original.items())
     manifest = {'base_source':base,'controller_source':controller_sha,
                 'kind':kind,'changed_files':changes,'fixture_source':TOOLBAR,
