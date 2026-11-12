@@ -1,27 +1,57 @@
-name: edit-toolbar-diagnostic
+# Explicit issue-scoped native regression refs; no release or signing work.
+name: edit-toolbar-windows-stack
 on:
   push:
     branches: ['toolbar-edit-diagnostic/**']
 permissions:
   contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: data-view-native-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  scoped:
+  icon:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    env:
-      CARGO_BUILD_JOBS: '4'
-      CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - run: |
-          echo "source=$(git rev-parse HEAD) feature=bd8d2d66a"
-          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-windows-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  native-rust:
+    needs: icon
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - name: Keep source and vendor patches in LF format
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/cache/restore@v4
+        id: cache
         with:
           path: |
             ~/.cargo/registry/
@@ -29,25 +59,75 @@ jobs:
             target/
             vendor/gpui-component/
             vendor/comrak-0.47.0/
-          key: toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          key: data-view-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/data-view-native.yml') }}-${{ github.sha }}
           restore-keys: |
-            toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
-            agent-v1-${{ runner.os }}-
-      - run: bash scripts/vendor-setup.sh
-      - run: cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness --no-run
-      - run: |
-          for scope in file2811_; do
-            cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness "$scope" -- --nocapture --test-threads=1
-          done
-      - name: Compile and fire file Edit negative controls
-        run: python3 scripts/ci/file-edit-toolbar.py
-      - uses: actions/cache/save@v4
+            data-view-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/data-view-native.yml') }}-
+            data-view-native-v1-${{ runner.os }}-
+            embeds-native-v1-${{ runner.os }}-
+            quote-native-v1-${{ runner.os }}-
+            keymap-native-v1-${{ runner.os }}-
+            math-native-v1-${{ runner.os }}-
+            updater-native-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-windows-icon
+          path: target/windows-dist
+      - name: Verify exact source and prepare native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            test "$(uname -m)" = arm64
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+          fi
+      - name: Build real native app without GPUI test support
+        id: native_build
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          cargo build --locked -p okilum-shell --bin okilum --features data-view-native-harness
+      - name: Verify exact toolbar app source
+        shell: bash
+        run: git diff --exit-code baf1c9bb137466d26285e80b4357436094d2f18d -- crates Cargo.toml Cargo.lock scripts/vendor-setup.sh scripts/patches
+      - name: Prepare immutable Tree fixture
+        shell: python
+        run: |
+          import importlib.util,os,pathlib
+          spec=importlib.util.spec_from_file_location('probe','scripts/ci/code-toolbar-native-app.py')
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'tree-stack'
+          (root/'vault').mkdir(parents=True,exist_ok=True)
+          (root/'vault/api.json').write_text(mod.fixture(),encoding='utf-8')
+      - name: Capture native debug stack overflow without changing reserve
+        shell: pwsh
+        run: |
+          $root = "$env:RUNNER_TEMP/tree-stack"
+          $env:OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE = $root
+          $env:OKILUM_CODE_TOOLBAR_NATIVE_SMOKE = '1'
+          $env:RUST_BACKTRACE = 'full'
+          $cdb = Get-ChildItem 'C:/Program Files (x86)/Windows Kits' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          if ($cdb) {
+            & $cdb.FullName -o -g -G -c "sxe sov;g;kv 100;.dump /ma $root/overflow.dmp;q" target/debug/okilum.exe 2>&1 | Tee-Object "$root/debugger.log"
+          } else {
+            Invoke-WebRequest https://live.sysinternals.com/procdump64.exe -OutFile "$env:RUNNER_TEMP/procdump64.exe"
+            & "$env:RUNNER_TEMP/procdump64.exe" -accepteula -ma -e 1 -f C00000FD -x $root "$pwd/target/debug/okilum.exe" 2>&1 | Tee-Object "$root/debugger.log"
+          }
+          exit 0
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
+          name: file-edit-windows-stack
           path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-            vendor/gpui-component/
-            vendor/comrak-0.47.0/
-          key: toolbar-edit-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+            ${{ runner.temp }}/tree-stack/*.log
+            ${{ runner.temp }}/tree-stack/*.dmp
+            target/debug/okilum.exe
+            target/debug/okilum.pdb
+          if-no-files-found: error
+          retention-days: 3
