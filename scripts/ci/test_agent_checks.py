@@ -92,6 +92,38 @@ class VerdictTests(unittest.TestCase):
                     self.assertEqual(workspace.main(), int(failed is not None))
                 self.assertCountEqual(seen, names)
 
+    def test_shared_census_preserves_workspace_selection_and_exclusions(self):
+        names = [f'case::{i}' for i in range(80)] + ['case::0', 'case::0::nested']
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            name + ': test\n' for name in names), stderr='')
+        for failed in (None, 'ordinary-2'):
+            seen = []
+            barrier = threading.Barrier(4)
+            lock = threading.Lock()
+
+            def execute(name, arguments, expected, *, command):
+                self.assertEqual(command, ['cargo', 'test', '--workspace', '--locked',
+                                           '--no-fail-fast', '--'])
+                self.assertIn('--test-threads=2', arguments)
+                self.assertIn('--exact', arguments)
+                self.assertEqual(arguments[-4:], ['--skip', 'platform::', '--skip', 'reader_log'])
+                selected = [item for item in names if item in arguments]
+                self.assertEqual(len(selected), expected)
+                barrier.wait(timeout=3)
+                with lock:
+                    seen.extend(selected)
+                return name != failed
+
+            with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                    patch.object(workspace.subprocess, 'run', return_value=inventory) as census, \
+                    patch.object(workspace, 'run', side_effect=execute), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(workspace.main(shared=True), int(failed is not None))
+                self.assertEqual(census.call_args.args[0], [
+                    'cargo', 'test', '--workspace', '--locked', '--no-fail-fast', '--',
+                    '--list', '--skip', 'platform::', '--skip', 'reader_log'])
+            self.assertCountEqual(seen, names)
+
     def test_canonical_compile_jobs_do_not_match_light_or_interactive_runners(self):
         # The shared ubuntu-latest label spans incompatible resource classes.
         # Evaluate scheduler eligibility, including overlapping Docker labels.

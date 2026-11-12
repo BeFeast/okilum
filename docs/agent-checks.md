@@ -148,9 +148,15 @@ successful original cold admission. Target fixtures retain positive parent
 receipts; the original 120/1320-second group budgets stay in effect. Every
 runtime stage runs even after an earlier runtime failure, and the final verdict
 retains that failure. This targeted diagnostic is not full canonical acceptance.
+`runtime: 'shared'` instead executes the complete original `check-shared.sh`
+entrypoint, including formatting, lint, portable reader, Python and manifest
+gates. The diagnostic's existing job cap remains in effect.
 
 The heavy Linux workspace selects four exact ordinary shards with two test
 threads each via `OKILUM_WORKSPACE_ORDINARY_SHARDS=4`; hosted keeps two shards.
+Shared compilation uses the same exact-shard census with the full `--workspace`
+package selection and original `platform::`/Log exclusions. Its entire serial
+Log selection still runs afterwards, separately from all ordinary processes.
 Serial Log I/O overlaps those shards in its own process, and private reveal
 runs alone afterwards. Duplicate/prefix names, nonempty census counts and
 failure propagation remain mandatory. The standalone Live Preview group caps
