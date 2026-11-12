@@ -1,0 +1,44 @@
+--- a/crates/base/src/input/editor/search.rs
++++ b/crates/base/src/input/editor/search.rs
+@@ -106,4 +106,41 @@
+             self.search_session.external_presentation = external;
+             cx.notify();
+         }
++    }
++
++    /// Select a host-computed match index without copying or rescanning ranges.
++    /// The host may choose it relative to an externally moved caret.
++    pub fn select_external_search_match(
++        &mut self,
++        index: usize,
++        cx: &mut Context<Self>,
++    ) -> Option<Range<usize>> {
++        let range = self.search_session.matcher.matched_ranges.get(index)?.clone();
++        self.search_session.matcher.set_current_match_index(index);
++        self.scroll_to(range.end, None, cx);
++        cx.notify();
++        Some(range)
++    }
++
++    /// Install worker-computed, revision-checked literal Find ranges. The host
++    /// owns scheduling and discards results for stale source snapshots. No regex
++    /// construction, source flattening or document scan runs on the UI thread.
++    pub fn set_external_search_results(
++        &mut self,
++        query: String,
++        case_insensitive: bool,
++        ranges: Vec<Range<usize>>,
++        current: usize,
++        cx: &mut Context<Self>,
++    ) {
++        let session = &mut self.search_session;
++        session.open = false;
++        session.external_presentation = !query.is_empty();
++        session.query = query;
++        session.case_insensitive = case_insensitive;
++        session.matcher.text = self.text.clone();
++        session.matcher.query = None;
++        session.matcher.matched_ranges = Rc::new(ranges);
++        session.matcher.set_current_match_index(current);
++        cx.notify();
+     }

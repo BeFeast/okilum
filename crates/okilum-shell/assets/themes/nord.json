@@ -37,7 +37,10 @@
       "success": "#4a7535",
       "warning": "#865900",
       "danger": "#a3404a",
-      "info": "#3d6a89"
+      "info": "#3d6a89",
+      "findMarkTrack": "#e5e9f0",
+      "findMark": "#8a5a00",
+      "findMarkCurrent": "#0b57d0"
     },
     "dark": {
       "canvas": "#2e3440",
@@ -71,7 +74,10 @@
       "success": "#a3be8c",
       "warning": "#ebcb8b",
       "danger": "#e0868e",
-      "info": "#88c0d0"
+      "info": "#88c0d0",
+      "findMarkTrack": "#3b4252",
+      "findMark": "#f2c14e",
+      "findMarkCurrent": "#8ab4f8"
     }
   }
 }

@@ -73,9 +73,9 @@ original combined titlebar and document controls:
   files omit the switch. ZIP combines its breadcrumb and one-button view menu
   with the same compact action builders; it has no second code toolbar.
   Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
-  large-file reasons and paged position/slider. Find remains an icon plus the
-  existing whole-file row until #2810. Edit and table inner chrome remain for
-  their own steps. Focus changes re-render the GPUI cached header; source edits,
+  large-file reasons and paged position/slider. Code/data read views use the
+  shared header Find; edit and table inner chrome remain for their own steps.
+  Focus changes re-render the GPUI cached header; source edits,
   query typing and page changes do not invalidate its slot key.
 - **One Find component (#2807).** Notes retain their floating bar, selectors,
   match count, case toggle, stepping and two-press Esc behavior. A file opts in
@@ -93,6 +93,42 @@ original combined titlebar and document controls:
   clears and returns in one press. With entry-pane focus Find belongs to that
   pane. The entry's 48 px compact bar contains its archive/entry crumb and PDF
   zoom or plain-text Open action; it has no history controls.
+- **Code/data Find and Tree (#2810).** Tree, Formatted and Raw share the same
+  header field. Tree and long-line Raw search the whole immutable document on a
+  worker, including hits across parts. Ordinary text uses a revision-bound
+  editor adapter: query/source changes coalesce for 60 ms, then Rope flattening
+  and literal Unicode matching run on a worker. No source edit scans a document
+  on the UI thread. Both targets remember Match case and unfold a hit. Enter and
+  Shift+Enter step; Esc clears marks and retains the selected visible hit. Tree
+  folds back Find-only branches outside that hit's ancestor path. The placeholder
+  is “Find in whole file” for paged text or a file over 4 MiB, “Find” otherwise. JSON Table retains
+  its own filter until the table step. Bare/native and ZIP hosts reserve an icon
+  at compact widths and open the same field over their row. No legacy whole-file
+  row or toolkit search strip remains in code/data read mode.
+  Tree hides its synthetic document root and starts with top-level keys at
+  depth zero. Semantic rows show a key/ordinal plus scalar preview or key/item
+  count. Empty containers use `{ }` / `[ ]`. Chevron buttons, 32 px rows and a
+  fixed 60 px two-action slot follow the app's component sizes. Keys use regular
+  code text, scalar values the active syntax theme and counts the faint token.
+  Before the first Tree paint, a bounded printable ASCII plus generated ellipsis/middle-dot glyphs set is prepared at
+  GPUI's finite subpixel phases under an empty content mask, in every foreground,
+  count and syntax-value colour used by Tree. This covers macOS colour-dependent
+  dilation as well as numeric punctuation and varied ASCII keys. The cache is
+  per window/font/size/scale/colour set; row sizes and shaping stay unchanged. Native scroll probes
+  count bitmap rasterizations separately from raster-bounds queries.
+  Copy node and
+  Show in raw text appear on hover/selection; a row context menu supplies those
+  actions and Fold/Unfold with live shortcuts. Up/Down move; Right expands or
+  enters a child; Left collapses or goes to the parent; Enter shows the node in
+  Raw at its exact part. Ctrl+Shift+C copies that node, including on Mac; notes
+  retain Copy as Markdown in their own context. Other matches use the highlight
+  token; current matches use warning plus the accent bar. Scrollbar marks use
+  sorted node lookup, capped at 1,000 evenly sampled hits. Their dedicated
+  `findMark` / `findMarkCurrent` tokens have at least 3:1 contrast against both
+  the `findMarkTrack` raised track and the canvas in every theme; text-highlight
+  backgrounds are not used for scrollbar ticks. Overlapping opaque other-hit
+  ticks are painted as their exact union, preserving gaps and the 1,000-hit
+  sample while avoiding repeated quad submissions on each scroll.
 - **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
   a filled, pinned Extract all button. Its summary is in the bottom line.
   Canvas uses a 28 px read-only lock badge, header Fit/zoom and percentage;
@@ -313,8 +349,11 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | `callout-bg` | `#fffaeb` | `#2a2720` | warning callout fill |
 | `callout-border` | `#f3e3b5` | `#4a3f2a` | |
 | `warning-tint` | `#fbf5e6` | `#3a3220` | warning bottom line; theme-derived warning over surface |
-| `find-match` | `#fde68a` | `#5c4f1c` | find marks |
-| `find-current` | `#fbbf24` | `#8a7420` | current find mark |
+| `find-match` | `#fde68a` | `#5c4f1c` | text-match background |
+| `find-current` | `#fbbf24` | `#8a7420` | current text-match background |
+| `find-mark` | `#8a5a00` | `#f2c14e` | other-hit scrollbar tick |
+| `find-mark-current` | `#0b57d0` | `#8ab4f8` | current-hit scrollbar tick |
+| `find-mark-track` | `#eff0f2` | `#30333a` | scrollbar tick track |
 | `find-current-ring` | `#d97706` | `#facc15` | |
 | `hover` | `#eff0f2` | `#2a2d33` | row and icon-button hover |
 | `selection` | `accent` @ 22 % | `accent` @ 35 % | text selection |

@@ -2920,7 +2920,7 @@ impl Reader {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.is_none() {
-            if let Some(target) = self.viewer_chrome(cx).find {
+            if let Some(target) = self.viewer_find_target(cx) {
                 target.focus(window, cx);
                 return;
             }
@@ -2930,22 +2930,9 @@ impl Reader {
                 table.update(cx, |table, cx| table.focus_filter(window, cx));
                 return;
             }
-            if self
-                .file_preview
-                .as_ref()
-                .and_then(|p| p.code.as_ref())
-                .is_some_and(|code| code.update(cx, |code, cx| code.open_paged_find(window, cx)))
-            {
-                return;
-            }
-            // The read-only code view searches in its own editor (#998).
-            if let Some(input) = self.code_view_input(cx) {
-                let sensitive = reader_ui_state::find_case_sensitive(cx);
-                input.update(cx, |input, cx| {
-                    let query = input.search_session().query.clone();
-                    input.set_search_query(query, !sensitive, cx);
-                    input.open_search(false, cx);
-                    input.focus(window, cx);
+            if let Some(code) = self.file_preview.as_ref().and_then(|p| p.code.as_ref()) {
+                code.update(cx, |code, cx| {
+                    code.open_paged_find(window, cx);
                 });
             }
             return;

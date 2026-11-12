@@ -86,7 +86,9 @@ impl CodePreview {
             return Availability::Disabled("Not available: the file is not valid JSON".into());
         }
         if view == View::Tree {
-            return if !raw.structure.is_empty() {
+            return if !raw.structure.is_empty()
+                && (!raw.json_tree || raw.children(0).next().is_some())
+            {
                 Availability::Available
             } else {
                 Availability::Absent
@@ -181,15 +183,11 @@ impl CodePreview {
             }
         }
         let focused_find = self.find.focus_handle(cx).is_focused(window);
-        self.retain_find = false;
         self.apply_view(view, window, cx);
-        let keeps_find = self.view == View::Tree || (self.view != View::Table && self.paged);
-        if focused_find && (!keeps_find || view != self.view) {
-            // An explicit choice may remove the old Find row. Keep a mounted
-            // keyboard target rather than leaving focus on its hidden Input.
+        if focused_find && self.view == View::Table {
             self.focus.focus(window, cx);
         }
-        if view == View::Tree {
+        if view == View::Tree && !focused_find {
             self.focus.focus(window, cx);
         } else if view == View::Table
             && self
@@ -239,9 +237,8 @@ impl CodePreview {
                     let requested_formatted = json.requested == View::Formatted;
                     let keep_raw = this.automatic_view && this.provisional_interacted.get();
                     if requested_formatted && this.read_active && !keep_raw {
-                        // Honor an explicit choice without unmounting the Find
-                        // the user focused while its worker was running.
-                        this.retain_find = this.find.focus_handle(cx).is_focused(window);
+                        // The shared header field remains mounted while its
+                        // document adapter changes; completion never moves focus.
                         this.apply_view(View::Formatted, window, cx);
                     }
                     if this.automatic_view {
@@ -269,24 +266,26 @@ impl CodePreview {
             if changed {
                 self.document_revision += 1;
                 self.show_page(0, window, cx);
-                self.search(window, cx);
             }
         }
-        if self.view == View::Tree || self.paged {
-            // The retained whole-file row owns Find in these presentations.
-            // A floating toolkit strip from Formatted must not survive here.
-            if let Some(input) = self.input() {
-                input.update(cx, |input, cx| input.close_search(cx));
-            }
-        }
+        self.search(window, cx);
         if self.view == View::Tree {
             self.show_match(window, cx);
         }
         cx.notify();
     }
 
-    pub(crate) fn suspend_presentation(&mut self) {
+    pub(crate) fn suspend_presentation(&mut self, cx: &mut Context<Self>) {
         self.read_active = false;
+        self.cancel_search();
+        self.search_revision += 1;
+        if self.searching {
+            self.search_key = None;
+        }
+        self.searching = false;
+        if let Some(editor) = &self.editor_find {
+            editor.update(cx, |editor, cx| editor.set_active(false, cx));
+        }
         self.provisional_interacted.set(true);
         self.finish_automatic_view();
         if let Some(json) = &mut self.json {
@@ -306,15 +305,9 @@ impl CodePreview {
         self.show_page(page, window, cx);
     }
     pub(super) fn open_find(&self, window: &mut Window, cx: &mut App) {
-        if !self.open_paged_find(window, cx) {
-            if let Some(input) = self.input() {
-                input.update(cx, |state, cx| {
-                    state.open_search(false, cx);
-                    state.focus(window, cx);
-                });
-            }
-        }
+        self.open_paged_find(window, cx);
     }
+
     pub(super) fn fold_availability(&self) -> Availability {
         let Some(doc) = &self.document else {
             return Availability::Disabled("Opening file…".into());
@@ -429,6 +422,13 @@ pub(super) fn copy_text_node(text: &str, window: &mut Window, cx: &mut App) {
 }
 
 pub(crate) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", TreeUp, Some("ReaderCode > ReaderStructure")),
+        KeyBinding::new("down", TreeDown, Some("ReaderCode > ReaderStructure")),
+        KeyBinding::new("left", TreeLeft, Some("ReaderCode > ReaderStructure")),
+        KeyBinding::new("right", TreeRight, Some("ReaderCode > ReaderStructure")),
+        KeyBinding::new("enter", ShowNodeRaw, Some("ReaderCode > ReaderStructure")),
+    ]);
     for context in ["ReaderCode", "ReaderCode > Input"] {
         let modifier = if cfg!(target_os = "macos") {
             "ctrl"

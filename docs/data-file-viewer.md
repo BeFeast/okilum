@@ -60,10 +60,11 @@ Copy selection is exact within the displayed page; Copy node can cross any numbe
 of pages. Search can match across a page boundary. A spanning match selects its
 part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
 Structured long-line files below the 8 MiB automatic threshold initially show a virtualized Tree over the
-complete AST, with original source line numbers, individual node folding, Fold
-all/Unfold all, exact whole-node Copy and Go to Raw navigation. Valid JSON has a
-semantic Tree in both Raw and Pretty: the root, named properties and indexed
-array items, including scalar items. Containers show their type and child count;
+complete AST, with individual node folding, Fold all/Unfold all, exact
+whole-node Copy and Show in raw text navigation. Valid JSON has a semantic Tree
+with named properties and indexed array items, including scalar items; its
+synthetic root is hidden and Tree is absent for a childless root. Rows show a key
+and child count or short value, without a source-line column or type words;
 only expanded rows are visible and only the viewport is rendered. The index is
 built iteratively on a worker from the complete immutable parse, within the
 existing 64 MiB file preview limit. Pretty's formatting bounds remain separate.
@@ -99,7 +100,7 @@ If an untouched default unmounts a programmatically focused text Input, focus
 moves to the mounted CodePreview target. Raw/Formatted snapshots are retained;
 switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
-in unguarded files update the per-type map; Go to error, Go to Raw node navigation
+in unguarded files update the per-type map; Go to error, Show in raw text node navigation
 and background completion never write memory. The map covers json, json-array,
 yaml, toml and xml;
 csv/tsv entries are reserved for the table step. Legacy `json_raw` migrates to
@@ -120,9 +121,11 @@ actions. A single-view source file has no switch. All tooltips use live bindings
 Bare/native hosts and ZIP entries use the same builders with one view menu;
 ZIP merges them with its breadcrumb in one measured compact bar. Copy holds
 Copy selection (disabled in Tree) and Copy node with `Copied node · N lines`.
-The old tools, Structure/Source, page and Pretty/Raw rows are removed. Whole-file
-Find remains the one viewer row until #2810; the header has its trigger icon.
-The table's inner rows and all edit chrome remain for their ordered steps.
+The old tools, Structure/Source, page and Pretty/Raw rows are removed. The shared
+header field owns read-mode Find in every format; there is no whole-file row or
+toolkit strip. The table's inner rows and all edit chrome remain for their ordered
+steps. While JSON Table is active the field is absent and Ctrl/Cmd+F focuses its
+existing filter.
 
 The name has a read-only lock with its reason and, independently, a warning that
 jumps to a JSON error. Storage writability is never inferred from opening a file;
@@ -179,3 +182,38 @@ boundaries to bound unoptimized native Windows render frames. The real native
 probe records its PE stack reserve and trace phases; no stack reserve override
 is introduced. It runs before the slower compiled negative/restored controls so
 a native startup/render failure is reported first. All controls remain required.
+
+## Shared Find and semantic Tree (#2810)
+
+Tree and paged Raw use a whole-document worker matcher with literal Unicode
+case handling and ranges crossing a 32 KiB part boundary. Normal Formatted/Raw
+use an editor adapter. It coalesces query/source mutations for 60 ms, snapshots
+the Rope and source stamp, and flattens/matches only on a worker. Generation and
+source revision checks reject stale results. The toolkit receives prepared
+ranges through `set_external_search_results`; it never rebuilds a regex or scans
+the source inside an edit callback. Clearing captures the existing match-return
+anchor before retiring marks. Query/count/case updates belong to the measured
+Find sibling, while cached header slots use static descriptors. The Copy menu
+resolves caret-sensitive availability only when opened.
+
+Semantic JSON rows hide index zero, the synthetic document root. Direct children
+stay visible after Fold all. `Document` exposes key text, array ordinal, container
+kind/count, scalar kind/short source preview, parent and ordered children for
+Contents reuse. Keys retain their JSON source escapes. Find tracks only branches
+it opened: Esc folds those back except the selected hit's ancestors. A sorted
+preorder lookup replaces the old full-index scan; the scrollbar samples no more
+than 1,000 hits, including the first and last, with a separate current mark.
+
+The opt-in `code-toolbar-native-app.py` hosts the real Reader on the OS main
+stack, uses a synthetic 3.5 MB JSON with 414 paths, and measures synchronous
+native CPU draw work (layout/prepaint/paint, excluding compositor/vsync). Opening
+paths must finish within 100 ms; all 48 scroll samples per marks state must stay
+within 16 ms. This independent step runs even when a baseline native app probe
+fails. It changes neither existing event-loop thresholds nor the Windows stack.
+
+The native toolbar gate keeps two distinct profiles: the debug native Reader
+smoke exercises Tree rendering and scrolling on the OS main stack; an independent
+production release job enforces the 3.5 MB / 414-path CPU budgets (100 ms open,
+16 ms per draw, 48 moving frames with marks and 48 without). Both require actual
+row builds and viewport movement. A debug smoke receipt cannot satisfy the
+release budget runner. Neither gate changes the Windows stack reserve.

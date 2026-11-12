@@ -1,7 +1,7 @@
 {
   "schema": "okilum-reader-tokens/v1",
   "version": "1.1.0",
-  "basis": "docs/design/reader.md, direction A (#348); theme roles from #349. Reader roles layered on interface-tokens.json; also the default \u00abOkilum\u00bb theme in docs/design/reader.md \u00a7Themes.",
+  "basis": "docs/design/reader.md, direction A (#348); theme roles from #349. Reader roles layered on interface-tokens.json; also the default «Okilum» theme in docs/design/reader.md §Themes.",
   "themes": {
     "light": {
       "warningTint": "#fbf5e6",
@@ -17,7 +17,10 @@
       "scrim": "#0000002e",
       "findMatch": "#fde68a",
       "findCurrent": "#fbbf24",
-      "onStatus": "#ffffff"
+      "onStatus": "#ffffff",
+      "findMarkTrack": "#eff0f2",
+      "findMark": "#8a5a00",
+      "findMarkCurrent": "#0b57d0"
     },
     "dark": {
       "warningTint": "#3a3220",
@@ -33,7 +36,10 @@
       "scrim": "#00000073",
       "findMatch": "#5c4f1c",
       "findCurrent": "#8a7420",
-      "onStatus": "#202226"
+      "onStatus": "#202226",
+      "findMarkTrack": "#30333a",
+      "findMark": "#f2c14e",
+      "findMarkCurrent": "#8ab4f8"
     }
   }
 }

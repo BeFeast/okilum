@@ -2,8 +2,7 @@
 use super::*;
 use std::rc::Rc;
 
-#[cfg(test)]
-mod editor;
+pub(crate) mod editor;
 #[cfg(test)]
 mod tests;
 
@@ -101,7 +100,8 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
             .py_1()
             .shadow_md()
     } else {
-        row.absolute()
+        row.occlude()
+            .absolute()
             .right_0()
             .h(px(28.))
             .w_full()
@@ -118,11 +118,12 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
         );
     row = row.child(
         div()
+            .debug_selector(|| "viewer-find-query".into())
             .when(floating, |d| d.w(px(220.)))
             .when(!floating, |d| d.flex_1().min_w_0())
             .child(input),
     );
-    if let Some(count) = &target.count {
+    if let Some(count) = target.count.as_ref().filter(|count| !count.is_empty()) {
         row = row.child(
             div()
                 .text_xs()
@@ -132,7 +133,7 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
                 .child(count.clone()),
         );
     }
-    if let Some((sensitive, invoke)) = &target.match_case {
+    if let Some((sensitive, invoke)) = target.match_case.as_ref().filter(|_| floating || focused) {
         let invoke = invoke.clone();
         row = row.child(
             control("find-case-sensitive", IconName::CaseSensitive, floating)
@@ -141,7 +142,7 @@ pub(crate) fn render(target: &Target, presentation: Presentation, cx: &App) -> A
                 .on_click(move |_, window, cx| invoke(window, cx)),
         );
     }
-    if let Some(step) = &target.step {
+    if let Some(step) = target.step.as_ref().filter(|_| floating || focused) {
         for (id, icon, direction) in [
             ("find-prev", IconName::ChevronUp, -1),
             ("find-next", IconName::ChevronDown, 1),

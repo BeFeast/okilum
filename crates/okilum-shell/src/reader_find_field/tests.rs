@@ -38,6 +38,7 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
     struct Field {
         target: Target,
         width: f32,
+        focused: bool,
     }
     impl Render for Field {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -45,7 +46,7 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
                 &self.target,
                 Presentation::Header {
                     width: self.width,
-                    focused: false,
+                    focused: self.focused,
                     max_width: f32::MAX,
                 },
                 cx,
@@ -66,6 +67,7 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
             large_file: false,
         },
         width: 200.,
+        focused: false,
     });
     for (width, large, expected) in [
         (200., false, Some(200.)),
@@ -93,6 +95,7 @@ fn header_field_renders_200_128_and_icon_but_large_files_keep_a_field(cx: &mut T
     }
     field.update_in(visual, |field, window, cx| {
         field.width = 272.;
+        field.focused = true;
         field.target.match_case = Some((false, std::rc::Rc::new(|_, _| {})));
         field.target.step = Some(std::rc::Rc::new(|_, _, _| {}));
         field.target.steps_visible = true;
@@ -126,6 +129,8 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
+    visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
         reader.editing.as_ref().unwrap().input().clone()
     });
@@ -146,13 +151,19 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         input.set_all_folded(true, cx);
     });
     visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
+    visual.run_until_parked();
     input.update(visual, |input, cx| input.open_search(false, cx));
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     assert!(
         measured_bounds(visual, "search-panel").is_some(),
         "positive control: the real toolkit strip mounts"
     );
     input.update(visual, |input, cx| input.close_search(cx));
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     let stamp = input.read_with(visual, |input, _| input.source_stamp());
     let target =
@@ -161,6 +172,8 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         target.focus(window, cx);
         target.set_query("target", window, cx);
     });
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 3));
     let descriptor = visual.update(|_, cx| EditorTarget::target(&target, cx));
@@ -175,15 +188,22 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         assert!(!input.search_session().open);
         assert_eq!(
             input.folded_ranges().len(),
-            2,
-            "positive control: matches start folded"
+            1,
+            "the first hit is unfolded on query completion"
         );
     });
     target.update(visual, |target, cx| target.step(1, cx));
     visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
+    visual.run_until_parked();
     assert_eq!(target.read_with(visual, |target, cx| target.count(cx).0), 1);
-    assert!(input.read_with(visual, |input, _| input.folded_ranges().len()) < 2);
+    assert_eq!(
+        input.read_with(visual, |input, _| input.folded_ranges().len()),
+        1
+    );
     target.update(visual, |target, cx| target.step(-1, cx));
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     assert_eq!(
         target.read_with(visual, |target, cx| target.count(cx).0),
@@ -196,13 +216,24 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
         2,
         "previous wraps from zero to the last of three matches"
     );
+    visual.run_until_parked();
+    assert_eq!(
+        input.read_with(visual, |input, _| input.folded_ranges().len()),
+        0,
+        "the wrapped step must unfold the second region"
+    );
     target.update(visual, |target, cx| target.set_case_sensitive(true, cx));
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
+    visual.run_until_parked();
     target.read_with(visual, |target, cx| assert_eq!(target.count(cx).1, 2));
     assert!(
         measured_bounds(visual, "search-panel").is_none(),
         "toolkit strip stays absent"
     );
     target.update_in(visual, |target, window, cx| target.clear(window, cx));
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     input.read_with(visual, |input, _| {
         assert!(!input.search_session().external_presentation);
