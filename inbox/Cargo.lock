@@ -1032,6 +1032,72 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-inbox-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "okilum-inboxd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "http-body-util",
+ "okilum-inbox-domain",
+ "okilum-sync",
+ "reqwest",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "url",
+ "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
+]
+
+[[package]]
+name = "okilum-network-access"
+version = "0.1.0"
+
+[[package]]
+name = "okilum-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "okilum-network-access",
+ "okilum-write-authority",
+ "reqwest",
+ "serde_json",
+]
+
+[[package]]
+name = "okilum-write-authority"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1624,56 +1690,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "okilum-inbox-domain"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "uuid",
-]
-
-[[package]]
-name = "okilum-inboxd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "http-body-util",
- "reqwest",
- "rusqlite",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "okilum-inbox-domain",
- "okilum-sync",
- "thiserror 2.0.21",
- "tokio",
- "tower",
- "url",
- "uuid",
- "webauthn-authenticator-rs",
- "webauthn-rs",
-]
-
-[[package]]
-name = "okilum-network-access"
-version = "0.1.0"
-
-[[package]]
-name = "okilum-sync"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "okilum-network-access",
- "reqwest",
- "serde_json",
 ]
 
 [[package]]

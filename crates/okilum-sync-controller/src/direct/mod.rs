@@ -1353,10 +1353,13 @@ impl Controller {
 impl Operation {
     fn first_sync(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if matches!(self, Self::FirstSync { .. }) {
-            return true;
+        {
+            matches!(self, Self::FirstSync { .. })
         }
-        false
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        {
+            false
+        }
     }
     fn removal_only(&self) -> bool {
         matches!(
@@ -1366,10 +1369,13 @@ impl Operation {
     }
     fn read_only(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if matches!(self, Self::Inspect { .. }) {
-            return true;
+        {
+            matches!(self, Self::Inspect { .. })
         }
-        false
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        {
+            false
+        }
     }
 }
 /// Every distinct endpoint this computer serves its paired computers on, the

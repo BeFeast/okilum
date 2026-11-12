@@ -24,6 +24,8 @@ RUN set -eu; \
 WORKDIR /source
 COPY inbox inbox
 COPY crates/okilum-sync crates/okilum-sync
+COPY crates/okilum-network-access crates/okilum-network-access
+COPY crates/okilum-write-authority crates/okilum-write-authority
 COPY web/inbox web/inbox
 ENV CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_DEBUG=0
 RUN cd inbox && cargo build --locked --release -p okilum-inboxd
