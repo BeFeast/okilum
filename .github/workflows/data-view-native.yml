@@ -109,6 +109,17 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/data-view-native.py
+      - name: Exercise real DirectX atlas uploads and compiled controls
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && runner.os == 'Windows' }}
+        shell: bash
+        run: python3 scripts/ci/windows-atlas-upload.py
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && runner.os == 'Windows' }}
+        with:
+          name: windows-atlas-upload-controls
+          path: target/windows-atlas-upload-controls/
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:

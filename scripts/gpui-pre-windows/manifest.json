@@ -1,0 +1,13 @@
+{
+  "package": "gpui-pre-windows",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre-windows/gpui-pre-windows-0.3.3.crate",
+  "archive_sha256": "1a4b60579aa2cb4ef7b6f22133a7b9fe12458062961343bdcf36e259047bc7ad",
+  "patch": "../patches/gpui-pre-windows/0001-directx-atlas-upload.diff",
+  "patch_sha256": "53f5fd0e1e07304b9e5571289b77bde15b0c105bbcdbdc6331489eb9224360d7",
+  "tree_sha256": "ba20cc7998d9513acc9a755327ad40ec4d50cd02714d14321802be79bfd37316",
+  "generated_path": "vendor/gpui-pre-windows-0.3.3",
+  "changed_files": [
+    "src/directx_atlas.rs"
+  ]
+}
