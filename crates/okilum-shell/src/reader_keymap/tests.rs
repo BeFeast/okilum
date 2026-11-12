@@ -460,3 +460,68 @@ fn keymap_2626_record_cancel_reassign_dispatch_reset_and_search_use_the_live_map
     visual.run_until_parked();
     assert_eq!(*events.lock().unwrap(), ["second", "first"]);
 }
+
+#[gpui::test]
+fn code2809_view_and_bracket_bindings_keep_source_editing_context_and_follow_overrides(
+    cx: &mut TestAppContext,
+) {
+    use reader_code_file::{
+        CopyNode, FoldAll, ShowFormatted, ShowRaw, ShowTable, ShowTree, UnfoldAll,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        crate::bind_keys(cx);
+        let modifier = if cfg!(target_os = "macos") {
+            "ctrl"
+        } else {
+            "alt"
+        };
+        for (n, expected) in [
+            (1, ShowTable::name_for_type()),
+            (2, ShowTree::name_for_type()),
+            (3, ShowFormatted::name_for_type()),
+            (4, ShowRaw::name_for_type()),
+        ] {
+            let key = format!("{modifier}-{n}");
+            assert_eq!(actions(&key, &["Reader ReaderCode"], cx)[0], expected);
+            assert_eq!(
+                actions(&key, &["Reader", "ReaderCode", "Input"], cx)[0],
+                expected
+            );
+            assert!(!actions(&key, &["Reader", "ReaderSource", "Input"], cx)
+                .iter()
+                .any(|a| a == expected));
+        }
+        for (key, expected) in [
+            ("ctrl-{", FoldAll::name_for_type()),
+            ("ctrl-}", UnfoldAll::name_for_type()),
+        ] {
+            assert_eq!(actions(key, &["ReaderCode", "Input"], cx)[0], expected);
+        }
+        #[cfg(not(target_os = "macos"))]
+        for (key, expected) in [
+            ("ctrl-shift-[", FoldAll::name_for_type()),
+            ("ctrl-shift-]", UnfoldAll::name_for_type()),
+        ] {
+            assert_eq!(actions(key, &["ReaderCode", "Input"], cx)[0], expected);
+        }
+        assert_eq!(
+            actions("ctrl-shift-c", &["ReaderCode", "Input"], cx)[0],
+            CopyNode::name_for_type()
+        );
+        install_at(Some(directory.path().join("keymap.json")), cx);
+        adopt(
+            Ok(Some(bytes(vec![override_for(
+                "ReaderCode",
+                "f7",
+                Some(ShowTree::name_for_type()),
+            )]))),
+            cx,
+        );
+        assert_eq!(
+            actions("f7", &["ReaderCode"], cx)[0],
+            ShowTree::name_for_type()
+        );
+    });
+}

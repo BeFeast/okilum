@@ -67,6 +67,7 @@ pub(crate) struct ArchivePreview {
     entry_split: reader_split::Split,
     list_focus: FocusHandle,
     entry_focus: FocusHandle,
+    entry_width: f32,
     _filter: Subscription,
 }
 
@@ -124,6 +125,7 @@ impl ArchivePreview {
             ),
             list_focus: cx.focus_handle(),
             entry_focus: cx.focus_handle(),
+            entry_width: 0.,
             _filter: subscription,
         }
     }
@@ -148,7 +150,7 @@ impl ArchivePreview {
         }
     }
 
-    fn entry_bar(&self, cx: &App) -> AnyElement {
+    fn entry_bar(&self, window: &Window, cx: &App) -> AnyElement {
         let Some(listing) = &self.listing else {
             return div().into_any_element();
         };
@@ -160,6 +162,34 @@ impl ArchivePreview {
             self.path.file_name().unwrap_or_default().to_string_lossy(),
             listing.entries[index].name
         );
+        if let Some(EntryView::Code(code)) = &self.entry {
+            let crumb = div()
+                .debug_selector(|| "archive-entry-crumb".into())
+                .flex_1()
+                .min_w(px(80.))
+                .truncate()
+                .child(crumb)
+                .into_any_element();
+            return div()
+                .w_full()
+                .h(px(48.))
+                .flex_none()
+                .debug_selector(|| "archive-entry-bar".into())
+                .border_b_1()
+                .border_color(brand::palette(cx).border_subtle)
+                .child(reader_viewer_chrome::render_compact_header_with_leading(
+                    &code.read(cx).compact_chrome(code.clone(), cx),
+                    if self.entry_width > 0. {
+                        self.entry_width
+                    } else {
+                        window.viewport_size().width.as_f32().min(600.)
+                    },
+                    Some(crumb),
+                    window,
+                    cx,
+                ))
+                .into_any_element();
+        }
         h_flex()
             .flex_none()
             .h(px(48.))
@@ -639,9 +669,9 @@ fn viewer(path: PathBuf, name: &str, window: &mut Window, cx: &mut App) -> Entry
     } else if reader_delimited::eligible(name) {
         EntryView::Table(cx.new(|cx| reader_delimited::TablePreview::new(path, cx)))
     } else if reader_code_file::eligible(name) {
-        EntryView::Code(
-            cx.new(|cx| reader_code_file::CodePreview::new(root, name.into(), path, window, cx)),
-        )
+        EntryView::Code(cx.new(|cx| {
+            reader_code_file::CodePreview::new(root, name.into(), path, window, cx).without_header()
+        }))
     } else {
         // Markdown, logs and anything else readable are shown as text; binary files say so.
         EntryView::Text(cx.new(|cx| {
@@ -688,7 +718,7 @@ fn when(t: archive::Modified) -> String {
 }
 
 impl Render for ArchivePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = brand::palette(cx);
         let view = v_flex()
             .debug_selector(|| "archive-view".into())
@@ -784,13 +814,39 @@ impl Render for ArchivePreview {
         // The slot takes the pane under the handle, like the PDF preview's;
         // the inner full-height column lets the text, code and table viewers'
         // `flex_1` fill it (#1079) instead of collapsing to a line (#1149).
+        let target = cx.entity().downgrade();
+        let measured = self.entry_width;
         let slot = div()
+            .relative()
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let width = bounds.size.width.as_f32();
+                        if width > 0. && (width - measured).abs() > 0.5 {
+                            cx.defer(move |cx| {
+                                let _ = target.update(cx, |this, cx| {
+                                    this.entry_width = width;
+                                    cx.notify();
+                                });
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .debug_selector(|| "archive-entry".into())
             .track_focus(&self.entry_focus)
             .flex_1()
             .min_h_0()
             .w_full()
-            .child(v_flex().size_full().child(self.entry_bar(cx)).child(entry));
+            .child(
+                v_flex()
+                    .size_full()
+                    .child(self.entry_bar(window, cx))
+                    .child(entry),
+            );
         view.child(reader_split::vertical(
             &self.entry_split,
             |view: &mut Self| &mut view.entry_split,
@@ -805,6 +861,84 @@ impl Render for ArchivePreview {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn code2809_zip_entry_has_one_measured_compact_bar_and_view_menu(cx: &mut TestAppContext) {
+        use reader_viewer_chrome::tests::{fixture, measured_bounds};
+        cx.executor().allow_parking();
+        let (reader, visual, temp) = fixture(cx, "note.md");
+        let mut zip = zip::ZipWriter::new(
+            std::fs::File::create(temp.path().join("vault/header.zip")).unwrap(),
+        );
+        zip.start_file("data.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"{\"a\":{\"b\":1}}").unwrap();
+        zip.finish().unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("header.zip", window, cx)
+        });
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |reader, _| {
+            reader
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .unwrap()
+        });
+        archive.update_in(visual, |archive, window, cx| {
+            archive.open_entry(0, window, cx)
+        });
+        visual.run_until_parked();
+        let started = std::time::Instant::now();
+        while archive.read_with(visual, |archive, cx| !matches!(&archive.entry, Some(EntryView::Code(code)) if code.read(cx).document_snapshot().is_some())) {
+            visual.run_until_parked(); assert!(started.elapsed() < Duration::from_secs(30)); std::thread::sleep(Duration::from_millis(10));
+        }
+        for width in [1100., 600.] {
+            visual.simulate_resize(gpui::size(px(width), px(800.)));
+            visual.run_until_parked();
+            let bar = measured_bounds(visual, "archive-entry-bar").unwrap();
+            assert_eq!(bar.size.height, px(48.));
+            for id in [
+                "archive-entry-crumb",
+                "code-view-menu",
+                "code-header-find",
+                "code-compact-more",
+            ] {
+                let item = visual
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("required {id}"));
+                assert!(
+                    item.left() >= bar.left()
+                        && item.right() <= bar.right()
+                        && item.top() >= bar.top()
+                        && item.bottom() <= bar.bottom(),
+                    "{id} outside the only entry bar: {item:?} vs {bar:?}"
+                );
+            }
+        }
+        let button = measured_bounds(visual, "code-view-menu").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert!(!gpui_base::GlobalState::native_overlays(window, cx).is_empty());
+        });
+        visual.simulate_keystrokes("down down down enter");
+        visual.run_until_parked();
+        archive.read_with(visual, |archive, cx| {
+            let Some(EntryView::Code(code)) = &archive.entry else {
+                panic!("code entry");
+            };
+            assert_eq!(
+                code.read(cx).document_snapshot().unwrap().text.as_ref(),
+                "{\"a\":{\"b\":1}}",
+                "Raw menu action selected the unformatted snapshot"
+            );
+        });
+    }
 
     #[gpui::test]
     fn code_entry_click_retains_keyboard_selection_and_copy(cx: &mut TestAppContext) {

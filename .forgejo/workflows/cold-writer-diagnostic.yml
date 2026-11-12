@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   cold-writer:
-    runs-on: ubuntu-latest
+    runs-on: heavy
     timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: '0'

@@ -5,6 +5,14 @@ use std::{ops::Range, sync::Arc};
 
 mod json_tree;
 
+// Reserved, per-fixture counters prove the real parser ordering. Other tests
+// cannot affect them, including concurrently running editor/highlighter work.
+#[cfg(test)]
+pub(super) static ORDERING_PARSES: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
+
 const LONG_LINE: usize = 64 * 1024;
 const PAGE_BYTES: usize = 32 * 1024;
 
@@ -14,7 +22,23 @@ pub(crate) struct Document {
     tree: Option<tree_sitter::Tree>,
     tree_offset: usize,
     pub json_tree: bool,
+    pub invalid: Option<JsonError>,
+    #[cfg(test)]
+    pub parses: bool,
+    #[cfg(test)]
+    pub node_lookups: std::sync::atomic::AtomicUsize,
+    pub foldable: bool,
     pub structure: Vec<StructureRow>,
+}
+
+/// Owned parser diagnostics belong to the whole raw snapshot, including
+/// documents above the automatic formatting threshold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JsonError {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+    pub offset: usize,
 }
 
 /// A preorder AST index, with no copied node text or recursive UI elements.
@@ -107,6 +131,21 @@ impl Document {
     }
 
     pub fn for_file(text: String, language: &str, json: bool) -> Self {
+        #[cfg(test)]
+        for (index, tag) in [
+            b"code2809_ordering_large".as_slice(),
+            b"code2809_ordering_small".as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if text.as_bytes()[..text.len().min(128)]
+                .windows(tag.len())
+                .any(|part| part == tag)
+            {
+                ORDERING_PARSES[index].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         let first = first_page(&text);
         let mut pages = vec![first];
         while pages.last().unwrap().end < text.len() {
@@ -127,11 +166,45 @@ impl Document {
                 parser.set_language(&language).ok()?;
                 parser.parse(parsed, None)
             });
-        let json_tree = json
-            && serde_json::from_str::<serde::de::IgnoredAny>(parsed).is_ok()
-            && tree
-                .as_ref()
-                .is_some_and(|tree| !tree.root_node().has_error());
+        let invalid = if json {
+            serde_json::from_str::<serde::de::IgnoredAny>(parsed)
+                .err()
+                .and_then(|error| {
+                    // IgnoredAny is iterative, but serde still enforces its default
+                    // nesting policy. That is a formatting refusal, not invalid JSON.
+                    if error.to_string().starts_with("recursion limit exceeded") {
+                        return None;
+                    }
+                    let line = error.line();
+                    let column = error.column();
+                    let start = parsed
+                        .split_inclusive('\n')
+                        .take(line.saturating_sub(1))
+                        .map(str::len)
+                        .sum::<usize>();
+                    let mut offset =
+                        (tree_offset + start + column.saturating_sub(1)).min(text.len());
+                    while !text.is_char_boundary(offset) {
+                        offset -= 1;
+                    }
+                    let message = error
+                        .to_string()
+                        .rsplit_once(" at line ")
+                        .map_or_else(|| error.to_string(), |(message, _)| message.to_owned());
+                    Some(JsonError {
+                        line,
+                        column,
+                        message,
+                        offset,
+                    })
+                })
+        } else {
+            None
+        };
+        let parses = tree
+            .as_ref()
+            .is_some_and(|tree| !tree.root_node().has_error());
+        let json_tree = json && invalid.is_none() && parses;
         let structure = if json_tree {
             json_tree::index(tree.as_ref().unwrap(), tree_offset, text.len())
         } else if !json && pages.len() > 1 {
@@ -139,17 +212,52 @@ impl Document {
         } else {
             Vec::new()
         };
+        let foldable = tree
+            .as_ref()
+            .filter(|_| text.contains('\n'))
+            .is_some_and(|tree| {
+                let mut cursor = tree.walk();
+                loop {
+                    let node = cursor.node();
+                    if node.is_named()
+                        && node.start_position().row < node.end_position().row
+                        && node.parent().is_some()
+                    {
+                        break true;
+                    }
+                    if cursor.goto_first_child() {
+                        continue;
+                    }
+                    loop {
+                        if cursor.goto_next_sibling() {
+                            break;
+                        }
+                        if !cursor.goto_parent() {
+                            return false;
+                        }
+                    }
+                }
+            });
         Self {
             text: text.into(),
             pages,
             tree,
             tree_offset,
             json_tree,
+            invalid,
+            #[cfg(test)]
+            parses,
+            #[cfg(test)]
+            node_lookups: std::sync::atomic::AtomicUsize::new(0),
+            foldable,
             structure,
         }
     }
 
     pub fn node_range(&self, offset: usize) -> Option<Range<usize>> {
+        #[cfg(test)]
+        self.node_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tree = self.tree.as_ref()?;
         let offset = offset
             .min(self.text.len().saturating_sub(1))

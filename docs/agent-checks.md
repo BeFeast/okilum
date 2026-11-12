@@ -98,8 +98,20 @@ Cargo to compile unrelated core integration harnesses, even though their
 filters run zero cases. The explicit core integration group and shell binary
 groups remain separate and mandatory.
 
+Canonical `shared-local` and `linux-local` compilation uses the existing
+`heavy` runner label. The generic `ubuntu-latest` label also matches light and
+interactive pools, so it does not specify sufficient compile resources.
+The cold diagnostic reproduced the original 900-second timeout on the same
+light runner as failed canonical main: a 5 GiB memory limit, shell test rustc
+at the limit, repeated memory-limit events and substantial I/O stalls. A
+same-job pair on the registered heavy runner completed all seven original
+groups from separate cold targets on both baseline and candidate. This is
+evidence for explicit workload routing, not a reason to relax deadlines or
+change host configuration. A scheduler eligibility regression rejects either
+compile job or the diagnostic becoming eligible for light/interactive pools.
+
 `cold-writer-diagnostic.yml` is a manual, source-pinned measurement on the
-same `ubuntu-latest` runner class as canonical Linux. It checks out diagnostic
+same `heavy` runner class as canonical Linux. It checks out diagnostic
 tools and the measured source separately. The measured checkout begins without
 a target cache and reproduces the observed unavailable compiler wrapper. Its
 original `check-linux.sh` prelude runs unchanged; a source-directory-qualified

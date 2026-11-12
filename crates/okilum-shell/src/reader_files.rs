@@ -509,6 +509,7 @@ impl Reader {
                     let (root, path) = (self.vault_root.clone(), preview.path.clone());
                     preview.code = Some(cx.new(|cx| {
                         reader_code_file::CodePreview::new(root, rel.into(), path, window, cx)
+                            .without_header()
                     }));
                 } else if reader_plain_text::eligible(rel) {
                     preview.text = Some(cx.new(|cx| {
@@ -1000,11 +1001,14 @@ mod tests {
         assert_eq!(shown(visual), pretty);
         assert!(shown(visual).starts_with("{\n  \"key\": \"ABC-1\",\n  \"fields\": {"));
         // Raw shows the original line.
-        let raw_button = visual.debug_bounds("json-raw").expect("Raw button");
+        let raw_button = reader_viewer_chrome::tests::measured_bounds(visual, "code-view-raw")
+            .expect("Raw button");
         visual.simulate_click(raw_button.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(shown(visual), raw);
-        let pretty_button = visual.debug_bounds("json-pretty").expect("Pretty button");
+        let pretty_button =
+            reader_viewer_chrome::tests::measured_bounds(visual, "code-view-formatted")
+                .expect("Pretty button");
         visual.simulate_click(pretty_button.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(shown(visual), pretty);
@@ -1017,12 +1021,12 @@ mod tests {
         // Invalid JSON stays raw and says where.
         open(visual, "broken.json");
         assert_eq!(shown(visual), "{\n  \"a\": 1,\n}");
-        assert!(visual.debug_bounds("json-note").is_some());
+        assert!(visual.debug_bounds("code-status").is_some());
 
         // Positive control: other code files get no Pretty/Raw switch.
         open(visual, "tool.py");
         assert_eq!(shown(visual), "print(1)\n");
-        assert!(visual.debug_bounds("json-raw").is_none());
+        assert!(visual.debug_bounds("code-view-raw").is_none());
     }
 
     #[gpui::test]

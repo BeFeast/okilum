@@ -14,6 +14,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +50,26 @@ def receipt():
 
 
 class VerdictTests(unittest.TestCase):
+    def test_canonical_compile_jobs_do_not_match_light_or_interactive_runners(self):
+        # The shared ubuntu-latest label spans incompatible resource classes.
+        # Evaluate scheduler eligibility, including overlapping Docker labels.
+        pools = {
+            'heavy': {'heavy', 'docker', 'ubuntu-latest'},
+            'light': {'light', 'ubuntu-latest'},
+            'interactive': {'ci-interactive', 'docker', 'ubuntu-latest'},
+        }
+        workflows = [('.forgejo/workflows/ci.yml', ('shared-local', 'linux-local')),
+                     ('.forgejo/workflows/cold-writer-diagnostic.yml', ('cold-writer',))]
+        for path, jobs in workflows:
+            workflow = yaml.safe_load((ROOT / path).read_text())
+            for name in jobs:
+                with self.subTest(job=name):
+                    labels = workflow['jobs'][name]['runs-on']
+                    required = set(labels if isinstance(labels, list) else [labels])
+                    eligible = [pool for pool, available in pools.items()
+                                if required <= available]
+                    self.assertEqual(eligible, ['heavy'])
+
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)

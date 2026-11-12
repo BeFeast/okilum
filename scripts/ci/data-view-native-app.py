@@ -58,6 +58,8 @@ def main():
                             assert clipboard() == expected, (name, clipboard())
                             receipt = json.loads(ready.read_text(encoding="utf-8"))
                             assert receipt['real_native_platform'] and receipt['ticks'] >= 6
+                            assert receipt['initial_view'] == 'raw', receipt
+                            assert receipt['final_view'] == ('tree' if name in ('big.json', 'big.xml') else 'raw'), receipt
                             print(json.dumps(receipt), flush=True)
                             (directory / ('ack-' + name)).write_text('observed')
                             break
@@ -66,6 +68,10 @@ def main():
                         raise AssertionError('native viewer timeout: ' + name)
                 assert process.wait(timeout=20) == 0, log_path.read_text(encoding="utf-8")[-6000:]
                 assert (directory / 'complete').exists()
+                trace = log_path.read_text(encoding='utf-8')
+                assert 'DATA_VIEW_2669_NATIVE_TRACE chrome.begin' in trace
+                assert 'DATA_VIEW_2669_NATIVE_TRACE chrome.end' in trace
+                assert 'DATA_VIEW_2669_NATIVE_TRACE toolbar.begin' not in trace
                 assert before == {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in fixtures}
                 print('DATA_VIEW_2669_REAL_NATIVE_EVENT_LOOP_CLIPBOARD_SOURCE_PASS', flush=True)
             finally:
