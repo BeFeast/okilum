@@ -495,11 +495,14 @@ fn file2811_repair_from_read_enters_edit_and_stale_sheet_closes(cx: &mut TestApp
 #[gpui::test]
 fn file2811_narrow_header_protects_find_read_save_format_and_more(cx: &mut TestAppContext) {
     let (_reader, _file, input, visual, _temp) = open(cx, "broken.json", "{ a: 1 }");
-    input.update_in(visual, |i, w, cx| i.replace_source_range(0..0, " ", w, cx));
     for mode in [
         gpui_component::ThemeMode::Light,
         gpui_component::ThemeMode::Dark,
     ] {
+        input.update_in(visual, |i, w, cx| {
+            i.focus(w, cx);
+            i.replace_source_range(0..0, " ", w, cx)
+        });
         visual.update(|_, cx| {
             gpui_component::Theme::change(mode, None, cx);
             brand::apply_theme(cx);
@@ -987,5 +990,38 @@ fn file2811_ambiguous_language_has_a_button_then_a_narrow_menu(cx: &mut TestAppC
     assert!(
         items.iter().any(|i| i.0 == "Language: TEXT"),
         "narrow Language remains reachable"
+    );
+}
+
+#[gpui::test]
+fn file2811_conflicting_repair_closes_the_sheet_without_applying_or_writing(
+    cx: &mut TestAppContext,
+) {
+    let original = "{ a: 1 }";
+    let (reader, _file, input, visual, temp) = open(cx, "broken.json", original);
+    input.update_in(visual, |i, w, cx| i.replace_source_range(0..0, " ", w, cx));
+    tick(visual, 121);
+    reader.update_in(visual, |r, w, cx| r.code_operation(Action::Repair, w, cx));
+    frame(visual);
+    measured(visual, "file-repair-sheet");
+    let path = temp.path().join("vault/broken.json");
+    let remote = "{\"remote\":2}";
+    std::fs::write(&path, remote).unwrap();
+    reader.update(visual, |r, cx| {
+        assert!(!r.save_source(cx));
+        assert!(r.editing.as_ref().unwrap().conflict_detected);
+    });
+    frame(visual);
+    visual.update(|w, cx| w.clear_notifications(cx));
+    click(visual, "file-repair-apply");
+    assert!(
+        visual.debug_bounds("file-repair-sheet").is_none(),
+        "stale conflict retires the real sheet"
+    );
+    assert_eq!(text(&input, visual), format!(" {original}"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), remote);
+    assert!(
+        visual.update(|w, cx| !w.notifications(cx).is_empty()),
+        "stale Apply has a real toast"
     );
 }
