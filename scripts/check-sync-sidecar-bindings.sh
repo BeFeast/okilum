@@ -33,7 +33,10 @@ objc2-service-management = { version = "0.3.2", default-features = false, featur
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_TaskScheduler", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
 ''')
 (probe/'Cargo.lock').write_bytes((root/'Cargo.lock').read_bytes())
+(probe/'rust-toolchain.toml').write_bytes((root/'rust-toolchain.toml').read_bytes())
 PY
+# rustup resolves from the current directory, not --manifest-path.
+cd "$probe"
 for target in aarch64-apple-darwin x86_64-pc-windows-msvc; do
-    cargo +1.99.0 clippy --manifest-path "$probe/Cargo.toml" --target "$target" --tests -- -D warnings
+    cargo clippy --manifest-path "$probe/Cargo.toml" --target "$target" --tests -- -D warnings
 done

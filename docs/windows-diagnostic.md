@@ -83,7 +83,8 @@ Record actual results before estimating daily viewer, native safe save or update
 
 ## Build
 
-On Linux install Rust 1.96.1 with `x86_64-pc-windows-msvc`, clang/lld/llvm,
+On Linux use rustup with the compiler pinned in `rust-toolchain.toml` and the
+`x86_64-pc-windows-msvc` target, plus clang/lld/llvm,
 `cargo-xwin` 0.23.1 and CairoSVG 2.8.2. Prepare and verify the pinned vendor using
 `scripts/vendor-setup.sh`, then run `scripts/build-windows-ci.sh`.
 

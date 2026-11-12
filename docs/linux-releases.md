@@ -164,7 +164,8 @@ channel refuses backwards publication.
 
 `.forgejo/workflows/linux-release.yml` builds each merge to `main` with shared
 sccache and cached dependency downloads, in a pinned
-Arch `base-devel` container, with Rust 1.96.1 and the locked dependency graph.
+Arch `base-devel` container, with the compiler pinned in `rust-toolchain.toml`
+and the locked dependency graph.
 The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packaging
 build/install the package and test signing with a disposable key; they cannot
 publish. Main builds publish beta. Workflow concurrency serializes publication.
