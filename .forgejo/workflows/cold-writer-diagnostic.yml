@@ -72,7 +72,7 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/cargo" --version
-      - name: Prepare exact source and Python dependencies
+      - name: Prepare exact source and vendor
         env:
           SOURCE: ${{ inputs.source }}
           CANDIDATE: ${{ inputs.candidate }}
@@ -83,10 +83,12 @@ jobs:
             test ! -d target
             scripts/vendor-setup.sh
             scripts/vendor-setup.sh --verify
-            bash scripts/ci/setup-python-tests.sh
           )
           prepare source "$SOURCE"
           if [[ -n "$CANDIDATE" ]]; then prepare candidate "$CANDIDATE"; fi
+      - name: Prepare pinned baseline Python dependencies
+        working-directory: source
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Observe original prelude and cold writer within 900 seconds
         id: baseline
         continue-on-error: true
@@ -99,6 +101,10 @@ jobs:
           # any host cache/server or adding a compiled-target restore.
           unset RUSTC_WRAPPER
           python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
+      - name: Prepare pinned candidate Python dependencies
+        if: inputs.candidate != ''
+        working-directory: candidate
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Observe candidate cold writer on the same runner within 900 seconds
         id: candidate
         if: inputs.candidate != ''

@@ -101,7 +101,8 @@ class VerdictTests(unittest.TestCase):
             barrier = threading.Barrier(4)
             lock = threading.Lock()
 
-            def execute(name, arguments, expected, *, command):
+            def execute(name, arguments, expected, *, command, limit):
+                self.assertEqual(limit, 3600)
                 self.assertEqual(command, ['cargo', 'test', '--workspace', '--locked',
                                            '--no-fail-fast', '--'])
                 self.assertIn('--test-threads=2', arguments)
@@ -401,6 +402,7 @@ class HelperFlowTests(unittest.TestCase):
             # not process supervision. Record every wrapper invocation and run
             # each fake command directly; the next control runs the real watchdog.
             (scripts / 'test-group.sh').write_text(
+                'if [[ ${1:-} == --isolated-writer-account ]]; then shift; fi\n'
                 'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
                 'shift 2\nexec "$@"\n')
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
@@ -475,8 +477,8 @@ class HelperFlowTests(unittest.TestCase):
             entrypoint = scripts / 'linux-rust-tests.sh'
             entrypoint.write_text(entrypoint.read_text()
                 .replace('suite issue2049 120 ', 'suite issue2049 2 ')
-                .replace('bash scripts/ci/test-group.sh "$group"',
-                         'bash scripts/ci/test-group.sh --kill-after 0.3 "$group"'))
+                .replace('bash scripts/ci/test-group.sh ',
+                         'bash scripts/ci/test-group.sh --kill-after 0.3 ', 1))
             for name in ('vendor-tests.sh', 'local-writer-admission.sh'):
                 (scripts / name).write_text('exit 0\n')
             fixture = ROOT / 'scripts/ci/fixtures/hung-test-group.py'

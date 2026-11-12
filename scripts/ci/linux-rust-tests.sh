@@ -7,9 +7,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 failed=0
 suite() {
     local group=$1 limit=$2
+    local account=()
     shift 2
     printf '\nLinux suite: %s\n' "$*"
-    bash scripts/ci/test-group.sh "$group" "$limit" "$@" || failed=1
+    if [[ "$group" == reader-editor-live-preview ]]; then
+        account=(--isolated-writer-account)
+    fi
+    bash scripts/ci/test-group.sh "${account[@]}" "$group" "$limit" "$@" || failed=1
 }
 suite local-writer 900 bash scripts/ci/local-writer-admission.sh
 # #2710: these regression names are outside the original admission filter.

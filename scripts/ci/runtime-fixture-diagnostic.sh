@@ -14,7 +14,7 @@ guarded() {
     local name=$1 target=$2 evidence
     shift 2
     evidence=$(mktemp)
-    if ! bash scripts/ci/test-group.sh "$name" 120 "$@" 2>&1 | tee "$evidence"; then
+    if ! bash scripts/ci/test-group.sh --isolated-writer-account "$name" 120 "$@" 2>&1 | tee "$evidence"; then
         status=1
     fi
     if ! python3 "$tools/require-target-tests.py" "$target" "$evidence"; then
