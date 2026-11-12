@@ -31,7 +31,9 @@ impl CodePreview {
         target.count = Some(
             if self.find.read(cx).value().is_empty() {
                 String::new()
-            } else if self.searching {
+            } else if self.searching
+                || (self.document.is_none() && !matches!(self.state, State::Message(_)))
+            {
                 "Searching…".into()
             } else if self.matches.is_empty() {
                 "No matches".into()
