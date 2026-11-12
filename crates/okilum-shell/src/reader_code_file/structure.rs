@@ -185,8 +185,8 @@ impl CodePreview {
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("{}", row.line)),
             )
-            .child(
-                div()
+            .child({
+                let label = div()
                     .id(("data-node-label", index))
                     .debug_selector(move || format!("data-node-label-{index}"))
                     .when(hit.is_some(), |label| {
@@ -204,8 +204,12 @@ impl CodePreview {
                             this.structure.selected = Some(index);
                             cx.notify();
                         }),
-                    ),
-            )
+                    )
+                    .into_any_element();
+                #[cfg(feature = "data-view-native-harness")]
+                let label = label_paint_probe::Trace::new(label, 3).into_any_element();
+                label
+            })
             .child(
                 Button::new(("data-node-copy", index))
                     .small()

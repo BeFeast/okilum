@@ -1035,3 +1035,8 @@ fn native_trace(phase: &str) {
         diagnostic_error!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
     }
 }
+
+// Diagnostic-only baseline: identical label paint timer to the toolbar branch.
+#[cfg(feature = "data-view-native-harness")]
+#[allow(dead_code)]
+mod label_paint_probe;
