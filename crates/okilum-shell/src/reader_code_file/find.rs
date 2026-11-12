@@ -3,7 +3,7 @@ use super::*;
 use std::rc::Rc;
 
 impl CodePreview {
-    fn cancel_search(&mut self) {
+    pub(super) fn cancel_search(&mut self) {
         self.search_cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.search_task = None;
@@ -194,11 +194,15 @@ impl CodePreview {
         let cancelled = self.search_cancel.clone();
         #[cfg(test)]
         let scans = self.search_scans.clone();
+        #[cfg(test)]
+        let started = self.search_scans_started.clone();
         self.search_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(60))
                 .await;
             let task = cx.background_executor().spawn(async move {
+                #[cfg(test)]
+                started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let result = scan_snapshot(&doc, &query, sensitive, &cancelled);
                 #[cfg(test)]
                 if result.is_some() {
@@ -210,8 +214,12 @@ impl CodePreview {
                 return;
             };
             let _ = this.update_in(cx, |s, window, cx| {
-                if s.search_revision != revision || !s.whole_find() {
+                if s.search_revision != revision || !s.whole_find() || !s.read_active {
                     return;
+                }
+                #[cfg(test)]
+                {
+                    s.search_installs += 1;
                 }
                 s.searching = false;
                 s.matches = result.matches;
@@ -327,14 +335,24 @@ pub(super) fn scan_snapshot(
     sensitive: bool,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Option<ScanResult> {
+    scan_snapshot_with_progress(doc, query, sensitive, cancelled, || {})
+}
+
+pub(super) fn scan_snapshot_with_progress(
+    doc: &Document,
+    query: &str,
+    sensitive: bool,
+    cancelled: &std::sync::atomic::AtomicBool,
+    mut progress: impl FnMut(),
+) -> Option<ScanResult> {
     use std::sync::atomic::Ordering;
     if cancelled.load(Ordering::Relaxed) {
         return None;
     }
-    let pattern = match regex::RegexBuilder::new(&regex::escape(query))
+    let compiled = regex::RegexBuilder::new(&regex::escape(query))
         .case_insensitive(!sensitive)
-        .build()
-    {
+        .build();
+    let pattern = match compiled {
         Ok(pattern) => pattern,
         Err(_) => {
             return Some(ScanResult {
@@ -349,6 +367,7 @@ pub(super) fn scan_snapshot(
     let mut matches = Vec::new();
     let mut rows = std::collections::HashMap::new();
     for hit in pattern.find_iter(&doc.text) {
+        progress();
         if cancelled.load(Ordering::Relaxed) {
             return None;
         }

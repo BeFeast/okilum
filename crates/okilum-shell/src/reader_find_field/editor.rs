@@ -12,6 +12,7 @@ pub(crate) struct EditorTarget {
     active: bool,
     generation: u64,
     navigation_revision: u64,
+    requested_query: Option<(String, bool)>,
     task: Option<Task<()>>,
     _subscriptions: [Option<Subscription>; 2],
     #[cfg(test)]
@@ -60,7 +61,17 @@ impl EditorTarget {
         cx: &mut Context<Self>,
     ) -> Self {
         let changed = cx.subscribe(&query, |this, _, event: &InputEvent, cx| match event {
-            InputEvent::Change => this.apply_query(true, cx),
+            InputEvent::Change => {
+                // Submit/focus may repeat Change with the same text. It must
+                // not restart first-hit navigation after a Find step.
+                let unchanged = this.requested_query.as_ref().is_some_and(|(query, case)| {
+                    query.as_str() == this.query.read(cx).value().as_ref()
+                        && *case == this.case_sensitive.get()
+                });
+                if !unchanged {
+                    this.apply_query(true, cx);
+                }
+            }
             InputEvent::PressEnter { shift, .. } if this.active => {
                 this.step(if *shift { -1 } else { 1 }, cx)
             }
@@ -78,6 +89,7 @@ impl EditorTarget {
             active: true,
             generation: 0,
             navigation_revision: 0,
+            requested_query: None,
             task: None,
             _subscriptions: [Some(changed), Some(mutated)],
             #[cfg(test)]
@@ -146,6 +158,7 @@ impl EditorTarget {
             return;
         }
         let query = self.query.read(cx).value().to_string();
+        self.requested_query = Some((query.clone(), self.case_sensitive.get()));
         if query.is_empty() {
             self.source.update(cx, |s, cx| {
                 // Capture the match-return anchor before retiring marks.
@@ -274,11 +287,33 @@ impl EditorTarget {
     }
     pub(crate) fn step(&mut self, direction: i32, cx: &mut Context<Self>) {
         self.source.update(cx, |s, cx| {
-            let range = if direction < 0 {
+            let matcher = &s.search_session().matcher;
+            let ranges = matcher.matched_ranges();
+            let selection = s.selected_range();
+            let external = ranges.get(matcher.current_match_index()) != Some(&selection);
+
+            let range = if external && !ranges.is_empty() {
+                let caret = s.cursor();
+                let index = if direction < 0 {
+                    ranges
+                        .partition_point(|r| r.start < caret)
+                        .checked_sub(1)
+                        .unwrap_or(ranges.len() - 1)
+                } else {
+                    let index = ranges.partition_point(|r| r.start < caret);
+                    if index == ranges.len() {
+                        0
+                    } else {
+                        index
+                    }
+                };
+                s.select_external_search_match(index, cx)
+            } else if direction < 0 {
                 s.previous_search_match(cx)
             } else {
                 s.next_search_match(cx)
             };
+
             if let Some(range) = range {
                 Self::reveal(s, range, cx);
             }

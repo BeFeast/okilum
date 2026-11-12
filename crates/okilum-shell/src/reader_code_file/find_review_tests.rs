@@ -21,12 +21,16 @@ fn code2810_root_separator_hits_never_borrow_a_visible_row_label(cx: &mut TestAp
             Some(0)
         );
         code.step_match(1, window, cx);
+    });
+    // Paint before checking ownership: restoring the original owner AND slice
+    // behavior must reproduce the original UI-thread slice panic.
+    settle(visual);
+    code.read_with(visual, |code, _| {
         assert_eq!(
             code.structure.match_node, None,
             "hidden-root hits do not belong to row one"
         );
     });
-    settle(visual);
     assert!(visual.debug_bounds("data-node-label-1").is_some());
 }
 
@@ -376,4 +380,174 @@ fn code2810_mark_segments_preserve_the_exact_tick_union_and_gaps() {
         assert_eq!(segments.iter().any(|r| r.contains(&y)), original);
     }
     assert!(structure::mark_segments(&[], bounds).is_empty());
+}
+
+#[gpui::test]
+fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = crate::reader_viewer_chrome::tests::fixture_with_files(
+        cx,
+        "data.json",
+        &[("data.json", r#"{"value":"needle other"}"#)],
+    );
+    let code = reader.read_with(visual, |r, _| {
+        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    code.update_in(visual, |s, w, cx| s.set_view(View::Tree, w, cx));
+    let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));
+    visual.update(|w, cx| target.set_query("other", w, cx));
+    settle(visual);
+    let before = code.read_with(visual, |s, _| {
+        assert_eq!(
+            s.matches.len(),
+            1,
+            "positive control: real search installed"
+        );
+        (
+            s.search_scans_started.load(Ordering::SeqCst),
+            s.search_installs,
+        )
+    });
+    visual.update(|w, cx| target.set_query("needle", w, cx));
+    visual.run_until_parked();
+    code.read_with(visual, |s, _| {
+        assert!(s.searching && s.search_task.is_some())
+    });
+    reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+    settle(visual);
+    assert!(
+        reader.read_with(visual, |r, _| r.editing.is_some()),
+        "real Edit entry completed"
+    );
+    code.read_with(visual, |s, _| {
+        assert!(!s.read_active);
+        assert_eq!(
+            s.search_scans_started.load(Ordering::SeqCst),
+            before.0,
+            "Edit before debounce must start zero scans"
+        );
+        assert_eq!(
+            s.search_installs, before.1,
+            "suspended preview installs zero results"
+        );
+        assert!(!s.searching);
+        assert!(s.search_task.is_none());
+        assert!(s.matches.is_empty());
+    });
+    // The real retained-preview exit must restart the pending query in Read.
+    reader.update_in(visual, |r, w, cx| {
+        let input = r.editing.as_ref().unwrap().input().clone();
+        input.update(cx, |input, cx| input.replace_source_range(0..0, " ", w, cx));
+        std::fs::write(
+            temp.path().join("vault/data.json"),
+            r#"{"incoming":"needle other"}"#,
+        )
+        .unwrap();
+        assert!(!r.save_source(cx), "real conflict enables draft parking");
+    });
+    settle(visual);
+    let park = visual
+        .debug_bounds("source-park")
+        .expect("real draft-park button")
+        .center();
+    visual.simulate_click(park, Modifiers::default());
+    settle(visual);
+    assert!(reader.read_with(visual, |r, _| r.editing.is_none()));
+    code.read_with(visual, |s, _| {
+        assert!(s.read_active);
+        assert_eq!(s.search_scans_started.load(Ordering::SeqCst), before.0 + 1);
+        assert_eq!(s.search_installs, before.1 + 1);
+        assert_eq!(
+            s.matches.len(),
+            1,
+            "Read resumes the retained pending query"
+        );
+    });
+}
+
+#[test]
+fn code2810_snapshot_cancellation_interrupts_an_in_flight_scan() {
+    crate::source_presentation::code_languages::install();
+    let doc = Document::new(
+        format!("{{\"value\":\"{}\"}}", "needle ".repeat(1000)),
+        "json",
+    );
+    let cancelled = AtomicBool::new(false);
+    let mut visited = 0;
+    let result =
+        super::find::scan_snapshot_with_progress(&doc, "needle", false, &cancelled, || {
+            visited += 1;
+            cancelled.store(true, Ordering::SeqCst);
+        });
+    assert_eq!(visited, 1, "cancellation interrupts the actual hit loop");
+    assert!(
+        result.is_none(),
+        "an interrupted scan cannot build a result"
+    );
+}
+
+#[gpui::test]
+fn code2810_raw_jump_steps_from_the_external_selection(cx: &mut TestAppContext) {
+    let source = r#"{"a":"needle","node":{"other":42},"z":"needle"}"#;
+    let (code, visual, _temp) = fixture(cx, "data.json", source);
+    code.update_in(visual, |s, w, cx| s.set_view(View::Tree, w, cx));
+    let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));
+    visual.update(|w, cx| target.set_query("needle", w, cx));
+    settle(visual);
+    let node = code.update_in(visual, |s, w, cx| {
+        let doc = s.document.as_ref().unwrap();
+        let row = (0..doc.structure.len())
+            .find(|i| doc.key_text(*i) == Some("node"))
+            .unwrap();
+        let range = doc.structure[row].range.clone();
+        s.structure.selected = Some(row);
+        s.show_selected_raw(w, cx);
+        range
+    });
+    settle(visual);
+    let input = code.read_with(visual, |s, _| s.input().unwrap());
+    assert_eq!(input.read_with(visual, |s, _| s.selected_range()), node);
+    let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));
+    target.input.update_in(visual, |s, w, cx| s.focus(w, cx));
+    settle(visual);
+    let adapter = code.read_with(visual, |s, _| s.editor_find.clone().unwrap());
+    let scans = adapter.read_with(visual, |s, _| s.scans_started.load(Ordering::SeqCst));
+    visual.simulate_keystrokes("enter");
+    settle(visual);
+    let first = source.find("needle").unwrap();
+    let last = source.rfind("needle").unwrap();
+    assert_eq!(
+        input.read_with(visual, |s, _| s.selected_range()),
+        last..last + 6,
+        "Next after a node jump lands on z, not the first hit"
+    );
+    assert_eq!(
+        adapter.read_with(visual, |s, _| s.scans_started.load(Ordering::SeqCst)),
+        scans,
+        "Enter must not rescan an unchanged query"
+    );
+    input.update(visual, |s, cx| s.set_selected_range(node.clone(), cx));
+    visual.simulate_keystrokes("shift-enter");
+    settle(visual);
+    assert_eq!(
+        input.read_with(visual, |s, _| s.selected_range()),
+        first..first + 6,
+        "Previous after external selection lands before the caret"
+    );
+    visual.simulate_keystrokes("enter");
+    settle(visual);
+    assert_eq!(
+        input.read_with(visual, |s, _| s.selected_range()),
+        last..last + 6,
+        "ordinary subsequent steps still advance from the revealed hit"
+    );
+    input.update(visual, |s, cx| {
+        s.set_selected_range(source.len()..source.len(), cx)
+    });
+    visual.simulate_keystrokes("enter");
+    settle(visual);
+    assert_eq!(
+        input.read_with(visual, |s, _| s.selected_range()),
+        first..first + 6,
+        "Next wraps only when no hit follows the external caret"
+    );
 }

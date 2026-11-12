@@ -275,8 +275,15 @@ impl CodePreview {
         cx.notify();
     }
 
-    pub(crate) fn suspend_presentation(&mut self) {
+    pub(crate) fn suspend_presentation(&mut self, cx: &mut Context<Self>) {
         self.read_active = false;
+        self.cancel_search();
+        self.search_revision += 1;
+        self.search_key = None;
+        self.searching = false;
+        if let Some(editor) = &self.editor_find {
+            editor.update(cx, |editor, cx| editor.set_active(false, cx));
+        }
         self.provisional_interacted.set(true);
         self.finish_automatic_view();
         if let Some(json) = &mut self.json {

@@ -173,6 +173,10 @@ pub(crate) struct CodePreview {
     search_cancel: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     search_scans: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    search_scans_started: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    search_installs: usize,
     focus: FocusHandle,
     _find_subscription: Subscription,
 }
@@ -454,6 +458,10 @@ impl CodePreview {
             search_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(test)]
             search_scans: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            search_scans_started: Default::default(),
+            #[cfg(test)]
+            search_installs: 0,
             focus: cx.focus_handle(),
             _find_subscription: find_subscription,
         }
@@ -833,13 +841,30 @@ impl Reader {
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
         {
-            code.update(cx, |code, cx| {
+            let resume_find = code.update(cx, |code, cx| {
+                let suspended = !code.read_active;
                 code.read_active = true;
                 if let Some(input) = code.input() {
                     code.apply_diagnostics(&input, cx);
                 }
                 cx.notify();
+                suspended && !code.find.read(cx).value().is_empty()
             });
+            if resume_find {
+                let code = code.clone();
+                let window = self.reader_window;
+                // Edit exits without a Window also use this path. Re-enter
+                // the owning window only after its current lease is released.
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        code.update(cx, |code, cx| {
+                            if code.read_active {
+                                code.search(window, cx);
+                            }
+                        });
+                    });
+                });
+            }
         }
     }
     fn read_code_view(&self) -> Option<Entity<CodePreview>> {

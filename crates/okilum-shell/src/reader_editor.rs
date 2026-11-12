@@ -864,7 +864,7 @@ impl Reader {
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
         {
-            code.update(cx, |code, _| code.suspend_presentation());
+            code.update(cx, |code, cx| code.suspend_presentation(cx));
         }
         // The editor opens at the Reader's place, not at the top (#1296). The
         // mapping parses the note (tens of ms for a long one), so it runs off

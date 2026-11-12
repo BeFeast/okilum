@@ -1,9 +1,23 @@
 --- a/crates/base/src/input/editor/search.rs
 +++ b/crates/base/src/input/editor/search.rs
-@@ -106,4 +106,27 @@
+@@ -106,4 +106,41 @@
              self.search_session.external_presentation = external;
              cx.notify();
          }
++    }
++
++    /// Select a host-computed match index without copying or rescanning ranges.
++    /// The host may choose it relative to an externally moved caret.
++    pub fn select_external_search_match(
++        &mut self,
++        index: usize,
++        cx: &mut Context<Self>,
++    ) -> Option<Range<usize>> {
++        let range = self.search_session.matcher.matched_ranges.get(index)?.clone();
++        self.search_session.matcher.set_current_match_index(index);
++        self.scroll_to(range.end, None, cx);
++        cx.notify();
++        Some(range)
 +    }
 +
 +    /// Install worker-computed, revision-checked literal Find ranges. The host
