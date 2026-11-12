@@ -1,0 +1,44 @@
+name: deps-storage-resolution
+on:
+  push:
+    branches: ['deps-resolution/storage-*']
+permissions:
+  contents: read
+jobs:
+  resolve-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare and verify unchanged vendor patches
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Resolve only ZIP and SQLite
+        run: |
+          cargo update -p zip --precise 9.5.1
+          cargo update --manifest-path inbox/Cargo.toml -p rusqlite --precise 0.42.0
+          python3 - <<'CHECK'
+          import pathlib,subprocess,tomllib
+          before=tomllib.loads(subprocess.check_output(['git','show','HEAD:Cargo.lock'],text=True))['package']
+          after=tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+          assert [p for p in before if p['name'].startswith('gpui-pre')]==[p for p in after if p['name'].startswith('gpui-pre')]
+          CHECK
+      - uses: actions/upload-artifact@v4
+        with:
+          name: storage-lockfiles
+          path: |
+            Cargo.lock
+            inbox/Cargo.lock
+          if-no-files-found: error
+      - name: Archive policy and limits
+        run: cargo test --locked -p okilum-core archive:: -- --nocapture
+      - name: Full Inbox suite including old database migration
+        run: cargo test --locked --manifest-path inbox/Cargo.toml --workspace
