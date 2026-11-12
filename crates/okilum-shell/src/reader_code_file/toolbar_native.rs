@@ -53,7 +53,7 @@ fn thread_cpu_ms() -> Option<f64> {
     None
 }
 
-pub(super) fn entry() -> bool {
+pub(crate) fn entry() -> bool {
     let Some(directory) = std::env::var_os("OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE") else {
         return false;
     };
