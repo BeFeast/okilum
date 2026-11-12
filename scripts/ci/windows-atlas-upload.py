@@ -70,6 +70,9 @@ def instrument(original):
     anchor = "                bounds.left().0 as u32,"
     assert body.count(anchor) == 1
     body = body.replace(anchor, '''                if std::env::var("OKILUM_ATLAS_UPLOAD_CONTROL").ok().as_deref()==Some("wrong-origin") {0} else {bounds.left().0 as u32},''')
+    anchor = "                bounds.top().0 as u32,"
+    assert body.count(anchor) == 1
+    body = body.replace(anchor, '                if std::env::var("OKILUM_ATLAS_UPLOAD_CONTROL").ok().as_deref()==Some("wrong-origin") {0} else {bounds.top().0 as u32},')
     source = source[:start] + body + source[end:]
     return source
 

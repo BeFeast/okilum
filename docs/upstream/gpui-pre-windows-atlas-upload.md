@@ -13,6 +13,13 @@ confirmed long label-paint spans with legacy uploads and no spans at the
 5 ms observation threshold with staging uploads in the same executable.
 The implementation does not change glyph generation or cache keys.
 
+The same mouse-wheel case was also measured on main `0c497f17` with a fired
+label-timer control: legacy, staging and legacy again all stayed below the
+5 ms label-span observation threshold. This does not establish a pre-existing
+main regression or a full-frame budget pass. The feature case measured legacy
+360.03/156.69 ms, staging below5 ms, then legacy23.85/19.56 ms, with the same
+executable and fixture. Full receipts and screenshots accompany the PR.
+
 For each new tile, create a matching small staging texture, map it for writing,
 copy each source row using the mapped `RowPitch`, unmap, then queue
 `CopySubresourceRegion` into the original atlas at its allocated offset.
