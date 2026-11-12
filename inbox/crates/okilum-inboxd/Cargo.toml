@@ -8,7 +8,7 @@ publish.workspace = true
 anyhow = "1"
 okilum-sync = { path = "../../../crates/okilum-sync" }
 okilum-inbox-domain = { path = "../okilum-inbox-domain" }
-rusqlite = { version = "=0.37.0", features = ["bundled"] }
+rusqlite = { version = "=0.42.0", features = ["bundled"] }
 uuid.workspace = true
 thiserror.workspace = true
 
