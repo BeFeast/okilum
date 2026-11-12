@@ -60,13 +60,13 @@ def positive(binary, filter_):
 
 CONTROLS = [
     ('legacy-host', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
+    ('live-part-cycle', 'file2811_app_teardown_releases_live_parts_and_pending_json_validation'),
     ('missing-find', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('editing-view', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('editing-fold', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('query-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('source-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('source-panels', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
-    ('legacy-target-notify', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('live-json', 'file2811_live_json_badge_and_bottom_follow_one_revision_without_refresh'),
     ('json-debounce', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
     ('json-cancel', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
@@ -99,15 +99,15 @@ fn main() {''')
     base = 'reader_editor/code_operations/file_chrome.rs'
     edit('reader_editor/code_operations.rs', '.is_some_and(|editing| !editing.markdown)',
          '.is_some_and(|editing| !editing.markdown) && !crate::file2811_control("legacy-host")')
+    edit(base, 'struct Part {', 'struct Part {\n    _hold: Option<Entity<FileChrome>>,')
+    edit(base, 'file: file.downgrade(),', 'file: file.downgrade(),\n            _hold: crate::file2811_control("live-part-cycle").then_some(file.clone()),')
     edit(base, 'chrome.find = Some(find);', 'if !crate::file2811_control("missing-find") {chrome.find = Some(find);}')
     edit(base, 'action.enabled = *view == View::Raw;',
          'action.enabled = *view == View::Raw || crate::file2811_control("editing-view");')
     edit(base, 'fold.enabled = false;', 'fold.enabled = crate::file2811_control("editing-fold");')
     edit('reader_viewer_chrome.rs', 'reader.selected_title(),', '''reader.selected_title()+&if crate::file2811_control("query-header") || crate::file2811_control("source-header") {
-reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {format!("{:?}", e.input.read(cx).source_stamp())} else { reader.file_editor_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default() }).unwrap_or_default()
+reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {format!("{:?}", e.input().read(cx).source_stamp())} else { reader.file_editor_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default() }).unwrap_or_default()
 } else {String::new()},''')
-    edit('reader_editor.rs', 'if !plain_file {\n                        cx.notify();',
-         'if !plain_file || crate::file2811_control("legacy-target-notify") {\n                        cx.notify();')
     edit('reader_editor.rs', 'if operation_changed && editing.markdown {',
          'if operation_changed && editing.markdown || crate::file2811_control("source-panels") {')
     edit(base, 'if file.json {\n                file.schedule(cx);', 'if file.json && !crate::file2811_control("live-json") {\n                file.schedule(cx);')
