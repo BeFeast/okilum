@@ -60,6 +60,70 @@ fn text(input: &Entity<EditorState>, visual: &VisualTestContext) -> String {
     input.read_with(visual, |s, _| s.value().to_string())
 }
 
+// Initial inventory can be followed by a watcher batch and another Workbench
+// publication. `workbench_ready.is_some()` can still name the previous batch.
+fn startup_publication(reader: &Reader) -> Option<(u64, u64, u64)> {
+    let current_rules = reader
+        .tree_rules_source
+        .as_ref()
+        .is_some_and(|(vault, epoch)| {
+            vault.ptr_eq(&Arc::downgrade(&reader.vault))
+                && *epoch == reader.source_publication_epoch
+        });
+    let ready = !reader.loading.as_ref().is_some_and(|load| load.active)
+        && !reader.incremental_initializing
+        && !reader.incremental_active
+        && reader.incremental_state.is_some()
+        && reader.deferred_vault_changes.is_empty()
+        && reader.watcher.is_some()
+        && !reader.watcher_poll_active
+        && reader
+            .workbench_ready
+            .as_ref()
+            .is_some_and(|ready| Arc::ptr_eq(ready, &reader.workbench))
+        && !reader.tree_rules_running
+        && current_rules
+        && Arc::ptr_eq(&reader.prepared_links, &reader.link_presentations);
+    ready.then_some((
+        reader.source_publication_epoch,
+        reader.workbench_pending,
+        reader.link_preparation_generation,
+    ))
+}
+
+fn settle_startup(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> (u64, u64, u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut stable = None;
+    loop {
+        // Keep the real watcher and its ordinary debounce/publication path.
+        // The debounce uses wall time, while Workbench uses the test clock.
+        reader.update_in(visual, |r, w, cx| r.poll_vault(w, cx));
+        tick(visual, 50);
+        let current = reader.read_with(visual, |r, _| startup_publication(r));
+        if let Some(current) = current {
+            let (previous, since) = stable.get_or_insert((current, std::time::Instant::now()));
+            if *previous != current {
+                *previous = current;
+                *since = std::time::Instant::now();
+            }
+            if since.elapsed() >= okilum_core::watch::QUIET_WINDOW {
+                eprintln!(
+                    "FILE2811_STARTUP_SETTLED epoch={} workbench={} links={} current_rules=true current_links=true watcher=true incremental_idle=true",
+                    current.0, current.1, current.2
+                );
+                return current;
+            }
+        } else {
+            stable = None;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "startup did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 #[gpui::test]
 fn file2811_note_host_has_a_positive_control_and_file_keeps_one_header(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
@@ -252,18 +316,20 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
         _subscriptions: Vec<Subscription>,
     }
     let _cached = crate::reader_side_panel::tests::CachedPanels::on();
-    let (reader, file, input, visual, _temp) = open(
+    let (reader, file, input, visual, temp) = open(
         cx,
         "test1.json",
         r#"{"a":"needle","b":"needle","c":"needle"}"#,
     );
     reader.update_in(visual, |r, w, cx| r.open_find(w, cx));
     visual.simulate_keystrokes("home");
-    // The independent initial Workbench publication notifies Reader after
-    // 500 ms. Finish startup before measuring notifications caused by typing;
-    // the trace control proved that publication occurred on the second key.
-    tick(visual, 501);
-    assert!(reader.read_with(visual, |r, _| r.workbench_ready.is_some()));
+    let startup = settle_startup(&reader, visual);
+    reader.read_with(visual, |r, _| {
+        let editing = r.editing.as_ref().unwrap();
+        assert!(editing.autosave_schedule.deadline.is_none());
+        assert!(editing.autosaving.is_none());
+        assert!(!editing.store.has_pending_revision());
+    });
     let counts = Rc::new(std::cell::Cell::new([0; 2]));
     let panels = reader.read_with(visual, |r, _| r.side_panels.clone());
     let _watch = visual.update(|_, cx| {
@@ -274,10 +340,6 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
                 .map(|(n, p)| {
                     let counts = counts.clone();
                     cx.observe(&p.unwrap(), move |_, _, _| {
-                        eprintln!(
-                            "FILE2811_PANEL_NOTIFY panel={n} trace={}",
-                            std::backtrace::Backtrace::force_capture()
-                        );
                         let mut c = counts.get();
                         c[n] += 1;
                         counts.set(c);
@@ -328,6 +390,10 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
         assert!(input.focus_handle(cx).is_focused(w));
     });
     let initial = crate::reader_viewer_chrome::header_renders(reader.entity_id());
+    let typing_started = visual.update(|_, cx| cx.background_executor().now());
+    let saves = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().saves);
+    let disk_path = temp.path().join("vault/test1.json");
+    let disk_before = std::fs::read(&disk_path).unwrap();
     counts.set([0, 0]);
     for _ in 0..5 {
         visual.simulate_input(" ");
@@ -343,6 +409,15 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
             [0, 0],
             "typing and live parse notify zero panels"
         );
+        let elapsed = visual.update(|_, cx| cx.background_executor().now()) - typing_started;
+        assert!(elapsed < crate::reader_editor::AUTOSAVE_PAUSE);
+        reader.read_with(visual, |r, _| {
+            assert_eq!(startup_publication(r), Some(startup));
+            let editing = r.editing.as_ref().unwrap();
+            assert_eq!(editing.saves, saves);
+            assert!(editing.autosaving.is_none());
+        });
+        assert_eq!(std::fs::read(&disk_path).unwrap(), disk_before);
     }
     reader.update(visual, |_, cx| cx.notify());
     frame(visual);
