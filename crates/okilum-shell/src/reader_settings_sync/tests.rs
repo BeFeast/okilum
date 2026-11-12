@@ -1,9 +1,10 @@
 #[cfg(target_os = "linux")]
 use super::linux_runtime;
 use super::{
-    destination, destination_name, mac_direct_state, perform, perform_with_locations, serve_paired,
-    shared, suspend, sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch,
-    Operation, Output, SyncSettings, TestSyncState, TestWorker,
+    destination, destination_name, draw_sync_fixture, mac_direct_state, perform,
+    perform_with_locations, serve_paired, shared, suspend, sync_refresh_interval, user_error,
+    BackgroundSync, ControllerGuard, Epoch, Operation, Output, SyncSettings, TestSyncState,
+    TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -928,13 +929,6 @@ fn guided_worker(
         })))
     });
     calls
-}
-
-// Draining executor tasks does not promise a frame: hitboxes and debug bounds
-// come from draw, which the GPUI event-simulation API requires before input.
-pub(super) fn draw_sync_fixture(visual: &mut VisualTestContext) {
-    visual.run_until_parked();
-    visual.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
