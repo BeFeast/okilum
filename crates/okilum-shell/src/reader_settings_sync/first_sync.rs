@@ -128,6 +128,11 @@ mod tests {
             );
         }
         let cancel = visual.debug_bounds("sync-cancel-first-preview").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        assert!(
+            cancel.top() >= px(0.) && cancel.bottom() <= viewport.height,
+            "cancel must be inside the mounted viewport: {cancel:?}, {viewport:?}"
+        );
         visual.simulate_click(cancel.center(), Modifiers::default());
         super::super::draw_sync_fixture(visual);
         assert_eq!(

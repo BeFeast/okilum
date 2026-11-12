@@ -1114,13 +1114,35 @@ mod tests {
         let before = f
             .input
             .read_with(visual, |input, _| input.layout_diagnostics().unwrap());
+        // Record existing native spans without I/O in the measured interval.
+        // This case runs alone; retain the evidence even when its limit fails.
+        #[cfg(target_os = "linux")]
+        gpui_component::input::attribution::init(true);
+        let mut frame_times = Vec::with_capacity(10);
         let started = Instant::now();
         for _ in 0..10 {
             // The same native layout work caused by popup hover/caret blink.
+            let frame_started = Instant::now();
             f.input.update(visual, |_, cx| cx.notify());
             visual.update(|window, cx| window.draw(cx).clear(cx));
+            frame_times.push(frame_started.elapsed());
         }
         let elapsed = started.elapsed();
+        #[cfg(target_os = "linux")]
+        {
+            use gpui_component::input::attribution;
+            attribution::init(false);
+            let evidence = attribution::dump();
+            let mut totals = std::collections::BTreeMap::<String, (u64, u64)>::new();
+            for event in evidence["events"].as_array().unwrap() {
+                let total = totals
+                    .entry(event["name"].as_str().unwrap().into())
+                    .or_default();
+                total.0 += 1;
+                total.1 += event["end_ns"].as_u64().unwrap() - event["start_ns"].as_u64().unwrap();
+            }
+            eprintln!("CACHED_NATIVE_FRAMES elapsed={elapsed:?} frames={frame_times:?} native_count_ns={totals:?} overflow={}", evidence["overflow"]);
+        }
         let after = f
             .input
             .read_with(visual, |input, _| input.layout_diagnostics().unwrap());
