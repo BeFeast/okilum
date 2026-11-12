@@ -2,10 +2,13 @@
 //! read-only editor, the engine Markdown code blocks already use; edit mode
 //! opens the same file in a writable editor with the same language.
 use super::*;
-use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, WrappingIndent};
+use gpui_component::input::{Editor, EditorState, InputEvent, InputState, WrappingIndent};
 use std::time::Instant;
 
 pub(crate) mod document;
+mod find;
+#[cfg(test)]
+mod find_tests;
 mod loading;
 #[cfg(test)]
 mod loading_tests;
@@ -15,6 +18,8 @@ pub(crate) mod native_harness;
 mod review_tests;
 mod structure;
 mod toolbar;
+#[cfg(feature = "data-view-native-harness")]
+mod toolbar_native;
 mod view;
 #[cfg(test)]
 mod view_tests;
@@ -39,7 +44,12 @@ actions!(
         UnfoldAll,
         PreviousPart,
         NextPart,
-        GoToError
+        GoToError,
+        ShowNodeRaw,
+        TreeUp,
+        TreeDown,
+        TreeLeft,
+        TreeRight
     ]
 );
 
@@ -138,7 +148,11 @@ pub(crate) struct CodePreview {
     automatic_view: bool,
     provisional_interacted: std::rc::Rc<std::cell::Cell<bool>>,
     provisional_subscription: Option<Subscription>,
-    retain_find: bool,
+    editor_find: Option<Entity<reader_find_field::editor::EditorTarget>>,
+    case_sensitive: std::rc::Rc<std::cell::Cell<bool>>,
+    match_rows: std::collections::HashMap<usize, std::ops::Range<usize>>,
+    match_pattern: Option<regex::Regex>,
+    scrollbar_marks: Vec<usize>,
     node_copy_cache: std::cell::RefCell<Option<(NodeCopyKey, Option<std::ops::Range<usize>>)>>,
     #[cfg(test)]
     preparation_gate: Option<futures::channel::oneshot::Receiver<()>>,
@@ -150,6 +164,7 @@ pub(crate) struct CodePreview {
     matches: Vec<std::ops::Range<usize>>,
     match_index: usize,
     search_revision: u64,
+    search_key: Option<(u64, String, bool)>,
     searching: bool,
     focus: FocusHandle,
     _find_subscription: Subscription,
@@ -305,6 +320,17 @@ impl CodePreview {
                         this.source_bytes = Some(text.len());
                         let range = document::first_page(&text);
                         this.paged = range.end < text.len();
+                        this.find.update(cx, |find, cx| {
+                            find.set_placeholder(
+                                if this.paged || text.len() > EDIT_BYTES {
+                                    "Find in whole file"
+                                } else {
+                                    "Find"
+                                },
+                                window,
+                                cx,
+                            )
+                        });
                         let input = cx.new(|cx| editor(language, &text[range], window, cx));
                         this.document_revision += 1;
                         this.applied_page = Some((this.document_revision, 0));
@@ -314,6 +340,14 @@ impl CodePreview {
                         }
                         timing(&input, started, cx);
                         this.watch_provisional(&input, cx);
+                        this.editor_find = Some(cx.new(|cx| {
+                            reader_find_field::editor::EditorTarget::with_query(
+                                input.clone(),
+                                this.find.clone(),
+                                this.case_sensitive.clone(),
+                                cx,
+                            )
+                        }));
                         // Text is available before any full-file parse/index or
                         // formatted snapshot. Those run on subsequent workers.
                         this.prepare_loaded(text, table_path.clone(), json, window, cx);
@@ -332,12 +366,18 @@ impl CodePreview {
             });
         })
         .detach();
-        let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find in whole file…"));
-        let find_subscription = cx.subscribe_in(&find, window, |this, _, event, window, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.search(window, cx);
-            }
-        });
+        let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
+        let find_subscription =
+            cx.subscribe_in(&find, window, |this, _, event, window, cx| match event {
+                InputEvent::Change => {
+                    this.provisional_interacted.set(true);
+                    this.search(window, cx);
+                }
+                InputEvent::PressEnter { shift, .. } if this.whole_find() => {
+                    this.step_match(if *shift { -1 } else { 1 }, window, cx)
+                }
+                _ => {}
+            });
         let scrubber = cx.new(|_| {
             gpui_component::slider::SliderState::new()
                 .min(0.)
@@ -382,7 +422,13 @@ impl CodePreview {
             automatic_view: true,
             provisional_interacted: Default::default(),
             provisional_subscription: None,
-            retain_find: false,
+            editor_find: None,
+            case_sensitive: std::rc::Rc::new(std::cell::Cell::new(
+                reader_ui_state::find_case_sensitive(cx),
+            )),
+            match_rows: Default::default(),
+            match_pattern: None,
+            scrollbar_marks: Vec::new(),
             node_copy_cache: Default::default(),
             #[cfg(test)]
             preparation_gate: None,
@@ -394,6 +440,7 @@ impl CodePreview {
             matches: Vec::new(),
             match_index: 0,
             search_revision: 0,
+            search_key: None,
             searching: false,
             focus: cx.focus_handle(),
             _find_subscription: find_subscription,
@@ -428,67 +475,6 @@ impl CodePreview {
             self.apply_diagnostics(&input, cx);
         }
         cx.notify();
-    }
-
-    fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_revision += 1;
-        let revision = self.search_revision;
-        let Some(doc) = self
-            .document
-            .clone()
-            .filter(|doc| doc.json_tree || doc.pages.len() > 1)
-        else {
-            return;
-        };
-        let query = self.find.read(cx).value().to_string();
-        self.matches.clear();
-        self.structure.match_node = None;
-        self.searching = !query.is_empty();
-        let task = cx
-            .background_executor()
-            .spawn(async move { doc.find(&query) });
-        cx.spawn_in(window, async move |this, cx| {
-            let matches = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.search_revision != revision {
-                    return;
-                }
-                this.searching = false;
-                this.matches = matches;
-                this.match_index = 0;
-                this.show_match(window, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn show_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(range) = self.matches.get(self.match_index).cloned() else {
-            return;
-        };
-        let Some(doc) = &self.document else {
-            return;
-        };
-        if self.view == View::Tree {
-            self.structure.reveal(&range, doc);
-            cx.notify();
-            return;
-        }
-        let page = doc.page_at(range.start);
-        self.show_page(page, window, cx);
-        let doc = self.document.as_ref().unwrap();
-        let page_range = &doc.pages[self.page];
-        if let State::Content(input) = &self.state {
-            input.update(cx, |state, cx| {
-                state.set_selected_range(
-                    range.start - page_range.start
-                        ..range.end.min(page_range.end) - page_range.start,
-                    cx,
-                );
-            });
-        }
     }
 
     fn copy_selection(&self, cx: &mut App) {
@@ -541,23 +527,21 @@ impl CodePreview {
         }
     }
 
-    /// Find targets the visible table or the whole-file paged presentation.
+    /// Tables retain their own filter until the table step (#2812).
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if !matches!(self.state, State::Content(_)) {
+            return false;
+        }
         self.provisional_interacted.set(true);
         if self.view == View::Table {
-            if let Some(table) = self.table.as_ref().filter(|table| table.read(cx).ready()) {
-                return table.update(cx, |table, cx| table.focus_filter(window, cx));
-            }
+            return self
+                .table
+                .as_ref()
+                .filter(|table| table.read(cx).ready())
+                .is_some_and(|table| table.update(cx, |t, cx| t.focus_filter(window, cx)));
         }
-        if self.view == View::Tree || self.paged || self.retain_find {
-            if let Some(input) = self.input() {
-                input.update(cx, |input, cx| input.close_search(cx));
-            }
-            self.find.update(cx, |input, cx| input.focus(window, cx));
-            true
-        } else {
-            false
-        }
+        self.find.update(cx, |input, cx| input.focus(window, cx));
+        true
     }
 
     /// UI editing admission is independent of the 64 MiB source-tool budget.
@@ -693,6 +677,13 @@ impl Render for CodePreview {
                     .capture_key_down(move |_, _, _| keyed.set(true))
             })
             .debug_selector(|| "reader-code-file".into())
+            .on_action(cx.listener(|this, _: &TreeUp, _, cx| this.tree_move(-1, cx)))
+            .on_action(cx.listener(|this, _: &TreeDown, _, cx| this.tree_move(1, cx)))
+            .on_action(cx.listener(|this, _: &TreeLeft, _, cx| this.tree_branch(false, cx)))
+            .on_action(cx.listener(|this, _: &TreeRight, _, cx| this.tree_branch(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowNodeRaw, window, cx| this.show_selected_raw(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CopyNode, window, cx| this.copy_node(window, cx)))
             .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy_selection(cx)))
             .on_action(cx.listener(|this, _: &GoToError, window, cx| this.go_to_error(window, cx)))
@@ -750,10 +741,6 @@ impl CodePreview {
             State::Loading => view.child(div().child("Opening file…")).into_any_element(),
             State::Message(message) => view.child(self.message(message, cx)).into_any_element(),
             State::Content(input) => view
-                .when(
-                    self.view == View::Tree || self.paged || self.retain_find,
-                    |view| view.child(self.search_row(cx)),
-                )
                 .child(if self.view == View::Tree {
                     self.structure_element(cx)
                 } else {
@@ -857,7 +844,8 @@ impl Reader {
 }
 
 impl Reader {
-    /// The read-only code view's editor, when a code file is shown.
+    /// Native regression tests inspect the loaded read-only editor directly.
+    #[cfg(test)]
     pub(crate) fn code_view_input(&self, cx: &App) -> Option<Entity<EditorState>> {
         self.file_preview.as_ref()?.code.as_ref()?.read(cx).input()
     }

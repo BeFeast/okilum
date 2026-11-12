@@ -26,36 +26,50 @@ fn preview(text: &str, range: &Range<usize>, limit: usize) -> String {
 }
 
 impl Label {
+    pub fn prefix(&self, text: &str) -> String {
+        match self {
+            Self::Json { key: Some(key), .. } => {
+                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 48))
+            }
+            Self::Json {
+                ordinal: Some(index),
+                ..
+            } => format!("[{index}] "),
+            _ => String::new(),
+        }
+    }
+
     pub fn display(&self, text: &str, range: &Range<usize>) -> String {
         let Self::Json {
-            key,
-            value,
-            container,
-            ordinal,
+            value, container, ..
         } = self
         else {
             return preview(text, range, 96);
         };
-        let prefix = if let Some(key) = key {
-            format!("{}: ", preview(text, key, 48))
-        } else if let Some(index) = ordinal {
-            format!("[{index}] ")
-        } else {
-            String::new()
-        };
+        let prefix = self.prefix(text);
         let value = match container {
-            Some(("Object", count)) => format!(
-                "Object · {count} {}",
-                if *count == 1 {
-                    "property"
+            Some(("Object", count)) => {
+                if *count == 0 {
+                    "{ }".into()
                 } else {
-                    "properties"
+                    format!(
+                        "{} {}",
+                        number(*count),
+                        if *count == 1 { "key" } else { "keys" }
+                    )
                 }
-            ),
-            Some((_, count)) => format!(
-                "Array · {count} {}",
-                if *count == 1 { "item" } else { "items" }
-            ),
+            }
+            Some((_, count)) => {
+                if *count == 0 {
+                    "[ ]".into()
+                } else {
+                    format!(
+                        "{} {}",
+                        number(*count),
+                        if *count == 1 { "item" } else { "items" }
+                    )
+                }
+            }
             None => preview(text, value, 96),
         };
         format!("{prefix}{value}")
@@ -67,7 +81,9 @@ impl Label {
             return label;
         }
         let prefix = match self {
-            Self::Json { key: Some(key), .. } => format!("{}: ", preview(text, key, 32)),
+            Self::Json { key: Some(key), .. } => {
+                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 32))
+            }
             Self::Json {
                 ordinal: Some(index),
                 ..
@@ -163,4 +179,18 @@ pub(super) fn index(tree: &tree_sitter::Tree, offset: usize, bytes: usize) -> Ve
             depth -= 1;
         }
     }
+}
+
+fn number(count: usize) -> String {
+    let digits = count.to_string();
+    digits
+        .chars()
+        .enumerate()
+        .fold(String::new(), |mut out, (i, c)| {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+            out
+        })
 }

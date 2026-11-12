@@ -531,7 +531,7 @@ fn read_mode_find_keystrokes_do_not_notify_cached_side_panels(cx: &mut TestAppCo
     reader.update_in(visual, |reader, window, cx| reader.open_find(window, cx));
     visual.run_until_parked();
     assert!(
-        measured_bounds(visual, "data-whole-file-find").is_some(),
+        measured_bounds(visual, "viewer-find-field").is_some(),
         "whole-file Find is mounted"
     );
     visual.simulate_keystrokes("home");
@@ -1210,7 +1210,6 @@ fn code2809_header_switch_and_more_stay_inside_the_pane_at_600(cx: &mut TestAppC
             "code-view-tree",
             "code-view-formatted",
             "code-view-raw",
-            "code-header-find",
             "document-more",
         ] {
             let control = visual
@@ -1222,6 +1221,12 @@ fn code2809_header_switch_and_more_stay_inside_the_pane_at_600(cx: &mut TestAppC
             );
             assert_eq!(control.size.height, px(28.));
         }
+        let find = visual
+            .debug_bounds("viewer-find")
+            .or_else(|| visual.debug_bounds("viewer-find-slot"))
+            .expect("required shared Find control");
+        assert!(find.left() >= header.left() && find.right() <= header.right());
+        assert_eq!(find.size.height, px(28.));
         assert!(
             visual.debug_bounds("viewer-compact-header").is_none(),
             "Reader must not mount a second toolbar"
@@ -1244,7 +1249,7 @@ fn code2809_actual_overflow_plan_collapses_view_labels_before_fold_actions(
         let mut saw_fold_menu = false;
         for width in (600..=1400).rev().step_by(4) {
             let plan = reader.header_layout(&chrome, width as f32, window, cx);
-            assert!(plan.shows("views") && plan.shows("more") && plan.shows("code-header-find"));
+            assert!(plan.shows("views") && plan.shows("more") && plan.shows("find"));
             saw_icons |= plan.collapsed("views");
             if !plan.shows("code-fold-all") || !plan.shows("code-unfold-all") {
                 saw_fold_menu = true;

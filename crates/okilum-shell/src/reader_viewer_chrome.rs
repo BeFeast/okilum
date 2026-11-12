@@ -103,7 +103,7 @@ struct FindKey {
 
 impl HeaderKey {
     fn new(reader: &Reader, _window: &Window, cx: &App) -> Self {
-        let chrome = reader.viewer_chrome(cx);
+        let chrome = reader.viewer_header_chrome(cx);
         Self {
             file: (
                 reader.vault_root.clone(),
@@ -164,7 +164,6 @@ impl HeaderKey {
                 .actions
                 .iter()
                 .chain(chrome.views.iter().map(|view| &view.action))
-                .chain(chrome.find_trigger.iter())
                 .chain(chrome.state.iter())
                 .chain(chrome.badges.iter())
                 .map(ActionKey::from)
@@ -234,7 +233,7 @@ impl Render for FindControls {
             return div().into_any_element();
         };
         let reader = reader.read(cx);
-        let Some(target) = reader.viewer_chrome(cx).find else {
+        let Some(target) = reader.viewer_find_target(cx) else {
             return div().into_any_element();
         };
         let Some(bounds) = reader.viewer_find_bounds.get() else {
@@ -482,7 +481,6 @@ pub(crate) struct ViewerChrome {
     pub overflow_order: OverflowOrder,
     pub views: Vec<ViewerView>,
     pub find: Option<ViewerFindTarget>,
-    pub find_trigger: Option<ViewerAction>,
     pub actions: Vec<ViewerAction>,
     pub action_text: Option<SharedString>,
     pub action_text_after: Option<&'static str>,
@@ -553,7 +551,7 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let find = self.viewer_chrome(cx).find.map(|target| {
+        let find = self.viewer_header_chrome(cx).find.map(|target| {
             let mut cached = self.viewer_find_controls.borrow_mut();
             if cached
                 .as_ref()
@@ -649,6 +647,32 @@ impl Reader {
             }))
             .into_any_element()
     }
+    pub(super) fn viewer_find_target(&self, cx: &App) -> Option<ViewerFindTarget> {
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .filter(|_| self.editing.is_none())
+            .and_then(|p| p.code.as_ref())
+        {
+            return code
+                .read(cx)
+                .header_chrome(code.clone(), cx)
+                .find
+                .map(|_| code.read(cx).find_target(code.clone(), cx));
+        }
+        self.viewer_chrome(cx).find
+    }
+    fn viewer_header_chrome(&self, cx: &App) -> ViewerChrome {
+        if let Some(code) = self
+            .file_preview
+            .as_ref()
+            .filter(|_| self.editing.is_none())
+            .and_then(|p| p.code.as_ref())
+        {
+            return code.read(cx).header_chrome(code.clone(), cx);
+        }
+        self.viewer_chrome(cx)
+    }
     /// Only this adapter knows where the active viewer lives. Slot builders
     /// render the resulting description without matching on a viewer kind.
     pub(crate) fn viewer_chrome(&self, cx: &App) -> ViewerChrome {
@@ -715,7 +739,7 @@ impl Reader {
             } else {
                 widths.notes + widths.backlinks
             };
-        let chrome = self.viewer_chrome(cx);
+        let chrome = self.viewer_header_chrome(cx);
         let plan = self.header_layout(&chrome, width, window, cx);
         // A test observes the values actually handed to the slot builders,
         // not a fresh description that could hide an incorrectly cached Header.
@@ -775,12 +799,6 @@ impl Reader {
         let order = chrome.overflow_order;
         let mut items = vec![LayoutItem::optional("reveal", 28., 28., order.reveal)];
         items.extend(reader_segmented::layout(&chrome.views, window));
-        items.extend(
-            chrome
-                .find_trigger
-                .iter()
-                .map(|action| action.layout_item(false, window)),
-        );
         items.extend(
             chrome
                 .actions
@@ -1012,9 +1030,6 @@ fn name_slot(
 
 #[inline(never)]
 fn find_slot(reader: &Reader, chrome: &ViewerChrome, plan: &HeaderLayout) -> AnyElement {
-    if let Some(trigger) = &chrome.find_trigger {
-        return trigger.render_button(true);
-    }
     let Some(_) = &chrome.find else {
         return div().into_any_element();
     };
@@ -1482,6 +1497,9 @@ pub(crate) fn render_compact_header_with_leading(
     window: &Window,
     cx: &App,
 ) -> AnyElement {
+    // Code entry panes keep the trigger in the compact row. The same field
+    // expands over the crumb, preserving the switch and action positions.
+    let compact_find = chrome.compact_menu_id == Some("code-compact-more") && width < 600.;
     let has_leading = leading.is_some();
     let labels = reader_ui_state::toolbar_labels(cx) && width >= 1400.;
     let mut items: Vec<_> = chrome
@@ -1489,25 +1507,30 @@ pub(crate) fn render_compact_header_with_leading(
         .iter()
         .map(|action| action.layout_item(labels, window))
         .collect();
-    items.extend(
-        chrome
-            .find_trigger
-            .iter()
-            .map(|action| action.layout_item(false, window)),
-    );
     if let Some(find) = &chrome.find {
-        let mut item = LayoutItem::pinned("find", 200., if find.large_file { 128. } else { 28. });
+        let mut item = LayoutItem::pinned(
+            "find",
+            if compact_find { 28. } else { 200. },
+            if find.large_file && !compact_find {
+                128.
+            } else {
+                28.
+            },
+        );
         item.steps = vec![overflow::OverflowStep {
             priority: chrome.overflow_order.find_narrow,
             width: 128.,
             disposition: Disposition::Collapsed,
         }];
-        if !find.large_file {
+        if !find.large_file || compact_find {
             item.steps.push(overflow::OverflowStep {
                 priority: chrome.overflow_order.find_icon,
                 width: 28.,
                 disposition: Disposition::Collapsed,
             });
+        }
+        if compact_find {
+            item.steps.clear();
         }
         items.push(item);
     }
@@ -1542,15 +1565,48 @@ pub(crate) fn render_compact_header_with_leading(
         collapse_parents: false,
     };
     let find = chrome.find.as_ref().map(|target| {
-        reader_find_field::render(
-            target,
+        let mut target = target.clone();
+        if compact_find {
+            target.large_file = false;
+        }
+        let spare = (width - plan.widths.iter().sum::<f32>() - state_width - 56.).max(0.);
+        let focused = target.input.read(cx).focus_handle(cx).is_focused(window);
+        let left_space = plan.width("find") + if has_leading { spare } else { state_width };
+        // A compact pane has no history buttons. Its focused field is an
+        // overlay of the row, with enough room for the query and step buttons.
+        // Preserve every underlying slot's position, including the view menu.
+        let expanded = 272_f32.min((width - 24.).max(28.));
+        let over_row = compact_find && focused;
+        let field = reader_find_field::render(
+            &target,
             reader_find_field::Presentation::Header {
                 width: plan.width("find"),
-                focused: target.input.read(cx).focus_handle(cx).is_focused(window),
-                max_width: plan.width("find"),
+                focused,
+                max_width: if over_row {
+                    expanded
+                } else {
+                    left_space.max(plan.width("find"))
+                },
             },
             cx,
-        )
+        );
+        if over_row {
+            div()
+                .relative()
+                .flex_none()
+                .w(px(plan.width("find")))
+                .h(px(28.))
+                .child(deferred(
+                    div()
+                        .absolute()
+                        .left(px((expanded - left_space).max(0.)))
+                        .top_0()
+                        .child(field),
+                ))
+                .into_any_element()
+        } else {
+            field
+        }
     });
     let overflow: Vec<_> = chrome
         .actions
@@ -1578,12 +1634,6 @@ pub(crate) fn render_compact_header_with_leading(
                 .map(|badge| badge.button(true)),
         )
         .children(find)
-        .children(
-            chrome
-                .find_trigger
-                .as_ref()
-                .map(|trigger| trigger.render_button(true)),
-        )
         .child(reader_segmented::render(
             &chrome.views,
             reader_segmented::Form::Menu,

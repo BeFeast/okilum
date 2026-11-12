@@ -251,7 +251,7 @@ fn code2809_explicit_table_choice_keeps_a_mounted_focus_target(cx: &mut TestAppC
         assert!(code.find.focus_handle(cx).is_focused(window));
     });
     settle(visual);
-    assert!(visual.debug_bounds("data-whole-file-find").is_some());
+    assert!(visual.debug_bounds("viewer-find-field").is_some());
     code.update_in(visual, |code, window, cx| {
         code.set_view(View::Table, window, cx);
         assert_eq!(code.view, View::Table);
@@ -262,5 +262,37 @@ fn code2809_explicit_table_choice_keeps_a_mounted_focus_target(cx: &mut TestAppC
     });
     settle(visual);
     assert!(visual.debug_bounds("table-duckdb").is_some());
-    assert!(visual.debug_bounds("data-whole-file-find").is_none());
+    assert!(visual.debug_bounds("viewer-find-field").is_none());
+}
+
+#[gpui::test]
+fn code2810_provisional_find_names_its_scope_and_keeps_the_pending_query(cx: &mut TestAppContext) {
+    let source = format!("{{\"payload\":\"{} NEEDLE\"}}", "x".repeat(100_000));
+    let (reader, code, visual, _temp, release) = held(cx, &source);
+    code.read_with(visual, |code, cx| {
+        assert_eq!(
+            code.find.read(cx).presentation().placeholder().as_ref(),
+            "Find in whole file"
+        )
+    });
+    reader.update_in(visual, |r, w, cx| r.open_find(w, cx));
+    settle(visual);
+    visual.simulate_input("NEEDLE");
+    settle(visual);
+    release.send(()).unwrap();
+    settle(visual);
+    code.read_with(visual, |code, cx| {
+        assert_eq!(
+            code.view,
+            View::Raw,
+            "Find is interaction with provisional text"
+        );
+        assert_eq!(code.find.read(cx).value().as_ref(), "NEEDLE");
+        assert_eq!(
+            code.matches.len(),
+            1,
+            "worker indexes the pending whole-file query"
+        );
+        assert!(code.page > 0);
+    });
 }

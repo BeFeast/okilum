@@ -1509,14 +1509,22 @@ pub(crate) fn find_case_sensitive(cx: &App) -> bool {
 }
 
 pub(crate) fn set_find_case_sensitive(value: bool, cx: &mut App) {
+    if remember_find_case_sensitive(value, cx) {
+        cx.refresh_windows();
+    }
+}
+
+/// The shared file field owns its own rendering. Persist its preference without
+/// invalidating cached headers or unrelated windows on a Match case click.
+pub(crate) fn remember_find_case_sensitive(value: bool, cx: &mut App) -> bool {
     if !installed(cx) || find_case_sensitive(cx) == value {
-        return;
+        return false;
     }
     let state = cx.global_mut::<Store>();
     state.saved.find_case_sensitive = value;
     state.find_changed = true;
     schedule(cx);
-    cx.refresh_windows();
+    true
 }
 
 pub(crate) fn toolbar_labels(cx: &App) -> bool {
