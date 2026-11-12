@@ -1,0 +1,25 @@
+name: deps-inbox-a
+on:
+  push:
+    branches: ['deps-resolution/inbox-a-*']
+permissions:
+  contents: read
+jobs:
+  inbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 9e6daf52e0d14c9a83f1c9921a8982058711b386
+          persist-credentials: false
+      - name: Verify exact production source
+        run: test "$(git rev-parse HEAD)" = 9e6daf52e0d14c9a83f1c9921a8982058711b386
+      - name: Lint every Inbox target
+        run: cargo clippy --locked --manifest-path inbox/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Complete Inbox suite
+        run: cargo test --locked --manifest-path inbox/Cargo.toml --workspace
