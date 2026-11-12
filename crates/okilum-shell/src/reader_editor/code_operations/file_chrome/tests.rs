@@ -1049,6 +1049,9 @@ fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mu
     drop(reader);
     drop(file);
     drop(input);
+    // Entity drops enqueue releases; flush an App effect cycle after the last
+    // external owner is gone, before checking for a retained live-part cycle.
+    app.update(|_| {});
     app.run_until_parked();
     assert!(
         weak_file.upgrade().is_none(),
