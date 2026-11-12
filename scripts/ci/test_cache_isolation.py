@@ -14,7 +14,7 @@ class IsolatedCacheTests(unittest.TestCase):
             for compiler_status in (0, 23):
                 with self.subTest(mode=mode, compiler_status=compiler_status), tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
-                    cache = root / 'cache/0.18.0-aarch64-apple-darwin/sccache'
+                    cache = root / 'cache/0.19.0-aarch64-apple-darwin/sccache'
                     cache.parent.mkdir(parents=True)
                     commands = {
                         root / 'uname': 'if [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi',

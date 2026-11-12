@@ -38,7 +38,7 @@ class CacheFallbackTests(unittest.TestCase):
         for mode in ['raised', 'hard-fallback', 'denied', 'low', 'start-failed']:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=scratch) as tmp:
                 root = Path(tmp)
-                cache = root / 'cache/0.18.0-aarch64-apple-darwin/sccache'
+                cache = root / 'cache/0.19.0-aarch64-apple-darwin/sccache'
                 cache.parent.mkdir(parents=True)
                 cache.write_text('#!/bin/bash\necho "$1" >> "$CALLS"\n'
                                  'if [[ $1 == --start-server && $MODE == start-failed ]]; then exit 2; fi\n')
@@ -108,7 +108,7 @@ class CacheFallbackTests(unittest.TestCase):
         for name, curl_body, cache_body, enabled in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                cache = root / 'cache/0.18.0-x86_64-unknown-linux-musl/sccache'
+                cache = root / 'cache/0.19.0-x86_64-unknown-linux-musl/sccache'
                 cache.parent.mkdir(parents=True)
                 cache.write_text('#!/bin/bash\n' + cache_body + '\n')
                 cache.chmod(0o755)
