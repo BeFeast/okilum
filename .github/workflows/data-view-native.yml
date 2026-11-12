@@ -97,7 +97,19 @@ jobs:
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/data-view-native-app.py "$binary"
+      - name: Observe native table independently of the data-view probe
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          binary=target/debug/okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/data-table-native-app.py "$binary"
+      - name: Exercise file Edit through the real native Reader
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          binary=target/debug/okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/reader-viewer-native-app.py "$binary"
       - name: Exercise Reader Tree on the native debug main stack
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}

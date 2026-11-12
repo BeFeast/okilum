@@ -684,6 +684,10 @@ impl Reader {
         {
             editing.operations.notice = Some("Repair preview is stale or source is in conflict. Nothing applied; review a fresh proposal.".into());
             editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
+            if !editing.markdown {
+                editing.operations.preview = None;
+                self.publish_file_operation_notice(window, cx);
+            }
             self.refresh_code_host(cx);
             return;
         }

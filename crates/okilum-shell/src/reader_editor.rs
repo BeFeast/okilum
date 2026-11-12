@@ -1032,7 +1032,12 @@ impl Reader {
                 let target = this.code_operation_target_key(cx);
                 if target != last_code_target {
                     last_code_target = target;
-                    cx.notify();
+                    // File operations are live siblings of Header. A parked
+                    // editor may briefly have no target; restoring it must not
+                    // repaint cached side panels on the next source key.
+                    if !plain_file {
+                        cx.notify();
+                    }
                 }
             }
 

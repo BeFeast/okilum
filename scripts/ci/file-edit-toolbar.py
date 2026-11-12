@@ -66,6 +66,7 @@ CONTROLS = [
     ('query-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('source-header', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('source-panels', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
+    ('legacy-target-notify', 'file2811_header_find_and_typing_do_not_render_slots_or_notify_panels'),
     ('live-json', 'file2811_live_json_badge_and_bottom_follow_one_revision_without_refresh'),
     ('json-debounce', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
     ('json-cancel', 'file2811_live_json_coalesces_keys_and_cancels_an_inflight_revision'),
@@ -79,6 +80,7 @@ CONTROLS = [
     ('cancel-mutates', 'file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo'),
     ('apply-saves', 'file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo'),
     ('read-repair', 'file2811_repair_from_read_enters_edit_and_stale_sheet_closes'),
+    ('stale-conflict-sheet', 'file2811_conflicting_repair_closes_the_sheet_without_applying_or_writing'),
     ('lost-presentation', 'file2811_return_to_read_restores_view_folds_query_and_does_not_remember_raw'),
     ('lost-page', 'file2811_raw_parts_and_async_formatted_restore_after_edit'),
     ('dead-shortcuts', 'file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host'),
@@ -104,6 +106,8 @@ fn main() {''')
     edit('reader_viewer_chrome.rs', 'reader.selected_title(),', '''reader.selected_title()+&if crate::file2811_control("query-header") || crate::file2811_control("source-header") {
 reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {format!("{:?}", e.input.read(cx).source_stamp())} else { reader.file_editor_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default() }).unwrap_or_default()
 } else {String::new()},''')
+    edit('reader_editor.rs', 'if !plain_file {\n                        cx.notify();',
+         'if !plain_file || crate::file2811_control("legacy-target-notify") {\n                        cx.notify();')
     edit('reader_editor.rs', 'if operation_changed && editing.markdown {',
          'if operation_changed && editing.markdown || crate::file2811_control("source-panels") {')
     edit(base, 'if file.json {\n                file.schedule(cx);', 'if file.json && !crate::file2811_control("live-json") {\n                file.schedule(cx);')
@@ -143,6 +147,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
          '    if crate::file2811_control("bottom-wording") {return text.into();}\n    if text == "Valid strict JSON" {')
     edit(base, 'if language_bounds.get().is_none() {',
          'if language_bounds.get().is_none() && !crate::file2811_control("language-fallback") {')
+    edit('reader_editor/code_operations.rs', 'if !editing.markdown {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);',
+         'if !editing.markdown && !crate::file2811_control("stale-conflict-sheet") {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);')
     edit('reader_editor/code_operations.rs', 'usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3',
          '(if crate::file2811_control("bom-body") {0} else {usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3})')
     (OUT / 'mutations.diff').write_text(''.join(patch))
