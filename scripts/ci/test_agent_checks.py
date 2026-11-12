@@ -472,7 +472,8 @@ class HelperFlowTests(unittest.TestCase):
             # not process supervision. Record every wrapper invocation and run
             # each fake command directly; the next control runs the real watchdog.
             (scripts / 'test-group.sh').write_text(
-                'if [[ ${1:-} == --isolated-writer-account ]]; then shift; fi\n'
+                'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
+                '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
                 'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
                 'shift 2\nexec "$@"\n')
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
@@ -501,13 +502,17 @@ class HelperFlowTests(unittest.TestCase):
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
                 groups = root / ('groups-' + fail)
+                accounts = root / ('accounts-' + fail)
                 result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh')], cwd=root,
                                         env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
                                              'CALL_LOG': str(log), 'GROUP_LOG': str(groups), 'FAIL_FIRST': fail,
+                                             'ACCOUNT_LOG': str(accounts),
                                              'FAIL_MARKER': str(root / 'failed')},
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, int(fail), result.stdout + result.stderr)
                 calls = log.read_text().splitlines()
+                self.assertCountEqual(accounts.read_text().splitlines(),
+                                      ['reader-editor-live-preview', 'issue2486'])
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
                 for selection in ('direct::existing::tests::', 'reader_settings_sync::',
                                   'reader_feedback::ui_tests::feedback2749_',

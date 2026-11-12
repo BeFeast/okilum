@@ -181,6 +181,15 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 #[cfg(test)]
 impl Global for TestWorker {}
 
+// Draining executor tasks does not promise a frame: hitboxes and debug bounds
+// come from draw, which the GPUI event-simulation API requires before input.
+// First-sync fixtures compile on Windows too; keep this outside Unix-only tests.
+#[cfg(test)]
+fn draw_sync_fixture(visual: &mut gpui::VisualTestContext) {
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+}
+
 struct Output {
     runtime_health: health::Runtime,
     first_sync: first_sync::Output,
