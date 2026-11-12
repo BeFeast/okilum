@@ -31,7 +31,7 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 
 - Keep patches as diffs, applied idempotently by the vendor script. Fresh clones
   are unpatched: verify application before trusting a build.
-- **gpui core stays unpatched.** An approach requiring a core patch fails.
+- **Core GPUI (`gpui-pre*`) patches are allowed with Oleg's OK.** If an approach needs one, keep the approach and bring it to Oleg through the manager with its cost: what changes, upkeep on GPUI upgrades, and alternatives. Once approved, ship it as its own small PR through the checksum-pinned vendor patch mechanism (as in `scripts/gpui-pre-windows-setup.py`), with tests and manager review; write the patch to be upstreamable (minimal, no Okilum-specific hooks). Every proposal includes an upstream plan: identify the actual owning repository/crate and publisher with source citations, assess whether the change is general enough to submit, and plan submission where possible. The `gpui-pre*` snapshots are published by [Jason Lee (`huacnlee`)](https://crates.io/api/v1/crates/gpui-pre/owners); their [package metadata](https://docs.rs/crate/gpui-pre/0.3.3/source/Cargo.toml.orig) identifies [zed-industries/zed](https://github.com/zed-industries/zed) as the source (`crates/gpui`, `crates/gpui_platform` and the OS backend crates), so distinguish the snapshot publisher from the code owner. Opening any upstream issue or PR requires Oleg's separate approval for that patch.
 - Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
