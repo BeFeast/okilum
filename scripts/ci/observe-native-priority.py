@@ -2,10 +2,10 @@
 import ctypes
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 kernel.GetCurrentProcess.restype = ctypes.c_void_p
@@ -44,15 +44,37 @@ original_run = subprocess.run
 def observe(args, **kwargs):
     assert len(args) == 1 and str(args[0]).endswith('okilum.exe')
     timeout = kwargs.pop('timeout')
-    with subprocess.Popen(args, **kwargs) as process:
+    flag = normal if os.environ.get("TOOLBAR_NORMAL_PRIORITY") == "1" else 0
+    with subprocess.Popen(args, creationflags=flag, **kwargs) as process:
         priority = kernel.GetPriorityClass(int(process._handle))
         assert priority != 0
         print('CHILD_PRIORITY', json.dumps({'pid': process.pid, 'class': priority, 'normal_class': normal}), flush=True)
-        meta = Path('diagnostics/scheduling/priority.json')
+        meta = Path(os.environ["RUNNER_TEMP"]) / "priority.json"
         meta.write_text(json.dumps({'pid': process.pid, 'class': priority, 'parent_class': kernel.GetPriorityClass(kernel.GetCurrentProcess()), 'normal_class': normal, 'threads': thread_priorities(process.pid)}, indent=2))
         process.wait(timeout=timeout)
         return subprocess.CompletedProcess(args, process.returncode)
 
 native.subprocess.run = observe
 sys.argv = ['code-toolbar-native-app.py', str(Path('inputs/toolbar/okilum.exe').resolve())]
-native.main()
+output = Path('diagnostics/scheduling')
+results = []
+for pair in range(5):
+    for mode in (['inherited', 'normal'] if pair % 2 == 0 else ['normal', 'inherited']):
+        directory = output / f'{pair}-{mode}'
+        directory.mkdir()
+        os.environ['RUNNER_TEMP'] = str(directory.resolve())
+        os.environ['TOOLBAR_NORMAL_PRIORITY'] = '1' if mode == 'normal' else '0'
+        try:
+            native.main()
+            passed = True
+        except AssertionError as error:
+            (directory / 'failure.txt').write_text(str(error))
+            passed = False
+        result = {'pair': pair, 'mode': mode, 'passed': passed, 'priority': json.loads((directory / 'priority.json').read_text())}
+        results.append(result)
+        print('PRIORITY_RESULT', json.dumps(result), flush=True)
+        (output / 'priority-results.json').write_text(json.dumps(results, indent=2))
+assert len(results) == 10
+# Diagnostic comparison retains inherited failures. Normal desktop launches
+# must satisfy every original wall gate, never a selected successful retry.
+assert all(r['passed'] for r in results if r['mode'] == 'normal')
