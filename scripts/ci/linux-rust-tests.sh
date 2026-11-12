@@ -20,9 +20,9 @@ suite() {
         esac
     fi
     printf '\nLinux suite: %s\n' "$*"
-    if [[ "$group" == reader-editor-live-preview ]]; then
-        account=(--isolated-writer-account)
-    fi
+    case "$group" in
+        reader-editor-live-preview|issue2486) account=(--isolated-writer-account) ;;
+    esac
     bash scripts/ci/test-group.sh "${account[@]}" "$group" "$limit" "$@" || failed=1
 }
 suite local-writer 900 bash scripts/ci/local-writer-admission.sh

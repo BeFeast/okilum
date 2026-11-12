@@ -218,6 +218,17 @@ invalidation controls and300ms assertion inside the same outer group deadline.
 Its census partition and any failure are mandatory; Linux private reveal still
 runs afterwards. These changes require a new exact-source native result.
 
+Run26486 confirmed the corrected Linux workspace: all4573 cases and its separate
+native-frame assertion passed within960.380s/1320s. Its standalone issue2486
+group compiled in0.52s but reached120s during the ten serial runtime cases;
+earlier groups had accumulated the ambient writer registry. That group now
+gets its own inherited CI account, using the same after-reap cleanup as Live
+Preview and workspace partitions. All ten cases and their five-second operation
+assertions remain in the original120s group. The fixture draw helper lives under
+plain `cfg(test)` in the parent module so Windows first-sync tests do not depend
+on the Unix-only test module; the native Windows gate caught that portability
+error before merge. Neither correction has a native acceptance verdict yet.
+
 This prevents unrelated ephemeral vault fixtures from contending on or scanning
 one accumulating account-wide authority registry. The first heavy runtime
 probe confirmed both corrected warm-reader fixtures, but four-way scheduling
