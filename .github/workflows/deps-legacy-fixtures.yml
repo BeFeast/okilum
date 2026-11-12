@@ -1,0 +1,28 @@
+name: deps-legacy-fixtures
+on:
+  push:
+    branches: ['deps-resolution/legacy-fixtures-*']
+permissions:
+  contents: read
+jobs:
+  create:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Create synthetic databases with the old pinned Inbox stack
+        env:
+          LEGACY_FIXTURE_OUTPUT: ${{ runner.temp }}/legacy-databases
+        run: |
+          cargo run --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --example legacy_fixture
+          sha256sum "$LEGACY_FIXTURE_OUTPUT"/*.db
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-databases
+          path: ${{ runner.temp }}/legacy-databases/*.db
+          if-no-files-found: error
