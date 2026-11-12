@@ -49,4 +49,8 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 
 - Code, comments, commits and PR text in English.
 - Rust edition/toolchain pinned; commit `Cargo.lock`.
+- The pin tracks the latest stable Rust. On each stable release, the bugs-main
+  lane opens the toolchain bump PR the same day. The pin provides reproducibility:
+  CI and every development host use the same compiler through rustup; it is not
+  a reason to stay on an older release (Oleg's decision, 2026-11-12).
 - No secrets in the repository; use Infisical references.
