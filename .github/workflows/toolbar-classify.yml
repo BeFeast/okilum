@@ -1,0 +1,160 @@
+name: toolbar-classify
+on:
+  push:
+    branches: ['diagnostic-toolbar/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg out/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: classify-icon
+          path: out/okilum.ico
+  build:
+    needs: icon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            kind: main
+          - os: windows-2022
+            kind: toolbar
+          - os: macos-15
+            kind: toolbar
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/code-toolbar-release
+    steps:
+      - shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
+          restore-keys: |
+            code-toolbar-release-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: classify-icon
+          path: icon
+      - name: Prepare exact viewer source with observer-only changes
+        shell: bash
+        run: |
+          python3 scripts/ci/toolbar-review/capsule.py ${{ matrix.kind }} "$RUNNER_TEMP/capsule"
+          cd "$RUNNER_TEMP/capsule"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$RUNNER_TEMP/capsule/vendor/sparkle" >> "$GITHUB_ENV"
+          fi
+      - name: Build pinned production release
+        shell: bash
+        run: |
+          export OKILUM_DIAG_SOURCE_BASE="$(git -C "$RUNNER_TEMP/capsule" rev-parse HEAD)"
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/icon/okilum.ico")"
+          fi
+          cd "$RUNNER_TEMP/capsule"
+          cargo build --locked --release -p okilum-shell --bin okilum --features data-view-native-harness
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          binary=okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary=okilum.exe; fi
+          cp "$CARGO_TARGET_DIR/release/$binary" "$GITHUB_WORKSPACE/out/"
+          cp capsule-manifest.json capsule.diff "$GITHUB_WORKSPACE/out/"
+          if [[ "$RUNNER_OS" = macOS ]]; then cp -R vendor/sparkle/Sparkle.framework "$GITHUB_WORKSPACE/out/"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capsule-${{ runner.os }}-${{ matrix.kind }}
+          path: out/
+          if-no-files-found: error
+  windows:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: capsule-Windows-main
+          path: inputs/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: capsule-Windows-toolbar
+          path: inputs/toolbar
+      - name: Five alternating pairs with precise scheduling capture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diagnostics | Out-Null
+          xperf.exe -on PROC_THREAD+CSWITCH+DISPATCHER -BufferSize 1024 -MinBuffers 64 -MaxBuffers 256 -f diagnostics/kernel.etl
+          if ($LASTEXITCODE) { throw 'Unable to start precise kernel scheduling trace' }
+          try {
+            python scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/pairs --mode pairs
+            if ($LASTEXITCODE) { throw 'Incomplete native census' }
+          } finally {
+            xperf.exe -d diagnostics/pairs/reader.etl
+          }
+          tracerpt.exe diagnostics/pairs/reader.etl -of XML -o diagnostics/pairs/reader.xml -y
+          if ($LASTEXITCODE) { throw 'Trace decode failed' }
+          python scripts/ci/toolbar-review/correlate.py diagnostics/pairs
+          if ($LASTEXITCODE) { throw 'Scheduling correlation failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-Windows
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+  mac:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: capsule-macOS-toolbar
+          path: inputs/toolbar
+      - name: Fixed census with per-thread CPU clock
+        run: |
+          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
+          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/mac --mode mac
+      - name: Separate Time Profiler capture
+        if: always()
+        continue-on-error: true
+        run: |
+          export DYLD_FRAMEWORK_PATH="$PWD/inputs/toolbar"
+          python3 scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/profiler --mode mac-profiler
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-macOS
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,66 @@
+diff --git a/crates/okilum-shell/src/reader_code_file/structure.rs b/crates/okilum-shell/src/reader_code_file/structure.rs
+index e7ca85206..533fbc205 100644
+--- a/crates/okilum-shell/src/reader_code_file/structure.rs
++++ b/crates/okilum-shell/src/reader_code_file/structure.rs
+@@ -10,7 +10,7 @@ pub(super) struct Structure {
+     pub selected: Option<usize>,
+     pub match_node: Option<usize>,
+     pub visible: Vec<usize>,
+-    scroll: UniformListScrollHandle,
++    pub(super) scroll: UniformListScrollHandle,
+ }
+ 
+ impl Structure {
+@@ -46,7 +46,7 @@ impl Structure {
+         self.rebuild(doc);
+     }
+ 
+-    fn toggle(&mut self, index: usize, doc: &Document) {
++    pub(super) fn toggle(&mut self, index: usize, doc: &Document) {
+         if !self.exceptions.remove(&index) {
+             self.exceptions.insert(index);
+         }
+@@ -120,6 +120,8 @@ impl CodePreview {
+     }
+ 
+     fn structure_row(&self, visible: usize, cx: &mut Context<Self>) -> AnyElement {
++        #[cfg(feature = "data-view-native-harness")]
++        NATIVE_ROWS.with(|count| count.set(count.get()+1));
+         let doc = self.document.as_ref().unwrap();
+         let index = self.structure.visible[visible];
+         let row = &doc.structure[index];
+@@ -185,8 +187,8 @@ impl CodePreview {
+                     .text_color(cx.theme().muted_foreground)
+                     .child(format!("{}", row.line)),
+             )
+-            .child(
+-                div()
++            .child({
++                let label = div()
+                     .id(("data-node-label", index))
+                     .debug_selector(move || format!("data-node-label-{index}"))
+                     .when(hit.is_some(), |label| {
+@@ -204,8 +206,12 @@ impl CodePreview {
+                             this.structure.selected = Some(index);
+                             cx.notify();
+                         }),
+-                    ),
+-            )
++                    )
++                    .into_any_element();
++                #[cfg(feature = "data-view-native-harness")]
++                let label = toolbar_native::trace::Trace::new(label, 3).into_any_element();
++                label
++            })
+             .child(
+                 Button::new(("data-node-copy", index))
+                     .small()
+@@ -339,3 +345,8 @@ mod tests {
+         }
+     }
+ }
++
++#[cfg(feature = "data-view-native-harness")]
++thread_local! { static NATIVE_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
++#[cfg(feature = "data-view-native-harness")]
++pub(super) fn native_row_builds()->usize {NATIVE_ROWS.with(|count|count.get())}
