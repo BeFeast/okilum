@@ -36,6 +36,7 @@ assert run(*base, 'data_table_2735_', '--', '--nocapture', '--test-threads=1').r
 print('DATA_TABLE_2735_RESTORED_NATIVE_SUITE_PASS', flush=True)
 # Preserve the real selection/edit/recovery/image contracts exercised by full Linux.
 for regression in [
+    'code2810_',
     'reader_viewer_chrome::',
     'reader_shortcuts::tests::markdown_copy_shortcut_has_no_reader_or_toolkit_collision',
     'reader_status_line::',
@@ -61,3 +62,20 @@ finally:
     source.write_bytes(positive)
 assert run(*base, 'data_view_2669_', '--', '--nocapture', '--test-threads=1').returncode == 0
 print('DATA_VIEW_2669_RESTORED_NATIVE_SUITE_PASS', flush=True)
+
+# A mounted field is a native control, not merely an available adapter. Removing
+# its production wiring must fail an executed read-format test on both OSes.
+chrome_source = pathlib.Path('crates/okilum-shell/src/reader_code_file/toolbar.rs')
+chrome_positive = chrome_source.read_bytes()
+find_branch = b'if self.view != View::Table {'
+assert chrome_positive.count(find_branch) == 1
+try:
+    chrome_source.write_bytes(chrome_positive.replace(find_branch, b'if false && self.view != View::Table {'))
+    negative = run(*base, 'code2810_every_read_format_uses_header_field_and_unfolds_first_hit', '--', '--nocapture', '--test-threads=1')
+    assert negative.returncode != 0
+    assert 'test result: FAILED' in negative.stdout and 'shared field' in negative.stdout
+    print('CODE2810_COMPILED_MISSING_HEADER_FIND_CONTROL_FIRED', flush=True)
+finally:
+    chrome_source.write_bytes(chrome_positive)
+assert run(*base, 'code2810_', '--', '--nocapture', '--test-threads=1').returncode == 0
+print('CODE2810_RESTORED_NATIVE_SUITE_PASS', flush=True)

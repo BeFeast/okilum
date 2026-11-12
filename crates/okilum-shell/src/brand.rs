@@ -407,6 +407,9 @@ pub struct ReaderPalette {
     pub callout_important: Hsla,
     /// `<mark>` background; translucent so it reads over any surface.
     pub highlight: Hsla,
+    /// Literal Find match and current-match backgrounds from reader tokens.
+    pub find_match: Hsla,
+    pub find_current: Hsla,
     /// Dims the document under an overlay.
     pub scrim: Hsla,
 }
@@ -501,6 +504,8 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 callout_question: color("calloutQuestion"),
                 callout_important: color("calloutImportant"),
                 highlight: color("highlight"),
+                find_match: color("findMatch"),
+                find_current: color("findCurrent"),
                 scrim: color("scrim"),
             },
         )

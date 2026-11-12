@@ -1072,9 +1072,11 @@ mod tests {
             assert_eq!(input.read(cx).value().as_ref(), code);
             assert!(!input.read(cx).is_editable(), "the code view is read-only");
             assert!(!input.read(cx).search_session().open);
-            // Find reaches the code view's own editor (#998 review).
+            // The read-only file uses the shared header field, never a toolkit strip.
             r.open_find(window, cx);
-            assert!(input.read(cx).search_session().open);
+            let find = r.viewer_chrome(cx).find.unwrap();
+            assert!(find.input.focus_handle(cx).is_focused(window));
+            assert!(!input.read(cx).search_session().open);
             assert!(r.code_file_editable(cx));
             r.toggle_source(window, cx);
             let editor = r

@@ -229,14 +229,7 @@ impl ArchivePreview {
         if self.entry_focus.contains_focused(window, cx) {
             match &self.entry {
                 Some(EntryView::Code(code)) => code.update(cx, |code, cx| {
-                    if !code.open_paged_find(window, cx) {
-                        if let Some(input) = code.input() {
-                            input.update(cx, |input, cx| {
-                                input.open_search(false, cx);
-                                input.focus(window, cx);
-                            });
-                        }
-                    }
+                    code.open_paged_find(window, cx);
                 }),
                 Some(EntryView::Table(table)) => {
                     table.update(cx, |table, cx| table.focus_filter(window, cx));
@@ -253,14 +246,18 @@ impl ArchivePreview {
         let Some(EntryView::Code(code)) = &self.entry else {
             return None;
         };
-        let input = code.read(cx).input()?;
-        let input = input.read(cx);
-        input.search_session().open.then(|| {
-            (
-                input.search_session().query.clone(),
-                input.text().to_string(),
-            )
-        })
+        let state = code.read(cx);
+        let input = state.input()?;
+        Some((
+            state
+                .chrome(code.clone(), cx)
+                .find?
+                .input
+                .read(cx)
+                .value()
+                .to_string(),
+            input.read(cx).text().to_string(),
+        ))
     }
 
     fn refresh_rows(&mut self, cx: &App) {
@@ -895,17 +892,12 @@ mod tests {
         while archive.read_with(visual, |archive, cx| !matches!(&archive.entry, Some(EntryView::Code(code)) if code.read(cx).document_snapshot().is_some())) {
             visual.run_until_parked(); assert!(started.elapsed() < Duration::from_secs(30)); std::thread::sleep(Duration::from_millis(10));
         }
-        for width in [1100., 600.] {
+        for width in [1100., 700., 460.] {
             visual.simulate_resize(gpui::size(px(width), px(800.)));
             visual.run_until_parked();
             let bar = measured_bounds(visual, "archive-entry-bar").unwrap();
             assert_eq!(bar.size.height, px(48.));
-            for id in [
-                "archive-entry-crumb",
-                "code-view-menu",
-                "code-header-find",
-                "code-compact-more",
-            ] {
+            for id in ["archive-entry-crumb", "code-view-menu", "code-compact-more"] {
                 let item = visual
                     .debug_bounds(id)
                     .unwrap_or_else(|| panic!("required {id}"));
@@ -916,6 +908,35 @@ mod tests {
                         && item.bottom() <= bar.bottom(),
                     "{id} outside the only entry bar: {item:?} vs {bar:?}"
                 );
+            }
+            let find = visual
+                .debug_bounds("viewer-find")
+                .or_else(|| visual.debug_bounds("viewer-find-slot"))
+                .expect("required compact Find slot");
+            assert!(find.left() >= bar.left() && find.right() <= bar.right());
+            if bar.size.width < px(600.) {
+                let icon = visual
+                    .debug_bounds("viewer-find")
+                    .expect("narrow entry Find is an icon");
+                let switch = visual.debug_bounds("code-view-menu").unwrap();
+                visual.simulate_click(icon.center(), Modifiers::default());
+                visual.run_until_parked();
+                let bar = measured_bounds(visual, "archive-entry-bar").unwrap();
+                let field = visual
+                    .debug_bounds("viewer-find-field")
+                    .expect("the same Find field opened over compact row");
+                assert!(field.left() >= bar.left() && field.right() <= bar.right());
+                assert!(
+                    field.size.width >= px(240.),
+                    "compact overlay leaves room for query and steps"
+                );
+                assert!(
+                    visual.debug_bounds("viewer-find-query").unwrap().size.width >= px(64.),
+                    "typed query stays visible beside Find controls"
+                );
+                assert_eq!(visual.debug_bounds("code-view-menu").unwrap(), switch);
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
             }
         }
         let button = measured_bounds(visual, "code-view-menu").unwrap();

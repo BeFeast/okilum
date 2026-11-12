@@ -41,12 +41,29 @@ pub(crate) struct JsonError {
     pub offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerKind {
+    Object,
+    Array,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScalarKind {
+    String,
+    Number,
+    Boolean,
+    Null,
+}
+
 /// A preorder AST index, with no copied node text or recursive UI elements.
 #[derive(Debug)]
 pub(crate) struct StructureRow {
     pub range: Range<usize>,
     pub subtree_end: usize,
     pub depth: usize,
+    #[allow(
+        dead_code,
+        reason = "Original source line is retained for Contents snapshot consumers (#2814)"
+    )]
     pub line: usize,
     pub parent: Option<usize>,
     label: json_tree::Label,
@@ -274,10 +291,96 @@ impl Document {
         }
     }
 
+    /// Preorder starts are sorted. Walk only the candidate's ancestors for
+    /// ranges spanning more than one node; no linear whole-index scan.
     pub fn row_at(&self, range: &Range<usize>) -> Option<usize> {
-        self.structure
-            .iter()
-            .rposition(|row| row.range.start <= range.start && row.range.end >= range.end)
+        let mut index = self
+            .structure
+            .partition_point(|row| row.range.start <= range.start)
+            .checked_sub(1)?;
+        loop {
+            let row = &self.structure[index];
+            if row.range.start <= range.start && row.range.end >= range.end {
+                return Some(index);
+            }
+            index = row.parent?;
+        }
+    }
+
+    pub fn key_text(&self, index: usize) -> Option<&str> {
+        match &self.structure.get(index)?.label {
+            json_tree::Label::Json { key: Some(key), .. } => {
+                Some(&self.text[key.start + 1..key.end - 1])
+            }
+            _ => None,
+        }
+    }
+    pub fn array_ordinal(&self, index: usize) -> Option<usize> {
+        match &self.structure.get(index)?.label {
+            json_tree::Label::Json { ordinal, .. } => *ordinal,
+            _ => None,
+        }
+    }
+    pub fn container(&self, index: usize) -> Option<(ContainerKind, usize)> {
+        match &self.structure.get(index)?.label {
+            json_tree::Label::Json {
+                container: Some((kind, count)),
+                ..
+            } => Some((
+                if *kind == "Object" {
+                    ContainerKind::Object
+                } else {
+                    ContainerKind::Array
+                },
+                *count,
+            )),
+            _ => None,
+        }
+    }
+    pub fn scalar(&self, index: usize) -> Option<(ScalarKind, String)> {
+        let json_tree::Label::Json {
+            value,
+            container: None,
+            ..
+        } = &self.structure.get(index)?.label
+        else {
+            return None;
+        };
+        let value = &self.text[value.clone()];
+        let kind = match value.as_bytes().first()? {
+            b'"' => ScalarKind::String,
+            b't' | b'f' => ScalarKind::Boolean,
+            b'n' => ScalarKind::Null,
+            _ => ScalarKind::Number,
+        };
+        let mut short: String = value.chars().take(96).collect();
+        if short.len() < value.len() {
+            short.push('…');
+        }
+        Some((kind, short))
+    }
+    pub fn parent(&self, index: usize) -> Option<usize> {
+        self.structure.get(index)?.parent
+    }
+    pub fn children(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
+        let mut next = index + 1;
+        let end = self.structure.get(index).map_or(next, |r| r.subtree_end);
+        std::iter::from_fn(move || {
+            if next >= end {
+                return None;
+            }
+            let index = next;
+            next = self.structure[index].subtree_end;
+            Some(index)
+        })
+    }
+
+    pub(super) fn row_value_start(&self, index: usize, label: &str) -> Option<usize> {
+        if self.key_text(index).is_none() && self.array_ordinal(index).is_none() {
+            return None;
+        }
+        let prefix = self.structure.get(index)?.label.prefix(&self.text);
+        (!prefix.is_empty() && label.starts_with(&prefix)).then_some(prefix.len())
     }
 
     pub fn row_label(&self, index: usize) -> String {
@@ -298,15 +401,10 @@ impl Document {
 
     /// Literal Unicode Find, counted over the complete snapshot, never just a page.
     pub fn find(&self, query: &str) -> Vec<Range<usize>> {
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let pattern = regex::escape(query);
-        regex::RegexBuilder::new(&pattern)
-            .case_insensitive(true)
-            .build()
-            .map(|regex| regex.find_iter(&self.text).map(|m| m.range()).collect())
-            .unwrap_or_default()
+        self.find_case(query, false)
+    }
+    pub fn find_case(&self, query: &str, sensitive: bool) -> Vec<Range<usize>> {
+        crate::reader_find_field::editor::literal_matches(&self.text, query, sensitive)
     }
 }
 
@@ -322,7 +420,7 @@ mod tests {
         let source = format!("{{\"components\":{{\"schemas\":[{}]}},\"paths\":{{\"deep\":[1,true,null,\"NEEDLE\"]}}}}", values.trim_end_matches(','));
         let doc = Document::new(source.clone(), "json");
         assert!(doc.json_tree && doc.pages.len() > 100);
-        assert_eq!(doc.row_label(0), "Object · 2 properties");
+        assert_eq!(doc.row_label(0), "2 keys");
         let children: Vec<_> = doc
             .structure
             .iter()
@@ -330,13 +428,7 @@ mod tests {
             .filter(|(_, row)| row.parent == Some(0))
             .map(|(index, _)| doc.row_label(index))
             .collect();
-        assert_eq!(
-            children,
-            [
-                "\"components\": Object · 1 property",
-                "\"paths\": Object · 1 property"
-            ]
-        );
+        assert_eq!(children, ["components 1 key", "paths 1 key"]);
         for label in ["[0] 1", "[1] true", "[2] null", "[3] \"NEEDLE\""] {
             assert!(
                 (0..doc.structure.len()).any(|index| doc.row_label(index) == label),

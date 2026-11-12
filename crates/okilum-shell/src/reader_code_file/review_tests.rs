@@ -53,7 +53,7 @@ fn code2809_navigation_never_changes_view_memory_even_after_restart(cx: &mut Tes
     });
     settle(visual);
     let source = visual
-        .debug_bounds("data-node-source-0")
+        .debug_bounds("data-node-source-1")
         .expect("real node navigation");
     visual.simulate_click(source.center(), Modifiers::default());
     settle(visual);
@@ -233,14 +233,19 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
             );
         });
         assert!(
-            visual.debug_bounds("data-whole-file-find").is_some(),
+            visual.debug_bounds("viewer-find-field").is_some(),
             "the focused Find is still mounted after completion"
         );
         visual.simulate_input("payload");
         settle(visual);
         code.read_with(visual, |code, cx| {
             assert_eq!(code.find.read(cx).value().as_ref(), "payload");
-            assert_eq!(code.matches.len(), 1, "the mounted Find remains usable");
+            let total = if code.whole_find() {
+                code.matches.len()
+            } else {
+                code.editor_find.as_ref().unwrap().read(cx).count(cx).1
+            };
+            assert_eq!(total, 1, "the mounted Find remains usable");
         });
     }
 }

@@ -15,7 +15,7 @@ pub(super) fn fixture<'a>(
     std::fs::write(&path, text).unwrap();
     cx.update(|cx| {
         crate::test_init(cx);
-        bind_keys(cx);
+        crate::bind_keys(cx);
     });
     let mut preview = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -112,7 +112,7 @@ fn code2809_switches_and_pages_keep_tree_folds_and_ready_snapshots(cx: &mut Test
         assert_eq!(p.view, View::Tree);
         p.fold_all(true, cx);
         assert_eq!(p.view, View::Tree);
-        assert_eq!(p.structure.visible, vec![0]);
+        assert_eq!(p.structure.visible, vec![1, 40003]);
         let raw = p.document.clone().unwrap();
         p.set_view(View::Raw, window, cx);
         p.show_page(2, window, cx);
@@ -120,7 +120,7 @@ fn code2809_switches_and_pages_keep_tree_folds_and_ready_snapshots(cx: &mut Test
         assert_eq!(p.view, View::Raw);
         assert!(matches!(p.fold_availability(), Availability::Disabled(_)));
         p.set_view(View::Tree, window, cx);
-        assert_eq!(p.structure.visible, vec![0]);
+        assert_eq!(p.structure.visible, vec![1, 40003]);
         assert!(Arc::ptr_eq(&raw, p.document.as_ref().unwrap()));
         p.set_view(View::Formatted, window, cx);
     });
@@ -136,7 +136,7 @@ fn code2809_switches_and_pages_keep_tree_folds_and_ready_snapshots(cx: &mut Test
         assert_eq!(p.view, View::Formatted);
         assert!(!p.input().unwrap().read(cx).folded_ranges().is_empty());
         p.set_view(View::Tree, window, cx);
-        assert_eq!(p.structure.visible, vec![0]);
+        assert_eq!(p.structure.visible, vec![1, 40003]);
     });
 }
 
@@ -538,6 +538,9 @@ struct GuardObserver {
 pub(super) fn settle(visual: &mut VisualTestContext) {
     for _ in 0..3 {
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(70));
         visual.update(|window, cx| window.draw(cx).clear(cx));
     }
     visual.run_until_parked();
@@ -702,8 +705,26 @@ fn code2809_copy_menu_disables_tree_selection_and_copies_exact_node_with_counted
     });
     visual.run_until_parked();
     visual.update(|window, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), source);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "\"key0\": 0",
+            "Tree starts on the first real node"
+        );
         assert_eq!(window.notifications(cx).len(), 1, "copy posts a real toast");
+    });
+    preview.update_in(visual, |p, window, cx| {
+        p.set_view(View::Raw, window, cx);
+        p.input()
+            .unwrap()
+            .update(cx, |input, cx| input.set_selected_range(0..0, cx));
+        p.copy_node(window, cx);
+    });
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            source,
+            "Raw still copies the entire root node"
+        )
     });
     assert_eq!(view::copy_node_notice(&source), "Copied node · 212 lines");
     assert_eq!(
@@ -873,6 +894,11 @@ fn code2809_switching_from_formatted_find_to_paged_raw_keeps_exactly_one_find_ui
     visual.run_until_parked();
     preview.update_in(visual, |code, window, cx| {
         assert!(!code.paged);
+        assert!(code.find_target(cx.entity(), cx).large_file);
+        assert_eq!(
+            code.find.read(cx).presentation().placeholder().as_ref(),
+            "Find in whole file"
+        );
         code.open_find(window, cx);
     });
     visual.run_until_parked();
@@ -881,10 +907,10 @@ fn code2809_switching_from_formatted_find_to_paged_raw_keeps_exactly_one_find_ui
         window.draw(cx).clear(cx);
     });
     assert!(
-        visual.debug_bounds("search-panel").is_some(),
-        "positive control: the real toolkit Find strip opened"
+        visual.debug_bounds("viewer-find-field").is_some(),
+        "positive control: the shared header Find is mounted"
     );
-    assert!(visual.debug_bounds("data-whole-file-find").is_none());
+    assert!(visual.debug_bounds("search-panel").is_none());
     preview.update_in(visual, |code, window, cx| {
         code.set_view(View::Raw, window, cx)
     });
@@ -894,7 +920,7 @@ fn code2809_switching_from_formatted_find_to_paged_raw_keeps_exactly_one_find_ui
         window.draw(cx).clear(cx);
     });
     assert!(
-        visual.debug_bounds("data-whole-file-find").is_some(),
+        visual.debug_bounds("viewer-find-field").is_some(),
         "the whole-file row owns paged Raw Find"
     );
     assert!(

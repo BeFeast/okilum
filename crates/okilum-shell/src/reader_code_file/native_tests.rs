@@ -212,7 +212,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     visual.run_until_parked();
     preview.read_with(visual, |p, _| {
         assert!(p.view == View::Tree);
-        assert_eq!(p.structure.visible, vec![0]);
+        assert_eq!(p.structure.visible, vec![1, 2]);
     });
     let unfold = visual.debug_bounds("code-unfold-all").unwrap();
     visual.simulate_click(unfold.center(), Modifiers::default());
@@ -220,7 +220,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     preview.read_with(visual, |p, _| {
         assert_eq!(
             p.structure.visible.len(),
-            p.document.as_ref().unwrap().structure.len()
+            p.document.as_ref().unwrap().structure.len() - 1
         )
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -231,6 +231,10 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         viewport.size.height >= px(96.),
         "three real rows fit: {viewport:?}"
     );
+    let row = visual.debug_bounds("data-structure-row-2").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|w, cx| w.draw(cx).clear(cx));
     let copy = visual
         .debug_bounds("data-node-copy-2")
         .expect("whole footer node beyond the first page");
@@ -405,7 +409,7 @@ fn json2794_tree_find_unfolds_ancestors_and_keyboard_search_covers_the_whole_fil
         assert!(doc.row_label(index).contains("NEEDLE"));
         let mut parent = doc.structure[index].parent;
         while let Some(index) = parent {
-            assert!(p.structure.visible.contains(&index));
+            assert!(index == 0 || p.structure.visible.contains(&index));
             assert!(!p.structure.folded(index));
             parent = doc.structure[index].parent;
         }

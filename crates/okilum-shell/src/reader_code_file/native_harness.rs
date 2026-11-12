@@ -2,6 +2,9 @@
 use super::*;
 
 pub(crate) fn entry() -> bool {
+    if super::toolbar_native::entry() {
+        return true;
+    }
     let Some(directory) = std::env::var_os("OKILUM_DATA_VIEW_NATIVE_FIXTURE") else {
         return false;
     };
@@ -52,7 +55,7 @@ pub(crate) fn entry() -> bool {
                             assert_eq!(p.view, initial, "Fold must not switch views");
                             p.set_view(View::Tree, window, cx);
                             p.fold_all(true, cx);
-                            assert_eq!(p.structure.visible, vec![0]);
+                            assert_eq!(p.structure.visible, if name == "big.json" { vec![1, 2] } else { vec![0] });
                             p.fold_all(false, cx);
                         }
                         let doc = p.document.as_ref().unwrap();
@@ -60,7 +63,7 @@ pub(crate) fn entry() -> bool {
                         assert!(!input.read(cx).is_editable());
                         if name == "big.json" {
                             assert!(p.view == View::Tree, "minified native view uses the complete AST");
-                            assert_eq!(p.structure.visible.len(), 3);
+                            assert_eq!(p.structure.visible.len(), 2);
                             assert!(doc.text.len() > 32 * 1024 * 1024);
                             assert!(input.read(cx).text().len() <= 32 * 1024);
                             let matches = doc.find("NEEDLE");

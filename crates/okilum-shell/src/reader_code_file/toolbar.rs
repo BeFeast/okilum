@@ -21,6 +21,12 @@ impl CodePreview {
         chrome
     }
     pub(crate) fn chrome(&self, entity: Entity<Self>, cx: &App) -> ViewerChrome {
+        self.describe(entity, cx, true)
+    }
+    pub(crate) fn header_chrome(&self, entity: Entity<Self>, cx: &App) -> ViewerChrome {
+        self.describe(entity, cx, false)
+    }
+    fn describe(&self, entity: Entity<Self>, cx: &App, live: bool) -> ViewerChrome {
         let mut chrome = ViewerChrome::default();
         if !matches!(self.state, State::Content(_)) {
             return chrome;
@@ -68,16 +74,13 @@ impl CodePreview {
         if chrome.views.len() < 2 {
             chrome.views.clear();
         }
-        let target = entity.clone();
-        let mut find = ViewerAction::new(
-            "code-header-find",
-            Icon::new(IconName::Search),
-            "Find",
-            Rc::new(move |window, cx| target.update(cx, |this, cx| this.open_find(window, cx))),
-        )
-        .with_action(FindInNote, cx);
-        find.never_dropped = true;
-        chrome.find_trigger = Some(find);
+        if self.view != View::Table {
+            chrome.find = Some(if live {
+                self.find_target(entity.clone(), cx)
+            } else {
+                self.find_descriptor(entity.clone(), cx)
+            });
+        }
         let folding = self.fold_availability();
         if folding != Availability::Absent {
             for folded in [true, false] {
@@ -125,7 +128,7 @@ impl CodePreview {
             Rc::new(move |window, cx| target.update(cx, |this, cx| this.copy_node(window, cx))),
         )
         .with_action(CopyNode, cx);
-        node.enabled = self.node_copy_range(cx).is_some();
+        node.enabled = live && self.node_copy_range(cx).is_some();
         if !node.enabled {
             node.disabled_reason = Some("No parsed node at the caret".into());
         }
@@ -388,63 +391,6 @@ impl CodePreview {
                         reader_files::run(reader_files::FileAction::Open, &root, &rel, window, cx)
                     }),
             )
-            .into_any_element()
-    }
-
-    #[inline(never)]
-    pub(super) fn search_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let input = div()
-            .w_64()
-            .debug_selector(|| "data-whole-file-find".into())
-            .child(Input::new(&self.find).small())
-            .into_any_element();
-        let label = div()
-            .text_sm()
-            .child(if self.searching {
-                "Searching…".into()
-            } else {
-                format!(
-                    "{} / {} matches",
-                    if self.matches.is_empty() {
-                        0
-                    } else {
-                        self.match_index + 1
-                    },
-                    self.matches.len()
-                )
-            })
-            .into_any_element();
-        let previous = self.match_control(false, cx);
-        let next = self.match_control(true, cx);
-        h_flex()
-            .gap_2()
-            .items_center()
-            .children([input, label, previous, next])
-            .into_any_element()
-    }
-
-    #[inline(never)]
-    fn match_control(&self, next: bool, cx: &mut Context<Self>) -> AnyElement {
-        let id = if next {
-            "data-next-match"
-        } else {
-            "data-prev-match"
-        };
-        Button::new(id)
-            .small()
-            .ghost()
-            .label(if next { "Next match" } else { "Previous match" })
-            .disabled(self.matches.is_empty())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if !this.matches.is_empty() {
-                    this.match_index = if next {
-                        (this.match_index + 1) % this.matches.len()
-                    } else {
-                        (this.match_index + this.matches.len() - 1) % this.matches.len()
-                    };
-                    this.show_match(window, cx);
-                }
-            }))
             .into_any_element()
     }
 }

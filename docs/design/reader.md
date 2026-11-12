@@ -73,9 +73,9 @@ original combined titlebar and document controls:
   files omit the switch. ZIP combines its breadcrumb and one-button view menu
   with the same compact action builders; it has no second code toolbar.
   Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
-  large-file reasons and paged position/slider. Find remains an icon plus the
-  existing whole-file row until #2810. Edit and table inner chrome remain for
-  their own steps. Focus changes re-render the GPUI cached header; source edits,
+  large-file reasons and paged position/slider. Code/data read views use the
+  shared header Find; edit and table inner chrome remain for their own steps.
+  Focus changes re-render the GPUI cached header; source edits,
   query typing and page changes do not invalidate its slot key.
 - **One Find component (#2807).** Notes retain their floating bar, selectors,
   match count, case toggle, stepping and two-press Esc behavior. A file opts in
@@ -93,6 +93,31 @@ original combined titlebar and document controls:
   clears and returns in one press. With entry-pane focus Find belongs to that
   pane. The entry's 48 px compact bar contains its archive/entry crumb and PDF
   zoom or plain-text Open action; it has no history controls.
+- **Code/data Find and Tree (#2810).** Tree, Formatted and Raw share the same
+  header field. Tree and long-line Raw search the whole immutable document on a
+  worker, including hits across parts. Ordinary text uses a revision-bound
+  editor adapter: query/source changes coalesce for 60 ms, then Rope flattening
+  and literal Unicode matching run on a worker. No source edit scans a document
+  on the UI thread. Both targets remember Match case and unfold a hit. Enter and
+  Shift+Enter step; Esc clears marks and retains the selected visible hit. Tree
+  folds back Find-only branches outside that hit's ancestor path. The placeholder
+  is “Find in whole file” for paged text, “Find” otherwise. JSON Table retains
+  its own filter until the table step. Bare/native and ZIP hosts reserve an icon
+  at compact widths and open the same field over their row. No legacy whole-file
+  row or toolkit search strip remains in code/data read mode.
+  Tree hides its synthetic document root and starts with top-level keys at
+  depth zero. Semantic rows show a key/ordinal plus scalar preview or key/item
+  count. Empty containers use `{ }` / `[ ]`. Chevron buttons, 32 px rows and a
+  fixed 60 px two-action slot follow the app's component sizes. Keys use medium
+  code text, scalar values the active syntax theme and counts the faint token.
+  Copy node and
+  Show in raw text appear on hover/selection; a row context menu supplies those
+  actions and Fold/Unfold with live shortcuts. Up/Down move; Right expands or
+  enters a child; Left collapses or goes to the parent; Enter shows the node in
+  Raw at its exact part. Ctrl+Shift+C copies that node, including on Mac; notes
+  retain Copy as Markdown in their own context. Other matches use the highlight
+  token; current matches use warning plus the accent bar. Scrollbar marks use
+  sorted node lookup, capped at 1,000 evenly sampled hits.
 - **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
   a filled, pinned Extract all button. Its summary is in the bottom line.
   Canvas uses a 28 px read-only lock badge, header Fit/zoom and percentage;

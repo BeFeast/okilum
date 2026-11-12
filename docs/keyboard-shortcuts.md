@@ -108,3 +108,13 @@ Ctrl+Shift+C copies a node in the code context; notes retain Copy as Markdown
 on their existing platform shortcut. Alt/Option+PageUp and PageDown selects the
 previous/next text part. All commands are listed and rebindable; hints use the
 live keymap. macOS Mission Control priority requires installed-beta verification.
+
+### Code/data Tree rows
+
+In a read-only code/data file Ctrl/Cmd+F focuses the shared header field, except
+JSON Table, which retains its own filter until its toolbar conversion. Enter and
+Shift+Enter step; Esc clears and leaves Find. Tree owns Up/Down, Right to expand
+or enter a child, Left to collapse or select its parent, and Enter to show the
+selected node in Raw. Copy node uses Ctrl+Shift+C on Linux, Windows **and Mac**;
+Copy as Markdown keeps its existing note contexts. Row menus/tooltips resolve
+these commands from the active keymap.
