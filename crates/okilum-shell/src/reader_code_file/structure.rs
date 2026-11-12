@@ -10,6 +10,7 @@ pub(super) struct Structure {
     exceptions: HashSet<usize>,
     find_opened: HashSet<usize>,
     pub selected: Option<usize>,
+    hovered: Option<usize>,
     pub match_node: Option<usize>,
     pub visible: Vec<usize>,
     pub(super) scroll: UniformListScrollHandle,
@@ -29,6 +30,7 @@ impl Structure {
             (!doc.structure.is_empty()).then_some(0)
         };
         self.match_node = None;
+        self.hovered = None;
         self.rebuild(doc);
     }
     pub(super) fn folded(&self, index: usize) -> bool {
@@ -357,13 +359,10 @@ impl CodePreview {
         let label = hit.map_or_else(|| doc.row_label(index), |h| doc.row_hit_label(index, h));
         let highlights = self.row_highlights(index, &label, cx);
         let entity = cx.entity();
-        let copy = entity.clone();
-        let raw = entity.clone();
         let menu = entity.clone();
-        let group: SharedString = format!("data-row-{index}").into();
+        let show_actions = selected || self.structure.hovered == Some(index);
         let element = h_flex()
             .id(("data-structure-row", index))
-            .group(group.clone())
             .debug_selector(move || format!("data-structure-row-{index}"))
             .w_full()
             .h(px(32.))
@@ -384,6 +383,17 @@ impl CodePreview {
             })
             .when(selected, |r| r.bg(brand::palette(cx).selected))
             .hover(|r| r.bg(brand::reader_palette(cx).hover))
+            .on_hover(cx.listener(move |s, hovered: &bool, _, cx| {
+                let next = if *hovered {
+                    Some(index)
+                } else {
+                    s.structure.hovered.filter(|old| *old != index)
+                };
+                if s.structure.hovered != next {
+                    s.structure.hovered = next;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |s, _, w, cx| {
@@ -432,10 +442,22 @@ impl CodePreview {
                     .min_w_0()
                     .truncate()
                     .text_size(text_size(cx))
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::NORMAL)
                     .font_family(reader_fonts::code(cx))
-                    .child(StyledText::new(label).with_highlights(highlights))
-                    .into_any_element();
+                    .child(StyledText::new(label).with_highlights(highlights));
+                #[cfg(test)]
+                let label = label.child(
+                    canvas(
+                        |_, _, _| (),
+                        |_, _, window, _| {
+                            LABEL_WEIGHTS.with(|weights| {
+                                weights.borrow_mut().push(window.text_style().font_weight)
+                            })
+                        },
+                    )
+                    .absolute(),
+                );
+                let label = label.into_any_element();
                 #[cfg(feature = "data-view-native-harness")]
                 let label = toolbar_native::trace::Trace::new(label, 3).into_any_element();
                 label
@@ -444,38 +466,7 @@ impl CodePreview {
                 h_flex()
                     .w(px(60.))
                     .flex_none()
-                    .when(!selected, |s| s.invisible())
-                    .group_hover(group, |s| s.visible())
-                    .child(
-                        reader_icon_button(
-                            ("data-node-copy", index),
-                            IconName::Copy,
-                            reader_shortcuts::hint("Copy node", &CopyNode, cx),
-                            cx,
-                        )
-                        .debug_selector(move || format!("data-node-copy-{index}"))
-                        .on_click(move |_, w, cx| {
-                            copy.update(cx, |s, cx| {
-                                s.structure.selected = Some(index);
-                                s.copy_node(w, cx);
-                            })
-                        }),
-                    )
-                    .child(
-                        reader_icon_button(
-                            ("data-node-source", index),
-                            Icon::default().path("icons/code-xml.svg"),
-                            reader_shortcuts::hint("Show in raw text", &ShowNodeRaw, cx),
-                            cx,
-                        )
-                        .debug_selector(move || format!("data-node-source-{index}"))
-                        .on_click(move |_, w, cx| {
-                            raw.update(cx, |s, cx| {
-                                s.structure.selected = Some(index);
-                                s.show_selected_raw(w, cx);
-                            })
-                        }),
-                    ),
+                    .when(show_actions, |slot| slot.child(self.row_actions(index, cx))),
             )
             .context_menu(move |m, w, cx| {
                 menu.update(cx, |s, _| s.structure.selected = Some(index));
@@ -485,6 +476,45 @@ impl CodePreview {
         #[cfg(feature = "data-view-native-harness")]
         let element = toolbar_native::trace::Trace::new(element, 2).into_any_element();
         element
+    }
+    #[inline(never)]
+    fn row_actions(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        ACTION_BUILDS.with(|count| count.set(count.get() + 1));
+        let copy = cx.entity();
+        let raw = copy.clone();
+        h_flex()
+            .child(
+                reader_icon_button(
+                    ("data-node-copy", index),
+                    IconName::Copy,
+                    reader_shortcuts::hint("Copy node", &CopyNode, cx),
+                    cx,
+                )
+                .debug_selector(move || format!("data-node-copy-{index}"))
+                .on_click(move |_, w, cx| {
+                    copy.update(cx, |s, cx| {
+                        s.structure.selected = Some(index);
+                        s.copy_node(w, cx);
+                    })
+                }),
+            )
+            .child(
+                reader_icon_button(
+                    ("data-node-source", index),
+                    Icon::default().path("icons/code-xml.svg"),
+                    reader_shortcuts::hint("Show in raw text", &ShowNodeRaw, cx),
+                    cx,
+                )
+                .debug_selector(move || format!("data-node-source-{index}"))
+                .on_click(move |_, w, cx| {
+                    raw.update(cx, |s, cx| {
+                        s.structure.selected = Some(index);
+                        s.show_selected_raw(w, cx);
+                    })
+                }),
+            )
+            .into_any_element()
     }
     fn tree_menu(menu: PopupMenu, _: &mut Window, _cx: &mut Context<PopupMenu>) -> PopupMenu {
         let items = [
@@ -704,4 +734,18 @@ thread_local! {static NATIVE_ROW_BUILDS:std::cell::Cell<usize>=const {std::cell:
 #[cfg(feature = "data-view-native-harness")]
 pub(super) fn native_row_builds() -> usize {
     NATIVE_ROW_BUILDS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    static ACTION_BUILDS: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
+}
+#[cfg(test)]
+pub(super) fn action_builds() -> usize {
+    ACTION_BUILDS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static LABEL_WEIGHTS: std::cell::RefCell<Vec<FontWeight>> = const {std::cell::RefCell::new(Vec::new())};
 }

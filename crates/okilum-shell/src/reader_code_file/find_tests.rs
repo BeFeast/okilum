@@ -287,6 +287,62 @@ fn code2810_tree_keyboard_rows_context_menu_hover_and_raw_jump(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn code2810_tree_only_builds_actions_for_the_hovered_or_selected_row(cx: &mut TestAppContext) {
+    let rows = (0..414)
+        .map(|i| format!("\"route-{i:04}\":{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let (code, v, _temp) = fixture(
+        cx,
+        "data.json",
+        &format!("{{\"paths\":{{{rows}}},\"tail\":false}}"),
+    );
+    code.update_in(v, |s, w, cx| {
+        s.set_view(View::Tree, w, cx);
+        s.structure.toggle(1, s.document.as_ref().unwrap());
+        // The first measurement row and the visible range are both unselected.
+        s.structure.selected = Some(416);
+        s.structure
+            .scroll
+            .scroll_to_item_strict(180, ScrollStrategy::Top);
+        cx.notify();
+    });
+    v.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+    settle(v);
+    let label = v
+        .debug_bounds("data-node-label-181")
+        .expect("positive control: scrolled rows mounted");
+    let before = structure::action_builds();
+    v.update(|w, cx| {
+        w.refresh();
+        w.draw(cx).clear(cx);
+    });
+    assert_eq!(
+        structure::action_builds(),
+        before,
+        "unselected rows must not construct hidden action controls"
+    );
+    assert!(v.debug_bounds("data-node-copy-181").is_none());
+    v.simulate_mouse_move(label.center(), None, Modifiers::default());
+    settle(v);
+    let button = v
+        .debug_bounds("data-node-copy-181")
+        .expect("hover mounts the action controls");
+    assert!(
+        structure::action_builds() > before,
+        "positive control: visible actions really built"
+    );
+    assert_eq!(v.debug_bounds("data-node-label-181").unwrap(), label);
+    let expected = code.read_with(v, |s, _| {
+        let doc = s.document.as_ref().unwrap();
+        doc.text[doc.structure[181].range.clone()].to_owned()
+    });
+    v.simulate_click(button.center(), Modifiers::default());
+    settle(v);
+    v.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected));
+}
+
+#[gpui::test]
 fn code2810_header_typing_renders_zero_slots_and_notifies_zero_panels(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let _cached = reader_side_panel::tests::CachedPanels::on();
@@ -600,5 +656,29 @@ fn code2810_bare_host_shares_case_between_whole_file_and_editor_adapters(cx: &mu
         let target = s.find_target(code.clone(), cx);
         assert!(!target.match_case.as_ref().unwrap().0);
         assert_eq!(target.count.unwrap().as_ref(), "1 of 2");
+    });
+}
+
+#[gpui::test]
+fn code2810_tree_keys_paint_with_the_mock_regular_code_face(cx: &mut TestAppContext) {
+    let (code, v, _temp) = fixture(cx, "data.json", "{\"paths\":{\"route\":42},\"tail\":true}");
+    code.update_in(v, |s, w, cx| s.set_view(View::Tree, w, cx));
+    settle(v);
+    structure::LABEL_WEIGHTS.with(|weights| weights.borrow_mut().clear());
+    v.update(|w, cx| {
+        w.refresh();
+        w.draw(cx).clear(cx);
+    });
+    assert!(v.debug_bounds("data-node-label-1").is_some());
+    structure::LABEL_WEIGHTS.with(|weights| {
+        let weights = weights.borrow();
+        assert!(
+            !weights.is_empty(),
+            "positive control: label paint style was captured"
+        );
+        assert!(
+            weights.iter().all(|weight| *weight == FontWeight::NORMAL),
+            "Tree keys must use the mock's regular code face"
+        );
     });
 }
