@@ -15,13 +15,13 @@ _enable_release_cache() {
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
       cache_target=x86_64-unknown-linux-musl
-      cache_hash=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;;
+      cache_hash=aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd ;;
     Darwin-arm64)
       cache_target=aarch64-apple-darwin
-      cache_hash=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e ;;
+      cache_hash=a35a0b7d622618774bc1bb8102d72562dfb21e619f88b153b370d7f89bc286af ;;
     *) return 1 ;;
   esac
-  cache_dir="${OKILUM_SCCACHE_HOME:-$HOME/.cache/okilum-sccache}/0.18.0-$cache_target"
+  cache_dir="${OKILUM_SCCACHE_HOME:-$HOME/.cache/okilum-sccache}/0.19.0-$cache_target"
   if [[ ! -x $cache_dir/sccache ]]; then
     mkdir -p "$cache_dir" || return 1
     cache_stage=$(mktemp -d "$cache_dir/install.XXXXXX") || return 1
@@ -29,7 +29,7 @@ _enable_release_cache() {
       rm -rf "$cache_stage"
       return 1
     fi
-    mv "$cache_stage/sccache-v0.18.0-$cache_target/sccache" "$cache_dir/sccache" || return 1
+    mv "$cache_stage/sccache-v0.19.0-$cache_target/sccache" "$cache_dir/sccache" || return 1
     rm -rf "$cache_stage"
   fi
   export PATH="$cache_dir:$PATH"
@@ -90,7 +90,7 @@ PYPROBE
 _install_release_cache() {
   local cache_stage="$1" cache_target="$2" cache_hash="$3"
   curl --fail --silent --show-error --location --max-time 60 \
-    "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-$cache_target.tar.gz" \
+    "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-$cache_target.tar.gz" \
     -o "$cache_stage/archive.tgz" || return 1
   python3 - "$cache_stage/archive.tgz" "$cache_hash" <<'PY' || return 1
 import hashlib, sys
