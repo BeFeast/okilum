@@ -108,8 +108,13 @@ original combined titlebar and document controls:
   Tree hides its synthetic document root and starts with top-level keys at
   depth zero. Semantic rows show a key/ordinal plus scalar preview or key/item
   count. Empty containers use `{ }` / `[ ]`. Chevron buttons, 32 px rows and a
-  fixed 60 px two-action slot follow the app's component sizes. Keys use medium
+  fixed 60 px two-action slot follow the app's component sizes. Keys use regular
   code text, scalar values the active syntax theme and counts the faint token.
+  Before the first Tree paint, ten digits are prepared at the finite GPUI
+  subpixel phases under an empty content mask, once per window/font/size/scale/
+  color. This keeps newly revealed numeric keys/counts from uploading glyphs
+  during scroll; row sizes and shaping remain unchanged. Native scroll probes
+  count bitmap rasterizations separately from raster-bounds queries.
   Copy node and
   Show in raw text appear on hover/selection; a row context menu supplies those
   actions and Fold/Unfold with live shortcuts. Up/Down move; Right expands or

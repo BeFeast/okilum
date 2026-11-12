@@ -45,12 +45,14 @@ def main():
         assert receipt['real_native_platform'] and receipt['mounted'] == 'Reader'
         assert receipt['source_sha'] == os.environ['OKILUM_SOURCE_COMMIT']
         assert receipt['bytes'] == 3_500_000 and receipt['paths_keys'] == 414
+        assert receipt['initial_rasterizations'] > 0, 'native glyph observer must fire during initial paint'
         assert receipt['measurement'] == ('debug-smoke' if smoke else 'production-release')
         if not smoke:
             assert receipt['open_ms'] <= 100
         for marked in [False, True]:
             frames = [f for f in receipt['frames'] if f['marks'] == marked]
             assert len(frames) == 48
+            assert sum(f['text_work']['work']['glyph_bitmap']['calls'] for f in frames) <= 1, 'Tree scroll must reuse warmed glyph variants'
             if not smoke:
                 assert max(f['cpu_draw_ms'] for f in frames) <= 16
             assert all(f['rows_built'] > 0 for f in frames)

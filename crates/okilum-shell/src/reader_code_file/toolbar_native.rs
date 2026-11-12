@@ -72,6 +72,7 @@ pub(super) fn entry() -> bool {
         reader_ui_state::install(&directory.join("state"), cx);
         gpui::profiler::set_trace_enabled(true);
         cx.activate(true);
+        let startup_text_probe=platform::text_diagnostics::Probe::start();
         let mut reader = None;
         let handle = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(0.),px(0.)), size:size(px(1100.),px(800.)) })),
@@ -93,6 +94,9 @@ pub(super) fn entry() -> bool {
             };
             // Drain one real native draw after the worker installed its snapshot.
             window.update(cx,|_,w,cx|{w.refresh();w.draw(cx).clear(cx);submit_frame(w);}).unwrap();
+            let initial_rasterizations=startup_text_probe.report()["work"]["glyph_bitmap"]["calls"].as_u64().unwrap();
+            assert!(initial_rasterizations>0,"native glyph observer must see initial painting");
+            drop(startup_text_probe);
             let (paths,bytes)=cx.update(|cx|{
                 let doc=code.read(cx).document.as_ref().unwrap();
                 let paths=(0..doc.structure.len()).find(|i|doc.key_text(*i)==Some("paths")).unwrap();
@@ -131,6 +135,7 @@ pub(super) fn entry() -> bool {
                     if p.structure.folded(paths) {p.structure.toggle(paths,p.document.as_ref().unwrap());}
                     cx.notify();
                 });
+                let mut scroll_rasterizations=0;
                 for sample in 0..48 {
                     cx.background_executor().timer(Duration::from_millis(20)).await;
                     let ms=window.update(cx,|_,w,cx|{
@@ -167,13 +172,15 @@ pub(super) fn entry() -> bool {
                         let present_ms=submit_frame(w);
                         (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_work,subtree_work,present_ms)
                     }).unwrap();
+                    scroll_rasterizations+=ms.7["work"]["glyph_bitmap"]["calls"].as_u64().unwrap();
                     frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7,"subtree_work":ms.8,"present_ms":ms.9}));
                     diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={} subtree_work={} present_ms={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7,ms.8,ms.9);
                     let ms=ms.0;
                     assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
+                assert!(scroll_rasterizations<=1,"Tree scroll rasterized new glyph variants after warm-up (marks={marked}): {scroll_rasterizations}");
             }
-            let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT"),"measurement":if smoke {"debug-smoke"} else {"production-release"}});
+            let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"initial_rasterizations":initial_rasterizations,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT"),"measurement":if smoke {"debug-smoke"} else {"production-release"}});
             std::fs::write(directory.join("toolbar-receipt.json"),receipt.to_string()).unwrap();
             diagnostic_println!("CODE2810_NATIVE_READER_PASS {receipt}");
             cx.update(|cx|cx.quit());

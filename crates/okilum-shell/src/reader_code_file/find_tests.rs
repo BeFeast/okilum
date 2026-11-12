@@ -682,3 +682,86 @@ fn code2810_tree_keys_paint_with_the_mock_regular_code_face(cx: &mut TestAppCont
         );
     });
 }
+
+#[gpui::test]
+fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut TestAppContext) {
+    use structure::digit_glyphs::REQUESTS;
+    REQUESTS.with(|requests| requests.borrow_mut().clear());
+    let text = format!(
+        "{{\"paths\":{{{}}}}}",
+        (0..414)
+            .map(|i| format!("\"/v1/path-{i:04}\":{{}}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let (code, v, temp) = fixture(cx, "data.json", &text);
+    v.update(|_, cx| reader_ui_state::install(&temp.path().join("state"), cx));
+    code.update_in(v, |s, w, cx| {
+        s.set_view(View::Tree, w, cx);
+        s.structure.toggle(1, s.document.as_ref().unwrap());
+        cx.notify();
+    });
+    settle(v);
+    let phases = usize::from(SUBPIXEL_VARIANTS_X) * usize::from(SUBPIXEL_VARIANTS_Y);
+    let initial = REQUESTS.with(|requests| {
+        let requests = requests.borrow();
+        assert_eq!(
+            requests.len(),
+            10 * phases,
+            "all numeric glyph phases prepared before scroll"
+        );
+        let glyphs: std::collections::HashSet<_> = requests.iter().map(|r| r.0).collect();
+        assert_eq!(
+            glyphs.len(),
+            10,
+            "positive control: ten different shaped digits"
+        );
+        for glyph in glyphs {
+            let variants: std::collections::HashSet<_> = requests
+                .iter()
+                .filter(|r| r.0 == glyph)
+                .map(|r| (r.1, r.2))
+                .collect();
+            assert_eq!(
+                variants.len(),
+                phases,
+                "each digit has every subpixel phase"
+            );
+        }
+        requests.len()
+    });
+    let label = v.debug_bounds("data-node-label-2").unwrap();
+    let row = v.debug_bounds("data-structure-row-2").unwrap();
+    assert_eq!(row.size.height, px(32.));
+    assert!(label.top() >= row.top() && label.bottom() <= row.bottom());
+    for sample in 0..48 {
+        code.update_in(v, |s, _, cx| {
+            s.structure
+                .scroll
+                .scroll_to_item_strict(1 + (sample * 7) % 390, ScrollStrategy::Top);
+            cx.notify();
+        });
+        settle(v);
+        REQUESTS.with(|requests| {
+            assert_eq!(
+                requests.borrow().len(),
+                initial,
+                "scrolling must not prepare glyphs again"
+            )
+        });
+    }
+    v.update(|_, cx| reader_ui_state::set_text_zoom(1.25, cx));
+    settle(v);
+    REQUESTS.with(|requests| {
+        let requests = requests.borrow();
+        assert_eq!(
+            requests.len(),
+            initial * 2,
+            "a new text size needs its own glyph phases"
+        );
+        assert_ne!(requests[0].3, requests[initial].3);
+    });
+    code.update_in(v, |_, _, cx| cx.notify());
+    settle(v);
+    REQUESTS.with(|requests| assert_eq!(requests.borrow().len(), initial * 2));
+}

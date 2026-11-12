@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-const NAMES: [&str; 9] = [
+const NAMES: [&str; 10] = [
     "font_lookup",
     "font_metrics",
     "glyph_lookup",
@@ -15,6 +15,7 @@ const NAMES: [&str; 9] = [
     "ui_render",
     "backlink_titles",
     "reader_ui_sync",
+    "glyph_bitmap",
 ];
 #[derive(Clone, Copy)]
 pub(crate) enum Work {
@@ -27,14 +28,15 @@ pub(crate) enum Work {
     UiRender,
     BacklinkTitles,
     ReaderUiSync,
+    GlyphBitmap,
 }
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static CALLS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
-static NANOS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+static CALLS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+static NANOS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
 
 pub(crate) struct Probe {
-    calls: [u64; 9],
-    nanos: [u64; 9],
+    calls: [u64; NAMES.len()],
+    nanos: [u64; NAMES.len()],
 }
 impl Probe {
     pub(crate) fn start() -> Self {
