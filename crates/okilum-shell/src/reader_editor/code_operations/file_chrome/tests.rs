@@ -64,7 +64,7 @@ fn file2811_note_host_has_a_positive_control_and_file_keeps_one_header(cx: &mut 
         crate::reader_viewer_chrome::tests::fixture_with_files(cx, "note.md", &[("note.md", note)]);
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
     reader
-        .read_with(visual, |r, cx| r.source_input().unwrap())
+        .read_with(visual, |r, _| r.source_input().unwrap())
         .update(visual, |i, cx| i.set_selected_range(12..12, cx));
     tick(visual, 150);
     measured(visual, "source-code-format");
@@ -517,6 +517,8 @@ fn file2811_return_to_read_restores_view_folds_query_and_does_not_remember_raw(
         r.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     code.update_in(visual, |s, w, cx| s.set_view(View::Tree, w, cx));
+    frame(visual);
+    click(visual, "data-node-fold-1");
     let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));
     visual.update(|w, cx| target.set_query("needle", w, cx));
     tick(visual, 70);
@@ -727,4 +729,196 @@ fn file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host(
     reader.read_with(visual, |r, _| {
         assert!(!r.editing.as_ref().unwrap().operations.busy)
     });
+}
+
+#[gpui::test]
+fn file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo(cx: &mut TestAppContext) {
+    let original = "\u{feff}{\"a\":1,\"a\":2e3,\"str\":\"\\u0041\"}\r\n";
+    let (reader, _file, input, visual, temp) = open(cx, "tokens.json", original);
+    click(visual, "file-format");
+    let formatted = text(&input, visual);
+    assert_eq!(
+        formatted,
+        "\u{feff}{\r\n  \"a\": 1,\r\n  \"a\": 2e3,\r\n  \"str\": \"\\u0041\"\r\n}\r\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("vault/tokens.json")).unwrap(),
+        original
+    );
+    assert!(
+        visual.update(|w, cx| !w.notifications(cx).is_empty()),
+        "Format actually posted its toast"
+    );
+    reader.read_with(visual, |r, _| {
+        assert!(
+            r.editing.as_ref().unwrap().operations.notice.is_none(),
+            "success no longer occupies the bottom line"
+        )
+    });
+    visual.dispatch_action(Undo);
+    frame(visual);
+    assert_eq!(text(&input, visual), original);
+}
+
+#[gpui::test]
+fn file2811_late_format_and_park_cannot_apply_to_a_newer_source(cx: &mut TestAppContext) {
+    let original = "{\"a\":1}";
+    let (reader, _file, input, visual, _temp) = open(cx, "test1.json", original);
+    // A real successful formatter is the control for the two rejected jobs.
+    click(visual, "file-format");
+    assert_ne!(text(&input, visual), original);
+    visual.dispatch_action(Undo);
+    frame(visual);
+    assert_eq!(text(&input, visual), original);
+    let (send, receive) = futures::channel::oneshot::channel();
+    reader.update_in(visual, |r, w, cx| {
+        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.code_operation(Action::Format, w, cx);
+    });
+    frame(visual);
+    input.update_in(visual, |i, w, cx| i.replace_source_range(5..6, "2", w, cx));
+    send.send(()).unwrap();
+    frame(visual);
+    assert_eq!(text(&input, visual), "{\"a\":2}");
+    reader.read_with(visual, |r, _| {
+        assert!(!r.editing.as_ref().unwrap().operations.busy)
+    });
+    assert!(visual.update(|w, cx| !w.notifications(cx).is_empty()));
+    let (send, receive) = futures::channel::oneshot::channel();
+    reader.update_in(visual, |r, w, cx| {
+        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.code_operation(Action::Format, w, cx);
+        let editing = r.editing.take().unwrap();
+        let (store, restore) = editing.park(cx);
+        r.editing = Some(restore(store));
+        input.update(cx, |i, cx| i.set_disabled(false, cx));
+    });
+    send.send(()).unwrap();
+    frame(visual);
+    assert_eq!(text(&input, visual), "{\"a\":2}");
+    click(visual, "file-format");
+    assert_eq!(text(&input, visual), "{\n  \"a\": 2\n}");
+}
+
+#[gpui::test]
+fn file2811_real_refusals_and_syntax_verdicts_have_one_bottom_home(cx: &mut TestAppContext) {
+    let deep = format!("{{\"deep\":{}0{}}}", "[".repeat(129), "]".repeat(129));
+    for (name, source, action, prefix, reason) in [
+        (
+            "invalid.json",
+            "{ a: 1 }",
+            Action::Format,
+            "Not formatted.",
+            "syntax error on line 1",
+        ),
+        (
+            "mixed.json",
+            "{\n\"a\":1\r\n}",
+            Action::Format,
+            "Not formatted.",
+            "Mixed line endings",
+        ),
+        (
+            "deep.json",
+            deep.as_str(),
+            Action::Format,
+            "Not formatted.",
+            "128 levels",
+        ),
+        (
+            "unclosed.json",
+            "{\"a\":\"unfinished}",
+            Action::Repair,
+            "No safe repair.",
+            "Unterminated",
+        ),
+        (
+            "mismatch.json",
+            "{\"a\":[}",
+            Action::Repair,
+            "No safe repair.",
+            "Mismatched",
+        ),
+        (
+            "missing.json",
+            "{\"a\":,}",
+            Action::Repair,
+            "No safe repair.",
+            "No safe strict-JSON correction",
+        ),
+        (
+            "dialect.jsonc",
+            "// comment\n{}",
+            Action::Validate,
+            "Validation is not available for JSONC.",
+            "Nothing was checked",
+        ),
+        (
+            "data.yml",
+            "value: [",
+            Action::Validate,
+            "Syntax problem in YAML.",
+            "Line 1",
+        ),
+    ] {
+        let (reader, _file, input, visual, temp) = open(cx, name, source);
+        reader.update_in(visual, |r, w, cx| r.code_operation(action, w, cx));
+        frame(visual);
+        let bottom = drawn(&input).1;
+        assert!(
+            bottom.starts_with(prefix) && bottom.contains(reason),
+            "{name}: {bottom}"
+        );
+        measured(visual, "file-edit-status-line");
+        assert!(visual.debug_bounds("source-code-validation").is_none());
+        assert_eq!(text(&input, visual), source);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault").join(name)).unwrap(),
+            source
+        );
+    }
+}
+
+#[gpui::test]
+fn file2811_raw_parts_and_async_formatted_restore_after_edit(cx: &mut TestAppContext) {
+    let source = format!(
+        "{{\"payload\":\"{}\",\"tail\":42}}",
+        "value ".repeat(20_000)
+    );
+    for view in [View::Raw, View::Formatted] {
+        cx.executor().allow_parking();
+        let (reader, visual, _temp) = crate::reader_viewer_chrome::tests::fixture_with_files(
+            cx,
+            "paged.json",
+            &[("paged.json", &source)],
+        );
+        tick(visual, 150);
+        let code = reader.read_with(visual, |r, _| {
+            r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        });
+        code.update_in(visual, |c, w, cx| c.set_view(view, w, cx));
+        frame(visual);
+        if view == View::Raw {
+            click(visual, "code-next-part");
+        }
+        reader.update_in(visual, |r, _, cx| {
+            r.code_view_input(cx).unwrap().update(cx, |i, cx| {
+                i.set_selected_range(2..8, cx);
+                i.set_scroll_offset(point(px(-20.), px(-4.)), cx);
+            });
+        });
+        let saved = code.read_with(visual, |c, cx| c.save_presentation(cx));
+        reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+        tick(visual, 130);
+        reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+        tick(visual, 150);
+        let restored = reader.read_with(visual, |r, _| {
+            r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        });
+        assert_eq!(
+            restored.read_with(visual, |c, cx| c.save_presentation(cx)),
+            saved,
+            "{view:?} restores its page, selection and scroll after worker preparation"
+        );
+    }
 }
