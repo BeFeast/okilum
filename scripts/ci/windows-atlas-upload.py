@@ -93,8 +93,8 @@ def main():
             ("legacy", readback, "real upload must use staging/copy"),
             ("invalid-success", failure, "truncated upload must not claim success"),
             ("leak", failure, "failed upload must release its tile"),
-            ("packed-pitch", readback, "assertion `left == right` failed"),
-            ("wrong-origin", readback, "assertion `left == right` failed"),
+            ("packed-pitch", readback, "atlas tile readback mismatch for Monochrome at packed byte 3"),
+            ("wrong-origin", readback, "atlas tile readback mismatch for Monochrome at packed byte 0"),
         ]:
             run(negative, control, test, control=control, failure=message)
     finally:

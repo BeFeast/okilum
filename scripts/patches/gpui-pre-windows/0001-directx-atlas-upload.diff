@@ -57,7 +57,7 @@
      fn allocate(
          &mut self,
          size: Size<DevicePixels>,
-@@ -278,45 +288,77 @@
+@@ -278,45 +288,75 @@
  
      fn upload(
          &self,
@@ -66,12 +66,15 @@
          bounds: Bounds<DevicePixels>,
          bytes: &[u8],
 -    ) {
+-        // `UpdateSubresource` reads `row_pitch * height` bytes from `bytes` based on the
+-        // `D3D11_BOX` below. If the caller hands us a slice shorter than that, the driver would
+-        // over-read past the end of the source buffer (potentially by multiple megabytes), so bail
+-        // out instead. This is a first-insert path rather than a per-frame one, so the check is
+-        // effectively free.
 +    ) -> anyhow::Result<()> {
-         // `UpdateSubresource` reads `row_pitch * height` bytes from `bytes` based on the
-         // `D3D11_BOX` below. If the caller hands us a slice shorter than that, the driver would
-         // over-read past the end of the source buffer (potentially by multiple megabytes), so bail
-         // out instead. This is a first-insert path rather than a per-frame one, so the check is
-         // effectively free.
++        // Validate the tightly packed source before copying its rows into mapped
++        // staging storage. Reject short slices and empty regions before allocating
++        // a texture or reading any caller bytes.
          let row_bytes = bounds.size.width.to_bytes(self.bytes_per_pixel as u8) as usize;
 -        let expected = row_bytes * bounds.size.height.0.max(0) as usize;
 -        if bytes.len() < expected {
@@ -158,7 +161,7 @@
      }
  
      fn decrement_ref_count(&mut self) {
-@@ -337,6 +379,11 @@
+@@ -337,6 +377,11 @@
          x: DevicePixels::from(value.x),
          y: DevicePixels::from(value.y),
      }
@@ -170,7 +173,7 @@
  }
  
  #[cfg(test)]
-@@ -348,7 +395,10 @@
+@@ -348,7 +393,10 @@
          Foundation::HMODULE,
          Graphics::{
              Direct3D::D3D_DRIVER_TYPE_WARP,
@@ -182,7 +185,7 @@
          },
      };
  
-@@ -417,4 +467,156 @@
+@@ -417,4 +465,165 @@
          let tile_b = insert_tile(&atlas, &big_key_b, big);
          assert_eq!(tile_b.texture_id, keeper_tile.texture_id);
      }
@@ -289,8 +292,17 @@
 +                before + 1,
 +                "real upload must use staging/copy, not UpdateSubresource"
 +            );
-+            assert_eq!(read_tile(&device, &context, texture, tile.bounds), bytes);
-+            assert_eq!(read_tile(&device, &context, texture, keeper.bounds), first);
++            let uploaded = read_tile(&device, &context, texture, tile.bounds);
++            for (at, (actual, expected)) in uploaded.iter().zip(&bytes).enumerate() {
++                assert_eq!(
++                    actual, expected,
++                    "atlas tile readback mismatch for {kind:?} at packed byte {at}"
++                );
++            }
++            assert_eq!(
++                read_tile(&device, &context, texture, keeper.bounds), first,
++                "existing atlas pixels must survive upload of a different tile"
++            );
 +        }
 +    }
 +

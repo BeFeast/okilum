@@ -75,7 +75,8 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
         return 0 if (required <= passed and linux.get("conclusion") == "success"
                      and windows.get("conclusion") == "success"
                      and {"Prepare and verify Windows vendor", "Run native Windows recovery controls",
-                          "Run native Windows delta console controls", "Run native Windows Sync identity controls"} <= native) else 75
+                          "Run native Windows delta console controls", "Run native Windows Sync identity controls",
+                          "Run native Windows atlas upload controls"} <= native) else 75
     if info.get("conclusion") != "failure":
         return 75
     failed = [s for job in jobs for s in job.get("steps", []) if s.get("conclusion") == "failure"]

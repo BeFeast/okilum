@@ -48,3 +48,22 @@ The existing native Reader runs retain their thresholds and stack reserve.
 VM mouse-wheel before/after results, fixture/executable hashes and screenshots
 are recorded in the implementation PR; those portable measurements do not
 establish installed-beta acceptance.
+
+The routine per-PR `agent-checks.yml` Windows job (`windows-recovery`) runs
+`scripts/ci/windows-atlas-upload.py` unconditionally after vendor verification:
+all WARP tests and all five compiled negatives are required, including for later
+patch revisions or a crate bump. The source-pinned `gh-check` verdict requires
+that step to succeed. `data-view-native.yml` also retains its separate
+`windows-atlas` job for the Reader gate.
+
+After a reviewed patch revision, setup deliberately rejects the previous
+revision's generated tree as a mismatch. Preserve it outside the checkout,
+then regenerate and verify the new pinned tree (the old copy remains available
+for inspection):
+
+```bash
+previous_backend=$(mktemp -d)
+mv vendor/gpui-pre-windows-0.3.3 "$previous_backend/"
+python3 scripts/gpui-pre-windows-setup.py
+python3 scripts/gpui-pre-windows-setup.py --verify
+```
