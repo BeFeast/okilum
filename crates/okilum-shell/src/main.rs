@@ -552,6 +552,20 @@ fn bind_keys(cx: &mut App) {
     reader_log::bind_keys(cx);
     reader_delimited::bind_keys(cx);
     reader_code_file::bind_keys(cx);
+    for context in ["ReaderFileEdit", "ReaderFileEdit > Input"] {
+        cx.bind_keys([
+            KeyBinding::new("alt-shift-f", reader_editor::FormatCode, Some(context)),
+            KeyBinding::new("alt-shift-v", reader_editor::ValidateCode, Some(context)),
+            KeyBinding::new("alt-shift-r", reader_editor::RepairCode, Some(context)),
+        ]);
+    }
+    for context in ["ReaderCode", "ReaderCode > Input"] {
+        cx.bind_keys([KeyBinding::new(
+            "alt-shift-r",
+            reader_editor::RepairCode,
+            Some(context),
+        )]);
+    }
     // App-level, so the key, the View menu and the toolbar all reach it.
     cx.on_action(|_: &ToggleNoteWidth, cx| toggle_note_width(cx));
     cx.bind_keys([
@@ -2919,7 +2933,7 @@ impl Reader {
     // --- find in note (#48) ---
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() {
+        if self.editing.is_none() || self.file_preview.is_some() {
             if let Some(target) = self.viewer_find_target(cx) {
                 target.focus(window, cx);
                 return;
@@ -7999,7 +8013,9 @@ impl Render for Reader {
             .min_h_0()
             .relative()
             .key_context(
-                if self.editing.is_none()
+                if self.file_editor_active() && !self.quick_open.open && !self.shortcut_sheet.open {
+                    "Reader ReaderCode ReaderFileEdit"
+                } else if self.editing.is_none()
                     && !self.quick_open.open
                     && !self.shortcut_sheet.open
                     && self.project_navigation.section == reader_project_navigation::Section::Reader
@@ -8139,6 +8155,21 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &SaveSource, _, cx| {
                 this.request_source_save(cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &reader_editor::FormatCode, window, cx| {
+                    this.run_format_code(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &reader_editor::ValidateCode, window, cx| {
+                    this.run_validate_code(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &reader_editor::RepairCode, window, cx| {
+                    this.repair_code_entry(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &RevealFile, window, cx| {
                 this.file_action(reader_files::FileAction::Reveal, window, cx)
             }))
