@@ -139,6 +139,8 @@ const IMAGES: [(&str, &[u8]); 48] = [
         include_bytes!("../assets/icons/trash.svg"),
     ),
     ("icons/save.svg", include_bytes!("../assets/icons/save.svg")),
+    ("icons/indent.svg", include_bytes!("../assets/icons/indent.svg")),
+    ("icons/wrench.svg", include_bytes!("../assets/icons/wrench.svg")),
     (
         "icons/channel-stable.svg",
         include_bytes!("../assets/icons/channel-stable.svg"),
