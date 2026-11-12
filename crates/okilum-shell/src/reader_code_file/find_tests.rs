@@ -218,8 +218,25 @@ fn code2810_tree_keyboard_rows_context_menu_hover_and_raw_jump(cx: &mut TestAppC
     settle(v);
     assert!(v.debug_bounds("data-structure-row-0").is_none());
     let label = v.debug_bounds("data-node-label-1").unwrap();
+    assert!(
+        v.debug_bounds("data-node-copy-1").is_some(),
+        "selected action is painted"
+    );
     v.simulate_keystrokes("down");
     settle(v);
+    assert!(
+        v.debug_bounds("data-node-copy-1").is_none(),
+        "unselected actions must not paint transparent widgets"
+    );
+    v.simulate_mouse_move(label.center(), None, Modifiers::default());
+    settle(v);
+    assert!(
+        v.debug_bounds("data-node-copy-1").is_some(),
+        "hover paints the reserved action slot"
+    );
+    v.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+    settle(v);
+    assert!(v.debug_bounds("data-node-copy-1").is_none());
     assert_eq!(
         v.debug_bounds("data-node-label-1").unwrap(),
         label,

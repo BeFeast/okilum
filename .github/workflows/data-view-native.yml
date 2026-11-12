@@ -159,7 +159,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: release_cache
         with:
           path: |
             ~/.cargo/registry/
@@ -189,6 +190,7 @@ jobs:
             echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
           fi
       - name: Build production release for CPU budgets
+        id: release_build
         shell: bash
         run: |
           if [[ "$RUNNER_OS" = Windows ]]; then
@@ -210,3 +212,20 @@ jobs:
             ${{ runner.temp }}/code-toolbar-native-receipt.json
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && runner.os == 'Windows' && steps.release_build.outcome == 'success' }}
+        with:
+          name: code-toolbar-release-windows-binary
+          path: target/code-toolbar-release/release/okilum.exe
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.release_cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.release_cache.outputs.cache-primary-key }}

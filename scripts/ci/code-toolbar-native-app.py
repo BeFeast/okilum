@@ -43,6 +43,7 @@ def main():
         assert process.returncode == 0, log_path.read_text(encoding='utf-8')[-14000:]
         receipt = json.loads((root / 'toolbar-receipt.json').read_text())
         assert receipt['real_native_platform'] and receipt['mounted'] == 'Reader'
+        assert receipt['source_sha'] == os.environ['OKILUM_SOURCE_COMMIT']
         assert receipt['bytes'] == 3_500_000 and receipt['paths_keys'] == 414
         assert receipt['measurement'] == ('debug-smoke' if smoke else 'production-release')
         if not smoke:
