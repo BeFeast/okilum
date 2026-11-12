@@ -59,6 +59,7 @@ def positive(binary, filter_):
 
 
 CONTROLS = [
+    ('missing-file-icons', 'brand::tests::every_local_functional_icon_is_embedded'),
     ('conflict-toast', 'file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast'),
     ('legacy-host', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
     ('live-part-cycle', 'file2811_app_teardown_releases_live_parts_and_pending_json_validation'),
@@ -92,6 +93,8 @@ CONTROLS = [
 ]
 
 try:
+    edit('brand.rs', '        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {',
+         '        if crate::file2811_control("missing-file-icons") && matches!(path, "icons/indent.svg" | "icons/wrench.svg") { return Ok(None); }\n        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {')
     edit('reader_toast.rs', '.filter(|notice| !self.file_conflict_in_status(notice))',
          '.filter(|notice| !self.file_conflict_in_status(notice) || crate::file2811_control("conflict-toast"))')
     edit('main.rs', 'fn main() {', '''#[cfg(test)]
@@ -163,6 +166,7 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
         artifacts = [json.loads(s) for s in build.stdout.splitlines() if s.startswith('{')]
         binary = next(x['executable'] for x in artifacts if x.get('reason') == 'compiler-artifact'
                       and x.get('executable') and x.get('profile', {}).get('test') and x['target']['name'] == 'okilum')
+        positive(binary, 'brand::tests::every_local_functional_icon_is_embedded')
         positive(binary, 'file2811_')
         for control, test in CONTROLS:
             result = run('negative-' + control, [binary, test, '--nocapture', '--test-threads=1'], control)
