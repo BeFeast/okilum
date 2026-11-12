@@ -369,7 +369,11 @@ impl Reader {
             )
         } else {
             (
-                0..input.text().len(),
+                // Keep BOM metadata outside the atomic body edit. The native
+                // user Undo path preserves a leading BOM; replacing it as
+                // source content would restore a second BOM on Undo.
+                usize::from(input.text().bytes().take(3).eq("\u{feff}".bytes())) * 3
+                    ..input.text().len(),
                 file_language(self.selected_file()),
                 None,
             )

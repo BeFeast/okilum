@@ -529,7 +529,9 @@ impl Reader {
                 .operations
                 .status
                 .as_ref()
-                .and_then(|(_, _, _, s)| location(s))
+                .and_then(|(_, range, _, s)| {
+                    location(s).map(|(line, column)| (line, column, range.start))
+                })
         };
         if offset.is_some() || position.is_some() {
             let find = state.find.clone();
@@ -537,14 +539,15 @@ impl Reader {
             editing.input.update(cx, |i, cx| {
                 use gpui_base::input::RopeExt;
                 let at = offset.unwrap_or_else(|| {
-                    let (line, column) = position.unwrap();
+                    let (line, column, base) = position.unwrap();
                     let line_start =
                         i.text()
                             .position_to_offset(&gpui_component::input::Position {
                                 line: line.saturating_sub(1) as u32,
                                 character: 0,
                             });
-                    (line_start + column.saturating_sub(1)).min(i.text().len())
+                    (line_start + column.saturating_sub(1) + if line == 1 { base } else { 0 })
+                        .min(i.text().len())
                 });
                 i.set_selected_range(at..at, cx);
                 i.focus(window, cx);
@@ -955,7 +958,8 @@ fn bottom(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
             && !result.starts_with("Valid strict JSON")
             && !result.starts_with("Invalid JSON")
     }) {
-        status.text = status_text(result, &language, None, state.source.read(cx).text().len()).into();
+        status.text =
+            status_text(result, &language, None, state.source.read(cx).text().len()).into();
     } else if state.json {
         match state.current.as_ref().map(|s| &s.verdict) {
             Some(Ok(Ok(()))) => {

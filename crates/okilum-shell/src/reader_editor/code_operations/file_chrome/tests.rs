@@ -16,7 +16,10 @@ fn open<'a>(cx: &'a mut TestAppContext, name: &str, source: &str) -> Open<'a> {
     let (reader, visual, temp) =
         crate::reader_viewer_chrome::tests::fixture_with_files(cx, name, &[(name, source)]);
     visual.simulate_resize(size(px(1440.), px(900.)));
-    reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+    reader.update_in(visual, |r, w, cx| {
+        w.activate_window();
+        r.toggle_source(w, cx);
+    });
     tick(visual, 130);
     let (file, input) = reader.read_with(visual, |r, _| {
         let e = r.editing.as_ref().expect("real file Edit entry");
@@ -490,6 +493,10 @@ fn file2811_narrow_header_protects_find_read_save_format_and_more(cx: &mut TestA
         visual.simulate_resize(size(px(700.), px(800.)));
         frame(visual);
         let header = measured(visual, "document-header-viewport");
+        assert!(
+            header.left() >= px(0.) && header.right() <= px(700.),
+            "the viewport itself fits the 700 px window: {header:?}"
+        );
         for id in [
             "viewer-find-field",
             "code-view-menu",
@@ -948,18 +955,23 @@ fn file2811_raw_parts_and_async_formatted_restore_after_edit(cx: &mut TestAppCon
     }
 }
 
-
 #[gpui::test]
 fn file2811_ambiguous_language_has_a_button_then_a_narrow_menu(cx: &mut TestAppContext) {
     let (_reader, _file, _input, visual, _temp) = open(cx, "scratch.txt", "plain text");
     measured(visual, "file-language");
     let (_, items) = open_menu(visual);
-    assert!(!items.iter().any(|i|i.0.starts_with("Language:")), "wide standalone Language is not repeated in Format");
+    assert!(
+        !items.iter().any(|i| i.0.starts_with("Language:")),
+        "wide standalone Language is not repeated in Format"
+    );
     visual.simulate_keystrokes("escape");
     frame(visual);
-    visual.simulate_resize(size(px(700.),px(800.)));
+    visual.simulate_resize(size(px(700.), px(800.)));
     frame(visual);
-    assert!(crate::reader_viewer_chrome::tests::measured_bounds(visual,"file-language").is_none());
+    assert!(crate::reader_viewer_chrome::tests::measured_bounds(visual, "file-language").is_none());
     let (_, items) = open_menu(visual);
-    assert!(items.iter().any(|i|i.0=="Language: TEXT"),"narrow Language remains reachable");
+    assert!(
+        items.iter().any(|i| i.0 == "Language: TEXT"),
+        "narrow Language remains reachable"
+    );
 }
