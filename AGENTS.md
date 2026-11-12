@@ -32,6 +32,7 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 - Keep patches as diffs, applied idempotently by the vendor script. Fresh clones
   are unpatched: verify application before trusting a build.
 - **gpui core stays unpatched.** An approach requiring a core patch fails.
+- Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
 ## Tests and measurements
