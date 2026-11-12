@@ -1,0 +1,54 @@
+name: deps-archive-native
+on:
+  push:
+    branches: ['deps-resolution/archive-native-b-*']
+permissions:
+  contents: read
+jobs:
+  archive:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      EXPECTED_SOURCE_SHA: 0fd285893636f3ed302b573162770c9e4a00f577
+      OKILUM_SOURCE_COMMIT: 0fd285893636f3ed302b573162770c9e4a00f577
+    steps:
+      - name: Preserve source and patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          ref: 0fd285893636f3ed302b573162770c9e4a00f577
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deps-archive-native-v1
+          cache-on-failure: true
+      - name: Verify production source and unchanged toolkit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Exercise every native archive policy control
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p okilum-core --lib archive:: -- --list | tee "$RUNNER_TEMP/archive-tests-list.log"
+          grep -Eq '^archive::tests::.*: test$' "$RUNNER_TEMP/archive-tests-list.log"
+          cargo test --locked -p okilum-core --lib archive:: -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/archive-tests.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: archive-controls-${{ runner.os }}
+          path: ${{ runner.temp }}/archive-tests*.log
+          if-no-files-found: error
