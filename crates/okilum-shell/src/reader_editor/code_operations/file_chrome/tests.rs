@@ -1045,7 +1045,13 @@ fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mu
     let weak_file = file.downgrade();
     let weak_input = input.downgrade();
     assert!(weak_file.upgrade().is_some() && weak_input.upgrade().is_some());
-    visual.update(|w, _| w.remove_window());
+    visual.update(|w, cx| {
+        // VisualTestContext retains its TestWindow after close. Retire the
+        // platform input handler, as destroying a native window would do.
+        w.blur(cx);
+        w.draw(cx).clear(cx);
+        w.remove_window();
+    });
     drop(reader);
     drop(file);
     drop(input);
