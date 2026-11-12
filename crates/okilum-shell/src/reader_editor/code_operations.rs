@@ -1188,7 +1188,7 @@ mod tests {
                 total.0 += 1;
                 total.1 += event["end_ns"].as_u64().unwrap() - event["start_ns"].as_u64().unwrap();
             }
-            eprintln!("CACHED_NATIVE_FRAMES elapsed={elapsed:?} frames={frame_times:?} native_count_ns={totals:?} overflow={}", evidence["overflow"]);
+            diagnostic_error!("CACHED_NATIVE_FRAMES elapsed={elapsed:?} frames={frame_times:?} native_count_ns={totals:?} overflow={}", evidence["overflow"]);
         }
         let after = f
             .input
