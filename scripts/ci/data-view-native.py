@@ -54,6 +54,9 @@ fn data_view_native_control(name: &str) -> bool {
     suite('data_table_2735_', 2)
     # Keep the existing selection/edit/recovery/image coverage unchanged.
     for regression in [
+        'file2811_',
+        'edit2803_',
+        'code2771_',
         'code2810_',
         'reader_viewer_chrome::',
         'reader_shortcuts::tests::markdown_copy_shortcut_has_no_reader_or_toolkit_collision',

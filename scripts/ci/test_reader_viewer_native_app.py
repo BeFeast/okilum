@@ -29,5 +29,15 @@ class RestoredSourceScope(unittest.TestCase):
                 RUNNER.assert_restored_source_scope(restored(name) + restored('note.md'))
 
 
+class FileEditStages(unittest.TestCase):
+    def test_complete_real_reader_flow_is_required(self):
+        receipts = [f'FILE_EDIT_NATIVE stage={i} mounted=Reader\n' for i in range(6)]
+        RUNNER.assert_file_edit_stages(''.join(receipts))
+        for output in ['', ''.join(receipts[:-1]), ''.join(receipts[1:]),
+                       ''.join(receipts + [receipts[-1]]), ''.join(reversed(receipts))]:
+            with self.subTest(output=output), self.assertRaises(AssertionError):
+                RUNNER.assert_file_edit_stages(output)
+
+
 if __name__ == '__main__':
     unittest.main()

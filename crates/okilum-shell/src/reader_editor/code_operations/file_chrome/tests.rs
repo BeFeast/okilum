@@ -23,6 +23,7 @@ fn open<'a>(cx: &'a mut TestAppContext, name: &str, source: &str) -> Open<'a> {
         (e.file_chrome.clone().unwrap(), e.input.clone())
     });
     frame(visual);
+    measured(visual, "file-edit-status-line");
     (reader, file, input, visual, temp)
 }
 
@@ -87,6 +88,10 @@ fn file2811_note_host_has_a_positive_control_and_file_keeps_one_header(cx: &mut 
     tick(visual, 130);
     assert_eq!(measured(visual, "document-header-viewport"), header);
     measured(visual, "file-format");
+    assert!(
+        visual.debug_bounds("file-language").is_none(),
+        "known extension keeps Language in the Format menu"
+    );
     measured(visual, "viewer-find-field");
     measured(visual, "reader-read");
     for old in [
@@ -393,12 +398,16 @@ fn file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo(cx: &mut TestAppC
     let original = "{ a: 1 }";
     let (reader, _file, input, visual, temp) = open(cx, "broken.json", original);
     let path = temp.path().join("vault/broken.json");
-    let top = measured(visual, "file-edit-body").top();
+    let body = measured(visual, "file-edit-body");
     let original_stamp = input.read_with(visual, |s, _| s.source_stamp());
     reader.update_in(visual, |r, w, cx| r.code_operation(Action::Repair, w, cx));
     frame(visual);
     measured(visual, "file-repair-sheet");
-    assert_eq!(measured(visual, "file-edit-body").top(), top);
+    assert_eq!(
+        measured(visual, "file-edit-body"),
+        body,
+        "sheet is an overlay; editor viewport stays unchanged"
+    );
     assert_eq!(text(&input, visual), original);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     click(visual, "file-repair-cancel");
@@ -416,7 +425,11 @@ fn file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo(cx: &mut TestAppC
         original,
         "Apply does not explicitly save"
     );
-    assert_eq!(measured(visual, "file-edit-body").top(), top);
+    assert_eq!(
+        measured(visual, "file-edit-body"),
+        body,
+        "sheet is an overlay; editor viewport stays unchanged"
+    );
     visual.dispatch_action(Undo);
     frame(visual);
     assert_eq!(
@@ -558,6 +571,18 @@ fn file2811_every_legacy_outcome_has_a_plain_file_home() {
     for (old, language, action, expected) in [
         ("Valid strict JSON", "json", None, "Valid JSON."),
         (
+            "Validation unavailable above 256 KiB",
+            "yaml",
+            None,
+            "Too large to validate. 300 KB is over the 256 KB limit.",
+        ),
+        (
+            "Syntax validation for yaml works with files up to 256 KiB; this file is 0.3 MiB.",
+            "yaml",
+            None,
+            "Too large to validate. 300 KB is over the 256 KB limit.",
+        ),
+        (
             "Invalid JSON · 2:3 · expected a value",
             "json",
             None,
@@ -612,7 +637,7 @@ fn file2811_every_legacy_outcome_has_a_plain_file_home() {
             "No safe repair. Unterminated string. Nothing was changed.",
         ),
     ] {
-        assert_eq!(status_text(old, language, action), expected);
+        assert_eq!(status_text(old, language, action, 300 * 1024), expected);
     }
 }
 
@@ -921,4 +946,20 @@ fn file2811_raw_parts_and_async_formatted_restore_after_edit(cx: &mut TestAppCon
             "{view:?} restores its page, selection and scroll after worker preparation"
         );
     }
+}
+
+
+#[gpui::test]
+fn file2811_ambiguous_language_has_a_button_then_a_narrow_menu(cx: &mut TestAppContext) {
+    let (_reader, _file, _input, visual, _temp) = open(cx, "scratch.txt", "plain text");
+    measured(visual, "file-language");
+    let (_, items) = open_menu(visual);
+    assert!(!items.iter().any(|i|i.0.starts_with("Language:")), "wide standalone Language is not repeated in Format");
+    visual.simulate_keystrokes("escape");
+    frame(visual);
+    visual.simulate_resize(size(px(700.),px(800.)));
+    frame(visual);
+    assert!(crate::reader_viewer_chrome::tests::measured_bounds(visual,"file-language").is_none());
+    let (_, items) = open_menu(visual);
+    assert!(items.iter().any(|i|i.0=="Language: TEXT"),"narrow Language remains reachable");
 }

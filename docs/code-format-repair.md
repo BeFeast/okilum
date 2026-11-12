@@ -1,8 +1,9 @@
 # Code Format, validation and explicit Repair (#2771)
 
-The desktop source editor exposes separate **Format**, **Validate** and
-**Repair…** actions for a code/data file and for the ordinary fenced-code body
-containing the caret in a Markdown source editor. The existing Markdown style
+File Edit keeps the pinned 48 px viewer header. One primary **Format** split
+button runs Format; its caret opens **Format code**, **Validate code** and
+**Repair code…**. Ordinary Markdown fenced-code bodies retain their existing
+three-button operations block. The existing Markdown style
 menu remains independent. Its **Format code / Validate code / Repair code…**
 entries also target the current code body. Reader/MCP operations stay read-only.
 
@@ -29,10 +30,10 @@ validator, which never builds a value tree. Unsupported formatters/repairs remai
 explicitly unavailable. A size/depth/output refusal is one message containing the
 limit and source size, never a syntax verdict.
 
-The explicit Edit entry for `.json` files (case-insensitive) also uses that
-64 MiB input budget, including after Format grows a file beyond 4 MiB. The
-read-only viewer, its pagination, tree, Find and wrapping thresholds retain
-their existing behavior; other source formats keep their existing edit limits.
+Explicit file Edit admission retains the viewer's 4 MiB UI cap. An existing
+editing session can grow beyond that cap and keeps the 64 MiB JSON operations
+budget. The read-only viewer, pagination, Tree, Find, shaping and save pipeline
+retain their existing limits and behavior.
 Plain-file edit entry and mutation do not schedule the Markdown draft-outline
 parser. Entering a plain file retires the previous note's draft-outline worker
 and cache; ordinary Markdown editing retains its existing outline updates.
@@ -42,8 +43,8 @@ recreates that preview through the existing file-open path.
 
 Button dispatch pins an immutable native source revision. Target flattening,
 newline detection, validation, formatting and repair construction all run on the
-background executor. A visible operation label and **Cancel** share the existing
-control row; typing remains available. Cancellation is checked every 16 KiB in
+background executor. For files, a running label and **Cancel** share the single bottom line;
+notes keep the existing control row. Typing remains available. Cancellation is checked every 16 KiB in
 scans and output construction and before/after the strict parser's bounded call.
 Cancel/navigation/source mutation retires the result: no partial edit is applied.
 The non-interruptible strict parser phase is bounded to 64 MiB. A cancelled job
@@ -59,6 +60,11 @@ instead of repeatedly inserting quotes into the remainder. Repair output growth
 is checked before every append, including quoted keys and EOF closers; CRLF/BOM
 expansion is checked before conversion. Native controls exercise a near-64-MiB
 input with all complete round-trip versions alive and record process peak RSS.
+
+File Repair opens a sheet over the lower editor; the editor viewport does not
+move or shrink. Original and proposal sit side by side, with Cancel and Apply
+repair. Cancel never changes text, and Apply is one Undo step without an
+explicit Save. Repair from an invalid file's read bottom line enters Edit first.
 
 Repair retains the complete revision-bound original and proposal, but each
 read-only comparison editor receives at most **64 KiB**, clipped at a UTF-8
@@ -112,3 +118,41 @@ draft protection, save, external-revision conflicts and recovery behavior.
 This contract does not grant editing to read-only formats or paged/large-file
 previews. Container-prefixed Markdown fences that the existing source snippet
 surface cannot isolate safely are not rewritten as flat code.
+
+## File-only toolbar and feedback (#2811)
+
+Raw stays selected in Edit. The other views and Fold/Unfold remain visible but
+disabled, with live shortcut hints explaining that Read restores them. At 700 px
+the switch becomes one menu; Read, dirty Save, Format, Find and Document actions
+stay in the header. Copy, Open with and folds yield to overflow. Language is in
+the Format menu for a known extension; an unknown/absent extension gets its own
+button when space permits. The toolkit's DropdownButton and the app's 28 px hit
+areas/theme tokens take precedence over static mock button internals.
+
+File Find uses the shared header field and revision-bound EditorTarget worker:
+60 ms debounce, immutable Rope snapshots, literal matching off the UI thread,
+stale-result rejection and selection-relative stepping. The toolkit search strip
+and Find in note controls remain available only in their note host.
+
+For `.json`, one strict verdict follows the last key after a 120 ms debounce on
+a worker. Only one parse is in flight; intervening edits cancel it and coalesce
+into the latest revision. Badge, bottom line and inline diagnostic consume the
+same immutable snapshot and verdict. Current and last-valid snapshots retain a
+shared Rope, not another value tree or flattened source. This is the handoff for
+future Contents work; no Contents parsing is added here. Other languages keep
+explicit Validate and the not-validated-since-change state.
+
+Refusals, syntax/validation results, running state, failed Save and conflicts
+have one bottom line. Successful Format/Repair, already-formatted/already-valid,
+cancellation and stale-result feedback are transient toasts. Conflict actions
+remain available from Resolve and Close, keeping draft in that line. Format,
+Validate and Repair refuse dispatch while busy, after failed Save and during a
+conflict; the menu explains the disabling reason.
+
+Live Format/Language/badge views occupy measured sibling overlays of the cached
+Header, like Find and Save. Typing, Find and validation do not render cached slots
+or notify SidePanels. Focus changes still cause GPUI's ordinary render. Returning
+to Read carries a small presentation snapshot: view, sparse Tree fold/selection
+state, part, query/case and text selection/scroll. The newly loaded viewer clamps
+the handoff to the current document and never remembers internal Raw editing as
+an explicit read-view choice.
