@@ -106,6 +106,16 @@ jobs:
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/code-toolbar-native-app.py "$binary" --smoke
+      - name: Retain native frame diagnostics before Rust controls
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-toolbar-debug-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/code-toolbar-native-app.log
+            ${{ runner.temp }}/code-toolbar-native-receipt.json
+          if-no-files-found: ignore
+          retention-days: 7
       # A known app-probe failure must not hide independent Rust regressions.
       # The failed probe still fails the job; no threshold or reserve changes.
       - name: Exercise read-only data viewing and compiled negative controls
