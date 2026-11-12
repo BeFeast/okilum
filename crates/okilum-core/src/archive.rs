@@ -133,9 +133,10 @@ fn open(path: &Path) -> Result<ZipArchive<BufReader<File>>> {
 }
 
 fn describe<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, index: usize) -> Result<Entry> {
-    // Raw access reads metadata only: no decryption, no inflation.
-    let file = archive.by_index_raw(index)?;
-    let name = file.name().to_owned();
+    // ZIP 9 exposes central-directory metadata without opening the entry reader:
+    // listing needs neither local-file I/O, decryption nor inflation.
+    let file = archive.by_index_data(index)?;
+    let name = file.name()?.into_owned();
     let raw = file.name_raw();
     let kind = if file.is_symlink() {
         Kind::Symlink
@@ -466,6 +467,31 @@ mod tests {
         out
     }
 
+    /// Preserve hostile mode bits that a well-behaved ZIP writer may mask.
+    fn with_unix_modes(mut bytes: Vec<u8>, modes: &[u32]) -> Vec<u8> {
+        let mut offset =
+            u32::from_le_bytes(bytes[bytes.len() - 6..bytes.len() - 2].try_into().unwrap())
+                as usize;
+        for mode in modes {
+            assert_eq!(&bytes[offset..offset + 4], &0x02014b50u32.to_le_bytes());
+            bytes[offset + 4..offset + 6].copy_from_slice(&((3u16 << 8) | 20).to_le_bytes());
+            bytes[offset + 38..offset + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+            assert_eq!(
+                u32::from_le_bytes(bytes[offset + 38..offset + 42].try_into().unwrap()) >> 16,
+                *mode
+            );
+            let field_len = |index| {
+                u16::from_le_bytes(
+                    bytes[offset + index..offset + index + 2]
+                        .try_into()
+                        .unwrap(),
+                ) as usize
+            };
+            offset += 46 + field_len(28) + field_len(30) + field_len(32);
+        }
+        bytes
+    }
+
     fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
@@ -721,6 +747,119 @@ mod tests {
         let done = extract(&archive, &[], merge.path(), Limits::default()).unwrap();
         assert_eq!(done.files, [merge.path().join("docs/a.md")]);
         assert!(done.directories.is_empty());
+    }
+
+    #[test]
+    fn archive_symlinks_with_huge_declared_sizes_are_never_read_or_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = with_unix_modes(
+            stored_zip(&[
+                (b"link", true, false, b"../outside"),
+                (b"plain.txt", true, false, b"safe"),
+            ]),
+            &[0o120777, 0o100644],
+        );
+        let central =
+            u32::from_le_bytes(bytes[bytes.len() - 6..bytes.len() - 2].try_into().unwrap())
+                as usize;
+        // An untrusted symlink must not allocate from its declared target size.
+        let declared_size = u32::MAX - 1;
+        bytes[central + 24..central + 28].copy_from_slice(&declared_size.to_le_bytes());
+        let archive = write(dir.path(), "links.zip", &bytes);
+        let listing = list(&archive, Limits::default()).unwrap();
+        assert_eq!(listing.entries[0].kind, Kind::Symlink);
+        assert_eq!(listing.entries[0].size, u64::from(declared_size));
+        assert_eq!(
+            refused(read_entry(&archive, 0, Limits::default()).unwrap_err()),
+            Refused::Symlink("link".into())
+        );
+        let out = tempfile::tempdir().unwrap();
+        let result = extract(&archive, &[], out.path(), Limits::default()).unwrap();
+        assert_eq!(result.files, [out.path().join("plain.txt")]);
+        assert_eq!(
+            result.skipped,
+            [("link".into(), "link is a symbolic link".into())]
+        );
+        assert!(std::fs::symlink_metadata(out.path().join("link")).is_err());
+        assert_eq!(
+            std::fs::read(out.path().join("plain.txt")).unwrap(),
+            b"safe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_never_preserves_archive_suid_sgid_or_sticky_bits() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write(
+            dir.path(),
+            "privileged.zip",
+            &with_unix_modes(
+                stored_zip(&[
+                    (b"folder/", true, false, b""),
+                    (b"folder/file", true, false, b"ordinary content"),
+                ]),
+                &[0o047777, 0o107777],
+            ),
+        );
+        // The raw fixture contains privilege bits (checked by with_unix_modes).
+        // ZIP 9 must mask them in metadata while preserving ordinary permission bits.
+        let raw = open(&archive).unwrap();
+        for index in 0..2 {
+            assert_eq!(
+                raw.by_index_data(index).unwrap().unix_mode().unwrap() & 0o7777,
+                0o777
+            );
+        }
+        let out = tempfile::tempdir().unwrap();
+        let result = extract(&archive, &[], out.path(), Limits::default()).unwrap();
+        assert_eq!(result.files, [out.path().join("folder/file")]);
+        assert_eq!(
+            std::fs::read(&result.files[0]).unwrap(),
+            b"ordinary content"
+        );
+        for target in [out.path().join("folder"), out.path().join("folder/file")] {
+            assert_eq!(
+                std::fs::metadata(target).unwrap().permissions().mode() & 0o7000,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn entry_count_and_total_size_limits_refuse_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write(
+            dir.path(),
+            "limits.zip",
+            &stored_zip(&[
+                (b"a.txt", true, false, b"one"),
+                (b"b.txt", true, false, b"two"),
+            ]),
+        );
+        let out = tempfile::tempdir().unwrap();
+        let count_limit = Limits {
+            entries: 1,
+            ..Limits::default()
+        };
+        assert_eq!(
+            refused(extract(&archive, &[], out.path(), count_limit).unwrap_err()),
+            Refused::TooManyEntries(2)
+        );
+        let total_limit = Limits {
+            total_bytes: 3,
+            ..Limits::default()
+        };
+        assert_eq!(
+            refused(extract(&archive, &[], out.path(), total_limit).unwrap_err()),
+            Refused::TotalTooLarge(6)
+        );
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+        let result = extract(&archive, &[1], out.path(), total_limit).unwrap();
+        assert_eq!(result.bytes, 3);
+        assert_eq!(std::fs::read(out.path().join("b.txt")).unwrap(), b"two");
     }
 
     #[cfg(unix)]
