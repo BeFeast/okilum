@@ -3,6 +3,7 @@
 import re
 import hashlib
 import os
+from pathlib import Path
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -15,9 +16,14 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY = re.compile(r"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 
 
-def run(name, arguments, expected, *, command=None):
+def run(name, arguments, expected, *, command=None, limit=1320):
     print(f"WORKSPACE_CENSUS_START part={name} expected={expected}", flush=True)
-    process = subprocess.Popen((command or COMMAND) + arguments, stdout=subprocess.PIPE,
+    # Unrelated fixture shards must not serialize against, or repeatedly scan,
+    # the same ever-growing account-wide authority registry. All descendants
+    # within one shard still inherit the SAME account and real writer fences.
+    supervisor = [sys.executable, str(Path(__file__).with_name('test-group.py')),
+                  '--isolated-writer-account', f'workspace-{name}', str(limit)]
+    process = subprocess.Popen(supervisor + (command or COMMAND) + arguments, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     observed = 0
     completed = 0
@@ -97,7 +103,7 @@ def main(*, shared=False):
     # Log I/O after inventory compilation. Exact filters prevent duplicate runs.
     # Reveal stays alone so its real D-Bus deadlines do not compete with either.
     concurrent = parts if shared else parts[:-1]
-    execute = (lambda part: run(*part, command=command)) if shared else (lambda part: run(*part))
+    execute = (lambda part: run(*part, command=command, limit=3600)) if shared else (lambda part: run(*part))
     with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
         results = list(pool.map(execute, concurrent))
     if not shared:

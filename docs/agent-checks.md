@@ -170,6 +170,23 @@ cancellation or priority-read deadline. Preparation remains bounded by the
 outer suite supervisor. Failed priority assertions release and join readers
 before removing the vault; a cancellation worker owns its temporary vault.
 
+Runtime shards and the standalone Live Preview group use private CI writer
+accounts. `test-group.py --isolated-writer-account` allocates a fresh
+`XDG_STATE_HOME` and keeps it until every descendant has been reaped. All
+participants within that group inherit the same account, so actual cross-window
+and cross-process writer fences remain exercised. The ambient account and its
+durable records are untouched. Serial shared Log uses its own group account.
+Shards retain the original outer 1320-second Linux / 60-minute shared caps;
+nested supervision never extends those deadlines.
+
+This prevents unrelated ephemeral vault fixtures from contending on or scanning
+one accumulating account-wide authority registry. The first heavy runtime
+probe confirmed both corrected warm-reader fixtures, but four-way scheduling
+alone still missed Live Preview120s and workspace1320s; isolation efficacy must
+therefore be checked on the actual runner before a success claim. The supervisor
+control checks inherited parent/child identity, preservation of nonzero exits,
+account availability during descendant termination and cleanup only after reap.
+
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
 IPC generation with unchanged enrollment after verified tree cleanup, reject a
