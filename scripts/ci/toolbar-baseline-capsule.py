@@ -6,7 +6,7 @@ import tarfile
 
 root=Path.cwd()
 output=Path(os.environ['RUNNER_TEMP'])
-tracked=subprocess.check_output(['git','ls-files','-z'],text=True).split('\0')
+tracked=subprocess.check_output(['git','ls-files','-z'],text=True,encoding='utf-8').split('\0')
 def keep(info):
     if '.git' in Path(info.name).parts or info.name.endswith('.pdb'):
         return None

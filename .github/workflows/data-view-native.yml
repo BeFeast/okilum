@@ -39,13 +39,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/cache/restore@v4
+        id: baseline_cache
         with:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
             target/code-toolbar-release/
           key: toolbar-main-baseline-${{ github.sha }}
-          restore-keys: code-toolbar-release-v1-Windows-
+          restore-keys: |
+            toolbar-main-baseline-
+            code-toolbar-release-v1-Windows-
       - uses: actions/download-artifact@v4
         with:
           name: updater-windows-icon
@@ -77,3 +80,11 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 3
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.baseline_cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: ${{ steps.baseline_cache.outputs.cache-primary-key }}
