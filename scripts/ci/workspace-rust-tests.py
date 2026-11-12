@@ -12,6 +12,7 @@ COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell
            "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
 LOG = "reader_log"
 REVEAL = "platform::reveal::tests::"
+NATIVE_FRAME = "reader_editor::code_operations::tests::edit2803_unwrapped_popup_frames_reuse_shapes_and_invalidate_on_edit"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY = re.compile(r"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 
@@ -87,11 +88,12 @@ def main(*, shared=False):
     assert not any(LOG in name and REVEAL in name for name in names), "resource groups must be disjoint"
     logs = sum(LOG in name for name in names)
     reveals = sum(REVEAL in name for name in names)
+    frames = names.count(NATIVE_FRAME)
     # A duplicate full name in another target belongs to this same exact
     # partition too; every occurrence still runs once with the same packages.
     serial = sum(name in serial_names for name in names)
     assert not any(LOG in name or REVEAL in name for name in serial_names)
-    ordinary = len(names) - logs - reveals - serial
+    ordinary = len(names) - logs - reveals - serial - frames
     assert ordinary > 0, "ordinary inventory must fire"
     if shared:
         assert logs == reveals == 0, "shared excludes platform and separately runs Log"
@@ -100,7 +102,7 @@ def main(*, shared=False):
         assert logs > 0 and reveals > 0, "every measured group must fire"
     shards = [[] for _ in range(shard_count)]
     for name in names:
-        if LOG not in name and REVEAL not in name and name not in serial_names:
+        if LOG not in name and REVEAL not in name and name not in serial_names and name != NATIVE_FRAME:
             # Identical names in different targets must stay in one shard;
             # libtest exact matching runs every occurrence there, once only.
             shards[hashlib.sha256(name.encode()).digest()[0] % shard_count].append(name)
@@ -117,7 +119,7 @@ def main(*, shared=False):
             ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
             ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
         ]
-    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial}",
+    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial} native_frames={frames}",
           flush=True)
     # Separate processes retain separate Log pools. Hosted keeps four ordinary
     # threads; the existing heavy resource class can run eight. Overlap serial
@@ -127,6 +129,12 @@ def main(*, shared=False):
     execute = (lambda part: run(*part, command=command, limit=3600)) if shared else (lambda part: run(*part))
     with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
         results = list(pool.map(execute, concurrent))
+    if frames:
+        # Keep the actual 300 ms frame assertion, without concurrent fixture
+        # work in the same census consuming its CPU scheduling interval.
+        results.append(run('native-frame', ['--nocapture', '--test-threads=1', '--exact',
+                                            NATIVE_FRAME, *skips], frames, command=command,
+                           limit=3600 if shared else 1320))
     if not shared:
         results.append(run(*parts[-1]))
     passed = all(results)
