@@ -178,9 +178,15 @@ impl CodePreview {
             if let Some(table) = &self.table {
                 let mut table_chrome = table.read(cx).chrome(table.clone(), live, cx);
                 table_chrome.views = chrome.views;
-                if let Some(lock) = chrome.state {
-                    table_chrome.badges.push(lock);
+                // Badges render beside the state slot; never drop the file's
+                // own state (the read-only lock) when the table has no warning.
+                if let Some(own) = chrome.state {
+                    match table_chrome.state {
+                        Some(_) => table_chrome.badges.push(own),
+                        None => table_chrome.state = Some(own),
+                    }
                 }
+                table_chrome.badges.extend(chrome.badges);
                 return table_chrome;
             }
         }
@@ -194,7 +200,10 @@ impl CodePreview {
             warning.enabled = false;
             warning.disabled_reason = Some(reason.clone().into());
             warning.tooltip = reason.clone().into();
-            chrome.badges.push(warning);
+            match chrome.state {
+                Some(_) => chrome.badges.push(warning),
+                None => chrome.state = Some(warning),
+            }
         }
         if reader_delimited::eligible(&self.rel) {
             chrome.copy_actions.retain(|a| a.id != "code-copy-node");

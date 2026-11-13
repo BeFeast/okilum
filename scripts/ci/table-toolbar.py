@@ -63,6 +63,8 @@ CONTROLS = [
  ('duckdb-not-checked', 'duckdb_running_menu_and_missing_cli_toast'),
  ('no-view-memory', 'csv_tsv_memory_is_separate_from_json_array'),
  ('no-raw-cap', 'raw_cap_does_not_eagerly_read_a_large_csv'),
+ ('drop-lock', 'raw_cap_does_not_eagerly_read_a_large_csv'),
+ ('hidden-table-badge', 'malformed_badge_reveals_filtered_row_and_failed_table_opens_raw'),
  ('window-sized-compact', 'narrow_header_and_measured_compact_pane_keep_controls_inside'),
 ]
 try:
@@ -73,6 +75,8 @@ fn table2812_control(name: &str) -> bool {
 fn main() {''')
     edit('reader_code_file.rs', 'if initial == View::Raw {', 'if initial == View::Raw || crate::table2812_control("eager-raw") {')
     edit('reader_code_file/view.rs', 'if focused_table && self.view != View::Table {', 'if focused_table && self.view != View::Table && !crate::table2812_control("strand-focus") {')
+    edit('reader_code_file/toolbar.rs', 'None => table_chrome.state = Some(own),', 'None if crate::table2812_control("drop-lock") => {}\n                        None => table_chrome.state = Some(own),')
+    edit('reader_code_file/toolbar.rs', 'None => chrome.state = Some(warning),', 'None if crate::table2812_control("hidden-table-badge") => {}\n                None => chrome.state = Some(warning),')
     find = 'reader_delimited/find.rs'
     edit(find, '.matches\n                    .into_iter()', '.matches\n                    .into_iter().take(if crate::table2812_control("first-cell-only") {1} else {usize::MAX})')
     edit(find, 'i64::from(direction)', 'i64::from(if crate::table2812_control("previous-is-next") {direction.abs()} else {direction})')
