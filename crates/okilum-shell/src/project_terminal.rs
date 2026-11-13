@@ -43,30 +43,60 @@ fn read_saved(path: &Path) -> anyhow::Result<Option<String>> {
         Err(e) => Err(e.into()),
     }
 }
-fn available(program: &str) -> bool {
-    fn executable(path: &Path) -> bool {
+/// A launcher can run: a regular executable file. On Windows the Windows
+/// Terminal App Execution Alias is a reparse point that cannot be followed,
+/// so its own entry counts.
+fn executable(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.symlink_metadata().is_ok_and(|m| !m.is_dir())
+    }
+    #[cfg(not(windows))]
+    {
         let Ok(metadata) = path.metadata() else {
             return false;
         };
-        if !metadata.is_file() {
-            return false;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            metadata.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            true
-        }
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
     }
-    if Path::new(program).is_absolute() {
-        return executable(Path::new(program));
-    }
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| executable(&p.join(program))))
 }
+
+/// The Windows system directory from the OS, not from the environment.
+#[cfg(windows)]
+fn system_directory() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    let mut buffer = vec![0u16; 260];
+    // SAFETY: the buffer length is passed and the call writes at most that many units.
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    (length > 0 && length < buffer.len())
+        .then(|| PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])))
+}
+#[cfg(not(windows))]
+fn system_directory() -> Option<PathBuf> {
+    None
+}
+
+/// Trusted absolute programs only (see `command::resolve`): never the
+/// current directory, a relative PATH entry or anything inside `excluded`.
+fn trusted(excluded: Vec<PathBuf>) -> impl Fn(&str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH");
+    let system = system_directory();
+    move |name| {
+        command::resolve(
+            name,
+            path.as_deref(),
+            &excluded,
+            system.as_deref(),
+            executable,
+        )
+    }
+}
+
 fn initial_for_project(
     project: &okilum_t3::projects::Project,
     state: &Path,
@@ -126,33 +156,44 @@ fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
     let initial = initial_for_project(project, &reader_history::state_directory()?)?;
     let os = std::env::consts::OS;
     let terminal = std::env::var("TERMINAL").ok();
-    let launcher =
-        command::launcher(os, terminal.as_deref(), available).map_err(anyhow::Error::msg)?;
-    run(command::plan(os, &initial, &launcher), None)
+    let mut excluded = vec![project.folder.clone()];
+    excluded.extend(project.folder.canonicalize());
+    let launcher = command::launcher(os, terminal.as_deref(), trusted(excluded))
+        .map_err(anyhow::Error::msg)?;
+    run(command::plan(&initial, &launcher))
 }
 
-/// Starts the planned terminal and waits for its launcher, keeping at most
-/// 8 KiB of its diagnostics. An AppImage's own variables are not inherited.
-fn run(plan: command::Plan, directory: Option<&Path>) -> anyhow::Result<()> {
-    use anyhow::Context as _;
+/// The process for a plan. It inherits Okilum's own working directory, never
+/// the selected folder: the folder travels as an argument. An AppImage's own
+/// variables are not inherited.
+fn process(plan: &command::Plan, get: impl Fn(&str) -> Option<String>) -> std::process::Command {
     let mut process = std::process::Command::new(&plan.program);
     process
         .args(&plan.args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    if let Some(directory) = directory {
-        process.current_dir(directory);
+    #[cfg(windows)]
+    if plan.new_console {
+        use std::os::windows::process::CommandExt as _;
+        process.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE);
     }
-    for (name, value) in command::appimage_env(|name| std::env::var(name).ok()) {
+    for (name, value) in command::appimage_env(get) {
         match value {
             Some(value) => process.env(name, value),
             None => process.env_remove(name),
         };
     }
-    let mut child = process
+    process
+}
+
+/// Starts the planned terminal and waits for its launcher, keeping at most
+/// 8 KiB of its diagnostics.
+fn run(plan: command::Plan) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let mut child = process(&plan, |name| std::env::var(name).ok())
         .spawn()
-        .with_context(|| format!("Cannot start system terminal {}", plan.program))?;
+        .with_context(|| format!("Cannot start system terminal {}", plan.program.display()))?;
     // Drain stderr without retaining unbounded terminal diagnostics.
     use std::io::Read as _;
     let mut diagnostic = Vec::new();
@@ -170,7 +211,7 @@ fn run(plan: command::Plan, directory: Option<&Path>) -> anyhow::Result<()> {
     anyhow::ensure!(
         status.success(),
         "System terminal {} failed ({}): {}",
-        plan.program,
+        plan.program.display(),
         status,
         String::from_utf8_lossy(&diagnostic).trim()
     );
@@ -193,32 +234,45 @@ pub(crate) fn folder_for(path: &Path) -> PathBuf {
     }
 }
 
-fn launch_folder(directory: &Path) -> anyhow::Result<()> {
-    use anyhow::Context as _;
+/// The launch of «Open in terminal»: launchers come from trusted locations
+/// outside the vault and the folder is an argument (#2837 review).
+fn folder_launch(
+    directory: &Path,
+    resolve: impl Fn(&str) -> Option<PathBuf>,
+) -> anyhow::Result<command::Plan> {
     let os = std::env::consts::OS;
     let terminal = std::env::var("TERMINAL").ok();
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
-    let launcher = command::folder_launcher(os, terminal.as_deref(), desktop.as_deref(), available)
+    let launcher = command::folder_launcher(os, terminal.as_deref(), desktop.as_deref(), resolve)
         .map_err(anyhow::Error::msg)?;
-    let text = directory
-        .to_str()
-        .context("The folder path is not valid Unicode")?;
-    run(
-        command::folder_plan(os, text, &launcher, MAC_TERMINAL_APP),
-        Some(directory),
-    )
+    command::folder_plan(directory, &launcher, MAC_TERMINAL_APP).map_err(anyhow::Error::msg)
+}
+
+fn excluded(directory: &Path, vault: &Path) -> Vec<PathBuf> {
+    let mut excluded = vec![vault.to_owned(), directory.to_owned()];
+    excluded.extend(vault.canonicalize());
+    excluded.extend(directory.canonicalize());
+    excluded
 }
 
 /// «Open in terminal» (#2837): the system terminal in `path`'s folder, on a
 /// dedicated thread; a launch failure is reported in the originating window.
-pub(crate) fn open_folder(path: &Path, window: &mut Window, cx: &mut App) {
+pub(crate) fn open_folder(path: &Path, vault: &Path, window: &mut Window, cx: &mut App) {
     let directory = okilum_core::vault::plain_path(&folder_for(path));
     #[cfg(test)]
     if cx.has_global::<Launches>() {
         cx.global_mut::<Launches>().0.push(directory);
         return;
     }
-    report(move || launch_folder(&directory), window, cx);
+    let vault = vault.to_owned();
+    report(
+        move || {
+            let resolve = trusted(excluded(&directory, &vault));
+            run(folder_launch(&directory, resolve)?)
+        },
+        window,
+        cx,
+    );
 }
 
 fn report(

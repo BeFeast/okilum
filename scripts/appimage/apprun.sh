@@ -10,7 +10,9 @@ for native_alsa in \
 do
     if [ -r "$native_alsa" ]; then
         LD_PRELOAD="$native_alsa${LD_PRELOAD:+:$LD_PRELOAD}"
-        export LD_PRELOAD
+        # Okilum removes exactly this entry again for terminals it opens (#2837).
+        OKILUM_APPRUN_PRELOAD=$native_alsa
+        export LD_PRELOAD OKILUM_APPRUN_PRELOAD
         break
     fi
 done
