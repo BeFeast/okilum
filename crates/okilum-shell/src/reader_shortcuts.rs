@@ -153,6 +153,7 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_log::PreviousMark>("Previous marked log row", Navigation),
         entry::<reader_log::InvestigationBack>("Back in log investigation", Navigation),
         entry::<reader_delimited::CopyCells>("Copy selected table cells", Notes),
+        entry::<reader_har::CopyHarDetail>("Copy the selected HAR detail value", Notes),
         menu_entry::<reader_delimited::ToggleHeaderRow>("First row is header", View),
         menu_entry::<reader_delimited::ResetTableSort>("Reset table sort", View),
         menu_entry::<reader_delimited::OpenTableDuckDb>("Open in DuckDB", View),
