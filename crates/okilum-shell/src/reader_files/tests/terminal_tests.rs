@@ -62,7 +62,11 @@ fn menu_shortcut_and_palette_open_the_items_folder(cx: &mut TestAppContext) {
         assert!(item.0.unwrap().partial_eq(&OpenInTerminal), "shortcut hint");
         let before = launches(visual).len();
         visual.update(|window, cx| item.1.unwrap()(&ClickEvent::default(), window, cx));
-        assert_eq!(launches(visual)[before..], [expected.clone()], "{rel}");
+        assert_eq!(
+            &launches(visual)[before..],
+            std::slice::from_ref(expected),
+            "{rel}"
+        );
     }
 
     // The bound shortcut acts on the open note: its folder.
@@ -70,7 +74,7 @@ fn menu_shortcut_and_palette_open_the_items_folder(cx: &mut TestAppContext) {
     let before = launches(visual).len();
     visual.simulate_keystrokes("alt-cmd-t");
     visual.run_until_parked();
-    assert_eq!(launches(visual)[before..], [folder.clone()]);
+    assert_eq!(&launches(visual)[before..], std::slice::from_ref(&folder));
 
     // The catalog lists it with its live key for Settings and hints.
     visual.update(|_, cx| {
@@ -102,7 +106,7 @@ fn menu_shortcut_and_palette_open_the_items_folder(cx: &mut TestAppContext) {
         this.open_palette_item(ix, window, cx);
     });
     visual.run_until_parked();
-    assert_eq!(launches(visual)[before..], [folder.clone()]);
+    assert_eq!(&launches(visual)[before..], std::slice::from_ref(&folder));
 
     // A path outside the vault is refused before any launch.
     let before = launches(visual).len();
