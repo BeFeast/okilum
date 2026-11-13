@@ -35,6 +35,18 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 - Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
+## Merging (manager, 13.11)
+
+- A lane merges only PRs it authored itself. Green agent checks are not a
+  merge permission.
+- Never merge a PR whose latest review verdict is «fix first», or one with no
+  review when a review was requested.
+- PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
+  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
+  manager only.
+- The batch fast gate (PR 2866, #2863) stays unmerged and unused until the
+  manager and Oleg have read it.
+
 ## Tests and measurements
 
 - Agent builds/tests default to `H=github scripts/agent/gh-check.sh` from a
