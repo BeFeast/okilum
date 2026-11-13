@@ -260,7 +260,18 @@ mod windows {
         unsafe {
             LocalFree(text.cast());
         }
-        result
+        // Windows records DACL inheritance processing during ReplaceFileW.
+        // AUTO_INHERITED changes no grant or protected/unprotected policy;
+        // compare owner, group, every ACE and protection, as the core save tests do.
+        let result = result.trim_end_matches('\0');
+        let flags_start = result.find("D:").unwrap() + 2;
+        let flags_end = flags_start + result[flags_start..].find('(').unwrap();
+        format!(
+            "{}{}{}",
+            &result[..flags_start],
+            result[flags_start..flags_end].replace("AI", ""),
+            &result[flags_end..]
+        )
     }
 
     #[test]
@@ -321,6 +332,10 @@ mod windows {
         assert!(
             before.contains(";;;WD)"),
             "file-specific execute ACE positive control: {before}"
+        );
+        assert!(
+            before.contains("D:P("),
+            "protected DACL positive control: {before}"
         );
         let attributes =
             FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED | FILE_ATTRIBUTE_ARCHIVE;

@@ -106,7 +106,9 @@ WRITE nor DELETE sharing), require error plus byte-identical original through
 repeated attempts, then unlock and require successful preparation. A separate
 control carries a protected explicit World execute ACE and HIDDEN /
 NOT_CONTENT_INDEXED attributes and compares the security descriptor and complete
-attributes before/after replacement.
+attributes before/after replacement. The comparison ignores only Windows'
+AUTO_INHERITED bookkeeping flag; owner/group, every ACE and DACL protection
+remain exact, matching the existing core save controls.
 
 The vendored SDK's execution-stub extraction no longer retains upstream's
 best-effort logging: it returns extraction failures. Its CRC-failure control
