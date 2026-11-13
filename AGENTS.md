@@ -44,8 +44,6 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 - PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
   #2837, #2847, updater #2855, and any PR the manager names) are merged by the
   manager only.
-- The batch fast gate (PR 2866, #2863) stays unmerged and unused until the
-  manager and Oleg have read it.
 
 ## Tests and measurements
 
