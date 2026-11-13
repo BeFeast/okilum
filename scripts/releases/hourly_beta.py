@@ -1,8 +1,9 @@
 """Beta admission shared by the Forgejo and public GitHub producers.
 
 Oleg 05.11: every push to main starts each platform's beta build from that
-exact commit, and a newer push cancels an unfinished build of an older one
-(workflow concurrency). Beta has no certification gate: merges are gated by
+exact commit. Manager 13.11: a newer push never cancels a running build; it
+queues, older queued push runs are cancelled when one starts, and a stale one
+that starts anyway skips. Beta has no certification gate: merges are gated by
 the worker's exact-HEAD check, and the platform compile/package/sign run is
 the beta gate. Fast certification stays source-pinned and on demand; it gates
 Stable only (`fast / shell-full` on the exact candidate).
@@ -62,7 +63,7 @@ def feed_platform(platform):
     return 'linux-appimage' if platform == 'linux' else platform
 
 
-def api(path, method='GET', body=None):
+def api(path, method='GET', body=None, timeout=30):
     headers = {'Content-Type': 'application/json', 'User-Agent': 'okilum-hourly-beta'}
     # Public mirror producers need read access only; no Forgejo secret on GitHub.
     if os.environ.get('FORGEJO_TOKEN'):
@@ -71,7 +72,7 @@ def api(path, method='GET', body=None):
     request = urllib.request.Request(base + '/api/v1/repos/' + REPOSITORY + path,
         data=json.dumps(body).encode() if body is not None else None,
         headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = response.read()
     return json.loads(payload) if payload else None
 
@@ -115,13 +116,74 @@ def candidate(tip, platform, descriptor, expected=''):
     return tip if not expected or expected == tip else None
 
 
+SUPERSEDE_DEPTH = 200
+# Wall-clock budget for the push superseded check, well inside the 3-minute
+# select job (review of #2890): slow but successful responses must not exhaust it.
+SUPERSEDE_BUDGET_SECONDS = 60
+SUPERSEDE_REQUEST_SECONDS = 10
+
+
+def budget_api(deadline, path, method='GET', body=None):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('superseded check budget exhausted')
+    result = api(path, method, body, timeout=min(remaining, SUPERSEDE_REQUEST_SECONDS))
+    if time.monotonic() > deadline:
+        raise TimeoutError('superseded check budget exhausted')
+    return result
+
+
+def superseded_by(tip, source, deadline):
+    """Whether source is among the last SUPERSEDE_DEPTH first-parent commits of tip."""
+    commit = tip
+    for _ in range(SUPERSEDE_DEPTH):
+        if commit == source:
+            return True
+        if not commit:
+            return False
+        data = budget_api(deadline, '/git/commits/' + commit)
+        if data['sha'] != commit:
+            raise ValueError('Mismatched main history')
+        commit = data['parents'][0]['sha'] if data['parents'] else None
+    return False
+
+
+def coalesce_queued_pushes(platform, env, deadline):
+    """Cancel older queued push runs of this platform's beta, keep the newest.
+
+    Forgejo 17 queues a cancel-in-progress: false group FIFO and never replaces a
+    pending run (models/actions/task.go getConcurrencyCondition), so a burst of
+    merges piles up checkout/select jobs. The run that starts cancels every
+    waiting push run except the newest; running runs are never touched. Best
+    effort: a failure here never changes this run's own decision.
+    """
+    workflow = WORKFLOWS[platform]
+    data = budget_api(deadline, '/actions/runs?workflow_id=' + workflow
+                      + '&event=push&status=waiting&limit=50&page=1')
+    queued = [run for run in data.get('workflow_runs') or []
+              if run.get('workflow_id') == workflow and run.get('trigger_event') == 'push'
+              and run.get('status') == 'waiting' and run.get('prettyref') == 'main'
+              and type(run.get('id')) is int and str(run['id']) != env.get('GITHUB_RUN_ID')]
+    if len(queued) < 2:
+        return []
+    newest = max(queued, key=lambda run: run['id'])
+    cancelled = []
+    for run in sorted(queued, key=lambda run: run['id']):
+        if run is not newest:
+            budget_api(deadline, f"/actions/runs/{run['id']}/cancel", 'POST')
+            cancelled.append(run['id'])
+    return cancelled
+
+
 def push_select(source, platform, env, descriptor):
     """A main push builds exactly the pushed commit (Oleg 05.11).
 
-    No certification and no main-tip lookup: a newer push starts its own run,
-    and that run's workflow concurrency cancels this one if it is unfinished.
-    The only skip is a source that already is this platform's beta. Publishers
-    still refuse a build older than the feed under their shared lock.
+    No certification. A running beta is never cancelled by a newer push
+    (manager 13.11: merges kept restarting the Linux beta). A push run that
+    starts after main has moved on skips: the newer push's own queued run
+    builds the tip. It also skips a source that already is this platform's
+    beta. If main's tip cannot be read, it builds as before rather than skip.
+    Publishers still refuse a build older than the feed under their lock.
     """
     if env.get('GITHUB_REF') != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', source or ''):
         raise ValueError('Push beta requires an exact main commit')
@@ -131,7 +193,30 @@ def push_select(source, platform, env, descriptor):
         raise ValueError('Invalid beta publication descriptor')
     if published and published.get('source') == source:
         return False, source, f'Pushed main {source} already is the {platform} beta'
-    return True, source, f'Build pushed main {source}'
+    deadline = time.monotonic() + SUPERSEDE_BUDGET_SECONDS
+    try:
+        cancelled = coalesce_queued_pushes(platform, env, deadline)
+        if cancelled:
+            print(f'Cancelled older queued {platform} push runs: {cancelled}')
+    except Exception as error:  # coalescing is an optimisation, never a gate
+        print(f'Queued push runs left as they are ({type(error).__name__})')
+    # Bounded so a deep queue or a slow API cannot exhaust the 3-minute select
+    # job (review of PR 2890): any lookup failure, an exhausted time budget, or a
+    # source not among the last SUPERSEDE_DEPTH first-parent commits builds
+    # rather than skips (a foreign or out-of-window source builds, it does not
+    # fail closed; publishers still refuse a build older than the feed).
+    try:
+        tip = budget_api(deadline, '/branches/main')['commit']['id']
+        if not re.fullmatch('[0-9a-f]{40}', tip or ''):
+            return True, source, f'Build pushed main {source} (main tip invalid)'
+        if tip == source:
+            return True, source, f'Build pushed main {source}'
+        superseded = superseded_by(tip, source, deadline)
+    except Exception as error:  # an unreadable tip or history must not skip a beta
+        return True, source, f'Build pushed main {source} (main history unreadable: {type(error).__name__})'
+    if superseded:
+        return False, source, f'Pushed main {source} is superseded by main {tip}; that push builds it'
+    return True, source, f'Build pushed main {source} (not within {SUPERSEDE_DEPTH} commits of main {tip})'
 
 
 def certification_source(env):

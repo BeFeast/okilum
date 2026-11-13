@@ -53,7 +53,7 @@ class LinuxWorkflow(unittest.TestCase):
              "github.event.pull_request.head.repo.full_name != github.repository || "
              "vars.OKILUM_PR_LANE == 'local')"],
         )
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'push' }}", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
 
 
@@ -150,7 +150,7 @@ class MacPublicationTests(unittest.TestCase):
                       "          FORGEJO_URL: ${{ github.server_url }}\n"
                       "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
         self.assertIn("github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id", workflow)
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'push' }}", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
         self.assertLess(workflow.index('id: select'), workflow.index('id: route'))

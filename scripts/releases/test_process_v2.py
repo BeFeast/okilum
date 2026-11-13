@@ -54,13 +54,13 @@ class ProcessV2(unittest.TestCase):
         self.assertNotIn('check-linux.sh', script)
 
     def test_all_platform_beta_builds_run_on_main_push_and_manual_signing_is_isolated(self):
-        # Oleg 05.11: beta on every main push, no cron; a newer push cancels
-        # an unfinished older push build, manual dispatches always finish.
+        # Oleg 05.11: beta on every main push, no cron. Manager 13.11: a newer
+        # push never cancels a running build; manual dispatches always finish.
         for file in ['linux-release', 'windows-diagnostic', 'macos-release']:
             data = workflow(f'.forgejo/workflows/{file}.yml')
             self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
             self.assertEqual(data['on']['push'], {'branches': ['main']})
-            self.assertEqual(data['concurrency']['cancel-in-progress'], "${{ github.event_name == 'push' }}")
+            self.assertIn(data['concurrency']['cancel-in-progress'], (False, 'false'))
             self.assertTrue(data['concurrency']['group'].endswith(
                 "-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}"))
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
