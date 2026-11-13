@@ -480,7 +480,7 @@ impl View {
             .debug_selector(|| "file-outline-list".into())
             // The list takes the height «Linked from» does not need (#2814),
             // never more than its rows, never less than a few of them.
-            .flex_shrink()
+            .flex_shrink(1.)
             .h(px(rows + 2. * OUTLINE_PADDING_Y))
             .min_h(px(
                 (rows + 2. * OUTLINE_PADDING_Y).min(6. * OUTLINE_ROW_HEIGHT)
@@ -613,7 +613,7 @@ impl Render for View {
         v_flex()
             .id("file-outline")
             .debug_selector(|| "file-outline-list".into())
-            .flex_shrink()
+            .flex_shrink(1.)
             .h(px(rows + 2. * OUTLINE_PADDING_Y))
             .min_h(px(
                 (rows + 2. * OUTLINE_PADDING_Y).min(6. * OUTLINE_ROW_HEIGHT)

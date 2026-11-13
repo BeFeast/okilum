@@ -6822,7 +6822,7 @@ impl Reader {
         v_flex()
             .id("reader-outline")
             .debug_selector(|| "reader-outline-list".into())
-            .flex_shrink()
+            .flex_shrink(1.)
             .h(px(full))
             .min_h(px(full.min(6. * OUTLINE_ROW_HEIGHT)))
             .py(px(OUTLINE_PADDING_Y))
