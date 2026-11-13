@@ -7163,6 +7163,28 @@ mod autosave_tests {
     }
 
     #[gpui::test]
+    fn issue2805_title_bar_close_saves_and_records_like_platform_close(cx: &mut TestAppContext) {
+        let state = tempfile::tempdir().unwrap();
+        let trace = crate::reader_diagnostics::Trace::new(Some(state.path().to_owned()), None);
+        cx.update(|cx| cx.set_global(crate::reader_diagnostics::LaunchTrace(trace)));
+        let (f, visual) = open(cx, "base");
+        type_at_start(&f, visual, "closed ");
+        let expected = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
+        assert_ne!(on_disk(&f), expected, "the edit must still be pending");
+        let weak = f.reader.downgrade();
+        let close = visual.update(|window, cx| {
+            crate::reader_open::request_reader_close(&weak, "title bar close button", window, cx)
+        });
+        assert!(close);
+        assert_eq!(on_disk(&f), expected);
+        let log = std::fs::read_to_string(state.path().join(crate::reader_diagnostics::LOG_FILE))
+            .unwrap();
+        assert!(log.lines().any(|line| {
+            line.contains("\"window_close_requested\"") && line.contains("title bar close button")
+        }));
+    }
+
+    #[gpui::test]
     fn issue2404_debounced_worker_failure_is_visible_and_latest_draft_retries(
         cx: &mut TestAppContext,
     ) {
