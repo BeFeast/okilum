@@ -16,7 +16,7 @@
 +[dependencies.tempfile]
 --- a/src/bundle.rs
 +++ b/src/bundle.rs
-@@ -24,0 +25,41 @@
+@@ -24,0 +25,44 @@
 +
 +// ReplaceFileW merges the existing destination's DACL rather than adopting the
 +// temporary file's inherited grants. Do not ignore ACL/metadata merge failures.
@@ -28,9 +28,12 @@
 +        GetFileAttributesW, ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
 +        FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES, REPLACE_FILE_FLAGS,
 +    };
++    // ReplaceFileW must open the replacement itself. Close our write handle,
++    // retaining TempPath ownership so failures still remove only the stage.
++    let staged = staged.into_temp_path();
 +    let wide = |path: &Path| path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
 +    let target = wide(path);
-+    let temporary = wide(staged.path());
++    let temporary = wide(&staged);
 +    let attributes = unsafe { GetFileAttributesW(PCWSTR(target.as_ptr())) };
 +    if attributes == INVALID_FILE_ATTRIBUTES {
 +        let error = std::io::Error::last_os_error();
@@ -58,14 +61,14 @@
 +    staged.persist(path).map_err(|e| e.error)?;
 +    Ok(())
 +}
-@@ -131,2 +172,4 @@
+@@ -131,2 +175,4 @@
 -                let name = file.name();
 -                if predicate(name) {
 +                // ZIP 9 initializes decompressors on first read; ZIP 8 rejected
 +                // unsupported methods here. Keep the old helper-selection behavior.
 +                if zip::SUPPORTED_COMPRESSION_METHODS.contains(&file.compression())
 +                    && file.name().is_ok_and(|name| predicate(&name)) {
-@@ -137,0 +181,26 @@
+@@ -137,0 +184,26 @@
 +    }
 +
 +    pub fn zip_idx_matches_path<T: AsRef<Path>>(&self, index: usize, path: T) -> Result<bool, Error> {
@@ -92,29 +95,29 @@
 +            count += len as u64;
 +        }
 +        Ok(count == size && actual.read(&mut actual_buffer[..1])? == 0)
-@@ -158 +227,3 @@
+@@ -158 +230,3 @@
 -        let mut outfile = misc::retry_io(|| File::create(path))?;
 +        // Stage beside the destination so publication is one atomic replace,
 +        // including on Windows. A read/CRC/size/write failure drops only the stage.
 +        let mut outfile = tempfile::NamedTempFile::new_in(parent)?;
-@@ -167,0 +239,3 @@
+@@ -167,0 +242,3 @@
 +            if len as u64 > total_size.saturating_sub(bytes_written) {
 +                return Err(Error::InvalidPackage("ZIP entry exceeds declared size".into()));
 +            }
-@@ -174,0 +249,5 @@
+@@ -174,0 +252,5 @@
 +        if bytes_written != total_size {
 +            return Err(Error::InvalidPackage("ZIP entry size does not match metadata".into()));
 +        }
 +        outfile.as_file().sync_all()?;
 +        publish_staged_file(outfile, path)?;
-@@ -235,2 +314 @@
+@@ -235,2 +317 @@
 -            let key = file.name();
 -            files.push(key.to_string());
 +            files.push(file.name()?.into_owned());
-@@ -281 +359 @@
+@@ -281 +362 @@
 -                Ok(f) => f.name().to_string(),
 +                Ok(f) => f.name()?.into_owned(),
-@@ -292,4 +370 @@
+@@ -292,4 +373 @@
 -            match self.extract_zip_idx_to_path(i, &dest_path) {
 -                Ok(_) => info!("Successfully extracted stub executable: {:?}", dest_path),
 -                Err(e) => warn!("Failed to extract stub executable {:?}: {} (non-fatal)", dest_path, e),
