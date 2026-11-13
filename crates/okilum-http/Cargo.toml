@@ -19,13 +19,15 @@ url = "2"
 
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "system-proxy"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization"] }
 
 
 [dev-dependencies]
+velopack = { version = "=1.2.161", features = ["public-utils", "helper-replacement-tests"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 tempfile = "3"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }

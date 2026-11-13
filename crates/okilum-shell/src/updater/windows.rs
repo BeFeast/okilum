@@ -88,6 +88,7 @@ fn restart_verified(cx: &mut gpui::App) {
                 "The downloaded update is no longer available. Check for updates again."
             )
         })?;
+        prepared_status(&manager, asset)?;
         let id = identity(asset);
         {
             let mut state = state().lock().unwrap();
@@ -376,6 +377,19 @@ pub(super) fn check(download: bool) -> bool {
     true
 }
 
+/// Creating Ready requires a live package/helper byte match, independent of
+/// feed receipts and cached package presence. Restart repeats this admission.
+fn prepared_status(
+    manager: &UpdateManager,
+    asset: &velopack::VelopackAsset,
+) -> anyhow::Result<super::status::CheckStatus> {
+    anyhow::ensure!(
+        manager.is_update_helper_prepared(asset)?,
+        "The update helper is not prepared for this package. Check for updates again."
+    );
+    Ok(super::status::CheckStatus::Ready)
+}
+
 fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStatus> {
     use super::status::CheckStatus;
     let manager = manager()?;
@@ -402,9 +416,10 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                     )
                     .map_err(anyhow::Error::msg)?
                 {
+                    let ready = prepared_status(&manager, asset)?;
                     record_verified(&sha256, offered);
                     state().lock().unwrap().observe(Some(identity(asset)));
-                    return Ok(CheckStatus::Ready);
+                    return Ok(ready);
                 }
             }
             let replacing = pending.is_some();
@@ -457,6 +472,10 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 }),
                 "The verified download does not match the selected update. Check for updates again."
             );
+            let ready = prepared_status(
+                &manager,
+                pending.as_ref().expect("pending identity checked above"),
+            )?;
             if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
                 record_verified(&sha256, &update.TargetFullRelease);
             }
@@ -468,7 +487,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
-            Ok(CheckStatus::Ready)
+            Ok(ready)
         }
         UpdateCheck::NoUpdateAvailable => {
             if let Some(asset) = pending.as_ref() {
@@ -505,6 +524,108 @@ fn message(text: &str) {
             text.as_ptr(),
             title.as_ptr(),
             windows_sys::Win32::UI::WindowsAndMessaging::MB_OK,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        io::{Cursor, Write},
+        path::Path,
+        sync::mpsc::Sender,
+    };
+    use velopack::{
+        bundle::Manifest, locator::VelopackLocatorConfig, sources::UpdateSource, VelopackAsset,
+        VelopackAssetFeed,
+    };
+
+    struct Source;
+    impl UpdateSource for Source {
+        fn get_release_feed(
+            &self,
+            _: &str,
+            _: &Manifest,
+            _: &str,
+        ) -> Result<VelopackAssetFeed, velopack::Error> {
+            unreachable!()
+        }
+        fn download_release_entry(
+            &self,
+            _: &VelopackAsset,
+            _: &Path,
+            _: Option<Sender<i16>>,
+        ) -> Result<(), velopack::Error> {
+            unreachable!("cached retry must prepare the existing package")
+        }
+    }
+
+    #[test]
+    fn ready_requires_helper_bytes_for_this_package() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        let packages = root.path().join("packages");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(&packages).unwrap();
+        let manifest = current.join("sq.version");
+        fs::write(&manifest, "<package><metadata><id>ReadyFixture</id><version>1.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>").unwrap();
+        let helper = root.path().join("Update.exe");
+        fs::write(&helper, b"stale helper").unwrap();
+        let asset = VelopackAsset {
+            FileName: "ReadyFixture-2.0.0-full.nupkg".into(),
+            ..Default::default()
+        };
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "lib/app/Squirrel.exe",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(b"prepared helper").unwrap();
+        fs::write(
+            packages.join(&asset.FileName),
+            zip.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        let manager = UpdateManager::new(
+            Source,
+            None,
+            Some(VelopackLocatorConfig {
+                RootAppDir: root.path().to_owned(),
+                UpdateExePath: helper.clone(),
+                PackagesDir: packages,
+                ManifestPath: manifest,
+                CurrentBinaryDir: current,
+                IsPortable: true,
+            }),
+        )
+        .unwrap();
+        assert!(
+            prepared_status(&manager, &asset).is_err(),
+            "stale helper must not be Ready"
+        );
+        manager
+            .download_updates(
+                &velopack::UpdateInfo {
+                    TargetFullRelease: asset.clone(),
+                    BaseRelease: None,
+                    DeltasToTarget: vec![],
+                    IsDowngrade: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            prepared_status(&manager, &asset).unwrap(),
+            super::super::status::CheckStatus::Ready
+        );
+        fs::write(&helper, b"prepared helpeX").unwrap();
+        assert!(
+            prepared_status(&manager, &asset).is_err(),
+            "same-size changed helper must not be Ready"
         );
     }
 }

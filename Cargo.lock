@@ -6197,6 +6197,7 @@ dependencies = [
  "uuid",
  "velopack",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -10727,6 +10728,7 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
  "ureq",
  "url",
