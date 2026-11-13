@@ -23,6 +23,8 @@ jobs:
         persist-credentials: false
     - uses: Swatinem/rust-cache@v2
       with:
+        # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
         shared-key: native-core-2700
     - name: Diagnose patch line endings
       shell: bash

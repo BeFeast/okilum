@@ -1089,6 +1089,8 @@ impl Reader {
             }
         }
     }
+    /// The document surface is built from this small frame; board and
+    /// return-bar builders keep their temporaries in separate frames (#2825).
     pub(crate) fn render_project_center(
         &self,
         window: &mut Window,
@@ -1099,62 +1101,69 @@ impl Reader {
             .active
             .as_ref()
             .and_then(|p| self.project_navigation.boards.get(&p.folder));
-        if self.project_navigation.section == reader_project_navigation::Section::Reader {
-            if let Some(board) = board {
-                if self.project_navigation.board_visible {
-                    let resizing = self.resizing_panel.is_some();
-                    board.update(cx, |board, cx| {
-                        if board.resizing != resizing {
-                            board.resizing = resizing;
-                            cx.notify();
-                        }
-                    });
-                    let records = self
-                        .project_navigation
-                        .active
-                        .as_ref()
-                        .and_then(|p| self.project_navigation.records.get(&p.folder));
-                    let record_tab = records.is_some_and(|records| records.read(cx).kind.is_some());
-                    let content = if record_tab {
-                        records.unwrap().clone().into_any_element()
-                    } else {
-                        board
-                            .clone()
-                            .cached(StyleRefinement::default().size_full())
-                            .into_any_element()
-                    };
-                    return v_flex()
-                        .size_full()
-                        .min_h_0()
-                        .min_w_0()
-                        .child(self.render_project_tabs(cx))
-                        .child(div().flex_1().min_h_0().min_w_0().child(content))
-                        .into_any_element();
-                }
-                return v_flex()
-                    .size_full()
-                    .min_h_0()
-                    .child(
-                        h_flex().px_3().py_1().child(
-                            Button::new("project-return-board")
-                                .debug_selector(|| "project-return-board".into())
-                                .ghost()
-                                .label("← Project views")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.return_to_project_board(cx);
-                                })),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .child(self.render_document_surface(window, cx)),
-                    )
-                    .into_any_element();
-            }
+        let project_reader = self.project_navigation.section
+            == reader_project_navigation::Section::Reader
+            && board.is_some();
+        if project_reader && self.project_navigation.board_visible {
+            return self.render_project_board(board.unwrap(), cx);
         }
-        self.render_document_surface(window, cx)
+        let surface = self.render_document_surface(window, cx);
+        if project_reader {
+            return self.render_project_return(surface, cx);
+        }
+        surface
+    }
+
+    #[inline(never)]
+    fn render_project_board(&self, board: &Entity<Board>, cx: &mut Context<Self>) -> AnyElement {
+        let resizing = self.resizing_panel.is_some();
+        board.update(cx, |board, cx| {
+            if board.resizing != resizing {
+                board.resizing = resizing;
+                cx.notify();
+            }
+        });
+        let records = self
+            .project_navigation
+            .active
+            .as_ref()
+            .and_then(|p| self.project_navigation.records.get(&p.folder));
+        let record_tab = records.is_some_and(|records| records.read(cx).kind.is_some());
+        let content = if record_tab {
+            records.unwrap().clone().into_any_element()
+        } else {
+            board
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        };
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .child(self.render_project_tabs(cx))
+            .child(div().flex_1().min_h_0().min_w_0().child(content))
+            .into_any_element()
+    }
+
+    #[inline(never)]
+    fn render_project_return(&self, surface: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(
+                h_flex().px_3().py_1().child(
+                    Button::new("project-return-board")
+                        .debug_selector(|| "project-return-board".into())
+                        .ghost()
+                        .label("← Project views")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.return_to_project_board(cx);
+                        })),
+                ),
+            )
+            .child(div().flex_1().min_h_0().child(surface))
+            .into_any_element()
     }
 }
 

@@ -14,6 +14,8 @@ mod link_complete;
 mod lists;
 mod live_preview;
 pub(crate) mod math_preview;
+#[cfg(test)]
+mod note_open_mode_tests;
 mod open_note_sync;
 mod paste_jobs;
 mod recovery;
@@ -745,6 +747,9 @@ impl Reader {
     /// and explicit lifecycle transitions still synchronously protect the latest
     /// native snapshot before relinquishing ownership.
     fn save_source_in_background(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
         let Some(editing) = self.editing.as_mut() else {
             return;
         };
@@ -810,8 +815,11 @@ impl Reader {
             if !self.leave_source(cx) {
                 return;
             }
-            // Explicit Read, not a navigation exit.
+            // Explicit Read, not a navigation exit. It also overrides the
+            // Settings default for this window (#2817).
             self.ui_state.source_mode = false;
+            self.ui_state.read_chosen = Some(self.current_rel.clone());
+            self.ui_state.auto_edit = false;
             // Saved: keep its Undo history for a return to Edit (#1095).
             self.retained_edit =
                 input.map(|input| (file, input.update(cx, |input, _| input.take_edit_history())));
@@ -860,10 +868,14 @@ impl Reader {
                 .session_directory
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("No recovery directory is available"))?;
-            let store = FileEditor::open(
-                &self.vault_root.join(self.selected_file()),
-                &state.join("editor-drafts"),
-            )?;
+            let path = self.vault_root.join(self.selected_file());
+            let drafts = state.join("editor-drafts");
+            // An automatic Edit (#2817) takes no ownership until the first edit.
+            let store = if self.ui_state.opening_by_default {
+                FileEditor::open_deferred(&path, &drafts)?
+            } else {
+                FileEditor::open(&path, &drafts)?
+            };
             if self
                 .file_preview
                 .as_ref()
@@ -877,6 +889,12 @@ impl Reader {
             Ok(store) => store,
             Err(error) => {
                 diagnostic_error!("Cannot edit: {error:#}");
+                if self.ui_state.opening_by_default {
+                    let text = format!("{error:#}");
+                    self.ui_state.default_edit_notice = text
+                        .contains(okilum_core::file_editor::BEING_EDITED)
+                        || text.contains(okilum_core::file_editor::UNSAVED_DRAFT);
+                }
                 // Record storage admission only after the existing edit attempt
                 // failed; a read must never probe writability for the header.
                 if let Some(code) = self
@@ -1151,6 +1169,21 @@ impl Reader {
                 snapshot.text.rope().clone(),
                 snapshot.text.id(),
             );
+            // An automatic editor (#2817) takes ownership on its first edit.
+            // If another window took the note meanwhile, this one returns to
+            // Read with that window's notice; nothing was written.
+            // Any input that changes the text (typing, IME, paste, Undo) is
+            // the person's edit; one that leaves it equal owns nothing.
+            if !editing.store.owns_lock()
+                && !editing.store.snapshot().same(&value)
+                && editing.store.snapshot() != value
+            {
+                if let Err(error) = editing.store.acquire_lock() {
+                    diagnostic_error!("Cannot edit: {error:#}");
+                    this.abandon_unowned_editor(input.entity_id(), &error, cx);
+                    return;
+                }
+            }
             // Retain the exact native revision, including silent Undo/Redo/IME.
             editing.draft_stamp = snapshot.stamp;
             let write = if editing.store.snapshot().same(&value) {
@@ -1522,6 +1555,8 @@ impl Reader {
         }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
+        self.ui_state.read_chosen = None;
+        self.ui_state.auto_edit = self.ui_state.opening_by_default;
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -1631,6 +1666,12 @@ impl Reader {
             editing.refresh_deferred = true;
             return;
         }
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
         let snapshot = editing.input.read(cx).source_snapshot();
         if editing.draft_stamp != snapshot.stamp {
             editing.draft_stamp = snapshot.stamp;
@@ -1759,6 +1800,12 @@ impl Reader {
             editing.refresh_deferred = true;
             return;
         }
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
         // Sample native state before looking at disk: a queued mutation event
         // cannot make an actually dirty buffer look clean.
         let text = editing.input.read(cx).value().to_string();
@@ -1886,6 +1933,9 @@ impl Reader {
     /// (#1986): that file is its base now. False when the editor can no
     /// longer reach the file (its folder was recreated) and must reopen it.
     pub(super) fn source_restored(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.own_modified_buffer(cx) {
+            return true;
+        }
         let Some(editing) = &mut self.editing else {
             return true;
         };
@@ -1935,6 +1985,10 @@ impl Reader {
     /// still retains the durable recovery draft, but must not retry a canonical
     /// save (or overwrite a returned file) during the authorized navigation.
     pub(super) fn release_deleted_editor(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.own_modified_buffer(cx) {
+            self.editing = None;
+            return true;
+        }
         if let Some(editing) = &mut self.editing {
             if let Err(error) = editing
                 .store
@@ -1994,6 +2048,11 @@ impl Reader {
             return (false, false);
         }
         let rules_scope = self.editing_in_rules_scope(cx);
+        // A refused automatic editor has nothing of its own to protect: its
+        // refused keystrokes were never the note's (#2817).
+        if !self.own_modified_buffer(cx) {
+            return (true, true);
+        }
         let Some(editing) = &mut self.editing else {
             return (true, true);
         };
@@ -2435,6 +2494,140 @@ impl Reader {
         }
     }
 
+    /// Settings → Editor → Open notes in → Edit (#2817). Only a Markdown note
+    /// opens its editor this way: text, CSV and code files keep their own
+    /// Read/Edit, and the window's chosen mode is left as it was, so a file
+    /// opened next still follows that choice. An explicit Read on this note
+    /// wins until another note is opened.
+    ///
+    /// The editor owns nothing until the first edit (`open_deferred`): no
+    /// lock, journal, autosave or writer authority, so another window can
+    /// still edit the note. A note another window is editing, or one with an
+    /// unsaved recovery draft, stays in Read with that notice; a note that
+    /// cannot be saved in place (read-only) or edited at all stays in Read
+    /// quietly, since the person asked for nothing.
+    pub(super) fn open_note_by_default(
+        &mut self,
+        tree_had_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .ui_state
+            .read_chosen
+            .as_ref()
+            .is_some_and(|rel| rel != &self.current_rel)
+        {
+            self.ui_state.read_chosen = None;
+        }
+        if reader_ui_state::note_open_mode(cx) != reader_ui_state::NoteOpenMode::Edit
+            || self.ui_state.read_chosen.is_some()
+            || self.ui_state.source_mode
+            || self.editing.is_some()
+            || self.file_preview.is_some()
+            || self.current_rel.is_empty()
+        {
+            return;
+        }
+        let notice = self.link_notice.clone();
+        self.ui_state.opening_by_default = true;
+        self.ui_state.default_edit_notice = false;
+        self.toggle_source(window, cx);
+        self.ui_state.opening_by_default = false;
+        self.ui_state.source_mode = false;
+        if self.editing.is_none() {
+            if !std::mem::take(&mut self.ui_state.default_edit_notice) {
+                self.link_notice = notice;
+            }
+            cx.notify();
+        } else if tree_had_focus {
+            self.tree_focus.focus(window, cx);
+        }
+    }
+
+    /// An automatic editor (#2817) owns nothing until its buffer differs from
+    /// what it opened or last captured. Every path that captures the input
+    /// into the store, saves or protects it calls this first, so a modified
+    /// buffer is never captured unowned, whichever runs first (blur, watcher
+    /// refresh, save, navigation) relative to the input's own event. False:
+    /// ownership was refused; the editor returns to Read with the reason and
+    /// the caller must not capture.
+    pub(super) fn own_modified_buffer(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = self.editing.as_mut() else {
+            return true;
+        };
+        if editing.store.owns_lock() {
+            return true;
+        }
+        let snapshot = editing.input.read(cx).source_snapshot();
+        if snapshot.stamp == editing.draft_stamp {
+            return true;
+        }
+        // Equal text (an Undo back, a same-character replacement) is no edit:
+        // capturing it keeps the store clean without taking the note.
+        let value =
+            DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
+        if editing.store.snapshot() == value {
+            return true;
+        }
+        match editing.store.acquire_lock() {
+            Ok(()) => true,
+            Err(error) => {
+                diagnostic_error!("Cannot edit: {error:#}");
+                let input = editing.input.entity_id();
+                self.abandon_unowned_editor(input, &error, cx);
+                false
+            }
+        }
+    }
+
+    /// The first edit of an automatic editor could not take the note:
+    /// discard that keystroke's buffer (nothing was written or owned) and
+    /// show the note in Read with the reason.
+    fn abandon_unowned_editor(
+        &mut self,
+        input: gpui::EntityId,
+        error: &anyhow::Error,
+        cx: &mut Context<Self>,
+    ) {
+        let notice = location_notice(error)
+            .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(error)));
+        // Shown at once, also if navigation retires the editor first.
+        self.link_notice = Some(notice.clone().into());
+        cx.notify();
+        let handle = self.reader_window;
+        cx.spawn(async move |this, cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    if this
+                        .editing
+                        .as_ref()
+                        .is_none_or(|editing| editing.input.entity_id() != input)
+                    {
+                        return;
+                    }
+                    // Read opens where the editor was, as an explicit Read does
+                    // (#1296); the refused keystroke never reaches the note.
+                    let place = this
+                        .editing
+                        .as_ref()
+                        .and_then(|editing| editing.input.read(cx).top_visible_line())
+                        .and_then(|line| u32::try_from(line + 1).ok());
+                    this.editing = None;
+                    this.ui_state.auto_edit = false;
+                    this.outline_list
+                        .reset_with_uniform_height(this.outline.len(), px(OUTLINE_ROW_HEIGHT));
+                    let rel = this.current_rel.clone();
+                    this.prepare_document_at_place(&rel, place, window, cx);
+                    this.link_notice = Some(notice.into());
+                    this.focus_handle.focus(window, cx);
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     /// A vanished source must not trap this window. Keep the latest durable
     /// draft for Recover notes instead; conflicts and failed recovery writes
     /// still block navigation. Explicit Save continues to report failure.
@@ -2472,9 +2665,13 @@ impl Reader {
     pub(super) fn edit_created_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let preferred = self.ui_state.live_preview;
         let source_mode = self.ui_state.source_mode;
-        self.toggle_source(window, cx);
+        let read_chosen = self.ui_state.read_chosen.clone();
+        if self.editing.is_none() {
+            self.toggle_source(window, cx);
+        }
         // Creating a note opens its body for typing, not a new window mode.
         self.ui_state.source_mode = source_mode;
+        self.ui_state.read_chosen = read_chosen;
         self.set_live_preview(true, window, cx);
         if let Some(editing) = &mut self.editing {
             editing.kept_preference = Some(preferred);
@@ -2690,6 +2887,9 @@ impl Reader {
     }
 
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -2703,6 +2903,8 @@ impl Reader {
                 self.editing = None;
                 self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
+                self.ui_state.read_chosen = Some(self.current_rel.clone());
+                self.ui_state.auto_edit = false;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
             }

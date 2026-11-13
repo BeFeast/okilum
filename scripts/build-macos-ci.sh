@@ -7,6 +7,27 @@
 #   SPARKLE_PUBLIC_ED_KEY   SUPublicEDKey value
 set -Eeuo pipefail
 OUTPUT="${1:?output directory required}"
+# Per-phase wall-clock timing (observability only; no effect on the artifact).
+OKILUM_PHASE_NAME=setup
+OKILUM_PHASE_START=$SECONDS
+OKILUM_PHASE_LOG=()
+okilum_phase() {
+    local elapsed=$((SECONDS - OKILUM_PHASE_START))
+    OKILUM_PHASE_LOG+=("$OKILUM_PHASE_NAME $elapsed")
+    echo "okilum-phase: $OKILUM_PHASE_NAME took ${elapsed}s"
+    OKILUM_PHASE_NAME="$1"
+    OKILUM_PHASE_START=$SECONDS
+}
+okilum_phase_summary() {
+    local entry lines=$'| phase | seconds |\n|---|---|'
+    for entry in "${OKILUM_PHASE_LOG[@]}"; do
+        echo "okilum-phase-summary: $entry"
+        lines+=$'\n'"| ${entry% *} | ${entry##* } |"
+    done
+    if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+        printf '### macOS shipping phases\n\n%s\n' "$lines" >>"$GITHUB_STEP_SUMMARY" || true
+    fi
+}
 : "${OKILUM_BUILD_VERSION:?}" "${OKILUM_SIGNING_IDENTITY:?}" "${OKILUM_NOTARY_PROFILE:?}" "${SPARKLE_PUBLIC_ED_KEY:?}"
 [[ $OKILUM_BUILD_VERSION =~ ^[1-9][0-9]*$ ]]
 DISPLAY_VERSION="0.1.$OKILUM_BUILD_VERSION"
@@ -38,9 +59,30 @@ tar -xJf "$SPARKLE_ARCHIVE" -C "$OUTPUT/sparkle-bin" --include='*bin/sign_update
 source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/ci/supervisor-bundle.sh"
 BUNDLE_ID="${OKILUM_BUNDLE_ID:-com.befeast.okilum}"
 TEAM_ID="$(supervisor_team_id "$OKILUM_SIGNING_IDENTITY")"
+okilum_phase cargo-app
 OKILUM_SIGNING_TEAM_ID="$TEAM_ID" OKILUM_BUNDLE_ID="$BUNDLE_ID" \
     cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+okilum_phase cargo-supervisor
 supervisor_build "$TEAM_ID" "$BUNDLE_ID" aarch64-apple-darwin
+okilum_phase cargo-bundle-tools
+# Icon rasters and the LaunchAgent plist come from okilum-macos-bundle-tools: only
+# normal dependencies already in the app graph. Co-selecting okilum-shell keeps
+# Cargo's feature set identical to the app build, so it reuses every compiled
+# crate (the former examples pulled dev-dependencies and rebuilt GPUI and
+# okilum-core with test-support). The app binary must not change here.
+if [[ -f crates/okilum-macos-bundle-tools/Cargo.toml ]]; then
+    APP_BINARY="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/okilum"
+    APP_BINARY_SHA="$(shasum -a 256 "$APP_BINARY")"
+    OKILUM_SIGNING_TEAM_ID="$TEAM_ID" OKILUM_BUNDLE_ID="$BUNDLE_ID" \
+        cargo build --release --locked --target aarch64-apple-darwin \
+        -p okilum-shell -p okilum-macos-bundle-tools
+    [[ $(shasum -a 256 "$APP_BINARY") == "$APP_BINARY_SHA" ]] || {
+        echo "building the bundle tools changed the app binary" >&2
+        exit 1
+    }
+    export OKILUM_BUNDLE_TOOLS="$CARGO_TARGET_DIR/aarch64-apple-darwin/release"
+fi
+okilum_phase stage-bundle-and-plist
 
 APP="$OUTPUT/Okilum.app"
 rm -rf "$APP"
@@ -51,8 +93,15 @@ python3 scripts/updater/sparkle.py verify "$APP/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/okilum" "$APP/Contents/MacOS/okilum"
 supervisor_stage "$APP" "$CARGO_TARGET_DIR" aarch64-apple-darwin
 python3 scripts/brand-assets.py verify
-# The example binary runs outside the bundle; point it at the source framework.
-env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
+okilum_phase icon-rasters
+if [[ -n ${OKILUM_BUNDLE_TOOLS:-} ]]; then
+    "$OKILUM_BUNDLE_TOOLS/okilum-app-icon-rasters" "$OUTPUT/icon-rasters"
+else
+    # Product sources from before okilum-macos-bundle-tools. The example binary runs
+    # outside the bundle; point it at the source framework.
+    env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
+fi
+okilum_phase info-plist
 python3 scripts/macos-icon.py "$OUTPUT/icon-rasters" "$APP/Contents/Resources/Okilum.icns"
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -123,8 +172,11 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist"
 [[ $(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw "$APP/Contents/Info.plist") == okilum ]]
 
+okilum_phase sign-notarize-staple-app
 source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/sign-bundle.sh"
+okilum_phase dmg-sign-notarize-staple
 source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/make-dmg.sh"
+okilum_phase release-metadata
 cat >"$OUTPUT/release.env" <<EOF
 BUILD=$OKILUM_BUILD_VERSION
 DISPLAY_VERSION=$DISPLAY_VERSION
@@ -137,3 +189,5 @@ EOF
 cat "$OUTPUT/release.env"
 
 release_cache_stats
+okilum_phase done
+okilum_phase_summary

@@ -99,7 +99,7 @@ jobs:
             cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
           done
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/

@@ -119,6 +119,14 @@ impl Layout {
     }
 }
 
+/// A string field that falls back to empty for any other JSON type.
+fn lenient_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -142,6 +150,12 @@ struct Saved {
     /// (#1762); off by default, Reveal beside the breadcrumb does it on
     /// request.
     tree_auto_reveal: bool,
+    /// How a note opens in a new window (#2817): "edit" opens notes in the
+    /// editor; anything else, including the absent key of older state and
+    /// unknown values from a newer build, keeps Read. A value of another
+    /// type falls back for this field only, never rejecting the whole state.
+    #[serde(deserialize_with = "lenient_string")]
+    note_open_mode: String,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
     /// Focus mode in the note editor (#1643): every block but the caret's
@@ -223,6 +237,7 @@ impl Default for Saved {
             toolbar_labels: false,
             tree_note_titles: false,
             tree_auto_reveal: false,
+            note_open_mode: String::new(),
             code_soft_wrap: false,
             focus_mode: false,
             typewriter_mode: false,
@@ -272,6 +287,7 @@ struct Store {
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
     tree_auto_reveal_changed: bool,
+    note_open_mode_changed: bool,
     code_soft_wrap_changed: bool,
     writing_modes_changed: bool,
     vault_open_changed: bool,
@@ -387,6 +403,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         toolbar_labels_changed: false,
         tree_note_titles_changed: false,
         tree_auto_reveal_changed: false,
+        note_open_mode_changed: false,
         code_soft_wrap_changed: false,
         writing_modes_changed: false,
         vault_open_changed: false,
@@ -624,6 +641,7 @@ struct WriteJob {
     toolbar_labels_changed: bool,
     tree_note_titles_changed: bool,
     tree_auto_reveal_changed: bool,
+    note_open_mode_changed: bool,
     code_soft_wrap_changed: bool,
     writing_modes_changed: bool,
     vault_open_changed: bool,
@@ -726,6 +744,9 @@ impl WriteJob {
         }
         if self.tree_auto_reveal_changed {
             latest.tree_auto_reveal = self.saved.tree_auto_reveal;
+        }
+        if self.note_open_mode_changed {
+            latest.note_open_mode = self.saved.note_open_mode.clone();
         }
         if self.vault_open_changed {
             latest.vault_open = self.saved.vault_open.clone();
@@ -886,6 +907,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.toolbar_labels_changed
             && !state.tree_note_titles_changed
             && !state.tree_auto_reveal_changed
+            && !state.note_open_mode_changed
             && !state.vault_open_changed
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
@@ -929,6 +951,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         toolbar_labels_changed: state.toolbar_labels_changed,
         tree_note_titles_changed: state.tree_note_titles_changed,
         tree_auto_reveal_changed: state.tree_auto_reveal_changed,
+        note_open_mode_changed: state.note_open_mode_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         writing_modes_changed: state.writing_modes_changed,
         vault_open_changed: state.vault_open_changed,
@@ -1021,6 +1044,22 @@ pub(crate) struct Session {
     /// This window keeps its chosen editing mode across Markdown file choices.
     /// Session restoration still uses the existing saved source/LP fields.
     pub(super) source_mode: bool,
+    /// The note on which the person explicitly chose Read: the Settings
+    /// default that opens notes in Edit (#2817) does not reopen it until
+    /// another note is opened.
+    pub(super) read_chosen: Option<String>,
+    /// The open editor came from that Settings default, not from a choice:
+    /// it owns nothing until the first edit and is never saved as the
+    /// session's editing mode (#2817).
+    pub(super) auto_edit: bool,
+    /// `toggle_source` is opening an automatic editor.
+    pub(super) opening_by_default: bool,
+    /// The automatic editor was refused for a reason the person should see
+    /// (another window edits the note, or it has an unsaved draft).
+    pub(super) default_edit_notice: bool,
+    /// The window's first note was published before its saved state was
+    /// restored; the Settings default still applies to it (#2817).
+    default_edit_pending: bool,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
     pub(crate) source_highlight_pending: bool,
@@ -1044,6 +1083,7 @@ impl Reader {
         self.ui_state = Session {
             root: self.vault_root.clone(),
             ready: true,
+            default_edit_pending: true,
             ..Default::default()
         };
         let Some((saved, known)) = layout(&self.vault_root, cx) else {
@@ -1192,6 +1232,12 @@ impl Reader {
             .is_some_and(|load| load.active && !load.published)
         {
             return;
+        }
+        // A saved editor restores itself below; otherwise the Settings
+        // default may open the window's first note in Edit (#2817).
+        if std::mem::take(&mut self.ui_state.default_edit_pending) && self.ui_state.source.is_none()
+        {
+            self.open_note_by_default(false, window, cx);
         }
         let Some(offset) = self.ui_state.source.take() else {
             return;
@@ -1353,7 +1399,11 @@ impl Reader {
             history,
             history_index: self.navigation.history_ix,
             position: position.into(),
-            source: self.editing.is_some() || self.ui_state.source.is_some(),
+            // An automatic Edit is the Settings default, not this session's
+            // choice: relaunch applies the setting again, never as a choice
+            // that would carry to text, data or code files (#2817).
+            source: (self.editing.is_some() && !self.ui_state.auto_edit)
+                || self.ui_state.source.is_some(),
             live_preview: if self.editing.is_some() {
                 self.source_live_preview()
             } else {
@@ -1571,6 +1621,47 @@ pub(crate) fn set_tree_auto_reveal(value: bool, cx: &mut App) {
     let state = cx.global_mut::<Store>();
     state.saved.tree_auto_reveal = value;
     state.tree_auto_reveal_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// How a note opens in a new Reader window (#2817). Read is today's
+/// behaviour and the default; Edit opens Markdown notes in the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoteOpenMode {
+    Read,
+    Edit,
+}
+impl NoteOpenMode {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Edit => "edit",
+        }
+    }
+    fn from_key(key: &str) -> Self {
+        match key {
+            "edit" => Self::Edit,
+            // Absent (older state), "read" and unknown future values.
+            _ => Self::Read,
+        }
+    }
+}
+
+pub(crate) fn note_open_mode(cx: &App) -> NoteOpenMode {
+    cx.try_global::<Store>()
+        .map_or(NoteOpenMode::Read, |state| {
+            NoteOpenMode::from_key(&state.saved.note_open_mode)
+        })
+}
+
+pub(crate) fn set_note_open_mode(value: NoteOpenMode, cx: &mut App) {
+    if !installed(cx) || note_open_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.note_open_mode = value.key().into();
+    state.note_open_mode_changed = true;
     schedule(cx);
     cx.refresh_windows();
 }
@@ -2197,6 +2288,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.toolbar_labels_changed = false;
         state.tree_note_titles_changed = false;
         state.tree_auto_reveal_changed = false;
+        state.note_open_mode_changed = false;
         state.code_soft_wrap_changed = false;
         state.writing_modes_changed = false;
         state.vault_open_changed = false;
@@ -2601,6 +2693,83 @@ mod tests {
             install(&state, cx);
             assert!(!tree_auto_reveal(cx), "switching back is remembered too");
         });
+    }
+
+    #[gpui::test]
+    fn note_open_mode_defaults_read_round_trips_and_migrates(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("reader-ui.json");
+        // State saved before #2817 has no key and must still load: Read.
+        std::fs::write(
+            &path,
+            format!("{{\"version\":{VERSION},\"tree_auto_reveal\":true}}"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(
+                tree_auto_reveal(cx),
+                "positive control: the old file loaded"
+            );
+            assert_eq!(
+                note_open_mode(cx),
+                NoteOpenMode::Read,
+                "OPENMODE2817: default"
+            );
+            set_note_open_mode(NoteOpenMode::Edit, cx);
+            flush(cx);
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Edit, "Edit is remembered");
+            assert!(tree_auto_reveal(cx), "other settings survive the write");
+            // Another window's unrelated write keeps the preference.
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            assert_eq!(read(&path).unwrap().note_open_mode, "edit");
+            set_note_open_mode(NoteOpenMode::Read, cx);
+            flush(cx);
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Read, "back to Read");
+        });
+        // A value from a newer build opens in Read and is not rewritten by
+        // an unrelated change.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["note_open_mode"] = "future-mode".into();
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Read);
+            set_tree_note_titles(false, cx);
+            flush(cx);
+        });
+        assert_eq!(read(&path).unwrap().note_open_mode, "future-mode");
+    }
+
+    #[gpui::test]
+    fn note_open_mode_of_another_type_falls_back_without_rejecting_state(cx: &mut TestAppContext) {
+        for value in ["null", "42", "true", "{\"mode\":\"edit\"}", "[\"edit\"]"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::write(
+                state.join("reader-ui.json"),
+                format!(
+                    "{{\"version\":{VERSION},\"tree_auto_reveal\":true,\"note_open_mode\":{value}}}"
+                ),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                if cx.has_global::<Store>() {
+                    cx.remove_global::<Store>();
+                }
+                install(&state, cx);
+                assert!(installed(cx), "{value}: the saved UI state still loads");
+                assert!(tree_auto_reveal(cx), "{value}: other settings are kept");
+                assert_eq!(note_open_mode(cx), NoteOpenMode::Read, "{value}");
+            });
+        }
     }
 
     #[gpui::test]
@@ -3078,6 +3247,7 @@ mod tests {
                 toolbar_labels_changed: false,
                 tree_note_titles_changed: false,
                 tree_auto_reveal_changed: false,
+                note_open_mode_changed: false,
                 code_soft_wrap_changed: false,
                 writing_modes_changed: false,
                 vault_open_changed: false,

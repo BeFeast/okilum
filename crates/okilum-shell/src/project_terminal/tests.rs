@@ -221,3 +221,77 @@ fn project_settings_connections_and_per_device_overrides_are_resolved_without_la
     .unwrap();
     assert!(initial_for_project(&project, &state).is_err());
 }
+
+/// #2837 review: the launcher never starts inside the selected folder (Windows
+/// would resolve `powershell.exe` there first); the folder is an argument and
+/// launchers come from trusted absolute locations only.
+#[cfg(target_os = "linux")]
+#[test]
+fn folder_launch_runs_outside_the_folder_with_trusted_absolute_programs() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = root.path().join("vault");
+    let folder = vault.join("Notes");
+    std::fs::create_dir_all(&folder).unwrap();
+    for decoy in [
+        "xdg-terminal-exec",
+        "foot",
+        "wt.exe",
+        "powershell.exe",
+        "open",
+    ] {
+        std::fs::write(folder.join(decoy), b"decoy").unwrap();
+    }
+    // Every name resolves to the decoy unless it is excluded.
+    let decoys = |excluded: Vec<PathBuf>| {
+        let folder = folder.clone();
+        move |name: &str| {
+            let candidate = folder.join(name);
+            (!excluded.iter().any(|e| candidate.starts_with(e))).then_some(candidate)
+        }
+    };
+    let plan = folder_launch(&folder, decoys(vec![])).unwrap();
+    assert!(
+        plan.program.starts_with(&folder),
+        "positive control: an unfiltered lookup would pick the decoy"
+    );
+    assert!(folder_launch(&folder, decoys(excluded(&folder, &vault))).is_err());
+    let plan = folder_launch(&folder, |name| {
+        Some(Path::new("/trusted").join(name.trim_start_matches('/')))
+    })
+    .unwrap();
+    assert!(plan.program.starts_with("/trusted"));
+    let process = process(&plan, |name| {
+        (name == "APPDIR").then(|| "/tmp/.mount_X".to_owned())
+    });
+    assert_eq!(process.get_current_dir(), None, "no cwd inside the vault");
+    assert!(process
+        .get_args()
+        .any(|arg| Path::new(arg).ends_with("Notes") || arg.to_string_lossy().contains("Notes")));
+    let removed: Vec<_> = process
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(key, _)| key.to_owned())
+        .collect();
+    assert!(removed.contains(&"APPDIR".into()) && removed.contains(&"APPIMAGE".into()));
+    // excluded() covers the vault and the folder, raw and canonical.
+    let list = excluded(&folder, &vault);
+    assert!(list.contains(&vault.canonicalize().unwrap()));
+    assert!(list.contains(&folder.canonicalize().unwrap()));
+}
+
+#[test]
+fn launcher_processes_never_inherit_a_vault_working_directory() {
+    let plan = command::Plan {
+        program: std::env::temp_dir().join("terminal"),
+        args: vec!["-d".into(), std::env::temp_dir().join("Notes").into()],
+        new_console: true,
+    };
+    let process = process(&plan, |_| None);
+    assert_eq!(process.get_current_dir(), None);
+    assert_eq!(process.get_program(), plan.program.as_os_str());
+    assert_eq!(
+        process.get_envs().count(),
+        0,
+        "outside an AppImage nothing changes"
+    );
+}

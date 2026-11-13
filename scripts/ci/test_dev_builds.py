@@ -308,6 +308,78 @@ esac
             self.assertFalse((root / 'build.lock').exists())
 
 
+
+class MacSprintBundleTools(unittest.TestCase):
+    """main's script builds any branch: older sources have no bundle-tools crate (#2880)."""
+
+    def commands(self, source, tool):
+        script = bash_function(MAC, 'sprint_bundle_tool') + 'sprint_bundle_tool "$1"'
+        result = subprocess.run(['bash', '-c', script, 'test', tool], cwd=source,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.splitlines()
+
+    def test_source_without_the_crate_uses_the_old_examples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            plist = self.commands(source, 'okilum-launch-agent-plist')
+            icon = self.commands(source, 'okilum-app-icon-rasters')
+            for argv in (plist, icon):
+                self.assertNotIn('okilum-macos-bundle-tools', argv)
+                self.assertEqual(argv[-1], '--')
+                self.assertEqual(argv[argv.index('--profile') + 1], 'sprint')
+            self.assertEqual(plist[plist.index('-p') + 1:plist.index('--')],
+                             ['okilum-sync-controller', '--example', 'bundled_plist'])
+            self.assertEqual(icon[icon.index('-p') + 1:icon.index('--')],
+                             ['okilum-shell', '--example', 'macos_app_icon'])
+            self.assertEqual(icon[:2], ['env', f'DYLD_FRAMEWORK_PATH={source.resolve()}/vendor/sparkle'])
+
+    def test_source_with_the_crate_uses_its_binaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / 'crates/okilum-macos-bundle-tools').mkdir(parents=True)
+            (source / 'crates/okilum-macos-bundle-tools/Cargo.toml').write_text('')
+            for tool in ('okilum-launch-agent-plist', 'okilum-app-icon-rasters'):
+                argv = self.commands(source, tool)
+                self.assertEqual(argv[0], 'cargo')
+                self.assertEqual(argv[argv.index('-p') + 1:], ['okilum-macos-bundle-tools', '--bin', tool, '--'])
+
+    def test_both_bundle_tool_call_sites_use_the_selector(self):
+        text = MAC.read_text()
+        self.assertEqual(text.count('< <(sprint_bundle_tool okilum-'), 2)
+        self.assertNotIn('mapfile', text, 'macOS /bin/bash is 3.2')
+
+    def test_failure_status_survives_the_runbook_tee_pipe(self):
+        # 13.11 16:45: `bash <(...) 2>&1 | tee log` reported 0 after a failed stage.
+        # The script exits non-zero; the pipeline reports tee. ${PIPESTATUS[0]} keeps it.
+        with tempfile.TemporaryDirectory() as directory, endpoint() as (url, requests):
+            home = Path(directory)
+            root = home / 'sprint'
+            (root / 'src').mkdir(parents=True)
+            checkout = home / 'okilum'
+            (checkout / '.git').mkdir(parents=True)
+            commands = home / 'bin'
+            commands.mkdir()
+            mocks = {
+                'uname': '#!/bin/bash\nif [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi\n',
+                'cargo': '#!/bin/bash\nexit 0\n',
+                'git': '#!/bin/bash\nif [[ $1 == -C ]]; then shift 2; fi\n'
+                       'case "$1 $2" in\n \'remote get-url\') echo ssh://git@10.10.0.27:2222/BeFeast/okilum.git;;\n'
+                       ' \'fetch origin\') exit 42;;\n *) exit 0;;\nesac\n',
+            }
+            for name, text in mocks.items():
+                (commands / name).write_text(text)
+                (commands / name).chmod(0o700)
+            script = home / 'sprint.sh'
+            script.write_text(MAC.read_text().replace(MAC_HELPER['ENDPOINT'], url))
+            env = dict(os.environ, HOME=str(home), TMPDIR=directory, OKILUM_SPRINT_HOME=str(root),
+                       OKILUM_CHECKOUT=str(checkout), PATH=str(commands) + os.pathsep + os.environ['PATH'])
+            log = home / 'sprint.log'
+            runbook = f'bash {script} fix/test 2>&1 | tee {log}; echo "pipeline=$? sprint=${{PIPESTATUS[0]}}"'
+            result = subprocess.run(['bash', '-c', runbook], env=env, capture_output=True, text=True, timeout=60)
+            self.assertIn('pipeline=0 sprint=42', result.stdout, result.stdout + result.stderr)
+            self.assertIn('Sprint FAILED at stage fetch (exit 42)', log.read_text())
+
 class LinuxTarget(unittest.TestCase):
     def pick(self, root, env):
         script = ('die() { echo "$*" >&2; exit 1; }\n' + bash_function(LINUX, 'pick_target') +

@@ -62,7 +62,7 @@ jobs:
           path: ${{ runner.temp }}/manager-board-fixture.tar.gz
           retention-days: 14
       - uses: actions/cache/save@v4
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: ${{ steps.native-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/

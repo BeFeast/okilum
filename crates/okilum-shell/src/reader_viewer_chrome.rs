@@ -123,6 +123,7 @@ impl HeaderKey {
                         preview.pdf.as_ref().map(Entity::entity_id),
                         preview.code.as_ref().map(Entity::entity_id),
                         preview.archive.as_ref().map(Entity::entity_id),
+                        preview.har.as_ref().map(Entity::entity_id),
                         preview.audio.as_ref().map(Entity::entity_id),
                         preview.canvas.as_ref().map(Entity::entity_id),
                         preview.drawing.as_ref().map(Entity::entity_id),
@@ -754,9 +755,17 @@ impl Reader {
             .filter(|_| self.editing.is_none())
             .and_then(|p| p.code.as_ref())
         {
-            return code.read(cx).header_chrome(code.clone(), cx);
+            let chrome = code.read(cx).header_chrome(code.clone(), cx);
+            return self.with_har_views(chrome, cx);
         }
         self.viewer_chrome(cx)
+    }
+    /// A HAR file's Source view is its JSON viewer plus a way back (#2836).
+    fn with_har_views(&self, chrome: ViewerChrome, cx: &App) -> ViewerChrome {
+        match self.file_preview.as_ref().and_then(|p| p.har.as_ref()) {
+            Some(har) => reader_har::with_requests_view(chrome, har, cx),
+            None => chrome,
+        }
     }
     /// Only this adapter knows where the active viewer lives. Slot builders
     /// render the resulting description without matching on a viewer kind.
@@ -772,7 +781,7 @@ impl Reader {
         }
         if let Some(code) = &preview.code {
             return if self.editing.is_none() {
-                code.read(cx).chrome(code.clone(), cx)
+                self.with_har_views(code.read(cx).chrome(code.clone(), cx), cx)
             } else {
                 ViewerChrome::default()
             };
@@ -782,6 +791,9 @@ impl Reader {
         }
         if let Some(archive) = &preview.archive {
             return reader_archive::chrome(archive, cx);
+        }
+        if let Some(har) = &preview.har {
+            return reader_har::chrome(har, cx);
         }
         if let Some(canvas) = &preview.canvas {
             return reader_canvas::chrome(canvas, cx);
@@ -1369,6 +1381,11 @@ fn open_commands() -> Vec<(&'static str, reader_files::FileAction, Box<dyn Actio
             platform::labels::Os::CURRENT.reveal(),
             reader_files::FileAction::Reveal,
             Box::new(RevealFile),
+        ),
+        (
+            reader_files::TERMINAL_LABEL,
+            reader_files::FileAction::Terminal,
+            Box::new(project_terminal::OpenInTerminal),
         ),
     ];
     #[cfg(target_os = "macos")]

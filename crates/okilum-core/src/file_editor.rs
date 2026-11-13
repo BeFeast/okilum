@@ -227,7 +227,10 @@ pub struct FileEditor {
     /// `draft.base` (#1363). `None` when that is not known.
     on_disk: Option<DiskStamp>,
     journal: PathBuf,
-    lock: Arc<EditorLock>,
+    /// `None` for an editor opened without ownership (`open_deferred`, #2817):
+    /// it reads and shows the note, and takes the lock before its first edit.
+    lock: Option<Arc<EditorLock>>,
+    lock_path: PathBuf,
     writes: Arc<JournalWrites>,
     generation: u64,
     base_generation: u64,
@@ -266,11 +269,20 @@ pub struct DraftWrite {
     journal: PathBuf,
     writes: Arc<JournalWrites>,
     generation: u64,
-    _lock: Arc<EditorLock>,
+    _lock: Option<Arc<EditorLock>>,
 }
 impl DraftWrite {
     pub fn persist(self) -> Result<()> {
         if self.writes.generation.load(Ordering::Acquire) != self.generation {
+            return Ok(());
+        }
+        // An editor without ownership never writes recovery state. A clean
+        // draft has nothing to recover; an edit must take the lock first.
+        if self._lock.is_none() {
+            anyhow::ensure!(
+                !self.draft.pending_input && self.draft.text == self.draft.base,
+                "{NOT_OWNED}"
+            );
             return Ok(());
         }
         #[cfg(unix)]
@@ -315,6 +327,45 @@ impl DraftWrite {
 
 #[cfg(test)]
 thread_local! { static JOURNAL_COMMITS: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) }; }
+
+/// An edit reached an editor that was opened without taking ownership.
+const NOT_OWNED: &str = "This editor does not own the note; choose Edit again";
+/// Another window's editor holds the note.
+pub const BEING_EDITED: &str = "This note is already being edited in another window";
+/// Only an explicit Edit adopts an unsaved recovery draft.
+pub const UNSAVED_DRAFT: &str =
+    "This note has an unsaved recovery draft; choose Edit to recover it";
+
+/// A write the current user cannot make in place: the file, its folder or
+/// its filesystem is read-only. Checked without writing anything (#2817).
+#[derive(Debug)]
+pub struct NotWritable(pub std::io::Error);
+impl std::fmt::Display for NotWritable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "This note is read-only here: {}", self.0)
+    }
+}
+impl std::error::Error for NotWritable {}
+
+#[cfg(unix)]
+fn check_writable_in_place(path: &Path) -> Result<()> {
+    use rustix::fs::{access, Access};
+    for target in [path, path.parent().context("Missing source folder")?] {
+        access(target, Access::WRITE_OK).map_err(|errno| {
+            NotWritable(std::io::Error::from_raw_os_error(errno.raw_os_error()))
+        })?;
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn check_writable_in_place(path: &Path) -> Result<()> {
+    // The same filesystem access check Save's replacement relies on, not the
+    // read-only attribute alone: an ACL may deny replacing a readable note.
+    if !crate::windows_files::can_replace(path)? {
+        return Err(NotWritable(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).into());
+    }
+    Ok(())
+}
 
 pub(crate) fn lock_busy(error: &anyhow::Error) -> bool {
     #[cfg(unix)]
@@ -424,6 +475,44 @@ impl FileEditor {
     }
 
     pub fn open(path: &Path, state: &Path) -> Result<Self> {
+        Self::open_with(path, state, true)
+    }
+
+    /// Open a note for an automatic Edit (Settings → Open notes in → Edit,
+    /// #2817) without taking ownership: no editor lock, no recovery folder or
+    /// journal write, no writer authority and no change to the file.
+    /// `acquire_lock` takes the lock before the first edit. Refuses, like
+    /// `open`, while another editor holds the note; also refuses a note the
+    /// user cannot save in place (read-only file, folder or filesystem) and
+    /// one with an unsaved recovery draft, which only an explicit Edit adopts.
+    pub fn open_deferred(path: &Path, state: &Path) -> Result<Self> {
+        Self::open_with(path, state, false)
+    }
+
+    /// Whether this editor holds the note's editor lock.
+    pub fn owns_lock(&self) -> bool {
+        self.lock.is_some()
+    }
+
+    /// Take ownership before the first edit of an `open_deferred` editor.
+    /// Another editor that took the note meanwhile refuses with
+    /// `BEING_EDITED`; a recovery draft written meanwhile is never adopted.
+    pub fn acquire_lock(&mut self) -> Result<()> {
+        if self.lock.is_some() {
+            return Ok(());
+        }
+        let state = self.journal.parent().context("Missing recovery folder")?;
+        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
+        let lock = EditorLock::acquire_or(&self.lock_path, BEING_EDITED)?;
+        anyhow::ensure!(
+            !Self::has_unsaved_draft(&self.draft.path, state)?,
+            "Another window left an unsaved draft of this note; reopen it to recover"
+        );
+        self.lock = Some(Arc::new(lock));
+        Ok(())
+    }
+
+    fn open_with(path: &Path, state: &Path, owned: bool) -> Result<Self> {
         #[cfg(unix)]
         let meta = fs::symlink_metadata(path)?;
         #[cfg(unix)]
@@ -440,12 +529,21 @@ impl FileEditor {
         let authority = okilum_write_authority::Authority::for_path(&path)?;
         #[cfg(unix)]
         let directory = Directory::open(path.parent().context("Missing source folder")?)?;
-        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
-        let lock = EditorLock::acquire_or(
-            &state.join(format!("{key}.lock")),
-            "This note is already being edited in another window",
-        )?;
+        let lock_path = state.join(format!("{key}.lock"));
+        let lock = if owned {
+            fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
+            Some(Arc::new(EditorLock::acquire_or(&lock_path, BEING_EDITED)?))
+        } else {
+            check_writable_in_place(&path)?;
+            anyhow::ensure!(!Self::has_unsaved_draft(&path, state)?, "{UNSAVED_DRAFT}");
+            // Probe only: another window's editor refuses; nothing is kept and
+            // a missing recovery folder is not created.
+            if lock_path.exists() {
+                drop(EditorLock::acquire_or(&lock_path, BEING_EDITED)?);
+            }
+            None
+        };
         let journal = state.join(format!("{key}.json"));
         let (base, opened) = directory.read(path.file_name().unwrap())?;
         #[cfg(unix)]
@@ -503,7 +601,8 @@ impl FileEditor {
             draft,
             on_disk,
             journal,
-            lock: Arc::new(lock),
+            lock,
+            lock_path,
             writes: Arc::default(),
             generation: 0,
             base_generation: 0,
@@ -593,6 +692,20 @@ impl FileEditor {
     }
     /// Retain the native immutable Rope revision without copying/scanning text.
     pub fn queue_snapshot(&mut self, text: Text) -> DraftWrite {
+        // An editor without ownership has no edit of its own: capturing the
+        // text it already holds stays clean instead of becoming an unowned
+        // pending revision. A different text is refused when it is persisted.
+        if self.lock.is_none()
+            && !self.draft.pending_input
+            && self.draft.text == text
+            && self.draft.base == text
+        {
+            // Rebind both snapshots to the new native revision, so equal
+            // bytes stay clean in the constant-time hint too.
+            self.draft.base = text.clone();
+            self.draft.text = text;
+            return self.pending_write();
+        }
         self.draft.text = text;
         self.draft.pending_input = true;
         self.advance_generation();
@@ -749,8 +862,11 @@ impl FileEditor {
             write.draft.pending_input = false;
             // Keep the conflict baseline paired with the visible source until
             // recovery persistence succeeds. A failed refresh must not authorize
-            // saving the old visible text over the external version.
-            write.persist()?;
+            // saving the old visible text over the external version. An editor
+            // without ownership has no journal; it only adopts the new text.
+            if self.lock.is_some() {
+                write.persist()?;
+            }
             self.draft.base = current.clone();
             self.draft.text = current;
             self.draft.pending_input = false;
@@ -774,7 +890,9 @@ impl FileEditor {
         write.draft.base = current.clone();
         write.draft.text = current.clone();
         write.draft.pending_input = false;
-        write.persist()?;
+        if self.lock.is_some() {
+            write.persist()?;
+        }
         self.base_generation = self.generation;
         self.draft.base = current.clone();
         self.draft.text = current;
@@ -807,6 +925,7 @@ impl FileEditor {
             on_disk: self.on_disk,
             journal: self.journal.clone(),
             lock: self.lock.clone(),
+            lock_path: self.lock_path.clone(),
             writes: self.writes.clone(),
             generation: self.generation,
             base_generation: self.base_generation,
@@ -854,6 +973,12 @@ impl FileEditor {
         Ok(())
     }
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        // An editor without ownership has nothing of its own to publish. A
+        // clean navigation save touches nothing; an edit must own the note.
+        if self.lock.is_none() {
+            anyhow::ensure!(!self.dirty() && !self.draft.pending_input, "{NOT_OWNED}");
+            return Ok(Save::Saved);
+        }
         let writes = self.writes.clone();
         let mut order = writes
             .save
@@ -1767,7 +1892,7 @@ mod tests {
         editor.set_text("durable draft".into()).unwrap();
         // dup and fork inheritance share the same kernel open-file description.
         // Keep that descriptor alive across close/reopen, without any timing race.
-        let inherited = editor.lock.file.try_clone().unwrap();
+        let inherited = editor.lock.as_ref().unwrap().file.try_clone().unwrap();
         assert_note_locked(&path, &state);
         drop(editor);
         let reopened = FileEditor::open(&path, &state).unwrap();
@@ -1783,7 +1908,7 @@ mod tests {
         let state = directory.path().join("state");
         fs::write(&path, "base").unwrap();
         let mut editor = FileEditor::open(&path, &state).unwrap();
-        let inherited = editor.lock.file.try_clone().unwrap();
+        let inherited = editor.lock.as_ref().unwrap().file.try_clone().unwrap();
         let write = editor.queue_text("last queued draft".into());
         drop(editor);
         assert_note_locked(&path, &state);
@@ -1836,7 +1961,7 @@ mod tests {
         for _ in 0..128 {
             fs::write(&path, "base").unwrap();
             let mut editor = FileEditor::open(&path, &state).unwrap();
-            let inherited_editor = editor.lock.file.try_clone().unwrap();
+            let inherited_editor = editor.lock.as_ref().unwrap().file.try_clone().unwrap();
             editor.set_text("orphaned unsaved draft".into()).unwrap();
             fs::remove_file(&path).unwrap();
             let error = FileEditor::reserve_destination(&path, &state)
@@ -1860,7 +1985,7 @@ mod tests {
             drop(inherited_editor);
             assert_note_locked(&path, &state);
             assert_eq!(editor.save().unwrap(), Save::Saved);
-            let inherited_saved_editor = editor.lock.file.try_clone().unwrap();
+            let inherited_saved_editor = editor.lock.as_ref().unwrap().file.try_clone().unwrap();
             drop(editor);
             fs::remove_file(&path).unwrap();
             let reservation = FileEditor::reserve_destination(&path, &state).unwrap();
@@ -3090,6 +3215,185 @@ mod local_writer_review_tests {
         assert_eq!(
             JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
             vec![false, true]
+        );
+    }
+}
+
+/// #2817: an automatic Edit opens without taking ownership of the note.
+#[cfg(test)]
+mod deferred_open_tests {
+    use super::*;
+
+    fn note() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, b"# Note\n\nbody\n").unwrap();
+        let state = temp.path().join("drafts");
+        (temp, path, state)
+    }
+
+    fn busy(error: &anyhow::Error) -> bool {
+        format!("{error:#}").contains(BEING_EDITED)
+    }
+
+    #[test]
+    fn deferred_open_owns_nothing_writes_nothing_and_leaves_the_note_editable_elsewhere() {
+        let (_temp, path, state) = note();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let authority =
+            okilum_write_authority::Authority::for_root(path.parent().unwrap()).unwrap();
+        // A held local-writer drain refuses every writer operation.
+        let hold = authority.begin_drain("deferred-open").unwrap();
+        let mut deferred = FileEditor::open_deferred(&path, &state).unwrap();
+        assert!(!deferred.owns_lock());
+        assert!(!deferred.dirty() && !deferred.has_pending_revision());
+        assert_eq!(deferred.text(), "# Note\n\nbody\n");
+        // Clean navigation/quit paths: no admission, no journal, no folder.
+        assert_eq!(deferred.save().unwrap(), Save::Saved);
+        deferred.flush_draft().unwrap();
+        deferred.recovery_write().persist().unwrap();
+        assert!(!state.exists(), "no recovery folder or journal is created");
+        // Another window can take the note while this one only shows it.
+        let other = FileEditor::open(&path, &state).unwrap();
+        assert!(
+            other.owns_lock(),
+            "positive control: an explicit Edit owns it"
+        );
+        drop(other);
+        // An edit without ownership is refused and never reaches disk.
+        deferred.queue_text("unowned".into()).persist().unwrap_err();
+        deferred.save().unwrap_err();
+        assert_eq!(fs::read(&path).unwrap(), b"# Note\n\nbody\n");
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert!(
+            fs::read_dir(&state).unwrap().all(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "lock")),
+            "only the other editor's lock file, never a journal"
+        );
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+    }
+
+    #[test]
+    fn deferred_open_refuses_a_note_another_editor_holds() {
+        let (_temp, path, state) = note();
+        let owner = FileEditor::open(&path, &state).unwrap();
+        let error = FileEditor::open_deferred(&path, &state).err().unwrap();
+        assert!(busy(&error), "{error:#}");
+        drop(owner);
+        assert!(FileEditor::open_deferred(&path, &state).is_ok());
+    }
+
+    #[test]
+    fn first_edit_takes_ownership_or_refuses_when_another_window_took_it() {
+        let (_temp, path, state) = note();
+        let mut deferred = FileEditor::open_deferred(&path, &state).unwrap();
+        deferred.acquire_lock().unwrap();
+        assert!(deferred.owns_lock());
+        let error = FileEditor::open(&path, &state).err().unwrap();
+        assert!(busy(&error), "the owner now excludes others: {error:#}");
+        deferred.set_text("# Note\n\nedited\n".into()).unwrap();
+        assert_eq!(deferred.save().unwrap(), Save::Saved);
+        assert_eq!(fs::read(&path).unwrap(), b"# Note\n\nedited\n");
+        drop(deferred);
+
+        let mut late = FileEditor::open_deferred(&path, &state).unwrap();
+        let owner = FileEditor::open(&path, &state).unwrap();
+        let error = late.acquire_lock().unwrap_err();
+        assert!(busy(&error), "{error:#}");
+        assert!(!late.owns_lock());
+        drop(owner);
+    }
+
+    #[test]
+    fn deferred_open_refuses_an_unsaved_recovery_draft() {
+        let (_temp, path, state) = note();
+        let mut explicit = FileEditor::open(&path, &state).unwrap();
+        explicit.set_text("unsaved".into()).unwrap();
+        drop(explicit);
+        assert!(FileEditor::open_deferred(&path, &state).is_err());
+        assert_eq!(FileEditor::open(&path, &state).unwrap().text(), "unsaved");
+    }
+
+    /// Through the real open path: a folder whose DACL denies adding files
+    /// (no read-only attribute anywhere) refuses an automatic Edit.
+    #[cfg(windows)]
+    #[test]
+    fn windows_deferred_open_refuses_a_folder_whose_acl_denies_replacement() {
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::{
+                Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            },
+        };
+        fn set_dacl(path: &Path, sddl: &str) {
+            let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+            let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut raw = std::ptr::null_mut();
+            unsafe {
+                assert_ne!(
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        text.as_ptr(),
+                        1,
+                        &mut raw,
+                        std::ptr::null_mut()
+                    ),
+                    0
+                );
+                let ok = SetFileSecurityW(
+                    name.as_ptr(),
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    raw,
+                );
+                LocalFree(raw as _);
+                assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+            }
+        }
+        use std::os::windows::ffi::OsStrExt;
+        let (_temp, path, state) = note();
+        let folder = path.parent().unwrap().to_owned();
+        assert!(
+            FileEditor::open_deferred(&path, &state).is_ok(),
+            "positive control"
+        );
+        // The owner may read, traverse and restore the DACL, not add files.
+        set_dacl(&folder, "D:P(A;OICI;FRFXWD;;;OW)(A;OICI;FA;;;SY)");
+        let result = FileEditor::open_deferred(&path, &state);
+        set_dacl(&folder, "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)");
+        assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+        let error = result
+            .err()
+            .expect("an ACL-denied folder is not editable in place");
+        assert!(error.downcast_ref::<NotWritable>().is_some(), "{error:#}");
+        assert!(FileEditor::open_deferred(&path, &state).is_ok(), "restored");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_open_refuses_a_note_that_cannot_be_saved_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, path, state) = note();
+        let folder = path.parent().unwrap().to_owned();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = FileEditor::open_deferred(&path, &state);
+        let writable = rustix::fs::access(&folder, rustix::fs::Access::WRITE_OK).is_ok();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        if writable {
+            return; // Running as a user that ignores permissions.
+        }
+        let error = result
+            .err()
+            .expect("a read-only folder is not editable in place");
+        assert!(error.downcast_ref::<NotWritable>().is_some(), "{error:#}");
+        assert!(
+            FileEditor::open_deferred(&path, &state).is_ok(),
+            "positive control"
         );
     }
 }

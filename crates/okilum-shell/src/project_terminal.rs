@@ -7,13 +7,15 @@ use gpui_component::{
 mod command;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows_console;
 
 #[cfg(test)]
 #[derive(Default)]
-struct Launches(Vec<PathBuf>);
+pub(crate) struct Launches(pub(crate) Vec<PathBuf>);
 #[cfg(test)]
 impl gpui::Global for Launches {}
-gpui::actions!(project_terminal, [OpenTerminal]);
+gpui::actions!(project_terminal, [OpenTerminal, OpenInTerminal]);
 
 pub(crate) fn bind_keys(cx: &mut App) {
     // Input/editor-specific bindings retain their meaning, including Ctrl+J.
@@ -21,6 +23,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-j", OpenTerminal, context),
         KeyBinding::new("ctrl-`", OpenTerminal, context),
+        // Next to Reveal (alt-cmd-r) and Copy vault path (alt-cmd-c).
+        KeyBinding::new("alt-cmd-t", OpenInTerminal, Some("Reader")),
     ]);
 }
 fn setting_path(project: &Path) -> anyhow::Result<PathBuf> {
@@ -41,30 +45,50 @@ fn read_saved(path: &Path) -> anyhow::Result<Option<String>> {
         Err(e) => Err(e.into()),
     }
 }
-fn available(program: &str) -> bool {
-    fn executable(path: &Path) -> bool {
+/// A launcher can run: a regular executable file. On Windows the Windows
+/// Terminal App Execution Alias is a reparse point that cannot be followed,
+/// so its own entry counts.
+fn executable(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.symlink_metadata().is_ok_and(|m| !m.is_dir())
+    }
+    #[cfg(not(windows))]
+    {
         let Ok(metadata) = path.metadata() else {
             return false;
         };
-        if !metadata.is_file() {
-            return false;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            metadata.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            true
-        }
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
     }
-    if Path::new(program).is_absolute() {
-        return executable(Path::new(program));
-    }
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| executable(&p.join(program))))
 }
+
+/// The Windows system directory from the OS, not from the environment.
+#[cfg(windows)]
+fn system_directory() -> Option<PathBuf> {
+    windows_console::system_directory()
+}
+#[cfg(not(windows))]
+fn system_directory() -> Option<PathBuf> {
+    None
+}
+
+/// Trusted absolute programs only (see `command::resolve`): never the
+/// current directory, a relative PATH entry or anything inside `excluded`.
+fn trusted(excluded: Vec<PathBuf>) -> impl Fn(&str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH");
+    let system = system_directory();
+    move |name| {
+        command::resolve(
+            name,
+            path.as_deref(),
+            &excluded,
+            system.as_deref(),
+            executable,
+        )
+    }
+}
+
 fn initial_for_project(
     project: &okilum_t3::projects::Project,
     state: &Path,
@@ -121,20 +145,50 @@ fn initial_for_project(
     .map_err(anyhow::Error::msg)
 }
 fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
-    use anyhow::Context as _;
     let initial = initial_for_project(project, &reader_history::state_directory()?)?;
     let os = std::env::consts::OS;
     let terminal = std::env::var("TERMINAL").ok();
-    let launcher =
-        command::launcher(os, terminal.as_deref(), available).map_err(anyhow::Error::msg)?;
-    let plan = command::plan(os, &initial, &launcher);
-    let mut child = std::process::Command::new(&plan.program)
+    let mut excluded = vec![project.folder.clone()];
+    excluded.extend(project.folder.canonicalize());
+    let launcher = command::launcher(os, terminal.as_deref(), trusted(excluded))
+        .map_err(anyhow::Error::msg)?;
+    run(command::plan(&initial, &launcher))
+}
+
+/// The process for a plan. It inherits Okilum's own working directory, never
+/// the selected folder: the folder travels as an argument. An AppImage's own
+/// variables are not inherited.
+fn process(plan: &command::Plan, get: impl Fn(&str) -> Option<String>) -> std::process::Command {
+    let mut process = std::process::Command::new(&plan.program);
+    process
         .args(&plan.args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in command::appimage_env(get) {
+        match value {
+            Some(value) => process.env(name, value),
+            None => process.env_remove(name),
+        };
+    }
+    process
+}
+
+/// Starts the planned terminal and waits for its launcher, keeping at most
+/// 8 KiB of its diagnostics.
+fn run(plan: command::Plan) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    // PowerShell without Windows Terminal: its own console, real console
+    // handles, nothing inherited; the console outlives this launch.
+    #[cfg(windows)]
+    if plan.new_console {
+        windows_console::spawn(&plan.program, &plan.args)
+            .with_context(|| format!("Cannot start system terminal {}", plan.program.display()))?;
+        return Ok(());
+    }
+    let mut child = process(&plan, |name| std::env::var(name).ok())
         .spawn()
-        .with_context(|| format!("Cannot start system terminal {}", plan.program))?;
+        .with_context(|| format!("Cannot start system terminal {}", plan.program.display()))?;
     // Drain stderr without retaining unbounded terminal diagnostics.
     use std::io::Read as _;
     let mut diagnostic = Vec::new();
@@ -152,11 +206,91 @@ fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
     anyhow::ensure!(
         status.success(),
         "System terminal {} failed ({}): {}",
-        plan.program,
+        plan.program.display(),
         status,
         String::from_utf8_lossy(&diagnostic).trim()
     );
     Ok(())
+}
+
+/// macOS application «Open in terminal» uses. Okilum has no terminal-app
+/// preference yet; Terminal.app is the system's own.
+const MAC_TERMINAL_APP: &str = "Terminal";
+
+/// The folder a terminal opens in for a vault item: a folder itself, or the
+/// folder that contains a file.
+pub(crate) fn folder_for(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        path.to_owned()
+    } else {
+        path.parent()
+            .map(Path::to_owned)
+            .unwrap_or_else(|| path.to_owned())
+    }
+}
+
+/// The launch of «Open in terminal»: launchers come from trusted locations
+/// outside the vault and the folder is an argument (#2837 review).
+fn folder_launch(
+    directory: &Path,
+    resolve: impl Fn(&str) -> Option<PathBuf>,
+) -> anyhow::Result<command::Plan> {
+    let os = std::env::consts::OS;
+    let terminal = std::env::var("TERMINAL").ok();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+    let launcher = command::folder_launcher(os, terminal.as_deref(), desktop.as_deref(), resolve)
+        .map_err(anyhow::Error::msg)?;
+    command::folder_plan(directory, &launcher, MAC_TERMINAL_APP).map_err(anyhow::Error::msg)
+}
+
+fn excluded(directory: &Path, vault: &Path) -> Vec<PathBuf> {
+    let mut excluded = vec![vault.to_owned(), directory.to_owned()];
+    excluded.extend(vault.canonicalize());
+    excluded.extend(directory.canonicalize());
+    excluded
+}
+
+/// «Open in terminal» (#2837): the system terminal in `path`'s folder, on a
+/// dedicated thread; a launch failure is reported in the originating window.
+pub(crate) fn open_folder(path: &Path, vault: &Path, window: &mut Window, cx: &mut App) {
+    let directory = okilum_core::vault::plain_path(&folder_for(path));
+    #[cfg(test)]
+    if cx.has_global::<Launches>() {
+        cx.global_mut::<Launches>().0.push(directory);
+        return;
+    }
+    let vault = vault.to_owned();
+    report(
+        move || {
+            let resolve = trusted(excluded(&directory, &vault));
+            run(folder_launch(&directory, resolve)?)
+        },
+        window,
+        cx,
+    );
+}
+
+fn report(
+    launch: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // A terminal can remain alive for hours. Neither the UI thread nor GPUI's
+    // shared background worker pool waits for that process. Reap on a dedicated
+    // thread and deliver any launch/exit failure back to the originating window.
+    let (send, receive) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = send.send_blocking(launch());
+    });
+    let window = window.window_handle();
+    cx.spawn(async move |cx| {
+        if let Ok(Err(error)) = receive.recv().await {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(format!("Terminal could not open: {error:#}"), cx)
+            });
+        }
+    })
+    .detach();
 }
 pub(crate) fn open_project(area: PathBuf, window: &mut Window, cx: &mut App) {
     match okilum_t3::projects::Project::read(&area) {
@@ -170,23 +304,8 @@ pub(crate) fn open(project: &okilum_t3::projects::Project, window: &mut Window, 
         cx.global_mut::<Launches>().0.push(project.folder.clone());
         return;
     }
-    // A terminal can remain alive for hours. Neither the UI thread nor GPUI's
-    // shared background worker pool waits for that process. Reap on a dedicated
-    // thread and deliver any launch/exit failure back to the originating window.
     let project = project.clone();
-    let (send, receive) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = send.send_blocking(launch(&project));
-    });
-    let window = window.window_handle();
-    cx.spawn(async move |cx| {
-        if let Ok(Err(error)) = receive.recv().await {
-            let _ = window.update(cx, |_, window, cx| {
-                window.push_notification(format!("Terminal could not open: {error:#}"), cx)
-            });
-        }
-    })
-    .detach();
+    report(move || launch(&project), window, cx);
 }
 impl Reader {
     pub(super) fn open_project_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

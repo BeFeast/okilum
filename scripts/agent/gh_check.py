@@ -34,11 +34,12 @@ def gh_json(*args):
     return json.loads(output("gh", *args))
 
 
-# The pre-merge gate (Oleg 13.11 ~14:20): checks that compile nothing. The
-# full set (this lane's ordinary verdict) runs once a day before Stable.
+# The pre-merge gate (Oleg 13.11 ~14:20, ~15:10): formatting, Python and
+# script checks plus workspace clippy; no Rust test suites, no Windows/macOS.
+# The full set (this lane's ordinary verdict) runs once a day before Stable.
 FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formatting",
                  "Verify agent helper controls", "Run CI, releases and updater Python suites",
-                 "Verify bundled Sync Help and brand"}
+                 "Verify bundled Sync Help and brand", "Lint every workspace target offline"}
 
 
 def fast_verdict(info):
@@ -107,7 +108,8 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
                      and windows.get("conclusion") == "success"
                      and {"Prepare and verify Windows vendor", "Run native Windows recovery controls",
                           "Run native Windows delta console controls", "Run native Windows Sync identity controls",
-                          "Run native Windows atlas upload controls"} <= native) else 75
+                          "Run native Windows atlas upload controls",
+                          "Run native Windows terminal console controls"} <= native) else 75
     if info.get("conclusion") != "failure":
         return 75
     failed = [s for job in jobs for s in job.get("steps", []) if s.get("conclusion") == "failure"]
@@ -159,7 +161,7 @@ def main():
     parser.add_argument("--receipt", type=Path, help="also write the final GitHub JSON receipt to this path")
     parser.add_argument("--benchmark", action="store_true", help="repeat checks with warm target on the same runner VM")
     parser.add_argument("--fast", action="store_true",
-                        help="pre-merge gate: formatting, Python and script checks; compiles nothing")
+                        help="pre-merge gate: formatting, Python and script checks, workspace clippy; no tests")
     parser.add_argument("--publication-baseline", help="public main SHA for same-host editor controls; requires --dispatch")
     args = parser.parse_args()
     if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):

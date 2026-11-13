@@ -84,13 +84,48 @@ jobs:
           else
             python3 scripts/releases/macos-hosted.py preflight
           fi
-      - uses: actions/cache@v4
+      # Two cache namespaces by trust level (#2877 review). Shipping restores and
+      # saves only beta-macos-shipping-*, saved by shipping runs alone. Verify-only
+      # PR previews run PR-controlled build scripts with the same HOME paths, so they
+      # use preview-macos-* only and never restore from or save into the shipping
+      # namespace. Shipping key hashes come from the product source that is
+      # actually compiled (macos-hosted.py checks out inputs.source, possibly older
+      # than the workflow commit), not from the workflow checkout.
+      - name: Derive cache keys from the compiled product source
+        id: cache-key
+        env:
+          PRODUCT_SOURCE: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          if [ "$VERIFY_ONLY" = true ]; then
+            echo "prefix=preview-macos-v1-$RUNNER_ARCH-" >>"$GITHUB_OUTPUT"
+            echo "key=preview-macos-v1-$RUNNER_ARCH-$GITHUB_RUN_ID" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          source="${PRODUCT_SOURCE:-$GITHUB_SHA}"
+          [[ $source =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$source" "$GITHUB_SHA"
+          toolchain=$(git show "$source:rust-toolchain.toml" | shasum -a 256 | cut -c1-16)
+          # ls-tree lists blob ids, so the patch set is content-addressed.
+          inputs=$( { git show "$source:Cargo.lock"; git ls-tree -r "$source" -- scripts/patches \
+            | grep '\.diff$' || true; } | shasum -a 256 | cut -c1-16)
+          prefix="beta-macos-shipping-v4-$RUNNER_ARCH-$toolchain-"
+          echo "prefix=$prefix" >>"$GITHUB_OUTPUT"
+          echo "key=$prefix$inputs" >>"$GITHUB_OUTPUT"
+      - name: Restore Cargo cache (own trust namespace only)
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
             ~/.cache/okilum-macos/reader-arm64/
-          key: beta-macos-v2-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
+          # Exact-key-only caching missed whenever Cargo.lock changed between
+          # betas (most runs: ~33 vs ~17 min). Fall back to the newest cache of the
+          # same namespace and toolchain; Cargo fingerprints rebuild what changed.
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: |
+            ${{ steps.cache-key.outputs.prefix }}
       - name: Build, sign and notarize exact product source
         env:
           PRODUCT_SOURCE: ${{ inputs.source }}
@@ -107,6 +142,15 @@ jobs:
           else
             python3 scripts/releases/macos-hosted.py build
           fi
+      - name: Save Cargo cache (own trust namespace only)
+        if: success() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cache/okilum-macos/reader-arm64/
+          key: ${{ steps.cache-key.outputs.key }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.verify_only == 'true' && 'macos-verify' || 'macos-shipping' }}-${{ inputs.source }}-${{ inputs.build }}

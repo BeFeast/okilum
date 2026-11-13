@@ -37,6 +37,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: native-viewers-v1
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Prepare and verify pinned vendor
         shell: bash

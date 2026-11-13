@@ -40,7 +40,9 @@ jobs:
         run: |
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
-      - uses: actions/cache@v4
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/
@@ -53,3 +55,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Reader tests
         run: cargo test -p okilum-core -p okilum-shell
+      # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+      - name: Save Cargo cache
+        if: ${{ success() && steps.cargo-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

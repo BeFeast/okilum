@@ -47,8 +47,62 @@ def receipt():
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
                 "Run native Windows delta console controls", "Run native Windows Sync identity controls",
-                "Run native Windows atlas upload controls")]}]}
+                "Run native Windows atlas upload controls",
+                "Run native Windows terminal console controls")]}]}
 
+
+
+MAIN_REF = "github.ref == 'refs/heads/main'"
+
+
+def _top_level(expression, operator):
+    """Split on operator outside parentheses and quotes."""
+    parts, depth, quote, start, i = [], 0, False, 0, 0
+    while i < len(expression):
+        char = expression[i]
+        if char == "'":
+            quote = not quote
+        elif not quote and char == "(":
+            depth += 1
+        elif not quote and char == ")":
+            depth -= 1
+        elif not quote and depth == 0 and expression.startswith(operator, i):
+            parts.append(expression[start:i])
+            start = i + len(operator)
+            i = start
+            continue
+        i += 1
+    return parts + [expression[start:]]
+
+
+def restricts_to_main(guard):
+    """True when the expression is a conjunction with the exact main-ref check."""
+    expression = str(guard or "").strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    if len(_top_level(expression, "||")) != 1:
+        return False
+    return any(" ".join(part.split()) == MAIN_REF for part in _top_level(expression, "&&"))
+
+
+def cache_save_violations(workflows):
+    """(cache actions found, unguarded saves) over {file name: parsed workflow}."""
+    found, violations = 0, []
+    for file, workflow in sorted(workflows.items()):
+        for name, job in (workflow or {}).get("jobs", {}).items():
+            job_guard = restricts_to_main(job.get("if"))
+            for step in job.get("steps", []):
+                action = str(step.get("uses", "")).lower().split("@")[0]
+                where = f"{file}:{name}:{step.get('uses')}"
+                if action in ("actions/cache", "actions/cache/save"):
+                    found += 1
+                    if not (job_guard or restricts_to_main(step.get("if"))):
+                        violations.append(where)
+                elif action == "swatinem/rust-cache":
+                    found += 1
+                    if not restricts_to_main((step.get("with") or {}).get("save-if")):
+                        violations.append(where)
+    return found, violations
 
 class VerdictTests(unittest.TestCase):
     def setUp(self):
@@ -306,23 +360,75 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(helper.verdict(failed, SHA, fast=True), 1)
         self.assertEqual(helper.verdict(self.pre_merge_receipt(), "b" * 40, fast=True), 75)
 
-    def test_pre_merge_job_compiles_nothing(self):
+    def test_pre_merge_job_lints_but_runs_no_rust_tests(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
         on = workflow.get("on", workflow.get(True))
         self.assertIn("agent-checks-fast/**", on["push"]["branches"])
-        self.assertNotIn("schedule", on, "no hourly run: the full set runs daily before Stable")
+        # No hourly run (#2863). One daily run on main only warms the caches that
+        # branch runs restore; branches no longer save their own (#2881).
+        crons = [entry["cron"].split() for entry in on.get("schedule", [])]
+        self.assertLessEqual(len(crons), 1)
+        for minute, hour, day, month, weekday in crons:
+            self.assertTrue(minute.isdigit() and hour.isdigit(), "at most one run a day")
         fast = "startsWith(github.ref, 'refs/heads/agent-checks-fast/')"
         jobs = workflow["jobs"]
-        self.assertEqual(jobs["pre-merge"]["if"], "${{ " + fast + " }}")
+        self.assertEqual(jobs["pre-merge"]["if"],
+                         "${{ " + fast + " || github.event_name == 'schedule' }}")
         for name in ("linux", "windows-recovery"):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
-        for step in steps:
-            run = step.get("run", "")
-            for compiling in ("cargo build", "cargo test", "cargo clippy", "cargo check", "cargo run",
-                              "at-vault-regression-control"):
-                self.assertNotIn(compiling, run, step.get("name"))
+        runs = [step.get("run", "") for step in steps]
+        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", runs)
+        for run in runs:
+            for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
+                          "at-vault-regression-control", "linux-rust-tests"):
+                self.assertNotIn(heavy, run)
+        # The pre-merge cache must survive edits to this workflow.
+        cache = next(s for s in steps if s.get("id") == "cache")
+        self.assertNotIn("agent-checks.yml", cache["with"]["key"])
+
+    def test_only_main_saves_cargo_caches(self):
+        # 10 GB repository quota (#2880, #2881): branch saves evicted main's caches.
+        directory = ROOT / ".github/workflows"
+        workflows = {path.name: yaml.safe_load(path.read_text())
+                     for path in sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])}
+        found, violations = cache_save_violations(workflows)
+        self.assertEqual(violations, [])
+        self.assertGreaterEqual(found, 20, "cache actions must be discovered")
+
+    def test_cache_save_guard_negative_controls(self):
+        main = "${{ github.ref == 'refs/heads/main' }}"
+        save = lambda uses, guard: {"w.yml": {"jobs": {"j": {"steps": [
+            {"uses": uses, "if": guard, "with": {"path": "target"}}]}}}}
+        # Positive control: a guarded save passes.
+        self.assertEqual(cache_save_violations(save("actions/cache/save@v4", main)), (1, []))
+        # 1. *.yaml files are scanned (the caller globs both; the scanner sees the name).
+        found, bad = cache_save_violations({"w.yaml": save("actions/cache/save@v4", None)["w.yml"]})
+        self.assertEqual((found, len(bad)), (1, 1))
+        # 2. Action names are matched case-insensitively.
+        for uses in ("Actions/cache/save@v4", "ACTIONS/CACHE@v4", "swatinem/Rust-Cache@v2"):
+            found, bad = cache_save_violations(save(uses, None))
+            self.assertEqual((found, len(bad)), (1, 1), uses)
+        # 3. Zero discovered cache actions is reported, not silently green.
+        self.assertEqual(cache_save_violations({"w.yml": {"jobs": {"j": {"steps": []}}}})[0], 0)
+        # 4. The guard must restrict to main: a disjunction or negation does not.
+        for guard in ("${{ github.ref == 'refs/heads/main' || github.ref != 'refs/heads/main' }}",
+                      "github.ref != 'refs/heads/main'",
+                      "${{ !(github.ref == 'refs/heads/main') }}",
+                      "${{ always() || github.ref == 'refs/heads/main' }}"):
+            self.assertEqual(len(cache_save_violations(save("actions/cache/save@v4", guard))[1]), 1, guard)
+        for guard in ("${{ (!cancelled() && steps.c.outputs.cache-hit != 'true') && github.ref == 'refs/heads/main' }}",
+                      "success() && github.ref == 'refs/heads/main'"):
+            self.assertEqual(cache_save_violations(save("actions/cache/save@v4", guard))[1], [], guard)
+        swatinem = {"w.yml": {"jobs": {"j": {"steps": [{"uses": "Swatinem/rust-cache@v2", "with": {
+            "save-if": "${{ github.ref == 'refs/heads/main' || true }}"}}]}}}}
+        self.assertEqual(len(cache_save_violations(swatinem)[1]), 1)
+        # A main-only job guard covers its steps; a disjunctive one does not.
+        job = lambda guard: {"w.yml": {"jobs": {"j": {"if": guard, "steps": [
+            {"uses": "actions/cache@v4", "with": {"path": "target"}}]}}}}
+        self.assertEqual(cache_save_violations(job("github.ref == 'refs/heads/main' && github.run_attempt == 1"))[1], [])
+        self.assertEqual(len(cache_save_violations(job("github.ref == 'refs/heads/main' || true"))[1]), 1)
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):
@@ -358,6 +464,22 @@ class VerdictTests(unittest.TestCase):
         self.assertNotIn("if", step)
         self.assertIn("python scripts/ci/windows-atlas-upload.py", step["run"])
         self.assertIn("exit $LASTEXITCODE", step["run"])
+
+    def test_windows_terminal_console_controls_are_required_in_the_routine_gate(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA), 0)
+        native = data["jobs"][1]["steps"]
+        terminal = next(step for step in native if step["name"] == "Run native Windows terminal console controls")
+        for state in ("skipped", "failure"):
+            terminal["conclusion"] = state
+            self.assertEqual(helper.verdict(data, SHA), 75)
+        native.remove(terminal)
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        step = next(step for step in workflow["jobs"]["windows-recovery"]["steps"]
+                    if step.get("name") == "Run native Windows terminal console controls")
+        self.assertNotIn("if", step)
+        self.assertIn("python scripts/ci/windows-terminal-console.py", step["run"])
 
     def test_vault_regression_control_must_run_for_normal_worker_checks(self):
         info = receipt()

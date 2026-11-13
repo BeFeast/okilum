@@ -30,78 +30,84 @@ impl Reader {
                 .child("Loading project…")
                 .into_any_element();
         }
+        // Nested file/note draws start from this small frame; the surrounding
+        // builders get their own frames before or after it (#2825).
         if self.file_preview.is_some() {
-            let status = self.viewer_chrome(cx).status;
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
-                .children(
-                    status
-                        .as_ref()
-                        .map(|status| reader_status_line::render(status, "file-status", None, cx)),
-                )
-                .into_any_element();
+            let status = self.file_surface_status(cx);
+            let main = self.render_main(window, cx);
+            return file_surface(main, status);
         }
         if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
             return self.render_main(window, cx);
         }
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .relative()
+        let header = self.note_surface_header(window, cx);
+        let main = self.render_main(window, cx);
+        note_surface(header, main)
+    }
+
+    #[inline(never)]
+    fn file_surface_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.viewer_chrome(cx)
+            .status
+            .as_ref()
+            .map(|status| reader_status_line::render(status, "file-status", None, cx))
+    }
+
+    /// Header, sync-conflict banner and encoding notice, in display order.
+    #[inline(never)]
+    fn note_surface_header(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> [Option<AnyElement>; 3] {
+        let header = div()
+            .debug_selector(|| "document-header-viewport".into())
+            .flex_none()
+            .overflow_hidden()
+            .h(px(48.))
+            .child(self.render_document_header(window, cx))
+            .into_any_element();
+        #[cfg(target_os = "linux")]
+        let banner = self.render_sync_conflict_banner(cx);
+        #[cfg(not(target_os = "linux"))]
+        let banner = None;
+        let notice = self
+            .note_encoding_damaged
+            .then(|| self.note_encoding_notice(cx));
+        [Some(header), banner, notice]
+    }
+
+    #[inline(never)]
+    fn note_encoding_notice(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .debug_selector(|| "note-encoding-notice".into())
+            .px_4()
+            .py_1()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .gap_2()
             .child(
                 div()
-                    .debug_selector(|| "document-header-viewport".into())
-                    .flex_none()
-                    .overflow_hidden()
-                    .h(px(48.))
-                    .child(self.render_document_header(window, cx)),
+                    .flex_1()
+                    .min_w_0()
+                    .child(reader_loading::ENCODING_NOTICE),
             )
-            .children({
-                #[cfg(target_os = "linux")]
-                {
-                    self.render_sync_conflict_banner(cx)
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    None::<AnyElement>
-                }
-            })
-            .when(self.note_encoding_damaged, |view| {
-                view.child(
-                    h_flex()
-                        .debug_selector(|| "note-encoding-notice".into())
-                        .px_4()
-                        .py_1()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(reader_loading::ENCODING_NOTICE),
-                        )
-                        .child(
-                            Button::new("note-encoding-repair")
-                                .debug_selector(|| "note-encoding-repair".into())
-                                .small()
-                                .label(if self.encoding_repair_pending.is_some() {
-                                    "Repairing…"
-                                } else {
-                                    "Repair"
-                                })
-                                .disabled(
-                                    self.encoding_repair_pending.is_some() || self.move_applying,
-                                )
-                                .on_click(cx.listener(|reader, _, window, cx| {
-                                    reader.repair_note_encoding(window, cx)
-                                })),
-                        ),
-                )
-            })
-            .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
+            .child(
+                Button::new("note-encoding-repair")
+                    .debug_selector(|| "note-encoding-repair".into())
+                    .small()
+                    .label(if self.encoding_repair_pending.is_some() {
+                        "Repairing…"
+                    } else {
+                        "Repair"
+                    })
+                    .disabled(self.encoding_repair_pending.is_some() || self.move_applying)
+                    .on_click(
+                        cx.listener(|reader, _, window, cx| {
+                            reader.repair_note_encoding(window, cx)
+                        }),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -141,7 +147,7 @@ impl Reader {
         if self.file_preview.is_some() {
             return self.render_file_header(window, cx);
         }
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        use gpui_component::menu::PopupMenuItem;
         let is_file = self.file_preview.is_some();
         let file_editable = self
             .file_preview
@@ -238,42 +244,34 @@ impl Reader {
             .min_w_0()
             .px_4()
             .gap_1()
-            .child(
-                reader_icon_button(
-                    "reader-history-back",
-                    IconName::ArrowLeft,
-                    reader_shortcuts::hint("Back", &HistoryBack, cx),
-                    cx,
-                )
-                .debug_selector(|| "reader-history-back".into())
-                .disabled(self.navigation.history_ix == 0)
-                .on_click(cx.listener(|this, _, window, cx| this.history_move(-1, window, cx))),
-            )
-            .child(
-                reader_icon_button(
-                    "reader-history-forward",
-                    IconName::ArrowRight,
-                    reader_shortcuts::hint("Forward", &HistoryForward, cx),
-                    cx,
-                )
-                .debug_selector(|| "reader-history-forward".into())
-                .disabled(self.navigation.history_ix + 1 >= self.navigation.history.len())
-                .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
-            )
+            .child(header_icon_button(
+                "reader-history-back",
+                IconName::ArrowLeft,
+                reader_shortcuts::hint("Back", &HistoryBack, cx),
+                self.navigation.history_ix == 0,
+                false,
+                cx.listener(|this, _, window, cx| this.history_move(-1, window, cx)),
+                cx,
+            ))
+            .child(header_icon_button(
+                "reader-history-forward",
+                IconName::ArrowRight,
+                reader_shortcuts::hint("Forward", &HistoryForward, cx),
+                self.navigation.history_ix + 1 >= self.navigation.history.len(),
+                false,
+                cx.listener(|this, _, window, cx| this.history_move(1, window, cx)),
+                cx,
+            ))
             .when(show_reveal, |row| {
-                row.child(
-                    reader_icon_button(
-                        "reader-reveal-current",
-                        Icon::default().path(brand::READER_FOCUS_ICON),
-                        reader_shortcuts::hint("Reveal in sidebar", &FocusCurrentFolder, cx),
-                        cx,
-                    )
-                    .debug_selector(|| "reader-reveal-current".into())
-                    .disabled(!self.tree.can_reveal(self.selected_file()))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
-                    ),
-                )
+                row.child(header_icon_button(
+                    "reader-reveal-current",
+                    Icon::default().path(brand::READER_FOCUS_ICON),
+                    reader_shortcuts::hint("Reveal in sidebar", &FocusCurrentFolder, cx),
+                    !self.tree.can_reveal(self.selected_file()),
+                    false,
+                    cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
+                    cx,
+                ))
             })
             .child(self.render_breadcrumbs(collapse_parents, cx));
         if rel.is_empty() {
@@ -300,31 +298,29 @@ impl Reader {
                 if dirty {
                     row = row.child(self.render_save_status(cx));
                     if show_save {
-                        row = row.child(
-                            reader_icon_button(
-                                "source-save",
-                                Icon::default().path("icons/save.svg"),
-                                reader_shortcuts::hint("Save", &SaveSource, cx),
-                                cx,
-                            )
-                            .debug_selector(|| "source-save".into())
-                            .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
-                        );
+                        row = row.child(header_icon_button(
+                            "source-save",
+                            Icon::default().path("icons/save.svg"),
+                            reader_shortcuts::hint("Save", &SaveSource, cx),
+                            false,
+                            false,
+                            cx.listener(|this, _, _, cx| this.request_source_save(cx)),
+                            cx,
+                        ));
                     }
                 }
             }
         }
         if (!is_file || editing) && show_find {
-            row = row.child(
-                reader_icon_button(
-                    "note-find",
-                    Icon::default().path("icons/text-search.svg"),
-                    reader_shortcuts::hint("Find in note", &FindInNote, cx),
-                    cx,
-                )
-                .debug_selector(|| "note-find".into())
-                .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
-            );
+            row = row.child(header_icon_button(
+                "note-find",
+                Icon::default().path("icons/text-search.svg"),
+                reader_shortcuts::hint("Find in note", &FindInNote, cx),
+                false,
+                false,
+                cx.listener(|this, _, window, cx| this.open_find(window, cx)),
+                cx,
+            ));
         }
         if show_width {
             let full = reader_ui_state::full_note_width(cx);
@@ -333,21 +329,19 @@ impl Reader {
             } else {
                 brand::NOTE_WIDTH_FULL_ICON
             };
-            row = row.child(
-                reader_icon_button(
-                    "note-width",
-                    Icon::default().path(icon),
-                    reader_shortcuts::hint(note_width_label(cx), &ToggleNoteWidth, cx),
-                    cx,
-                )
-                .debug_selector(|| "note-width".into())
-                .selected(full)
-                .on_click(|_, _, cx| toggle_note_width(cx)),
-            );
+            row = row.child(header_icon_button(
+                "note-width",
+                Icon::default().path(icon),
+                reader_shortcuts::hint(note_width_label(cx), &ToggleNoteWidth, cx),
+                false,
+                full,
+                |_, _, cx| toggle_note_width(cx),
+                cx,
+            ));
         }
         row = row.child(preserve_reader_selection(
             "reader-maximize-note-preserve",
-            reader_icon_button(
+            header_icon_button(
                 "reader-maximize-note",
                 IconName::Maximize,
                 reader_shortcuts::hint(
@@ -359,147 +353,151 @@ impl Reader {
                     &MaximizeNote,
                     cx,
                 ),
+                false,
+                self.panels.maximized(),
+                cx.listener(|this, _, window, cx| this.maximize_note(window, cx)),
                 cx,
-            )
-            .debug_selector(|| "reader-maximize-note".into())
-            .selected(self.panels.maximized())
-            .on_click(cx.listener(|this, _, window, cx| this.maximize_note(window, cx))),
+            ),
         ));
         let width_label = (width_applies && !show_width).then(|| note_width_label(cx));
-        row.child(
-            reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
-                .debug_selector(|| "document-more".into())
-                .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
+        row.child(document_more_button(
+            move |mut menu: gpui_component::menu::PopupMenu,
+                  window: &mut Window,
+                  cx: &mut Context<gpui_component::menu::PopupMenu>| {
+                menu = menu
+                    .menu_with_icon(
+                        "Reveal in sidebar",
+                        Icon::default().path(brand::READER_FOCUS_ICON),
+                        Box::new(FocusCurrentFolder),
+                    )
+                    .separator();
+                // The ⋯ menu holds what the toolbar does not show right now (#992).
+                if let Some(label) = width_label {
+                    menu = menu.menu(label, Box::new(ToggleNoteWidth));
+                }
+                // Linux and Windows have no menu bar: View zoom lives here
+                // too, with its shortcuts (#1652).
+                if width_applies {
                     menu = menu
-                        .menu_with_icon(
-                            "Reveal in sidebar",
-                            Icon::default().path(brand::READER_FOCUS_ICON),
-                            Box::new(FocusCurrentFolder),
-                        )
+                        .menu("Zoom In", Box::new(reader_text_zoom::ZoomIn))
+                        .menu("Zoom Out", Box::new(reader_text_zoom::ZoomOut))
+                        .menu("Actual Size", Box::new(reader_text_zoom::Reset))
                         .separator();
-                    // The ⋯ menu holds what the toolbar does not show right now (#992).
-                    if let Some(label) = width_label {
-                        menu = menu.menu(label, Box::new(ToggleNoteWidth));
-                    }
-                    // Linux and Windows have no menu bar: View zoom lives here
-                    // too, with its shortcuts (#1652).
-                    if width_applies {
-                        menu = menu
-                            .menu("Zoom In", Box::new(reader_text_zoom::ZoomIn))
-                            .menu("Zoom Out", Box::new(reader_text_zoom::ZoomOut))
-                            .menu("Actual Size", Box::new(reader_text_zoom::Reset))
-                            .separator();
-                    }
-                    if (!is_file || editing) && !show_find {
-                        menu = menu.menu_with_icon(
-                            "Find in note",
-                            Icon::default().path("icons/text-search.svg"),
-                            Box::new(FindInNote),
-                        );
-                    }
-                    if !is_file {
-                        #[cfg(any(unix, windows))]
-                        {
-                            if editing && dirty && !show_save {
-                                menu = menu.menu("Save", Box::new(SaveSource));
-                            }
-                            // Shows ⌘⇧E / Ctrl+Shift+E and works from Reader too (#916).
-                            if !editing || (!live && !show_presentation) {
-                                menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
-                            }
-                            // #1643: here too, for Linux and Windows,
-                            // which have no menu bar.
-                            if editing {
-                                menu = menu
-                                    .menu_with_check(
-                                        "Focus mode",
-                                        reader_ui_state::focus_mode(cx),
-                                        Box::new(ToggleFocusMode),
-                                    )
-                                    .menu_with_check(
-                                        "Typewriter mode",
-                                        reader_ui_state::typewriter_mode(cx),
-                                        Box::new(ToggleTypewriterMode),
-                                    );
-                            }
-                            if editing && live && !show_presentation {
-                                let reader = reader.clone();
-                                menu = menu.item(PopupMenuItem::new("Source").on_click(
-                                    move |_, window, cx| {
-                                        let _ = reader.update(cx, |this, cx| {
-                                            this.set_live_preview(false, window, cx);
-                                        });
-                                    },
-                                ));
-                            }
-                            menu = menu
-                                .item(
-                                    PopupMenuItem::new("Rename")
-                                        .action(Box::new(RenameNote))
-                                        .on_click({
-                                            let reader = reader.clone();
-                                            move |_, window, cx| {
-                                                let _ = reader.update(cx, |this, cx| {
-                                                    this.rename_note_title(window, cx)
-                                                });
-                                            }
-                                        }),
-                                )
-                                .menu("Move to…", Box::new(reader_move_picker::MoveToFolder))
-                                .menu("Note history", Box::new(NoteSourceHistory))
-                                .separator();
-                        }
-                        for (label, action) in [
-                            (Os::CURRENT.reveal(), reader_files::FileAction::Reveal),
-                            ("Copy path", reader_files::FileAction::Absolute),
-                            ("Copy Okilum link", reader_files::FileAction::OkilumLink),
-                        ] {
-                            let root = root.clone();
-                            let rel = rel.clone();
-                            menu = menu.item(PopupMenuItem::new(label).on_click(
-                                move |_, window, cx| {
-                                    reader_files::run(action, &root, &rel, window, cx)
-                                },
-                            ));
-                        }
-                    } else {
-                        for (label, action) in [
-                            ("Copy vault path", reader_files::FileAction::Relative),
-                            ("Copy wikilink", reader_files::FileAction::Wiki),
-                        ] {
-                            let root = root.clone();
-                            let rel = rel.clone();
-                            menu = menu.item(PopupMenuItem::new(label).on_click(
-                                move |_, window, cx| {
-                                    reader_files::run(action, &root, &rel, window, cx)
-                                },
-                            ));
-                        }
-                    }
-                    // Installed editors for this note or file (#873).
-                    menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
-                    if !is_file {
-                        menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
-                    }
+                }
+                if (!is_file || editing) && !show_find {
+                    menu = menu.menu_with_icon(
+                        "Find in note",
+                        Icon::default().path("icons/text-search.svg"),
+                        Box::new(FindInNote),
+                    );
+                }
+                if !is_file {
                     #[cfg(any(unix, windows))]
                     {
-                        let reader = reader.clone();
-                        let rel = rel.clone();
-                        menu = menu.separator().item(
-                            PopupMenuItem::new(platform::labels::Os::CURRENT.move_to_trash())
-                                .on_click(move |_, window, cx| {
+                        if editing && dirty && !show_save {
+                            menu = menu.menu("Save", Box::new(SaveSource));
+                        }
+                        // Shows ⌘⇧E / Ctrl+Shift+E and works from Reader too (#916).
+                        if !editing || (!live && !show_presentation) {
+                            menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
+                        }
+                        // #1643: here too, for Linux and Windows,
+                        // which have no menu bar.
+                        if editing {
+                            menu = menu
+                                .menu_with_check(
+                                    "Focus mode",
+                                    reader_ui_state::focus_mode(cx),
+                                    Box::new(ToggleFocusMode),
+                                )
+                                .menu_with_check(
+                                    "Typewriter mode",
+                                    reader_ui_state::typewriter_mode(cx),
+                                    Box::new(ToggleTypewriterMode),
+                                );
+                        }
+                        if editing && live && !show_presentation {
+                            let reader = reader.clone();
+                            menu = menu.item(PopupMenuItem::new("Source").on_click(
+                                move |_, window, cx| {
                                     let _ = reader.update(cx, |this, cx| {
-                                        this.delete_path(rel.clone(), window, cx);
+                                        this.set_live_preview(false, window, cx);
                                     });
-                                }),
-                        );
+                                },
+                            ));
+                        }
+                        menu = menu
+                            .item(
+                                PopupMenuItem::new("Rename")
+                                    .action(Box::new(RenameNote))
+                                    .on_click({
+                                        let reader = reader.clone();
+                                        move |_, window, cx| {
+                                            let _ = reader.update(cx, |this, cx| {
+                                                this.rename_note_title(window, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .menu("Move to…", Box::new(reader_move_picker::MoveToFolder))
+                            .menu("Note history", Box::new(NoteSourceHistory))
+                            .separator();
                     }
-                    menu.separator().menu(
-                        if is_file { "Close file" } else { "Close note" },
-                        Box::new(CloseNote),
-                    )
-                }),
-        )
+                    for (label, action) in [
+                        (Os::CURRENT.reveal(), reader_files::FileAction::Reveal),
+                        (
+                            reader_files::TERMINAL_LABEL,
+                            reader_files::FileAction::Terminal,
+                        ),
+                        ("Copy path", reader_files::FileAction::Absolute),
+                        ("Copy Okilum link", reader_files::FileAction::OkilumLink),
+                    ] {
+                        let root = root.clone();
+                        let rel = rel.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                reader_files::run(action, &root, &rel, window, cx)
+                            }));
+                    }
+                } else {
+                    for (label, action) in [
+                        ("Copy vault path", reader_files::FileAction::Relative),
+                        ("Copy wikilink", reader_files::FileAction::Wiki),
+                    ] {
+                        let root = root.clone();
+                        let rel = rel.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                reader_files::run(action, &root, &rel, window, cx)
+                            }));
+                    }
+                }
+                // Installed editors for this note or file (#873).
+                menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
+                if !is_file {
+                    menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
+                }
+                #[cfg(any(unix, windows))]
+                {
+                    let reader = reader.clone();
+                    let rel = rel.clone();
+                    menu = menu.separator().item(
+                        PopupMenuItem::new(platform::labels::Os::CURRENT.move_to_trash()).on_click(
+                            move |_, window, cx| {
+                                let _ = reader.update(cx, |this, cx| {
+                                    this.delete_path(rel.clone(), window, cx);
+                                });
+                            },
+                        ),
+                    );
+                }
+                menu.separator().menu(
+                    if is_file { "Close file" } else { "Close note" },
+                    Box::new(CloseNote),
+                )
+            },
+            cx,
+        ))
     }
 
     pub(super) fn close_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1252,3 +1250,62 @@ mod tests {
 #[cfg(test)]
 #[path = "reader_document_menu/reveal_tests.rs"]
 mod reveal_tests;
+
+#[inline(never)]
+fn file_surface(main: AnyElement, status: Option<AnyElement>) -> AnyElement {
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .child(div().flex_1().min_h_0().child(main))
+        .children(status)
+        .into_any_element()
+}
+
+#[inline(never)]
+fn note_surface(header: [Option<AnyElement>; 3], main: AnyElement) -> AnyElement {
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .relative()
+        .children(header.into_iter().flatten())
+        .child(div().flex_1().min_h_0().child(main))
+        .into_any_element()
+}
+
+/// One header icon button per short-lived frame. Unoptimized Button builder
+/// temporaries otherwise stay reserved under every nested document draw on
+/// the native main stack (#2825).
+#[inline(never)]
+fn header_icon_button(
+    id: &'static str,
+    icon: impl Into<Icon>,
+    tooltip: SharedString,
+    disabled: bool,
+    selected: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    reader_icon_button(id, icon, tooltip, cx)
+        .debug_selector(move || id.into())
+        .disabled(disabled)
+        .selected(selected)
+        .on_click(on_click)
+        .into_any_element()
+}
+
+#[inline(never)]
+fn document_more_button(
+    menu: impl Fn(
+            gpui_component::menu::PopupMenu,
+            &mut Window,
+            &mut Context<gpui_component::menu::PopupMenu>,
+        ) -> gpui_component::menu::PopupMenu
+        + 'static,
+    cx: &App,
+) -> AnyElement {
+    use gpui_component::menu::DropdownMenu as _;
+    reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
+        .debug_selector(|| "document-more".into())
+        .dropdown_menu_with_anchor(Anchor::TopRight, menu)
+        .into_any_element()
+}

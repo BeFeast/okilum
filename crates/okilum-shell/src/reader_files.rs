@@ -16,7 +16,12 @@ pub(crate) enum FileAction {
     OkilumLink,
     Open,
     QuickLook,
+    /// The system terminal in the item's folder, or its file's folder (#2837).
+    Terminal,
 }
+
+/// The menu and catalog label of [`FileAction::Terminal`].
+pub(crate) const TERMINAL_LABEL: &str = "Open in terminal";
 
 pub(crate) fn checked_path(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     let root = root.canonicalize()?;
@@ -31,6 +36,10 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
         let copied = match action {
             FileAction::Reveal => {
                 reveal(&path, window, cx);
+                None
+            }
+            FileAction::Terminal => {
+                super::project_terminal::open_folder(&path, root, window, cx);
                 None
             }
             FileAction::Open => {
@@ -94,7 +103,9 @@ fn copied_text(action: FileAction, root: &Path, rel: &str, path: &Path) -> Optio
         FileAction::Relative => Some(rel.to_owned()),
         FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
         FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
-        FileAction::Reveal | FileAction::Open | FileAction::QuickLook => None,
+        FileAction::Reveal | FileAction::Open | FileAction::QuickLook | FileAction::Terminal => {
+            None
+        }
     }
 }
 
@@ -156,6 +167,7 @@ pub(crate) fn menu(
 fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
     let actions = [
         (Os::CURRENT.reveal(), FileAction::Reveal),
+        (TERMINAL_LABEL, FileAction::Terminal),
         ("Copy absolute path", FileAction::Absolute),
         ("Copy vault path", FileAction::Relative),
         ("Copy wikilink", FileAction::Wiki),
@@ -171,6 +183,8 @@ fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
             // not this row (#1733).
             let item = match action {
                 FileAction::Reveal => PopupMenuItem::new(label).action(Box::new(super::RevealFile)),
+                FileAction::Terminal => PopupMenuItem::new(label)
+                    .action(Box::new(super::project_terminal::OpenInTerminal)),
                 _ => PopupMenuItem::new(label),
             };
             item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx))
@@ -194,6 +208,8 @@ pub(crate) struct FilePreview {
     pub code: Option<Entity<reader_code_file::CodePreview>>,
     /// A ZIP archive's entries, previews and extraction (#996).
     pub archive: Option<Entity<reader_archive::ArchivePreview>>,
+    /// A HAR capture's requests (#2836). Its Source view is `code`.
+    pub har: Option<Entity<reader_har::HarView>>,
     pub audio: Option<Entity<reader_audio::AudioView>>,
     pub canvas: Option<Entity<reader_canvas::CanvasView>>,
     pub drawing: Option<Entity<reader_drawing::FileHandle>>,
@@ -226,6 +242,7 @@ impl FilePreview {
             live_identity: Arc::new(()),
             _live: None,
             archive: None,
+            har: None,
             audio: None,
             canvas: None,
             drawing: None,
@@ -494,6 +511,12 @@ impl Reader {
                     });
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
+                } else if reader_har::eligible(rel) {
+                    let (root, path) = (self.vault_root.clone(), preview.path.clone());
+                    let reader = cx.entity().downgrade();
+                    preview.har = Some(cx.new(|cx| {
+                        reader_har::HarView::new(root, rel.into(), path, reader, window, cx)
+                    }));
                 } else if reader_archive::eligible(rel) {
                     let path = preview.path.clone();
                     preview.archive =
@@ -520,6 +543,7 @@ impl Reader {
                     && preview.text.is_none()
                     && preview.code.is_none()
                     && preview.archive.is_none()
+                    && preview.har.is_none()
                     && !reader_media::is_video(&preview.path)
                     && preview.audio.is_none()
                     && preview.canvas.is_none()
@@ -563,17 +587,23 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Build the nested editor from this small dispatch frame; the read
+        // viewers' builder temporaries live in their own frame (#2825).
         if self.editing.is_some() {
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .when(preview.code.is_some(), |view| {
-                    view.key_context(reader_code_file::KEY_CONTEXT)
-                })
-                .child(self.render_file_header_viewport(window, cx))
-                .child(self.render_source(window, cx))
-                .into_any_element();
+            let header = self.render_file_header_viewport(window, cx);
+            let source = self.render_source(window, cx);
+            return file_edit_column(preview.code.is_some(), header, source);
         }
+        self.render_file_viewer(preview, window, cx)
+    }
+
+    #[inline(never)]
+    fn render_file_viewer(
+        &self,
+        preview: &FilePreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(virtual_log) = &preview.virtual_log {
             return v_flex()
                 .size_full()
@@ -604,6 +634,18 @@ impl Reader {
                         .text_color(cx.theme().muted_foreground)
                         .child(message.clone()),
                 )
+                .into_any_element();
+        }
+        // In Source mode `code` holds the JSON viewer and renders below.
+        if let Some(har) = preview.har.as_ref().filter(|_| preview.code.is_none()) {
+            return v_flex()
+                .id("reader-har-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .min_h_0()
+                .child(self.render_file_header_viewport(window, cx))
+                .child(har.clone())
                 .into_any_element();
         }
         if let Some(archive) = &preview.archive {
@@ -799,6 +841,17 @@ impl Reader {
             )
             .into_any_element()
     }
+}
+
+#[inline(never)]
+fn file_edit_column(code: bool, header: AnyElement, source: AnyElement) -> AnyElement {
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .when(code, |view| view.key_context(reader_code_file::KEY_CONTEXT))
+        .child(header)
+        .child(source)
+        .into_any_element()
 }
 
 /// HEIC uses Apple's image decoder off the UI thread; the temporary PNG is
@@ -1338,6 +1391,11 @@ mod tests {
         );
         // Positive control: the inspection sees an item's bound action.
         assert_eq!(bound(Os::CURRENT.reveal()), Some(Some(RevealFile.name())));
+        assert_eq!(
+            bound(TERMINAL_LABEL),
+            Some(Some(project_terminal::OpenInTerminal.name())),
+            "#2837: the row offers its folder in the terminal with the shortcut hint"
+        );
 
         // Choose «Copy vault path» in the production sidebar row menu for B.
         set_clipboard(visual, "clipboard sentinel");
@@ -1358,9 +1416,9 @@ mod tests {
         });
         visual.run_until_parked();
         // «Open in ▸» comes first when an editor is installed; then Reveal,
-        // Copy absolute path and Copy vault path.
+        // Open in terminal, Copy absolute path and Copy vault path.
         let before = usize::from(!super::super::open_in::editors().is_empty());
-        let downs = vec!["down"; before + 3].join(" ");
+        let downs = vec!["down"; before + 4].join(" ");
         visual.simulate_keystrokes(&format!("{downs} enter"));
         visual.run_until_parked();
         assert_eq!(clipboard_text(visual).as_deref(), Some(row));
@@ -1379,6 +1437,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(open)).unwrap(), open_text);
         assert_eq!(std::fs::read_to_string(root.join(row)).unwrap(), row_text);
     }
+
+    #[path = "terminal_tests.rs"]
+    mod terminal_tests;
 
     struct Fixture(PathBuf);
     impl Fixture {

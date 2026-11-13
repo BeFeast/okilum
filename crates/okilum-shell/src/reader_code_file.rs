@@ -81,7 +81,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "tsx" => "tsx",
         "go" => "go",
         "sh" | "bash" | "zsh" => "bash",
-        "json" | "jsonc" | "okilog" => "json",
+        "json" | "jsonc" | "okilog" | "har" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "xml" | "xsd" | "xsl" => "xml",
@@ -117,7 +117,7 @@ pub(crate) fn eligible(rel: &str) -> bool {
 
 /// Preview eligibility does not grant a new writable file format (#2669).
 pub(crate) fn editable_format(rel: &str) -> bool {
-    eligible(rel) && language(rel) != Some("xml")
+    eligible(rel) && language(rel) != Some("xml") && !crate::reader_har::eligible(rel)
 }
 
 enum State {
@@ -213,7 +213,7 @@ struct JsonText {
 fn is_json(rel: &str) -> bool {
     Path::new(rel)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("har"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1018,6 +1018,7 @@ mod tests {
             ("work/lan-forward.py", Some("python")),
             ("src/main.rs", Some("rust")),
             ("cfg/app.JSON", Some("json")),
+            ("capture/session.HAR", Some("json")),
             ("bin/run.sh", Some("bash")),
             ("ci.yml", Some("yaml")),
             ("Cargo.toml", Some("toml")),
