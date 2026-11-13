@@ -10,6 +10,9 @@ MAINTENANCE = 'Maintenance and stability fixes'
 HIDDEN = {'ci', 'test', 'chore', 'docs', 'refactor'}
 CONVENTIONAL = re.compile(r'^([a-z]+)(?:\([^)]*\))?!?:\s*(.*)$', re.I)
 SPARKLE = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
+REVERT_COMMIT = re.compile(r'This reverts commit ([0-9a-f]{7,40})')
+REVERTS = re.compile(r'^Reverts:[ \t]*(.*?)[ \t]*$', re.M | re.I)
+NONE = re.compile(r'none\b', re.I)
 OKILUM = '{https://git.oklabs.uk/BeFeast/okilum/update-metadata}'
 FORGEJO_START = '<!-- okilum-release-notes:start -->'
 FORGEJO_END = '<!-- okilum-release-notes:end -->'
@@ -104,11 +107,23 @@ def predecessor(store, platform, channel='beta'):
     return {'build': result['build'], 'source': result['source']}
 
 
+def authored_body(pr):
+    # Template instructions/examples inside comments are not authored text.
+    return re.sub(r'<!--.*?-->', '', pr.get('body') or '', flags=re.S)
+
+
+def explicit_text(pr):
+    """The first nonempty `User-visible:` line; `none` (with any explanation) means hidden."""
+    lines = re.findall(r'^User-visible:[ \t]*(.*?)[ \t]*$', authored_body(pr), flags=re.M | re.I)
+    text = next((line.strip() for line in lines if line.strip()), '')
+    return None if NONE.match(text) else text
+
+
 def pr_item(pr, include_hidden=False):
-    # Template instructions/examples inside comments are not authored summaries.
-    body = re.sub(r'<!--.*?-->', '', pr.get('body') or '', flags=re.S)
-    lines = re.findall(r'^User-visible:[ \t]*(.*?)[ \t]*$', body, flags=re.M | re.I)
-    explicit = next((line.strip() for line in lines if line.strip()), '')
+    explicit = explicit_text(pr)
+    if explicit is None and not include_hidden:
+        return None
+    explicit = explicit or ''
     title = ' '.join(pr['title'].split())
     match = CONVENTIONAL.match(title)
     prefix, text = (match[1].lower(), match[2]) if match else ('', title)
@@ -119,6 +134,70 @@ def pr_item(pr, include_hidden=False):
         return None
     kind = 'feature' if prefix == 'feat' or (prefix != 'fix' and labels & {'feature', 'enhancement'}) else 'fix'
     return {'pr': pr['number'], 'kind': kind, 'text': explicit or text}
+
+
+def git(*args):
+    return subprocess.run(['git', *args], check=True, capture_output=True, text=True, timeout=30).stdout
+
+
+def is_ancestor(commit, descendant):
+    return subprocess.run(['git', 'merge-base', '--is-ancestor', commit, descendant],
+                          capture_output=True, timeout=30).returncode == 0
+
+
+def revert_edges(revision, commits, inventory, by_sha, in_range):
+    """Map each reverting PR (None: a revert pushed without a PR) to the PRs it reverts.
+
+    Sources: `Reverts: #N` in an in-range PR body, and Git revert commits
+    reachable in the range whose «This reverts commit <sha>» names a PR merge
+    commit, or a revert commit owned by another PR (a revert of a revert).
+    """
+    edges = {}
+    for number in in_range:
+        for line in REVERTS.findall(authored_body(inventory[number])):
+            for target in map(int, re.findall(r'#([1-9][0-9]*)', line)):
+                if target in inventory and target != number:
+                    edges.setdefault(number, set()).add(target)
+    log = [entry.split('\0', 1) for entry in git('log', '--format=%H%x00%B%x1e', revision).split('\x1e')
+           if '\0' in entry]
+    found = [(sha.strip(), target) for sha, body in log for target in REVERT_COMMIT.findall(body)]
+    if not found:
+        return edges
+    owners = {}
+
+    def owner(commit):
+        if commit not in owners:
+            if commit in by_sha and commit in commits:
+                owners[commit] = by_sha[commit]
+            else:
+                owners[commit] = None
+                for number, index in in_range.items():
+                    merge = inventory[number]['merge_commit_sha']
+                    if commit in git('rev-list', f'{merge}^1..{merge}').split():
+                        owners[commit] = number
+                        break
+        return owners[commit]
+
+    reverting_commits = {sha for sha, _ in found}
+    for sha, target in found:
+        full = [s for s in list(by_sha) + list(reverting_commits) if s.startswith(target)]
+        if len(full) != 1:
+            continue
+        reverted = by_sha.get(full[0]) if full[0] in by_sha else owner(full[0])
+        source = owner(sha)
+        if reverted is not None and reverted != source:
+            edges.setdefault(source, set()).add(reverted)
+    return edges
+
+
+def is_revert_pr(pr):
+    if REVERTS.search(authored_body(pr)):
+        return True
+    merge = pr['merge_commit_sha']
+    try:
+        return bool(REVERT_COMMIT.search(git('log', '--format=%B', f'{merge}^1..{merge}')))
+    except subprocess.CalledProcessError:
+        return False
 
 
 def merged_items(client, previous_source, source):
@@ -132,21 +211,55 @@ def merged_items(client, previous_source, source):
     commits = result.stdout.splitlines()
     if not commits:
         return []
-    merged = {}
+    inventory, by_sha = {}, {}
     # Closed PRs are paginated; a recently updated old PR must never enter the range.
     for page in range(1, 101):
         prs = client.call('GET', f'/pulls?state=closed&sort=recentupdate&limit=50&page={page}')
         for pr in prs:
             sha = pr.get('merge_commit_sha')
-            if pr.get('merged') and sha in commits:
-                item = pr_item(pr)
-                if item:
-                    merged[pr['number']] = (commits.index(sha), item)
+            if pr.get('merged') and sha:
+                inventory[pr['number']] = pr
+                by_sha[sha] = pr['number']
         if len(prs) < 50:
             break
     else:
         raise ValueError('Incomplete merged PR inventory for notes')
-    return [item for _, item in sorted(merged.values(), key=lambda row: (row[0], row[1]['pr']))]
+    in_range = {number: commits.index(pr['merge_commit_sha'])
+                for number, pr in inventory.items() if pr['merge_commit_sha'] in commits}
+    edges = revert_edges(revision, commits, inventory, by_sha, in_range)
+    # A reverted PR's line is false once its revert is in the same build. A
+    # revert of a revert does not resurrect it: the re-land PR's own
+    # User-visible line is the only claim that the change is back.
+    dropped = {target for targets in edges.values() for target in targets if target in in_range}
+    def removed_again(index, target):
+        # Only a change that reached the previous build of this channel can be
+        # «removed again»; a reverted revert is the re-land PR's to describe.
+        earlier = inventory[target]
+        if (target in in_range or previous_source is None or is_revert_pr(earlier)
+                or not is_ancestor(earlier['merge_commit_sha'], previous_source)):
+            return
+        item = pr_item(earlier)
+        if item:
+            rows.append((index, target, {'pr': target, 'kind': 'fix', 'text': f'Removed again: {item["text"]}'}))
+
+    rows = []
+    for number, index in in_range.items():
+        if number in dropped:
+            continue
+        pr = inventory[number]
+        if number in edges and not explicit_text(pr):
+            # A revert without its own summary says only what it took away
+            # from an earlier build; within one build the pair cancels out.
+            for target in sorted(edges[number]):
+                removed_again(index, target)
+            continue
+        item = pr_item(pr)
+        if item:
+            rows.append((index, number, item))
+    # A revert pushed straight to main has no PR of its own.
+    for target in sorted(edges.get(None, ())):
+        removed_again(0, target)
+    return [item for _, _, item in sorted(rows, key=lambda row: (row[0], row[1]))]
 
 
 def prepare(store, client, platform, build, source, channel='beta'):
