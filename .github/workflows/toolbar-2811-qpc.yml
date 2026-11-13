@@ -1,0 +1,138 @@
+name: toolbar-2811-qpc-diagnostic
+on:
+  push:
+    branches: ['diagnostic-toolbar-2811/qpc-controller-*']
+permissions:
+  contents: read
+env:
+  PYTHONUTF8: '1'
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/ci/perf-2811-qpc -p 'test_*.py' -v
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg out/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qpc-windows-icon
+          path: out/okilum.ico
+          if-no-files-found: error
+  build:
+    needs: [controls, icon]
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        kind: [main, toolbar]
+    runs-on: windows-2022
+    timeout-minutes: 70
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/code-toolbar-release
+    steps:
+      - shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: qpc2811-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
+          restore-keys: |
+            qpc2811-${{ runner.os }}-${{ matrix.kind }}-
+            qpc2811-${{ runner.os }}-
+            code-toolbar-release-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: qpc-windows-icon
+          path: icon
+      - name: Verify committed diagnostic source and build unchanged release configuration
+        shell: bash
+        env:
+          KIND: ${{ matrix.kind }}
+        run: |
+          source_sha=$(python scripts/ci/perf-2811-qpc/provenance.py source --kind "$KIND")
+          capsule="$RUNNER_TEMP/qpc-capsule"
+          output="$GITHUB_WORKSPACE/out/$KIND"
+          python scripts/ci/perf-2811-qpc/provenance.py prepare --kind "$KIND" --source "$source_sha" --destination "$capsule" --output "$output"
+          export OKILUM_SOURCE_COMMIT="$source_sha"
+          export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/icon/okilum.ico")"
+          cd "$capsule"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          cargo build --locked --release -p okilum-shell --bin okilum --features data-view-native-harness
+          cd "$GITHUB_WORKSPACE"
+          python scripts/ci/perf-2811-qpc/provenance.py finish --destination "$capsule" --output "$output"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qpc-binary-${{ matrix.kind }}
+          path: out/${{ matrix.kind }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: qpc2811-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
+  capture:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qpc-binary-main
+          path: inputs/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: qpc-binary-toolbar
+          path: inputs/toolbar
+      - name: Fixed five alternating pairs with original final strict verdict
+        id: census
+        shell: pwsh
+        run: ./scripts/ci/perf-2811-qpc/capture.ps1
+      - name: Export raw QPC events and attribute complete primary-thread states
+        if: ${{ always() && steps.census.outcome != 'skipped' }}
+        shell: pwsh
+        run: |
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/kernel.raw.etl diagnostics/kernel.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw kernel export failed' }
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/markers.raw.etl diagnostics/markers.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw marker export failed' }
+          python scripts/ci/perf-2811-qpc/analyze.py diagnostics
+          if ($LASTEXITCODE) { throw 'Scheduler evidence rejected: see retained raw trace and error receipt' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qpc2811-five-pairs
+          path: |
+            diagnostics/
+            inputs/*/build-manifest.json
+            inputs/*/backend-manifest.json
+            inputs/*/observer.diff
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,11 @@
+{
+  "status": "BASES_PINNED",
+  "main": {
+    "base_source": "718d23d8b799bd50569ba0b8ff40e784afb4ed0c",
+    "diagnostic_commit": null
+  },
+  "toolbar": {
+    "base_source": "46194f96dcaf20e653843da66bcb292dfbdc1f25",
+    "diagnostic_commit": null
+  }
+}

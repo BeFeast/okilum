@@ -2,6 +2,8 @@
 use super::*;
 use std::time::Duration;
 pub(super) mod trace;
+#[cfg(target_os = "windows")]
+mod qpc_clock;
 
 fn submit_frame(window: &mut Window) -> f64 {
     let mut frames = gpui::profiler::FrameTimingCollector::new();
@@ -59,6 +61,7 @@ pub(super) fn entry() -> bool {
     };
     assert!(!build_info::gpui_test_support());
     let smoke = std::env::var_os("OKILUM_CODE_TOOLBAR_NATIVE_SMOKE").is_some();
+    let collect_all = std::env::var_os("OKILUM_DIAG_COLLECT_ALL").is_some();
     assert_eq!(
         smoke,
         cfg!(debug_assertions),
@@ -83,6 +86,8 @@ pub(super) fn entry() -> bool {
         }).unwrap();
         let reader=reader.unwrap(); let window:AnyWindowHandle=handle.into();
         cx.spawn(async move |cx| {
+            #[cfg(target_os="windows")]
+            let frame_clock=qpc_clock::Clock::new();
             let start=Instant::now();
             let code=loop {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
@@ -112,7 +117,9 @@ pub(super) fn entry() -> bool {
                 ms
             }).unwrap();
             diagnostic_println!("CODE2810_OPEN wall_ms={open_ms}");
-            assert!(smoke || open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
+            let mut budget_violations=Vec::new();
+            if open_ms>100. {budget_violations.push(serde_json::json!({"kind":"open","wall_ms":open_ms,"limit_ms":100}));}
+            assert!(smoke || collect_all || open_ms<=100.,"paths opening exceeded 100 ms: {open_ms}");
             let mut frames=Vec::new();
             for marked in [false,true] {
                 window.update(cx,|_,w,cx|{
@@ -139,11 +146,17 @@ pub(super) fn entry() -> bool {
                 for sample in 0..48 {
                     cx.background_executor().timer(Duration::from_millis(20)).await;
                     let ms=window.update(cx,|_,w,cx|{
+                        #[cfg(target_os="windows")]
+                        let clock_before=frame_clock.anchor((marked as u64)*96+(sample as u64)*2);
                         let rows_before=structure::native_row_builds();
                         let offset_before=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
                         let cpu_before=thread_cpu_ms();
                         let text_probe=platform::text_diagnostics::Probe::start();
+                        #[cfg(target_os="windows")]
+                        let start_before=qpc_clock::qpc();
                         let frame=Instant::now();
+                        #[cfg(target_os="windows")]
+                        let start_after=qpc_clock::qpc();
                         code.update(cx,|p,cx|{
                             let at=p.structure.visible.binary_search(&paths).unwrap();
                             p.structure.scroll.scroll_to_item_strict(at+1+(sample*7)%390,ScrollStrategy::Top);
@@ -157,7 +170,11 @@ pub(super) fn entry() -> bool {
                         let clear_start=Instant::now();
                         arena.clear(cx);
                         let clear_ms=clear_start.elapsed().as_secs_f64()*1000.;
+                        #[cfg(target_os="windows")]
+                        let end_before=qpc_clock::qpc();
                         let ms=frame.elapsed().as_secs_f64()*1000.;
+                        #[cfg(target_os="windows")]
+                        let end_after=qpc_clock::qpc();
                         // Window::draw only builds the scene. Without submission,
                         // native GPU atlas commands can accumulate across samples;
                         // the production event loop always presents after drawing.
@@ -168,7 +185,16 @@ pub(super) fn entry() -> bool {
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
                         let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
                         let text_work=text_probe.report();
-                        let subtree_work=trace::report();
+                        let mut subtree_work=trace::report();
+                        #[cfg(target_os="windows")]
+                        {
+                            let clock_after=frame_clock.anchor((marked as u64)*96+(sample as u64)*2+1);
+                            subtree_work["diagnostic_qpc"]=serde_json::json!({
+                                "version":1,"start_qpc_bounds":[start_before,start_after],
+                                "end_qpc_bounds":[end_before,end_after],
+                                "before":clock_before,"after":clock_after
+                            });
+                        }
                         let present_ms=submit_frame(w);
                         (ms,rows,offset.as_f32(),update_ms,cpu_ms,draw_ms,clear_ms,text_work,subtree_work,present_ms)
                     }).unwrap();
@@ -176,11 +202,24 @@ pub(super) fn entry() -> bool {
                     frames.push(serde_json::json!({"marks":marked,"sample":sample,"cpu_draw_ms":ms.0,"rows_built":ms.1,"scroll_y":ms.2,"update_ms":ms.3,"thread_cpu_ms":ms.4,"draw_ms":ms.5,"clear_ms":ms.6,"text_work":ms.7,"subtree_work":ms.8,"present_ms":ms.9}));
                     diagnostic_println!("CODE2810_FRAME marks={marked} sample={sample} wall_ms={} update_ms={} thread_cpu_ms={:?} draw_ms={} clear_ms={} text_work={} subtree_work={} present_ms={}",ms.0,ms.3,ms.4,ms.5,ms.6,ms.7,ms.8,ms.9);
                     let ms=ms.0;
-                    assert!(smoke || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
+                    if ms>16. {budget_violations.push(serde_json::json!({"kind":"frame","marks":marked,"sample":sample,"wall_ms":ms,"limit_ms":16}));}
+                    assert!(smoke || collect_all || ms<=16.,"Tree scroll frame exceeded 16 ms (marks={marked}, sample={sample}): {ms}");
                 }
                 assert!(scroll_rasterizations<=1,"Tree scroll rasterized new glyph variants after warm-up (marks={marked}): {scroll_rasterizations}");
             }
             let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"initial_rasterizations":initial_rasterizations,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT"),"measurement":if smoke {"debug-smoke"} else {"production-release"}});
+            if collect_all {
+                let strict_pass=budget_violations.is_empty();
+                let mut diagnostic=receipt;
+                diagnostic["diagnostic_only"]=serde_json::json!(true);
+                diagnostic["strict_pass"]=serde_json::json!(strict_pass);
+                diagnostic["budget_violations"]=serde_json::json!(budget_violations);
+                std::fs::write(directory.join("toolbar-diagnostic-receipt.json"),diagnostic.to_string()).unwrap();
+                diagnostic_println!("CODE2811_QPC_CENSUS_COMPLETE frames={} strict_pass={strict_pass}",frames.len());
+                assert!(strict_pass,"original native budgets failed after complete diagnostic census");
+                cx.update(|cx|cx.quit());
+                return;
+            }
             std::fs::write(directory.join("toolbar-receipt.json"),receipt.to_string()).unwrap();
             diagnostic_println!("CODE2810_NATIVE_READER_PASS {receipt}");
             cx.update(|cx|cx.quit());
