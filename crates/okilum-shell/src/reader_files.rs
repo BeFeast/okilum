@@ -16,7 +16,12 @@ pub(crate) enum FileAction {
     OkilumLink,
     Open,
     QuickLook,
+    /// The system terminal in the item's folder, or its file's folder (#2837).
+    Terminal,
 }
+
+/// The menu and catalog label of [`FileAction::Terminal`].
+pub(crate) const TERMINAL_LABEL: &str = "Open in terminal";
 
 pub(crate) fn checked_path(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     let root = root.canonicalize()?;
@@ -31,6 +36,10 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
         let copied = match action {
             FileAction::Reveal => {
                 reveal(&path, window, cx);
+                None
+            }
+            FileAction::Terminal => {
+                super::project_terminal::open_folder(&path, window, cx);
                 None
             }
             FileAction::Open => {
@@ -94,7 +103,9 @@ fn copied_text(action: FileAction, root: &Path, rel: &str, path: &Path) -> Optio
         FileAction::Relative => Some(rel.to_owned()),
         FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
         FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
-        FileAction::Reveal | FileAction::Open | FileAction::QuickLook => None,
+        FileAction::Reveal | FileAction::Open | FileAction::QuickLook | FileAction::Terminal => {
+            None
+        }
     }
 }
 
@@ -156,6 +167,7 @@ pub(crate) fn menu(
 fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
     let actions = [
         (Os::CURRENT.reveal(), FileAction::Reveal),
+        (TERMINAL_LABEL, FileAction::Terminal),
         ("Copy absolute path", FileAction::Absolute),
         ("Copy vault path", FileAction::Relative),
         ("Copy wikilink", FileAction::Wiki),
@@ -171,6 +183,8 @@ fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
             // not this row (#1733).
             let item = match action {
                 FileAction::Reveal => PopupMenuItem::new(label).action(Box::new(super::RevealFile)),
+                FileAction::Terminal => PopupMenuItem::new(label)
+                    .action(Box::new(super::project_terminal::OpenInTerminal)),
                 _ => PopupMenuItem::new(label),
             };
             item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx))
@@ -1345,6 +1359,11 @@ mod tests {
         );
         // Positive control: the inspection sees an item's bound action.
         assert_eq!(bound(Os::CURRENT.reveal()), Some(Some(RevealFile.name())));
+        assert_eq!(
+            bound(TERMINAL_LABEL),
+            Some(Some(project_terminal::OpenInTerminal.name())),
+            "#2837: the row offers its folder in the terminal with the shortcut hint"
+        );
 
         // Choose «Copy vault path» in the production sidebar row menu for B.
         set_clipboard(visual, "clipboard sentinel");
@@ -1365,9 +1384,9 @@ mod tests {
         });
         visual.run_until_parked();
         // «Open in ▸» comes first when an editor is installed; then Reveal,
-        // Copy absolute path and Copy vault path.
+        // Open in terminal, Copy absolute path and Copy vault path.
         let before = usize::from(!super::super::open_in::editors().is_empty());
-        let downs = vec!["down"; before + 3].join(" ");
+        let downs = vec!["down"; before + 4].join(" ");
         visual.simulate_keystrokes(&format!("{downs} enter"));
         visual.run_until_parked();
         assert_eq!(clipboard_text(visual).as_deref(), Some(row));
@@ -1386,6 +1405,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(open)).unwrap(), open_text);
         assert_eq!(std::fs::read_to_string(root.join(row)).unwrap(), row_text);
     }
+
+    #[path = "terminal_tests.rs"]
+    mod terminal_tests;
 
     struct Fixture(PathBuf);
     impl Fixture {
