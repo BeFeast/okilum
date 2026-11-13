@@ -330,11 +330,16 @@ impl Tree {
                 FolderIndex::One(path) => Some(path),
                 _ => None,
             };
+            // Labels compare without letter case, as file managers list them:
+            // byte order put every lowercase name after all uppercase ones
+            // (#2773). The exact label, then the unique path, keep the order
+            // total and deterministic.
             children.sort_by_cached_key(|entry| {
                 let label = tree_label(&entry.path, entry.kind, note_titles, titles);
                 (
                     index.as_deref() != Some(entry.path.as_str()),
                     entry.kind != EntryKind::Directory,
+                    label.to_lowercase(),
                     label,
                     entry.path.clone(),
                 )
@@ -1007,7 +1012,7 @@ mod tests {
                 .iter()
                 .map(|r| r.label.as_str())
                 .collect::<Vec<_>>(),
-            ["Folder", "Alpha title", "Zebra title", "data.csv"]
+            ["Folder", "Alpha title", "data.csv", "Zebra title"]
         );
         assert_eq!(tree.cursor.as_deref(), Some("z.md"));
         tree.set_note_titles(false);
@@ -1126,10 +1131,10 @@ mod tests {
                     .collect::<Vec<_>>(),
                 [
                     ("legacy.md", "Legacy title"),
+                    ("plain.md", "plain"),
                     ("24q4.md", "Quarterly plans"),
                     ("duplicate.md", "Quarterly plans"),
                     ("Upper.MD", "Upper title"),
-                    ("plain.md", "plain"),
                 ]
             );
             cx.notify();
@@ -1206,6 +1211,106 @@ mod tests {
         );
     }
 
+    /// #2773: every incremental path (create, rename, title change) and a
+    /// fresh rebuild list labels without regard to letter case.
+    #[test]
+    fn issue2773_mixed_case_labels_sort_case_insensitively_on_every_path() {
+        fn labels(tree: &Tree) -> Vec<String> {
+            tree.rows.iter().map(|row| row.label.clone()).collect()
+        }
+        fn rebuilt(tree: &Tree, titles: &Arc<HashMap<String, String>>) -> Vec<String> {
+            let mut fresh = Tree::default();
+            fresh.set_note_titles(tree.note_titles);
+            fresh.refresh(
+                Path::new("/issue2773-vault"),
+                &tree
+                    .kinds
+                    .iter()
+                    .map(|(path, kind)| entry(path, *kind))
+                    .collect::<Vec<_>>(),
+            );
+            fresh.set_titles(titles.clone());
+            labels(&fresh)
+        }
+        let mut tree = Tree::default();
+        tree.refresh(
+            Path::new("/issue2773-vault"),
+            &[
+                entry("Bravo.md", EntryKind::Markdown),
+                entry("Vega-2.md", EntryKind::Markdown),
+                entry("Vega.md", EntryKind::Markdown),
+            ],
+        );
+        tree.cursor = Some("Vega.md".into());
+        let none = Arc::new(HashMap::new());
+        assert_eq!(labels(&tree), ["Bravo", "Vega", "Vega-2"]);
+
+        // Create: a lowercase-initial note joins its alphabetical place
+        // instead of trailing every uppercase-initial note.
+        tree.entry_created("apple-2026-10-16.md", EntryKind::Markdown);
+        tree.cursor = Some("apple-2026-10-16.md".into());
+        assert_eq!(
+            labels(&tree),
+            ["apple-2026-10-16", "Bravo", "Vega", "Vega-2"],
+            "ISSUE2773 created lowercase note must sort before Bravo, not after Vega"
+        );
+        for path in ["IREN report.md", "IonQ report.md", "VEGA.md"] {
+            tree.entry_created(path, EntryKind::Markdown);
+        }
+        let expected = [
+            "apple-2026-10-16",
+            "Bravo",
+            "IonQ report",
+            "IREN report",
+            "VEGA",
+            "Vega",
+            "Vega-2",
+        ];
+        assert_eq!(labels(&tree), expected, "ISSUE2773 mixed-case creates");
+        assert_eq!(labels(&tree), rebuilt(&tree, &none));
+        assert_eq!(tree.cursor.as_deref(), Some("apple-2026-10-16.md"));
+
+        // Rename: the moved note leaves its obsolete position.
+        tree.note_moved("Bravo.md", "zulu.md");
+        assert_eq!(
+            labels(&tree),
+            [
+                "apple-2026-10-16",
+                "IonQ report",
+                "IREN report",
+                "VEGA",
+                "Vega",
+                "Vega-2",
+                "zulu",
+            ],
+            "ISSUE2773 renamed note"
+        );
+        assert_eq!(labels(&tree), rebuilt(&tree, &none));
+
+        // Title change on save / external update, with note titles shown.
+        tree.set_note_titles(true);
+        let titles = Arc::new(HashMap::from([
+            ("zulu.md".into(), "alpha title".into()),
+            ("Vega-2.md".into(), "Beta title".into()),
+        ]));
+        tree.set_titles(titles.clone());
+        assert_eq!(
+            labels(&tree),
+            [
+                "alpha title",
+                "apple-2026-10-16",
+                "Beta title",
+                "IonQ report",
+                "IREN report",
+                "VEGA",
+                "Vega",
+            ],
+            "ISSUE2773 retitled notes"
+        );
+        assert_eq!(labels(&tree), rebuilt(&tree, &titles));
+        assert_eq!(tree.cursor.as_deref(), Some("apple-2026-10-16.md"));
+    }
+
     #[test]
     fn cached_titles_sort_by_display_name_keep_paths_and_refresh_without_io() {
         let mut tree = Tree::default();
@@ -1234,10 +1339,10 @@ mod tests {
             vec![
                 ("Folder", "Folder"),
                 ("z.md", "Alpha"),
-                ("a.md", "Same.md"),
-                ("b.md", "Same.md"),
                 ("photo.png", "photo.png"),
                 ("plain.md", "plain"),
+                ("a.md", "Same.md"),
+                ("b.md", "Same.md"),
             ]
         );
         tree.cursor = Some("b.md".into());
@@ -1248,7 +1353,11 @@ mod tests {
             "unchanged titles do not rebuild rows"
         );
         tree.set_titles(Arc::new(HashMap::from([("b.md".into(), "AAA".into())])));
-        assert_eq!(tree.rows[1].path, "b.md");
+        assert_eq!(
+            [tree.rows[1].path.as_str(), tree.rows[2].path.as_str()],
+            ["a.md", "b.md"],
+            "«a» precedes «AAA» without regard to letter case (#2773)"
+        );
         assert_eq!(tree.cursor.as_deref(), Some("b.md"));
         tree.refresh(Path::new("/another-vault"), &entries);
         assert_eq!(
@@ -1374,8 +1483,8 @@ mod tests {
                 "Area",
                 "Area/@index.md",
                 "Area/sub",
-                "Area/Alpha.md",
                 "Area/_draft.md",
+                "Area/Alpha.md",
                 "Twice"
             ],
             "index first without Show hidden; `_draft` is ordinary and only the ambiguous @ pair stays hidden"
