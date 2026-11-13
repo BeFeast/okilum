@@ -1510,7 +1510,6 @@ impl Settings {
             }
             Section::Keyboard => content.children(self.keyboard.clone()).into_any_element(),
             Section::Editor => content
-                .child(note_open_mode_setting(cx))
                 .child(image_import_settings(cx))
                 .child(setting_row(
                     "Ask before copying files larger than",
@@ -2242,30 +2241,6 @@ impl Render for Settings {
 /// update offers its install action here instead of a modal.
 pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
     render_update_status(id, updater::status::get(), updater::restart_now, cx)
-}
-
-/// Settings → Editor → Open notes in (#2817).
-fn note_open_mode_setting(cx: &App) -> impl IntoElement {
-    use reader_ui_state::NoteOpenMode;
-    setting_row(
-        "Open notes in",
-        "Read shows the formatted note. Edit opens it in the editor, in Live Preview or Source as you last used. Files keep their own mode, a note that can\u{2019}t be edited opens in Read, and choosing Read or Edit in a window still applies to that window.",
-        h_flex().gap_1().children(
-            [
-                ("settings-note-open-read", "Read", NoteOpenMode::Read),
-                ("settings-note-open-edit", "Edit", NoteOpenMode::Edit),
-            ]
-            .into_iter()
-            .map(|(id, label, mode)| {
-                Button::new(id)
-                    .debug_selector(move || id.into())
-                    .label(label)
-                    .selected(reader_ui_state::note_open_mode(cx) == mode)
-                    .on_click(move |_, _, cx| reader_ui_state::set_note_open_mode(mode, cx))
-            }),
-        ),
-        cx,
-    )
 }
 
 pub(crate) fn render_update_status(
