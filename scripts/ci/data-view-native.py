@@ -27,13 +27,11 @@ def suite(filter_, expected=None):
     assert run(*BASE, filter_, '--', '--nocapture', '--test-threads=1').returncode == 0, filter_
 
 
-# Compile the controls together rather than rebuilding the large UI crate
+# Compile the three controls together rather than rebuilding the large UI crate
 # for each mutation. Every default-positive suite and fired negative uses that
 # same instrumented binary. No compilation failure counts as a fired control.
-source_names = ['main.rs', 'reader_delimited.rs', 'reader_code_file.rs', 'reader_code_file/toolbar.rs']
-if os.name == 'nt':
-    source_names.append('updater/windows.rs')
-paths = {name: pathlib.Path('crates/okilum-shell/src') / name for name in source_names}
+paths = {name: pathlib.Path('crates/okilum-shell/src') / name for name in
+         ['main.rs', 'reader_delimited.rs', 'reader_code_file.rs', 'reader_code_file/toolbar.rs']}
 original = {name: path.read_bytes() for name, path in paths.items()}
 mutations = {
     'reader_delimited.rs': (b'this.sort_column(column, cx);',
@@ -42,10 +40,6 @@ mutations = {
     'reader_code_file/toolbar.rs': (b'if self.view != View::Table {',
                                   b'if self.view != View::Table && !crate::data_view_native_control("find") {'),
 }
-if os.name == 'nt':
-    mutations['updater/windows.rs'] = (
-        b'manager.is_update_helper_prepared(asset)?,',
-        b'crate::data_view_native_control("helper") || manager.is_update_helper_prepared(asset)?,')
 try:
     for name, (before, after) in mutations.items():
         assert original[name].count(before) == 1, name
@@ -58,8 +52,6 @@ fn data_view_native_control(name: &str) -> bool {
 ''')
     suite('data_view_2669_', 8)
     suite('data_table_2735_', 2)
-    if os.name == 'nt':
-        suite('updater::windows::tests::ready_requires_helper_bytes_for_this_package', 1)
     # Keep the existing selection/edit/recovery/image coverage unchanged.
     for regression in [
         'code2810_',
@@ -72,18 +64,14 @@ fn data_view_native_control(name: &str) -> bool {
         'reader_files::live::native_tests::native_image_notifications_evict_cached_pixels_and_recover',
     ]:
         suite(regression)
-    controls = [
+    for control, test, assertion, marker in [
         ('sort', 'data_table_2735_native_sort_filter_copy_and_wide_virtualization',
          'native header click sorted numerically', 'DATA_TABLE_2735_COMPILED_DISABLED_SORT_CONTROL_FIRED'),
         ('fold', 'data_view_2669_native_fold_copy_find_and_readonly_source',
          'native XML grammar supplies folds', 'DATA_VIEW_2669_COMPILED_DISABLED_FOLD_CONTROL_FIRED'),
         ('find', 'code2810_every_read_format_uses_header_field_and_unfolds_first_hit',
          'shared field', 'CODE2810_COMPILED_MISSING_HEADER_FIND_CONTROL_FIRED'),
-    ]
-    if os.name == 'nt':
-        controls.append(('helper', 'updater::windows::tests::ready_requires_helper_bytes_for_this_package',
-                         'stale helper must not be Ready', 'UPDATER_STALE_HELPER_READY_CONTROL_FIRED'))
-    for control, test, assertion, marker in controls:
+    ]:
         negative = run(*BASE, test, '--', '--nocapture', '--test-threads=1', control=control)
         assert negative.returncode != 0
         assert 'running 1 test' in negative.stdout
@@ -103,7 +91,3 @@ for filter_, marker in [
 ]:
     suite(filter_)
     print(marker, flush=True)
-
-if os.name == 'nt':
-    suite('updater::windows::tests::ready_requires_helper_bytes_for_this_package', 1)
-    print('UPDATER_PREPARED_HELPER_RESTORED_SUITE_PASS', flush=True)

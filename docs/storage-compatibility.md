@@ -1,8 +1,30 @@
 # ZIP and Inbox SQLite compatibility
 
-Reader and the checksum-pinned Velopack SDK use ZIP 9.5.1; Inbox uses rusqlite
-0.42.0 and bundled SQLite through libsqlite3-sys 0.40.0. GPUI remains exactly
-0.3.3. No archive limits, native budgets or toolchain pins change.
+Reader uses ZIP 9.5.1; Inbox uses rusqlite 0.42.0 / libsqlite3-sys 0.40.0.
+Velopack 1.2.161 keeps ZIP 8.6.0. GPUI remains exactly 0.3.3; toolchain,
+archive limits and native budgets are unchanged relative to main.
+
+## Separate updater dependency
+
+This migration changes only Okilum's archive dependency and Inbox SQLite.
+Velopack's vendor diff, manifest and complete generated source are byte-identical
+to main 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Windows updater production
+code and its existing console controls are also unchanged. Updater hardening is
+a separate draft; none of its replacement/admission changes is included here.
+
+Both ZIP majors coexist in the resolved graph. ZIP 8 has exactly one direct
+owner, Velopack, which reads only our own update packages after feed-checksum
+verification; arbitrary Reader archives go through ZIP 9 and the Reader bounds.
+The legacy ZIP path therefore retains these open RustSec advisories (this PR
+does not claim to eliminate them):
+
+- [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367.html): privileged Unix mode bits.
+- [RUSTSEC-2026-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368.html): external symlink targets.
+- [RUSTSEC-2026-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369.html): permissions through symlinks.
+- [RUSTSEC-2026-0429](https://rustsec.org/advisories/RUSTSEC-2026-0429.html): allocation from a declared symlink size.
+
+The input restriction is a scope statement, not a fix or an audit suppression.
+RUSTSEC-2025-0168 is already fixed in ZIP 8.6.0 and is not retained by this path.
 
 ## Reader names and link refusal
 
@@ -20,30 +42,6 @@ symlink bits, including DOS-origin entries. Such entries cannot be previewed and
 are skipped during extraction; a neighboring ordinary file is the positive
 control. Existing bounds, no-overwrite and rollback rules remain unchanged.
 
-## Updater helper publication
-
-ZIP 9 initializes decompressors on the first read. Velopack's helper search
-explicitly skips methods outside `SUPPORTED_COMPRESSION_METHODS`, preserving
-ZIP 8's selection behavior when an unsupported `tools/Squirrel.exe` precedes a
-supported helper.
-
-Every SDK file extraction stages a `NamedTempFile` in the destination directory,
-reads through EOF/CRC validation, verifies the declared uncompressed size, syncs
-the completed file, then uses `persist` for atomic replacement on Windows and
-Unix. A read, size, write or publication error returns an error and drops the
-stage, preserving the original destination. Windows `download_updates` now
-propagates bundle loading and helper extraction failures instead of announcing
-success. The SDK version stays pinned; source archive, patch and complete
-resulting tree remain checksum-verified by `scripts/velopack-setup.py`.
-
-`zip_compat` covers a CRC failure after partial output, mismatched size, direct
-unsupported-method failure and the mixed-method selection/replacement control.
-Windows also verifies error propagation through `UpdateManager::download_updates`.
-`scripts/ci/zip-compat-controls.py` requires the CRC/size controls to fail when
-staging is replaced with destination truncation, and the selection control to
-fail when unsupported-method filtering is removed; it restores and verifies the
-pinned vendor tree and reruns the production controls afterwards.
-
 ## Real published Windows packages
 
 `scripts/ci/fixtures/windows-historical-update.json` pins the public beta feed
@@ -52,18 +50,13 @@ snapshot containing base Full 0.1.31653 and target Full/Delta 0.1.31678. The dri
 the feed's size/SHA256 before running the native Windows integration test.
 
 The test seeds an isolated portable installation from the real base package,
-uses the new SDK to prepare either the published Full or the actual Delta with
+uses the unchanged main SDK to prepare either the published Full or the actual Delta with
 the published Update.exe, then applies it with the real updater. The Delta
 source refuses Full downloads so fallback cannot conceal a broken patch. Both
 the reconstructed and installed file trees must match payload bytes extracted
 from the published target Full. This includes a 190,399,488-byte executable.
 The three historical packages have no ZIP64 entries; this run makes no claim
 about historical packages exceeding 4 GiB.
-
-The separate console-inheritance test remains a process-creation control with a
-stand-in patcher. It now returns a valid ZIP containing a helper, since the SDK
-correctly refuses non-ZIP packages. It does not establish real delta application;
-the published-package integration above provides that separate evidence.
 
 ## SQLite recovery and downgrade
 
@@ -79,49 +72,18 @@ The optional `INBOX_DOWNGRADE_DB` output from that test feeds the old-stack
 second old-stack reopen after the new writer touched the DB. This bounded
 compatibility check does not cover future schema versions.
 
-The `storage-compat` workflow runs archive/updater controls on native Windows and
-Intel Mac, the real published-package application on Windows, and full Inbox
-lint/tests on Linux. The normal exact-head agent and native gates remain required.
+## Exact-source controls
 
+`zip-compat-controls.py` requires ZIP 8.6.0 and 9.5.1 in Cargo metadata and rejects
+any ZIP 8 owner other than Velopack. Independent main manifest/patch/tree hashes
+prove the complete generated updater source is unchanged. It then removes each
+Reader compatibility fix, requires its actual regression test to fail, restores
+the source and requires the complete archive suite to pass.
 
-## Package/helper admission and Windows metadata (re-review follow-up)
-
-A final `.nupkg` is now published only after its Windows Update.exe entry has
-been prepared successfully. Sharing violations therefore leave a retryable
-`.partial`, not a discoverable final package. An already cached final package
-from an older SDK must retry helper preparation before download_updates can
-return success. Pending-package discovery also compares the installed helper
-against that package's supported helper entry, through complete byte/CRC/size
-validation. Okilum repeats that check when creating Ready and immediately before
-arming a restart, independently of channel/feed receipts. A later same-size
-helper change revokes admission too.
-
-On Windows, existing destinations use ReplaceFileW with metadata merge errors
-left fatal; the stage receives the existing file attributes before replacement.
-This retains the existing destination's explicit DACL rather than adopting the
-tempfile's inherited permissions. Missing targets use persist_noclobber so a
-racing new file cannot lose its metadata. Other platforms retain atomic persist.
-Native Windows controls hold a target open with only FILE_SHARE_READ (neither
-WRITE nor DELETE sharing), require error plus byte-identical original through
-repeated attempts, then unlock and require successful preparation. A separate
-control carries a protected explicit World execute ACE and HIDDEN /
-NOT_CONTENT_INDEXED attributes and compares the security descriptor and complete
-attributes before/after replacement. The comparison ignores only Windows'
-AUTO_INHERITED bookkeeping flag; owner/group, every ACE and DACL protection
-remain exact, matching the existing core save controls.
-
-The vendored SDK's execution-stub extraction no longer retains upstream's
-best-effort logging: it returns extraction failures. Its CRC-failure control
-requires both an error and unchanged existing stub bytes. The historical
-published Update.exe binaries remain unchanged; this patch changes the pinned
-Rust SDK source and does not claim to rebuild those external binaries.
-
-Compatibility runs are path-triggered on push to every branch and on pull
-requests for the vendor patch/manifest, Cargo manifests/locks and updater code;
-explicit storage-compat refs and workflow_dispatch remain usable. Runs for the
-same source SHA share a concurrency group to avoid duplicate work when the agent
-and native verification refs carry the same commit. The real package application
-step remains mandatory on the Windows job. Revert controls cover late package
-publication, cached-success bypass, pending admission, lossy metadata replacement
-and swallowed stub errors; the native Windows lane additionally disables the
-actual Okilum Ready guard and requires its regression to fail before restoring it.
+The path-triggered `storage-compat` workflow covers vendor setup/patches, Cargo
+manifests/locks, updater code, archive code and compatibility controls on every
+pushed branch. Native Windows and Intel Mac run the graph/vendor/Reader checks;
+Windows additionally applies the real Full and Delta packages. Linux runs full
+Inbox lint/tests, WAL recovery and the actual old-stack downgrade probe. Exact-
+head agent and native gates remain required. Historical ZIP64 / >4 GiB packages
+remain unverified because the pinned published pair contains none.

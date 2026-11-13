@@ -1,64 +1,55 @@
 #!/usr/bin/env python3
-"""Run staged extraction controls and prove the corresponding unsafe SDK mutations fail."""
+"""Prove split ZIP ownership, unchanged main Velopack, and Reader regressions."""
+import hashlib
+import importlib.util
+import json
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-COMMAND = ["cargo", "test", "--locked", "-p", "okilum-http", "--features", "updates", "--test", "zip_compat"]
-
-
-def require_failure(test):
-    result = subprocess.run(COMMAND + [test, "--", "--exact", "--nocapture"], cwd=ROOT,
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    print(result.stdout, flush=True)
-    if result.returncode != 101 or f"{test} ... FAILED" not in result.stdout or "test result: FAILED" not in result.stdout:
-        raise RuntimeError("Unsafe SDK mutation did not fail the executed regression: " + test)
+# Main 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Changing the updater is a separate PR.
+MAIN_MANIFEST_SHA256 = "df75037cdc98ab2d568a3cf4940c82fd0ffb9fb9bb7107193da8b2f3be31fc0f"
+MAIN_PATCH_SHA256 = "b43f52b39928715e53a8bf7dc8afb13dfbd9a1fedadb0d07ff49a254994b03d7"
+MAIN_TREE_SHA256 = "9dbbe586d66712c914fc7017d1f0f82fba63f81b9227ac0eb198e388ec646ba8"
+COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "--lib"]
 
 
 def main():
-    subprocess.run(COMMAND + ["--", "--nocapture"], cwd=ROOT, check=True)
-    source = ROOT / "vendor/velopack-1.2.161/src/bundle.rs"
+    for name, expected in [("manifest.json", MAIN_MANIFEST_SHA256), ("hidden-delta.diff", MAIN_PATCH_SHA256)]:
+        assert hashlib.sha256((ROOT / "scripts/velopack" / name).read_bytes()).hexdigest() == expected, name
+    spec = importlib.util.spec_from_file_location("velopack_setup", ROOT / "scripts/velopack-setup.py")
+    setup = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(setup)
+    assert setup.tree_digest(ROOT / "vendor/velopack-1.2.161") == MAIN_TREE_SHA256
+    metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT))
+    packages = {p["id"]: p for p in metadata["packages"]}
+    zip_ids = {p["version"]: p["id"] for p in packages.values() if p["name"] == "zip"}
+    assert set(zip_ids) == {"8.6.0", "9.5.1"}, zip_ids
+    owners = {packages[n["id"]]["name"] for n in metadata["resolve"]["nodes"]
+              if any(d["pkg"] == zip_ids["8.6.0"] for d in n["deps"])}
+    assert owners == {"velopack"}, owners
+    print("ZIP_SPLIT_GRAPH_PASS zip8=Velopack-only zip9=Reader vendor=main-byte-identical", flush=True)
+    source = ROOT / "crates/okilum-core/src/archive.rs"
     original = source.read_bytes()
-    staging = b"let mut outfile = tempfile::NamedTempFile::new_in(parent)?;"
-    publication = b"        outfile.as_file().sync_all()?;\n        publish_staged_file(outfile, path)?;\n"
-    selection = b"zip::SUPPORTED_COMPRESSION_METHODS.contains(&file.compression())\n                    && "
-    if any(original.count(marker) != 1 for marker in (staging, publication, selection)):
-        raise RuntimeError("Pinned extraction patch is missing or ambiguous")
+    cases = [
+        (b"let utf8 = file.flags().as_u16() & (1 << 11) != 0;",
+         b"let utf8 = std::str::from_utf8(file.name_raw()).is_ok();",
+         "archive::tests::utf8_flag_controls_ambiguous_names_and_extraction_paths"),
+        (b"if raw_symlink || file.is_symlink()", b"if file.is_symlink()",
+         "archive::tests::dos_origin_unix_symlink_attributes_are_still_refused"),
+    ]
     try:
-        source.write_bytes(original.replace(staging, b"let mut outfile = File::create(path)?;").replace(publication, b""))
-        require_failure("failed_crc_after_partial_copy_keeps_original_helper_identical")
-        require_failure("failed_size_check_keeps_original_helper_identical")
-        source.write_bytes(original.replace(selection, b""))
-        require_failure("unsupported_first_helper_is_skipped_and_supported_helper_replaces_original")
-        stub = b"            self.extract_zip_idx_to_path(i, &dest_path)?;"
-        assert original.count(stub) == 1
-        source.write_bytes(original.replace(stub, b"            let _ = self.extract_zip_idx_to_path(i, &dest_path);"))
-        require_failure("failed_stub_extraction_returns_error_and_keeps_original")
-        if __import__("os").name == "nt":
-            source.write_bytes(original.replace(b"publish_staged_file(outfile, path)?;", b"outfile.persist(path).map_err(|e| e.error)?;"))
-            require_failure("windows::replacement_preserves_explicit_execute_ace_and_nondefault_attributes")
+        for before, after, test in cases:
+            assert original.count(before) == 1
+            source.write_bytes(original.replace(before, after))
+            result = subprocess.run(COMMAND + [test, "--", "--exact", "--nocapture"], cwd=ROOT,
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            print(result.stdout, flush=True)
+            assert result.returncode == 101 and f"{test} ... FAILED" in result.stdout, test
+            print("READER_REVERT_CONTROL_FIRED " + test, flush=True)
     finally:
         source.write_bytes(original)
-    subprocess.run(["python3" if __import__("os").name != "nt" else "python", "scripts/velopack-setup.py", "--verify"], cwd=ROOT, check=True)
-    if __import__("os").name == "nt":
-        manager = ROOT / "vendor/velopack-1.2.161/src/manager.rs"
-        manager_original = manager.read_bytes()
-        before_publish = b"        #[cfg(windows)]\n        self.prepare_update_helper(&partial_file)?;\n"
-        cached_retry = b"            #[cfg(windows)]\n            self.prepare_update_helper(&final_target_file)?;\n"
-        pending_guard = b"                if !self.is_update_helper_prepared(&asset).unwrap_or(false) { return None; }"
-        assert all(manager_original.count(marker) == 1 for marker in (before_publish, cached_retry, pending_guard))
-        try:
-            late = manager_original.replace(before_publish, b"").replace(b"        fs::rename(&partial_file, &final_target_file)?;", b"        fs::rename(&partial_file, &final_target_file)?;\n        self.prepare_update_helper(&final_target_file)?;")
-            manager.write_bytes(late)
-            require_failure("windows::helper_failure_never_publishes_pending_package_and_retry_prepares_helper")
-            manager.write_bytes(manager_original.replace(cached_retry, b""))
-            require_failure("windows::cached_package_with_stale_or_corrupted_helper_is_not_pending_and_retry_repairs_it")
-            manager.write_bytes(manager_original.replace(pending_guard, b""))
-            require_failure("windows::cached_package_with_stale_or_corrupted_helper_is_not_pending_and_retry_repairs_it")
-        finally:
-            manager.write_bytes(manager_original)
-    subprocess.run(["python3" if __import__("os").name != "nt" else "python", "scripts/velopack-setup.py", "--verify"], cwd=ROOT, check=True)
-    subprocess.run(COMMAND + ["--", "--nocapture"], cwd=ROOT, check=True)
+    subprocess.run(COMMAND + ["archive::tests::", "--", "--nocapture"], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":

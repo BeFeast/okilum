@@ -6181,7 +6181,7 @@ dependencies = [
  "walkdir",
  "windows-sys 0.61.2",
  "zeroize",
- "zip",
+ "zip 9.5.1",
  "zstd",
 ]
 
@@ -6218,7 +6218,6 @@ dependencies = [
  "uuid",
  "velopack",
  "windows-sys 0.61.2",
- "zip",
 ]
 
 [[package]]
@@ -6320,7 +6319,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",
- "zip",
+ "zip 9.5.1",
 ]
 
 [[package]]
@@ -10329,6 +10328,12 @@ checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
 
 [[package]]
 name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
+name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
@@ -10749,7 +10754,6 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.21",
  "ureq",
  "url",
@@ -10758,7 +10762,7 @@ dependencies = [
  "waitpid-any",
  "windows 0.62.2",
  "xml",
- "zip",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -12512,6 +12516,20 @@ dependencies = [
 
 [[package]]
 name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path 0.12.3",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
 version = "9.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302"
@@ -12524,10 +12542,9 @@ dependencies = [
  "libc",
  "memchr",
  "nix",
- "typed-path",
+ "typed-path 0.13.0",
  "windows-sys 0.61.2",
  "zeroize",
- "zopfli",
 ]
 
 [[package]]

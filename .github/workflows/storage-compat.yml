@@ -61,10 +61,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
-      - name: Run archive and staged updater extraction controls
+      - name: Verify split ZIP graph, unchanged updater and Reader controls
         shell: bash
         run: |
-          cargo test --locked -p okilum-core --lib archive::tests:: -- --nocapture
           python3 scripts/ci/zip-compat-controls.py
       - name: Apply checksum-verified historical Full and real Delta packages
         if: runner.os == 'Windows'
