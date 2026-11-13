@@ -37,77 +37,89 @@ pub(crate) fn layout(views: &[ViewerView], window: &Window) -> Option<LayoutItem
 }
 
 #[inline(never)]
+/// Every viewer header draw builds this; each Button chain gets its own
+/// short-lived frame on the native main stack (#2825).
 pub(crate) fn render(views: &[ViewerView], form: Form, cx: &App) -> AnyElement {
-    let tokens = brand::palette(cx);
     if views.len() < 2 {
         return div().into_any_element();
     }
     if matches!(form, Form::Menu) {
-        let active = views.iter().find(|view| view.active).unwrap_or(&views[0]);
-        let items = views.to_vec();
-        return Button::new("code-view-menu")
-            .ghost()
-            .h(px(28.))
-            .px_2()
-            .label(active.action.label.clone())
-            .dropdown_caret(true)
-            .debug_selector(|| "code-view-menu".into())
-            .accessibility_label("View")
-            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
-                for view in &items {
-                    let mut action = view.action.clone();
-                    action.toggled = view.active;
-                    menu = menu.item(action.menu_item());
-                }
-                menu
-            })
-            .into_any_element();
+        return view_menu(views);
     }
+    let tokens = brand::palette(cx);
     h_flex()
         .debug_selector(|| "reader-segmented".into())
         .flex_none()
         .p(px(2.))
         .rounded(px(6.))
         .bg(tokens.border_subtle.opacity(0.5))
-        .children(views.iter().map(|view| {
-            let labelled = matches!(form, Form::Full) || view.active;
-            let action = &view.action;
-            let invoke = action.invoke.clone();
-            Button::new(action.id)
-                .ghost()
-                .h(px(28.))
-                .min_w(px(28.))
-                .px_1()
-                .rounded(px(4.))
-                .icon(action.icon.clone().size(px(14.)))
-                .when(labelled, |b| b.label(action.label.clone()))
-                .accessibility_label(action.label.clone())
-                .selected(view.active)
-                .disabled(!action.enabled)
-                .text_size(px(11.))
-                .text_color(if view.active {
-                    tokens.text
-                } else {
-                    tokens.text_muted
-                })
-                .when(view.active, |b| {
-                    b.bg(tokens.surface_raised)
-                        .border_1()
-                        .border_color(tokens.border_subtle)
-                        .font_weight(FontWeight::SEMIBOLD)
-                })
-                .tooltip(
-                    action
-                        .disabled_reason
-                        .clone()
-                        .unwrap_or_else(|| action.tooltip.clone()),
-                )
-                .debug_selector({
-                    let id = action.id;
-                    move || id.into()
-                })
-                .on_click(move |_, window, cx| invoke(window, cx))
-        }))
+        .children(views.iter().map(|view| segment(view, form, cx)))
+        .into_any_element()
+}
+
+#[inline(never)]
+fn view_menu(views: &[ViewerView]) -> AnyElement {
+    let active = views.iter().find(|view| view.active).unwrap_or(&views[0]);
+    let items = views.to_vec();
+    Button::new("code-view-menu")
+        .ghost()
+        .h(px(28.))
+        .px_2()
+        .label(active.action.label.clone())
+        .dropdown_caret(true)
+        .debug_selector(|| "code-view-menu".into())
+        .accessibility_label("View")
+        .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
+            for view in &items {
+                let mut action = view.action.clone();
+                action.toggled = view.active;
+                menu = menu.item(action.menu_item());
+            }
+            menu
+        })
+        .into_any_element()
+}
+
+#[inline(never)]
+fn segment(view: &ViewerView, form: Form, cx: &App) -> AnyElement {
+    let tokens = brand::palette(cx);
+    let labelled = matches!(form, Form::Full) || view.active;
+    let action = &view.action;
+    let invoke = action.invoke.clone();
+    Button::new(action.id)
+        .ghost()
+        .h(px(28.))
+        .min_w(px(28.))
+        .px_1()
+        .rounded(px(4.))
+        .icon(action.icon.clone().size(px(14.)))
+        .when(labelled, |b| b.label(action.label.clone()))
+        .accessibility_label(action.label.clone())
+        .selected(view.active)
+        .disabled(!action.enabled)
+        .text_size(px(11.))
+        .text_color(if view.active {
+            tokens.text
+        } else {
+            tokens.text_muted
+        })
+        .when(view.active, |b| {
+            b.bg(tokens.surface_raised)
+                .border_1()
+                .border_color(tokens.border_subtle)
+                .font_weight(FontWeight::SEMIBOLD)
+        })
+        .tooltip(
+            action
+                .disabled_reason
+                .clone()
+                .unwrap_or_else(|| action.tooltip.clone()),
+        )
+        .debug_selector({
+            let id = action.id;
+            move || id.into()
+        })
+        .on_click(move |_, window, cx| invoke(window, cx))
         .into_any_element()
 }
 
