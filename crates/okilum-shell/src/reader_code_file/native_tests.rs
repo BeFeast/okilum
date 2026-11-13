@@ -95,7 +95,8 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
     visual.update(|window, cx| window.draw(cx).clear(cx));
     let input = preview.read_with(visual, |p, _| {
         assert!(p.document.is_some());
-        assert!(!p.editable());
+        // #2887: Edit is offered; the viewer's own text stays read-only.
+        assert!(p.editable());
         p.input().expect("XML opens in the code viewer")
     });
     input.read_with(visual, |s, _| {
