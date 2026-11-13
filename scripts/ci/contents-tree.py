@@ -58,6 +58,11 @@ CONTROLS = [
  ('click-by-index', 'contents2814_a_click_on_old_rows_reaches_the_same_node_in_a_newer_document'),
  ('linked-from-everywhere', 'linked2885_data_files_hide_linked_from_and_notes_keep_it'),
  ('hide-linked-backlinks', 'linked2885_a_linked_data_file_keeps_linked_from'),
+ ('json-only-contents', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('no-current-mark', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('indent-current', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('remap-every-sample', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
+ ('groups-unmarked', 'contents2814_where_you_are_inside_a_closed_group_marks_the_group'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -77,6 +82,9 @@ try:
     edit(tree, 'default_open: !grouped && default_open(doc, index),', 'default_open: (!grouped || crate::contents2814_control("group-children-open")) && default_open(doc, index),')
     edit(tree, '    if doc.key_text(first_index).is_some() {', '    let first_index = if crate::contents2814_control("labels-walk-children") { doc.children(doc.parent(first_index).unwrap()).nth(first).unwrap() } else { first_index };\n    if doc.key_text(first_index).is_some() {')
     view = 'reader_file_outline.rs'
+    edit(view, '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n', '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n        if crate::contents2814_control("no-current-mark") {\n            return None;\n        }\n')
+    edit(view, '        if !Arc::ptr_eq(&raw, doc) {\n            return self.snapshot.current;\n        }\n        let mut at = Some(code.read(cx).contents_top_node(cx)?);', '        let mut node = code.read(cx).contents_top_node(cx)?;\n        if !Arc::ptr_eq(&raw, doc) {\n            if !crate::contents2814_control("remap-every-sample") {\n                return self.snapshot.current;\n            }\n            node = raw.node_in(node, doc)?;\n        }\n        let mut at = Some(node);')
+    edit(view, '        let groups = self.snapshot.groups.get(&parent)?;', '        if crate::contents2814_control("groups-unmarked") {\n            return None;\n        }\n        let groups = self.snapshot.groups.get(&parent)?;')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
@@ -84,6 +92,8 @@ try:
     edit('reader_right_panel.rs', 'let service = service_file(reader) && reader.backlinks.is_empty();', 'let service = service_file(reader) && (reader.backlinks.is_empty() || crate::contents2814_control("hide-linked-backlinks"));')
     edit('reader_right_panel.rs', '    reader.file_preview.as_ref().is_some_and(|preview| {', '    !crate::contents2814_control("linked-from-everywhere") && reader.file_preview.as_ref().is_some_and(|preview| {')
     code = 'reader_code_file/contents.rs'
+    edit(code, '            || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))', '            || (!crate::contents2814_control("json-only-contents") && matches!(language(&self.rel), Some("yaml" | "toml" | "xml")))')
+    edit(code, ".take_while(|b| *b == b' ' || *b == b'\\t')", ".take_while(|b| !crate::contents2814_control(\"indent-current\") && (*b == b' ' || *b == b'\\t'))")
     edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
     edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
     edit(code, 'if !self.contents_format() || self.view == View::Table {', 'if !self.contents_format() || (self.view == View::Table && !crate::contents2814_control("table-contents")) {')
