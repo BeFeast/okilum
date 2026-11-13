@@ -254,6 +254,14 @@ impl TablePreview {
     pub(crate) fn ready(&self) -> bool {
         self.table.is_some()
     }
+    /// The grid or its Find input holds focus; both unmount when Table is left.
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+            || self
+                .filter
+                .as_ref()
+                .is_some_and(|input| input.focus_handle(cx).is_focused(window))
+    }
     pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) -> bool {
         let Some(input) = &self.filter else {
             return false;

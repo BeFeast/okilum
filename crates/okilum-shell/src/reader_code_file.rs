@@ -275,6 +275,11 @@ impl CodePreview {
         self.source_bytes = Some(bytes);
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_view(&self) -> View {
+        self.view
+    }
+
     pub(crate) fn table_view(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
     }

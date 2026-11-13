@@ -42,6 +42,7 @@ def run(label, args, control=None):
 
 CONTROLS = [
  ('eager-raw', 'csv_is_lazy_table_then_readonly_raw_and_real_edit'),
+ ('strand-focus', 'csv_is_lazy_table_then_readonly_raw_and_real_edit'),
  ('first-cell-only', 'matching_cells_case_steps_and_escape_keep_selection'),
  ('previous-is-next', 'matching_cells_case_steps_and_escape_keep_selection'),
  ('ignore-case', 'matching_cells_case_steps_and_escape_keep_selection'),
@@ -71,6 +72,7 @@ fn table2812_control(name: &str) -> bool {
 }
 fn main() {''')
     edit('reader_code_file.rs', 'if initial == View::Raw {', 'if initial == View::Raw || crate::table2812_control("eager-raw") {')
+    edit('reader_code_file/view.rs', 'if focused_table && self.view != View::Table {', 'if focused_table && self.view != View::Table && !crate::table2812_control("strand-focus") {')
     find = 'reader_delimited/find.rs'
     edit(find, '.matches\n                    .into_iter()', '.matches\n                    .into_iter().take(if crate::table2812_control("first-cell-only") {1} else {usize::MAX})')
     edit(find, 'i64::from(direction)', 'i64::from(if crate::table2812_control("previous-is-next") {direction.abs()} else {direction})')

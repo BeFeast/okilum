@@ -73,7 +73,33 @@ fn table2812_csv_is_lazy_table_then_readonly_raw_and_real_edit(cx: &mut TestAppC
     reader.update_in(v, |r, w, cx| r.toggle_source(w, cx));
     settle(v);
     let c = code(&reader, v);
-    c.update_in(v, |p, w, cx| p.set_view(View::Raw, w, cx));
+    // Keyboard round trip from a focused grid: leaving Table must not strand
+    // focus on the unmounted grid, or the next view key reaches nothing.
+    let view_key = |n: u8| {
+        if cfg!(target_os = "macos") {
+            format!("ctrl-{n}")
+        } else {
+            format!("alt-{n}")
+        }
+    };
+    let cell = measured_bounds(v, "delimited-cell-1-0").expect("grid mounted");
+    v.simulate_click(cell.center(), Modifiers::default());
+    settle(v);
+    v.simulate_keystrokes(&view_key(4));
+    settle(v);
+    c.read_with(v, |p, _| {
+        assert_eq!(p.active_view(), View::Raw, "view key reaches Raw")
+    });
+    v.simulate_keystrokes(&view_key(1));
+    settle(v);
+    c.read_with(v, |p, _| {
+        assert_eq!(
+            p.active_view(),
+            View::Table,
+            "focus survived leaving the grid"
+        )
+    });
+    v.simulate_keystrokes(&view_key(4));
     settle(v);
     c.read_with(v, |p, cx| {
         let input = p.input().unwrap().read(cx);
@@ -376,16 +402,8 @@ fn table2812_find_debounces_and_notifies_no_header_or_side_panels(cx: &mut TestA
     for ch in "needle".chars() {
         v.simulate_input(&ch.to_string());
         v.run_until_parked();
-        eprintln!(
-            "TABLE_HEADER_KEY {ch} renders={} before={before}",
-            reader_viewer_chrome::header_renders(r.entity_id())
-        );
     }
     settle(v);
-    eprintln!(
-        "TABLE_HEADER_RESULTS renders={} before={before}",
-        reader_viewer_chrome::header_renders(r.entity_id())
-    );
     t.read_with(v, |p, _| {
         assert_eq!(p.hits.len(), 2, "positive: actual query completed");
         assert_eq!(
