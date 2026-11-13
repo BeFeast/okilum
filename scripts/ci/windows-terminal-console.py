@@ -17,6 +17,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
+# The step runs under pwsh 7, whose PSModulePath breaks Windows PowerShell 5.1
+# module autoloading. Okilum is a GUI app and passes no such value.
+BASE_ENV = {key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}
 PROFILE = r'''
 if ($env:OKILUM_TERMINAL_MARKER_START) {
     [IO.File]::WriteAllText($env:OKILUM_TERMINAL_MARKER_START, ('{0}|{1}|{2}' -f [Console]::IsInputRedirected, [Console]::IsOutputRedirected, (Get-Process -Id $PID).Path))
@@ -30,7 +33,7 @@ if ($env:OKILUM_TERMINAL_MARKER_START) {
 
 def powershell(command):
     return subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', command],
-                          text=True, stdout=subprocess.PIPE, check=True).stdout.strip()
+                          env=BASE_ENV, text=True, stdout=subprocess.PIPE, check=True).stdout.strip()
 
 
 def encoded(folder):
@@ -46,7 +49,7 @@ def same(a, b):
 def run(helper, mode, folder, markers, want):
     for marker in markers.values():
         marker.unlink(missing_ok=True)
-    env = dict(os.environ, OKILUM_TERMINAL_MARKER_START=str(markers['start']),
+    env = dict(BASE_ENV, OKILUM_TERMINAL_MARKER_START=str(markers['start']),
                OKILUM_TERMINAL_MARKER_PROMPT=str(markers['prompt']))
     # The selected folder is the working directory, as Okilum's could be.
     started = subprocess.run([str(helper), mode, encoded(folder)], cwd=folder, env=env,
