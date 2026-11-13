@@ -24,7 +24,9 @@ in 3 of 5 observed runs (1311, 1993, 2462, 2485, 2549 ms).
    the native Merge All Windows, Move Tab to New Window or Show Tab Bar action
    ran. That flag never resets, so explicit tabbing and a window whose
    identifier is later cleared still query AppKit as before. A unit test covers
-   the flag (`cargo test -p gpui-pre-macos --lib tab_group` on macOS).
+   the flag. The crate's unit tests run in the `data-view-native` macOS job via
+   `scripts/ci/gpui-macos-vendor-tests.sh` (own manifest, `test-support`; at least
+   8 must pass, including the tabbing-flag test).
 2. `scripts/patches/gpui-pre-apple/0001-shared-background-metal-pipelines.diff`
    and `scripts/patches/gpui-pre-macos/0002-prepare-metal-pipelines-at-startup.diff`:
    the shader library and eight pipeline states are built once per process for

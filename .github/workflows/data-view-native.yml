@@ -138,6 +138,12 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/data-view-native.py
+      # Pinned GPUI macOS patches (#2825): the crate's own unit tests, so a
+      # future patch edit cannot silently break them. Independent of the probes.
+      - name: Run pinned gpui-pre-macos unit tests
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: bash scripts/ci/gpui-macos-vendor-tests.sh
       - name: Exercise file Edit compiled negative controls
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         shell: bash
