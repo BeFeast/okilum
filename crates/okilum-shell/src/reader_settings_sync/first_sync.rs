@@ -115,7 +115,7 @@ mod tests {
             root.view().clone().downcast::<SyncSettings>().unwrap()
         });
         visual.simulate_resize(size(px(1000.), px(1400.)));
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         for selector in [
             "sync-merge-same-count",
             "sync-merge-here-count",
@@ -128,8 +128,13 @@ mod tests {
             );
         }
         let cancel = visual.debug_bounds("sync-cancel-first-preview").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        assert!(
+            cancel.top() >= px(0.) && cancel.bottom() <= viewport.height,
+            "cancel must be inside the mounted viewport: {cancel:?}, {viewport:?}"
+        );
         visual.simulate_click(cancel.center(), Modifiers::default());
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         assert_eq!(
             writes.load(Ordering::SeqCst),
             0,
@@ -145,10 +150,10 @@ mod tests {
                 cx,
             )
         });
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         let apply = visual.debug_bounds("sync-merge-apply").unwrap();
         visual.simulate_click(apply.center(), Modifiers::default());
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         assert_eq!(
             writes.load(Ordering::SeqCst),
             0,
@@ -156,10 +161,10 @@ mod tests {
         );
         let acknowledge = visual.debug_bounds("sync-merge-ack").unwrap();
         visual.simulate_click(acknowledge.center(), Modifiers::default());
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         let apply = visual.debug_bounds("sync-merge-apply").unwrap();
         visual.simulate_click(apply.center(), Modifiers::default());
-        visual.run_until_parked();
+        super::super::draw_sync_fixture(visual);
         assert_eq!(
             writes.load(Ordering::SeqCst),
             1,

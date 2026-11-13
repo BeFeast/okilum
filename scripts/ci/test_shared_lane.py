@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / '.forgejo/workflows/ci.yml').read_text()
@@ -78,10 +79,31 @@ class SharedLaneTests(unittest.TestCase):
                              if not line.startswith('    if:'))
         self.assertEqual(execution('shared-github'), execution('shared-measure'))
 
+    def test_heavy_local_gates_wait_without_suppressing_shared_after_linux_failure(self):
+        jobs = yaml.safe_load(WORKFLOW)['jobs']
+        shared = jobs['shared-local']
+        self.assertIn('linux-local', shared['needs'])
+        self.assertNotIn('shared-local', jobs['linux-local'].get('needs', []))
+        self.assertEqual(shared['timeout-minutes'], 60)
+        self.assertEqual(jobs['linux-local']['timeout-minutes'], 80)
+        condition = shared['if']
+        self.assertIn('always()', condition)
+        self.assertIn('!cancelled()', condition)
+        expression = condition.replace('always()', 'True').replace('!cancelled()', 'not cancelled')
+        expression = expression.replace('needs.shared-select.outputs.lane', 'lane').replace('&&', 'and')
+        for linux in ('success', 'failure', 'skipped'):
+            for lane, cancelled in itertools.product(('local', 'hosted', ''), (False, True)):
+                with self.subTest(linux=linux, lane=lane, cancelled=cancelled):
+                    # Actions waits for every need. always() must remove its
+                    # implicit success() guard even when Linux did not pass.
+                    result = eval(expression, {'__builtins__': {}},
+                                  {'lane': lane, 'cancelled': cancelled})
+                    self.assertEqual(result, lane == 'local' and not cancelled)
+
     def test_wiring_and_public_runner_isolation(self):
         self.assertEqual(WORKFLOW.count('vars.OKILUM_SHARED_LANE'), 1)
         self.assertNotIn('checkout', block('shared-select'))
-        self.assertIn("if: needs.shared-select.outputs.lane == 'local'", block('shared-local'))
+        self.assertIn("if: always() && !cancelled() && needs.shared-select.outputs.lane == 'local'", block('shared-local'))
         self.assertIn("if: needs.shared-select.outputs.lane == 'hosted'", block('shared-github'))
         self.assertIn("if: needs.shared-select.outputs.measure == 'true'", block('shared-measure'))
         self.assertNotIn('shared-measure', block('shared'))

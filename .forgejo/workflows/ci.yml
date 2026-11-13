@@ -110,8 +110,11 @@ jobs:
           PYSELECT
 
   shared-local:
-    needs: [shared-select]
-    if: needs.shared-select.outputs.lane == 'local'
+    # These two heavy jobs can land on the SAME multi-capacity runner. Keep
+    # their compile/runtime budgets independent without competing on that host.
+    # A Linux failure still leaves the complete shared result observable.
+    needs: [shared-select, linux-local]
+    if: always() && !cancelled() && needs.shared-select.outputs.lane == 'local'
     # ubuntu-latest also matches light runners capped below shell test RSS.
     runs-on: heavy
     timeout-minutes: 60
@@ -120,6 +123,7 @@ jobs:
     # they are absent (fork PRs) the build simply runs without the wrapper.
     env:
       CARGO_INCREMENTAL: "0"
+      OKILUM_WORKSPACE_ORDINARY_SHARDS: "4"
       # Match required hosted checks: omit CI debug info, retain assertions and
       # every suite/deadline. Developer, macOS and release profiles stay intact.
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -306,6 +310,7 @@ jobs:
     # they are absent (fork PRs) the build simply runs without the wrapper.
     env:
       CARGO_INCREMENTAL: "0"
+      OKILUM_WORKSPACE_ORDINARY_SHARDS: "4"
       # Match required hosted checks: omit CI debug info, retain assertions and
       # every suite/deadline. Developer, macOS and release profiles stay intact.
       CARGO_PROFILE_DEV_DEBUG: "0"

@@ -1,5 +1,6 @@
 """Execute the real watchdog against a hang; no compiler or real daemons."""
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -15,6 +16,58 @@ FIXTURE = ROOT / 'scripts/ci/fixtures/hung-test-group.py'
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux fast-runner process supervision')
 class TestGroup(unittest.TestCase):
+    def test_isolated_writer_account_is_shared_with_children_and_removed_after_reap(self):
+        for status in (0, 7):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ambient = root / 'ambient'
+                ambient.mkdir()
+                (ambient / 'keep').write_text('unrelated account')
+                child = root / 'child.py'
+                child.write_text('''import json,os,pathlib,signal,sys,time
+root=pathlib.Path(sys.argv[1]); state=pathlib.Path(os.environ['XDG_STATE_HOME'])
+def stop(number,frame):
+    (root/'stopped').write_text(json.dumps({'state_exists':state.exists()}))
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM,stop)
+(root/'ready').write_text(json.dumps({'pid':os.getpid(),'state':str(state)}))
+while True: time.sleep(.01)
+''')
+                parent = '''import json,os,pathlib,subprocess,sys,time
+root=pathlib.Path(sys.argv[1]); state=pathlib.Path(os.environ['XDG_STATE_HOME'])
+assert state.is_dir()
+(state/'marker').write_text('own account')
+(root/'parent').write_text(str(state))
+subprocess.Popen([sys.executable,str(root/'child.py'),str(root)])
+until=time.monotonic()+2
+while not (root/'ready').exists():
+    assert time.monotonic()<until
+    time.sleep(.01)
+raise SystemExit(int(sys.argv[2]))
+'''
+                try:
+                    result = subprocess.run(['bash', str(SCRIPT), '--isolated-writer-account',
+                        '--kill-after', '.3', 'account-control', '5', sys.executable, '-c',
+                        parent, str(root), str(status)], capture_output=True, text=True,
+                        timeout=6, env=dict(os.environ, XDG_STATE_HOME=str(ambient)))
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    state = Path((root / 'parent').read_text())
+                    ready = json.loads((root / 'ready').read_text())
+                    self.assertEqual(ready['state'], str(state))
+                    self.assertNotEqual(state, ambient)
+                    self.assertTrue(json.loads((root / 'stopped').read_text())['state_exists'])
+                    self.assertFalse(Path('/proc', str(ready['pid'])).exists())
+                    self.assertFalse(state.exists())
+                    self.assertEqual((ambient / 'keep').read_text(), 'unrelated account')
+                finally:
+                    if (root / 'ready').exists():
+                        pid = json.loads((root / 'ready').read_text())['pid']
+                        try:
+                            if str(root).encode() in Path('/proc', str(pid), 'cmdline').read_bytes():
+                                os.kill(pid, signal.SIGKILL)
+                        except (FileNotFoundError, ProcessLookupError):
+                            pass
+
     def test_hung_tree_including_detached_daemons_is_killed_and_reaped(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp)

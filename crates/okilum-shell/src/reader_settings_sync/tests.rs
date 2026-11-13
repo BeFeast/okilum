@@ -1,9 +1,10 @@
 #[cfg(target_os = "linux")]
 use super::linux_runtime;
 use super::{
-    destination, destination_name, mac_direct_state, perform, perform_with_locations, serve_paired,
-    shared, suspend, sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch,
-    Operation, Output, SyncSettings, TestSyncState, TestWorker,
+    destination, destination_name, draw_sync_fixture, mac_direct_state, perform,
+    perform_with_locations, serve_paired, shared, suspend, sync_refresh_interval, user_error,
+    BackgroundSync, ControllerGuard, Epoch, Operation, Output, SyncSettings, TestSyncState,
+    TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -931,6 +932,7 @@ fn guided_worker(
 }
 
 fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
+    draw_sync_fixture(visual);
     let panel = visual
         .debug_bounds("sync-panel")
         .expect("Sync panel is rendered");
@@ -1068,7 +1070,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     });
     let mut visual = VisualTestContext::from_window(settings, cx);
     visual.simulate_resize(size(px(700.), px(440.)));
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_eq!(
         visual.update(|window, _| window.viewport_size()),
         size(px(700.), px(440.)),
@@ -1084,13 +1086,13 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
             .update(cx, |input, cx| input.set_value("Desktop", window, cx));
         cx.notify();
     });
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     let add = visual.debug_bounds("sync-add-computer").unwrap();
     visual.simulate_click(add.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     let create = visual.debug_bounds("sync-create-link").unwrap();
     visual.simulate_click(create.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-copy-url");
     assert_visible(&mut visual, "sync-pairing-url");
     view.update(&mut visual, |view, cx| {
@@ -1098,7 +1100,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         cx.notify();
     });
     visual.executor().advance_clock(Duration::from_secs(1));
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-approve-computer");
     assert!(
         visual.debug_bounds("sync-copy-url").is_none(),
@@ -1106,7 +1108,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     );
     let confirm = visual.debug_bounds("sync-approve-computer").unwrap();
     visual.simulate_click(confirm.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-status");
     assert_visible(&mut visual, "sync-catalog-0");
     assert!(visual.debug_bounds("sync-approve-computer").is_none());
@@ -1120,7 +1122,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         view.error = Some("Could not connect. Check both computers and try again.".into());
         cx.notify();
     });
-    visual.run_until_parked();
+    draw_sync_fixture(&mut visual);
     assert_visible(&mut visual, "sync-error");
 }
 
@@ -1637,7 +1639,10 @@ fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut Tes
 }
 
 #[gpui::test]
-fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut TestAppContext) {
+async fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     let directory = tempfile::tempdir().unwrap();
     let peer = uuid::Uuid::new_v4();
@@ -1690,7 +1695,10 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
-    visual.run_until_parked();
+    visual
+        .condition(&view, |view, _| !view.busy && view.snapshot.is_some())
+        .await;
+    draw_sync_fixture(visual);
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
     assert!(visual.did_prompt_for_paths());
@@ -1698,10 +1706,16 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
         assert!(options.directories && !options.files && !options.multiple);
         Some(vec![directory.path().join("absent/Notes")])
     });
-    visual.run_until_parked();
+    visual
+        .condition(&view, |view, _| {
+            view.presentation.destinations.contains_key("notes")
+        })
+        .await;
+    draw_sync_fixture(visual);
     let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
     visual.simulate_click(start.center(), Modifiers::default());
-    visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
+    draw_sync_fixture(visual);
     assert_eq!(*calls.lock().unwrap(), vec!["read", "attach"]);
     assert!(visual.debug_bounds("sync-destination-error-0").is_some());
     view.read_with(visual, |view, _| {
@@ -1710,7 +1724,8 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
         assert!(view.awaiting_open.is_none());
     });
     view.update(visual, |view, cx| view.run(Operation::Read, cx));
-    visual.run_until_parked();
+    visual.condition(&view, |view, _| !view.busy).await;
+    draw_sync_fixture(visual);
     assert!(
         visual.debug_bounds("sync-destination-error-0").is_some(),
         "refresh preserves actionable failure"
@@ -2227,11 +2242,11 @@ fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext)
         });
         Root::new(view, window, cx)
     });
-    visual.run_until_parked();
+    draw_sync_fixture(visual);
     assert_visible(visual, "sync-reject-computer");
     let reject = visual.debug_bounds("sync-reject-computer").unwrap();
     visual.simulate_click(reject.center(), Modifiers::default());
-    visual.run_until_parked();
+    draw_sync_fixture(visual);
     assert_eq!(*calls.lock().unwrap(), vec!["other"]);
     assert!(visual.debug_bounds("sync-new-link").is_none());
     assert!(visual.debug_bounds("sync-modal").is_none());

@@ -51,6 +51,95 @@ def receipt():
 
 
 class VerdictTests(unittest.TestCase):
+    def setUp(self):
+        ambient = patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='2')
+        ambient.start()
+        self.addCleanup(ambient.stop)
+
+    def test_heavy_workspace_shards_keep_inventory_overlap_and_failure_verdict(self):
+        names = [f'ordinary::case{i}' for i in range(80)]
+        names += ['ordinary::case0', 'ordinary::case0::nested', 'reader_log::case',
+                  'platform::reveal::tests::case']
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            name + ': test\n' for name in names), stderr='')
+        for failed in (None, 'ordinary-3', 'logs', 'reveal'):
+            with self.subTest(failed=failed):
+                barrier = threading.Barrier(5)
+                seen = []
+                completed = set()
+                lock = threading.Lock()
+
+                def execute(name, arguments, expected):
+                    if name.startswith('ordinary-'):
+                        self.assertIn('--test-threads=2', arguments)
+                        self.assertIn('--exact', arguments)
+                        selected = [item for item in names if item in arguments]
+                    else:
+                        selected = [item for item in names if arguments[0] in item]
+                    self.assertEqual(len(selected), expected)
+                    if name != 'reveal':
+                        barrier.wait(timeout=3)
+                    else:
+                        self.assertEqual(completed, {f'ordinary-{i}' for i in range(4)} | {'logs'})
+                    with lock:
+                        seen.extend(selected)
+                        completed.add(name)
+                    return name != failed
+
+                with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                        patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                        patch.object(workspace, 'run', side_effect=execute), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(workspace.main(), int(failed is not None))
+                self.assertCountEqual(seen, names)
+
+    def test_shared_census_preserves_workspace_selection_and_exclusions(self):
+        ordinary = [f'case::{i}' for i in range(80)] + ['case::0', 'case::0::nested']
+        names = ordinary + ['tests::appimage']
+        inventory = subprocess.CompletedProcess([], 0, stdout=(
+            'Running unittests src/lib.rs (target/debug/deps/okilum_core-abcdef)\n'
+            + ''.join(name + ': test\n' for name in ordinary)
+            + 'Running unittests src/lib.rs (target/debug/deps/okilum_appimage-fedcba)\n'
+              'tests::appimage: test\n'), stderr='')
+        for failed in (None, 'ordinary-2'):
+            seen = []
+            barrier = threading.Barrier(5)
+            lock = threading.Lock()
+
+            def execute(name, arguments, expected, *, command, limit):
+                self.assertEqual(limit, 3600)
+                self.assertEqual(command, ['cargo', 'test', '--workspace', '--locked',
+                                           '--no-fail-fast', '--'])
+                self.assertIn('--test-threads=1' if name == 'appimage'
+                              else '--test-threads=2', arguments)
+                self.assertIn('--exact', arguments)
+                self.assertEqual(arguments[-4:], ['--skip', 'platform::', '--skip', 'reader_log'])
+                selected = [item for item in names if item in arguments]
+                self.assertEqual(len(selected), expected)
+                barrier.wait(timeout=3)
+                with lock:
+                    seen.extend(selected)
+                return name != failed
+
+            with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                    patch.object(workspace.subprocess, 'run', return_value=inventory) as census, \
+                    patch.object(workspace, 'run', side_effect=execute), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(workspace.main(shared=True), int(failed is not None))
+                self.assertEqual(census.call_args.args[0], [
+                    'cargo', 'test', '--workspace', '--locked', '--no-fail-fast', '--',
+                    '--list', '--skip', 'platform::', '--skip', 'reader_log'])
+            self.assertCountEqual(seen, names)
+
+    def test_shared_census_refuses_unfired_appimage_serial_partition(self):
+        inventory = subprocess.CompletedProcess([], 0, stdout=''.join(
+            f'case::{i}: test\n' for i in range(80)), stderr='')
+        with patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                patch.object(workspace, 'run') as execute:
+            with self.assertRaisesRegex(AssertionError, 'AppImage serial inventory must fire'):
+                workspace.main(shared=True)
+        execute.assert_not_called()
+
     def test_canonical_compile_jobs_do_not_match_light_or_interactive_runners(self):
         # The shared ubuntu-latest label spans incompatible resource classes.
         # Evaluate scheduler eligibility, including overlapping Docker labels.
@@ -70,6 +159,55 @@ class VerdictTests(unittest.TestCase):
                     eligible = [pool for pool, available in pools.items()
                                 if required <= available]
                     self.assertEqual(eligible, ['heavy'])
+
+    def test_appimage_fork_cases_are_serial_without_losing_duplicate_names_or_failures(self):
+        ordinary = [f'ordinary::case{i}' for i in range(80)] + ['tests::lock::nested']
+        serial = ['tests::lock', 'tests::restart', 'tests::lock']
+        for shared in (False, True):
+            resources = [] if shared else ['reader_log::case', 'platform::reveal::tests::case']
+            names = ordinary + serial + resources
+            inventory = subprocess.CompletedProcess([], 0, stdout=(
+                'Running unittests src/lib.rs (target/debug/deps/okilum_appimage-abcdef)\n'
+                'tests::lock: test\ntests::restart: test\n'
+                'Running unittests src/lib.rs (target/debug/deps/okilum_core-fedcba)\n'
+                + ''.join(name + ': test\n' for name in ordinary + ['tests::lock'] + resources)), stderr='')
+            for failed in (None, 'appimage', 'ordinary-1'):
+                with self.subTest(shared=shared, failed=failed):
+                    barrier = threading.Barrier(5 if shared else 6)
+                    seen, completed = [], set()
+                    lock = threading.Lock()
+
+                    def execute(name, arguments, expected, **options):
+                        if name.startswith('ordinary-') or name == 'appimage':
+                            self.assertIn('--exact', arguments)
+                            self.assertIn('--test-threads=1' if name == 'appimage'
+                                          else '--test-threads=2', arguments)
+                            selected = [item for item in names if item in arguments]
+                            if name == 'appimage':
+                                self.assertCountEqual(selected, serial)
+                            else:
+                                self.assertFalse(set(selected) & set(serial))
+                        else:
+                            selected = [item for item in names if arguments[0] in item]
+                        self.assertEqual(len(selected), expected)
+                        if name != 'reveal':
+                            barrier.wait(timeout=3)
+                        else:
+                            self.assertEqual(completed,
+                                             {f'ordinary-{i}' for i in range(4)} | {'appimage', 'logs'})
+                        with lock:
+                            seen.extend(selected)
+                            completed.add(name)
+                        return name != failed
+
+                    with patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='4'), \
+                            patch.object(workspace.subprocess, 'run', return_value=inventory) as census, \
+                            patch.object(workspace, 'run', side_effect=execute), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(workspace.main(shared=shared), int(failed is not None))
+                        self.assertEqual(census.call_args.kwargs['stderr'], subprocess.STDOUT)
+                        self.assertEqual(census.call_args.kwargs['stdout'], subprocess.PIPE)
+                    self.assertCountEqual(seen, names)
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
@@ -193,6 +331,13 @@ class VerdictTests(unittest.TestCase):
 
 
 class HelperFlowTests(unittest.TestCase):
+    def setUp(self):
+        # These synthetic inventories exercise the two-shard hosted policy;
+        # native heavy discovery inherits four shards from the real workflow.
+        ambient = patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='2')
+        ambient.start()
+        self.addCleanup(ambient.stop)
+
     def test_discovery_rejects_another_source_workflow_branch_or_event(self):
         good = dict(id=7, head_sha=SHA, head_branch="agent-checks/topic", event="push",
                     path=".github/workflows/agent-checks.yml")
@@ -345,6 +490,8 @@ class HelperFlowTests(unittest.TestCase):
             # not process supervision. Record every wrapper invocation and run
             # each fake command directly; the next control runs the real watchdog.
             (scripts / 'test-group.sh').write_text(
+                'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
+                '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
                 'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
                 'shift 2\nexec "$@"\n')
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
@@ -373,14 +520,32 @@ class HelperFlowTests(unittest.TestCase):
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
                 groups = root / ('groups-' + fail)
+                accounts = root / ('accounts-' + fail)
                 result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh')], cwd=root,
                                         env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
                                              'CALL_LOG': str(log), 'GROUP_LOG': str(groups), 'FAIL_FIRST': fail,
+                                             'ACCOUNT_LOG': str(accounts),
                                              'FAIL_MARKER': str(root / 'failed')},
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, int(fail), result.stdout + result.stderr)
                 calls = log.read_text().splitlines()
+                self.assertCountEqual(accounts.read_text().splitlines(),
+                                      ['reader-editor-live-preview', 'issue2486',
+                                       'file-editor-network-save-tests', 'issue1588'])
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
+                for selection in ('direct::existing::tests::', 'reader_settings_sync::',
+                                  'reader_feedback::ui_tests::feedback2749_',
+                                  'reader_editor::live_preview::', 'issue2486_'):
+                    selected = [call for call in calls if selection in call]
+                    self.assertEqual(len(selected), 1, selection)
+                    for package in ('okilum-write-authority', 'okilum-core',
+                                    'okilum-shell', 'okilum-t3'):
+                        self.assertIn('-p ' + package, selected[0])
+                # Separate feature/no-default policies retain their own roots.
+                image = next(call for call in calls if '--all-features' in call)
+                portable = next(call for call in calls if '--test portable_reader' in call)
+                self.assertNotIn('-p okilum-shell', image)
+                self.assertNotIn('-p okilum-shell', portable)
                 self.assertTrue(any('sprint=1' in call for call in calls))
                 self.assertTrue(any('retired-sync.test.js' in call for call in calls))
                 self.assertIn('vendor-tests', calls)
@@ -404,6 +569,57 @@ class HelperFlowTests(unittest.TestCase):
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
 
+    def test_native_frame_measurement_waits_for_ordinary_cases_and_keeps_its_failure(self):
+        for shared in (False, True):
+            first_content = 'reader_code_file::review_tests::code2809_first_text_precedes_full_parse_and_format_on_three_point_five_mb'
+            names = ['ordinary::case0', 'ordinary::case2', workspace.NATIVE_FRAME, first_content]
+            resources = ['tests::appimage'] if shared else [
+                'reader_log::case', 'platform::reveal::tests::case']
+            names += resources
+            inventory = subprocess.CompletedProcess([], 0, stdout=(
+                'Running unittests src/main.rs (target/debug/deps/okilum-abcdef)\n'
+                + ''.join(name + ': test\n' for name in names if name != 'tests::appimage')
+                + ('Running unittests src/lib.rs (target/debug/deps/okilum_appimage-abcdef)\n'
+                   'tests::appimage: test\n' if shared else '')), stderr='')
+            for failed in (None, 'native-frame', 'first-content', 'ordinary-0'):
+                with self.subTest(shared=shared, failed=failed):
+                    completed, seen = set(), []
+                    lock = threading.Lock()
+                    barrier = threading.Barrier(3)
+
+                    def execute(name, arguments, expected, **options):
+                        if name in ('first-content', 'native-frame', 'reveal'):
+                            earlier = {'ordinary-0', 'ordinary-1'} | ({'appimage'} if shared else {'logs'})
+                            if name != 'first-content':
+                                earlier.add('first-content')
+                            if name == 'reveal':
+                                earlier.add('native-frame')
+                            self.assertEqual(completed, earlier)
+                        else:
+                            barrier.wait(timeout=3)
+                        if name.startswith('ordinary-') or name in ('first-content', 'native-frame', 'appimage'):
+                            self.assertIn('--exact', arguments)
+                            selected = [item for item in names if item in arguments]
+                            if name in ('native-frame', 'first-content'):
+                                self.assertIn('--test-threads=1', arguments)
+                                self.assertEqual(selected, [workspace.NATIVE_FRAME if name == 'native-frame' else first_content])
+                            elif name.startswith('ordinary-'):
+                                self.assertNotIn(workspace.NATIVE_FRAME, arguments)
+                                self.assertNotIn(first_content, arguments)
+                        else:
+                            selected = [item for item in names if arguments[0] in item]
+                        self.assertEqual(len(selected), expected)
+                        with lock:
+                            seen.extend(selected)
+                            completed.add(name)
+                        return name != failed
+
+                    with patch.object(workspace.subprocess, 'run', return_value=inventory), \
+                            patch.object(workspace, 'run', side_effect=execute), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(workspace.main(shared=shared), int(failed is not None))
+                    self.assertCountEqual(seen, names)
+
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux process supervision')
     def test_linux_suite_hang_fails_named_group_and_keeps_later_suites(self):
@@ -419,8 +635,8 @@ class HelperFlowTests(unittest.TestCase):
             entrypoint = scripts / 'linux-rust-tests.sh'
             entrypoint.write_text(entrypoint.read_text()
                 .replace('suite issue2049 120 ', 'suite issue2049 2 ')
-                .replace('bash scripts/ci/test-group.sh "$group"',
-                         'bash scripts/ci/test-group.sh --kill-after 0.3 "$group"'))
+                .replace('bash scripts/ci/test-group.sh ',
+                         'bash scripts/ci/test-group.sh --kill-after 0.3 ', 1))
             for name in ('vendor-tests.sh', 'local-writer-admission.sh'):
                 (scripts / name).write_text('exit 0\n')
             fixture = ROOT / 'scripts/ci/fixtures/hung-test-group.py'

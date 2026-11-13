@@ -92,6 +92,15 @@ package's successful footer, a child fixture's earlier result, a missing
 target or an empty parent cannot satisfy it. All original filters, integration
 targets, test bodies and profile/deadline settings remain enabled.
 
+Later default-feature Linux filters keep these same four roots alongside their
+original selected package and target. Canonical26469 passed cold admission in
+509 seconds, then rebuilt the core dependency graph for the single-package
+Sync controller and rebuilt the GUI for single-package Settings/Feedback,
+exhausting the existing120s/300s groups before their tests. Keeping admission's
+feature union avoids that repeated compilation without adding a precompile or
+moving work outside the original deadlines. AppImage all-features, HTTP updates,
+Sprint and portable/no-default checks retain their separate root/feature policy.
+
 The write-authority and T3 admission queries use `--lib`, matching their
 original target scope. Selecting four packages without that flag also asks
 Cargo to compile unrelated core integration harnesses, even though their
@@ -141,6 +150,102 @@ failure does not prevent observing the candidate, but the final diagnostic
 retains both outcomes and fails if either measurement failed. The job's
 60-minute cap stays unchanged. Large process samples use ordered JSON chunks
 to survive the runner's log-line limit without discarding compiler arguments.
+
+For runtime diagnosis, `runtime: 'true'` (without a paired candidate) runs the
+two warm-reader fixtures, Live Preview, and the complete workspace after a
+successful original cold admission. Target fixtures retain positive parent
+receipts; the original 120/1320-second group budgets stay in effect. Every
+runtime stage runs even after an earlier runtime failure, and the final verdict
+retains that failure. This targeted diagnostic is not full canonical acceptance.
+`runtime: 'shared'` instead executes the complete original `check-shared.sh`
+entrypoint, including formatting, lint, portable reader, Python and manifest
+gates. The diagnostic's existing job cap remains in effect.
+
+The heavy Linux workspace selects four exact ordinary shards with two test
+threads each via `OKILUM_WORKSPACE_ORDINARY_SHARDS=4`; hosted keeps two shards.
+Shared compilation uses the same exact-shard census with the full `--workspace`
+package selection and original `platform::`/Log exclusions. Its entire serial
+Log selection still runs afterwards, separately from all ordinary processes.
+Serial Log I/O overlaps those shards in its own process, and private reveal
+runs alone afterwards. Duplicate/prefix names, nonempty census counts and
+failure propagation remain mandatory. The standalone Live Preview group caps
+native fixture concurrency at four instead of inheriting twelve host CPUs.
+These scheduling choices require actual heavy-runner timing; a hosted pass
+alone does not establish their canonical deadline result.
+
+Warm-reader fixture operation timers start after the coordinator reports
+`Checking notes`, so metadata/authority preparation does not consume the
+cancellation or priority-read deadline. Preparation remains bounded by the
+outer suite supervisor. Failed priority assertions release and join readers
+before removing the vault; a cancellation worker owns its temporary vault.
+
+Runtime shards and the standalone Live Preview group use private CI writer
+accounts. `test-group.py --isolated-writer-account` allocates a fresh
+`XDG_STATE_HOME` and keeps it until every descendant has been reaped. All
+participants within that group inherit the same account, so actual cross-window
+and cross-process writer fences remain exercised. The ambient account and its
+durable records are untouched. Serial shared Log uses its own group account.
+Shards retain the original outer 1320-second Linux / 60-minute shared caps;
+nested supervision never extends those deadlines.
+
+The shared census also discovers AppImage unit-case names from Cargo's ordered
+target headers and runs that exact partition in a separate serial process.
+Every invocation still selects the complete workspace. Identical full names
+in other targets stay in the same partition, so no occurrence is omitted or
+run twice; prefix-related names remain distinct. This preserves the standalone
+AppImage fixture policy: another concurrent test's fork must not inherit an
+installation-lock FD before exec. Canonical run26452 reproduced that lock
+failure while all5518 shared cases were accounted for. Serial execution does
+not weaken lock, cancellation, cleanup or retry assertions.
+
+Synthetic two-shard controls explicitly select their own fixture policy instead
+of inheriting the heavy workflow's four-shard environment. The four-shard
+controls retain their independent overlap and failure checks. Linux lifecycle
+fixtures resolve coreutils aliases before supplying executables to the actual
+managed-launch NOFOLLOW guard; production still refuses substituted symlinks.
+The same canonical run exposed these two environment-dependent fixture errors,
+while its Mac, Windows and supplementary perf jobs passed. Earlier perf
+NO_EVIDENCE remains a failed observation, not an accepted latency measurement.
+
+Canonical26469 subsequently passed all49 serial AppImage cases and the lifecycle
+fixtures. Its shared census accounted for5518 cases; later Sync UI assertions
+and one Linux frame-timing assertion remained failures. Mounted Sync fixtures
+explicitly draw after draining tasks, before reading hitboxes or simulating
+input, as GPUI's event-simulation API requires. No callback is invoked directly
+and no click/state assertion is removed. The native cached-frame measurement
+runs after the concurrent workspace processes finish, retaining its ten frames, cache
+invalidation controls and300ms assertion inside the same outer group deadline.
+Its census partition and any failure are mandatory; Linux private reveal still
+runs afterwards. These changes require a new exact-source native result.
+
+Run26486 confirmed the corrected Linux workspace: all4573 cases and its separate
+native-frame assertion passed within960.380s/1320s. Its standalone issue2486
+group compiled in0.52s but reached120s during the ten serial runtime cases;
+earlier groups had accumulated the ambient writer registry. That group now
+gets its own inherited CI account, using the same after-reap cleanup as Live
+Preview and workspace partitions. All ten cases and their five-second operation
+assertions remain in the original120s group. The fixture draw helper lives under
+plain `cfg(test)` in the parent module so Windows first-sync tests do not depend
+on the Unix-only test module; the native Windows gate caught that portability
+error before merge. Neither correction has a native acceptance verdict yet.
+
+Run26495 accounted for all5518 shared cases and passed its native/perf bridge
+jobs, but both workspace gates still failed the cached-frame300ms assertion.
+Linux also missed two mounted Sync clicks. The fixture helper now drains/draws
+twice: SyncSettings can mount a Root dialog while rendering, so a single frame
+can describe the previous layer. The destination test waits for actual snapshot
+and destination readiness before drawing; backend/error/consent assertions still
+require real clicks. Cached-frame evidence now records existing native span
+counts/times and individual frame durations, printed only after the unchanged
+ten-frame measurement. Instrumentation is not a performance fix or acceptance.
+
+This prevents unrelated ephemeral vault fixtures from contending on or scanning
+one accumulating account-wide authority registry. The first heavy runtime
+probe confirmed both corrected warm-reader fixtures, but four-way scheduling
+alone still missed Live Preview120s and workspace1320s; isolation efficacy must
+therefore be checked on the actual runner before a success claim. The supervisor
+control checks inherited parent/child identity, preservation of nonzero exits,
+account availability during descendant termination and cleanup only after reap.
 
 Native Mac Sync admission also executes the complete supervisor `serve`
 integration target with nonempty discovery. Its restart controls require a new
@@ -414,3 +519,39 @@ foreign-cache extraction failure; the patched runtime must launch, re-exec and
 restart both copies through both extraction entry forms, clean up only its own
 cache and preserve the other user's tree. This runs before Rust compilation and
 does not install an app or certify the official beta GUI flow.
+
+
+Canonical26633 on d88 retained two real shared timing failures: first text for
+3.5MB code exceeded1000ms while ordinary fixtures competed, and cached editor
+frames took381.629ms/300ms even after ordinary partitions. The first-text case
+now has its own serial, counted process after ordinary/AppImage/Log work, just
+before the existing isolated frame process. Both original assertions and source
+sizes remain unchanged, and every workspace case still runs exactly once.
+Native-frame evidence now filters existing spans by the measured document and
+records Linux thread schedstat outside the timed interval; no CPU-time waiver
+replaces the wall assertion. Efficacy requires fresh source-pinned hardware proof.
+
+The same Linux run compiled network-save controls in2.08s but exhausted their
+120s runtime group while sharing the accumulated ambient writer registry. That
+standalone group now inherits its own private CI account with after-reap cleanup,
+using the same tested supervisor as issue2486/Live Preview. All nine cases,
+publication fences and original120s deadline remain. Regression controls exercise
+the real shell entrypoint and require the private-account option for this group.
+
+
+Canonical26859 proved the two heavy jobs actually overlapped on the SAME runner
+UUID: Linux began08:13UTC and shared08:24UTC. Linux later exhausted HTTP180s and
+agent-import120s groups while shared compilation/runtime was active. The local
+shared job now waits for linux-local, retaining its own60min cap and every suite;
+Linux keeps80min. always()+!cancelled() preserves independent shared evidence
+after a Linux failure or lane skip. Hosted/platform lanes remain independent.
+This removes that observed collision without changing runner/host configuration
+or any operation deadline; its measured effect still needs exact-source proof.
+The standalone issue1588 reader fixtures also receive a private inherited CI
+account, as do the other independent reader groups.
+
+The empty remote-log async deadline control previously spent its120ms before a
+single poll reached the loopback server. It now uses the existing cfg(test)
+HTTP clock: observe the real held empty poll, expire exactly120ms, require the
+actual timer to fire, then retain all timeout/partial/empty-result assertions.
+The production transport and its real timers are unchanged.

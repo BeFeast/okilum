@@ -659,7 +659,9 @@ mod tests {
         }
         Ok(ManagedInstance {
             home,
-            executable: PathBuf::from("/bin/true"),
+            // Some distros install coreutils command names as symlinks. The
+            // fixture supplies a regular executable to the real NOFOLLOW guard.
+            executable: PathBuf::from("/bin/true").canonicalize()?,
         })
     }
     #[test]
@@ -669,7 +671,7 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         assert!(!lifecycle.desired_enabled()?);
         lifecycle.disable()?;
         lifecycle.reconcile()?;
@@ -683,8 +685,8 @@ mod tests {
         assert_eq!(fs::read(instance.home.join("cert.pem"))?, cert);
         assert_eq!(lifecycle.enable(instance)?, id);
         lifecycle.disable()?;
-        let reopened =
-            Lifecycle::new(state, units, &services).with_launcher(PathBuf::from("/bin/true"));
+        let reopened = Lifecycle::new(state, units, &services)
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         reopened.reconcile()?;
         assert!(!services.active.get() && !services.registered.get());
         Ok(())
@@ -696,7 +698,7 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let instance = instance(root.path())?;
         let name = lifecycle.enable(instance)?;
         services.fail_stop.set(true);
@@ -708,7 +710,7 @@ mod tests {
         assert!(!services.active.get() && !units.join(&name).exists());
         let name = lifecycle.enable(ManagedInstance {
             home: root.path().join("home"),
-            executable: "/bin/true".into(),
+            executable: PathBuf::from("/bin/true").canonicalize()?,
         })?;
         fs::write(units.join(name), "[Service]\nExecStart=/bin/false")?;
         assert!(lifecycle.disable().is_err());
@@ -725,7 +727,7 @@ mod tests {
         let units = root.path().join("units");
         let state = root.path().join("state");
         let controller = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         services.fail_start.set(true);
         assert!(controller.enable(instance(root.path())?).is_err());
         assert!(controller.desired_enabled()?);
@@ -733,7 +735,7 @@ mod tests {
         let unit = fs::read_dir(&units)?.next().unwrap()?.file_name();
         services.fail_start.set(false);
         let reopened = Lifecycle::new(state, units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         reopened.reconcile()?;
         assert!(services.active.get());
         assert_eq!(fs::read_dir(&units)?.count(), 1);
@@ -748,7 +750,7 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let controller = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let instance = instance(root.path())?;
         let certificate = fs::read(instance.home.join("cert.pem"))?;
         let name = controller.enable(instance.clone())?;
@@ -769,7 +771,7 @@ mod tests {
             .count();
         assert!(starts > 0, "Enable must exercise the service boundary");
         let reopened = Lifecycle::new(state, units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         for _ in 0..3 {
             reopened.disable()?;
             reopened.reconcile()?;
@@ -805,7 +807,7 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let controller = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         services.fail_start.set(true);
         assert!(controller.enable(instance(root.path())?).is_err());
         assert!(controller.desired_enabled()?);
@@ -830,7 +832,7 @@ mod tests {
         services.fail_start.set(false);
         services.active.set(true);
         let reopened = Lifecycle::new(state, units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         assert!(!reopened.desired_enabled()?);
         assert!(reopened.reconcile().is_err());
         assert!(services.active.get());
@@ -868,7 +870,7 @@ mod tests {
         let services = Services::default();
         let units = root.path().join("units");
         let lifecycle = Lifecycle::new(root.path().join("state"), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let instance = instance(root.path())?;
         let name = lifecycle.enable(instance.clone())?;
         lifecycle.disable()?;
@@ -890,7 +892,7 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let controller = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let instance = instance(root.path())?;
         let name = controller.enable(instance.clone())?;
         *services.replace_on_start.borrow_mut() = Some(units.join(name));
@@ -904,8 +906,8 @@ mod tests {
         let sentinel = root.path().join("sentinel");
         fs::write(&sentinel, "external")?;
         std::os::unix::fs::symlink(&sentinel, second.join("lifecycle.lock"))?;
-        let other =
-            Lifecycle::new(second, units, &services).with_launcher(PathBuf::from("/bin/true"));
+        let other = Lifecycle::new(second, units, &services)
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         assert!(other.enable(instance).is_err());
         assert_eq!(fs::read_to_string(sentinel)?, "external");
         Ok(())
@@ -930,7 +932,7 @@ mod tests {
         fs::copy("/bin/true", &executable)?;
         instance.executable = executable.clone();
         let old = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let name = old.enable(instance.clone())?;
         let before = old.load()?.unwrap();
         let old_helper = before.launch.as_ref().unwrap().helper.clone();
@@ -938,7 +940,7 @@ mod tests {
         let old_unit = fs::read(units.join(&name))?;
         fs::copy("/bin/false", &executable)?;
         let updated = Lifecycle::new(state, units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/false"));
+            .with_launcher(PathBuf::from("/bin/false").canonicalize()?);
         services.fail_stop.set(true);
         assert!(updated.reconcile().is_err());
         assert!(services.active.get());
@@ -959,7 +961,7 @@ mod tests {
         assert_eq!(crate::managed_launch::digest(&old_helper)?, old_hash);
         assert_eq!(
             launch.helper_hash,
-            crate::managed_launch::digest(Path::new("/bin/false"))?
+            crate::managed_launch::digest(&Path::new("/bin/false").canonicalize()?)?
         );
         launch.reference.validate(&instance)?;
         assert!(fs::read_to_string(units.join(&name))?.contains(launch.helper.to_str().unwrap()));
@@ -989,12 +991,12 @@ mod tests {
         let state = root.path().join("state");
         let units = root.path().join("units");
         let old = Lifecycle::new(state.clone(), units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/true"));
+            .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let name = old.enable(instance(root.path())?)?;
         fs::write(units.join(&name), "[Service]\nExecStart=/bin/false\n")?;
         services.calls.borrow_mut().clear();
         let updated = Lifecycle::new(state, units.clone(), &services)
-            .with_launcher(PathBuf::from("/bin/false"));
+            .with_launcher(PathBuf::from("/bin/false").canonicalize()?);
         assert!(updated.reconcile().is_err());
         assert!(services.calls.borrow().is_empty());
         assert!(services.active.get());
@@ -1022,7 +1024,7 @@ mod tests {
             root.path().join("units"),
             &services,
         )
-        .with_launcher(PathBuf::from("/bin/true"));
+        .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
         let error = format!("{:#}", lifecycle.enable(instance).unwrap_err());
         assert!(error.contains("travelling-vault") && error.contains(missing.to_str().unwrap()));
         assert!(error.contains("reconnect its disk or remove this folder"));
@@ -1048,7 +1050,7 @@ mod tests {
                 launch: None,
             };
             let lifecycle = Lifecycle::new(state.clone(), units.clone(), &services)
-                .with_launcher(PathBuf::from("/bin/true"));
+                .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
             lifecycle.save(&journal)?;
             let name = unit_name(&journal);
             let contents = legacy_unit_contents(&journal)?;

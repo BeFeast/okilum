@@ -641,9 +641,29 @@ fn async_deadline_without_intermediate_hits_is_still_a_visible_timeout() {
             ..Default::default()
         },
     );
-    let mut history = History::for_source(client(&server), &source(&server)).unwrap();
+    let (arrived, polls) = std::sync::mpsc::channel();
+    let (release, permit) = std::sync::mpsc::channel();
+    let permit = Mutex::new(permit);
+    server.state.lock().unwrap().after_poll = Some(Arc::new(move |count| {
+        arrived.send(count).unwrap();
+        permit.lock().unwrap().recv().unwrap();
+    }));
+    let clock = Arc::new(TestClock::new());
+    let mut history = History::for_source(
+        client(&server).with_test_clock(clock.clone()).unwrap(),
+        &source(&server),
+    )
+    .unwrap();
     history.search_timeout = Duration::from_millis(120);
-    let page = history.page().unwrap();
+    let query = std::thread::spawn(move || history.page().unwrap());
+    // Establish a real empty async poll before expiring the same 120 ms
+    // budget. Client/server scheduling is not part of this timeout semantic.
+    assert_eq!(polls.recv().unwrap(), 1);
+    assert_eq!(clock.expirations(), 0);
+    clock.advance(Duration::from_millis(120));
+    let page = query.join().unwrap();
+    assert_eq!(clock.expirations(), 1, "the actual HTTP deadline must fire");
+    release.send(()).unwrap();
     assert!(page.status.timed_out && page.status.partial);
     assert!(!page.complete);
     assert!(page.events.is_empty());
