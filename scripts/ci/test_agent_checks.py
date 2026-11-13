@@ -276,6 +276,54 @@ class VerdictTests(unittest.TestCase):
                      'Could not resolve host', 'Connection timed out'):
             self.assertTrue(helper.infrastructure_failure(timeout + real))
 
+    def pre_merge_receipt(self):
+        data = receipt()
+        for job in data["jobs"]:
+            job["conclusion"] = "skipped"
+            job["steps"] = []
+        data["jobs"].append({"name": "pre-merge", "conclusion": "success", "steps": [
+            {"name": n, "conclusion": "success"} for n in sorted(helper.FAST_REQUIRED)]})
+        return data
+
+    def test_pre_merge_gate_accepts_only_its_own_scope(self):
+        data = self.pre_merge_receipt()
+        self.assertEqual(helper.verdict(data, SHA, fast=True), 0)
+        # A pre-merge run is never a full verdict, and a full one is not pre-merge.
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        self.assertEqual(helper.verdict(receipt(), SHA, fast=True), 75)
+        for name in sorted(helper.FAST_REQUIRED):
+            with self.subTest(missing=name):
+                data = self.pre_merge_receipt()
+                data["jobs"][-1]["steps"] = [s for s in data["jobs"][-1]["steps"] if s["name"] != name]
+                self.assertEqual(helper.verdict(data, SHA, fast=True), 75)
+        ran = self.pre_merge_receipt()
+        ran["jobs"][0]["conclusion"] = "success"
+        self.assertEqual(helper.verdict(ran, SHA, fast=True), 75, "a compiling job must not run")
+        failed = self.pre_merge_receipt()
+        failed["conclusion"] = "failure"
+        failed["jobs"][-1]["conclusion"] = "failure"
+        next(s for s in failed["jobs"][-1]["steps"] if s["name"] == "Check formatting")["conclusion"] = "failure"
+        self.assertEqual(helper.verdict(failed, SHA, fast=True), 1)
+        self.assertEqual(helper.verdict(self.pre_merge_receipt(), "b" * 40, fast=True), 75)
+
+    def test_pre_merge_job_compiles_nothing(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        on = workflow.get("on", workflow.get(True))
+        self.assertIn("agent-checks-fast/**", on["push"]["branches"])
+        self.assertNotIn("schedule", on, "no hourly run: the full set runs daily before Stable")
+        fast = "startsWith(github.ref, 'refs/heads/agent-checks-fast/')"
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["pre-merge"]["if"], "${{ " + fast + " }}")
+        for name in ("linux", "windows-recovery"):
+            self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
+        steps = jobs["pre-merge"]["steps"]
+        self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
+        for step in steps:
+            run = step.get("run", "")
+            for compiling in ("cargo build", "cargo test", "cargo clippy", "cargo check", "cargo run",
+                              "at-vault-regression-control"):
+                self.assertNotIn(compiling, run, step.get("name"))
+
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):
             data = receipt()
@@ -320,7 +368,7 @@ class VerdictTests(unittest.TestCase):
     def test_worker_lane_has_no_secrets_or_publication(self):
         workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()
         self.assertNotIn("secrets.", workflow)
-        self.assertIn("branches: ['agent-checks/**', 'agent-checks-benchmark/**']", workflow)
+        self.assertIn("branches: ['agent-checks/**', 'agent-checks-benchmark/**', 'agent-checks-fast/**']", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
