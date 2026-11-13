@@ -1783,7 +1783,7 @@ mod tests {
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             "start"
         );
-        let templates = root.join("_Assets/Templates");
+        let templates = root.join("@Schema/Templates");
         std::fs::create_dir_all(&templates).unwrap();
         std::fs::write(templates.join("Meeting.md"), "# {{title}}\n\nTemplate body").unwrap();
         reader.update_in(visual, |reader, window, cx| {
@@ -1836,10 +1836,10 @@ mod tests {
             assert_eq!(reader.current_rel, "Selected/Target/a/Meeting.md");
             assert!(reader.editing.is_some());
         });
-        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
-        std::fs::write(root.join("_Assets/Templates/Note.md"), "Default {{title}}").unwrap();
+        std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
+        std::fs::write(root.join("@Schema/Templates/Note.md"), "Default {{title}}").unwrap();
         std::fs::write(
-            root.join("_Assets/Templates/Meeting.md"),
+            root.join("@Schema/Templates/Meeting.md"),
             "Meeting {{title}} {{date:YYYY-MM-DD}}",
         )
         .unwrap();
@@ -1870,7 +1870,7 @@ mod tests {
                 Some("Note.md")
             );
             reader.cancel_creation(window, cx);
-            reader.new_note(Some("_Assets/Templates"), window, cx);
+            reader.new_note(Some("@Schema/Templates"), window, cx);
             assert_eq!(reader.creation.as_ref().unwrap().folder, "");
             reader.cancel_creation(window, cx);
         });
@@ -1878,7 +1878,7 @@ mod tests {
             .unwrap()
             .starts_with("Meeting Planning "));
         assert_eq!(
-            std::fs::read_to_string(root.join("_Assets/Templates/Meeting.md")).unwrap(),
+            std::fs::read_to_string(root.join("@Schema/Templates/Meeting.md")).unwrap(),
             "Meeting {{title}} {{date:YYYY-MM-DD}}"
         );
         // Keep the missing-folder control on the explicitly selected legacy
@@ -1886,12 +1886,12 @@ mod tests {
         std::fs::create_dir_all(root.join(".obsidian")).unwrap();
         std::fs::write(
             root.join(".obsidian/templates.json"),
-            r#"{"folder":"_Assets/Templates"}"#,
+            r#"{"folder":"@Schema/Templates"}"#,
         )
         .unwrap();
-        std::fs::remove_dir_all(root.join("_Assets/Templates")).unwrap();
+        std::fs::remove_dir_all(root.join("@Schema/Templates")).unwrap();
         reader.update_in(visual, |reader, window, cx| {
-            reader.new_note(Some("_Assets/Templates"), window, cx);
+            reader.new_note(Some("@Schema/Templates"), window, cx);
             assert_eq!(reader.creation.as_ref().unwrap().folder, "");
             reader.cancel_creation(window, cx);
         });

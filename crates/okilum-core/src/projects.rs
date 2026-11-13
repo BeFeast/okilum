@@ -41,8 +41,7 @@ pub fn archived(path: &str) -> bool {
 fn visible(path: &str) -> bool {
     !archived(path)
         && !path.split('/').any(|p| {
-            p.starts_with('.')
-                || (p.starts_with(['_', '@']) && !crate::vault_conventions::index_name(p))
+            p.starts_with('.') || (p.starts_with('@') && !crate::vault_conventions::index_name(p))
         })
 }
 impl Index {
@@ -179,10 +178,10 @@ mod tests {
     fn projects_are_derived_ordered_scoped_and_incremental() {
         let mut i = Index::default();
         for (path, status, time) in [
-            ("Work/Projects/One/_index.md", "active", 1),
-            ("Home/Projects/One/_index.md", "planned", 99),
-            ("Work/Projects/Done/_index.md", "closed", 200),
-            ("Work/4 Archive/Old/_index.md", "active", 300),
+            ("Work/Projects/One/@index.md", "active", 1),
+            ("Home/Projects/One/@index.md", "planned", 99),
+            ("Work/Projects/Done/@index.md", "closed", 200),
+            ("Work/4 Archive/Old/@index.md", "active", 300),
         ] {
             i.replace(
                 path,
@@ -194,7 +193,7 @@ mod tests {
         i.replace("Work/Projects/OneOther/a.md", "- [ ] Wrong subtree", 1000);
         i.replace("Work/Projects/One/Archive/a.md", "- [ ] Archived", 1001);
         i.replace(
-            "Work/Projects/One/_Assets/template.md",
+            "Work/Projects/One/@Assets/template.md",
             "- [ ] Template",
             1002,
         );
@@ -208,7 +207,7 @@ mod tests {
         i.remove("Work/Projects/One/a.md");
         i.refresh();
         assert_eq!(i.rows()[0].open_tasks, 1);
-        i.replace("Work/Projects/One/_index.md", "---\ntype: Note\n---\n", 20);
+        i.replace("Work/Projects/One/@index.md", "---\ntype: Note\n---\n", 20);
         i.refresh();
         assert_eq!(i.rows().len(), 2);
     }
@@ -216,13 +215,13 @@ mod tests {
     fn unknown_status_stays_visible_and_invalid_types_are_not_guessed() {
         let mut i = Index::default();
         i.replace(
-            "Work/P/_index.md",
+            "Work/P/@index.md",
             "---\ntype: project\nstatus: paused\n---\n",
             1,
         );
-        i.replace("Work/Q/_index.md", "---\ntype: [project]\n---\n", 2);
+        i.replace("Work/Q/@index.md", "---\ntype: [project]\n---\n", 2);
         i.replace(
-            "Work/R/_index.md",
+            "Work/R/@index.md",
             "---\ntype: project\ntype: Note\n---\n",
             3,
         );
@@ -230,7 +229,7 @@ mod tests {
         assert_eq!(i.rows().len(), 1);
         assert_eq!(i.rows()[0].status_label, "paused");
         i.replace(
-            "Work/_Private/Hidden/_index.md",
+            "Work/_Private/Hidden/@index.md",
             "---\ntype: project\n---\n",
             4,
         );

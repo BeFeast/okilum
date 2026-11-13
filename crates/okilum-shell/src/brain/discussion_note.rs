@@ -225,14 +225,14 @@ pub(super) fn suggested_title(origin: &Origin) -> String {
 
 fn basename(filename: &str) -> Result<(), String> {
     if filename.len() > 255
-        || filename.starts_with(['.', '_'])
+        || filename.starts_with(['.', '@'])
         || filename.contains('/')
         || !valid_path(filename)
         || !filename.ends_with(".md")
         || filename.trim() != filename
         || filename.chars().any(char::is_control)
     {
-        return Err("Use a .md filename of at most 255 bytes, without folders or internal names starting with a dot or underscore.".into());
+        return Err("Use a .md filename of at most 255 bytes, without folders or internal names starting with a dot or @.".into());
     }
     Ok(())
 }
@@ -564,7 +564,7 @@ mod tests {
         for title in ["", " ", "two\nlines", &"λ".repeat(257)] {
             assert!(freeze_target(&target, None, title, "", None, OPERATION).is_err());
         }
-        for filename in ["_reserved.md", "../note.md", ".hidden.md"] {
+        for filename in ["@reserved.md", "../note.md", ".hidden.md"] {
             assert!(freeze_target(&target, None, "Title", "", Some(filename), OPERATION).is_err());
         }
     }
@@ -708,7 +708,7 @@ mod tests {
         for name in [
             "../evil.md",
             "notes/new.md",
-            "_index.md",
+            "@index.md",
             ".okilum.md",
             "a\\b.md",
             "a:b.md",
@@ -718,6 +718,12 @@ mod tests {
             "",
         ] {
             assert!(basename(name).is_err(), "{name:?}");
+        }
+        for ordinary in ["_index.md", "_AgentContract.md", "_ordinary.md"] {
+            assert!(
+                basename(ordinary).is_ok(),
+                "ordinary underscore filename: {ordinary}"
+            );
         }
         assert!(basename(&format!("{}.md", "a".repeat(252))).is_ok());
         assert!(basename(&format!("{}.md", "a".repeat(253))).is_err());

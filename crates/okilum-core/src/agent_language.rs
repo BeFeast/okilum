@@ -67,9 +67,7 @@ pub fn diagnose(path: &str, source: &str, schema: Option<&str>) -> Report {
         };
     }
     let Some(schema) = schema else {
-        return Report::unknown(
-            "Missing language policy (@Schema/language.yaml or _Schema/language.yaml)",
-        );
+        return Report::unknown("Missing language policy (@Schema/language.yaml)");
     };
     if schema.len() > MAX_SCHEMA_BYTES || source.len() > MAX_SOURCE_BYTES {
         return Report::unknown("Language check input exceeds local size limit");

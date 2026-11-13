@@ -574,9 +574,9 @@ mod tests {
         for folder in roots {
             std::fs::create_dir_all(vault.join(folder)).unwrap();
         }
-        std::fs::write(vault.join("_Index.md"), "# Vault Index — Bird View\n").unwrap();
+        std::fs::write(vault.join("@Index.md"), "# Vault Index — Bird View\n").unwrap();
         std::fs::write(vault.join("Other.md"), "# Another document\n").unwrap();
-        std::fs::write(vault.join("_hidden.md"), "# Hidden fixture\n").unwrap();
+        std::fs::write(vault.join("@hidden.md"), "# Hidden fixture\n").unwrap();
         for index in 0..50 {
             std::fs::write(
                 vault.join(format!("{branch}/Note {index:02}.md")),
@@ -793,10 +793,10 @@ mod tests {
         visual.simulate_click(index.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |view, _| {
-            assert_eq!(view.selected_file(), "_Index.md")
+            assert_eq!(view.selected_file(), "@Index.md")
         });
         assert_eq!(
-            std::fs::read_to_string(temp.path().join("vault/_Index.md")).unwrap(),
+            std::fs::read_to_string(temp.path().join("vault/@Index.md")).unwrap(),
             "# Vault Index — Bird View\n"
         );
         reader.update(visual, |view, cx| {
@@ -896,7 +896,7 @@ mod tests {
         }
         reader.read_with(visual, |view, _| {
             assert!(!view.sidebar.show_hidden);
-            assert!(!view.tree.rows.iter().any(|row| row.path == "_hidden.md"));
+            assert!(!view.tree.rows.iter().any(|row| row.path == "@hidden.md"));
         });
         for enabled in [true, false] {
             let toggle = visual.debug_bounds("sidebar-show-hidden").unwrap();
@@ -905,7 +905,7 @@ mod tests {
             reader.read_with(visual, |view, _| {
                 assert_eq!(view.sidebar.show_hidden, enabled);
                 assert_eq!(
-                    view.tree.rows.iter().any(|row| row.path == "_hidden.md"),
+                    view.tree.rows.iter().any(|row| row.path == "@hidden.md"),
                     enabled
                 );
                 let saved = reader_sidebar::State::load(view.sidebar_path.as_ref().unwrap());
@@ -922,7 +922,7 @@ mod tests {
         let (reader, visual, _temp) = fixture_with_branch(
             cx,
             "Health/Areas/Current",
-            &["AI/Notes", "Business", "Dev", "Finance", "_filtered"],
+            &["AI/Notes", "Business", "Dev", "Finance", "@filtered"],
         );
         let viewport = visual.debug_bounds("sidebar-tree-body").unwrap();
         assert!(visual.debug_bounds("tree-earlier-roots").is_none());
@@ -931,10 +931,10 @@ mod tests {
                 view.vault
                     .entries
                     .iter()
-                    .any(|entry| entry.path == "_filtered"),
+                    .any(|entry| entry.path == "@filtered"),
                 "positive control: hidden root exists in inventory"
             );
-            assert!(!view.tree.rows.iter().any(|row| row.path == "_filtered"));
+            assert!(!view.tree.rows.iter().any(|row| row.path == "@filtered"));
             view.tree.set_subtree("AI", true);
             let first = view
                 .sidebar_items_named("")

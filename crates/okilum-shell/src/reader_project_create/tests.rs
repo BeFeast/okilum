@@ -152,7 +152,7 @@ fn open(
     )
     .unwrap();
     std::fs::create_dir_all(root.join("Dev/Areas/tool")).unwrap();
-    std::fs::write(root.join("Dev/Areas/tool/_index.md"), "# Tool notes\n").unwrap();
+    std::fs::write(root.join("Dev/Areas/tool/@index.md"), "# Tool notes\n").unwrap();
     std::fs::write(root.join("start.md"), "# Start\n").unwrap();
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -228,7 +228,7 @@ fn make_this_a_project_is_hidden_for_folders_that_are_projects(cx: &mut TestAppC
 }
 
 /// The folder's menu → the dialog → Create project: project.toml and
-/// `_index.md` are written, the dialog closes, and the project is in the
+/// `@index.md` are written, the dialog closes, and the project is in the
 /// Projects list at once. Nothing reaches T3 for a knowledge project.
 #[gpui::test]
 fn issue1859_make_this_a_project_writes_toml_and_lists_the_project(cx: &mut TestAppContext) {
@@ -253,7 +253,7 @@ fn issue1859_make_this_a_project_writes_toml_and_lists_the_project(cx: &mut Test
     assert!(document.get("t3").is_none(), "T3 is off for knowledge");
     assert!(!folder.join("ops/project.yaml").exists());
     assert_eq!(
-        std::fs::read_to_string(folder.join("_index.md")).unwrap(),
+        std::fs::read_to_string(folder.join("@index.md")).unwrap(),
         "# HomeLab\n"
     );
     reader.read_with(visual, |r, _| {
@@ -267,7 +267,7 @@ fn issue1859_make_this_a_project_writes_toml_and_lists_the_project(cx: &mut Test
     assert!(!drawn(visual, "reader-error-toast"));
 }
 
-/// An existing `_index.md` is kept, and «+ New project…» starts with the
+/// An existing `@index.md` is kept, and «+ New project…» starts with the
 /// folder selected in the tree.
 #[gpui::test]
 fn new_project_starts_with_the_selected_folder_and_keeps_its_index(cx: &mut TestAppContext) {
@@ -284,7 +284,7 @@ fn new_project_starts_with_the_selected_folder_and_keeps_its_index(cx: &mut Test
     );
     click(visual, "new-project-create");
     assert_eq!(
-        std::fs::read_to_string(root.join("Dev/Areas/tool/_index.md")).unwrap(),
+        std::fs::read_to_string(root.join("Dev/Areas/tool/@index.md")).unwrap(),
         "# Tool notes\n"
     );
     let manifest =

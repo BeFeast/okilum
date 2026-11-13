@@ -14,7 +14,7 @@ fn open<'a>(cx: &'a mut TestAppContext, note: &str) -> Fixture<'a> {
     let root = directory.path().join("vault");
     std::fs::create_dir_all(root.join("project/imports")).unwrap();
     let source = "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n";
-    for path in ["project/AGENTS.md", "_AgentContract.md"] {
+    for path in ["project/AGENTS.md", "@AgentContract.md"] {
         std::fs::write(root.join(path), source).unwrap();
     }
     std::fs::write(
@@ -161,9 +161,9 @@ fn issue1588_expanded_markdown_link_uses_imported_origin(cx: &mut TestAppContext
 }
 #[gpui::test]
 fn issue1588_entered_project_note_and_contract_keep_document_features(cx: &mut TestAppContext) {
-    let mut f = open(cx, "_AgentContract.md");
-    assert!(okilum_core::quick_open::FileFilter::Default.admits("_AgentContract.md"));
-    assert!(!okilum_core::quick_open::FileFilter::AgentFiles.admits("_AgentContract.md"));
+    let mut f = open(cx, "@AgentContract.md");
+    assert!(okilum_core::quick_open::FileFilter::Default.admits("@AgentContract.md"));
+    assert!(!okilum_core::quick_open::FileFilter::AgentFiles.admits("@AgentContract.md"));
     f.reader.update(f.visual, |r, cx| {
         r.project_open = true;
         r.project_navigation.active = Some(okilum_t3::projects::Project {

@@ -7,7 +7,7 @@ and follows a directive with Cmd/Ctrl+click. Entering a project does not remove
 these note features; the Board remains separate.
 
 `agent_imports::is_agent_document` is a document classifier. It includes the
-vault-root `_AgentContract.md` independently of the conventional names used by
+vault-root `@AgentContract.md` independently of the conventional names used by
 `quick_open::is_agent_file` for tree/search filtering. Adding a document feature
 must not silently change which files the browser hides.
 

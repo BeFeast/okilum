@@ -19,7 +19,11 @@
     "Visible/data.csv": "a,b\n1,2\n",
     "@Assets/Files/sample.pdf": "%PDF-1.4\n%%EOF\n",
     "@Schema/stignore.template": "// synthetic shared policy\ncache-generated\n",
-    "_Schema/stignore.template": "// synthetic legacy shared policy\nlegacy-generated\n"
+    "_Schema/stignore.template": "// synthetic legacy shared policy\nlegacy-generated\n",
+    "_index.md": "# Ordinary root note\n",
+    "_AgentContract.md": "# Ordinary contract-shaped note\n\n_Ordinarycontractneedle\n",
+    "_export/data.json": "{\"ordinary\": true}\n",
+    "_Schema/language.yaml": "gate: []\n"
   },
   "base64": {
     "@Assets/Images/a.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="

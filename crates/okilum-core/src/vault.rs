@@ -461,7 +461,7 @@ pub struct UnreadableEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Note {
-    /// Path relative to vault root, with extension ("Dev/Areas/x/_index.md").
+    /// Path relative to vault root, with extension ("Dev/Areas/x/@index.md").
     pub path: String,
     /// Display title: file stem.
     pub title: String,
@@ -1290,7 +1290,7 @@ impl Vault {
     /// when there is no source note).
     ///
     /// Bare `@index` additionally prefers the source folder's unambiguous @ index.
-    /// Legacy `_index` and other bare names retain their existing root-first rules.
+    /// `_index` is an ordinary name and retains root-first resolution.
     /// Relative targets — those starting with `./` or `../` — use the
     /// source note, and for them it is not a hint but the whole meaning:
     /// `[[../ops/signoff]]` names a sibling directory of the *linking* note and

@@ -140,3 +140,18 @@ fn refuses_a_brief_symlink_outside_the_selected_area() {
         .to_string()
         .contains("outside this vault area"));
 }
+
+#[test]
+fn issue2847_executor_bootstrap_uses_existing_at_contract_paths() {
+    let (area, binding, context, draft) = setup();
+    std::fs::write(area.0.join("@AgentContract.md"), "# Rules\n").unwrap();
+    assert!(!area.0.join("_AgentContract.md").exists());
+    let request = Request::prepare(&area.0, &binding, &context, &draft).unwrap();
+    assert!(request
+        .manager_instructions
+        .contains("existing vault-root @AgentContract.md (if present)"));
+    assert!(request
+        .manager_instructions
+        .contains("resolve and verify these paths on the server"));
+    assert!(!request.manager_instructions.contains("_AgentContract.md"));
+}

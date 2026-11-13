@@ -120,8 +120,6 @@ pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind
             };
             if vault_root.join("@Assets").is_dir() {
                 PathBuf::from(typed)
-            } else if vault_root.join("_Assets/Attachments").is_dir() {
-                PathBuf::from("_Assets/Attachments")
             } else if vault_root.join("attachments").is_dir() {
                 PathBuf::from("attachments")
             } else {
@@ -793,5 +791,41 @@ mod tests {
             Err(SaveError::Convert)
         ));
         assert!(!other.path().join("attachments").exists());
+    }
+}
+
+#[cfg(test)]
+mod underscore_tests {
+    use super::*;
+
+    #[test]
+    fn issue2847_legacy_attachment_folder_is_not_a_default() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("_Assets/Attachments")).unwrap();
+        for (kind, expected) in [
+            (AttachmentKind::Image, "@Assets/Images"),
+            (AttachmentKind::File, "@Assets/Files"),
+        ] {
+            assert_eq!(
+                attachment_folder(root.path(), "note.md", kind),
+                root.path().join(expected)
+            );
+            assert!(!root.path().join(expected).exists());
+        }
+        std::fs::create_dir(root.path().join("attachments")).unwrap();
+        assert_eq!(
+            attachment_folder(root.path(), "note.md", AttachmentKind::File),
+            root.path().join("attachments")
+        );
+        std::fs::create_dir(root.path().join(".obsidian")).unwrap();
+        std::fs::write(
+            root.path().join(".obsidian/app.json"),
+            r#"{"attachmentFolderPath":"_Assets/Attachments"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            attachment_folder(root.path(), "note.md", AttachmentKind::File),
+            root.path().join("_Assets/Attachments")
+        );
     }
 }
