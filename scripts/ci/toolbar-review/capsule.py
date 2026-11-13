@@ -82,7 +82,8 @@ def prepare(destination, kind, in_place=False):
         write(SRC+'reader_code_file/toolbar_native/trace.rs',
               git('show', TOOLBAR+':'+SRC+'reader_code_file/toolbar_native/trace.rs'))
 
-    harness = git('show', base+':'+SRC+'reader_code_file/toolbar_native.rs').decode()
+    # Identical in 863bfdd and current main; 774cef4 has no harness.
+    harness = git('show', TOOLBAR+':'+SRC+'reader_code_file/toolbar_native.rs').decode()
     harness = replace(harness,
         '#[cfg(not(target_os = "windows"))]\nfn thread_cpu_ms() -> Option<f64> {\n    None\n}',
         observer)
