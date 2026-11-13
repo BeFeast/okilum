@@ -156,6 +156,11 @@ impl Tree {
                     .is_some_and(|tail| tail.starts_with('/')))
     }
 
+    /// The path is in the inventory, folded, hidden or out of scope alike.
+    pub(crate) fn contains(&self, path: &str) -> bool {
+        self.kinds.contains_key(path)
+    }
+
     pub(crate) fn is_directory(&self, path: &str) -> bool {
         self.kinds.get(path) == Some(&EntryKind::Directory)
     }

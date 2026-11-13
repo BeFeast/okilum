@@ -813,7 +813,14 @@ impl Reader {
             }
         }
         let mut pins = v_flex().w_full().min_w_0().pb_2();
-        for path in &self.sidebar.pinned {
+        // Missing pins are listed in the pinned row only (#2789).
+        let present: Vec<&String> = self
+            .sidebar
+            .pinned
+            .iter()
+            .filter(|path| !self.pin_missing(path))
+            .collect();
+        for path in present.iter().copied() {
             pins =
                 pins.child(self.now_note_row(path, self.vault.note_title(path), String::new(), cx));
         }
@@ -892,13 +899,7 @@ impl Reader {
                         .child(changes),
                 )
             })
-            .child(self.now_heading(
-                "pins".into(),
-                "PINNED".into(),
-                self.sidebar.pinned.len(),
-                false,
-                cx,
-            ))
+            .child(self.now_heading("pins".into(), "PINNED".into(), present.len(), false, cx))
             .when(!self.sidebar.now_collapsed.contains("pins"), |panel| {
                 panel.child(
                     div()

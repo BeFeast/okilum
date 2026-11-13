@@ -621,6 +621,28 @@ toggle:
   stores themselves stay vault-wide (Recent keeps 40), and the project is a
   folder-prefix filter.
 
+### Pinned files row (#2789)
+
+Decided by Oleg 2026-11-13 (option b). **Pin** / **Unpin** sits in each
+file's menus: the note and file ⋯ Document actions (last before Move to
+Trash), the tree row menu and the document title's context menu. Pins are the
+Pinned ▾ store, so the tree's pin glyph, the Pinned menu and this row agree.
+
+A row of pinned files sits above the document header whenever one is pinned
+and stays while other notes and files open, like pinned tabs. A click opens
+the file through ordinary navigation, so unsaved edits follow the usual save
+and draft rules; pinning never saves or discards anything. The open file's
+pin is highlighted; × or the pin's menu unpins. Pinned folders stay in the
+Pinned menu only. Many pins keep one fixed-height row that scrolls
+sideways; long names are cut.
+
+Pins are saved with the per-vault sidebar state and survive a relaunch. A
+move or rename inside Okilum carries the pin. A pinned file that a complete
+inventory no longer has (moved, renamed or deleted elsewhere) is not dropped:
+the row shows it struck through as missing until removed, and the Pinned menu,
+palette and Now leave it out. A single file opened without its vault has no
+pins, so neither the row nor the menu item appears.
+
 ### ⌘K palette (#1518)
 
 Quick open (Ctrl+K / ⌘K) is one palette with the sections **Pinned**,
