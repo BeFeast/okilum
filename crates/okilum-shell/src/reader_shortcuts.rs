@@ -725,9 +725,9 @@ mod tests {
     #[gpui::test]
     fn listed_actions_are_bound_and_unique(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);
-        // Quick Look exists only on macOS; Windows lacks the Unix-only editing
-        // actions. Every ordinary entry still requires a key; explicitly
-        // declared menu entries must stay unbound by default.
+        // Quick Look exists only on macOS. Linux, Windows and macOS bind every
+        // other ordinary entry; explicitly declared menu entries must stay
+        // unbound by default.
         let platform_only = [QuickLookFile::name_for_type()];
         let mut seen = BTreeSet::new();
         for entry in catalog() {
@@ -739,12 +739,34 @@ mod tests {
                     "{} unexpectedly acquired a default shortcut",
                     entry.action
                 );
-            } else if cfg!(target_os = "macos")
-                || (cfg!(unix) && !platform_only.contains(&entry.action))
-            {
+            } else if cfg!(target_os = "macos") || !platform_only.contains(&entry.action) {
                 assert!(bound, "{} is listed but not bound", entry.action);
             }
         }
+    }
+
+    #[gpui::test]
+    fn altgr2813_no_default_uses_ctrl_alt_letter(cx: &mut TestAppContext) {
+        // AltGr arrives as Ctrl+Alt on Windows layouts that type characters
+        // with it, so a Ctrl+Alt+letter default would steal printable keys.
+        let keymap = reader_keymap(cx);
+        assert!(keymap.bindings().len() > 40, "positive control");
+        let offenders: Vec<String> = keymap
+            .bindings()
+            .flat_map(|binding| {
+                binding.keystrokes().iter().filter_map(move |stroke| {
+                    let m = &stroke.modifiers;
+                    let letter = stroke.key.len() == 1
+                        && stroke.key.chars().all(|c| c.is_ascii_alphabetic());
+                    (m.control && m.alt && letter)
+                        .then(|| format!("{} {}", binding.action().name(), stroke.unparse()))
+                })
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "Ctrl+Alt+letter defaults: {offenders:?}"
+        );
     }
 
     #[gpui::test]
