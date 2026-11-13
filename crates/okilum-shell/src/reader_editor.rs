@@ -13,9 +13,9 @@ mod latency;
 mod link_complete;
 mod lists;
 mod live_preview;
+pub(crate) mod math_preview;
 #[cfg(test)]
 mod note_open_mode_tests;
-pub(crate) mod math_preview;
 mod open_note_sync;
 mod paste_jobs;
 mod recovery;
