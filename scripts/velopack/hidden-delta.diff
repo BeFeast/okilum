@@ -64,8 +64,14 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,288 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
++//!
++//! Invariant: a file only ever acquires the destination, `.vpk-stage` or
++//! `.vpk-backup` name by an atomic rename of a complete file. The stage is a
++//! fully read, CRC/size-checked and flushed extraction; the backup is the
++//! original destination renamed by ReplaceFileW. Recovery therefore never
++//! needs to trust a partially written file and never deletes the last copy.
 +use crate::Error;
 +use std::path::Path;
 +
@@ -85,20 +91,14 @@
 +#[cfg(windows)]
 +mod native {
 +    use super::*;
-+    use std::{
-+        fs,
-+        io::{self, Write},
-+        path::PathBuf,
-+    };
++    use std::{fs, io, path::PathBuf};
 +    use windows::{
 +        core::PCWSTR,
 +        Win32::Storage::FileSystem::{
-+            GetFileAttributesW, MoveFileExW, ReplaceFileW, SetFileAttributesW,
-+            FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES,
-+            MOVEFILE_WRITE_THROUGH, REPLACE_FILE_FLAGS,
++            GetFileAttributesW, MoveFileExW, ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
++            FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES, MOVEFILE_WRITE_THROUGH, REPLACE_FILE_FLAGS,
 +        },
 +    };
-+    const READY: &[u8] = b"velopack-verified-helper-v1\n";
 +    const REMOVE_REPLACED: i32 = 1175;
 +    const MOVE_REPLACEMENT: i32 = 1176;
 +    const MOVE_REPLACEMENT_2: i32 = 1177;
@@ -107,16 +107,12 @@
 +        destination: PathBuf,
 +        stage: PathBuf,
 +        backup: PathBuf,
-+        ready: PathBuf,
 +        lock: PathBuf,
 +    }
 +    impl Paths {
 +        fn new(destination: &Path) -> Self {
 +            let sibling = |suffix: &str| {
-+                let mut name = destination
-+                    .file_name()
-+                    .expect("file destination")
-+                    .to_os_string();
++                let mut name = destination.file_name().expect("file destination").to_os_string();
 +                name.push(suffix);
 +                destination.with_file_name(name)
 +            };
@@ -124,12 +120,11 @@
 +                destination: destination.to_owned(),
 +                stage: sibling(".vpk-stage"),
 +                backup: sibling(".vpk-backup"),
-+                ready: sibling(".vpk-ready"),
 +                lock: sibling(".vpk-lock"),
 +            }
 +        }
 +        fn has_artifacts(&self) -> io::Result<bool> {
-+            Ok(self.stage.try_exists()? || self.backup.try_exists()? || self.ready.try_exists()?)
++            Ok(self.stage.try_exists()? || self.backup.try_exists()?)
 +        }
 +    }
 +
@@ -142,10 +137,7 @@
 +        let extended: Vec<u16> = if units.starts_with(&[92, 92, 63, 92]) {
 +            units
 +        } else if units.starts_with(&[92, 92]) {
-+            "\\\\?\\UNC\\"
-+                .encode_utf16()
-+                .chain(units.into_iter().skip(2))
-+                .collect()
++            "\\\\?\\UNC\\".encode_utf16().chain(units.into_iter().skip(2)).collect()
 +        } else {
 +            "\\\\?\\".encode_utf16().chain(units).collect()
 +        };
@@ -156,28 +148,24 @@
 +            return Ok(());
 +        }
 +        // Only obsolete transaction files; never clear destination attributes.
-+        unsafe { SetFileAttributesW(PCWSTR(wide(path)?.as_ptr()), FILE_ATTRIBUTE_NORMAL) }
-+            .map_err(io::Error::from)?;
++        unsafe { SetFileAttributesW(PCWSTR(wide(path)?.as_ptr()), FILE_ATTRIBUTE_NORMAL) }.map_err(io::Error::from)?;
 +        fs::remove_file(path)
++    }
++    /// Atomic no-clobber rename: never overwrites another recovery copy.
++    fn rename_new(source: &Path, destination: &Path) -> io::Result<()> {
++        if destination.try_exists()? {
++            return Err(io::ErrorKind::AlreadyExists.into());
++        }
++        let source = wide(source)?;
++        let destination = wide(destination)?;
++        unsafe { MoveFileExW(PCWSTR(source.as_ptr()), PCWSTR(destination.as_ptr()), MOVEFILE_WRITE_THROUGH) }
++            .map_err(io::Error::from)
 +    }
 +
 +    trait Operations {
 +        fn replace(&self, paths: &Paths) -> io::Result<()>;
 +        fn restore(&self, source: &Path, destination: &Path) -> io::Result<()> {
-+            // Destination must be absent: never overwrite another recovery copy.
-+            if destination.try_exists()? {
-+                return Err(io::ErrorKind::AlreadyExists.into());
-+            }
-+            let source = wide(source)?;
-+            let destination = wide(destination)?;
-+            unsafe {
-+                MoveFileExW(
-+                    PCWSTR(source.as_ptr()),
-+                    PCWSTR(destination.as_ptr()),
-+                    MOVEFILE_WRITE_THROUGH,
-+                )
-+            }
-+            .map_err(io::Error::from)
++            rename_new(source, destination)
 +        }
 +        fn leave_interrupted(&self) -> bool {
 +            false
@@ -189,8 +177,8 @@
 +            let destination = wide(&p.destination)?;
 +            let stage = wide(&p.stage)?;
 +            let backup = wide(&p.backup)?;
-+            // Backup is mandatory. In particular, never pass NULL: error 1176
-+            // without it may delete the only original. Ignore no merge errors.
++            // Backup is mandatory. Never pass NULL: error 1176 without a backup
++            // name may delete the only original. Flags 0: ACL/merge errors fail.
 +            unsafe {
 +                ReplaceFileW(
 +                    PCWSTR(destination.as_ptr()),
@@ -205,51 +193,47 @@
 +        }
 +    }
 +
++    /// Bring the destination back to exactly one complete helper.
++    ///
++    /// | destination | backup | stage | action                                   |
++    /// |-------------|--------|-------|------------------------------------------|
++    /// | missing     | yes    | any   | rename backup (the original) back        |
++    /// | missing     | no     | yes   | rename the verified stage into place     |
++    /// | missing     | no     | no    | nothing to recover                       |
++    /// | present     | any    | any   | keep destination, discard obsolete files |
++    ///
++    /// A refused rename returns an error and leaves every file in place, so a
++    /// later process retries; nothing is deleted while the destination is missing.
 +    fn recover_locked(p: &Paths, operations: &impl Operations) -> io::Result<()> {
-+        let exists = p.destination.try_exists()?;
-+        if !exists {
++        if !p.destination.try_exists()? {
 +            if p.backup.try_exists()? {
-+                // 1177 / interruption after the original was renamed. Preserve
-+                // the security descriptor/attributes by renaming the original.
++                // 1177, or an interruption between ReplaceFileW's two renames.
++                // Renaming the original back keeps its DACL and attributes.
 +                operations.restore(&p.backup, &p.destination)?;
-+            } else if p.stage.try_exists()? && fs::read(&p.ready).ok().as_deref() == Some(READY) {
-+                // Last-resort verified replacement; an incomplete stage is never
-+                // executable. Keep it on disk if this rename is refused too.
++            } else if p.stage.try_exists()? {
++                // First install, or the helper vanished after staging.
 +                operations.restore(&p.stage, &p.destination)?;
-+            } else if p.has_artifacts()? {
-+                return Err(io::Error::other(
-+                    "helper missing; no verified recovery source; preserving transaction files",
-+                ));
 +            } else {
 +                return Ok(());
 +            }
 +        }
 +        if !p.destination.is_file() {
-+            return Err(io::Error::other(
-+                "helper destination is not a file; preserving transaction files",
-+            ));
++            return Err(io::Error::other("helper destination is not a file; preserving transaction files"));
 +        }
-+        if p.backup.try_exists()? && p.stage.try_exists()? {
-+            return Err(io::Error::other(
-+                "ambiguous helper transaction; preserving all three files",
-+            ));
-+        }
-+        // Hold the admitted destination against deletion/write throughout cleanup;
-+        // a presence check alone would race another process removing the helper.
++        // Hold the destination against deletion/write throughout cleanup; a
++        // presence check alone would race another process removing the helper.
 +        use std::os::windows::fs::OpenOptionsExt;
-+        let _admitted = fs::OpenOptions::new()
++        let _held = fs::OpenOptions::new()
 +            .read(true)
 +            .share_mode(windows::Win32::Storage::FileSystem::FILE_SHARE_READ.0)
 +            .open(&p.destination)?;
-+        // Only after a destination exists. A post-swap crash leaves destination
-+        // + backup; a pre-swap failure leaves destination + stage. Both are safe.
 +        remove_owned(&p.stage)?;
 +        remove_owned(&p.backup)?;
-+        remove_owned(&p.ready)?;
 +        Ok(())
 +    }
 +
-+    /// Recover a previous process interruption before locator existence checks.
++    /// Recover an interrupted publication. Locators call this before checking
++    /// that Update.exe exists; their callers log failures and retry next launch.
 +    pub fn recover(destination: &Path) -> Result<(), Error> {
 +        let p = Paths::new(destination);
 +        if !p.has_artifacts()? {
@@ -259,102 +243,74 @@
 +        recover_locked(&p, &Windows)?;
 +        Ok(())
 +    }
-+    pub(crate) fn publish(
-+        staged: tempfile::NamedTempFile,
-+        destination: &Path,
-+    ) -> Result<(), Error> {
++    pub(crate) fn publish(staged: tempfile::NamedTempFile, destination: &Path) -> Result<(), Error> {
 +        publish_with(staged, destination, &Windows)
 +    }
-+    fn publish_with(
-+        staged: tempfile::NamedTempFile,
-+        destination: &Path,
-+        operations: &impl Operations,
-+    ) -> Result<(), Error> {
++    fn publish_with(staged: tempfile::NamedTempFile, destination: &Path, operations: &impl Operations) -> Result<(), Error> {
 +        let p = Paths::new(destination);
++        // A per-destination exclusive handle serializes publication and recovery.
 +        let _lock = crate::lockfile::LockFile::try_acquire_lock(p.lock.clone())?;
 +        recover_locked(&p, operations)?;
-+        // Close the staged write handle before ReplaceFileW opens it. Transfer
-+        // ownership to a deterministic recovery name; no RAII deletion afterwards.
++        // Close the staged write handle before ReplaceFileW opens it, then move
++        // the complete, flushed file to the deterministic stage name. Until that
++        // rename succeeds the random temporary is dropped on any error.
 +        let temporary = staged.into_temp_path();
-+        let temporary_wide = wide(&temporary)?;
-+        unsafe { SetFileAttributesW(PCWSTR(temporary_wide.as_ptr()), FILE_ATTRIBUTE_NORMAL) }
-+            .map_err(io::Error::from)?;
-+        // tempfile's Windows persist uses raw, non-extended paths. Use the same
-+        // explicit long-path/no-clobber primitive as recovery instead.
-+        Windows.restore(&temporary, &p.stage)?;
-+        drop(temporary);
++        unsafe { SetFileAttributesW(PCWSTR(wide(&temporary)?.as_ptr()), FILE_ATTRIBUTE_NORMAL) }.map_err(io::Error::from)?;
++        rename_new(&temporary, &p.stage)?;
++        let _ = temporary.keep();
 +        let transaction = || -> io::Result<()> {
 +            if p.destination.try_exists()? {
-+                let attributes =
-+                    unsafe { GetFileAttributesW(PCWSTR(wide(&p.destination)?.as_ptr())) };
++                // ReplaceFileW keeps the DACL, owner and streams of the replaced
++                // file but not its attributes; copy those to the stage first.
++                let attributes = unsafe { GetFileAttributesW(PCWSTR(wide(&p.destination)?.as_ptr())) };
 +                if attributes == INVALID_FILE_ATTRIBUTES {
 +                    return Err(io::Error::last_os_error());
 +                }
-+                unsafe {
-+                    SetFileAttributesW(
-+                        PCWSTR(wide(&p.stage)?.as_ptr()),
-+                        FILE_FLAGS_AND_ATTRIBUTES(attributes),
-+                    )
-+                }
-+                .map_err(io::Error::from)?;
-+            }
-+            let mut ready = fs::OpenOptions::new()
-+                .write(true)
-+                .create_new(true)
-+                .open(&p.ready)?;
-+            ready.write_all(READY)?;
-+            ready.sync_all()?;
-+            drop(ready);
-+            if p.destination.try_exists()? {
++                unsafe { SetFileAttributesW(PCWSTR(wide(&p.stage)?.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attributes)) }
++                    .map_err(io::Error::from)?;
 +                operations.replace(&p)
 +            } else {
 +                operations.restore(&p.stage, &p.destination)
 +            }
 +        };
-+        match transaction() {
-+            Ok(()) => {
-+                recover_locked(&p, operations)?;
-+                Ok(())
-+            }
-+            Err(error) => {
-+                if operations.leave_interrupted() {
-+                    return Err(error.into());
-+                }
-+                match error.raw_os_error() {
-+                    Some(REMOVE_REPLACED) => warn!(
-+                        "ReplaceFileW 1175: original and replacement retain names; recovering"
-+                    ),
-+                    Some(MOVE_REPLACEMENT) => {
-+                        warn!("ReplaceFileW 1176: mandatory backup protects original; recovering")
-+                    }
-+                    Some(MOVE_REPLACEMENT_2) => {
-+                        warn!("ReplaceFileW 1177: original renamed to backup; restoring")
-+                    }
-+                    _ => warn!("Helper publication failed; recovering: {}", error),
-+                }
-+                if let Err(recovery) = recover_locked(&p, operations) {
-+                    // Deliberately keep backup, stage and marker. The next launch
-+                    // retries recovery; missing destination NEVER licenses cleanup.
-+                    return Err(io::Error::other(format!(
-+                        "helper publication: {error}; recovery: {recovery}; transaction retained"
-+                    ))
-+                    .into());
-+                }
-+                Err(error.into())
-+            }
++        let error = match transaction() {
++            Ok(()) => return Ok(recover_locked(&p, operations)?),
++            Err(error) => error,
++        };
++        if operations.leave_interrupted() {
++            return Err(error.into());
 +        }
++        match error.raw_os_error() {
++            Some(REMOVE_REPLACED) => warn!("ReplaceFileW 1175: original and replacement retain their names; recovering"),
++            Some(MOVE_REPLACEMENT) => warn!("ReplaceFileW 1176: the mandatory backup kept the original; recovering"),
++            Some(MOVE_REPLACEMENT_2) => warn!("ReplaceFileW 1177: original renamed to the backup; restoring it"),
++            _ => warn!("Helper publication failed; recovering: {}", error),
++        }
++        if let Err(recovery) = recover_locked(&p, operations) {
++            // Every remaining file stays for the next process; a missing
++            // destination never licenses cleanup.
++            return Err(io::Error::other(format!("helper publication: {error}; recovery: {recovery}; transaction retained")).into());
++        }
++        Err(error.into())
 +    }
 +
 +    /// Filesystem fault seam, compiled only by the dedicated native test feature.
 +    #[cfg(feature = "helper-replacement-tests")]
-+    #[derive(Clone, Copy)]
++    #[derive(Clone, Copy, Debug)]
 +    pub enum Fault {
++        /// ReplaceFileW 1175: both files keep their names.
 +        RemoveReplaced,
++        /// ReplaceFileW 1176 with a backup name: both files keep their names.
 +        MoveReplacement,
++        /// ReplaceFileW 1177: original renamed to the backup, stage kept.
 +        MoveReplacement2,
++        /// 1177 followed by a refused rename of the backup back into place.
 +        RollbackBlocked,
++        /// Process death after staging, before ReplaceFileW.
 +        LeaveBeforeSwap,
++        /// Process death between ReplaceFileW's two renames.
 +        LeaveAfterBackupMove,
++        /// Process death after a real ReplaceFileW, before cleanup.
 +        LeaveAfterSwap,
 +    }
 +    #[cfg(feature = "helper-replacement-tests")]
@@ -364,7 +320,7 @@
 +                Self::RemoveReplaced => Err(io::Error::from_raw_os_error(REMOVE_REPLACED)),
 +                Self::MoveReplacement => Err(io::Error::from_raw_os_error(MOVE_REPLACEMENT)),
 +                Self::MoveReplacement2 | Self::RollbackBlocked | Self::LeaveAfterBackupMove => {
-+                    fs::rename(&p.destination, &p.backup)?;
++                    rename_new(&p.destination, &p.backup)?;
 +                    Err(io::Error::from_raw_os_error(MOVE_REPLACEMENT_2))
 +                }
 +                Self::LeaveBeforeSwap => Err(io::Error::other("interrupted before swap")),
@@ -375,18 +331,13 @@
 +            }
 +        }
 +        fn restore(&self, source: &Path, destination: &Path) -> io::Result<()> {
-+            if matches!(self, Self::RollbackBlocked)
-+                && source.extension().is_some_and(|v| v == "vpk-backup")
-+            {
++            if matches!(self, Self::RollbackBlocked) && source.extension().is_some_and(|v| v == "vpk-backup") {
 +                return Err(io::Error::from_raw_os_error(32));
 +            }
 +            Windows.restore(source, destination)
 +        }
 +        fn leave_interrupted(&self) -> bool {
-+            matches!(
-+                self,
-+                Self::LeaveBeforeSwap | Self::LeaveAfterBackupMove | Self::LeaveAfterSwap
-+            )
++            matches!(self, Self::LeaveBeforeSwap | Self::LeaveAfterBackupMove | Self::LeaveAfterSwap)
 +        }
 +    }
 +    /// Inspect the exact native API path used by production, independent of host policy.
@@ -397,11 +348,7 @@
 +
 +    /// Invoke the production state machine with a filesystem failure seam.
 +    #[cfg(feature = "helper-replacement-tests")]
-+    pub fn publish_fault(
-+        staged: tempfile::NamedTempFile,
-+        destination: &Path,
-+        fault: Fault,
-+    ) -> Result<(), Error> {
++    pub fn publish_fault(staged: tempfile::NamedTempFile, destination: &Path, fault: Fault) -> Result<(), Error> {
 +        staged.as_file().sync_all()?;
 +        publish_with(staged, destination, &fault)
 +    }
@@ -413,17 +360,26 @@
 +
 --- a/src/locator.rs
 +++ b/src/locator.rs
-@@ -113,0 +114,2 @@
+@@ -110,0 +111,10 @@
++/// Finish or roll back an interrupted helper publication before discovery
++/// checks that Update.exe exists. A refused recovery keeps every transaction
++/// file for the next launch and never aborts discovery by itself.
++#[cfg(windows)]
++fn recover_helper(update_exe: &Path) {
++    if let Err(error) = crate::helper_replace::recover(update_exe) {
++        error!("Update helper recovery failed; transaction kept for the next launch: {}", error);
++    }
++}
++
+@@ -113,0 +124,2 @@
 +        #[cfg(windows)]
-+        crate::helper_replace::recover(&config.UpdateExePath)?;
-@@ -171,0 +174,3 @@
-+                if let Err(error) = crate::helper_replace::recover(&paths.UpdateExePath) {
-+                    error!("Fallback helper recovery failed; preserving transaction: {}", error);
-+                }
-@@ -424,0 +430 @@
-+                crate::helper_replace::recover(&parent_dir.join("Update.exe"))?;
-@@ -438,0 +445 @@
-+                crate::helper_replace::recover(&maybe_root.join("Update.exe"))?;
++        recover_helper(&config.UpdateExePath);
+@@ -171,0 +184 @@
++                recover_helper(&paths.UpdateExePath);
+@@ -424,0 +438 @@
++                recover_helper(&parent_dir.join("Update.exe"));
+@@ -438,0 +453 @@
++                recover_helper(&maybe_root.join("Update.exe"));
 --- a/src/manager.rs
 +++ b/src/manager.rs
 @@ -276 +276,4 @@
@@ -432,9 +388,7 @@
 +                #[cfg(windows)]
 +                if !self.is_update_helper_prepared(&asset).unwrap_or(false) { return None; }
 +                return Some(asset);
-@@ -279,0 +283,18 @@
-+    }
-+
+@@ -281,0 +285,18 @@
 +    /// Check the installed Windows helper against the complete package entry,
 +    /// including CRC/size validation. A cached package alone never authorizes Ready.
 +    #[cfg(windows)]
@@ -451,6 +405,8 @@
 +        let bundle = crate::bundle::load_bundle_from_file(package)?;
 +        bundle.extract_zip_predicate_to_path(|name| name.ends_with("Squirrel.exe"), self.inner.locator.get_update_path())?;
 +        Ok(())
++    }
++
 @@ -415,0 +437,3 @@
 +            // Older SDKs could publish the package before helper preparation.
 +            #[cfg(windows)]
@@ -463,8 +419,7 @@
 +
 @@ -460 +488,0 @@
 -
-@@ -462,15 +489,0 @@
--
+@@ -463,15 +490,0 @@
 -        // extract new Update.exe on Windows only
 -        #[cfg(target_os = "windows")]
 -        match crate::bundle::load_bundle_from_file(&final_target_file) {
@@ -479,6 +434,7 @@
 -                error!("Error loading bundle: {}", e);
 -            }
 -        }
+-
 @@ -522 +535,10 @@
 -        let output = std::process::Command::new(self.inner.locator.get_update_path()).args(args).output()?;
 +        let mut patcher = std::process::Command::new(self.inner.locator.get_update_path());

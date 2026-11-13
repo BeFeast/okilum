@@ -3,12 +3,14 @@
 use std::{
     fs,
     io::Write,
+    os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 use velopack::{
     helper_replace::{native_path_for_test, publish_fault, recover, Fault},
-    locator::{auto_locate_app_manifest, LocationContext},
+    locator::{auto_locate_app_manifest, LocationContext, VelopackLocator},
 };
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 const OLD: &[u8] = b"original executable helper bytes";
 const NEW: &[u8] = b"fully verified replacement helper bytes";
 
@@ -31,8 +33,19 @@ fn fixture(root: &Path) -> PathBuf {
     fs::write(&helper, OLD).unwrap();
     helper
 }
+fn locate(root: &Path) -> Result<VelopackLocator, velopack::Error> {
+    auto_locate_app_manifest(LocationContext::FromSpecifiedRootDir(root.to_owned(), None))
+}
+/// Another process holding the file without FILE_SHARE_DELETE refuses its rename/removal.
+fn hold(path: &Path) -> fs::File {
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .unwrap()
+}
 fn assert_clean(helper: &Path) {
-    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-ready"] {
+    for suffix in [".vpk-stage", ".vpk-backup"] {
         assert!(
             !sibling(helper, suffix).exists(),
             "transaction not cleaned: {suffix}"
@@ -69,9 +82,9 @@ fn refused_rollback_keeps_backup_and_verified_stage_then_startup_recovers() {
     assert!(!helper.exists());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
-    assert!(sibling(&helper, ".vpk-ready").exists());
+    // The app executable lives in the current directory; discovery walks back to the root.
     let locator = auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(
-        root.path().join("current/okilum.exe"),
+        root.path().join("current").join("okilum.exe"),
     ))
     .unwrap();
     assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
@@ -93,32 +106,85 @@ fn startup_recovers_every_interruption_state_including_real_replace_backup() {
             // ReplaceFileW makes this assertion fail even when replacement works.
             assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
         }
-        let locator = auto_locate_app_manifest(LocationContext::FromSpecifiedRootDir(
-            root.path().to_owned(),
-            None,
-        ))
-        .unwrap();
+        let locator = locate(root.path()).unwrap();
         assert_eq!(fs::read(locator.get_update_path()).unwrap(), installed);
         assert_clean(&helper);
     }
 }
 
 #[test]
-fn verified_stage_can_recover_missing_helper_but_incomplete_stage_is_retained() {
+fn first_install_and_interrupted_first_install_publish_the_staged_helper() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    fs::remove_file(&helper).unwrap();
+    // No destination: publication is a no-clobber rename; ReplaceFileW is not used.
+    publish_fault(staged(&helper), &helper, Fault::RemoveReplaced).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_clean(&helper);
+
+    // The helper vanished after staging (e.g. an interrupted first install):
+    // the stage is a complete, flushed extraction and is the only copy.
+    fs::write(&helper, OLD).unwrap();
+    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveBeforeSwap).is_err());
+    fs::remove_file(&helper).unwrap();
+    let locator = locate(root.path()).unwrap();
+    assert_eq!(fs::read(locator.get_update_path()).unwrap(), NEW);
+    assert_clean(&helper);
+}
+
+#[test]
+fn present_destination_resolves_every_leftover_combination_without_blocking() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    for (backup, stage) in [(true, false), (false, true), (true, true)] {
+        if backup {
+            fs::write(sibling(&helper, ".vpk-backup"), b"previous helper").unwrap();
+        }
+        if stage {
+            fs::write(sibling(&helper, ".vpk-stage"), NEW).unwrap();
+        }
+        // The destination only receives complete files by rename, so it wins.
+        recover(&helper).unwrap();
+        assert_eq!(fs::read(&helper).unwrap(), OLD, "{backup} {stage}");
+        assert_clean(&helper);
+    }
+}
+
+#[test]
+fn refused_cleanup_never_disables_discovery_of_an_existing_helper() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
     assert!(publish_fault(staged(&helper), &helper, Fault::LeaveBeforeSwap).is_err());
-    fs::remove_file(&helper).unwrap();
-    recover(&helper).unwrap();
-    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    let stage = sibling(&helper, ".vpk-stage");
+    let held = hold(&stage);
+    // Cleanup is refused, but Update.exe exists and must still be located.
+    let locator = locate(root.path()).unwrap();
+    assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
+    assert!(stage.exists(), "held stage cannot have been removed");
+    drop(held);
+    locate(root.path()).unwrap();
     assert_clean(&helper);
-    fs::remove_file(&helper).unwrap();
-    fs::write(sibling(&helper, ".vpk-stage"), b"incomplete").unwrap();
-    assert!(recover(&helper).is_err());
-    assert_eq!(
-        fs::read(sibling(&helper, ".vpk-stage")).unwrap(),
-        b"incomplete"
-    );
+}
+
+#[test]
+fn refused_startup_restore_retains_every_copy_and_the_next_launch_recovers() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterBackupMove).is_err());
+    let backup = sibling(&helper, ".vpk-backup");
+    let held = hold(&backup);
+    match locate(root.path()) {
+        Err(velopack::Error::NotInstalled(_)) => {}
+        Err(error) => panic!("refused recovery must not replace discovery: {error}"),
+        Ok(_) => panic!("helper cannot be located while its only original is held"),
+    }
+    assert!(!helper.exists());
+    assert_eq!(fs::read(&backup).unwrap(), OLD);
+    assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
+    drop(held);
+    let locator = locate(root.path()).unwrap();
+    assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
+    assert_clean(&helper);
 }
 
 #[test]
@@ -167,11 +233,7 @@ fn killed_process_does_not_lose_recovery_files_and_next_locator_restores_helper(
     assert!(!helper.exists());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
-    let locator = auto_locate_app_manifest(LocationContext::FromSpecifiedRootDir(
-        root.path().to_owned(),
-        None,
-    ))
-    .unwrap();
+    let locator = locate(root.path()).unwrap();
     assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
     assert_clean(&helper);
 }

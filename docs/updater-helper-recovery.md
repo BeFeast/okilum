@@ -1,78 +1,88 @@
-# Draft: recoverable updater helper publication
+# Recoverable updater helper publication (Windows)
 
-This lower-priority hardening is independent of the Reader ZIP/Inbox SQLite
-migration in PR 2853. It retains main's ZIP 8.6.0 and Velopack 1.2.161. Existing
-truncate-before-read and helper-after-package-publication weaknesses exist with
-ZIP 8 too; no dependency bump is needed to address them.
+Independent of the Reader ZIP/Inbox SQLite migration (PR 2853). Velopack stays
+at 1.2.161 on its own ZIP 8 major; the fixes live in the checksum-pinned vendor
+patch (`scripts/velopack/hidden-delta.diff`, `manifest.json`). They address
+weaknesses that exist with any ZIP version: the helper was truncated before its
+replacement had been read, the final package was published before the helper
+was replaced, a failed helper extraction was logged and ignored, and stub
+extraction errors were dropped.
 
-## Publication and admission
+## Extraction and admission
 
-Extraction stages beside the destination, reads the complete entry through CRC
-and expected-size checks, syncs it, then hands it to the publication transaction.
-Existing Windows files use ReplaceFileW with a mandatory backup name and fatal
-metadata merge failures. The stage receives destination attributes first;
-ReplaceFileW preserves the DACL and other original metadata. New files use a
-no-clobber move. Helper preparation precedes final nupkg publication; cached
-packages retry preparation, pending discovery rejects stale helpers, and Okilum
-checks the actual helper/package entry bytes when creating Ready and before
-restart. Stub extraction errors also propagate.
+Every extraction is written to a random temporary file beside the destination.
+It is read to the end through ZIP CRC and declared-size checks and flushed
+before publication starts. Any read, CRC, size or write failure removes only
+that temporary file; the installed helper is never opened for writing.
 
-## On-disk transaction and recovery
+`download_updates` prepares `Update.exe` from the downloaded `.partial` before
+renaming it to the final `.nupkg`, so a failed helper preparation never leaves
+an admitted package. A cached final package (for example one left by the old
+SDK) re-runs preparation. `get_update_pending_restart` returns a package only
+when the installed helper is byte-identical to that package's helper entry, and
+Okilum repeats that check before it reports Ready and again before restart.
 
-A per-destination Windows exclusive file handle serializes publication and
-recovery across processes. Its .vpk-lock file is persistent; ownership is the
-handle, not the file's existence. Fully validated, synced bytes are transferred
-to Update.exe.vpk-stage. A synced .vpk-ready receipt follows. ReplaceFileW always
-receives Update.exe.vpk-backup. Random temporary extraction files have not yet
-entered a transaction and are never startup recovery sources.
+## On-disk transaction
 
-| Observed state | Recovery |
-| --- | --- |
-| Original + stage | Keep original; discard only obsolete stage/receipt |
-| Missing original + backup + stage | Rename original backup back; retain every file if restoration fails |
-| Replacement + backup, stage consumed | Swap completed; keep replacement, remove obsolete backup/receipt |
-| Missing original + verified stage only | Recover the verified stage; an absent/incomplete receipt cannot authorize it |
-| Missing original + incomplete stage | Return error and retain stage; never delete the only available copy |
-| Destination + backup + stage | Return an ambiguity error and retain all three |
+Names beside the destination: `Update.exe.vpk-stage`, `Update.exe.vpk-backup`
+and the persistent lock file `Update.exe.vpk-lock` (an exclusive handle on it
+serializes publication and recovery across processes).
 
-The SDK explicitly handles Microsoft's documented errors:
-1175 ERROR_UNABLE_TO_REMOVE_REPLACED (both names retained),
-1176 ERROR_UNABLE_TO_MOVE_REPLACEMENT (mandatory backup prevents deletion of the
-original), and 1177 ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (original renamed to the
-backup). All errors run recovery and still return error to package admission.
-Cleanup holds the destination open without DELETE/WRITE sharing, so a presence
-check cannot race deletion of the admitted helper. No failure removes
-stage/backup while the destination is missing. A refused
-rollback leaves all transaction files for the next process.
+Invariant: a file only ever acquires the destination, stage or backup name
+through an atomic rename of a complete file. The stage is the verified, flushed
+extraction (no-clobber `MoveFileExW`, write-through); the backup is the original
+renamed by `ReplaceFileW`, which always receives the backup name (never NULL)
+with flags 0, so ACL and merge errors fail. ReplaceFileW keeps the destination's
+DACL, owner and streams; its attributes are copied to the stage first. With no
+destination (first install) the stage is renamed into place.
 
-Recovery runs before locator helper-existence checks, including automatic
-current-directory discovery and MSI fallback paths. Native API paths use the
-extended-length prefix for local and UNC paths, independently of host MAX_PATH
-policy. This protocol targets process interruption and documented API failure;
-it does not claim full-device power-loss durability.
+Recovery runs at the start of every publication, after any failed publication,
+and in the locator before it checks that `Update.exe` exists:
 
-[Microsoft ReplaceFileW contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew).
+| Destination | Backup | Stage | Action |
+| --- | --- | --- | --- |
+| missing | present | any | rename the backup (the original) back |
+| missing | absent | present | rename the stage into place |
+| missing | absent | absent | nothing to recover |
+| present | any | any | keep the destination; delete the other files while holding it open |
 
-## Controls and review status
+A refused rename leaves every file in place and returns an error. Nothing is
+deleted while the destination is missing. Locators log a recovery failure and
+continue discovery, so an existing `Update.exe` is always found, and a later
+launch retries recovery. Every state therefore converges to exactly one
+complete helper. A helper that does not match the pending package is never
+admitted; the next download prepares it again.
 
-A dedicated feature exposes the fault seam only in native test builds; normal
-application builds contain no environment-controlled injection. Tests execute
-the production publication/recovery state machine with each documented partial
-failure, blocked rollback, pre-swap/post-backup/post-swap interruption, explicit
-ACE and non-default attributes, locked target without DELETE/WRITE sharing,
-same-size helper corruption, >400-character paths and a real child abort followed
-by fresh locator recovery. A successful real ReplaceFileW is interrupted before
-cleanup and must leave the actual original backup. This control fails if the
-API backup argument is reverted to NULL. Another mutation deliberately deletes
-the stage before a refused rollback and must fail its retention assertion.
+[ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+partial failures:
 
-The dedicated native Windows workflow restores the vendor source after each
-mutation and reruns positives, then applies real published Full and Delta
-packages with fallback forbidden and compares installed payload hashes. The
-native shell control separately disables the actual Ready guard, requires its
-assertion failure and restores it.
+| Error | Documented state | Recovery |
+| --- | --- | --- |
+| 1175 `ERROR_UNABLE_TO_REMOVE_REPLACED` | both files keep their names | keep original, delete stage |
+| 1176 `ERROR_UNABLE_TO_MOVE_REPLACEMENT` | with a backup name, both keep their names | keep original, delete stage |
+| 1177 `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2` | original renamed to the backup | rename the backup back, delete stage |
 
-This remains a draft for separate adversarial review. It has no deadline and
-must not merge before that review and explicit notification to Oleg. ZIP-8
-RustSec advisories remain open on the trusted update-package path; this draft
-neither upgrades ZIP nor suppresses advisories.
+All of them still fail package admission. Native API paths use the
+extended-length prefix (`\\?\`, `\\?\UNC\`) regardless of the host's long-path
+policy. The protocol targets process interruption and documented API failures;
+it does not claim power-loss durability beyond flushing before each rename.
+
+## Controls
+
+`helper-replacement-tests` is a vendor feature enabled only by `okilum-http`'s
+dev-dependency; it compiles a fault seam that drives the production state
+machine with injected ReplaceFileW errors 1175/1176/1177, a refused rollback,
+and interruptions before the swap, between ReplaceFileW's renames and after a
+real swap. A child process aborts mid-transaction and a fresh locator recovers.
+Other tests cover a locked target opened without `FILE_SHARE_DELETE`/`WRITE`,
+failure followed by retry, a protected explicit DACL with non-default
+attributes, paths over 400 characters, first installs, leftovers next to an
+existing helper, refused cleanup and refused restore during discovery, stale
+and same-size corrupted helpers, and stub extraction failure.
+
+`.github/workflows/updater-helper-compat.yml` runs them on native Windows.
+`scripts/ci/updater-helper-controls.py` then reverts each fix separately,
+rebuilds and requires the named test to fail. `scripts/ci/updater-ready-guard.py`
+does the same for Okilum's own Ready check. The workflow then applies real,
+checksum-pinned Full and Delta packages from the beta feed with fallback
+forbidden and compares installed payload hashes.

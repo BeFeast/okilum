@@ -11,6 +11,7 @@ on:
       - 'crates/okilum-http/tests/*helper*'
       - 'crates/okilum-http/tests/zip_compat.rs'
       - 'scripts/ci/updater-helper-controls.py'
+      - 'scripts/ci/updater-ready-guard.py'
       - '.github/workflows/updater-helper-compat.yml'
   workflow_dispatch:
 permissions:
@@ -21,7 +22,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -45,7 +46,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
-      - name: Run native helper recovery, admission, metadata and failure controls
+      - name: Run native helper recovery, admission, metadata and revert controls
         shell: bash
         run: python scripts/ci/updater-helper-controls.py
       - name: Apply real checksum-verified historical Full and Delta packages
@@ -53,3 +54,55 @@ jobs:
         run: |
           python scripts/ci/windows-historical-update.py
           exit $LASTEXITCODE
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-helper-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  ready-guard:
+    needs: icon
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: updater-ready-guard-v1
+          cache-on-failure: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-helper-icon
+          path: target/windows-dist
+      - name: Verify exact source and vendor
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run Okilum Ready guard with its compiled revert control
+        shell: bash
+        run: |
+          export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          python scripts/ci/updater-ready-guard.py
