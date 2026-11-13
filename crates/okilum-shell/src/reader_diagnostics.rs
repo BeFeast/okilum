@@ -197,7 +197,7 @@ impl Trace {
         }));
     }
 
-    fn record_window_closes(&self, cx: &mut App) {
+    pub(crate) fn record_window_closes(&self, cx: &mut App) {
         let closed_trace = self.clone();
         cx.on_window_closed(move |cx, id| {
             let origin = cx.default_global::<WindowCloseRequests>().0.remove(&id);
