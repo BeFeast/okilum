@@ -272,7 +272,7 @@ fn code2809_above_auto_threshold_opens_raw_and_only_click_starts_formatting(
 }
 
 #[gpui::test]
-fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
+fn code2809_single_view_formats_have_no_switch_and_xml_has_no_readonly_lock(
     cx: &mut TestAppContext,
 ) {
     for (name, text) in [
@@ -317,21 +317,13 @@ fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
             p.set_view(View::Tree, window, cx);
             assert_eq!(p.view, if data { View::Tree } else { View::Raw }, "{name}");
             p.set_view(View::Raw, window, cx);
-            if name.ends_with("xml") {
-                assert!(!p.editable());
-                assert_eq!(
-                    p.chrome(preview.clone(), cx)
-                        .state
-                        .unwrap()
-                        .tooltip
-                        .as_ref(),
-                    "Read-only: XML files are view-only"
-                );
-                assert!(
-                    p.status(preview.clone(), cx).text.is_empty(),
-                    "the XML lock tooltip needs no permanent bottom line"
-                );
-            }
+            // #2887: XML edits like YAML and TOML; no format keeps a lock.
+            assert!(p.editable(), "{name}");
+            assert!(
+                p.chrome(preview.clone(), cx).state.is_none(),
+                "{name}: no read-only lock"
+            );
+            assert!(p.status(preview.clone(), cx).text.is_empty(), "{name}");
         });
         if !data {
             assert!(visual.debug_bounds("code-view-menu").is_none());

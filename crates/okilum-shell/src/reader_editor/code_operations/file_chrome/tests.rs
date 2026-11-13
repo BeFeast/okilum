@@ -1206,3 +1206,80 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), remote);
 }
+
+/// #2887: an XML file (the QA showcase Ant build) had no Edit button and a
+/// «view-only» lock. It now edits through the same header as YAML and TOML:
+/// the real Edit button opens it, typed text lands, Validate runs the XML
+/// syntax check, Format refuses without touching the text, and Save writes.
+#[gpui::test]
+fn xml2887_edit_button_typing_validate_format_and_save(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let name = "apache-ant-build.xml";
+    let source = "<?xml version=\"1.0\"?>\n<project name=\"demo\" default=\"jar\">\n  <target name=\"jar\">\n    <jar destfile=\"demo.jar\" basedir=\"build\"/>\n  </target>\n</project>\n";
+    let (reader, visual, temp) =
+        crate::reader_viewer_chrome::tests::fixture_with_files(cx, name, &[(name, source)]);
+    let path = temp.path().join("vault").join(name);
+    visual.simulate_resize(size(px(1440.), px(900.)));
+    reader.update_in(visual, |_, w, _| w.activate_window());
+    tick(visual, 130);
+    reader.read_with(visual, |r, cx| {
+        assert_eq!(r.selected_file(), name);
+        assert!(r.code_file_editable(cx), "XML must be editable");
+        assert!(r.editing.is_none());
+    });
+    // The user's path: the header Edit button, not a direct call.
+    click(visual, "reader-edit");
+    tick(visual, 130);
+    let input = reader.read_with(visual, |r, _| {
+        r.editing
+            .as_ref()
+            .expect("Edit button opens the XML editor")
+            .input
+            .clone()
+    });
+    measured(visual, "reader-read");
+    measured(visual, "file-edit-status-line");
+    assert_eq!(text(&input, visual), source);
+    assert!(input.read_with(visual, |i, _| i.is_editable()));
+
+    // Typed input reaches the buffer (a comment after the root element).
+    input.update_in(visual, |i, w, cx| {
+        i.focus(w, cx);
+        let position = gpui_component::input::Position {
+            line: 6,
+            character: 0,
+        };
+        i.set_cursor_position(position, w, cx);
+    });
+    frame(visual);
+    visual.simulate_input("<!-- edited -->");
+    frame(visual);
+    let edited = text(&input, visual);
+    assert_eq!(edited, format!("{source}<!-- edited -->"));
+
+    // Validate runs the XML grammar, Format refuses and changes nothing.
+    reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
+    frame(visual);
+    let bottom = drawn(&input).1;
+    assert!(bottom.contains("No syntax problems found"), "{bottom}");
+    reader.update_in(visual, |r, w, cx| r.code_operation(Action::Format, w, cx));
+    frame(visual);
+    assert!(drawn(&input).1.starts_with("Not formatted."));
+    assert_eq!(text(&input, visual), edited);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+
+    // Save writes the edited text.
+    reader.update(visual, |r, cx| assert!(r.save_source(cx)));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+
+    // A broken document gets the XML syntax verdict, not a silent pass.
+    let end = edited.len();
+    input.update_in(visual, |i, w, cx| {
+        i.replace_source_range(end..end, "<broken", w, cx)
+    });
+    frame(visual);
+    reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
+    frame(visual);
+    let bottom = drawn(&input).1;
+    assert!(bottom.starts_with("Syntax problem in XML."), "{bottom}");
+}

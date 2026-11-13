@@ -48,7 +48,7 @@ fn code2771_invalid_json_formatted_is_disabled_and_never_writes_source(cx: &mut 
 }
 
 #[gpui::test]
-fn data_view_2669_native_xml_and_text_are_admitted_without_new_write_authority(
+fn data_view_2669_native_xml_and_text_are_admitted_and_editable_but_har_is_not(
     cx: &mut TestAppContext,
 ) {
     let fixture = tempfile::tempdir().unwrap();
@@ -60,8 +60,11 @@ fn data_view_2669_native_xml_and_text_are_admitted_without_new_write_authority(
         assert!(eligible(name));
         assert!(reader_open::OpenIntent::validate(&fixture.path().join(name), None, None).is_ok());
     }
-    assert!(!reader_delimited::editable("data.xml"));
-    assert!(reader_delimited::editable("note.txt")); // Existing explicit editor stays.
+    // #2887: XML (and its XSD/XSL siblings) edit like YAML and TOML.
+    for name in ["data.xml", "schema.XSD", "style.xsl", "note.txt"] {
+        assert!(reader_delimited::editable(name), "{name}");
+    }
+    assert!(!reader_delimited::editable("capture.har")); // HAR stays read-only.
     cx.update(crate::test_init);
 }
 
@@ -526,7 +529,7 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
 }
 
 #[gpui::test]
-fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_markdown_or_editing(
+fn data_view_2669_native_standalone_xml_mounts_a_preview_without_markdown_and_edits_on_request(
     cx: &mut TestAppContext,
 ) {
     let fixture = tempfile::tempdir().unwrap();
@@ -563,14 +566,28 @@ fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_ma
             .code_view_input(cx)
             .expect("direct XML is not projected as Markdown");
         assert_eq!(input.read(cx).value().as_ref(), source);
-        assert!(!input.read(cx).is_editable());
+        assert!(
+            !input.read(cx).is_editable(),
+            "the preview itself is read-only"
+        );
         assert!(reader.editing.is_none());
-        assert!(!reader.code_file_editable(cx));
-        // This must not widen the existing writable-format gate.
-        reader.toggle_source(window, cx);
-        assert!(reader.editing.is_none());
+        assert!(reader.code_file_editable(cx), "#2887: XML is editable");
         reader.record_usable_document(cx);
     });
+    // Entering and leaving Edit without typing never writes the file.
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        assert!(
+            reader.editing.is_some(),
+            "Edit opens for a standalone XML file"
+        );
+        reader.toggle_source(window, cx);
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
 }
 
