@@ -433,11 +433,11 @@ fn table2812_duckdb_running_menu_and_missing_cli_toast(cx: &mut TestAppContext) 
     }
     t.read_with(v, |p, _| {
         assert!(!p.external_pending);
-        assert!(p
-            .external_error
-            .as_ref()
-            .unwrap()
-            .contains("Install the DuckDB CLI"));
+        assert_eq!(
+            p.external_error.as_deref(),
+            Some(controls::MISSING_DUCKDB),
+            "frame 7 «DuckDB is not installed» text"
+        );
     });
     assert!(
         measured_bounds(v, "table-get-duckdb").is_some(),
