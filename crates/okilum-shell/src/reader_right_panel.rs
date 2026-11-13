@@ -30,33 +30,63 @@ pub(super) fn render_file(
             .child(Icon::default().path(icon).xsmall().text_color(faint))
             .child(label)
     };
+    // Data and service files (code viewer formats, HAR, logs, plain text):
+    // an empty «Linked from» only takes space (#2885), so it appears only
+    // when a note actually links the file; Contents uses the room otherwise.
+    // Notes and documents always keep it.
+    let service = service_file(reader) && reader.backlinks.is_empty();
+    let contents = outline.read(cx).has_entries();
+    let separator = || {
+        div()
+            .flex_none()
+            .h(px(1.))
+            .mx_4()
+            .my_1()
+            .bg(p.border_subtle)
+    };
     v_flex()
         .w_full()
         .h_full()
         .flex_none()
         .text_size(px(brand::READER_CHROME_FONT_SIZE))
-        .when(outline.read(cx).has_entries(), |panel| {
-            panel
-                .child(
-                    section("icons/list.svg", "Contents".into())
-                        .debug_selector(|| "file-contents-heading".into()),
-                )
-                .child(outline)
-                .child(
-                    div()
-                        .flex_none()
-                        .h(px(1.))
-                        .mx_4()
-                        .my_1()
-                        .bg(p.border_subtle),
-                )
+        .when(contents || service, |panel| {
+            panel.child(
+                section("icons/list.svg", "Contents".into())
+                    .debug_selector(|| "file-contents-heading".into()),
+            )
         })
-        .child(
-            section("icons/link.svg", reader.linked_from_title())
-                .debug_selector(|| "file-linked-from-heading".into()),
-        )
-        .child(reader.render_backlinks(cx))
+        .when(contents, |panel| panel.child(outline))
+        .when(service && !contents, |panel| {
+            panel.child(
+                div()
+                    .flex_none()
+                    .px_4()
+                    .py_1()
+                    .text_color(p.text_muted)
+                    .child(contents_empty(true)),
+            )
+        })
+        .when(!service, |panel| {
+            panel
+                .when(contents, |panel| panel.child(separator()))
+                .child(
+                    section("icons/link.svg", reader.linked_from_title())
+                        .debug_selector(|| "file-linked-from-heading".into()),
+                )
+                .child(reader.render_backlinks(cx))
+        })
         .into_any_element()
+}
+
+/// Files the code viewer, the HAR viewer, the log viewer or the plain-text
+/// viewer shows: data and service files.
+pub(super) fn service_file(reader: &Reader) -> bool {
+    reader.file_preview.as_ref().is_some_and(|preview| {
+        preview.code.is_some()
+            || preview.har.is_some()
+            || preview.log.is_some()
+            || preview.text.is_some()
+    })
 }
 
 /// Distinct linking notes and link places. `paths` arrive grouped by source

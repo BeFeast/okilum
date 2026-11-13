@@ -4483,11 +4483,10 @@ impl Reader {
 
     /// «Linked from» with counts only when something links here (#646).
     fn linked_from_title(&self) -> String {
-        let (notes, places) = if self.file_preview.is_some() {
-            (0, 0)
-        } else {
-            reader_right_panel::link_counts(self.backlinks.iter().map(|b| b.path.as_str()))
-        };
+        // Files count their real backlinks too (a note can link or embed a
+        // CSV, JSON, HAR or text file, #2885).
+        let (notes, places) =
+            reader_right_panel::link_counts(self.backlinks.iter().map(|b| b.path.as_str()));
         reader_right_panel::linked_from_title(
             self.vault.inventory_scanned,
             notes,
@@ -6286,7 +6285,7 @@ impl Reader {
     /// `set_backlinks`, the one place that changes both.
     fn render_backlinks(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        if self.file_preview.is_some() {
+        if self.file_preview.is_some() && self.backlinks.is_empty() {
             return panel_empty_line(muted, "—");
         }
         let empty = (self.backlink_groups.is_empty() || !self.vault.inventory_scanned).then(|| {
