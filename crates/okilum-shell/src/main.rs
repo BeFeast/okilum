@@ -4135,7 +4135,21 @@ impl Reader {
     }
 
     /// docs/design/reader.md §Layout: icon controls, breadcrumbs, loading status.
+    /// Title navigation is built first, from this small frame; the header
+    /// row's own builder temporaries live in a separate frame (#2825).
     fn render_header(&self, available: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let title_nav = self.render_title_nav(available, cx).into_any_element();
+        self.render_header_row(available, title_nav, window, cx)
+    }
+
+    #[inline(never)]
+    fn render_header_row(
+        &self,
+        available: f32,
+        title_nav: AnyElement,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let notes_open = self
             .workspace_panels()
             .visible(reader_layout::Panel::Notes, available);
@@ -4199,7 +4213,7 @@ impl Reader {
                         ))
                     })
                     // Variant A (#1508): switcher, Recent ▾, Pinned ▾, then search.
-                    .child(self.render_title_nav(available, cx))
+                    .child(title_nav)
                     .child(
                         div()
                             .id("sidebar-search")
@@ -5697,6 +5711,13 @@ impl Reader {
         if let Some(view) = reader_typed_view::render(self, window, cx) {
             return view;
         }
+        self.render_note_column(window, cx)
+    }
+
+    /// The rendered note's builder temporaries stay out of the dispatch frame
+    /// that every nested file/source draw passes through (#2825).
+    #[inline(never)]
+    fn render_note_column(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
         let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
@@ -7842,8 +7863,81 @@ impl Render for Reader {
                 project.manager_surface_visible(visible, cx)
             });
         }
-        let bounds_view = cx.entity().downgrade();
-        let main = v_flex()
+        let frame = RenderFrame {
+            sheet_layer: sheet_layer.map(IntoElement::into_any_element),
+            dialog_layer: dialog_layer.map(IntoElement::into_any_element),
+            notification_layer: notification_layer.map(IntoElement::into_any_element),
+            diagnostics,
+            document_ready,
+            inventory_ready,
+            note_count,
+            available,
+            overlay,
+            workspace_panels,
+            panel_widths,
+        };
+        // The nested document draw starts from this small frame. The window
+        // composition below has its own frame and receives the finished
+        // element, so its builder temporaries are not reserved underneath
+        // every nested file/source render on the native main stack (#2825).
+        let center = self.render_project_center(window, cx);
+        let header = self.render_window_header(frame.available, window, cx);
+        self.compose_reader_window(frame, center, header, window, cx)
+    }
+}
+
+/// Values computed before the document center is built, consumed by the
+/// window composition in the same draw.
+struct RenderFrame {
+    sheet_layer: Option<AnyElement>,
+    dialog_layer: Option<AnyElement>,
+    notification_layer: Option<AnyElement>,
+    diagnostics: Option<reader_diagnostics::Trace>,
+    document_ready: bool,
+    inventory_ready: bool,
+    note_count: usize,
+    available: f32,
+    overlay: bool,
+    workspace_panels: reader_layout::Panels,
+    panel_widths: reader_layout::Widths,
+}
+
+impl Reader {
+    #[inline(never)]
+    fn render_window_header(
+        &self,
+        available: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        #[cfg(target_os = "linux")]
+        if self.board_manager_header_cache(available) {
+            self.header_cache
+                .update(cx, |header, cx| header.set_available(available, cx));
+            return self
+                .header_cache
+                .clone()
+                .cached(
+                    gpui::StyleRefinement::default()
+                        .w_full()
+                        .h(px(READER_HEADER_HEIGHT))
+                        .flex_shrink_0(),
+                )
+                .into_any_element();
+        }
+        self.render_header(available, window, cx)
+    }
+
+    /// The document column and its overlays, in their own frame (#2825).
+    #[inline(never)]
+    fn render_document_column(
+        &self,
+        center: AnyElement,
+        overlay: bool,
+        panel_widths: &reader_layout::Widths,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        v_flex()
             .id("reader-document")
             .map(|view| reader_text_zoom::document(view, cx))
             .debug_selector(|| "reader-document".into())
@@ -7866,7 +7960,7 @@ impl Render for Reader {
                         self.agent_document.is_some() && !self.project_navigation.board_visible,
                         |view| view.flex_1().min_h_0(),
                     )
-                    .child(self.render_project_center(window, cx)),
+                    .child(center),
             )
             .children(self.render_agent_document(cx))
             .when(
@@ -7874,7 +7968,34 @@ impl Render for Reader {
                 |view| view.children(self.render_agents_rules_offer(cx)),
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
-            .children(reader_text_zoom::hud(self, cx));
+            .children(reader_text_zoom::hud(self, cx))
+            .into_any_element()
+    }
+
+    #[inline(never)]
+    fn compose_reader_window(
+        &mut self,
+        frame: RenderFrame,
+        center: AnyElement,
+        window_header: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let RenderFrame {
+            sheet_layer,
+            dialog_layer,
+            notification_layer,
+            diagnostics,
+            document_ready,
+            inventory_ready,
+            note_count,
+            available,
+            overlay,
+            workspace_panels,
+            panel_widths,
+        } = frame;
+        let bounds_view = cx.entity().downgrade();
+        let main = self.render_document_column(center, overlay, &panel_widths, cx);
         let mut panel_bodies =
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
                 workspace_panels.visible(panel, available).then(|| {
@@ -8326,24 +8447,7 @@ impl Render for Reader {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .map(|view| {
-                #[cfg(target_os = "linux")]
-                let header = if self.board_manager_header_cache(available) {
-                    self.header_cache
-                        .update(cx, |header, cx| header.set_available(available, cx));
-                    self.header_cache
-                        .clone()
-                        .cached(
-                            gpui::StyleRefinement::default()
-                                .w_full()
-                                .h(px(READER_HEADER_HEIGHT))
-                                .flex_shrink_0(),
-                        )
-                        .into_any_element()
-                } else {
-                    self.render_header(available, window, cx)
-                };
-                #[cfg(not(target_os = "linux"))]
-                let header = self.render_header(available, window, cx);
+                let header = window_header;
                 let view = if self.embedded_in_workspace {
                     // Workspace owns the window title bar; this is a plain row.
                     view.child(
@@ -8631,6 +8735,7 @@ impl Render for Reader {
                 let view = project::performance::Trace::new(view.into_any_element(), 2);
                 view
             })
+            .into_any_element()
     }
 }
 
@@ -13286,3 +13391,6 @@ fn initialize_native_sync_qa() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod issue2821_tests;
+
+#[cfg(test)]
+mod issue2825_stack_tests;
