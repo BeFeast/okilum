@@ -50,7 +50,37 @@ fn thread_cpu_ms() -> Option<f64> {
     let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
     Some((ticks(kernel) + ticks(user)) as f64 / 10_000.)
 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn thread_cpu_ms() -> Option<f64> {
+    let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: main-thread identity is queried without mutation, and the
+    // CLOCK_THREAD_CPUTIME_ID output is valid aligned timespec storage.
+    unsafe {
+        assert_eq!(libc::pthread_main_np(), 1, "CPU clock must measure native UI main thread");
+        assert_eq!(libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value), 0);
+    }
+    Some(value.tv_sec as f64 * 1000. + value.tv_nsec as f64 / 1_000_000.)
+}
+#[cfg(target_os = "macos")]
+fn mac_clock_metadata() -> serde_json::Value {
+    let mut resolution = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut tid = 0;
+    // SAFETY: these read-only queries address the current pthread; all output
+    // pointers remain live for the synchronous calls. No stack setting changes.
+    let stack_size = unsafe {
+        assert_eq!(libc::pthread_main_np(), 1);
+        assert_eq!(libc::pthread_threadid_np(libc::pthread_self(), &mut tid), 0);
+        assert_eq!(libc::clock_getres(libc::CLOCK_THREAD_CPUTIME_ID, &mut resolution), 0);
+        libc::pthread_get_stacksize_np(libc::pthread_self())
+    };
+    let resolution_ns = resolution.tv_sec as u64 * 1_000_000_000 + resolution.tv_nsec as u64;
+    assert!(tid > 0 && stack_size > 0 && resolution_ns > 0);
+    serde_json::json!({"api":"CLOCK_THREAD_CPUTIME_ID","clock_id":libc::CLOCK_THREAD_CPUTIME_ID,
+        "resolution_ns":resolution_ns,"pid":std::process::id(),"native_tid":tid,
+        "main_thread":true,"pthread_stack_bytes":stack_size,
+        "limitation":"thread CPU cannot distinguish Ready from Waiting"})
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn thread_cpu_ms() -> Option<f64> {
     None
 }
@@ -88,6 +118,8 @@ pub(super) fn entry() -> bool {
         cx.spawn(async move |cx| {
             #[cfg(target_os="windows")]
             let frame_clock=qpc_clock::Clock::new();
+            #[cfg(target_os="macos")]
+            let mac_clock=mac_clock_metadata();
             let start=Instant::now();
             let code=loop {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
@@ -150,6 +182,8 @@ pub(super) fn entry() -> bool {
                         let clock_before=frame_clock.anchor((marked as u64)*96+(sample as u64)*2);
                         let rows_before=structure::native_row_builds();
                         let offset_before=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
+                        #[cfg(target_os="macos")]
+                        let cpu_wall_before=Instant::now();
                         let cpu_before=thread_cpu_ms();
                         let text_probe=platform::text_diagnostics::Probe::start();
                         #[cfg(target_os="windows")]
@@ -183,9 +217,19 @@ pub(super) fn entry() -> bool {
                         let offset=code.read(cx).structure.scroll.0.borrow().base_handle.offset().y;
                         assert!(rows>0,"scroll sample must build real visible Tree rows");
                         assert_ne!(offset,offset_before,"scroll sample must move the native viewport");
-                        let cpu_ms=thread_cpu_ms().zip(cpu_before).map(|(end,start)|end-start);
+                        let cpu_after=thread_cpu_ms();
+                        #[cfg(target_os="macos")]
+                        let cpu_wall_ms=cpu_wall_before.elapsed().as_secs_f64()*1000.;
+                        let cpu_ms=cpu_after.zip(cpu_before).map(|(end,start)|end-start);
                         let text_work=text_probe.report();
                         let mut subtree_work=trace::report();
+                        #[cfg(target_os="macos")]
+                        {
+                            subtree_work["diagnostic_macos_cpu"]=serde_json::json!({
+                                "clock":mac_clock,"before_cpu_ms":cpu_before,"after_cpu_ms":cpu_after,
+                                "cpu_bracket_wall_ms":cpu_wall_ms,"cpu_bracket_margin_ms":cpu_wall_ms-ms
+                            });
+                        }
                         #[cfg(target_os="windows")]
                         {
                             let clock_after=frame_clock.anchor((marked as u64)*96+(sample as u64)*2+1);

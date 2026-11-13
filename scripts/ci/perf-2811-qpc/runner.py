@@ -9,10 +9,12 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
+import tarfile
 import time
 
 from capsule import ROOT, SOURCES, git
-from provenance import native_environment, pe_stack
+from provenance import binary_metadata, native_binary, native_environment, runtime_environment
 
 FIXTURE_SHA = '3111144a60615a0a1870164cfc22dae16d60a5a7c0813c7e3e74d294ad47af88'
 PLAN = [(pair, kind) for pair in range(5) for kind in ['main', 'toolbar']]
@@ -61,6 +63,17 @@ def validate_receipt(receipt, source, exit_code, log):
 
 
 def launch(binary, env, log_path):
+    if sys.platform == 'darwin':
+        with log_path.open('wb') as log:
+            process = subprocess.Popen([str(binary)], env=env, stdout=log, stderr=subprocess.STDOUT)
+            timed_out = False
+            try:
+                code = process.wait(timeout=180)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                code = process.wait(timeout=10)
+        return process.pid, None, code, timed_out
     import _winapi
     import msvcrt
     # Preserve the primary native thread and default PE stack/priority/affinity.
@@ -89,20 +102,33 @@ def preflight(inputs, out):
     out.mkdir(parents=True, exist_ok=True)
     result = {'completed_unix_ns': None, 'controller': git('rev-parse', 'HEAD').decode().strip(),
               'build_info_processes': 2, 'binaries': {}}
+    if sys.platform == 'darwin':
+        import resource
+        result['inherited_stack_limit'] = list(resource.getrlimit(resource.RLIMIT_STACK))
+        result['nice'] = os.getpriority(os.PRIO_PROCESS, 0)
+        assert result['nice'] == 0, 'diagnostic keeps normal inherited process priority'
     for kind in SOURCES:
         manifest = json.loads((inputs / kind / 'build-manifest.json').read_text())
         assert manifest['kind'] == kind and manifest['base_source'] == SOURCES[kind]
-        binary = (inputs / kind / 'okilum.exe').resolve()
+        binary = native_binary(inputs / kind)
+        if binary.name == 'okilum':
+            binary.chmod(0o755)  # Artifact download drops Unix executable bits.
         raw = binary.read_bytes()
         assert hashlib.sha256(raw).hexdigest() == manifest['binary_sha256']
-        assert pe_stack(raw) == (1048576, 4096)
+        metadata = binary_metadata(raw)
+        if metadata['format'] == 'Mach-O arm64':
+            archive = binary.parent / 'Sparkle.framework.tar'
+            assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest['sparkle_archive_sha256']
+            with tarfile.open(archive) as stream:
+                stream.extractall(binary.parent, filter='data')
+            assert hashlib.sha256((binary.parent / 'Sparkle.framework/Sparkle').read_bytes()).hexdigest() == manifest['sparkle_binary_sha256']
         info = subprocess.check_output([str(binary), '--build-info'], text=True,
-                                       env=native_environment(os.environ))
+                                       env=runtime_environment(os.environ, binary))
         assert manifest['diagnostic_commit'] in info and 'gpui-test-support: no' in info
         status = binary.stat()
         result['binaries'][kind] = {'manifest': manifest, 'build_info': info,
                                    'binary_path': str(binary), 'size': status.st_size,
-                                   'mtime_ns': status.st_mtime_ns}
+                                   'mtime_ns': status.st_mtime_ns, 'binary_metadata': metadata}
     # Compile inputs relevant to this measurement must match across both bases.
     for path in ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                  'scripts/gpui-pre-windows/manifest.json',
@@ -115,10 +141,16 @@ def preflight(inputs, out):
 
 def postflight(inputs, out):
     pinned = json.loads((out / 'preflight.json').read_text())
+    if sys.platform == 'darwin':
+        import resource
+        assert list(resource.getrlimit(resource.RLIMIT_STACK)) == pinned['inherited_stack_limit']
+        assert os.getpriority(os.PRIO_PROCESS, 0) == pinned['nice'] == 0
     for kind, value in pinned['binaries'].items():
-        binary = inputs / kind / 'okilum.exe'
+        binary = native_binary(inputs / kind)
         assert hashlib.sha256(binary.read_bytes()).hexdigest() == value['manifest']['binary_sha256']
         assert binary.stat().st_mtime_ns == value['mtime_ns']
+        if value['binary_metadata']['format'] == 'Mach-O arm64':
+            assert hashlib.sha256((binary.parent / 'Sparkle.framework/Sparkle').read_bytes()).hexdigest() == value['manifest']['sparkle_binary_sha256']
     (out / 'postflight.json').write_text(json.dumps({'immutable_binaries_verified': True,
         'completed_unix_ns': time.time_ns(), 'expected_native_processes_in_trace': 10}, indent=2))
 
@@ -134,7 +166,7 @@ def run_case(pinned, kind, out, text):
     (root / 'vault').mkdir(parents=True)
     path = root / 'vault/api.json'
     path.write_bytes(text)
-    env = native_environment(os.environ)
+    env = runtime_environment(os.environ, binary)
     env.update(OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE=str(root), OKILUM_DIAG_COLLECT_ALL='1')
     result = {'kind': kind, 'base_source': SOURCES[kind],
               'diagnostic_commit': manifest['diagnostic_commit'],
@@ -147,8 +179,15 @@ def run_case(pinned, kind, out, text):
         log = (out / 'native.log').read_text(encoding='utf-8', errors='replace')
         receipt = json.loads((root / 'toolbar-diagnostic-receipt.json').read_text())
         frames = validate_receipt(receipt, manifest['diagnostic_commit'], code, log)
-        assert all(f['subtree_work']['diagnostic_qpc']['before']['pid'] == pid and
-                   f['subtree_work']['diagnostic_qpc']['before']['tid'] == tid for f in frames)
+        if value['binary_metadata']['format'] == 'Mach-O arm64':
+            clocks = [f['subtree_work']['diagnostic_macos_cpu']['clock'] for f in frames]
+            assert all(c['pid'] == pid and c['main_thread'] is True and c['native_tid'] > 0 for c in clocks)
+            assert len({c['native_tid'] for c in clocks}) == 1
+            tid = clocks[0]['native_tid']
+            result['primary_tid'] = tid
+        else:
+            assert all(f['subtree_work']['diagnostic_qpc']['before']['pid'] == pid and
+                       f['subtree_work']['diagnostic_qpc']['before']['tid'] == tid for f in frames)
         assert hashlib.sha256(path.read_bytes()).hexdigest() == FIXTURE_SHA
         result.update(complete=True, strict_pass=receipt['strict_pass'],
                       wall_misses=sum(f['cpu_draw_ms'] > 16 for f in frames), frames=96,
@@ -164,7 +203,7 @@ def run_case(pinned, kind, out, text):
 
 
 def main(inputs, out):
-    assert os.name == 'nt'
+    assert os.name == 'nt' or sys.platform == 'darwin'
     inputs, out = inputs.resolve(), out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     pinned = json.loads((out / 'preflight.json').read_text())

@@ -137,3 +137,105 @@ jobs:
             inputs/*/observer.diff
           if-no-files-found: error
           retention-days: 7
+  mac-build:
+    needs: controls
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        kind: [main, toolbar]
+    runs-on: macos-15
+    timeout-minutes: 70
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/code-toolbar-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: qpc2811-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
+          restore-keys: |
+            qpc2811-${{ runner.os }}-${{ matrix.kind }}-
+            qpc2811-${{ runner.os }}-
+            code-toolbar-release-v1-${{ runner.os }}-
+      - name: Build exact release with the original native Mac Sparkle setup
+        env:
+          KIND: ${{ matrix.kind }}
+        run: |
+          test "$(uname -m)" = arm64
+          source_sha=$(python3 scripts/ci/perf-2811-qpc/provenance.py source --kind "$KIND")
+          capsule="$RUNNER_TEMP/qpc-capsule"
+          output="$GITHUB_WORKSPACE/out/$KIND"
+          python3 scripts/ci/perf-2811-qpc/provenance.py prepare --kind "$KIND" --source "$source_sha" --destination "$capsule" --output "$output"
+          export OKILUM_SOURCE_COMMIT="$source_sha"
+          python3 scripts/ci/perf-2811-qpc/provenance.py environment --output "$output"
+          cd "$capsule"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+          cargo build --locked --release -p okilum-shell --bin okilum --features data-view-native-harness
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/ci/perf-2811-qpc/provenance.py finish --destination "$capsule" --output "$output"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qpc-binary-mac-${{ matrix.kind }}
+          path: out/${{ matrix.kind }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/code-toolbar-release/
+          key: qpc2811-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
+  mac-capture:
+    needs: mac-build
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qpc-binary-mac-main
+          path: inputs/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: qpc-binary-mac-toolbar
+          path: inputs/toolbar
+      - name: Fixed five native Mac pairs with thread CPU diagnostics only
+        run: |
+          test "$(uname -m)" = arm64
+          python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics/mac --mode preflight
+          if python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics/mac; then
+            census_exit=0
+          else
+            census_exit=$?
+          fi
+          python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics/mac --mode postflight
+          python3 scripts/ci/perf-2811-qpc/mac_cpu.py diagnostics/mac
+          exit "$census_exit"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac2811-five-pairs-cpu-only
+          path: |
+            diagnostics/mac/
+            inputs/*/build-manifest.json
+            inputs/*/observer.diff
+          if-no-files-found: error
+          retention-days: 7

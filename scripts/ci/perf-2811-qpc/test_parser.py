@@ -12,7 +12,8 @@ from analyze import (EvidenceError, correlate_markers, decode, frame_analysis, l
                      overlap_components, scheduler_segments)
 from export_raw import MARKER, RAW_MODE, verify_layouts
 from runner import postflight, preflight, run_case, validate_receipt
-from provenance import build_environment, native_environment, reference, validate_build_environment
+from provenance import binary_metadata, build_environment, native_environment, reference, validate_build_environment
+from mac_cpu import frame_cpu
 from capsule import SOURCES
 
 
@@ -62,6 +63,37 @@ def receipt():
 
 
 class ParserControls(unittest.TestCase):
+    def test_macho_default_stack_and_override_control(self):
+        raw = bytearray(56)
+        struct.pack_into('<8I', raw, 0, 0xfeedfacf, 0x0100000c, 0, 2, 1, 24, 0, 0)
+        struct.pack_into('<IIQQ', raw, 32, 0x80000028, 24, 4096, 0)
+        self.assertEqual(binary_metadata(raw)['lc_main_stacksize'], 0)
+        struct.pack_into('<Q', raw, 48, 16 * 1024 * 1024)
+        with self.assertRaisesRegex(AssertionError, 'default LC_MAIN stack'):
+            binary_metadata(raw)
+
+    def test_mac_thread_cpu_identity_and_clock_controls(self):
+        value = {'marks': False, 'sample': 19, 'cpu_draw_ms': 20., 'thread_cpu_ms': 6.,
+            'subtree_work': {'diagnostic_macos_cpu': {'clock': {
+                'api': 'CLOCK_THREAD_CPUTIME_ID', 'clock_id': 16, 'pid': 100, 'native_tid': 200,
+                'main_thread': True, 'resolution_ns': 1, 'pthread_stack_bytes': 8388608},
+                'before_cpu_ms': 10., 'after_cpu_ms': 16., 'cpu_bracket_wall_ms': 22.,
+                'cpu_bracket_margin_ms': 2.}}}
+        result = frame_cpu(value, 100, 200)
+        self.assertEqual(result['thread_cpu_query_delta_ms'], 6.)
+        self.assertTrue(result['wall_miss'])
+        self.assertNotIn('Ready', result)
+        self.assertNotIn('Waiting', result)
+        for key, bad in [('clock_id', 12), ('main_thread', False), ('pid', 999), ('native_tid', 999)]:
+            mutant = copy.deepcopy(value)
+            mutant['subtree_work']['diagnostic_macos_cpu']['clock'][key] = bad
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                frame_cpu(mutant, 100, 200)
+        mutant = copy.deepcopy(value)
+        mutant['thread_cpu_ms'] = 0.
+        with self.assertRaises(AssertionError):
+            frame_cpu(mutant, 100, 200)
+
     def test_all_release_and_target_rustflags_are_recorded_and_tuning_rejected(self):
         normal = {'CARGO_BUILD_JOBS': '4', 'CARGO_INCREMENTAL': '0', 'UNRELATED_TOKEN': 'not-recorded'}
         self.assertEqual(validate_build_environment(normal), {'CARGO_BUILD_JOBS': '4', 'CARGO_INCREMENTAL': '0'})

@@ -9,9 +9,9 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[3]
 SOURCES = {
     'main': '718d23d8b799bd50569ba0b8ff40e784afb4ed0c',
-    'toolbar': '46194f96dcaf20e653843da66bcb292dfbdc1f25',
+    'toolbar': '680c230dbcca8ada498cd612ba326f94119540ae',
 }
-REFS = {kind: f'diagnostic/2811-qpc-{kind}-{base[:8]}' for kind, base in SOURCES.items()}
+REFS = {kind: f'diagnostic/2811-native-{kind}-{base[:8]}' for kind, base in SOURCES.items()}
 HARNESS = 'crates/okilum-shell/src/reader_code_file/toolbar_native.rs'
 CLOCK = 'crates/okilum-shell/src/reader_code_file/toolbar_native/qpc_clock.rs'
 ORIGINAL_HARNESS_SHA = '265473b112ec73a1cd68eeda723f5d8792b047f40491f5015c7a3a4f80f90a49'

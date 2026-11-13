@@ -9,6 +9,8 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
+import tarfile
 
 from capsule import CLOCK, HARNESS, ROOT, SOURCES, git
 
@@ -44,6 +46,42 @@ def pe_stack(raw):
     offset = struct.unpack_from('<I', raw, 0x3c)[0] + 24
     assert struct.unpack_from('<H', raw, offset)[0] == 0x20b, 'PE32+ required'
     return struct.unpack_from('<QQ', raw, offset + 72)
+
+
+def binary_metadata(raw):
+    if raw[:4] != b'\xcf\xfa\xed\xfe':
+        reserve, commit = pe_stack(raw)
+        assert (reserve, commit) == (1048576, 4096), 'PE stack reserve/commit must remain unchanged'
+        return {'format': 'PE32+', 'stack_reserve': reserve, 'stack_commit': commit}
+    magic, cpu, subtype, filetype, count, command_bytes, flags, reserved = struct.unpack_from('<8I', raw)
+    assert cpu == 0x0100000c and filetype == 2, 'native thin arm64 Mach-O executable required'
+    offset, stacks = 32, []
+    assert offset + command_bytes <= len(raw), 'truncated Mach-O load commands'
+    for _ in range(count):
+        command, length = struct.unpack_from('<II', raw, offset)
+        assert length >= 8 and offset + length <= 32 + command_bytes, 'invalid Mach-O load command'
+        if command == 0x80000028:  # LC_MAIN: entryoff + stacksize
+            assert length == 24
+            entry, stack = struct.unpack_from('<QQ', raw, offset + 8)
+            stacks.append(stack)
+        offset += length
+    assert offset == 32 + command_bytes and stacks == [0], 'Mach-O must retain default LC_MAIN stack size'
+    return {'format': 'Mach-O arm64', 'lc_main_stacksize': 0, 'stack_policy': 'OS default, no override'}
+
+
+def native_binary(folder):
+    paths = [p for p in [folder / 'okilum.exe', folder / 'okilum'] if p.is_file()]
+    assert len(paths) == 1, 'exactly one native binary required'
+    return paths[0].resolve()
+
+
+def runtime_environment(environment, binary):
+    result = native_environment(environment)
+    if binary.name == 'okilum':
+        framework = binary.parent / 'Sparkle.framework/Sparkle'
+        assert framework.is_file(), 'isolated Sparkle framework must be available'
+        result['DYLD_FRAMEWORK_PATH'] = str(binary.parent)
+    return result
 
 
 def reference(kind, pins):
@@ -91,16 +129,35 @@ def finish(destination, output):
     manifest = json.loads((output / 'build-manifest.json').read_text())
     assert git('rev-parse', 'HEAD', cwd=destination).decode().strip() == manifest['diagnostic_commit']
     assert not git('status', '--porcelain', '--untracked-files=no', cwd=destination).strip()
-    binary = Path(os.environ['CARGO_TARGET_DIR']) / 'release/okilum.exe'
+    mac = sys.platform == 'darwin'
+    name = 'okilum' if mac else 'okilum.exe'
+    binary = Path(os.environ['CARGO_TARGET_DIR']) / 'release' / name
     raw = binary.read_bytes()
-    assert pe_stack(raw) == (1048576, 4096), 'stack reserve/commit must remain unchanged'
-    shutil.copy2(binary, output / 'okilum.exe')
-    info = subprocess.check_output([str(binary), '--build-info'], text=True, env=native_environment(os.environ))
+    metadata = binary_metadata(raw)
+    shutil.copy2(binary, output / name)
+    environment = native_environment(os.environ)
+    if mac:
+        framework = destination / 'vendor/sparkle/Sparkle.framework'
+        environment['DYLD_FRAMEWORK_PATH'] = str(framework.parent)
+        archive = output / 'Sparkle.framework.tar'
+        with tarfile.open(archive, 'w') as stream:
+            stream.add(framework, arcname='Sparkle.framework')
+        manifest['sparkle_archive_sha256'] = sha(archive.read_bytes())
+        manifest['sparkle_binary_sha256'] = sha((framework / 'Sparkle').read_bytes())
+        sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
+        headers = [sdk / 'usr/include' / p for p in ['time.h', '_time.h']]
+        headers = [p for p in headers if p.is_file()]
+        text = '\n'.join(p.read_text() for p in headers)
+        assert all(value in text for value in ['CLOCK_THREAD_CPUTIME_ID', 'clock_gettime', 'clock_getres'])
+        manifest['darwin_clock_sdk'] = {'sdk': str(sdk),
+            'version': subprocess.check_output(['xcrun', '--show-sdk-version'], text=True).strip(),
+            'headers_sha256': {str(p): sha(p.read_bytes()) for p in headers}}
+    info = subprocess.check_output([str(binary), '--build-info'], text=True, env=environment)
     assert manifest['diagnostic_commit'] in info and 'gpui-test-support: no' in info
     (output / 'build-info.txt').write_text(info)
     (output / 'backend-manifest.json').write_bytes((destination / 'scripts/gpui-pre-windows/manifest.json').read_bytes())
     manifest.update({'binary_sha256': sha(raw), 'binary_bytes': len(raw),
-                     'stack_reserve': 1048576, 'stack_commit': 4096,
+                     'binary_metadata': metadata,
                      'rustc': subprocess.check_output(['rustc', '-Vv'], cwd=destination, text=True),
                      'cargo': subprocess.check_output(['cargo', '-V'], cwd=destination, text=True),
                      'build_environment': validate_build_environment(os.environ)})

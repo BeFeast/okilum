@@ -2,10 +2,11 @@
 
 Status: LOCAL REVIEW ONLY. No Rust build, push or native capture has run.
 The controller worktree is based on e4da51d3d; the compared feature source is
-now pinned to 46194f96dcaf20e653843da66bcb292dfbdc1f25, main to
+now pinned to 680c230dbcca8ada498cd612ba326f94119540ae, main to
 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Separate observer commits are prepared
-from those exact bases. The local source refs are main `4ed83ebc3` and
-toolbar `ae6dd4ea4`; both have only the same two-path observer patch. The feature
+from those exact bases. Fresh local source refs use the diagnostic/2811-native-* prefix, with the
+same two-path observer patch on both bases. Earlier Windows-only refs are
+retained locally and are not used for this run. The feature
 worktree and
 the separate running-time gate proposal are untouched.
 
@@ -22,11 +23,11 @@ The old cc4 binary had no absolute frame stamps. Neither a later capture nor
 this controller can retroactively classify its old miss or the new untraced
 39.6195 ms observation. This plan classifies NEW source-pinned observations.
 
-Main718 and feature46194f96 have byte-identical original toolbar_native.rs, SHA256
+Main718 and feature680c230db have byte-identical original toolbar_native.rs, SHA256
 265473b112ec73a1cd68eeda723f5d8792b047f40491f5015c7a3a4f80f90a49, and identical
 Rust1.100.0 toolchain, lockfile, release profile, fixture and backend patch.
-Feature46194f96 differs from e4da only in cfg(test) Mac shaper fixture code;
-the production shaping path remains unchanged.
+Feature680c230db differs from e4da only in cfg(test) native shaper fixture
+setup for Mac and Windows; production shaping and geometry remain unchanged.
 
 ## Source provenance and release configuration
 
@@ -71,7 +72,7 @@ abort makes the census incomplete and therefore NO_EVIDENCE. Both the native
 child process and controller exit nonzero if any original budget is violated;
 the GitHub job remains red even when analysis/collection completes correctly.
 
-Exactly five alternating main/toolbar pairs run on ONE windows-2022 runner,
+For Windows, exactly five alternating main/toolbar pairs run on ONE windows-2022 runner,
 using immutable binaries and fresh synthetic vault/state for every launch.
 No retries or successful-run selection. Complete data is 480 frames per base,
 240 unmarked and 240 marked. Builds are serial and use the same constant capsule
@@ -174,3 +175,48 @@ Publish every new miss with main/head counts, raw wall verdict, Running/Ready/
 Waiting/Unknown ranges, uncertainty and separate causal status. No automatic
 waiver follows from scheduler evidence. The native exception is still limited
 to baseline issue2825; the separate gate proposal is not modified or merged.
+
+
+## Mac extension after the actual 46194f96 strict miss
+
+The untraced Mac461 release aborted at unmarked sample19: wall20.1195 ms,
+draw18.719584 ms, clear1.389584 ms, open4.281417 ms, glyph_bitmap0 and
+thread_cpu_ms=None. This remains separate from the earlier Windows E4
+39.6195 ms observation. NEW instrumented680/main frames cannot retroactively
+attribute either old result.
+
+The same common observer patch now adds Darwin CLOCK_THREAD_CPUTIME_ID at the
+existing before/after query sites. Pinned libc0.2.191 declares clock ID16 and
+the gettime/getres/pthread APIs; Apple's [Libc time declarations](https://github.com/apple-oss-distributions/Libc/blob/main/include/_time.h)
+independently confirm the API. The Mac build records its actual xcrun SDK
+version and time-header hashes and verifies the declarations before packaging.
+No new dependency, compiler flag, GPUI patch, xctrace or sudo is introduced.
+
+Each frame records CPU query delta, enclosing query-bracket wall time and its
+margin beyond the original measured frame, clock_getres resolution, PID,
+native TID, main-thread proof and runtime pthread main-stack size. Both query
+calls assert pthread_main_np()==1. This measures actual UI-thread CPU, with
+bookkeeping outside the original wall interval explicitly retained. The CPU
+clock's advertised resolution is recorded rather than claimed as measured
+precision. CPU-only evidence does NOT distinguish Ready, Waiting, interrupts or
+preemption, and never waives the existing wall16/open100 budgets.
+
+Reuse collect-all and the same exact-source binary provenance for five pairs
+on ONE hosted macos-15 arm64 runner, giving480 frames per base. Keep default
+priority and stack: normal nice0 and inherited RLIMIT_STACK are observed, not
+changed; the thin arm64 Mach-O must have LC_MAIN.stacksize=0. Runtime stack
+sizes must match across both sources. The Windows raw-QPC/ETW group remains
+one fixed capture, separately measured and reported.
+
+Mac dependency preparation matches data-view-native.yml: original Sparkle2.10
+fetch/prepare, locked release command, and DYLD_FRAMEWORK_PATH. Frameworks are
+packaged in tar to preserve symlinks/modes, hashed, and extracted beside each
+isolated native binary; preflight checks the framework and resolves it for
+--build-info before the ten app launches. Postflight checks framework and app
+hashes. No Oleg windows or corporate files are touched.
+
+mac_cpu.py reports THREAD_CPU_QUERY_DELTAS_ONLY with the original strict
+verdict retained. Invalid clock identity, missing CPU metadata, impossible
+counter ordering or mismatched stacks gives CPU NO_EVIDENCE. Native budget
+violations still cause nonzero final job status after all96 frames per launch.
+Only NEW measurements from these pinned sources will be reported.
