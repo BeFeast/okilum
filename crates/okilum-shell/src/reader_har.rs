@@ -89,6 +89,15 @@ pub(crate) struct HarView {
     list_width: f32,
     source: Option<Entity<reader_code_file::CodePreview>>,
     cancel: Arc<AtomicBool>,
+    /// The file revision the byte ranges belong to, from the index.
+    revision: Option<har::Revision>,
+    /// Batches of an older index (before a reindex) are ignored.
+    index_generation: u64,
+    /// Said above the list after the file changed and was read again.
+    notice: Option<SharedString>,
+    /// Detail reads that finished their parse and formatting.
+    #[cfg(test)]
+    finished_reads: Arc<std::sync::atomic::AtomicUsize>,
     _index: Task<()>,
     _filter: Subscription,
 }
@@ -105,7 +114,7 @@ impl Drop for HarView {
 }
 
 enum Message {
-    Batch(Vec<Entry>, u64),
+    Batch(Vec<Entry>, u64, Option<har::Revision>),
     Done(Result<Outcome, har::Cancelled>),
 }
 
@@ -141,7 +150,7 @@ impl HarView {
         );
         let cancel = Arc::new(AtomicBool::new(false));
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let index = Self::start_index(path.clone(), cancel.clone(), cx);
+        let index = Self::start_index(path.clone(), cancel.clone(), 0, cx);
         Self {
             root,
             rel,
@@ -177,19 +186,33 @@ impl HarView {
             list_width: 0.,
             source: None,
             cancel,
+            revision: None,
+            index_generation: 0,
+            notice: None,
+            #[cfg(test)]
+            finished_reads: Default::default(),
             _index: index,
             _filter: subscription,
         }
     }
 
-    fn start_index(path: PathBuf, cancel: Arc<AtomicBool>, cx: &mut Context<Self>) -> Task<()> {
+    fn start_index(
+        path: PathBuf,
+        cancel: Arc<AtomicBool>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
         // Unbounded: the index never waits for the UI (the requests it holds
         // are bounded by `har::MAX_ENTRIES` either way).
         let (send, receive) = async_channel::unbounded::<Message>();
         cx.background_executor()
             .spawn(async move {
                 let result = har::index_file(&path, &cancel, &mut |batch| {
-                    let _ = send.send_blocking(Message::Batch(batch.entries, batch.offset));
+                    let _ = send.send_blocking(Message::Batch(
+                        batch.entries,
+                        batch.offset,
+                        batch.revision,
+                    ));
                 });
                 let _ = send.send_blocking(Message::Done(result));
             })
@@ -202,13 +225,17 @@ impl HarView {
                     messages.push(next);
                 }
                 let applied = this.update(cx, |this, cx| {
+                    if this.index_generation != generation {
+                        return Err(());
+                    }
                     for message in messages {
                         this.apply(message);
                     }
                     this.refresh(cx);
                     cx.notify();
+                    Ok(())
                 });
-                if applied.is_err() {
+                if !matches!(applied, Ok(Ok(()))) {
                     break;
                 }
             }
@@ -217,7 +244,11 @@ impl HarView {
 
     fn apply(&mut self, message: Message) {
         match message {
-            Message::Batch(entries, offset) => {
+            Message::Batch(entries, offset, revision) => {
+                if let Some(revision) = revision {
+                    self.revision = Some(revision);
+                    self.bytes = revision.len;
+                }
                 for entry in &entries {
                     self.stats.add(entry);
                 }
@@ -226,10 +257,43 @@ impl HarView {
                     *read = offset;
                 }
             }
-            Message::Done(Ok(outcome)) => self.index = Index::Done(outcome),
+            Message::Done(Ok(outcome)) => {
+                if outcome.revision.is_some() {
+                    self.revision = outcome.revision;
+                }
+                self.index = Index::Done(outcome);
+            }
             // Only a dropped view cancels; nothing is left to update.
             Message::Done(Err(har::Cancelled)) => {}
         }
+    }
+
+    /// Reads the file again after it changed on disk: earlier byte ranges
+    /// belong to the old file, so the list, selection and reads are dropped.
+    fn reindex(&mut self, cx: &mut Context<Self>) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.index_generation = self.index_generation.wrapping_add(1);
+        self.cancel_projection();
+        self.selected = None;
+        self.detail = None;
+        self.detail_cancel.store(true, Ordering::Relaxed);
+        self.detail_generation = self.detail_generation.wrapping_add(1);
+        self.reset_detail_rows();
+        self.entries = Entries::default();
+        self.stats = Stats::default();
+        self.rows = Rows::default();
+        self.revision = None;
+        self.index = Index::Reading { offset: 0 };
+        self.notice = Some("The file changed on disk, so its requests were read again.".into());
+        self._index = Self::start_index(
+            self.path.clone(),
+            self.cancel.clone(),
+            self.index_generation,
+            cx,
+        );
+        self.refresh(cx);
+        cx.notify();
     }
 
     fn reading(&self) -> bool {
@@ -320,14 +384,22 @@ impl HarView {
         let generation = self.detail_generation;
         self.detail = Some(Detail::Loading);
         self.reset_detail_rows();
-        let (path, cancel, start) = (
+        let (path, cancel, start, revision) = (
             self.path.clone(),
             self.detail_cancel.clone(),
             self.stats.first_ms,
+            self.revision,
         );
+        #[cfg(test)]
+        let finished = self.finished_reads.clone();
         let work = cx.background_executor().spawn(async move {
-            har::details(&path, span, &cancel)
-                .map(|details| details::build(&path, &details, start, &cancel))
+            let result = har::details(&path, span, revision, &cancel)
+                .and_then(|details| details::build(&path, &details, start, revision, &cancel));
+            #[cfg(test)]
+            if result.is_ok() {
+                finished.fetch_add(1, Ordering::Relaxed);
+            }
+            result
         });
         self._detail_task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -338,7 +410,8 @@ impl HarView {
                 }
                 this.detail = Some(match result {
                     Ok(rows) => Detail::Ready(Arc::new(rows)),
-                    Err(message) => Detail::Failed(message.into()),
+                    Err(har::DetailError::Changed) => return this.reindex(cx),
+                    Err(error) => Detail::Failed(error.to_string().into()),
                 });
                 this.reset_detail_rows();
                 cx.notify();
@@ -520,6 +593,15 @@ impl HarView {
 
     /// A banner above a partial list.
     fn banner(&self) -> Option<String> {
+        let damage = self.damage();
+        match (&self.notice, damage) {
+            (Some(notice), Some(damage)) => Some(format!("{notice} {damage}")),
+            (Some(notice), None) => Some(notice.to_string()),
+            (None, damage) => damage,
+        }
+    }
+
+    fn damage(&self) -> Option<String> {
         match self.outcome()?.problem.as_ref()? {
             Problem::Damaged(error) if self.stats.requests > 0 => Some(format!(
                 "The file is damaged ({error}). The {} requests before that point are listed; Source shows the file as written.",

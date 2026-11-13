@@ -139,7 +139,7 @@ pub(crate) fn project(entries: &Entries, query: &Query, cancel: &AtomicBool) -> 
     let mut rows = Vec::new();
     let mut status = String::new();
     for (index, entry) in entries.iter().enumerate() {
-        if index % 4096 == 0 && cancel.load(Ordering::Relaxed) {
+        if index.is_multiple_of(4096) && cancel.load(Ordering::Relaxed) {
             return None;
         }
         if needle.is_empty() || needle.matches_entry(entry, &mut status) {
@@ -148,23 +148,74 @@ pub(crate) fn project(entries: &Entries, query: &Query, cancel: &AtomicBool) -> 
     }
     if let Some((column, ascending)) = query.sort {
         // Stable: equal keys keep file order in both directions.
-        rows.sort_by(|&a, &b| {
-            let (x, y) = (entries.get(a as usize), entries.get(b as usize));
-            let (Some(x), Some(y)) = (x, y) else {
-                return std::cmp::Ordering::Equal;
-            };
-            let order = compare(column, x, y);
-            if ascending {
-                order
-            } else {
-                order.reverse()
-            }
-        });
-        if cancel.load(Ordering::Relaxed) {
+        let sorted = sort_cancellable(
+            &mut rows,
+            |&a, &b| {
+                let (x, y) = (entries.get(a as usize), entries.get(b as usize));
+                let (Some(x), Some(y)) = (x, y) else {
+                    return std::cmp::Ordering::Equal;
+                };
+                let order = compare(column, x, y);
+                if ascending {
+                    order
+                } else {
+                    order.reverse()
+                }
+            },
+            cancel,
+        );
+        if !sorted {
             return None;
         }
     }
     Some(rows)
+}
+
+/// A stable merge sort that notices cancellation between runs and every few
+/// thousand merged items, so a superseded sort frees its worker promptly.
+/// Returns false when cancelled (the order of `items` is then unspecified).
+pub(crate) fn sort_cancellable<T: Copy>(
+    items: &mut Vec<T>,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+    cancel: &AtomicBool,
+) -> bool {
+    const RUN: usize = 2048;
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    for run in items.chunks_mut(RUN) {
+        if cancelled() {
+            return false;
+        }
+        run.sort_by(&compare);
+    }
+    let len = items.len();
+    let mut merged: Vec<T> = Vec::with_capacity(len);
+    let mut width = RUN;
+    while width < len {
+        merged.clear();
+        for start in (0..len).step_by(2 * width) {
+            let mid = (start + width).min(len);
+            let end = (start + 2 * width).min(len);
+            let (mut left, mut right) = (start, mid);
+            while left < mid && right < end {
+                if merged.len().is_multiple_of(4096) && cancelled() {
+                    return false;
+                }
+                // Equal items keep the left (earlier) one first.
+                if compare(&items[right], &items[left]) == std::cmp::Ordering::Less {
+                    merged.push(items[right]);
+                    right += 1;
+                } else {
+                    merged.push(items[left]);
+                    left += 1;
+                }
+            }
+            merged.extend_from_slice(&items[left..mid]);
+            merged.extend_from_slice(&items[right..end]);
+        }
+        std::mem::swap(items, &mut merged);
+        width *= 2;
+    }
+    !cancelled()
 }
 
 fn compare(column: Column, a: &Entry, b: &Entry) -> std::cmp::Ordering {
@@ -253,13 +304,15 @@ pub(crate) struct Stats {
 impl Stats {
     pub(crate) fn add(&mut self, entry: &Entry) {
         self.requests += 1;
-        self.transferred += shown_size(entry).unwrap_or(0).max(0);
+        self.transferred = self
+            .transferred
+            .saturating_add(shown_size(entry).unwrap_or(0).max(0));
         if entry.failed() {
             self.errors += 1;
         }
         if let Some(start) = entry.started_ms {
             self.first_ms = Some(self.first_ms.map_or(start, |first| first.min(start)));
-            let end = start + entry.time.unwrap_or(0.).max(0.);
+            let end = start + entry.time.filter(|t| t.is_finite()).unwrap_or(0.).max(0.);
             self.last_end_ms = Some(self.last_end_ms.map_or(end, |last| last.max(end)));
         }
     }
@@ -440,5 +493,55 @@ mod tests {
         assert_eq!(clock("2026-11-13T08:00:01.123456Z"), "08:00:01.123");
         assert_eq!(clock("2026-11-13T10:00:00+02:00"), "10:00:00");
         assert_eq!(clock("garbage"), "garbage");
+    }
+
+    // --- Review of PR 2878: each case fails on head 9482eed4. ---
+
+    #[test]
+    fn review2878_superseded_sorts_stop_early() {
+        let cancel = AtomicBool::new(false);
+        let comparisons = std::cell::Cell::new(0usize);
+        let mut items: Vec<u32> = (0..200_000u32)
+            .map(|i| i.wrapping_mul(2_654_435_761) % 200_000)
+            .collect();
+        let finished = sort_cancellable(
+            &mut items,
+            |a, b| {
+                comparisons.set(comparisons.get() + 1);
+                if comparisons.get() == 5_000 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                a.cmp(b)
+            },
+            &cancel,
+        );
+        assert!(!finished);
+        assert!(
+            comparisons.get() < 50_000,
+            "{} comparisons after cancel",
+            comparisons.get()
+        );
+        // Control: uncancelled it sorts completely and stably.
+        let mut pairs: Vec<(u32, u32)> = (0..100_000u32).map(|i| (i % 7, i)).collect();
+        assert!(sort_cancellable(
+            &mut pairs,
+            |a, b| a.0.cmp(&b.0),
+            &AtomicBool::new(false)
+        ));
+        assert!(pairs
+            .windows(2)
+            .all(|w| w[0].0 < w[1].0 || (w[0].0 == w[1].0 && w[0].1 < w[1].1)));
+    }
+
+    #[test]
+    fn review2878_totals_saturate_instead_of_overflowing() {
+        let mut stats = Stats::default();
+        for _ in 0..3 {
+            stats.add(&Entry {
+                transferred: Some(i64::MAX - 1),
+                ..Default::default()
+            });
+        }
+        assert_eq!(stats.transferred, i64::MAX);
     }
 }

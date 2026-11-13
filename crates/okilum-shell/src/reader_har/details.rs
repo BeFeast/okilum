@@ -2,9 +2,9 @@
 //! decoded within [`BODY_PREVIEW`]; HTML and other markup is only ever text.
 use super::model;
 use gpui::SharedString;
-use okilum_core::har::{self, Body, Cookie, Details, Pair, Text};
+use okilum_core::har::{self, Body, Cookie, DetailError, Details, Pair, Revision, Text};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Decoded bytes of a body shown in details.
 pub(crate) const BODY_PREVIEW: usize = 256 * 1024;
@@ -14,6 +14,10 @@ const LINE: usize = 2000;
 const VALUE: usize = 4000;
 /// Rows of one body.
 const BODY_ROWS: usize = 20_000;
+/// Deepest nesting the indented JSON view shows; deeper bodies stay as written.
+pub(crate) const PRETTY_DEPTH: usize = 64;
+/// Largest indented JSON; a body that would indent larger stays as written.
+pub(crate) const PRETTY_BYTES: usize = 4 * BODY_PREVIEW;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Section {
@@ -88,27 +92,39 @@ impl DetailRows {
     }
 }
 
-/// Builds the rows for `details`, reading bodies from `path` within the
-/// preview bound. `capture_start` is the first request's start, for offsets.
+/// Builds the rows for `details`, reading bodies from `path` (the indexed
+/// `revision`) within the preview bound. `capture_start` is the first
+/// request's start, for offsets. Stops on cancellation or a changed file.
 pub(crate) fn build(
     path: &Path,
     details: &Details,
     capture_start: Option<f64>,
+    revision: Option<Revision>,
     cancel: &AtomicBool,
-) -> DetailRows {
+) -> Result<DetailRows, DetailError> {
+    let stop = || {
+        if cancel.load(Ordering::Relaxed) {
+            Err(DetailError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
     let mut rows = Vec::new();
     general(details, capture_start, &mut rows);
     timing(details, &mut rows);
     section(&mut rows, Section::RequestHeaders, &details.request_headers);
     section(&mut rows, Section::Query, &details.query);
     cookies(&mut rows, Section::RequestCookies, &details.request_cookies);
+    stop()?;
+    let request = details.request_body.as_ref();
     body(
         path,
         Section::RequestBody,
-        details.request_body.as_ref(),
+        request,
+        revision,
         cancel,
         &mut rows,
-    );
+    )?;
     section(
         &mut rows,
         Section::ResponseHeaders,
@@ -119,13 +135,16 @@ pub(crate) fn build(
         Section::ResponseCookies,
         &details.response_cookies,
     );
+    stop()?;
+    let response = details.response_body.as_ref();
     body(
         path,
         Section::ResponseBody,
-        details.response_body.as_ref(),
+        response,
+        revision,
         cancel,
         &mut rows,
-    );
+    )?;
     for (label, total) in &details.cut_lists {
         rows.push(Row::Note(
             format!(
@@ -136,7 +155,13 @@ pub(crate) fn build(
             .into(),
         ));
     }
-    DetailRows { rows }
+    if details.incomplete {
+        rows.push(Row::Note(
+            "This request is larger than details can show; the rest of it was skipped. Source shows the file as written."
+                .into(),
+        ));
+    }
+    Ok(DetailRows { rows })
 }
 
 fn field(rows: &mut Vec<Row>, name: &str, value: impl Into<String>) {
@@ -221,6 +246,8 @@ fn timing(details: &Details, rows: &mut Vec<Row>) {
         section: Section::Timing,
         count: None,
     });
+    // Unknown (non-finite) phases neither draw nor move the bar.
+    let known = |ms: f64| if ms.is_finite() { ms.max(0.) } else { 0. };
     let phases: Vec<_> = details
         .timings
         .iter()
@@ -228,20 +255,38 @@ fn timing(details: &Details, rows: &mut Vec<Row>) {
         // standard ones; they are listed but do not move the bar.
         .map(|(name, ms)| (name, *ms, !name.starts_with('_')))
         .collect();
-    let sum: f64 = phases.iter().filter(|p| p.2).map(|p| p.1).sum();
-    let total = details.time.unwrap_or(0.).max(sum).max(f64::EPSILON);
-    let mut at = 0.;
+    let sum = phases
+        .iter()
+        .filter(|p| p.2)
+        .fold(0f64, |sum, p| sum + known(p.1));
+    let time = details.time.map_or(0., known);
+    let total = time.max(sum);
+    let total = if total.is_finite() && total > 0. {
+        total
+    } else {
+        f64::MAX
+    };
+    let mut at = 0f64;
     for (name, ms, sequential) in phases {
-        let start = (at / total) as f32;
+        let start = fraction(at / total);
         rows.push(Row::Timing {
             name: phase_label(name).into(),
-            ms,
-            start: start.clamp(0., 1.),
-            width: ((ms / total) as f32).clamp(0., 1. - start.clamp(0., 1.)),
+            ms: known(ms),
+            start,
+            width: fraction(known(ms) / total).min(1. - start),
         });
         if sequential {
-            at += ms;
+            at += known(ms);
         }
+    }
+}
+
+/// A bar position in 0..=1; anything not finite is 0.
+fn fraction(value: f64) -> f32 {
+    if value.is_finite() {
+        value.clamp(0., 1.) as f32
+    } else {
+        0.
     }
 }
 
@@ -320,83 +365,170 @@ pub(crate) fn classify(bytes: &[u8], complete: bool) -> Content {
 }
 
 /// JSON is shown indented when the whole body is valid JSON. Keys, numbers
-/// and escapes stay exactly as written; only whitespace between tokens changes.
-pub(crate) fn pretty(text: &str, mime: &str, complete: bool) -> Option<String> {
+/// and escapes stay exactly as written; only whitespace between tokens
+/// changes. Nesting deeper than [`PRETTY_DEPTH`], output larger than
+/// [`PRETTY_BYTES`] or cancellation give `None` (the text is shown as written).
+pub(crate) fn pretty(
+    text: &str,
+    mime: &str,
+    complete: bool,
+    cancel: &AtomicBool,
+) -> Option<String> {
     let start = text.trim_start().as_bytes().first().copied();
     let json = mime.to_ascii_lowercase().contains("json") || matches!(start, Some(b'{' | b'['));
     if !(json && complete) {
         return None;
     }
-    serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
-    let pretty = indent_json(text);
+    let pretty = indent_json(text, cancel)?;
     (pretty != text).then_some(pretty)
 }
 
-/// Re-indents valid JSON text with two spaces per level.
-fn indent_json(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / 4);
-    let mut depth = 0usize;
-    let (mut in_string, mut escaped) = (false, false);
-    let mut chars = text.chars().peekable();
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Want {
+    Value,
+    Key,
+    Colon,
+    CommaOrClose,
+    End,
+}
+
+/// Validates JSON (RFC 8259 grammar) while re-indenting it with two spaces
+/// per level, in one pass with bounded depth and output.
+fn indent_json(text: &str, cancel: &AtomicBool) -> Option<String> {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity((b.len() + b.len() / 4).min(PRETTY_BYTES));
+    let mut stack: Vec<u8> = Vec::new();
+    let mut want = Want::Value;
+    let mut i = 0;
+    let mut steps = 0usize;
     let newline = |out: &mut String, depth: usize| {
         out.push('\n');
         for _ in 0..depth {
             out.push_str("  ");
         }
     };
-    while let Some(c) = chars.next() {
-        if in_string {
-            out.push(c);
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
+    let done = |stack: &[u8]| {
+        if stack.is_empty() {
+            Want::End
+        } else {
+            Want::CommaOrClose
+        }
+    };
+    while i < b.len() {
+        steps += 1;
+        if steps.is_multiple_of(4096) && cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        if out.len() > PRETTY_BYTES {
+            return None;
+        }
+        let c = b[i];
+        if matches!(c, b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
             continue;
         }
         match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            '{' | '[' => {
-                out.push(c);
-                while chars.next_if(|c| c.is_ascii_whitespace()).is_some() {}
-                if matches!(chars.peek(), Some('}' | ']')) {
-                    out.push(chars.next().unwrap_or_default());
+            b'"' if matches!(want, Want::Value | Want::Key) => {
+                let start = i;
+                i += 1;
+                loop {
+                    match *b.get(i)? {
+                        b'"' => break,
+                        b'\\' => match *b.get(i + 1)? {
+                            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => i += 2,
+                            b'u' if b.get(i + 2..i + 6)?.iter().all(u8::is_ascii_hexdigit) => {
+                                i += 6
+                            }
+                            _ => return None,
+                        },
+                        control if control < 0x20 => return None,
+                        _ => i += 1,
+                    }
+                }
+                i += 1;
+                out.push_str(&text[start..i]);
+                want = if want == Want::Key {
+                    Want::Colon
                 } else {
-                    depth += 1;
-                    newline(&mut out, depth);
+                    done(&stack)
+                };
+            }
+            b'{' | b'[' if want == Want::Value => {
+                if stack.len() >= PRETTY_DEPTH {
+                    return None;
+                }
+                out.push(c as char);
+                i += 1;
+                while matches!(b.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+                    i += 1;
+                }
+                let close = if c == b'{' { b'}' } else { b']' };
+                if b.get(i) == Some(&close) {
+                    out.push(close as char);
+                    i += 1;
+                    want = done(&stack);
+                } else {
+                    stack.push(c);
+                    newline(&mut out, stack.len());
+                    want = if c == b'{' { Want::Key } else { Want::Value };
                 }
             }
-            '}' | ']' => {
-                depth = depth.saturating_sub(1);
-                newline(&mut out, depth);
-                out.push(c);
+            b'}' | b']' if want == Want::CommaOrClose => {
+                let open = if c == b'}' { b'{' } else { b'[' };
+                if stack.pop() != Some(open) {
+                    return None;
+                }
+                newline(&mut out, stack.len());
+                out.push(c as char);
+                i += 1;
+                want = done(&stack);
             }
-            ',' => {
-                out.push(c);
-                newline(&mut out, depth);
+            b',' if want == Want::CommaOrClose => {
+                out.push(',');
+                newline(&mut out, stack.len());
+                i += 1;
+                want = if stack.last() == Some(&b'{') {
+                    Want::Key
+                } else {
+                    Want::Value
+                };
             }
-            ':' => out.push_str(": "),
-            c if c.is_ascii_whitespace() => {}
-            c => out.push(c),
+            b':' if want == Want::Colon => {
+                out.push_str(": ");
+                i += 1;
+                want = Want::Value;
+            }
+            _ if want == Want::Value => {
+                let start = i;
+                while b
+                    .get(i)
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'+' | b'.'))
+                {
+                    i += 1;
+                }
+                let token = &b[start..i];
+                if !(matches!(token, b"true" | b"false" | b"null") || har::json_number(token)) {
+                    return None;
+                }
+                out.push_str(&text[start..i]);
+                want = done(&stack);
+            }
+            _ => return None,
         }
     }
-    out
+    (want == Want::End && out.len() <= PRETTY_BYTES).then_some(out)
 }
 
 fn body(
     path: &Path,
     section: Section,
     body: Option<&Body>,
+    revision: Option<Revision>,
     cancel: &AtomicBool,
     rows: &mut Vec<Row>,
-) {
+) -> Result<(), DetailError> {
     let Some(body) = body else {
-        return;
+        return Ok(());
     };
     let empty_text = body.text.as_ref().is_none_or(Text::is_empty);
     if empty_text && body.params.is_empty() {
@@ -413,7 +545,7 @@ fn body(
                 .into(),
             ));
         }
-        return;
+        return Ok(());
     }
     rows.push(Row::Section {
         section,
@@ -426,14 +558,15 @@ fn body(
         });
     }
     let Some(text) = body.text.as_ref().filter(|text| !text.is_empty()) else {
-        return;
+        return Ok(());
     };
-    let decoded = match har::body_bytes(path, text, body.base64(), BODY_PREVIEW, cancel) {
+    let decoded = match har::body_bytes(path, text, body.base64(), BODY_PREVIEW, revision, cancel) {
         Ok(decoded) => decoded,
-        Err(error) => {
-            rows.push(Row::Note(error.into()));
-            return;
+        Err(DetailError::Failed(message)) => {
+            rows.push(Row::Note(message.into()));
+            return Ok(());
         }
+        Err(stop) => return Err(stop),
     };
     let size = body
         .size
@@ -457,7 +590,10 @@ fn body(
             ));
         }
         Content::Text(text) => {
-            let pretty = pretty(&text, &body.mime, decoded.complete);
+            let pretty = pretty(&text, &body.mime, decoded.complete, cancel);
+            if cancel.load(Ordering::Relaxed) {
+                return Err(DetailError::Cancelled);
+            }
             let shown = pretty.as_deref().unwrap_or(&text);
             text_rows(shown, rows);
             if !decoded.complete {
@@ -471,6 +607,7 @@ fn body(
             }
         }
     }
+    Ok(())
 }
 
 /// Splits text into display rows: one per line, long lines in parts.
@@ -521,15 +658,51 @@ mod tests {
     #[test]
     fn json_is_indented_only_when_complete_and_valid() {
         assert_eq!(
-            pretty(r#"{"a":[1]}"#, "application/json", true).as_deref(),
+            pretty(
+                r#"{"a":[1]}"#,
+                "application/json",
+                true,
+                &AtomicBool::new(false)
+            )
+            .as_deref(),
             Some("{\n  \"a\": [\n    1\n  ]\n}")
         );
-        assert_eq!(pretty(r#"{"a":[1]"#, "application/json", true), None);
-        assert_eq!(pretty(r#"{"a":1}"#, "application/json", false), None);
-        assert_eq!(pretty("<html>{}</html>", "text/html", true), None);
+        assert_eq!(
+            pretty(
+                r#"{"a":[1]"#,
+                "application/json",
+                true,
+                &AtomicBool::new(false)
+            ),
+            None
+        );
+        assert_eq!(
+            pretty(
+                r#"{"a":1}"#,
+                "application/json",
+                false,
+                &AtomicBool::new(false)
+            ),
+            None
+        );
+        assert_eq!(
+            pretty(
+                "<html>{}</html>",
+                "text/html",
+                true,
+                &AtomicBool::new(false)
+            ),
+            None
+        );
         // Order, numbers and escapes are kept as written.
         assert_eq!(
-            pretty(r#"{"z":1.50,"a":{},"s":"x\"]{,:","e":[ ]}"#, "", true).as_deref(),
+            pretty(
+                r#"{"z":1.50,"a":{},"s":"x\"]{,:","e":[ ]}"#,
+                "",
+                true,
+                &AtomicBool::new(false)
+            )
+            .as_deref(),
             Some("{\n  \"z\": 1.50,\n  \"a\": {},\n  \"s\": \"x\\\"]{,:\",\n  \"e\": []\n}")
         );
     }
@@ -596,5 +769,101 @@ mod tests {
             })
             .collect();
         assert_eq!(bars, [(0., 0.1), (0.1, 0.05), (0.1, 0.6), (0.7, 0.3)]);
+    }
+
+    // --- Review of PR 2878: each case fails on head 9482eed4. ---
+
+    #[test]
+    fn review2878_deep_json_is_not_indented_and_never_grows_without_bound() {
+        let open = AtomicBool::new(false);
+        // 100,000 nested arrays around 0 (~200 KB): raw text, no indentation.
+        let deep = format!("{}0{}", "[".repeat(100_000), "]".repeat(100_000));
+        assert_eq!(pretty(&deep, "application/json", true, &open), None);
+        // The depth bound is exact; one level less still indents.
+        let limit = format!("{}0{}", "[".repeat(PRETTY_DEPTH), "]".repeat(PRETTY_DEPTH));
+        assert!(pretty(&limit, "application/json", true, &open).is_some());
+        let over = format!("[{limit}]");
+        assert_eq!(pretty(&over, "application/json", true, &open), None);
+        // Wide input whose indentation would exceed the output cap stays raw.
+        let wide = format!("[{}0]", "0,".repeat(PRETTY_BYTES / 4));
+        assert!(wide.len() < BODY_PREVIEW * 3);
+        assert_eq!(pretty(&wide, "application/json", true, &open), None);
+        // Grammar: raw control bytes, Rust-only numbers and trailing commas are not JSON.
+        for bad in [
+            "{\"a\":\"x\ty\"}",
+            "[01]",
+            "[1.]",
+            "[1,]",
+            "{\"a\" 1}",
+            "[1] 2",
+        ] {
+            assert_eq!(pretty(bad, "application/json", true, &open), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn review2878_formatting_stops_when_cancelled() {
+        let json = format!("[{}0]", "{\"k\":[1,2,3]},".repeat(5_000));
+        // Control: uncancelled it indents.
+        assert!(pretty(&json, "application/json", true, &AtomicBool::new(false)).is_some());
+        assert_eq!(
+            pretty(&json, "application/json", true, &AtomicBool::new(true)),
+            None
+        );
+    }
+
+    #[test]
+    fn review2878_non_finite_timings_never_panic() {
+        for (time, timings) in [
+            (
+                Some(f64::INFINITY),
+                vec![("send".to_owned(), f64::INFINITY), ("wait".to_owned(), 1.)],
+            ),
+            (
+                None,
+                vec![("send".to_owned(), f64::NAN), ("wait".to_owned(), 1.)],
+            ),
+            (
+                Some(f64::MAX),
+                vec![("send".to_owned(), f64::MAX), ("wait".to_owned(), f64::MAX)],
+            ),
+        ] {
+            let details = Details {
+                time,
+                timings,
+                ..Default::default()
+            };
+            let mut rows = Vec::new();
+            timing(&details, &mut rows);
+            for row in rows {
+                if let Row::Timing {
+                    start, width, ms, ..
+                } = row
+                {
+                    assert!((0. ..=1.).contains(&start) && (0. ..=1.).contains(&width));
+                    assert!(start + width <= 1.0001 && ms.is_finite());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn review2878_build_stops_when_cancelled() {
+        let details = Details {
+            response_body: Some(Body {
+                mime: "application/json".into(),
+                text: Some(Text::Inline("[1,2]".into())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let path = std::path::Path::new("/nonexistent");
+        // Control: uncancelled, the body is shown.
+        let rows = build(path, &details, None, None, &AtomicBool::new(false)).unwrap();
+        assert!(rows.rows.contains(&Row::Text("  1,".into())));
+        assert!(matches!(
+            build(path, &details, None, None, &AtomicBool::new(true)),
+            Err(DetailError::Cancelled)
+        ));
     }
 }

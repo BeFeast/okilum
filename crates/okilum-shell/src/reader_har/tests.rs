@@ -263,7 +263,7 @@ fn har2836_arriving_batches_render_no_header_slots(cx: &mut TestAppContext) {
                     ..Default::default()
                 })
                 .collect();
-            har.apply(Message::Batch(entries, 0));
+            har.apply(Message::Batch(entries, 0, None));
             har.refresh(cx);
             cx.notify();
         });
@@ -294,17 +294,26 @@ fn har2836_details_load_lazily_cancel_stale_reads_and_keep_focus(cx: &mut TestAp
         visual.update(|window, cx| filter.read(cx).focus_handle(cx).is_focused(window))
     };
     assert!(focused(visual), "control: the filter has focus");
+    // Both selections in one update: the first worker has not run yet when
+    // the second selection cancels it, so it must stop rather than finish.
     let first_cancel = har.update(visual, |har, cx| {
         har.select(2, cx);
         assert!(matches!(har.detail, Some(Detail::Loading)));
-        har.detail_cancel.clone()
+        let first = har.detail_cancel.clone();
+        har.select(1, cx);
+        first
     });
-    har.update(visual, |har, cx| har.select(1, cx));
     assert!(
         first_cancel.load(Ordering::Relaxed),
         "a newer selection cancels the older read"
     );
     draw(visual);
+    // The superseded read never finished its parse and formatting: exactly
+    // one detail read (the current selection) ran to the end.
+    assert_eq!(
+        har.read_with(visual, |har, _| har.finished_reads.load(Ordering::Relaxed)),
+        1
+    );
     assert!(focused(visual), "a finished detail read never moves focus");
     let rows = har.read_with(visual, |har, _| match &har.detail {
         Some(Detail::Ready(rows)) => rows.rows.clone(),
@@ -573,4 +582,50 @@ fn har2836_viewer_sources_never_log_content() {
     // Control: the check sees a real logging call elsewhere.
     assert!(include_str!("../reader_files.rs").contains("diagnostic_error!"));
     let _ = SECRET;
+}
+
+/// Review of PR 2878 (P2): an equal-length replacement must not show new
+/// details under an old row; the list is read again with a notice.
+#[gpui::test]
+fn review2878_a_replaced_file_is_read_again_before_details(cx: &mut TestAppContext) {
+    let text = sample();
+    let (reader, visual, temp) = open(cx, &[("capture.har", &text)], "capture.har");
+    let view = har(&reader, visual);
+    let url = |view: &Entity<HarView>, visual: &mut VisualTestContext, index| {
+        view.read_with(visual, |har, _| {
+            har.entries.get(index).unwrap().url.to_string()
+        })
+    };
+    assert_eq!(url(&view, visual, 1), "https://api.example.test/v1/login");
+    let replaced = text.replace("api.example.test", "zpi.example.test");
+    assert_eq!(replaced.len(), text.len());
+    let path = temp.path().join("vault/capture.har");
+    std::fs::write(&path, &replaced).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .unwrap();
+    view.update(visual, |har, cx| har.select(1, cx));
+    draw(visual);
+    view.read_with(visual, |har, _| {
+        assert!(
+            har.detail.is_none() && har.selected.is_none(),
+            "no details from the new file under the old row"
+        );
+        assert!(har.notice.is_some());
+    });
+    assert_eq!(url(&view, visual, 1), "https://zpi.example.test/v1/login");
+    assert!(measured_bounds(visual, "har-banner").is_some());
+    // Selecting again reads the new revision.
+    view.update(visual, |har, cx| har.select(1, cx));
+    draw(visual);
+    view.read_with(visual, |har, _| match &har.detail {
+        Some(Detail::Ready(rows)) => assert!(rows.rows.iter().any(|row| matches!(
+            row,
+            Row::Field { name, value } if name.as_ref() == "URL" && value.as_ref() == "https://zpi.example.test/v1/login"
+        ))),
+        _ => panic!("details of the new revision"),
+    });
 }

@@ -165,7 +165,7 @@ fn details_read_one_entry_from_its_range() {
     let path = write(&dir, "c.har", CHROME.as_bytes());
     let (entries, _) = index_text(CHROME.as_bytes());
     let cancel = AtomicBool::new(false);
-    let d = details(&path, entries[0].span.clone(), &cancel).unwrap();
+    let d = details(&path, entries[0].span.clone(), None, &cancel).unwrap();
     assert_eq!(d.method, "GET");
     assert_eq!(d.url.shown(), "https://example.test/app?x=1&y=two");
     assert_eq!(d.request_headers.len(), 3);
@@ -187,11 +187,19 @@ fn details_read_one_entry_from_its_range() {
     );
     let body = d.response_body.unwrap();
     assert_eq!(body.mime, "text/html");
-    let bytes = body_bytes(&path, body.text.as_ref().unwrap(), false, 1024, &cancel).unwrap();
+    let bytes = body_bytes(
+        &path,
+        body.text.as_ref().unwrap(),
+        false,
+        1024,
+        None,
+        &cancel,
+    )
+    .unwrap();
     assert_eq!(bytes.bytes, b"<html><b>hello</b></html>\n");
     assert!(bytes.complete);
 
-    let d = details(&path, entries[1].span.clone(), &cancel).unwrap();
+    let d = details(&path, entries[1].span.clone(), None, &cancel).unwrap();
     let post = d.request_body.unwrap();
     assert_eq!(
         post.text.unwrap().shown(),
@@ -199,7 +207,15 @@ fn details_read_one_entry_from_its_range() {
     );
     let response = d.response_body.unwrap();
     assert!(response.base64());
-    let decoded = body_bytes(&path, response.text.as_ref().unwrap(), true, 1024, &cancel).unwrap();
+    let decoded = body_bytes(
+        &path,
+        response.text.as_ref().unwrap(),
+        true,
+        1024,
+        None,
+        &cancel,
+    )
+    .unwrap();
     assert_eq!(decoded.bytes, br#"{"error":"denied"}"#);
     assert!(decoded.complete && !decoded.invalid_base64);
 }
@@ -213,10 +229,10 @@ fn base64_prefix_decodes_whole_quanta_and_reports_invalid_text() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("unused");
     let text = Text::Inline(encoded);
-    let cut = body_bytes(&path, &text, true, 1000, &cancel).unwrap();
+    let cut = body_bytes(&path, &text, true, 1000, None, &cancel).unwrap();
     assert_eq!(cut.bytes, payload[..1000]);
     assert!(!cut.complete);
-    let all = body_bytes(&path, &text, true, 20_000, &cancel).unwrap();
+    let all = body_bytes(&path, &text, true, 20_000, None, &cancel).unwrap();
     assert_eq!(all.bytes, payload);
     assert!(all.complete);
     let bad = body_bytes(
@@ -224,6 +240,7 @@ fn base64_prefix_decodes_whole_quanta_and_reports_invalid_text() {
         &Text::Inline("not base64!".into()),
         true,
         100,
+        None,
         &cancel,
     )
     .unwrap();
@@ -254,7 +271,13 @@ fn non_utf8_bytes_are_replaced_not_fatal() {
     assert_eq!(&*entries[0].url, "https://e.test/\u{FFFD}\u{FFFD}a");
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "n.har", &har);
-    let d = details(&path, entries[0].span.clone(), &AtomicBool::new(false)).unwrap();
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(d
         .response_body
         .unwrap()
@@ -352,7 +375,13 @@ fn deep_values_inside_an_entry_do_not_recurse_without_bound() {
     assert_eq!(outcome.problem, None);
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "deep.har", &har);
-    let d = details(&path, entries[0].span.clone(), &AtomicBool::new(false)).unwrap();
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(d.method, "GET");
 }
 
@@ -370,7 +399,7 @@ fn long_values_stay_on_disk_as_ranges() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "l.har", har.as_bytes());
     let cancel = AtomicBool::new(false);
-    let d = details(&path, e.span.clone(), &cancel).unwrap();
+    let d = details(&path, e.span.clone(), None, &cancel).unwrap();
     // The whole URL is in the details even though the list keeps a prefix.
     assert_eq!(d.url, Text::Inline(url.clone()));
     let text = d.response_body.unwrap().text.unwrap();
@@ -379,12 +408,12 @@ fn long_values_stay_on_disk_as_ranges() {
     };
     assert_eq!(prefix.len(), INLINE_TEXT);
     assert_eq!(&har.as_bytes()[span.start as usize], &b'"');
-    let cut = body_bytes(&path, &text, false, 10, &cancel).unwrap();
+    let cut = body_bytes(&path, &text, false, 10, None, &cancel).unwrap();
     assert_eq!(
         (cut.bytes.as_slice(), cut.complete),
         (&b"xxxxxxxxxx"[..], false)
     );
-    let all = body_bytes(&path, &text, false, usize::MAX, &cancel).unwrap();
+    let all = body_bytes(&path, &text, false, usize::MAX, None, &cancel).unwrap();
     assert!(all.complete);
     assert_eq!(all.bytes.len(), INLINE_TEXT * 3 + 1 + 10);
     assert!(all.bytes.ends_with(b"x\nyyyyyyyyyy"));
@@ -494,7 +523,13 @@ fn a_100_mb_capture_indexes_with_bounded_memory_and_progressive_batches() {
     );
     // The last entry's details load lazily and keep the body on disk.
     let last = entries.last().unwrap();
-    let d = details(file.path(), last.span.clone(), &AtomicBool::new(false)).unwrap();
+    let d = details(
+        file.path(),
+        last.span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(
         d.url.shown(),
         format!("https://big.example.test/{}", count - 1)
@@ -532,4 +567,316 @@ fn kinds_follow_resource_type_then_mime() {
     assert_eq!(Kind::of("", "application/json"), Kind::Fetch);
     assert_eq!(Kind::of("ping", ""), Kind::Other);
     assert_eq!(Kind::of("", ""), Kind::Other);
+}
+
+// --- Review of PR 2878 (#2836): each case fails on head 9482eed4. ---
+
+/// P1: one ignored field holding 5,000 arrays of 5,000 zeros (~50 MB) must not
+/// become 25 M values; cookies with huge attribute lists hit the aggregate
+/// budget, which the details report.
+#[test]
+fn review2878_detail_parse_skips_unknown_fields_and_has_an_aggregate_budget() {
+    let mut har = String::from(
+        r#"{"log":{"entries":[{"request":{"method":"GET","url":"https://e.test/","cookies":["#,
+    );
+    let attributes: String = (0..5000).map(|i| format!(r#","a{i}":"v""#)).collect();
+    for i in 0..60 {
+        if i > 0 {
+            har.push(',');
+        }
+        har.push_str(&format!(r#"{{"name":"c{i}","value":"x"{attributes}}}"#));
+    }
+    har.push_str(r#"]},"_junk":["#);
+    let zeros = format!("[{}0]", "0,".repeat(4999));
+    for i in 0..5000 {
+        if i > 0 {
+            har.push(',');
+        }
+        har.push_str(&zeros);
+    }
+    har.push_str("]}]}}");
+    assert!(har.len() > 50_000_000);
+    let (entries, outcome) = index_text(har.as_bytes());
+    assert_eq!(outcome.problem, None);
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "budget.har", har.as_bytes());
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(d.method, "GET");
+    assert!(d.nodes <= MAX_DETAIL_NODES, "{} values built", d.nodes);
+    assert!(d.incomplete, "the budget ran out and the details say so");
+    // Control: the ignored field alone builds almost nothing.
+    let small =
+        r#"{"log":{"entries":[{"request":{"method":"GET","url":"u"},"_junk":[[0,0],[0,0]]}]}}"#;
+    let (entries, _) = index_text(small.as_bytes());
+    let path = write(&dir, "small.har", small.as_bytes());
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(d.nodes < 10 && !d.incomplete, "{}", d.nodes);
+}
+
+/// P1: decoded strings count against the byte budget.
+#[test]
+fn review2878_inline_strings_share_a_byte_budget() {
+    let value = "v".repeat(INLINE_TEXT - 1);
+    let headers: Vec<String> = (0..400)
+        .map(|i| format!(r#"{{"name":"h{i}","value":"{value}"}}"#))
+        .collect();
+    let har = format!(
+        r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"u","headers":[{}]}}}}]}}}}"#,
+        headers.join(",")
+    );
+    let (entries, _) = index_text(har.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "bytes.har", har.as_bytes());
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let kept: usize = d
+        .request_headers
+        .iter()
+        .map(|h| h.value.shown().len())
+        .sum();
+    assert!(kept <= MAX_DETAIL_BYTES, "{kept}");
+    assert!(d.incomplete);
+}
+
+/// P1: non-finite and out-of-range numbers are unknown, never a panic or a
+/// wrapped sum (debug test builds check overflow).
+#[test]
+fn review2878_huge_numbers_are_unknown_not_panics() {
+    let har = br#"{"log":{"entries":[{"time":1e999,"request":{"method":"GET","url":"u"},"response":{"status":1e300,"headersSize":1e19,"bodySize":1e19,"content":{"size":-1e400}},"timings":{"send":1e999,"wait":1,"receive":1e300}}]}}"#;
+    let (entries, outcome) = index_text(har);
+    assert_eq!(outcome.problem, None);
+    let e = &entries[0];
+    assert_eq!(
+        (e.time, e.status, e.transferred, e.size),
+        (None, None, None, None)
+    );
+    let near = br#"{"log":{"entries":[{"response":{"headersSize":9007199254740992,"bodySize":9007199254740992}}]}}"#;
+    let (entries, _) = index_text(near);
+    assert_eq!(entries[0].transferred, Some(2 * 9_007_199_254_740_992));
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "n.har", har);
+    let d = details(&path, e.span.clone(), None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(d.timings, [("wait".to_owned(), 1.)]);
+    assert_eq!((d.time, d.status), (None, None));
+    assert_eq!(d.response_body.unwrap().size, None);
+}
+
+/// P2: details refuse a file that is not the indexed revision.
+#[test]
+fn review2878_details_refuse_a_replaced_file_of_equal_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "r.har", CHROME.as_bytes());
+    let mut revision = None;
+    let mut entries = Vec::new();
+    let outcome = index_file(&path, &AtomicBool::new(false), &mut |batch| {
+        revision = batch.revision;
+        entries.extend(batch.entries)
+    })
+    .unwrap();
+    assert_eq!(outcome.revision, revision);
+    let cancel = AtomicBool::new(false);
+    // Control: the same revision reads.
+    assert!(details(&path, entries[0].span.clone(), revision, &cancel).is_ok());
+    let replaced = CHROME.replace("app?x=1", "zzz?x=1");
+    assert_eq!(replaced.len(), CHROME.len());
+    std::fs::write(&path, &replaced).unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .unwrap();
+    assert_eq!(
+        details(&path, entries[0].span.clone(), revision, &cancel),
+        Err(DetailError::Changed)
+    );
+    let body = Text::Long {
+        prefix: String::new(),
+        span: entries[0].span.clone(),
+    };
+    assert_eq!(
+        body_bytes(&path, &body, false, 10, revision, &cancel),
+        Err(DetailError::Changed)
+    );
+}
+
+/// P2: duplicate keys follow one rule (last wins) in the list and details.
+#[test]
+fn review2878_duplicate_keys_agree_between_list_and_details() {
+    let har = br#"{"log":{"entries":[{"request":{"method":"GET","method":"DELETE","url":"https://a.test/1"},"request":{"url":"https://b.test/2","method":"PUT"},"response":{"status":200,"_error":"x","content":{"size":5}},"response":{"status":404},"_error":null}]}}"#;
+    let (entries, _) = index_text(har);
+    let e = &entries[0];
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "dup.har", har);
+    let d = details(&path, e.span.clone(), None, &AtomicBool::new(false)).unwrap();
+    assert_eq!((&*e.method, d.method.as_str()), ("PUT", "PUT"));
+    assert_eq!(
+        (&*e.url, d.url.shown()),
+        ("https://b.test/2", "https://b.test/2")
+    );
+    assert_eq!((e.status, d.status), (Some(404), Some(404)));
+    // The later response has no content and no error.
+    assert_eq!(e.size, None);
+    assert!(d.response_body.is_none());
+    assert_eq!((&*e.error, d.error.as_str()), ("", ""));
+    let one = br#"{"log":{"entries":[{"request":{"method":"GET","method":"DELETE","url":"u"}}]}}"#;
+    let (entries, _) = index_text(one);
+    let path = write(&dir, "one.har", one);
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        (&*entries[0].method, d.method.as_str()),
+        ("DELETE", "DELETE")
+    );
+}
+
+/// P2: JSON grammar, not Rust float syntax; raw control bytes are damage.
+#[test]
+fn review2878_json_grammar_is_enforced() {
+    for (text, offset, message) in [
+        (
+            &br#"{"log":{"entries":[{"time":01}]}}"#[..],
+            27,
+            "Invalid number",
+        ),
+        (
+            br#"{"log":{"entries":[{"time":1.}]}}"#,
+            27,
+            "Invalid number",
+        ),
+        (
+            br#"{"log":{"entries":[{"time":.5}]}}"#,
+            27,
+            "Expected a value",
+        ),
+        (
+            br#"{"log":{"entries":[{"time":+1}]}}"#,
+            27,
+            "Expected a value",
+        ),
+        (
+            br#"{"log":{"entries":[{"time":1e}]}}"#,
+            27,
+            "Invalid number",
+        ),
+        (
+            b"{\"log\":{\"entries\":[{\"x\":\"a\tb\"}]}}",
+            26,
+            "Unescaped control character in a string",
+        ),
+    ] {
+        let (_, outcome) = index_text(text);
+        assert_eq!(
+            outcome.problem,
+            Some(Problem::Damaged(SyntaxError { offset, message })),
+            "{}",
+            String::from_utf8_lossy(text)
+        );
+    }
+    for valid in ["0", "-0", "1.5e-3", "1E+2", "123", "-0.0e0"] {
+        assert!(json_number(valid.as_bytes()), "{valid}");
+    }
+    let (entries, outcome) = index_text(br#"{"log":{"entries":[{"time":1.5e1}]}}"#);
+    assert_eq!((outcome.problem, entries[0].time), (None, Some(15.)));
+}
+
+/// Cancellation stops a detail read and a body decode before they finish.
+#[test]
+fn review2878_cancelled_detail_and_body_reads_stop() {
+    let body = "B".repeat(20_000_000);
+    let har = format!(
+        r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"u"}},"response":{{"status":200,"content":{{"mimeType":"text/plain","text":"{body}"}}}}}}]}}}}"#
+    );
+    let (entries, _) = index_text(har.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "c.har", har.as_bytes());
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        details(&path, entries[0].span.clone(), None, &cancelled),
+        Err(DetailError::Cancelled)
+    );
+    let text = Text::Long {
+        prefix: String::new(),
+        span: (har.find("BBB").unwrap() as u64 - 1)
+            ..(har.find("BBB").unwrap() + body.len() + 1) as u64,
+    };
+    assert_eq!(
+        body_bytes(&path, &text, false, usize::MAX, None, &cancelled),
+        Err(DetailError::Cancelled)
+    );
+    // Control: uncancelled, the same reads complete.
+    let open = AtomicBool::new(false);
+    assert!(details(&path, entries[0].span.clone(), None, &open).is_ok());
+    let all = body_bytes(&path, &text, false, usize::MAX, None, &open).unwrap();
+    assert_eq!(all.bytes.len(), body.len());
+}
+
+/// A detail parse notices cancellation between reads: flipping the flag after
+/// the first buffer of a 20 MB entry stops it after at most one more read.
+#[test]
+fn review2878_detail_parse_stops_mid_read_when_cancelled() {
+    struct Flip<'a> {
+        data: &'a [u8],
+        read: usize,
+        reads: usize,
+        cancel: &'a AtomicBool,
+    }
+    impl Read for Flip<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            if self.reads == 1 {
+                // The worker is cancelled while it is in the middle of the entry.
+                self.cancel.store(true, Ordering::Relaxed);
+            }
+            let n = buf.len().min(self.data.len() - self.read);
+            buf[..n].copy_from_slice(&self.data[self.read..self.read + n]);
+            self.read += n;
+            Ok(n)
+        }
+    }
+    let entry = format!(
+        r#"{{"request":{{"method":"GET","url":"u","postData":{{"text":"{}"}}}}}}"#,
+        "P".repeat(20_000_000)
+    );
+    let cancel = AtomicBool::new(false);
+    let mut reader = Flip {
+        data: entry.as_bytes(),
+        read: 0,
+        reads: 0,
+        cancel: &cancel,
+    };
+    assert_eq!(
+        parse_details(&mut reader, 0, &cancel),
+        Err(DetailError::Cancelled)
+    );
+    assert_eq!(reader.reads, 1, "no read after the cancellation");
+    assert!(
+        reader.read < entry.len() / 10,
+        "{} of {} bytes read",
+        reader.read,
+        entry.len()
+    );
+    // Control: the same entry parses completely without cancellation.
+    let open = AtomicBool::new(false);
+    let d = parse_details(entry.as_bytes(), 0, &open).unwrap();
+    assert_eq!(d.method, "GET");
 }

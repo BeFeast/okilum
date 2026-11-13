@@ -14,7 +14,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Files above this are not indexed; the request list says so and the source
 /// view keeps its own (smaller) limit.
@@ -27,8 +27,12 @@ pub const LIST_TEXT: usize = 2048;
 pub const INLINE_TEXT: usize = 64 * 1024;
 /// Headers, cookies, parameters or timings kept per detail list.
 pub const MAX_ITEMS: usize = 5_000;
-/// Containers nested deeper than this inside one entry are skipped, not built.
-const MAX_DETAIL_DEPTH: usize = 48;
+/// Values one detail parse may build, and decoded string bytes it may keep;
+/// the rest of the request is skipped (the details say so).
+pub const MAX_DETAIL_NODES: usize = 100_000;
+pub const MAX_DETAIL_BYTES: usize = 8 << 20;
+/// Durations above this (about 31 years) are not plausible and are unknown.
+pub const MAX_MS: f64 = 1e12;
 /// Bound for the iterative skipper; deeper input is reported as damaged.
 const MAX_DEPTH: usize = 4096;
 const BUFFER: usize = 256 * 1024;
@@ -221,6 +225,26 @@ pub struct Outcome {
     pub limited: bool,
     pub creator: Option<String>,
     pub problem: Option<Problem>,
+    /// The file as it was opened; details refuse a different file.
+    pub revision: Option<Revision>,
+}
+
+/// Identifies the file the byte ranges belong to: size and modification time
+/// of the opened file. Details and bodies are read only from that revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Revision {
+    pub len: u64,
+    pub modified: Option<SystemTime>,
+}
+
+impl Revision {
+    pub fn of(file: &std::fs::File) -> std::io::Result<Self> {
+        let meta = file.metadata()?;
+        Ok(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -230,6 +254,7 @@ pub struct Cancelled;
 pub struct Batch {
     pub entries: Vec<Entry>,
     pub offset: u64,
+    pub revision: Option<Revision>,
 }
 
 /// Indexes the HAR file at `path`, sending requests in batches to `sink`.
@@ -247,15 +272,29 @@ pub fn index_file(
             })
         }
     };
-    let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if bytes > MAX_FILE_BYTES {
+    let revision = match Revision::of(&file) {
+        Ok(revision) => revision,
+        Err(error) => {
+            return Ok(Outcome {
+                problem: Some(Problem::Unreadable(error.kind().to_string())),
+                ..Default::default()
+            })
+        }
+    };
+    if revision.len > MAX_FILE_BYTES {
         return Ok(Outcome {
-            problem: Some(Problem::TooLarge(bytes)),
+            problem: Some(Problem::TooLarge(revision.len)),
+            revision: Some(revision),
             ..Default::default()
         });
     }
     // A file that grows while it is read is indexed up to its size at open.
-    index(file.take(MAX_FILE_BYTES), cancel, sink)
+    let mut outcome = index(file.take(revision.len), cancel, &mut |mut batch| {
+        batch.revision = Some(revision);
+        sink(batch)
+    })?;
+    outcome.revision = Some(revision);
+    Ok(outcome)
 }
 
 /// Indexes HAR text from `reader`; see [`index_file`].
@@ -314,6 +353,7 @@ impl Indexer<'_> {
             (self.sink)(Batch {
                 entries: std::mem::take(&mut self.pending),
                 offset,
+                revision: None,
             });
         }
         self.flushed = Instant::now();
@@ -383,70 +423,146 @@ impl Indexer<'_> {
     }
 }
 
+/// Duplicate keys: the last occurrence wins, as in [`details`]; a repeated
+/// `request`, `response` or `content` object replaces the earlier one whole.
 fn index_entry<R: Read>(s: &mut Scanner<R>, entry: &mut Entry) -> Step {
     let mut started = String::new();
+    let mut entry_error: Box<str> = Box::default();
+    let mut response_error: Box<str> = Box::default();
     s.object(|s, key| match key {
         b"startedDateTime" => s.text_into(&mut started, 64),
         b"time" => {
-            entry.time = s.number()?;
+            entry.time = s.number()?.and_then(duration);
             Ok(())
         }
         b"_resourceType" => s.boxed(&mut entry.resource_type, 32),
-        b"_error" => s.boxed(&mut entry.error, 256),
-        b"request" => s.with_object(|s, key| match key {
-            b"method" => s.boxed(&mut entry.method, 32),
-            b"url" => {
-                let mut url = String::new();
-                entry.url_cut = !s.text_into_full(&mut url, LIST_TEXT)?;
-                entry.url = url.into();
-                Ok(())
-            }
-            _ => s.skip_value(),
-        }),
+        b"_error" => s.boxed(&mut entry_error, 256),
+        b"request" => {
+            entry.method = Box::default();
+            entry.url = Box::default();
+            entry.url_cut = false;
+            s.with_object(|s, key| match key {
+                b"method" => s.boxed(&mut entry.method, 32),
+                b"url" => {
+                    let mut url = String::new();
+                    entry.url_cut = !s.text_into_full(&mut url, LIST_TEXT)?;
+                    entry.url = url.into();
+                    Ok(())
+                }
+                _ => s.skip_value(),
+            })
+        }
         b"response" => {
-            let (mut headers, mut body) = (None, None);
+            entry.status = None;
+            entry.size = None;
+            entry.mime = Box::default();
+            response_error = Box::default();
+            let (mut headers, mut body, mut transfer) = (None, None, None);
             s.with_object(|s, key| match key {
                 b"status" => {
-                    entry.status = s.number()?.map(|n| n as i64);
+                    entry.status = s.number()?.and_then(whole);
                     Ok(())
                 }
                 b"headersSize" => {
-                    headers = s.number()?;
+                    headers = s.number()?.and_then(size);
                     Ok(())
                 }
                 b"bodySize" => {
-                    body = s.number()?;
+                    body = s.number()?.and_then(size);
                     Ok(())
                 }
                 b"_transferSize" => {
-                    entry.transferred = s.number()?.filter(|n| *n >= 0.).map(|n| n as i64);
+                    transfer = s.number()?.and_then(size);
                     Ok(())
                 }
-                b"_error" if entry.error.is_empty() => s.boxed(&mut entry.error, 256),
-                b"content" => s.with_object(|s, key| match key {
-                    b"size" => {
-                        entry.size = s.number()?.filter(|n| *n >= 0.).map(|n| n as i64);
-                        Ok(())
-                    }
-                    b"mimeType" => s.boxed(&mut entry.mime, 128),
-                    _ => s.skip_value(),
-                }),
+                b"_error" => s.boxed(&mut response_error, 256),
+                b"content" => {
+                    entry.size = None;
+                    entry.mime = Box::default();
+                    s.with_object(|s, key| match key {
+                        b"size" => {
+                            entry.size = s.number()?.and_then(size);
+                            Ok(())
+                        }
+                        b"mimeType" => s.boxed(&mut entry.mime, 128),
+                        _ => s.skip_value(),
+                    })
+                }
                 _ => s.skip_value(),
             })?;
-            if entry.transferred.is_none() {
-                let known = |n: Option<f64>| n.filter(|n| *n >= 0.).map(|n| n as i64);
-                entry.transferred = match (known(headers), known(body)) {
-                    (None, None) => None,
-                    (h, b) => Some(h.unwrap_or(0) + b.unwrap_or(0)),
-                };
-            }
+            entry.transferred = transfer.or(match (headers, body) {
+                (None, None) => None,
+                (h, b) => h.unwrap_or(0).checked_add(b.unwrap_or(0)),
+            });
             Ok(())
         }
         _ => s.skip_value(),
     })?;
+    entry.error = if entry_error.is_empty() {
+        response_error
+    } else {
+        entry_error
+    };
     entry.started_ms = parse_time(&started);
     entry.started = started.into();
     Ok(())
+}
+
+/// Largest integer an f64 holds exactly; larger counts are not plausible.
+const EXACT: f64 = 9_007_199_254_740_992.;
+
+/// An integer field (status); non-finite or out of range is unknown.
+pub fn whole(n: f64) -> Option<i64> {
+    (n.is_finite() && n.abs() <= EXACT).then_some(n as i64)
+}
+
+/// A byte count; negative (HAR's "unknown" -1), non-finite or out of range is unknown.
+pub fn size(n: f64) -> Option<i64> {
+    (n.is_finite() && (0. ..=EXACT).contains(&n)).then_some(n as i64)
+}
+
+/// A duration in milliseconds; negative, non-finite or implausible is unknown.
+pub fn duration(ms: f64) -> Option<f64> {
+    (ms.is_finite() && (0. ..=MAX_MS).contains(&ms)).then_some(ms)
+}
+
+/// JSON number grammar (RFC 8259): no leading zeros, digits after `.` and
+/// in the exponent, no `+` sign, no `inf`/`nan`.
+pub fn json_number(text: &[u8]) -> bool {
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while text.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    let mut i = 0;
+    if text.first() == Some(&b'-') {
+        i += 1;
+    }
+    match text.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            digits(&mut i);
+        }
+        _ => return false,
+    }
+    if text.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    if matches!(text.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(text.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == text.len()
 }
 
 /// `startedDateTime` (ISO 8601 / RFC 3339) as Unix milliseconds.
@@ -548,26 +664,161 @@ pub struct Details {
     pub timings: Vec<(String, f64)>,
     /// Lists cut at [`MAX_ITEMS`], with their full lengths.
     pub cut_lists: Vec<(&'static str, usize)>,
+    /// The parse reached [`MAX_DETAIL_NODES`] or [`MAX_DETAIL_BYTES`] and
+    /// skipped the rest of the request.
+    pub incomplete: bool,
+    /// Values built by the parse (bounded by [`MAX_DETAIL_NODES`]).
+    pub nodes: usize,
 }
 
-/// Reads one entry's details from `span` (an [`Entry::span`]).
-pub fn details(path: &Path, span: Range<u64>, cancel: &AtomicBool) -> Result<Details, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| e.kind().to_string())?;
-    file.seek(SeekFrom::Start(span.start))
-        .map_err(|e| e.kind().to_string())?;
-    let length = span.end.saturating_sub(span.start);
-    let mut s = Scanner::new(file.take(length), cancel, span.start);
+/// Why details or a body could not be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailError {
+    Cancelled,
+    /// The file is not the revision the request list was read from.
+    Changed,
+    Failed(String),
+}
+
+impl std::fmt::Display for DetailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DetailError::Cancelled => f.write_str("Cancelled."),
+            DetailError::Changed => f.write_str("The file changed on disk."),
+            DetailError::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Opens `path` at `span.start`, refusing a file other than `revision`.
+fn open_range(
+    path: &Path,
+    span: &Range<u64>,
+    revision: Option<Revision>,
+) -> Result<std::io::Take<std::fs::File>, DetailError> {
+    let failed = |e: std::io::Error| DetailError::Failed(e.kind().to_string());
+    let mut file = std::fs::File::open(path).map_err(failed)?;
+    // The opened handle is checked, so a later rename cannot swap the bytes.
+    if revision.is_some_and(|expected| Revision::of(&file).ok() != Some(expected)) {
+        return Err(DetailError::Changed);
+    }
+    file.seek(SeekFrom::Start(span.start)).map_err(failed)?;
+    Ok(file.take(span.end.saturating_sub(span.start)))
+}
+
+fn detail_error(stop: Stop, what: &str) -> DetailError {
+    match stop {
+        Stop::Cancelled => DetailError::Cancelled,
+        Stop::Syntax(error) => DetailError::Failed(format!("This {what} is damaged: {error}.")),
+        Stop::Io(error) => DetailError::Failed(error.kind().to_string()),
+        Stop::Limit | Stop::NotHar(_) => {
+            DetailError::Failed(format!("This {what} could not be read."))
+        }
+    }
+}
+
+/// Reads one entry's details from `span` (an [`Entry::span`]) of the file
+/// `revision` (from the index; `None` skips the check).
+pub fn details(
+    path: &Path,
+    span: Range<u64>,
+    revision: Option<Revision>,
+    cancel: &AtomicBool,
+) -> Result<Details, DetailError> {
+    let reader = open_range(path, &span, revision)?;
+    parse_details(reader, span.start, cancel)
+}
+
+/// Parses one entry from `reader`, positioned at file offset `base`.
+fn parse_details(
+    reader: impl Read,
+    base: u64,
+    cancel: &AtomicBool,
+) -> Result<Details, DetailError> {
+    let mut s = Scanner::new(reader, cancel, base);
+    let mut budget = Budget::default();
     let node = match s.peek() {
-        Ok(Some(b'{')) => s.node(0),
-        Ok(_) => return Err("The request is not a JSON object.".into()),
+        Ok(Some(b'{')) => s.node(Shape::Entry, &mut budget),
+        Ok(_) => {
+            return Err(DetailError::Failed(
+                "The request is not a JSON object.".into(),
+            ))
+        }
         Err(stop) => Err(stop),
     };
-    match node {
-        Ok(node) => Ok(Details::from_node(node)),
-        Err(Stop::Cancelled) => Err("Cancelled".into()),
-        Err(Stop::Syntax(error)) => Err(format!("This request is damaged: {error}.")),
-        Err(Stop::Io(error)) => Err(error.kind().to_string()),
-        Err(Stop::Limit | Stop::NotHar(_)) => Err("This request could not be read.".into()),
+    let mut details = Details::from_node(node.map_err(|stop| detail_error(stop, "request"))?);
+    details.incomplete = budget.exhausted;
+    details.nodes = budget.nodes;
+    Ok(details)
+}
+
+/// The aggregate allowance of one detail parse.
+#[derive(Default)]
+struct Budget {
+    nodes: usize,
+    bytes: usize,
+    exhausted: bool,
+}
+
+/// The parts of an entry the details show. Anything else is skipped while
+/// parsing and never built, so unknown fields cost no memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Entry,
+    Request,
+    Response,
+    Content,
+    PostData,
+    Pairs,
+    Pair,
+    Cookies,
+    Cookie,
+    Timings,
+    /// A scalar; a container here is skipped.
+    Value,
+}
+
+impl Shape {
+    fn field(self, key: &[u8]) -> Option<Shape> {
+        use Shape::*;
+        match (self, key) {
+            (Entry, b"request") => Some(Request),
+            (Entry, b"response") => Some(Response),
+            (Entry, b"timings") => Some(Timings),
+            (
+                Entry,
+                b"startedDateTime" | b"time" | b"serverIPAddress" | b"connection"
+                | b"_resourceType" | b"_error",
+            ) => Some(Value),
+            (Request, b"headers" | b"queryString") => Some(Pairs),
+            (Request, b"cookies") => Some(Cookies),
+            (Request, b"postData") => Some(PostData),
+            (Request, b"method" | b"url" | b"httpVersion" | b"bodySize") => Some(Value),
+            (Response, b"headers") => Some(Pairs),
+            (Response, b"cookies") => Some(Cookies),
+            (Response, b"content") => Some(Content),
+            (Response, b"status" | b"statusText" | b"httpVersion" | b"redirectURL" | b"_error") => {
+                Some(Value)
+            }
+            (Content, b"mimeType" | b"size" | b"encoding" | b"text" | b"comment") => Some(Value),
+            (PostData, b"params") => Some(Pairs),
+            (PostData, b"mimeType" | b"encoding" | b"text" | b"comment") => Some(Value),
+            (Pair, b"name" | b"value") => Some(Value),
+            (Cookie | Timings, _) => Some(Value),
+            _ => None,
+        }
+    }
+
+    fn item(self) -> Option<Shape> {
+        match self {
+            Shape::Pairs => Some(Shape::Pair),
+            Shape::Cookies => Some(Shape::Cookie),
+            _ => None,
+        }
+    }
+
+    fn object(self) -> bool {
+        !matches!(self, Shape::Pairs | Shape::Cookies | Shape::Value)
     }
 }
 
@@ -576,17 +827,20 @@ pub fn details(path: &Path, span: Range<u64>, cancel: &AtomicBool) -> Result<Det
 enum Node {
     Null,
     Bool(bool),
+    /// Always finite.
     Number(f64),
     Text(Text),
     Array(Vec<Node>, usize),
     Object(Vec<(String, Node)>),
-    Deep,
+    /// Not built: outside the shape or beyond the budget.
+    Skipped,
 }
 
 impl Node {
+    /// Duplicate keys: the last occurrence wins, as in the index.
     fn get(&self, key: &str) -> Option<&Node> {
         match self {
-            Node::Object(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Node::Object(fields) => fields.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
         }
     }
@@ -632,7 +886,7 @@ impl Details {
     fn from_node(entry: Node) -> Self {
         let mut details = Details {
             started: entry.text("startedDateTime"),
-            time: entry.number("time"),
+            time: entry.number("time").and_then(duration),
             server: entry.text("serverIPAddress"),
             connection: entry.text("connection"),
             resource_type: entry.text("_resourceType"),
@@ -654,10 +908,7 @@ impl Details {
             let params = details.pairs(post, "params", "Form fields");
             details.request_body = Some(Body {
                 mime: post.text("mimeType"),
-                size: request
-                    .number("bodySize")
-                    .filter(|n| *n >= 0.)
-                    .map(|n| n as i64),
+                size: request.number("bodySize").and_then(size),
                 encoding: post.text("encoding"),
                 text: match post.get("text") {
                     Some(Node::Text(text)) => Some(text.clone()),
@@ -668,7 +919,7 @@ impl Details {
             });
         }
         let response = entry.get("response").unwrap_or(&null);
-        details.status = response.number("status").map(|n| n as i64);
+        details.status = response.number("status").and_then(whole);
         details.status_text = response.text("statusText");
         details.response_version = response.text("httpVersion");
         details.redirect = response.text("redirectURL");
@@ -683,10 +934,7 @@ impl Details {
         {
             details.response_body = Some(Body {
                 mime: content.text("mimeType"),
-                size: content
-                    .number("size")
-                    .filter(|n| *n >= 0.)
-                    .map(|n| n as i64),
+                size: content.number("size").and_then(size),
                 encoding: content.text("encoding"),
                 text: match content.get("text") {
                     Some(Node::Text(text)) => Some(text.clone()),
@@ -697,11 +945,16 @@ impl Details {
             });
         }
         if let Some(Node::Object(timings)) = entry.get("timings") {
-            for (name, value) in timings.iter().take(MAX_ITEMS) {
-                if let Node::Number(ms) = value {
-                    if *ms >= 0. && name != "comment" {
-                        details.timings.push((name.clone(), *ms));
-                    }
+            for (index, (name, value)) in timings.iter().enumerate() {
+                // A repeated phase: the last occurrence wins.
+                if timings[index + 1..].iter().any(|(later, _)| later == name) {
+                    continue;
+                }
+                if let Some(ms) = match value {
+                    Node::Number(ms) if name != "comment" => duration(*ms),
+                    _ => None,
+                } {
+                    details.timings.push((name.clone(), ms));
                 }
             }
         }
@@ -772,8 +1025,9 @@ pub fn body_bytes(
     text: &Text,
     base64: bool,
     cap: usize,
+    revision: Option<Revision>,
     cancel: &AtomicBool,
-) -> Result<BodyBytes, String> {
+) -> Result<BodyBytes, DetailError> {
     // base64 expands 3 bytes to 4 characters; read whole quanta.
     let text_cap = if base64 { cap.div_ceil(3) * 4 } else { cap };
     let (raw, complete) = match text {
@@ -781,7 +1035,7 @@ pub fn body_bytes(
             let end = text.len().min(text_cap);
             (text.as_bytes()[..end].to_vec(), end == text.len())
         }
-        Text::Long { span, .. } => read_string(path, span.clone(), text_cap, cancel)?,
+        Text::Long { span, .. } => read_string(path, span.clone(), text_cap, revision, cancel)?,
     };
     if !base64 {
         return Ok(BodyBytes {
@@ -821,13 +1075,11 @@ fn read_string(
     path: &Path,
     span: Range<u64>,
     cap: usize,
+    revision: Option<Revision>,
     cancel: &AtomicBool,
-) -> Result<(Vec<u8>, bool), String> {
-    let mut file = std::fs::File::open(path).map_err(|e| e.kind().to_string())?;
-    file.seek(SeekFrom::Start(span.start))
-        .map_err(|e| e.kind().to_string())?;
-    let length = span.end.saturating_sub(span.start);
-    let mut s = Scanner::new(file.take(length), cancel, span.start);
+) -> Result<(Vec<u8>, bool), DetailError> {
+    let reader = open_range(path, &span, revision)?;
+    let mut s = Scanner::new(reader, cancel, span.start);
     let mut out = Vec::new();
     let result = (|| -> Step<bool> {
         if s.next()? != b'"' {
@@ -835,13 +1087,9 @@ fn read_string(
         }
         s.string(&mut out, cap, true)
     })();
-    match result {
-        Ok(complete) => Ok((out, complete)),
-        Err(Stop::Cancelled) => Err("Cancelled".into()),
-        Err(Stop::Syntax(error)) => Err(format!("This body is damaged: {error}.")),
-        Err(Stop::Io(error)) => Err(error.kind().to_string()),
-        Err(_) => Err("This body could not be read.".into()),
-    }
+    result
+        .map(|complete| (out, complete))
+        .map_err(|stop| detail_error(stop, "body"))
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1216,11 @@ impl<'c, R: Read> Scanner<'c, R> {
             let chunk = &self.buf[self.pos..self.len];
             let found = memchr::memchr2(b'"', b'\\', chunk);
             let plain = found.unwrap_or(chunk.len());
+            // JSON strings never hold raw control characters.
+            if let Some(control) = chunk[..plain].iter().position(|&b| b < 0x20) {
+                self.pos += control;
+                return Err(self.error("Unescaped control character in a string"));
+            }
             let room = keep.saturating_sub(out.len());
             if plain > room {
                 complete = false;
@@ -1063,40 +1316,39 @@ impl<'c, R: Read> Scanner<'c, R> {
         Ok(value)
     }
 
-    /// A number or literal starting at the next byte.
+    /// A number or literal starting at the next byte, by JSON grammar. A
+    /// number outside the f64 range is valid JSON but an unknown value.
     fn scalar(&mut self) -> Step<Node> {
         let start = self.offset();
-        let mut text = [0u8; 64];
-        let mut len = 0;
+        let mut text = Vec::new();
         while self.fill()? {
             let byte = self.buf[self.pos];
             if !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'+' | b'.')) {
                 break;
             }
-            if len == text.len() {
+            if text.len() == 4096 {
                 return Err(self.error("A number is too long"));
             }
-            text[len] = byte;
-            len += 1;
+            text.push(byte);
             self.pos += 1;
         }
-        let text = &text[..len];
         let error = |message| {
             Stop::Syntax(SyntaxError {
                 offset: start,
                 message,
             })
         };
-        match text {
+        match text.as_slice() {
             b"true" => Ok(Node::Bool(true)),
             b"false" => Ok(Node::Bool(false)),
             b"null" => Ok(Node::Null),
             b"" => Err(error("Expected a value")),
-            _ if matches!(text[0], b'-' | b'0'..=b'9') => std::str::from_utf8(text)
+            number if json_number(number) => Ok(std::str::from_utf8(number)
                 .ok()
                 .and_then(|t| t.parse::<f64>().ok())
-                .map(Node::Number)
-                .ok_or_else(|| error("Invalid number")),
+                .filter(|n| n.is_finite())
+                .map_or(Node::Null, Node::Number)),
+            [b'-' | b'0'..=b'9', ..] => Err(error("Invalid number")),
             _ => Err(error("Expected a value")),
         }
     }
@@ -1230,6 +1482,8 @@ impl<'c, R: Read> Scanner<'c, R> {
     /// As [`Self::text_into`]; false when the value was cut.
     fn text_into_full(&mut self, out: &mut String, keep: usize) -> Step<bool> {
         if self.peek()? != Some(b'"') {
+            // Last wins: a later non-string value replaces an earlier string.
+            out.clear();
             self.skip_value()?;
             return Ok(true);
         }
@@ -1259,29 +1513,35 @@ impl<'c, R: Read> Scanner<'c, R> {
         }
     }
 
-    /// Builds a detail value at the next byte.
-    fn node(&mut self, depth: usize) -> Step<Node> {
-        if depth > MAX_DETAIL_DEPTH {
+    /// Builds the detail value of `shape` at the next byte within `budget`.
+    /// Values outside the shape, and everything after the budget runs out,
+    /// are skipped without being built. The shape bounds the recursion.
+    fn node(&mut self, shape: Shape, budget: &mut Budget) -> Step<Node> {
+        if budget.exhausted {
             self.skip_value()?;
-            return Ok(Node::Deep);
+            return Ok(Node::Skipped);
+        }
+        budget.nodes += 1;
+        if budget.nodes >= MAX_DETAIL_NODES {
+            budget.exhausted = true;
         }
         match self.peek()? {
-            Some(b'{') => {
+            Some(b'{') if shape.object() => {
                 self.pos += 1;
                 let mut fields = Vec::new();
-                self.object(|s, key| {
-                    if fields.len() >= MAX_ITEMS {
-                        return s.skip_value();
+                self.object(|s, key| match shape.field(key) {
+                    Some(child) if fields.len() < MAX_ITEMS => {
+                        let value = s.node(child, budget)?;
+                        fields.push((String::from_utf8_lossy(key).into_owned(), value));
+                        Ok(())
                     }
-                    let key = String::from_utf8_lossy(key).into_owned();
-                    let value = s.node(depth + 1)?;
-                    fields.push((key, value));
-                    Ok(())
+                    _ => s.skip_value(),
                 })?;
                 Ok(Node::Object(fields))
             }
-            Some(b'[') => {
+            Some(b'[') if shape.item().is_some() => {
                 self.pos += 1;
+                let item = shape.item().unwrap_or(Shape::Value);
                 let mut items = Vec::new();
                 let mut total = 0usize;
                 self.array(|s| {
@@ -1289,21 +1549,30 @@ impl<'c, R: Read> Scanner<'c, R> {
                     if items.len() >= MAX_ITEMS {
                         return s.skip_value();
                     }
-                    items.push(s.node(depth + 1)?);
+                    items.push(s.node(item, budget)?);
                     Ok(())
                 })?;
                 Ok(Node::Array(items, total))
             }
+            Some(b'{' | b'[') => {
+                self.skip_value()?;
+                Ok(Node::Skipped)
+            }
             Some(b'"') => {
                 let start = self.offset();
                 self.pos += 1;
+                let keep = INLINE_TEXT.min(MAX_DETAIL_BYTES.saturating_sub(budget.bytes));
                 let mut bytes = Vec::new();
-                let complete = self.string(&mut bytes, INLINE_TEXT, false)?;
+                let complete = self.string(&mut bytes, keep, false)?;
+                budget.bytes += bytes.len();
                 let text = String::from_utf8(bytes)
                     .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
                 Ok(Node::Text(if complete {
                     Text::Inline(text)
                 } else {
+                    if keep < INLINE_TEXT {
+                        budget.exhausted = true;
+                    }
                     Text::Long {
                         prefix: text,
                         span: start..self.offset(),
