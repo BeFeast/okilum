@@ -36,10 +36,26 @@ predates a hosted workflow fails at once with `predates hosted check` (or
 ordinary manual runs use the same hosted jobs. Details and budgets:
 `docs/fast-runner.md`.
 
-### Beta on every main push (Oleg 05.11)
+### Beta on every main push (Oleg 05.11); Mac once a day (Oleg 13.11)
 
-Every push to `main` starts `linux-release`, `macos-release` and
-`windows-release` for **that exact commit**. There is no cron and no
+Every push to `main` starts `linux-release` and `windows-release` for **that
+exact commit**.
+
+**Mac:** `macos-release` no longer runs on push. It runs once a day at 05:00 UTC
+(07:00 Israel in winter, 08:00 in summer) and on manual dispatch. The daily run
+only selects: `hourly_beta.select` dispatches a run pinned to the newest main
+(`hourly_source`) unless that commit already is the Mac beta, and the pinned
+dispatch builds, signs, notarizes and publishes as a manual run always did. Its
+`shipping-status` job reports `macos-release / <job> (workflow_dispatch)` on the
+source, so the 09:00 Stable promotion finds that build. If main moves between
+the daily selection and the pinned run, that run dispatches the newest main
+instead of building nothing (no push run builds Mac). Publication before 09:00
+is typical but not guaranteed (summer leaves 60 min; the hosted bridge allows
+115 min plus queueing): if today's Mac beta is not published yet, the 09:00
+promotion takes the previous published Mac beta. Oleg's own Mac gets hourly
+local Sprint builds.
+
+For Linux and Windows there is no cron and no
 certification gate: merges are gated by the worker's exact-HEAD gh-check, and
 each platform's compile, package and signing run is the beta gate. The only
 skip is a pushed commit that already is that platform's beta (the actual feed
@@ -59,7 +75,7 @@ run that starts cancels every older queued push run of its workflow and keeps
 only the newest (`coalesce_queued_pushes`); a burst of merges costs one extra
 select at most. The beta is therefore at most one build behind main. The hosted GitHub producers follow: Linux
 AppImage producers share the GitHub group `forgejo-linux-beta`, and Mac beta
-signing runs share `macos-shipping-beta`, both cancelling the older run
+signing runs share `macos-shipping-beta` (now one daily run plus manual dispatches), both cancelling the older run
 (the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
 archive, AppImage-only and Windows re-sign dispatches keep their own Forgejo
 groups: a push never cancels their Forgejo run, and they never cancel a push
@@ -73,10 +89,11 @@ Its push starts the producer; existing completed or active producers are reused.
 A mismatched existing ref is an error, never force-updated. The branch is
 created only after the GitHub mirror has the pushed commit (bounded wait, 10
 minutes); the Mac bridge waits the same bound for the mirror. Mac and Windows
-build the pushed product source with their existing delivery tooling.
+build their product source with their existing delivery tooling.
 
-Push runs carry Forgejo's native statuses on their own commit, named
-`<platform>-release / <job> (push)`; the 09:00 Stable selector matches them.
+Linux and Windows push runs carry Forgejo's native statuses on their own
+commit, named `<platform>-release / <job> (push)`; the 09:00 Stable selector
+matches them. Every Mac build is a dispatch and reports its contexts itself.
 Manual dispatches report the same contexts with `(workflow_dispatch)` through
 `shipping-status`. Signing, channels and Stable promotion are unchanged;
 Windows push betas stay unsigned.
@@ -88,10 +105,10 @@ first-parent main; a dispatch whose snapshot is older than main re-dispatches
 itself pinned to main's tip.
 
 To observe it after a merge: within a minute of the push, Forgejo Actions shows
-three new `push` runs on that commit (`linux-release`, `macos-release`,
-`windows-release`) plus `github-mirror`. Linux creates
-`forgejo-linux-pr/hourly-<sha>` on GitHub and a `forgejo-linux` run there; Mac
-starts a `forgejo-macos-shipping` run. Each successful build dispatches
+two new `push` runs on that commit (`linux-release`, `windows-release`) plus
+`github-mirror`; `macos-release` appears at the next 05:00 UTC run. Linux creates
+`forgejo-linux-pr/hourly-<sha>` on GitHub and a `forgejo-linux` run there; the
+Mac daily run's pinned dispatch starts a `forgejo-macos-shipping` run. Each successful build dispatches
 `release-publish`, which then refreshes `releases` (the GitHub rolling Beta).
 A second merge before those finish shows the first commit's runs as cancelled.
 

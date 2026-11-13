@@ -1,11 +1,14 @@
-"""Beta delivery runs on main push only (no PR trigger, no cron); acceptance keeps its own schedule."""
+"""Linux/Windows beta runs on main push, the hosted Mac beta once a day (Oleg 13.11);
+no PR trigger; acceptance keeps its own schedule."""
 from pathlib import Path
 import re
 import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ['linux-release.yml', 'windows-diagnostic.yml', 'macos-release.yml']
+PUSH_BETAS = ['linux-release.yml', 'windows-diagnostic.yml']
+MAC_BETA = 'macos-release.yml'
+WORKFLOWS = [*PUSH_BETAS, MAC_BETA]
 
 
 def triggers(workflow):
@@ -14,8 +17,17 @@ def triggers(workflow):
 
 
 class ReleasePathsTests(unittest.TestCase):
+    def test_hosted_mac_beta_runs_once_a_day_and_on_dispatch(self):
+        # Oleg 13.11: no Mac beta per main push; one daily run from the newest main
+        # (05:00 UTC = 07:00/08:00 Israel, before the 09:00 Stable promotion).
+        events = triggers(MAC_BETA)
+        self.assertEqual(re.findall(r'^  ([\w_]+):', events, re.M), ['schedule', 'workflow_dispatch'])
+        self.assertIn("  schedule:\n    - cron: '0 5 * * *'\n", events)
+        self.assertNotIn('push', yaml.load((ROOT / '.forgejo/workflows' / MAC_BETA).read_text(),
+                                           Loader=yaml.BaseLoader)['on'])
+
     def test_prs_never_trigger_native_packaging(self):
-        for workflow in WORKFLOWS:
+        for workflow in PUSH_BETAS:
             with self.subTest(workflow=workflow):
                 self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(workflow), re.M),
                                  ['push', 'workflow_dispatch'])
@@ -33,9 +45,9 @@ class ReleasePathsTests(unittest.TestCase):
                              ['schedule', 'workflow_dispatch'])
 
     def test_push_delivery_has_no_path_filters_or_cron(self):
-        # Every main push ships, including UI/docs, packaging, release logic and
-        # shared dependencies. PR #2079 deliberately replaced all path-filtered builds.
-        for workflow in WORKFLOWS:
+        # Every main push ships Linux and Windows, including UI/docs, packaging, release
+        # logic and shared dependencies. PR #2079 deliberately replaced all path-filtered builds.
+        for workflow in PUSH_BETAS:
             with self.subTest(workflow=workflow):
                 events = triggers(workflow)
                 self.assertNotIn('schedule', events)
@@ -54,8 +66,9 @@ class ReleasePathsTests(unittest.TestCase):
                 self.assertIn('OKILUM_SOURCE: ${{ inputs.source }}', text)
 
     def test_full_acceptance_schedule_is_separate_from_main_beta(self):
-        for workflow in WORKFLOWS:
+        for workflow in PUSH_BETAS:
             self.assertNotIn('cron', triggers(workflow))
+        self.assertNotIn('2,6', triggers(MAC_BETA))
         acceptance = (ROOT / '.forgejo/workflows/ci.yml').read_text()
         self.assertIn("  schedule:\n    - cron: '0 4 * * *'", acceptance)
         self.assertIn('  workflow_dispatch:', acceptance)

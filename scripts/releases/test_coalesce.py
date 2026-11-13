@@ -113,8 +113,9 @@ class MacPublicationTests(unittest.TestCase):
         self.assert_macos_publication_workflow(workflow)
 
     def assert_macos_publication_workflow(self, workflow):
-        self.assertNotIn('schedule:', workflow)
-        self.assertIn('  push:\n    branches: [main]\n', workflow)
+        # Oleg 13.11: the hosted Mac beta runs once a day, not on every main push.
+        self.assertIn("on:\n  schedule:\n    - cron: '0 5 * * *'\n  workflow_dispatch:\n", workflow)
+        self.assertNotIn('  push:\n', workflow)
         select, release = workflow.split('\n  release:\n', 1)
         release, hosted = release.split('\n  hosted-artifact:\n', 1)
         hosted = hosted.split('\n  shipping-status:\n', 1)[0]
@@ -130,7 +131,7 @@ class MacPublicationTests(unittest.TestCase):
         self.assertIn('    needs: select\n', hosted)
         self.assertEqual([line.strip() for line in hosted.splitlines() if line.startswith('    if:')],
                          ["if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && "
-                          "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"])
+                          "github.event_name == 'workflow_dispatch'"])
         self.assertIn('    runs-on: bridge\n', hosted)
         self.assertNotIn('continue-on-error:', hosted)
         producer = hosted.split('      - name: Produce a source-pinned hosted shipping artifact\n', 1)[1].split(
@@ -149,7 +150,7 @@ class MacPublicationTests(unittest.TestCase):
                       "          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
                       "          FORGEJO_URL: ${{ github.server_url }}\n"
                       "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
-        self.assertIn("github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id", workflow)
+        self.assertIn("github.event_name == 'schedule' && 'daily' || inputs.hourly_source || github.run_id", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
@@ -160,8 +161,9 @@ class MacPublicationTests(unittest.TestCase):
         prefix, hosted = workflow.split('\n  hosted-artifact:\n', 1)
         for label, broken in [
             ('local reenabled', workflow.replace('    if: false # Corporate', '    if: true # Corporate')),
-            ('push removed', workflow.replace('  push:\n    branches: [main]\n', '', 1)),
-            ('cron restored', workflow.replace('  workflow_dispatch:', "  schedule:\n    - cron: '17 * * * *'\n  workflow_dispatch:", 1)),
+            ('push restored', workflow.replace('on:\n', 'on:\n  push:\n    branches: [main]\n', 1)),
+            ('daily run removed', workflow.replace("  schedule:\n    - cron: '0 5 * * *'\n", '', 1)),
+            ('hourly cron', workflow.replace("'0 5 * * *'", "'17 * * * *'", 1)),
             ('selector on Mac', workflow.replace('    runs-on: publish', '    runs-on: macos', 1)),
             ('hosted disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
                 "    if: needs.select.outputs.build == 'true'", '    if: false && true', 1)),

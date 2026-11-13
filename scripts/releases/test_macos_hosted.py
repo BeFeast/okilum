@@ -158,7 +158,7 @@ class ShippingPolicy(unittest.TestCase):
         fj = (root / '.forgejo/workflows/macos-release.yml').read_text()
         gh = (root / '.github/workflows/forgejo-macos-shipping.yml').read_text()
         self.assertIn('if: false # Corporate M4 CI prohibited', fj)
-        self.assertIn("needs.select.outputs.lane == 'hosted' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')", fj)
+        self.assertIn("needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'", fj)
         self.assertIn('python3 scripts/releases/macos-hosted.py route', fj)
         self.assertIn('persist-credentials: false', gh)
         self.assertNotIn('secrets.MIRROR_TOKEN', gh)
