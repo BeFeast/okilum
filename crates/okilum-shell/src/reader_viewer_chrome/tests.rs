@@ -1284,7 +1284,8 @@ fn code2809_actual_overflow_plan_collapses_view_labels_before_fold_actions(
 
 #[gpui::test]
 fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext) {
-    let source = "{\n  \"a\": {\n    \"b\": 1\n  },\n  \"c\": [1, 2]\n}\n";
+    // A JSON array in Formatted: four views plus five labelled actions.
+    let source = "[\n  {\"a\": {\"b\": 1}},\n  {\"a\": {\"b\": 2}}\n]\n";
     let (reader, visual, _temp) = fixture_with_files(cx, "fold.json", &[("fold.json", source)]);
     reader.update(visual, |reader, cx| {
         reader.panels.close(reader_layout::Panel::Notes);
@@ -1292,6 +1293,15 @@ fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext)
         reader_ui_state::set_toolbar_labels(true, cx);
         cx.notify();
     });
+    visual.simulate_resize(size(px(1700.), px(800.)));
+    visual.run_until_parked();
+    let code = reader.read_with(visual, |r, _| {
+        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+    });
+    code.update_in(visual, |p, w, cx| {
+        p.set_view(reader_code_file::View::Formatted, w, cx)
+    });
+    visual.run_until_parked();
     let ids = [
         "code-fold-all",
         "code-unfold-all",
@@ -1299,18 +1309,16 @@ fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext)
         "reader-edit",
         "viewer-open-with",
     ];
-    visual.simulate_resize(size(px(1600.), px(800.)));
-    visual.run_until_parked();
     let wide = ids.map(|id| {
         measured_bounds(visual, id)
-            .unwrap_or_else(|| panic!("{id} in the row at 1,600 px"))
+            .unwrap_or_else(|| panic!("{id} in the row at 1,700 px"))
             .size
             .width
     });
     for (id, width) in ids.into_iter().zip(wide) {
         assert!(
             width > px(40.),
-            "{id} carries its label at 1,600 px: {width:?}"
+            "{id} carries its label at 1,700 px: {width:?}"
         );
     }
     reader.update(visual, |_, cx| {
@@ -1326,12 +1334,31 @@ fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext)
     reader.update(visual, |_, cx| {
         reader_ui_state::set_toolbar_labels(true, cx)
     });
-    // Narrower: labels go before any action leaves the row.
-    visual.simulate_resize(size(px(1100.), px(800.)));
-    visual.run_until_parked();
-    for id in ids {
-        let bounds = measured_bounds(visual, id)
-            .unwrap_or_else(|| panic!("{id}: still in the row once labels are dropped"));
-        assert!(bounds.size.width <= px(40.), "{id} label yielded first");
+    // A constrained header with labels still enabled (document width at or
+    // above 1,400 px): labels yield first and every control stays in the row,
+    // inside the header. Below 1,400 px only the threshold would be tested.
+    let mut narrowed_somewhere = false;
+    for width in (1400..=1700).rev().step_by(10) {
+        visual.simulate_resize(size(px(width as f32), px(800.)));
+        visual.run_until_parked();
+        let header = measured_bounds(visual, "document-header").unwrap();
+        assert!(
+            header.size.width >= px(1400.),
+            "labels stay enabled at {width} px"
+        );
+        for (id, labelled) in ids.into_iter().zip(wide) {
+            let bounds = measured_bounds(visual, id).unwrap_or_else(|| {
+                panic!("{id} left the row at {width} px while labels could still yield")
+            });
+            assert!(
+                bounds.left() >= header.left() && bounds.right() <= header.right(),
+                "{id} stays inside the header at {width} px"
+            );
+            narrowed_somewhere |= bounds.size.width < labelled;
+        }
     }
+    assert!(
+        narrowed_somewhere,
+        "positive control: some label had to yield between 1,400 and 1,700 px"
+    );
 }

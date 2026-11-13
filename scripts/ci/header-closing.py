@@ -44,6 +44,7 @@ def run(label, args, control=None):
 CONTROLS = [
  ('fold-unlabelled', 'labels2813_fold_actions_carry_labels_and_yield_first'),
  ('ctrl-alt-letter', 'altgr2813_no_default_uses_ctrl_alt_letter'),
+ ('labels-after-overflow', 'labels2813_fold_actions_carry_labels_and_yield_first'),
 ]
 TESTS = ['labels2813_', 'altgr2813_']
 CONTROL_FN = '''#[cfg(test)]
@@ -56,6 +57,8 @@ try:
     edit('reader_code_file/toolbar.rs', '                action.labelled = true;\n                if let Availability::Disabled(reason) = &folding {',
          '                action.labelled = !crate::close2813_control("fold-unlabelled");\n                if let Availability::Disabled(reason) = &folding {')
     edit('main.rs', 'fn bind_keys(cx: &mut App) {', 'fn bind_keys(cx: &mut App) {\n    #[cfg(test)]\n    if crate::close2813_control("ctrl-alt-letter") {\n        cx.bind_keys([KeyBinding::new("ctrl-alt-k", reader_code_file::FoldAll, None)]);\n    }')
+    edit('reader_viewer_chrome.rs', '                step.priority = self.collapse_priority;', '                step.priority = if crate::close2813_control("labels-after-overflow") { 60_000 } else { self.collapse_priority };')
+    edit('reader_viewer_chrome/overflow.rs', '            steps.push(OverflowStep {\n                priority: 0,\n                width: minimum,', '            steps.push(OverflowStep {\n                priority: if crate::close2813_control("labels-after-overflow") { 60_000 } else { 0 },\n                width: minimum,')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))
     if '--audit' in sys.argv:
         print('CLOSE2813_MUTATION_ANCHORS_PASS', flush=True)

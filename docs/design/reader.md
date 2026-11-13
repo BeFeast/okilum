@@ -123,8 +123,9 @@ original combined titlebar and document controls:
   on the UI thread. Both targets remember Match case and unfold a hit. Enter and
   Shift+Enter step; Esc clears marks and retains the selected visible hit. Tree
   folds back Find-only branches outside that hit's ancestor path. The placeholder
-  is “Find in whole file” for paged text or a file over 4 MiB, “Find” otherwise. JSON Table retains
-  its own filter until the table step. Bare/native and ZIP hosts reserve an icon
+  is “Find in whole file” for paged text or a file over 4 MiB, “Find” otherwise, and
+  “Find in loaded rows” while a table (CSV, TSV, JSON array) is active (#2812).
+  Bare/native and ZIP hosts reserve an icon
   at compact widths and open the same field over their row. No legacy whole-file
   row or toolkit search strip remains in code/data read mode.
   Tree hides its synthetic document root and starts with top-level keys at
