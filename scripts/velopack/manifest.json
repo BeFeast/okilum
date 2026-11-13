@@ -4,8 +4,8 @@
   "archive_url": "https://static.crates.io/crates/velopack/velopack-1.2.161.crate",
   "archive_sha256": "4295172ffaad78f9adbab35f7ffefa97e4ceefee9d2c38bda37fdce4d6c66e5a",
   "patch": "hidden-delta.diff",
-  "patch_sha256": "ba6820c2e02173679e25515b0d52024399130138c9c476b089f475dcc2f9c6a0",
-  "tree_sha256": "e575a053ab7fd09de515c9e74af5c2c0627c55b762d1d4fc07fea2b4376e5973",
+  "patch_sha256": "a0dc8ac39ac6190e39176711532e1373498a29435cb7180eec5c8981cb30cb18",
+  "tree_sha256": "39949eb8348c098ebdc1331404cc11d1686eabf36bd324f615c33fa1e83e3d20",
   "generated_path": "vendor/velopack-1.2.161",
   "changed_files": [
     "Cargo.toml",

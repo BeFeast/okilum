@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use velopack::{
-    helper_replace::{native_path_for_test, publish_fault, recover, Fault},
+    helper_replace::{inspect, lock, native_path_for_test, publish_fault, recover, Fault},
     locator::{auto_locate_app_manifest, LocationContext, VelopackLocator},
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -44,50 +44,119 @@ fn hold(path: &Path) -> fs::File {
         .open(path)
         .unwrap()
 }
+fn quarantined(helper: &Path) -> Vec<Vec<u8>> {
+    let prefix = format!(
+        "{}.vpk-quarantine-",
+        helper.file_name().unwrap().to_string_lossy()
+    );
+    let mut found: Vec<Vec<u8>> = fs::read_dir(helper.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        })
+        .map(|path| fs::read(path).unwrap_or_default())
+        .collect();
+    found.sort();
+    found
+}
 fn assert_clean(helper: &Path) {
-    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-lock"] {
+    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-txn", ".vpk-lock"] {
         assert!(
-            !sibling(helper, suffix).exists(),
+            fs::symlink_metadata(sibling(helper, suffix)).is_err(),
             "transaction not cleaned: {suffix}"
         );
     }
 }
-
-#[test]
-fn documented_replacefile_errors_restore_original_and_return_error() {
-    for fault in [
-        Fault::RemoveReplaced,
-        Fault::MoveReplacement,
-        Fault::MoveReplacement2,
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let helper = fixture(root.path());
-        assert!(publish_fault(staged(&helper), &helper, fault).is_err());
-        assert_eq!(
-            fs::read(&helper).unwrap(),
-            OLD,
-            "original lost on documented failure"
-        );
-        assert_clean(&helper);
-        recover(&helper).unwrap();
-        assert_eq!(fs::read(&helper).unwrap(), OLD);
+/// Missing helper, original in the backup, new helper staged, valid record.
+fn interrupted_between_renames(root: &Path) -> PathBuf {
+    let helper = fixture(root);
+    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterBackupMove).is_err());
+    assert!(!helper.exists());
+    assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
+    assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
+    assert!(sibling(&helper, ".vpk-txn").exists());
+    helper
+}
+fn code(result: Result<(), velopack::Error>) -> i32 {
+    match result {
+        Err(velopack::Error::Io(error)) => error.raw_os_error().unwrap_or(0),
+        other => panic!("expected an OS error, got {other:?}"),
     }
 }
 
 #[test]
-fn refused_rollback_keeps_backup_and_verified_stage_then_startup_recovers() {
+fn documented_replacefile_errors_converge_to_a_verified_helper() {
+    for (fault, installed) in [
+        (Fault::RemoveReplaced, OLD),
+        (Fault::MoveReplacement, OLD),
+        (Fault::MoveReplacement2, NEW),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let helper = fixture(root.path());
+        let result = publish_fault(staged(&helper), &helper, fault);
+        // Success is decided by identity: only an installed new helper is Ok.
+        assert_eq!(result.is_ok(), installed == NEW, "{fault:?}: {result:?}");
+        assert_eq!(fs::read(&helper).unwrap(), installed, "{fault:?}");
+        assert_clean(&helper);
+        assert!(quarantined(&helper).is_empty(), "{fault:?}");
+    }
+}
+
+#[test]
+fn real_replacefile_partial_failures_report_plain_win32_codes() {
+    let mut codes = Vec::new();
+    for (hold_destination, hold_stage, occupy_backup) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let helper = fixture(root.path());
+        let held = hold_destination.then(|| hold(&helper));
+        let result = publish_fault(
+            staged(&helper),
+            &helper,
+            Fault::Real {
+                hold_stage,
+                occupy_backup,
+            },
+        );
+        drop(held);
+        let code = code(result);
+        println!("REAL_REPLACEFILEW_CODE destination={hold_destination} stage={hold_stage} backup={occupy_backup} code={code}");
+        assert!(
+            code > 0 && code < 0x1_0000,
+            "ReplaceFileW error must be a plain Win32 code, not an HRESULT: {code:#x}"
+        );
+        assert_eq!(fs::read(&helper).unwrap(), OLD);
+        assert_clean(&helper);
+        codes.push(code);
+    }
+    assert!(
+        codes.iter().any(|code| [1175, 1176, 1177].contains(code)),
+        "no real partial-failure code observed: {codes:?}"
+    );
+}
+
+#[test]
+fn refused_promotion_keeps_every_copy_then_startup_recovers() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
-    assert!(publish_fault(staged(&helper), &helper, Fault::RollbackBlocked).is_err());
+    assert!(publish_fault(staged(&helper), &helper, Fault::PromotionBlocked).is_err());
     assert!(!helper.exists());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
+    assert!(sibling(&helper, ".vpk-txn").exists());
     // The app executable lives in the current directory; discovery walks back to the root.
     let locator = auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(
         root.path().join("current").join("okilum.exe"),
     ))
     .unwrap();
-    assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
+    assert_eq!(fs::read(locator.get_update_path()).unwrap(), NEW);
     assert_clean(&helper);
 }
 
@@ -95,20 +164,89 @@ fn refused_rollback_keeps_backup_and_verified_stage_then_startup_recovers() {
 fn startup_recovers_every_interruption_state_including_real_replace_backup() {
     for (fault, installed) in [
         (Fault::LeaveBeforeSwap, OLD),
-        (Fault::LeaveAfterBackupMove, OLD),
+        (Fault::LeaveAfterBackupMove, NEW),
         (Fault::LeaveAfterSwap, NEW),
     ] {
         let root = tempfile::tempdir().unwrap();
         let helper = fixture(root.path());
         assert!(publish_fault(staged(&helper), &helper, fault).is_err());
+        assert!(sibling(&helper, ".vpk-txn").exists(), "{fault:?}");
         if matches!(fault, Fault::LeaveAfterSwap) {
             // This is the real Windows API, not a fake backup. Passing NULL to
             // ReplaceFileW makes this assertion fail even when replacement works.
             assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
         }
         let locator = locate(root.path()).unwrap();
-        assert_eq!(fs::read(locator.get_update_path()).unwrap(), installed);
+        assert_eq!(
+            fs::read(locator.get_update_path()).unwrap(),
+            installed,
+            "{fault:?}"
+        );
         assert_clean(&helper);
+    }
+}
+
+#[test]
+fn planted_or_truncated_copies_are_never_promoted_or_deleted_while_helper_missing() {
+    // A truncated backup next to a verified stage: the stage wins and the
+    // backup is set aside intact, never promoted and never deleted.
+    let root = tempfile::tempdir().unwrap();
+    let helper = interrupted_between_renames(root.path());
+    fs::write(sibling(&helper, ".vpk-backup"), b"trunc").unwrap();
+    recover(&helper).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_eq!(quarantined(&helper), vec![b"trunc".to_vec()]);
+    assert_clean(&helper);
+
+    // Neither copy matches the record: nothing is promoted or removed.
+    let root = tempfile::tempdir().unwrap();
+    let helper = interrupted_between_renames(root.path());
+    fs::write(sibling(&helper, ".vpk-backup"), b"planted backup").unwrap();
+    fs::write(sibling(&helper, ".vpk-stage"), b"planted stage").unwrap();
+    assert!(recover(&helper).is_err());
+    assert!(locate(root.path()).is_err());
+    assert!(!helper.exists());
+    assert_eq!(
+        fs::read(sibling(&helper, ".vpk-backup")).unwrap(),
+        b"planted backup"
+    );
+    assert_eq!(
+        fs::read(sibling(&helper, ".vpk-stage")).unwrap(),
+        b"planted stage"
+    );
+    assert!(inspect(&helper).unwrap().contains("missing"));
+
+    // A stage without any transaction record is never promoted.
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    fs::remove_file(&helper).unwrap();
+    fs::write(sibling(&helper, ".vpk-stage"), NEW).unwrap();
+    assert!(recover(&helper).is_err());
+    assert!(!helper.exists());
+    assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
+}
+
+#[test]
+fn linked_candidates_with_matching_bytes_are_never_promoted() {
+    for kind in ["hardlink", "symlink"] {
+        let root = tempfile::tempdir().unwrap();
+        let helper = interrupted_between_renames(root.path());
+        let stage = sibling(&helper, ".vpk-stage");
+        let backup = sibling(&helper, ".vpk-backup");
+        // Bytes that match the record, reachable only through a link.
+        let elsewhere = root.path().join("elsewhere.bin");
+        fs::write(&elsewhere, NEW).unwrap();
+        fs::remove_file(&stage).unwrap();
+        match kind {
+            "hardlink" => fs::hard_link(&elsewhere, &stage).unwrap(),
+            _ => std::os::windows::fs::symlink_file(&elsewhere, &stage)
+                .expect("symbolic link creation (CI runs elevated)"),
+        }
+        fs::write(&backup, b"planted backup").unwrap();
+        assert!(recover(&helper).is_err(), "{kind} promoted");
+        assert!(!helper.exists(), "{kind}");
+        assert!(fs::symlink_metadata(&stage).is_ok(), "{kind} link removed");
+        assert_eq!(fs::read(&elsewhere).unwrap(), NEW, "{kind} target changed");
     }
 }
 
@@ -117,13 +255,12 @@ fn first_install_and_interrupted_first_install_publish_the_staged_helper() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
     fs::remove_file(&helper).unwrap();
-    // No destination: publication is a no-clobber rename; ReplaceFileW is not used.
+    // No destination: publication is a verified rename by handle.
     publish_fault(staged(&helper), &helper, Fault::RemoveReplaced).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
 
-    // The helper vanished after staging (e.g. an interrupted first install):
-    // the stage is a complete, flushed extraction and is the only copy.
+    // The helper vanished after staging: the record proves the stage.
     fs::write(&helper, OLD).unwrap();
     assert!(publish_fault(staged(&helper), &helper, Fault::LeaveBeforeSwap).is_err());
     fs::remove_file(&helper).unwrap();
@@ -133,7 +270,7 @@ fn first_install_and_interrupted_first_install_publish_the_staged_helper() {
 }
 
 #[test]
-fn present_destination_resolves_every_leftover_combination_without_blocking() {
+fn present_destination_sets_unverifiable_leftovers_aside_without_blocking() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
     for (backup, stage) in [(true, false), (false, true), (true, true)] {
@@ -143,11 +280,12 @@ fn present_destination_resolves_every_leftover_combination_without_blocking() {
         if stage {
             fs::write(sibling(&helper, ".vpk-stage"), NEW).unwrap();
         }
-        // The destination only receives complete files by rename, so it wins.
         recover(&helper).unwrap();
         assert_eq!(fs::read(&helper).unwrap(), OLD, "{backup} {stage}");
         assert_clean(&helper);
     }
+    // Without a record nothing is provably obsolete: set aside, never deleted.
+    assert_eq!(quarantined(&helper).len(), 4);
 }
 
 #[test]
@@ -167,23 +305,29 @@ fn refused_cleanup_never_disables_discovery_of_an_existing_helper() {
 }
 
 #[test]
-fn refused_startup_restore_retains_every_copy_and_the_next_launch_recovers() {
+fn refused_startup_restore_retains_every_copy_and_recovers_in_session() {
     let root = tempfile::tempdir().unwrap();
-    let helper = fixture(root.path());
-    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterBackupMove).is_err());
-    let backup = sibling(&helper, ".vpk-backup");
-    let held = hold(&backup);
+    let helper = interrupted_between_renames(root.path());
+    let held = hold(&sibling(&helper, ".vpk-stage"));
     match locate(root.path()) {
         Err(velopack::Error::NotInstalled(_)) => {}
         Err(error) => panic!("refused recovery must not replace discovery: {error}"),
-        Ok(_) => panic!("helper cannot be located while its only original is held"),
+        Ok(_) => panic!("helper cannot be located while its verified copy is held"),
     }
     assert!(!helper.exists());
-    assert_eq!(fs::read(&backup).unwrap(), OLD);
+    let diagnostic = inspect(&helper).unwrap();
+    assert!(diagnostic.contains("missing"), "{diagnostic}");
+    assert!(
+        !diagnostic.contains(&*root.path().to_string_lossy()),
+        "diagnostic must not name paths: {diagnostic}"
+    );
+    assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
     drop(held);
-    let locator = locate(root.path()).unwrap();
-    assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
+    // Same process, no relaunch: the retry succeeds.
+    recover(&helper).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert!(inspect(&helper).is_none());
     assert_clean(&helper);
 }
 
@@ -204,9 +348,10 @@ fn long_path_replacement_and_recovery_do_not_require_host_max_path_opt_in() {
     recover(&helper).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
-    assert!(publish_fault(staged(&helper), &helper, Fault::RollbackBlocked).is_err());
+    assert!(publish_fault(staged(&helper), &helper, Fault::PromotionBlocked).is_err());
     recover(&helper).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_clean(&helper);
 }
 
 #[test]
@@ -234,6 +379,61 @@ fn killed_process_does_not_lose_recovery_files_and_next_locator_restores_helper(
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
     let locator = locate(root.path()).unwrap();
-    assert_eq!(fs::read(locator.get_update_path()).unwrap(), OLD);
+    assert_eq!(fs::read(locator.get_update_path()).unwrap(), NEW);
+    assert_clean(&helper);
+}
+
+#[test]
+fn helper_lock_excludes_publication_from_another_process() {
+    const CHILD: &str = "OKILUM_HELPER_LOCK_HOLDER_ROOT";
+    if let Some(root) = std::env::var_os(CHILD) {
+        let root = PathBuf::from(root);
+        let _lock = lock(&root.join("Update.exe")).unwrap();
+        fs::write(root.join("locked"), b"").unwrap();
+        while !root.join("release").exists() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "helper_lock_excludes_publication_from_another_process",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, root.path())
+        .spawn()
+        .unwrap();
+    while !root.path().join("locked").exists() {
+        assert!(child.try_wait().unwrap().is_none(), "lock holder exited");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let result = publish_fault(
+        staged(&helper),
+        &helper,
+        Fault::Real {
+            hold_stage: false,
+            occupy_backup: false,
+        },
+    );
+    assert!(
+        result.is_err(),
+        "publication ran while another process held the helper lock"
+    );
+    assert_eq!(fs::read(&helper).unwrap(), OLD);
+    fs::write(root.path().join("release"), b"").unwrap();
+    assert!(child.wait().unwrap().success());
+    publish_fault(
+        staged(&helper),
+        &helper,
+        Fault::Real {
+            hold_stage: false,
+            occupy_backup: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
 }

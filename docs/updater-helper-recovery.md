@@ -2,90 +2,94 @@
 
 Independent of the Reader ZIP/Inbox SQLite migration (PR 2853). Velopack stays
 at 1.2.161 on its own ZIP 8 major; the fixes live in the checksum-pinned vendor
-patch (`scripts/velopack/hidden-delta.diff`, `manifest.json`). They address
-weaknesses that exist with any ZIP version: the helper was truncated before its
-replacement had been read, the final package was published before the helper
-was replaced, a failed helper extraction was logged and ignored, and stub
-extraction errors were dropped.
+patch (`scripts/velopack/hidden-delta.diff`, `manifest.json`) and in Okilum's
+Windows updater. They address weaknesses that exist with any ZIP version: the
+helper was truncated before its replacement had been read, the final package
+was published before the helper was replaced, a failed helper extraction was
+logged and ignored, and stub extraction errors were dropped.
 
 ## Extraction and admission
 
-Every extraction is written to a random temporary file beside the destination.
-It is read to the end through ZIP CRC and declared-size checks and flushed
-before publication starts. Any read, CRC, size or write failure removes only
-that temporary file; the installed helper is never opened for writing.
+Every extraction is written to a random temporary file beside the destination,
+read to the end through ZIP CRC and declared-size checks and flushed before
+publication starts. A read, CRC, size or write failure removes only that
+temporary file; the installed helper is never opened for writing.
 
 `download_updates` prepares `Update.exe` from the downloaded `.partial` before
 renaming it to the final `.nupkg`, so a failed helper preparation never leaves
-an admitted package. A cached final package (for example one left by the old
-SDK) re-runs preparation. `get_update_pending_restart` returns a package only
-when the installed helper is byte-identical to that package's helper entry, and
-Okilum repeats that check before it reports Ready and again before restart.
+an admitted package. A cached final package re-runs preparation.
+`get_update_pending_restart` returns a package only when the installed helper
+is byte-identical to that package's helper entry; Okilum repeats that check
+before it reports Ready.
 
-## On-disk transaction
+## Transaction and recovery: identity, not names
 
-Names beside the destination: `Update.exe.vpk-stage`, `Update.exe.vpk-backup`
-and `Update.exe.vpk-lock`. An exclusive (share mode 0) handle on the lock file
-serializes publication and recovery across processes; the file is deleted after
-release, which cannot succeed while another process holds it, so extraction
-leaves no files behind.
+Names beside the destination: `Update.exe.vpk-txn` (record), `.vpk-stage`,
+`.vpk-backup`, `.vpk-lock`, and `.vpk-quarantine-<id>` for anything set aside.
 
-Invariant: a file only ever acquires the destination, stage or backup name
-through an atomic rename of a complete file. The stage is the verified, flushed
-extraction (no-clobber `MoveFileExW`, write-through); the backup is the original
-renamed by `ReplaceFileW`, which always receives the backup name (never NULL)
-with flags 0, so ACL and merge errors fail. ReplaceFileW gives the new helper
-the destination's DACL, owner, attributes and streams; the native metadata
-control showed that copying attributes to the stage beforehand is unnecessary.
-With no destination (first install) the stage is renamed into place.
+1. An exclusive (share mode 0) handle on the lock file serializes publication,
+   recovery and helper launch across processes. The lock file is deleted after
+   release, which cannot succeed while another process holds it.
+2. Before anything is renamed, a record with the size and SHA-256 of the new
+   helper and of the original is written to a temporary file, flushed, and
+   renamed into place atomically.
+3. The verified temporary file is renamed to the stage and re-verified through
+   a handle. With a destination, `ReplaceFileW` runs with a mandatory backup
+   name and flags 0 (ACL/merge errors fail); it carries the destination's DACL,
+   owner, attributes and streams. Without one (first install) the stage is
+   renamed through its verified handle.
+4. Publication succeeds only if the destination is then the new helper by hash.
 
-Recovery runs at the start of every publication, after any failed publication,
-and in the locator before it checks that `Update.exe` exists:
+Recovery opens every candidate with `FILE_FLAG_OPEN_REPARSE_POINT`, accepts
+only single-link regular files (no reparse points, symlinks, junctions or hard
+links), hashes it through a handle that denies writers and deleters, and
+renames or deletes it through that same handle. Nothing changes attributes
+through a name.
 
-| Destination | Backup | Stage | Action |
-| --- | --- | --- | --- |
-| missing | present | any | rename the backup (the original) back |
-| missing | absent | present | rename the stage into place |
-| missing | absent | absent | nothing to recover |
-| present | any | any | keep the destination; delete the other files while holding it open |
+| Destination | Action |
+| --- | --- |
+| missing, valid record | promote the stage if it matches the new helper, else the backup if it matches the original |
+| missing, no matching copy or no valid record | promote nothing, delete nothing, report "needs repair" |
+| present, matches the record (or no record) | keep it; delete leftovers that match the record, set unverifiable ones aside |
+| present, matches neither side while a verified copy exists | set it aside and promote the verified copy |
 
-A refused rename leaves every file in place and returns an error. Nothing is
-deleted while the destination is missing. Locators log a recovery failure and
-continue discovery, so an existing `Update.exe` is always found, and a later
-launch retries recovery. Every state therefore converges to exactly one
-complete helper. A helper that does not match the pending package is never
-admitted; the next download prepares it again.
+Nothing is deleted while the destination is missing, and nothing unverified is
+ever promoted. windows-result reports Win32 errors as HRESULTs (0x8007xxxx);
+they are normalized to plain codes so 1175/1176/1177 are matched as documented
+by [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew).
+A native test drives real ReplaceFileW partial failures (held destination,
+held stage, occupied backup name) and requires plain Win32 codes.
 
-[ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
-partial failures:
+Locators run recovery before checking that `Update.exe` exists and only log a
+refused recovery, so an existing helper is always found. Native API paths use
+the extended-length prefix regardless of the host's long-path policy.
 
-| Error | Documented state | Recovery |
-| --- | --- | --- |
-| 1175 `ERROR_UNABLE_TO_REMOVE_REPLACED` | both files keep their names | keep original, delete stage |
-| 1176 `ERROR_UNABLE_TO_MOVE_REPLACEMENT` | with a backup name, both keep their names | keep original, delete stage |
-| 1177 `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2` | original renamed to the backup | rename the backup back, delete stage |
+## Okilum
 
-All of them still fail package admission. Native API paths use the
-extended-length prefix (`\\?\`, `\\?\UNC\`) regardless of the host's long-path
-policy. The protocol targets process interruption and documented API failures;
-it does not claim power-loss durability beyond flushing before each rename.
+- **Needs repair is not Portable.** If the installation cannot be located while
+  recovery files remain, Settings says updates are paused because the update
+  helper needs repair, shows a path-free diagnostic line, and offers Retry now
+  plus the Releases link to reinstall. The state is not cached for the session:
+  Okilum retries recovery in the background every minute.
+- **Verify and launch are one cross-process transaction.** Restart takes the
+  helper lock, re-verifies that the pending package is unchanged and that the
+  helper matches it, launches the helper, then releases the lock. Another
+  Okilum process cannot replace the helper in between; the running helper
+  keeps its image afterwards.
 
 ## Controls
 
-`helper-replacement-tests` is a vendor feature enabled only by `okilum-http`'s
-dev-dependency; it compiles a fault seam that drives the production state
-machine with injected ReplaceFileW errors 1175/1176/1177, a refused rollback,
-and interruptions before the swap, between ReplaceFileW's renames and after a
-real swap. A child process aborts mid-transaction and a fresh locator recovers.
-Other tests cover a locked target opened without `FILE_SHARE_DELETE`/`WRITE`,
-failure followed by retry, a protected explicit DACL with non-default
-attributes, paths over 400 characters, first installs, leftovers next to an
-existing helper, refused cleanup and refused restore during discovery, stale
-and same-size corrupted helpers, and stub extraction failure.
+`.github/workflows/updater-helper-compat.yml` runs on native Windows:
 
-`.github/workflows/updater-helper-compat.yml` runs them on native Windows.
-`scripts/ci/updater-helper-controls.py` then reverts each fix separately,
-rebuilds and requires the named test to fail. `scripts/ci/updater-ready-guard.py`
-does the same for Okilum's own Ready check. The workflow then applies real,
-checksum-pinned Full and Delta packages from the beta feed with fallback
-forbidden and compares installed payload hashes.
+- `scripts/ci/updater-helper-controls.py`: the vendor suites, then 23 revert
+  controls, each reverting one fix, rebuilding and requiring its named test to
+  fail; then the real checksum-pinned beta Full and Delta packages are applied
+  with fallback forbidden and installed payload hashes compared.
+- `scripts/ci/updater-ready-guard.py`: Okilum's Ready check, launch lock,
+  launch re-verification and repair classification, each with a compiled
+  revert control.
+
+The fault seam (`helper-replacement-tests` vendor feature) is enabled only by
+`okilum-http`'s dev-dependency. The protocol targets process interruption and
+documented API failures; installed-VM power-cut evidence is collected
+separately (see the PR).

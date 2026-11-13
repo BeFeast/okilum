@@ -6,7 +6,19 @@ use std::sync::{
 };
 use velopack::{UpdateCheck, UpdateManager, UpdateOptions};
 
-static AVAILABLE: OnceLock<bool> = OnceLock::new();
+/// How this copy can update. Not cached once and for all: a helper that needs
+/// repair is re-evaluated in this session (#2855 review).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Install {
+    Installed,
+    Portable,
+    /// Update.exe is missing or unusable while its recovery files remain.
+    /// Carries a path-free diagnostic.
+    Repair(String),
+}
+static INSTALL: Mutex<Option<(Install, std::time::Instant)>> = Mutex::new(None);
+static REPAIRING: AtomicBool = AtomicBool::new(false);
+const REPAIR_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 static BETA: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static READY: OnceLock<Mutex<super::ready::Ready>> = OnceLock::new();
@@ -119,12 +131,15 @@ fn restart_verified(cx: &mut gpui::App) {
                 }
                 RestartStep::ProtectEditors => crate::reader_update_restart::protect_editors(cx)?,
                 RestartStep::PersistState => crate::reader_ui_state::prepare_for_restart(cx)?,
-                RestartStep::ArmUpdater => manager.wait_exit_then_apply_updates(
-                    asset,
-                    false,
-                    true,
-                    std::mem::take(&mut restart_args),
-                )?,
+                RestartStep::ArmUpdater => arm_verified(&manager, asset, || {
+                    manager.wait_exit_then_apply_updates(
+                        asset,
+                        false,
+                        true,
+                        std::mem::take(&mut restart_args),
+                    )?;
+                    Ok(())
+                })?,
                 RestartStep::Quit => {
                     super::restart_feedback::record(
                         "accepted",
@@ -252,18 +267,101 @@ fn manager_with_token(
     )
 }
 
+/// A portable copy has no helper transaction. A helper that cannot be located
+/// while its recovery files remain needs repair, which is not "Portable".
+fn classify(portable: Option<bool>, pending: Option<&str>, detail: Option<&str>) -> Install {
+    match (portable, pending) {
+        (Some(false), _) => Install::Installed,
+        (Some(true), _) | (None, None) => Install::Portable,
+        (None, Some(pending)) => Install::Repair(match detail {
+            Some(detail) => format!("{pending}; last error: {detail}"),
+            None => pending.to_owned(),
+        }),
+    }
+}
+
+fn helper_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.join("Update.exe"))
+}
+
+/// Locating the installation already ran helper recovery; when it still fails
+/// and recovery files remain, retry recovery once more and keep its error.
+fn evaluate(beta: bool) -> Install {
+    if let Ok(manager) = manager_for(beta) {
+        return classify(Some(manager.get_is_portable()), None, None);
+    }
+    let Some(helper) = helper_path() else {
+        return Install::Portable;
+    };
+    let Some(pending) = velopack::helper_replace::inspect(&helper) else {
+        return Install::Portable;
+    };
+    let detail = match velopack::helper_replace::recover(&helper) {
+        Ok(()) => match manager_for(beta) {
+            Ok(manager) => return classify(Some(manager.get_is_portable()), None, None),
+            Err(_) => "the update helper could not be located".to_owned(),
+        },
+        Err(error) => error.to_string(),
+    };
+    classify(None, Some(&pending), Some(&detail))
+}
+
+fn install() -> Install {
+    let mut cached = INSTALL.lock().unwrap();
+    if let Some((state, since)) = cached.as_ref() {
+        if matches!(state, Install::Repair(_)) && since.elapsed() >= REPAIR_RETRY {
+            retry_repair_in_background();
+        }
+        return state.clone();
+    }
+    let saved = crate::reader_history::state_directory()
+        .ok()
+        .and_then(|root| std::fs::read_to_string(root.join("windows-update-channel")).ok());
+    let beta = super::windows_feed::follows_beta(saved.as_deref());
+    BETA.store(beta, Ordering::Relaxed);
+    let state = evaluate(beta);
+    *cached = Some((state.clone(), std::time::Instant::now()));
+    state
+}
+
+fn retry_repair_in_background() {
+    if REPAIRING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| {
+        retry_repair();
+        REPAIRING.store(false, Ordering::Release);
+    });
+}
+
+/// Re-run helper recovery now. Returns whether updating is available again.
+pub(super) fn retry_repair() -> bool {
+    let state = evaluate(BETA.load(Ordering::Relaxed));
+    let installed = state == Install::Installed;
+    if let Install::Repair(detail) = &state {
+        crate::reader_diagnostics::network_failure(
+            "Windows update helper",
+            &anyhow::anyhow!("needs repair: {detail}"),
+        );
+    }
+    *INSTALL.lock().unwrap() = Some((state, std::time::Instant::now()));
+    installed
+}
+
+/// Path-free reason why updating is paused, when the helper needs repair.
+pub(super) fn repair_needed() -> Option<String> {
+    match install() {
+        Install::Repair(detail) => Some(detail),
+        _ => None,
+    }
+}
+
 /// Whether this copy is installed and which channel it follows. Read on first
 /// use, so the diagnostic line written before `start` already says how Okilum
 /// was installed (#1273).
 fn settings() -> bool {
-    *AVAILABLE.get_or_init(|| {
-        let saved = crate::reader_history::state_directory()
-            .ok()
-            .and_then(|root| std::fs::read_to_string(root.join("windows-update-channel")).ok());
-        let beta = super::windows_feed::follows_beta(saved.as_deref());
-        BETA.store(beta, Ordering::Relaxed);
-        manager_for(beta).is_ok_and(|m| !m.get_is_portable())
-    })
+    install() == Install::Installed
 }
 
 pub(super) fn start() {
@@ -388,6 +486,35 @@ fn prepared_status(
         "The update helper is not prepared for this package. Check for updates again."
     );
     Ok(super::status::CheckStatus::Ready)
+}
+
+/// Verify and launch under the helper's cross-process transaction lock: no
+/// other Okilum process can replace Update.exe between this re-verification
+/// and the launch. The running helper keeps its image afterwards.
+fn arm_verified(
+    manager: &UpdateManager,
+    asset: &velopack::VelopackAsset,
+    launch: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let _helper = manager.lock_update_helper().map_err(|error| {
+        anyhow::anyhow!(
+            "Another Okilum window is preparing an update. Try Restart now again in a moment ({error})"
+        )
+    })?;
+    reverify(manager, asset)?;
+    launch()
+}
+
+/// The pending package is still this asset and the helper still matches it.
+fn reverify(manager: &UpdateManager, asset: &velopack::VelopackAsset) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        manager
+            .get_update_pending_restart()
+            .is_some_and(|pending| identity(&pending) == identity(asset)),
+        "The downloaded update changed. Check for updates again."
+    );
+    prepared_status(manager, asset)?;
+    Ok(())
 }
 
 fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStatus> {
@@ -534,7 +661,7 @@ mod tests {
     use std::{
         fs,
         io::{Cursor, Write},
-        path::Path,
+        path::{Path, PathBuf},
         sync::mpsc::Sender,
     };
     use velopack::{
@@ -562,8 +689,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ready_requires_helper_bytes_for_this_package() {
+    struct Fixture {
+        _root: tempfile::TempDir,
+        helper: PathBuf,
+        asset: VelopackAsset,
+        manager: UpdateManager,
+    }
+    /// An installed copy at 1.0.0 with a cached 2.0.0 package and a stale helper.
+    fn fixture() -> Fixture {
         let root = tempfile::tempdir().unwrap();
         let current = root.path().join("current");
         let packages = root.path().join("packages");
@@ -573,11 +706,14 @@ mod tests {
         fs::write(&manifest, "<package><metadata><id>ReadyFixture</id><version>1.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>").unwrap();
         let helper = root.path().join("Update.exe");
         fs::write(&helper, b"stale helper").unwrap();
-        let asset = VelopackAsset {
-            FileName: "ReadyFixture-2.0.0-full.nupkg".into(),
-            ..Default::default()
-        };
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "ReadyFixture.nuspec",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(b"<package><metadata><id>ReadyFixture</id><version>2.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>").unwrap();
         zip.start_file(
             "lib/app/Squirrel.exe",
             zip::write::SimpleFileOptions::default()
@@ -585,6 +721,13 @@ mod tests {
         )
         .unwrap();
         zip.write_all(b"prepared helper").unwrap();
+        let asset = VelopackAsset {
+            PackageId: "ReadyFixture".into(),
+            Version: "2.0.0".into(),
+            Type: "Full".into(),
+            FileName: "ReadyFixture-2.0.0-full.nupkg".into(),
+            ..Default::default()
+        };
         fs::write(
             packages.join(&asset.FileName),
             zip.finish().unwrap().into_inner(),
@@ -603,14 +746,18 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(
-            prepared_status(&manager, &asset).is_err(),
-            "stale helper must not be Ready"
-        );
-        manager
+        Fixture {
+            _root: root,
+            helper,
+            asset,
+            manager,
+        }
+    }
+    fn prepare(f: &Fixture) {
+        f.manager
             .download_updates(
                 &velopack::UpdateInfo {
-                    TargetFullRelease: asset.clone(),
+                    TargetFullRelease: f.asset.clone(),
                     BaseRelease: None,
                     DeltasToTarget: vec![],
                     IsDowngrade: false,
@@ -618,14 +765,82 @@ mod tests {
                 None,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn ready_requires_helper_bytes_for_this_package() {
+        let f = fixture();
+        assert!(
+            prepared_status(&f.manager, &f.asset).is_err(),
+            "stale helper must not be Ready"
+        );
+        prepare(&f);
         assert_eq!(
-            prepared_status(&manager, &asset).unwrap(),
+            prepared_status(&f.manager, &f.asset).unwrap(),
             super::super::status::CheckStatus::Ready
         );
-        fs::write(&helper, b"prepared helpeX").unwrap();
+        fs::write(&f.helper, b"prepared helpeX").unwrap();
         assert!(
-            prepared_status(&manager, &asset).is_err(),
+            prepared_status(&f.manager, &f.asset).is_err(),
             "same-size changed helper must not be Ready"
+        );
+    }
+
+    #[test]
+    fn helper_launch_is_locked_and_reverified_across_processes() {
+        let f = fixture();
+        prepare(&f);
+        let pending = f.manager.get_update_pending_restart().unwrap();
+        // Another process holds the helper transaction: no launch.
+        let held = velopack::helper_replace::lock(&f.helper).unwrap();
+        let mut launched = 0;
+        assert!(
+            arm_verified(&f.manager, &pending, || {
+                launched += 1;
+                Ok(())
+            })
+            .is_err(),
+            "launch must wait for the helper lock"
+        );
+        assert_eq!(launched, 0, "helper launched without the helper lock");
+        drop(held);
+        // Another process replaced the helper after the earlier verification.
+        fs::write(&f.helper, b"prepared helpeX").unwrap();
+        assert!(
+            arm_verified(&f.manager, &pending, || {
+                launched += 1;
+                Ok(())
+            })
+            .is_err(),
+            "launch must re-verify the helper under the lock"
+        );
+        assert_eq!(launched, 0, "changed helper was launched");
+        prepare(&f);
+        arm_verified(&f.manager, &pending, || {
+            launched += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(launched, 1);
+    }
+
+    #[test]
+    fn helper_needing_repair_is_not_reported_as_portable() {
+        assert_eq!(classify(Some(false), None, None), Install::Installed);
+        assert_eq!(classify(Some(true), None, None), Install::Portable);
+        assert_eq!(classify(None, None, None), Install::Portable);
+        let repair = classify(
+            None,
+            Some("update helper missing; recovery files kept: staged copy"),
+            Some("IO error: sharing violation"),
+        );
+        assert_eq!(
+            repair,
+            Install::Repair(
+                "update helper missing; recovery files kept: staged copy; last error: IO error: sharing violation"
+                    .into()
+            ),
+            "a helper needing repair must not be called Portable"
         );
     }
 }
