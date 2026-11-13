@@ -36,8 +36,13 @@ remains; no system hard limits change. No data/native gate is added to fast CI.
 
 ## Full acceptance
 
-Full Forgejo CI, Brain, Inbox and compatibility suites run at 22:05 UTC Tuesday
-and Saturday (the nights before Wednesday/Sunday Stable), or workflow_dispatch.
+Full Forgejo CI runs daily at 04:00 UTC (06:00 Israel in winter), a fixed hour
+while the shared heavy host is idle, before the 09:00 Stable; it gates Stable
+only (Oleg 13.11 evening). Budgets are unchanged. Each heavy job samples the
+host's 5-minute load average (`scripts/ci/host-load.py`); a failing job whose
+peak exceeded twice the core count is reported as **no verdict**, not as a code
+failure, in its summary and outputs. Brain, Inbox and compatibility suites run
+at 22:05 UTC Tuesday and Saturday. All of them also run on workflow_dispatch.
 The full Linux and native macOS scripts keep their complete suites. AppImage
 native installation tests reuse the original main beta artifact on the nightly
 GitHub run, retaining producer/source/digest identity. Nightly does not fabricate
