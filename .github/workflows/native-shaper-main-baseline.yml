@@ -1,0 +1,132 @@
+# Diagnostic only: unchanged main app/shaping code, real Windows test shaper.
+name: native-shaper-main-baseline
+on:
+  push:
+    branches: ['toolbar-shaper-baseline/**']
+permissions:
+  contents: read
+concurrency:
+  group: native-shaper-main-baseline-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  PYTHONIOENCODING: utf-8
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-shaper-baseline-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+  windows-shaper:
+    needs: icon
+    runs-on: windows-2022
+    timeout-minutes: 75
+    steps:
+      - name: Preserve exact source bytes
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: native-shaper-main-baseline-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}-${{ github.sha }}
+          restore-keys: |
+            native-shaper-main-baseline-v1-${{ runner.os }}-
+            data-view-native-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-shaper-baseline-icon
+          path: target/windows-dist
+      - name: Prove unchanged production code and geometry assertions
+        shell: bash
+        run: |
+          python3 - <<'PYPROOF'
+          import hashlib, json, os, pathlib, re, subprocess
+          base='718d23d8b799bd50569ba0b8ff40e784afb4ed0c'
+          file='crates/okilum-shell/src/platform/shaped_line_cache.rs'
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True,encoding='utf-8').strip()
+          assert head==os.environ['OKILUM_SOURCE_COMMIT']
+          subprocess.run(['git','diff','--exit-code',base,'--','crates','Cargo.toml','Cargo.lock','rust-toolchain.toml','scripts/vendor-setup.sh','scripts/patches','scripts/gpui-pre-windows-setup.py','scripts/gpui-pre-windows',':(exclude)'+file],check=True)
+          old=subprocess.check_output(['git','show',base+':'+file],text=True,encoding='utf-8')
+          new=pathlib.Path(file).read_text(encoding='utf-8')
+          def protected(text):
+              return (text[:text.index('    /// The platform shaper the application uses')],text[text.index('    fn font(family:'):])
+          diagnostic=r'                // BEGIN NATIVE_SHAPER_BASELINE_DIAGNOSTICS\n.*?                // END NATIVE_SHAPER_BASELINE_DIAGNOSTICS\n'
+          normalized,removed=re.subn(diagnostic,'',new,flags=re.S)
+          assert removed==1, 'exactly one failure-only diagnostic block is allowed'
+          assert protected(old)==protected(normalized), 'production source and every existing geometry assertion must remain byte-identical'
+          receipt={'baseline_source':base,'diagnostic_source':head,'compiler_pin':pathlib.Path('rust-toolchain.toml').read_text(encoding='utf-8'),'scope':'only the native test helper, real-glyph positive and failure-only bounded comparisons; no production code, thresholds, stack or shaping changes','helper_file_sha256':hashlib.sha256(pathlib.Path(file).read_bytes()).hexdigest(),'lock_sha256':hashlib.sha256(pathlib.Path('Cargo.lock').read_bytes()).hexdigest()}
+          pathlib.Path(os.environ['RUNNER_TEMP'],'native-shaper-baseline-source.json').write_text(json.dumps(receipt,indent=2),encoding='utf-8')
+          print(json.dumps(receipt,indent=2))
+          PYPROOF
+      - name: Prepare unchanged native dependencies
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          rustc --version --verbose
+      - name: Require the full Windows edit2803 inventory
+        shell: bash
+        run: |
+          export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness edit2803_ -- --list 2>&1 | tee "$RUNNER_TEMP/native-shaper-baseline-inventory.log"
+          python3 - <<'PYINVENTORY'
+          import os,pathlib
+          log=pathlib.Path(os.environ['RUNNER_TEMP'],'native-shaper-baseline-inventory.log').read_text(encoding='utf-8')
+          names=[line[:-6] for line in log.splitlines() if line.endswith(': test')]
+          assert len(names)==12,(len(names),names)
+          for required in ['edit2803_incremental_ascii_geometry_matches_the_real_platform_shaper','edit2803_hebrew_insert_into_multi_mb_ascii_retires_incremental_state','edit2803_native_shaper_fixture_uses_real_glyphs_and_main_thread_initialization']:
+              assert any(name.endswith('::'+required) for name in names),required
+          print('MAIN718_WINDOWS_EDIT2803_INVENTORY',len(names))
+          PYINVENTORY
+      - name: Run real DirectWrite geometry and all existing edit guards
+        shell: bash
+        run: |
+          export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          cargo test --locked -p okilum-shell --bin okilum --features data-view-native-harness edit2803_ -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/native-shaper-baseline-edit2803.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-shaper-main718-Windows
+          path: |
+            ${{ runner.temp }}/native-shaper-baseline-source.json
+            ${{ runner.temp }}/native-shaper-baseline-inventory.log
+            ${{ runner.temp }}/native-shaper-baseline-edit2803.log
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.cache.outputs.cache-primary-key }}

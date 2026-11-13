@@ -388,6 +388,10 @@ mod tests {
 
     /// The platform shaper the application uses (with the Windows repair).
     fn platform_shaper() -> Arc<dyn PlatformTextSystem> {
+        // Match the toolbar test fixture: Windows headless is NoopTextSystem.
+        #[cfg(windows)]
+        let platform = gpui_platform::current_platform(false);
+        #[cfg(not(windows))]
         let platform = gpui_platform::current_platform(true);
         let shaper = super::super::text_platform::shaper(platform.text_system());
         // The bundled fonts the reader uses (brand::load_fonts); scripts they
@@ -402,6 +406,68 @@ mod tests {
             ])
             .unwrap();
         shaper
+    }
+
+    #[test]
+    fn edit2803_native_shaper_fixture_uses_real_glyphs_and_main_thread_initialization() {
+        let shaper = platform_shaper();
+        let mono = shaper.font_id(&gpui::font("Cascadia Code")).unwrap();
+        let a = shaper.glyph_for_char(mono, 'a').unwrap();
+        let b = shaper.glyph_for_char(mono, 'b').unwrap();
+        assert_ne!(
+            a, b,
+            "the fixture must use real font glyphs, not NoopTextSystem"
+        );
+    }
+
+    fn report_native_geometry(comparison: &str, a: &LineLayout, b: &LineLayout) {
+        let glyph = |g: &ShapedGlyph| (g.id, g.index, g.position, g.is_emoji);
+        let mut left = a.runs.iter().flat_map(|r| &r.glyphs).map(glyph);
+        let mut right = b.runs.iter().flat_map(|r| &r.glyphs).map(glyph);
+        let mut ordinal = 0usize;
+        let first_glyph_difference = loop {
+            let a = left.next();
+            let b = right.next();
+            if a != b {
+                break Some((ordinal, a, b));
+            }
+            if a.is_none() {
+                break None;
+            }
+            ordinal += 1;
+        };
+        let first_run_difference = a
+            .runs
+            .iter()
+            .zip(&b.runs)
+            .enumerate()
+            .find_map(|(i, (a, b))| {
+                (a.font_id != b.font_id || a.glyphs.len() != b.glyphs.len()).then_some((
+                    i,
+                    a.font_id,
+                    b.font_id,
+                    a.glyphs.len(),
+                    b.glyphs.len(),
+                ))
+            });
+        diagnostic_error!(
+            "NATIVE_SHAPER_COMPARE comparison={comparison} exact={} left_len={} right_len={} left_font_size={:?} right_font_size={:?} left_width={:?} right_width={:?} left_ascent={:?} right_ascent={:?} left_descent={:?} right_descent={:?} left_runs={} right_runs={} left_glyphs={} right_glyphs={} first_run_difference={first_run_difference:?} first_glyph_difference={first_glyph_difference:?}",
+            native_ascii::exact_geometry(a, b),
+            a.len,
+            b.len,
+            a.font_size,
+            b.font_size,
+            a.width,
+            b.width,
+            a.ascent,
+            b.ascent,
+            a.descent,
+            b.descent,
+            a.runs.len(),
+            b.runs.len(),
+            a.runs.iter().map(|r| r.glyphs.len()).sum::<usize>(),
+            b.runs.iter().map(|r| r.glyphs.len()).sum::<usize>(),
+        );
     }
 
     fn font(family: &str, weight: FontWeight, style: FontStyle) -> Font {
@@ -643,6 +709,17 @@ mod tests {
                 text.insert(at, 'x');
                 let actual = cache.layout_line(&text, px(16.), &runs(&text));
                 let direct = shaper.layout_line(&text, px(16.), &runs(&text));
+                // BEGIN NATIVE_SHAPER_BASELINE_DIAGNOSTICS
+                if !native_ascii::exact_geometry(&actual, &direct) {
+                    diagnostic_error!(
+                        "NATIVE_SHAPER_MISMATCH source_bytes={} edit_offset={at}",
+                        text.len()
+                    );
+                    report_native_geometry("cache-vs-native", &actual, &direct);
+                    let direct_again = shaper.layout_line(&text, px(16.), &runs(&text));
+                    report_native_geometry("native-vs-native", &direct, &direct_again);
+                }
+                // END NATIVE_SHAPER_BASELINE_DIAGNOSTICS
                 assert!(
                     native_ascii::exact_geometry(&actual, &direct),
                     "all native coordinates, widths, glyphs and indices must match exactly"
