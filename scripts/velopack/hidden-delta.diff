@@ -66,7 +66,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,959 @@
+@@ -0,0 +1,1052 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -103,7 +103,7 @@
 +#[cfg(windows)]
 +pub use native::{inspect, lock, recover, HelperLock};
 +#[cfg(all(windows, feature = "helper-replacement-tests"))]
-+pub use native::{native_path_for_test, publish_fault, Fault};
++pub use native::{abandon_staging, native_path_for_test, publish_fault, Fault};
 +
 +#[cfg(windows)]
 +mod native {
@@ -429,19 +429,43 @@
 +        }
 +    }
 +
++    /// Volume serial number + file index of an open file: which file a name
++    /// refers to, independent of the name.
++    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
++    struct FileId {
++        volume: u32,
++        index: u64,
++    }
++    impl FileId {
++        fn of(file: &fs::File) -> io::Result<Self> {
++            let mut info = BY_HANDLE_FILE_INFORMATION::default();
++            unsafe { GetFileInformationByHandle(handle(file), &mut info) }.map_err(os)?;
++            Ok(Self { volume: info.dwVolumeSerialNumber, index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64 })
++        }
++        fn text(&self) -> String {
++            format!("{}:{}", self.volume, self.index)
++        }
++        fn parse(text: &str) -> Option<Self> {
++            let (volume, index) = text.split_once(':')?;
++            Some(Self { volume: volume.parse().ok()?, index: index.parse().ok()? })
++        }
++    }
++
 +    /// Artifacts this code created next to the helper; the only ones ever swept.
 +    #[derive(Clone, PartialEq, Debug)]
 +    enum Owned {
-+        /// A temporary extraction or record file, deleted once no process holds it.
-+        Temporary(String),
++        /// A temporary whose name carries its transaction id. Reserved (None)
++        /// before creation, then bound to the created file's identity; only a
++        /// file with exactly that identity, held by no process, is deleted.
++        Temporary(String, Option<FileId>),
 +        /// A verified obsolete copy that could not be deleted yet; deleted only
-+        /// while it is still a plain file with exactly this identity.
++        /// while it is still a plain file with exactly this content identity.
 +        Obsolete(String, Id),
 +    }
 +    impl Owned {
 +        fn text(&self) -> String {
 +            match self {
-+                Self::Temporary(name) => format!("tmp {name}"),
++                Self::Temporary(name, id) => format!("tmp {name} {}", id.map_or_else(|| "-".to_owned(), |id| id.text())),
 +                Self::Obsolete(name, id) => format!("obsolete {name} {}", id.text()),
 +            }
 +        }
@@ -451,35 +475,42 @@
 +                name.starts_with(&format!("{base}.vpk-{kind}-")) && !name.contains(['/', '\\', ':'])
 +            };
 +            let mut parts = line.split(' ');
-+            let owned = match (parts.next()?, parts.next()?, parts.next()) {
-+                ("tmp", name, None) if valid(name, "tmp") => Self::Temporary(name.to_owned()),
-+                ("obsolete", name, Some(id)) if valid(name, "obsolete") => Self::Obsolete(name.to_owned(), Id::parse(id)?),
++            let owned = match (parts.next()?, parts.next()?, parts.next()?) {
++                ("tmp", name, "-") if valid(name, "tmp") => Self::Temporary(name.to_owned(), None),
++                ("tmp", name, id) if valid(name, "tmp") => Self::Temporary(name.to_owned(), Some(FileId::parse(id)?)),
++                ("obsolete", name, id) if valid(name, "obsolete") => Self::Obsolete(name.to_owned(), Id::parse(id)?),
 +                _ => return None,
 +            };
 +            parts.next().is_none().then_some(owned)
 +        }
 +    }
++    fn unknown_ownership() -> io::Error {
++        io::Error::new(io::ErrorKind::InvalidData, "ownership ledger unreadable; nothing swept, repair needed")
++    }
++    /// A ledger that is not exactly what this code writes means unknown
++    /// ownership: nothing is swept and recovery reports repair.
 +    fn read_ledger(p: &Paths) -> io::Result<Vec<Owned>> {
++        const LIMIT: u64 = 1 << 20;
 +        let mut file = match open_plain(&p.ledger, GENERIC_READ) {
 +            Ok(Some(file)) => file,
 +            Ok(None) => return Ok(Vec::new()),
-+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-+                remove_entry(p, &p.ledger)?;
-+                return Ok(Vec::new());
-+            }
++            Err(error) if error.kind() == io::ErrorKind::InvalidData => return Err(unknown_ownership()),
 +            Err(error) => return Err(error),
 +        };
 +        let mut bytes = Vec::new();
-+        (&mut file).take(1 << 20).read_to_end(&mut bytes)?;
-+        let text = String::from_utf8_lossy(&bytes);
++        (&mut file).take(LIMIT + 1).read_to_end(&mut bytes)?;
++        if bytes.len() as u64 > LIMIT {
++            return Err(unknown_ownership());
++        }
++        let text = String::from_utf8(bytes).map_err(|_| unknown_ownership())?;
 +        let mut lines = text.lines();
 +        if lines.next() != Some(LEDGER_MAGIC) {
-+            return Ok(Vec::new());
++            return Err(unknown_ownership());
 +        }
-+        Ok(lines.filter_map(|line| Owned::parse(p, line)).collect())
++        lines.map(|line| Owned::parse(p, line).ok_or_else(unknown_ownership)).collect()
 +    }
 +    /// Flushed and atomically replaced; written before the artifacts it lists exist.
-+    fn write_ledger(p: &Paths, entries: &[Owned]) -> io::Result<()> {
++    fn write_ledger(p: &Paths, entries: &[Owned], operations: &impl Operations) -> io::Result<()> {
 +        remove_entry(p, &p.ledger_next)?;
 +        if entries.is_empty() {
 +            return remove_entry(p, &p.ledger);
@@ -500,6 +531,7 @@
 +            file.write_all(text.as_bytes())?;
 +            file.sync_all()?;
 +            drop(file);
++            operations.checkpoint(p, "ledger-written")?;
 +            replace_name(&p.ledger_next, &p.ledger)
 +        };
 +        let result = write();
@@ -509,14 +541,27 @@
 +        }
 +        result
 +    }
-+    fn add_owned(p: &Paths, added: Vec<Owned>) -> io::Result<()> {
++    fn add_owned(p: &Paths, added: Vec<Owned>, operations: &impl Operations) -> io::Result<()> {
 +        let mut entries = read_ledger(p)?;
 +        entries.extend(added);
-+        write_ledger(p, &entries)
++        write_ledger(p, &entries, operations)
++    }
++    /// Bind a reserved temporary to the identity of the file just created.
++    fn bind_owned(p: &Paths, path: &Path, file: &fs::File, operations: &impl Operations) -> io::Result<()> {
++        let name = file_name(path);
++        let id = FileId::of(file)?;
++        let mut entries = read_ledger(p)?;
++        let reserved = entries.iter_mut().find(|entry| matches!(entry, Owned::Temporary(listed, None) if *listed == name));
++        match reserved {
++            Some(entry) => *entry = Owned::Temporary(name, Some(id)),
++            None => return Err(other("temporary was not reserved in the ownership ledger")),
++        }
++        write_ledger(p, &entries, operations)
 +    }
 +    /// Delete owned artifacts that are provably orphaned or obsolete; keep the
-+    /// rest listed. Never follows or changes attributes of a link.
-+    fn sweep_owned(p: &Paths) -> io::Result<()> {
++    /// rest listed. Never follows or changes attributes of a link, and never
++    /// deletes a file whose identity differs from the one recorded for it.
++    fn sweep_owned(p: &Paths, operations: &impl Operations) -> io::Result<()> {
 +        if !present(&p.ledger)? && !present(&p.ledger_next)? {
 +            return Ok(());
 +        }
@@ -524,7 +569,7 @@
 +        let mut kept = Vec::new();
 +        for entry in read_ledger(p)? {
 +            let keep = match &entry {
-+                Owned::Temporary(name) => {
++                Owned::Temporary(name, recorded) => {
 +                    // Exclusive open succeeds only when no process holds it.
 +                    match fs::OpenOptions::new()
 +                        .access_mode(GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES)
@@ -534,10 +579,21 @@
 +                    {
 +                        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
 +                        Err(_) => true,
-+                        Ok(file) if is_plain(&file)? => delete_handle_ref(&file).is_err(),
 +                        Ok(file) => {
-+                            rename_handle(&file, &p.quarantine())?;
-+                            false
++                            let same = Some(FileId::of(&file)?) == *recorded;
++                            if same && is_plain(&file)? {
++                                let failed = delete_handle_ref(&file).is_err();
++                                drop(file);
++                                if !failed {
++                                    operations.checkpoint(p, "swept-one")?;
++                                }
++                                failed
++                            } else {
++                                // Unbound (crash right after creation) or not
++                                // the file we created: never deleted, no longer ours.
++                                warn!("Temporary next to the update helper is not provably ours; left in place");
++                                false
++                            }
 +                        }
 +                    }
 +                }
@@ -559,7 +615,7 @@
 +                kept.push(entry);
 +            }
 +        }
-+        write_ledger(p, &kept)
++        write_ledger(p, &kept, operations)
 +    }
 +
 +    struct Record {
@@ -613,8 +669,9 @@
 +    }
 +    /// Flushed and atomically named, through an owned temporary, before any
 +    /// transaction file exists.
-+    fn write_record(p: &Paths, record: &Record, temporary: &Path) -> io::Result<()> {
++    fn write_record(p: &Paths, record: &Record, temporary: &Path, operations: &impl Operations) -> io::Result<()> {
 +        let mut file = create_owned(temporary)?;
++        bind_owned(p, temporary, &file, operations)?;
 +        file.write_all(record.text().as_bytes())?;
 +        file.sync_all()?;
 +        rename_handle(&file, &p.record)
@@ -703,7 +760,7 @@
 +            // A still-running helper image cannot be deleted, only renamed.
 +            warn!("Obsolete update helper {label} could not be deleted yet ({error}); set aside for later removal");
 +            let obsolete = p.obsolete();
-+            add_owned(p, vec![Owned::Obsolete(file_name(&obsolete), verified)])?;
++            add_owned(p, vec![Owned::Obsolete(file_name(&obsolete), verified)], operations)?;
 +            rename_handle(&file, &obsolete)?;
 +        }
 +        drop(file);
@@ -720,7 +777,7 @@
 +    /// copy); verified leftovers are deleted, unverifiable ones set aside.
 +    fn recover_locked(p: &Paths, operations: &impl Operations) -> io::Result<()> {
 +        // Owned temporaries are never promotion candidates; orphans go first.
-+        sweep_owned(p)?;
++        sweep_owned(p, operations)?;
 +        let record = read_record(p)?;
 +        let valid = match &record {
 +            RecordState::Valid(record) => Some(record),
@@ -770,7 +827,7 @@
 +        // `held` denies writers and deleters of the admitted helper during cleanup.
 +        retire(p, &p.stage, valid, "staged copy", operations)?;
 +        retire(p, &p.backup, valid, "backup", operations)?;
-+        sweep_owned(p)?;
++        sweep_owned(p, operations)?;
 +        remove_entry(p, &p.record)?;
 +        drop(held);
 +        Ok(())
@@ -796,6 +853,8 @@
 +            (&p.backup, "backup"),
 +            (&p.record, "transaction record"),
 +            (&p.ledger, "owned leftovers"),
++            (&p.ledger_next, "ownership ledger update"),
++            (&p.lock, "transaction lock"),
 +        ]
 +            .into_iter()
 +            .filter(|(path, _)| present(path).unwrap_or(true))
@@ -828,8 +887,25 @@
 +            let id = transaction_id();
 +            let temporary = sibling(destination, &format!(".vpk-tmp-{id}"));
 +            let record_temporary = sibling(destination, &format!(".vpk-tmp-{id}-record"));
-+            add_owned(&paths, vec![Owned::Temporary(file_name(&temporary)), Owned::Temporary(file_name(&record_temporary))])?;
-+            let file = create_owned(&temporary)?;
++            add_owned(
++                &paths,
++                vec![Owned::Temporary(file_name(&temporary), None), Owned::Temporary(file_name(&record_temporary), None)],
++                operations,
++            )?;
++            let file = match create_owned(&temporary) {
++                Ok(file) => file,
++                Err(error) => {
++                    let _ = sweep_owned(&paths, operations);
++                    return Err(error);
++                }
++            };
++            if let Err(error) = bind_owned(&paths, &temporary, &file, operations) {
++                // Our own handle: the unbound temporary goes, the reservation is swept.
++                let _ = delete_handle_ref(&file);
++                drop(file);
++                let _ = sweep_owned(&paths, operations);
++                return Err(error);
++            }
 +            Ok(Self { paths, record_temporary, file: Some(file), _transaction: transaction })
 +        }
 +        pub(crate) fn file(&mut self) -> &mut fs::File {
@@ -853,7 +929,7 @@
 +                Err(error) => return Err(error.into()),
 +            };
 +            let record = Record { id: transaction_id(), new, original };
-+            write_record(p, &record, &self.record_temporary)?;
++            write_record(p, &record, &self.record_temporary, operations)?;
 +            operations.checkpoint(p, "record")?;
 +            // Our own handle renames exactly the bytes just hashed; close it
 +            // before ReplaceFileW opens the stage.
@@ -914,7 +990,7 @@
 +            if let Some(file) = self.file.take() {
 +                let _ = delete_handle_ref(&file);
 +            }
-+            let _ = sweep_owned(&self.paths);
++            let _ = sweep_owned(&self.paths, &Windows);
 +        }
 +    }
 +
@@ -922,6 +998,13 @@
 +    /// as a locked, verified publication, and never while an earlier
 +    /// transaction there is unresolved (creating the staging recovers first).
 +    pub(crate) fn bootstrap(source: &Path, destination: &Path) -> Result<(), Error> {
++        // The root helper is a source only when its own recovery succeeded and
++        // nothing there is pending: a root helper rejected by (or unresolved
++        // against) its transaction record is never copied.
++        recover(source)?;
++        if let Some(pending) = inspect(source) {
++            return Err(other(&format!("root {pending}; not used as a bootstrap source")).into());
++        }
 +        let mut staging = Staging::new(destination)?;
 +        if present(destination)? {
 +            return Ok(());
@@ -1012,6 +1095,16 @@
 +            matches!(self, Self::LeaveBeforeSwap | Self::LeaveAfterBackupMove | Self::LeaveAfterSwap)
 +        }
 +    }
++    /// Leave an extraction exactly as a killed process would: listed, bound
++    /// temporary on disk, ledger written. Call in a process that then exits.
++    #[cfg(feature = "helper-replacement-tests")]
++    pub fn abandon_staging(bytes: &[u8], destination: &Path) -> Result<(), Error> {
++        let mut staging = Staging::new(destination)?;
++        staging.file().write_all(bytes)?;
++        staging.file().sync_all()?;
++        std::mem::forget(staging);
++        Ok(())
++    }
 +    /// Inspect the exact native API path used by production, independent of host policy.
 +    #[cfg(feature = "helper-replacement-tests")]
 +    pub fn native_path_for_test(path: &Path) -> Result<Vec<u16>, Error> {
@@ -1078,7 +1171,7 @@
 +                #[cfg(windows)]
 +                if !self.is_update_helper_prepared(&asset).unwrap_or(false) { return None; }
 +                return Some(asset);
-@@ -281,0 +285,43 @@
+@@ -281,0 +285,49 @@
 +    /// Check the installed Windows helper against the complete package entry,
 +    /// including CRC/size validation. A cached package alone never authorizes Ready.
 +    #[cfg(windows)]
@@ -1088,6 +1181,12 @@
 +        let index = bundle.find_zip_file(|name| name.ends_with("Squirrel.exe"))
 +            .ok_or_else(|| Error::InvalidPackage("No supported Update.exe helper found".into()))?;
 +        bundle.zip_idx_matches_path(index, self.inner.locator.get_update_path())
++    }
++
++    /// The directory packages are downloaded to: the install root's packages
++    /// folder, or the per-user fallback when the root is not writable.
++    pub fn get_packages_dir(&self) -> PathBuf {
++        self.inner.locator.get_packages_dir()
 +    }
 +
 +    /// Hold the Update.exe transaction lock. While held, no process can publish
@@ -1122,19 +1221,19 @@
 +        Ok(())
 +    }
 +
-@@ -415,0 +462,3 @@
+@@ -415,0 +468,3 @@
 +            // Older SDKs could publish the package before helper preparation.
 +            #[cfg(windows)]
 +            self.prepare_update_helper(&final_target_file)?;
-@@ -457,0 +507,5 @@
+@@ -457,0 +513,5 @@
 +        // The final package is the admission boundary. Never publish it before
 +        // successful helper preparation; failed attempts remain retryable partials.
 +        #[cfg(windows)]
 +        self.prepare_update_helper(&partial_file)?;
 +
-@@ -460 +513,0 @@
+@@ -460 +519,0 @@
 -
-@@ -463,15 +515,0 @@
+@@ -463,15 +521,0 @@
 -        // extract new Update.exe on Windows only
 -        #[cfg(target_os = "windows")]
 -        match crate::bundle::load_bundle_from_file(&final_target_file) {
@@ -1150,7 +1249,7 @@
 -            }
 -        }
 -
-@@ -522 +560,10 @@
+@@ -522 +566,10 @@
 -        let output = std::process::Command::new(self.inner.locator.get_update_path()).args(args).output()?;
 +        let mut patcher = std::process::Command::new(self.inner.locator.get_update_path());
 +        patcher.args(args);

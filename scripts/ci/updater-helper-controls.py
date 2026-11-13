@@ -77,13 +77,25 @@ CONTROLS = [
     ('sweep-by-name', 'helper_replace.rs',
      [(b'        for entry in read_ledger(p)? {\n            let keep = match &entry {',
        b'        for entry in fs::read_dir(&directory)?.flatten().filter(|e| e.file_name().to_string_lossy().contains(".vpk-tmp-"))'
-       b'.map(|e| Owned::Temporary(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>() {\n'
-       b'            let keep = match &entry {')],
+       b'.map(|e| Owned::Temporary(e.file_name().to_string_lossy().into_owned(), None)).collect::<Vec<_>>() {\n'
+       b'            let keep = match &entry {'),
+      (b'let same = Some(FileId::of(&file)?) == *recorded;', b'let same = { let _ = recorded; true };')],
      RECOVERY, 'only_owned_orphaned_temporaries_are_swept'),
     ('sweep-touches-links', 'helper_replace.rs',
-     [(b'Ok(file) if is_plain(&file)? => delete_handle_ref(&file).is_err(),',
-       b'Ok(file) => delete_handle_ref(&file).is_err(),')],
+     [(b'if same && is_plain(&file)? {', b'if same {')],
      RECOVERY, 'owned_names_that_became_links_or_changed_are_never_deleted'),
+    ('temp-without-identity', 'helper_replace.rs',
+     [(b'let same = Some(FileId::of(&file)?) == *recorded;', b'let same = { let _ = recorded; true };')],
+     RECOVERY, 'owned_temporaries_are_bound_to_their_file_identity'),
+    ('lenient-ledger', 'helper_replace.rs',
+     [(b'        if lines.next() != Some(LEDGER_MAGIC) {\n            return Err(unknown_ownership());\n        }\n'
+       b'        lines.map(|line| Owned::parse(p, line).ok_or_else(unknown_ownership)).collect()',
+       b'        let _ = lines.next();\n        Ok(lines.filter_map(|line| Owned::parse(p, line)).collect())')],
+     RECOVERY, 'malformed_or_oversized_ledger_means_unknown_ownership'),
+    ('bootstrap-trusts-root', 'helper_replace.rs',
+     [(b'        recover(source)?;\n        if let Some(pending) = inspect(source) {\n'
+       b'            return Err(other(&format!("root {pending}; not used as a bootstrap source")).into());\n        }\n', b'')],
+     RECOVERY, 'machine_install_never_bootstraps_from_an_unresolved_root_helper'),
     ('obsolete-without-identity', 'helper_replace.rs',
      [(b'if is_plain(&file)? && identity(&mut file)? == *id {', b'if true {')],
      RECOVERY, 'owned_names_that_became_links_or_changed_are_never_deleted'),

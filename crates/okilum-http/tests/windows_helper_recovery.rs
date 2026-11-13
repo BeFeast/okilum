@@ -7,7 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use velopack::{
-    helper_replace::{inspect, lock, native_path_for_test, publish_fault, recover, Fault},
+    helper_replace::{
+        abandon_staging, inspect, lock, native_path_for_test, publish_fault, recover, Fault,
+    },
     locator::{auto_locate_app_manifest, LocationContext, VelopackLocator},
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -567,6 +569,12 @@ fn power_cut_bytes(seed: u8) -> Vec<u8> {
 #[test]
 #[ignore = "Windows QA VM power-cut writer, driven externally"]
 fn power_cut_writer() {
+    const ABANDON: &str = "OKILUM_POWER_CUT_ABANDON";
+    if let Some(root) = std::env::var_os(ABANDON) {
+        // Leave an owned, bound extraction behind exactly like a killed process.
+        abandon_staging(&power_cut_bytes(2), &PathBuf::from(root).join("Update.exe")).unwrap();
+        std::process::exit(0);
+    }
     let root = PathBuf::from(std::env::var_os(POWER_CUT_ROOT).expect(POWER_CUT_ROOT));
     let phase = std::env::var(POWER_CUT_PHASE).expect(POWER_CUT_PHASE);
     let helper = fixture(&root);
@@ -587,6 +595,16 @@ fn power_cut_writer() {
             publish_fault(&bytes, &helper, REAL).unwrap();
             fs::write(root.join("power-cut-progress"), round.to_string()).unwrap();
         }
+    }
+    if phase == "swept-one" {
+        // Something owned to sweep: the next publication deletes it first.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["power_cut_writer", "--exact", "--ignored", "--nocapture"])
+            .env(ABANDON, &root)
+            .status()
+            .unwrap();
+        assert!(status.success(), "abandoning an extraction failed");
+        assert!(sibling(&helper, ".vpk-owned").exists());
     }
     let phase: &'static str = Box::leak(phase.into_boxed_str());
     let _ = publish_fault(&power_cut_bytes(2), &helper, Fault::Pause(phase));
@@ -660,6 +678,25 @@ fn power_cut_verify() {
 }
 
 /// Write the ownership ledger the way production does (test fixture only).
+/// Volume serial + file index, as the ledger records a temporary's identity.
+fn file_id(path: &Path) -> String {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = fs::File::open(path).unwrap();
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    assert_ne!(
+        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) },
+        0
+    );
+    format!(
+        "{}:{}",
+        info.dwVolumeSerialNumber,
+        ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64
+    )
+}
+
 fn write_ledger(helper: &Path, lines: &[String]) {
     let mut text = String::from("velopack-helper-owned-v1\n");
     for line in lines {
@@ -689,8 +726,8 @@ fn only_owned_orphaned_temporaries_are_swept() {
     write_ledger(
         &helper,
         &[
-            "tmp Update.exe.vpk-tmp-orphan".into(),
-            "tmp Update.exe.vpk-tmp-busy".into(),
+            format!("tmp Update.exe.vpk-tmp-orphan {}", file_id(&orphan)),
+            format!("tmp Update.exe.vpk-tmp-busy {}", file_id(&busy)),
         ],
     );
     publish_fault(NEW, &helper, REAL).unwrap();
@@ -733,10 +770,11 @@ fn owned_names_that_became_links_or_changed_are_never_deleted() {
     fs::hard_link(&elsewhere, sibling(&helper, ".vpk-tmp-linked")).unwrap();
     // An owned obsolete name whose bytes no longer match its recorded identity.
     fs::write(sibling(&helper, ".vpk-obsolete-changed"), b"replaced bytes").unwrap();
+    let linked = sibling(&helper, ".vpk-tmp-linked");
     write_ledger(
         &helper,
         &[
-            "tmp Update.exe.vpk-tmp-linked".into(),
+            format!("tmp Update.exe.vpk-tmp-linked {}", file_id(&linked)),
             format!(
                 "obsolete Update.exe.vpk-obsolete-changed 3:{}",
                 "00".repeat(32)
@@ -750,12 +788,102 @@ fn owned_names_that_became_links_or_changed_are_never_deleted() {
         0,
         "attributes of a linked file were changed"
     );
+    // The linked name is left in place (not provably ours); the changed
+    // obsolete copy is set aside. Neither is deleted.
+    assert_eq!(fs::read(&linked).unwrap(), b"someone else's data");
     let aside = quarantined(&helper);
     assert!(
-        aside.contains(&b"someone else's data".to_vec())
-            && aside.contains(&b"replaced bytes".to_vec()),
-        "link or changed copy was deleted instead of set aside: {aside:?}"
+        aside.contains(&b"replaced bytes".to_vec()),
+        "changed obsolete copy was deleted instead of set aside: {aside:?}"
     );
+    fs::remove_file(&linked).unwrap();
+    assert_clean(&helper);
+}
+
+#[test]
+fn owned_temporaries_are_bound_to_their_file_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    // A replayed ledger names a file that was deleted; a new file reused the name.
+    let replayed = sibling(&helper, ".vpk-tmp-replayed");
+    fs::write(&replayed, b"first file").unwrap();
+    let old_id = file_id(&replayed);
+    fs::remove_file(&replayed).unwrap();
+    fs::write(&replayed, b"another file with the same name").unwrap();
+    assert_ne!(file_id(&replayed), old_id);
+    // A reservation that was never bound (crash right after creation).
+    let unbound = sibling(&helper, ".vpk-tmp-unbound");
+    fs::write(&unbound, b"unknown").unwrap();
+    // A bound entry whose file is exactly the recorded one.
+    let bound = sibling(&helper, ".vpk-tmp-bound");
+    fs::write(&bound, b"ours").unwrap();
+    write_ledger(
+        &helper,
+        &[
+            format!("tmp Update.exe.vpk-tmp-replayed {old_id}"),
+            "tmp Update.exe.vpk-tmp-unbound -".into(),
+            format!("tmp Update.exe.vpk-tmp-bound {}", file_id(&bound)),
+        ],
+    );
+    recover(&helper).unwrap();
+    assert_eq!(
+        fs::read(&replayed).unwrap(),
+        b"another file with the same name",
+        "a file with a different identity was deleted by name"
+    );
+    assert_eq!(
+        fs::read(&unbound).unwrap(),
+        b"unknown",
+        "unbound temporary deleted"
+    );
+    assert!(!bound.exists(), "the recorded temporary was not swept");
+    fs::remove_file(&replayed).unwrap();
+    fs::remove_file(&unbound).unwrap();
+    assert_clean(&helper);
+}
+
+#[test]
+fn malformed_or_oversized_ledger_means_unknown_ownership() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let orphan = sibling(&helper, ".vpk-tmp-orphan");
+    fs::write(&orphan, b"orphan").unwrap();
+    let ledger = sibling(&helper, ".vpk-owned");
+    for text in [
+        format!(
+            "not-a-ledger\ntmp Update.exe.vpk-tmp-orphan {}\n",
+            file_id(&orphan)
+        ),
+        format!(
+            "velopack-helper-owned-v1\ntmp Update.exe.vpk-tmp-orphan {}\ngarbage line\n",
+            file_id(&orphan)
+        ),
+        format!(
+            "velopack-helper-owned-v1\n{}",
+            format!("tmp Update.exe.vpk-tmp-orphan {}\n", file_id(&orphan)).repeat(40_000)
+        ),
+    ] {
+        fs::write(&ledger, &text).unwrap();
+        assert!(
+            recover(&helper).is_err(),
+            "unknown ownership reported success"
+        );
+        assert!(
+            publish_fault(NEW, &helper, REAL).is_err(),
+            "publication proceeded with unknown ownership"
+        );
+        assert_eq!(fs::read(&helper).unwrap(), OLD);
+        assert!(orphan.exists(), "a file was swept under unknown ownership");
+        assert_eq!(
+            fs::read(&ledger).unwrap(),
+            text.as_bytes(),
+            "ledger rewritten"
+        );
+        assert!(inspect(&helper).is_some());
+    }
+    fs::remove_file(&ledger).unwrap();
+    fs::remove_file(&orphan).unwrap();
+    recover(&helper).unwrap();
     assert_clean(&helper);
 }
 
@@ -818,6 +946,9 @@ impl Drop for MachineInstall {
     }
 }
 fn machine_install() -> MachineInstall {
+    machine_install_with(|_| {})
+}
+fn machine_install_with(plant: impl FnOnce(&Path)) -> MachineInstall {
     let root = tempfile::tempdir().unwrap();
     let id = format!(
         "OkilumHelperFallback{}x{}",
@@ -830,6 +961,7 @@ fn machine_install() -> MachineInstall {
     fs::create_dir_all(root.path().join("current")).unwrap();
     fs::write(root.path().join("current").join("sq.version"), format!("<package><metadata><id>{id}</id><version>1.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>")).unwrap();
     fs::write(root.path().join("Update.exe"), OLD).unwrap();
+    plant(root.path());
     // An unwritable root sends Velopack to the per-user fallback.
     let output = std::process::Command::new("icacls")
         .arg(root.path())
@@ -892,4 +1024,29 @@ fn machine_install_bootstrap_is_locked_and_atomic() {
     locate(install.root.path()).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), OLD);
     assert_clean(&helper);
+}
+
+#[test]
+fn machine_install_never_bootstraps_from_an_unresolved_root_helper() {
+    use sha2::{Digest, Sha256};
+    let identity = |bytes: &[u8]| format!("{}:{:x}", bytes.len(), Sha256::digest(bytes));
+    // The root helper matches neither side of its own transaction record.
+    let install = machine_install_with(|root| {
+        fs::write(
+            root.join("Update.exe.vpk-txn"),
+            format!(
+                "velopack-helper-transaction-v1\nid=planted\nnew={}\noriginal={}\n",
+                identity(b"some other new helper"),
+                identity(b"some other original helper")
+            ),
+        )
+        .unwrap();
+    });
+    let helper = install.fallback.join("Update.exe");
+    locate(install.root.path()).unwrap();
+    assert!(
+        !helper.exists(),
+        "the empty fallback was seeded from a root helper its record rejects"
+    );
+    assert!(inspect(&install.root.path().join("Update.exe")).is_some());
 }

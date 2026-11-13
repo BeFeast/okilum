@@ -171,16 +171,14 @@ fn verified_path() -> Option<std::path::PathBuf> {
         .map(|root| root.join(VERIFIED))
 }
 
-fn packages_dir() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.parent()?.join("packages"))
-}
-
 /// SHA256 of the downloaded package file, upper-case hex like the feed's.
-/// Velopack's local pending asset leaves `SHA256` empty, so it is read here.
-fn package_sha256(asset: &velopack::VelopackAsset) -> Option<String> {
+/// Velopack's local pending asset leaves `SHA256` empty, so it is read here,
+/// from the directory the package was downloaded to: `<root>\packages`, or the
+/// per-user fallback when the install root is not writable.
+fn package_sha256(manager: &UpdateManager, asset: &velopack::VelopackAsset) -> Option<String> {
     use sha2::{Digest, Sha256};
-    let mut file = std::fs::File::open(packages_dir()?.join(&asset.FileName)).ok()?;
+    let packages = manager.get_packages_dir();
+    let mut file = std::fs::File::open(packages.join(&asset.FileName)).ok()?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).ok()?;
     Some(
@@ -215,10 +213,8 @@ fn forget_verified() {
 }
 
 /// Deletes a downloaded package the current channel does not offer (#1318).
-fn discard(asset: &velopack::VelopackAsset) {
-    if let Some(packages) = packages_dir() {
-        let _ = std::fs::remove_file(packages.join(&asset.FileName));
-    }
+fn discard(manager: &UpdateManager, asset: &velopack::VelopackAsset) {
+    let _ = std::fs::remove_file(manager.get_packages_dir().join(&asset.FileName));
     forget_verified();
 }
 
@@ -300,6 +296,29 @@ fn helper_candidates() -> Vec<std::path::PathBuf> {
     candidates
 }
 
+/// An installed (not portable) layout: `<root>\current\okilum.exe` next to its
+/// `sq.version` manifest.
+fn installed_layout(exe: &std::path::Path) -> bool {
+    exe.parent().is_some_and(|current| {
+        current
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("current"))
+            && current.join("sq.version").is_file()
+    })
+}
+
+/// When the installation cannot be located and no helper has recovery files:
+/// an installed layout lost its helper (repair), a portable copy has none.
+fn missing_helper_detail(installed_layout: bool) -> Option<&'static str> {
+    installed_layout.then_some("update helper missing; reinstall Okilum to restore updates")
+}
+
+/// Every cached state is re-evaluated in the background after this long, so a
+/// later unrecoverable helper failure is not hidden behind "Installed".
+fn refresh_due(_state: &Install, elapsed: std::time::Duration) -> bool {
+    elapsed >= REPAIR_RETRY
+}
+
 /// Locating the installation already ran helper recovery. A located install
 /// still reports a helper that is missing or unresolved; when locating fails,
 /// any candidate with recovery files gets one more attempt and keeps its error.
@@ -330,13 +349,16 @@ fn evaluate(beta: bool) -> Install {
         };
         return classify(None, Some(&detail));
     }
-    classify(None, None)
+    let layout = std::env::current_exe()
+        .map(|exe| installed_layout(&exe))
+        .unwrap_or(false);
+    classify(None, missing_helper_detail(layout))
 }
 
 fn install() -> Install {
     let mut cached = INSTALL.lock().unwrap();
     if let Some((state, since)) = cached.as_ref() {
-        if matches!(state, Install::Repair(_)) && since.elapsed() >= REPAIR_RETRY {
+        if refresh_due(state, since.elapsed()) {
             retry_repair_in_background();
         }
         return state.clone();
@@ -452,7 +474,7 @@ pub(super) fn check(download: bool) -> bool {
             if cancelled {
                 if let Ok(manager) = manager() {
                     if let Some(asset) = manager.get_update_pending_restart() {
-                        discard(&asset);
+                        discard(&manager, &asset);
                     }
                 }
                 state().lock().unwrap().observe(None);
@@ -475,6 +497,9 @@ pub(super) fn check(download: bool) -> bool {
                 }
                 Err(error) => {
                     crate::reader_diagnostics::network_failure("Windows update", &error);
+                    // A failure may come from the helper: re-evaluate now rather
+                    // than keep a cached "Installed".
+                    retry_repair_in_background();
                     let reason = format!(
                         "{}. Your current version is unchanged.",
                         error
@@ -552,7 +577,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
             if let Some(asset) = pending.as_ref() {
-                let sha256 = package_sha256(asset).ok_or_else(|| {
+                let sha256 = package_sha256(&manager, asset).ok_or_else(|| {
                     anyhow::anyhow!(
                         "The downloaded update could not be read. Okilum will try again later"
                     )
@@ -583,7 +608,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
             use super::status;
             if !download {
                 if let Some(asset) = pending.as_ref() {
-                    discard(asset);
+                    discard(&manager, asset);
                     super::restart_feedback::offer(format!(
                         "An update ({}) is available. Download it to update.",
                         update.TargetFullRelease.Version
@@ -629,7 +654,10 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 &manager,
                 pending.as_ref().expect("pending identity checked above"),
             )?;
-            if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
+            if let Some(sha256) = pending
+                .as_ref()
+                .and_then(|asset| package_sha256(&manager, asset))
+            {
                 record_verified(&sha256, &update.TargetFullRelease);
             }
             state()
@@ -644,7 +672,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
         }
         UpdateCheck::NoUpdateAvailable => {
             if let Some(asset) = pending.as_ref() {
-                discard(asset);
+                discard(&manager, asset);
                 state().lock().unwrap().observe(None);
                 super::restart_feedback::offer(
                     "The update offer changed. No newer update is currently available.",
@@ -654,7 +682,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
         }
         UpdateCheck::RemoteIsEmpty => {
             if let Some(asset) = pending.as_ref() {
-                discard(asset);
+                discard(&manager, asset);
                 state().lock().unwrap().observe(None);
                 super::restart_feedback::offer(
                     "No release has been published on the selected channel yet.",
@@ -848,6 +876,42 @@ mod tests {
         })
         .unwrap();
         assert_eq!(launched, 1);
+    }
+
+    #[test]
+    fn package_hash_reads_the_directory_the_package_was_downloaded_to() {
+        use sha2::{Digest, Sha256};
+        let f = fixture();
+        let bytes = fs::read(f.manager.get_packages_dir().join(&f.asset.FileName)).unwrap();
+        let expected: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        assert_eq!(
+            package_sha256(&f.manager, &f.asset),
+            Some(expected),
+            "package must be hashed where it was downloaded"
+        );
+    }
+
+    #[test]
+    fn missing_helper_in_an_installed_layout_and_stale_installed_state_reach_repair() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        fs::create_dir(&current).unwrap();
+        fs::write(current.join("sq.version"), "<package/>").unwrap();
+        assert!(installed_layout(&current.join("okilum.exe")));
+        assert!(!installed_layout(&root.path().join("okilum.exe")));
+        assert!(
+            missing_helper_detail(true).is_some(),
+            "installed layout without a helper must not be Portable"
+        );
+        assert_eq!(missing_helper_detail(false), None);
+        assert!(
+            refresh_due(&Install::Installed, REPAIR_RETRY),
+            "a cached Installed state must be re-evaluated"
+        );
+        assert!(!refresh_due(&Install::Installed, std::time::Duration::ZERO));
     }
 
     #[test]

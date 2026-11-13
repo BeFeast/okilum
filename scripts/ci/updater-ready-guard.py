@@ -34,6 +34,15 @@ CONTROLS = [
      b'        (None, Some(_)) if updater_guard_control("repair-label") => Install::Portable,\n'
      b'        (Some(false), Some(_)) if updater_guard_control("installed-repair") => Install::Installed,\n',
      'helper_needing_repair_is_not_reported_as_portable', 'must not be called Portable'),
+    ('packages-root', b'    let packages = manager.get_packages_dir();\n',
+     b'    let packages = if updater_guard_control("packages-root") { std::env::current_exe().ok()?.parent()?.parent()?.join("packages") } else { manager.get_packages_dir() };\n',
+     'package_hash_reads_the_directory_the_package_was_downloaded_to', 'package must be hashed where it was downloaded'),
+    ('layout-ignored', b'    installed_layout.then_some(',
+     b'    (installed_layout && !updater_guard_control("layout-ignored")).then_some(',
+     'missing_helper_in_an_installed_layout_and_stale_installed_state_reach_repair', 'must not be Portable'),
+    ('installed-cached', b'    elapsed >= REPAIR_RETRY\n}',
+     b'    elapsed >= REPAIR_RETRY && !(updater_guard_control("installed-cached") && *_state == Install::Installed)\n}',
+     'missing_helper_in_an_installed_layout_and_stale_installed_state_reach_repair', 'must be re-evaluated'),
     # Same injected arms as repair-label (one source edit); this switch bypasses
     # only the located-install classification.
     ('installed-repair', None, None,
@@ -66,7 +75,7 @@ def main():
         SOURCE.write_bytes(mutated + HOOK)
         listed = run(PREFIX, '--', '--list')
         names = [line for line in listed.stdout.splitlines() if line.endswith(': test')]
-        assert listed.returncode == 0 and len(names) == 3, names
+        assert listed.returncode == 0 and len(names) == 5, names
         assert run(PREFIX, '--', '--nocapture', '--test-threads=1').returncode == 0, 'positive'
         for name, _, _, test, assertion in CONTROLS:
             negative = run(PREFIX + test, '--', '--exact', '--nocapture', control=name)
