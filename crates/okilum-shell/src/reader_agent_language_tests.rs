@@ -116,16 +116,24 @@ fn issue1593_marks_hover_and_policy_refresh_without_a_source_edit(cx: &mut TestA
             == Some(vec!["worker-new".to_string(), "merge".to_string()])),
         "the open file's check uses the new policy without a source edit"
     );
-    let marked = reader.read_with(visual, |r, cx| {
+    // Marks are applied from the published result on a later frame; wait for
+    // them too, so a mark that never follows the policy still fails here.
+    let marks = |r: &Reader, cx: &App| {
         r.agent_language_marks
             .as_ref()
-            .map(|marks| marks.collection.get_ranges(cx))
-    });
-    assert_eq!(
-        marked.map(|m| m.len()),
-        Some(2),
-        "marks follow the new policy"
-    );
+            .map(|marks| marks.collection.get_ranges(cx).len())
+    };
+    let mut marked = None;
+    for _ in 0..300 {
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        marked = reader.read_with(visual, |r, cx| marks(r, cx));
+        if marked == Some(2) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(marked, Some(2), "marks follow the new policy");
     assert_eq!(
         std::fs::read_to_string(root.join("project/AGENTS.md")).unwrap(),
         SOURCE
