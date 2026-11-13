@@ -37,7 +37,15 @@ pub(crate) fn supersede(cx: &mut App) {
         .any(|window| *window != entry && super::reader_owned_windows::owner(*window, cx) != entry)
     {
         cx.global_mut::<Startup>().entry = None;
-        let _ = entry.update(cx, |_, window, _| window.remove_window());
+        let _ = entry.update(cx, |_, window, cx| {
+            // Named in the close log, not left as an unexplained removal (#2805).
+            super::reader_diagnostics::window_close_requested(
+                window,
+                cx,
+                "start window replaced by a vault window",
+            );
+            window.remove_window()
+        });
     }
 }
 
@@ -890,6 +898,55 @@ mod tests {
                 .downcast::<Entry>()
                 .unwrap()
         })
+    }
+
+    #[gpui::test]
+    fn issue2805_replaced_start_window_names_its_close(cx: &mut TestAppContext) {
+        struct VaultSurface;
+        impl Render for VaultSurface {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                gpui::div()
+            }
+        }
+        let state = tempfile::tempdir().unwrap();
+        let trace =
+            super::super::reader_diagnostics::Trace::new(Some(state.path().to_owned()), None);
+        cx.update(|cx| {
+            crate::test_init(cx);
+            cx.set_global(super::super::reader_diagnostics::LaunchTrace(trace.clone()));
+            trace.record_window_closes(cx);
+            cx.set_global(Startup::default());
+            show_entry(
+                Vec::new(),
+                EntryState {
+                    directory: None,
+                    missing: Default::default(),
+                    notice: None,
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.add_window(|_, _| VaultSurface);
+        cx.update(supersede);
+        cx.run_until_parked();
+        let log = std::fs::read_to_string(
+            state
+                .path()
+                .join(super::super::reader_diagnostics::LOG_FILE),
+        )
+        .unwrap();
+        let closed: Vec<serde_json::Value> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["phase"] == "window_closed")
+            .collect();
+        assert_eq!(closed.len(), 1, "{log}");
+        assert_eq!(
+            closed[0]["details"]["origin"],
+            "start window replaced by a vault window"
+        );
+        assert_eq!(closed[0]["details"]["remaining_windows"], 1);
     }
 
     #[cfg(target_os = "linux")]
