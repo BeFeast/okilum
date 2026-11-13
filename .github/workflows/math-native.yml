@@ -101,7 +101,7 @@ jobs:
             python3 scripts/ci/math-environment-check.py
           fi
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
         with:
           path: |
             ~/.cargo/registry/
