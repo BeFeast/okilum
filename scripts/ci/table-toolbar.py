@@ -25,18 +25,19 @@ patches = []
 
 def edit(name, old, new, count=1):
     p = ROOT / ('crates/okilum-shell/src/' + name)
-    s = p.read_text()
+    # Bytes in and out: no platform codepage and no newline translation.
+    s = p.read_bytes().decode('utf-8')
     assert s.count(old) == count, (name, old, s.count(old))
     original.setdefault(p, p.read_bytes())
     result = s.replace(old, new)
-    p.write_text(result)
+    p.write_bytes(result.encode('utf-8'))
     patches.append(''.join(difflib.unified_diff(s.splitlines(True), result.splitlines(True), fromfile=name, tofile=name)))
 
 def run(label, args, control=None):
     env = dict(ENV)
     if control: env['OKILUM_TABLE2812_CONTROL'] = control
     p = subprocess.run(args, cwd=ROOT, env=env, text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (OUT / (label + '.log')).write_text(p.stdout)
+    (OUT / (label + '.log')).write_text(p.stdout, encoding='utf-8')
     print(label, p.returncode, p.stdout[-3500:], flush=True)
     return p
 
