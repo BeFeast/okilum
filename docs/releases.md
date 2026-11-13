@@ -45,19 +45,21 @@ each platform's compile, package and signing run is the beta gate. The only
 skip is a pushed commit that already is that platform's beta (the actual feed
 head, not an archive catalog).
 
-A newer push cancels the unfinished beta of an older commit, per platform:
-push runs share the concurrency group `<platform>-beta-main` with
-`cancel-in-progress`. Forgejo cancels every run of that group that still has a
-waiting, blocked or running job. The hosted GitHub producers follow: Linux
+A running beta always finishes (manager 13.11: merges faster than a build kept
+cancelling the Linux beta, so none was published for hours). Push runs share
+the concurrency group `<platform>-beta-main` without `cancel-in-progress`: a
+newer push waits for the running one. When a queued push run starts and main
+has moved on, its select step skips (`hourly_beta.push_select` reads main's tip;
+the newer push's own run builds it). If the tip cannot be read, the run builds as
+before rather than skip. The beta is therefore at most one build behind main. The hosted GitHub producers follow: Linux
 AppImage producers share the GitHub group `forgejo-linux-beta`, and Mac beta
 signing runs share `macos-shipping-beta`, both cancelling the older run
 (the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
 archive, AppImage-only and Windows re-sign dispatches keep their own Forgejo
 groups: a push never cancels their Forgejo run, and they never cancel a push
 run. A manual main beta's hosted Linux/Mac producer is still superseded by a
-newer push's producer, which is the intended outcome. Trade-off: merges that
-arrive faster than a platform's build time keep restarting that platform's beta
-until main is quiet for one build.
+newer push's producer, which is the intended outcome. Hosted producers only
+overlap when a manual dispatch runs beside a push.
 
 Linux retains exact run/job/artifact SHA provenance by creating a write-once
 GitHub branch `forgejo-linux-pr/hourly-<source>` (the name predates push betas).

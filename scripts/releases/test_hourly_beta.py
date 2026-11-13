@@ -65,18 +65,39 @@ class Admission(unittest.TestCase):
     def status_reads(self):
         return [path for path, _, _ in self.calls if path.startswith('/commits/')]
 
-    def test_push_builds_exactly_the_pushed_commit_on_every_platform(self):
+    def test_push_builds_the_tip_and_a_superseded_push_skips(self):
         # Oleg 05.11: a push to main starts each OS beta from that exact commit,
-        # with no certification and no cron; red fast checks are irrelevant.
+        # with no certification and no cron. Manager 13.11: a running beta is
+        # never cancelled; a push run that starts after main moved on skips,
+        # because the newer push's own run builds the tip.
         newer = 'c' * 40
         self.tip = newer
         self.parents[newer] = SOURCE
         for platform in hourly.WORKFLOWS:
-            self.assertEqual(self.push(platform, SOURCE)[:2], (True, SOURCE))
             self.assertEqual(self.push(platform, newer)[:2], (True, newer))
-        # Selection never reads statuses, main or history, and never dispatches:
-        # superseding is the newer push run's workflow concurrency.
-        self.assertFalse(self.calls)
+            build, source, reason = self.push(platform, SOURCE)
+            self.assertEqual((build, source), (False, SOURCE))
+            self.assertIn('superseded by main ' + newer, reason)
+        # Selection never reads statuses and never dispatches.
+        self.assertFalse(self.status_reads())
+        self.assertFalse(self.writes())
+
+    def test_push_builds_when_main_tip_cannot_be_read(self):
+        def broken(path, method='GET', body=None):
+            raise OSError('offline')
+        with patch.object(hourly, 'api', side_effect=broken):
+            for platform in hourly.WORKFLOWS:
+                build, source, reason = self.push(platform, SOURCE)
+                self.assertEqual((build, source), (True, SOURCE))
+                self.assertIn('main tip unreadable', reason)
+
+    def test_push_off_first_parent_main_fails_closed(self):
+        newer, foreign = 'c' * 40, 'd' * 40
+        self.tip = newer
+        self.parents[newer] = OLD
+        self.parents[OLD] = None
+        with self.assertRaises(ValueError):
+            self.push('linux', foreign)
 
     def test_push_of_the_current_beta_head_builds_nothing(self):
         for platform in hourly.WORKFLOWS:
@@ -88,7 +109,8 @@ class Admission(unittest.TestCase):
             self.descriptor.side_effect = lambda source, published, feed=feed: dict(source=OLD, platform=feed)
             self.assertEqual(self.push(platform)[:2], (True, SOURCE))
         self.assertEqual(hourly.feed_platform('linux'), 'linux-appimage')
-        self.assertFalse(self.calls)
+        self.assertFalse(self.status_reads())
+        self.assertFalse(self.writes())
 
     def test_push_admission_fails_closed_off_main_or_with_a_foreign_descriptor(self):
         for change in [dict(GITHUB_REF='refs/heads/feature'), dict(GITHUB_REF='')]:
@@ -197,13 +219,19 @@ class Admission(unittest.TestCase):
 
     def test_coalesce_push_entrypoint_emits_the_pushed_commit_for_each_platform(self):
         newer = 'c' * 40
-        self.tip = newer
         self.parents[newer] = SOURCE
         for platform in hourly.WORKFLOWS:
             with self.subTest(platform=platform):
+                self.tip = SOURCE
                 values = self.run_coalesce(platform, GITHUB_SHA=SOURCE, GITHUB_EVENT_NAME='push')
                 self.assertEqual((values['source'], values['build']), (SOURCE, 'true'))
-        self.assertFalse(self.calls)
+                # Main moved on before this queued push run started: skip.
+                self.tip = newer
+                values = self.run_coalesce(platform, GITHUB_SHA=SOURCE, GITHUB_EVENT_NAME='push')
+                self.assertEqual((values['source'], values['build']), (SOURCE, 'false'))
+        # A push only reads main's tip and history: no statuses, no dispatch.
+        self.assertFalse(self.status_reads())
+        self.assertFalse(self.writes())
 
     def test_coalesce_dispatch_entrypoint_builds_only_the_newest_main_pin(self):
         newer = 'c' * 40
@@ -587,9 +615,9 @@ class WorkflowContract(unittest.TestCase):
                     if step.get('uses', '').endswith('checkout@v4'):
                         self.assertNotEqual(step.get('with', {}).get('ref'), '${{ inputs.hourly_source }}')
 
-    def test_beta_producers_run_on_main_push_and_newer_push_cancels_older(self):
-        # Oleg 05.11: beta on every main push, no cron, no certification; a newer
-        # push cancels an unfinished older beta; manual dispatches always finish.
+    def test_beta_producers_run_on_main_push_and_a_running_beta_finishes(self):
+        # Oleg 05.11: beta on every main push, no cron, no certification.
+        # Manager 13.11: a newer push never cancels a running beta.
         for platform, workflow in hourly.WORKFLOWS.items():
             data = self.load('.forgejo/workflows/' + workflow)
             self.assertEqual(data['on']['push'], {'branches': ['main']})
@@ -597,7 +625,7 @@ class WorkflowContract(unittest.TestCase):
             prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
             self.assertEqual(data['concurrency']['group'], prefix + "-beta-${{ github.event_name == 'push' && 'main' "
                              "|| inputs.hourly_source || github.run_id }}")
-            self.assertEqual(data['concurrency']['cancel-in-progress'], "${{ github.event_name == 'push' }}")
+            self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
             report = data['jobs']['shipping-status']
             self.assertIn("github.event_name == 'workflow_dispatch'", report['if'])
             self.assertNotIn('schedule', report['if'])

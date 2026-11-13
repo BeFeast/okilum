@@ -16,7 +16,7 @@ class LinuxAdmission(unittest.TestCase):
         # their admission and they are never cancelled by a push.
         self.assertEqual(workflow['concurrency']['group'],
                          "linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
-        self.assertEqual(workflow['concurrency']['cancel-in-progress'], "${{ github.event_name == 'push' }}")
+        self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
         self.assertEqual(jobs['appimage-reuse']['needs'], 'select')

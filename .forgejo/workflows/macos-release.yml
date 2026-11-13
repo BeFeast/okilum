@@ -28,12 +28,14 @@ on:
         required: false
         default: ''
 
-# A newer main push cancels this platform's unfinished beta of an older commit
-# (the hosted signing run on GitHub is superseded by its own concurrency group).
+# A newer main push never cancels a running beta of an older commit; a queued
+# stale push run skips in select (the hosted signing run keeps its own group).
 # Manual, pinned and preview dispatches keep their own groups and always finish.
 concurrency:
   group: macos-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # A running beta always finishes (manager 13.11); a stale queued push run
+  # skips in select because main moved on.
+  cancel-in-progress: false
 
 jobs:
   select:

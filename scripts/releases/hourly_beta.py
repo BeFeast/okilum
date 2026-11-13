@@ -118,10 +118,12 @@ def candidate(tip, platform, descriptor, expected=''):
 def push_select(source, platform, env, descriptor):
     """A main push builds exactly the pushed commit (Oleg 05.11).
 
-    No certification and no main-tip lookup: a newer push starts its own run,
-    and that run's workflow concurrency cancels this one if it is unfinished.
-    The only skip is a source that already is this platform's beta. Publishers
-    still refuse a build older than the feed under their shared lock.
+    No certification. A running beta is never cancelled by a newer push
+    (manager 13.11: merges kept restarting the Linux beta). A push run that
+    starts after main has moved on skips: the newer push's own queued run
+    builds the tip. It also skips a source that already is this platform's
+    beta. If main's tip cannot be read, it builds as before rather than skip.
+    Publishers still refuse a build older than the feed under their lock.
     """
     if env.get('GITHUB_REF') != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', source or ''):
         raise ValueError('Push beta requires an exact main commit')
@@ -131,6 +133,16 @@ def push_select(source, platform, env, descriptor):
         raise ValueError('Invalid beta publication descriptor')
     if published and published.get('source') == source:
         return False, source, f'Pushed main {source} already is the {platform} beta'
+    try:
+        tip = api('/branches/main')['commit']['id']
+    except Exception as error:  # an unreadable tip must not skip a beta
+        return True, source, f'Build pushed main {source} (main tip unreadable: {type(error).__name__})'
+    if not re.fullmatch('[0-9a-f]{40}', tip or ''):
+        return True, source, f'Build pushed main {source} (main tip invalid)'
+    if tip != source:
+        if source not in main_history(tip):
+            raise ValueError('Pushed source is not a first-parent main commit')
+        return False, source, f'Pushed main {source} is superseded by main {tip}; that push builds it'
     return True, source, f'Build pushed main {source}'
 
 
