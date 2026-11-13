@@ -899,6 +899,23 @@ fn appimage_children_lose_only_the_bundles_environment() {
         None,
         "a user value outside APPDIR stays"
     );
+    // A mixed colon/space list: the bundled library goes whichever separator
+    // precedes it; AppRun's `:`-prepended loader goes; the user's stays.
+    let mixed = appimage_env(env(&[
+        ("APPDIR", "/tmp/.mount_OkilumX"),
+        ("OKILUM_APPRUN_PRELOAD", "/usr/lib/a.so"),
+        (
+            "LD_PRELOAD",
+            "/usr/lib/a.so:/user/b.so /tmp/.mount_OkilumX/lib/c.so\t/user/d.so",
+        ),
+    ]));
+    assert_eq!(
+        mixed
+            .iter()
+            .find(|(key, _)| *key == "LD_PRELOAD")
+            .map(|e| e.1.clone()),
+        Some(Some("/user/b.so:/user/d.so".into()))
+    );
     // Without AppRun's marker the same host loader is the user's own.
     let unmarked = appimage_env(env(&[
         ("APPDIR", "/tmp/.mount_OkilumX"),

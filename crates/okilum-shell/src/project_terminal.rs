@@ -7,6 +7,8 @@ use gpui_component::{
 mod command;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows_console;
 
 #[cfg(test)]
 #[derive(Default)]
@@ -64,17 +66,7 @@ fn executable(path: &Path) -> bool {
 /// The Windows system directory from the OS, not from the environment.
 #[cfg(windows)]
 fn system_directory() -> Option<PathBuf> {
-    use std::os::windows::ffi::OsStringExt as _;
-    let mut buffer = vec![0u16; 260];
-    // SAFETY: the buffer length is passed and the call writes at most that many units.
-    let length = unsafe {
-        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        )
-    } as usize;
-    (length > 0 && length < buffer.len())
-        .then(|| PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])))
+    windows_console::system_directory()
 }
 #[cfg(not(windows))]
 fn system_directory() -> Option<PathBuf> {
@@ -173,11 +165,6 @@ fn process(plan: &command::Plan, get: impl Fn(&str) -> Option<String>) -> std::p
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    if plan.new_console {
-        use std::os::windows::process::CommandExt as _;
-        process.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE);
-    }
     for (name, value) in command::appimage_env(get) {
         match value {
             Some(value) => process.env(name, value),
@@ -191,6 +178,14 @@ fn process(plan: &command::Plan, get: impl Fn(&str) -> Option<String>) -> std::p
 /// 8 KiB of its diagnostics.
 fn run(plan: command::Plan) -> anyhow::Result<()> {
     use anyhow::Context as _;
+    // PowerShell without Windows Terminal: its own console, real console
+    // handles, nothing inherited; the console outlives this launch.
+    #[cfg(windows)]
+    if plan.new_console {
+        windows_console::spawn(&plan.program, &plan.args)
+            .with_context(|| format!("Cannot start system terminal {}", plan.program.display()))?;
+        return Ok(());
+    }
     let mut child = process(&plan, |name| std::env::var(name).ok())
         .spawn()
         .with_context(|| format!("Cannot start system terminal {}", plan.program.display()))?;

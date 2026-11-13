@@ -100,6 +100,11 @@ jobs:
         run: |
           python scripts/ci/windows-atlas-upload.py
           exit $LASTEXITCODE
+      - name: Run native Windows terminal console controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-terminal-console.py
+          exit $LASTEXITCODE
   linux:
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04

@@ -32,6 +32,11 @@ TERMINAL falls through; non-executable files do not count. TERMINAL names a
 single executable, including paths with spaces. macOS uses
 `/usr/bin/osascript` and Terminal.app. Windows selects Windows Terminal, else
 the System32 Windows PowerShell in a new console; cmd.exe is never used.
+That console is created with CreateProcessW without standard handles
+(no STARTF_USESTDHANDLES) and without handle inheritance, so PowerShell's
+stdin/stdout are the new console and `-NoExit` stays interactive; std's
+`Command` always passes handles, which a new console does not replace.
+PowerShell profiles stay enabled: it is the user's interactive shell.
 Missing launchers and failed processes show a toast with the cause.
 
 Every launcher is an absolute program from a trusted location (#2837 review):
@@ -110,6 +115,12 @@ execute the POSIX wrapper with a fake shell and a fake passwd lookup, place
 decoy launchers in the vault, the folder and relative PATH entries, assert
 that no Windows plan contains cmd.exe, `start` or a bare PowerShell name and
 that the launcher process has no working directory of its own, and check the
-AppImage environment edits.
+AppImage environment edits, including a mixed colon/space LD_PRELOAD. The
+native Windows job (`scripts/ci/windows-terminal-console.py`) compiles the
+production console spawner, starts the System32 PowerShell from a working
+directory holding a decoy `powershell.exe`, and requires console stdin/stdout,
+the System32 image and the folder at the first interactive prompt; the #2858
+spawn (std handles plus a new console) and `cmd /c start powershell.exe` from
+the folder must fail those checks.
 A GPUI control reaches an application-scoped fake from the sidebar menu,
 shortcut and palette. A visible terminal on each OS remains beta acceptance.
