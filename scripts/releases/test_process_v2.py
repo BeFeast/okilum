@@ -21,7 +21,9 @@ class ProcessV2(unittest.TestCase):
         for file in ['ci', 'brain-ci', 'inbox-ci', 'excalidraw-compat']:
             data = workflow(f'.forgejo/workflows/{file}.yml')
             self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
-            self.assertEqual(data['on']['schedule'][0]['cron'], '5 22 * * 2,6')
+            # ci.yml is the daily full set before Stable (Oleg 13.11 evening).
+            expected = '0 4 * * *' if file == 'ci' else '5 22 * * 2,6'
+            self.assertEqual(data['on']['schedule'][0]['cron'], expected)
         self.assertEqual(workflow('.forgejo/workflows/sprint.yml')['on'], {})
         self.assertIn('test-nofile.sh', (ROOT / 'scripts/ci/check-linux.sh').read_text())
 

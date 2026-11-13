@@ -1,10 +1,12 @@
-# Full acceptance only: Tuesday/Saturday night before Wednesday/Sunday Stable.
-# No PR/main-push trigger. Process v2 uses fast.yml for merge admission.
+# Full acceptance: daily at 04:00 UTC (06:00 Israel in winter), a fixed hour
+# while baldr is idle, before the 09:00 Stable (Oleg 13.11 evening). Budgets
+# are unchanged; a failing run whose host load exceeded 2x cores is reported as
+# no verdict (scripts/ci/host-load.py). No PR/main-push trigger.
 name: ci
 
 on:
   schedule:
-    - cron: '5 22 * * 2,6'
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -140,6 +142,8 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Sample host load (no-verdict guard)
+        run: python3 scripts/ci/host-load.py start "$RUNNER_TEMP/host-load.tsv"
 
       - name: Sprint reporting and cache/vendor regressions (isolated)
         run: python3 scripts/dev/test-sprint-report.py
@@ -219,6 +223,9 @@ jobs:
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+      - name: Report host load and verdict
+        if: always()
+        run: python3 scripts/ci/host-load.py verdict "$RUNNER_TEMP/host-load.tsv" --job-status "${{ job.status }}"
 
   shared-github:
     needs: [shared-select]
@@ -327,6 +334,8 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Sample host load (no-verdict guard)
+        run: python3 scripts/ci/host-load.py start "$RUNNER_TEMP/host-load.tsv"
 
       - name: Install system libraries (README "Building")
         run: |
@@ -401,6 +410,9 @@ jobs:
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+      - name: Report host load and verdict
+        if: always()
+        run: python3 scripts/ci/host-load.py verdict "$RUNNER_TEMP/host-load.tsv" --job-status "${{ job.status }}"
 
   linux-github:
     if: >-

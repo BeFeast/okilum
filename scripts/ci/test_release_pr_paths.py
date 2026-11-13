@@ -57,7 +57,7 @@ class ReleasePathsTests(unittest.TestCase):
         for workflow in WORKFLOWS:
             self.assertNotIn('cron', triggers(workflow))
         acceptance = (ROOT / '.forgejo/workflows/ci.yml').read_text()
-        self.assertIn("  schedule:\n    - cron: '5 22 * * 2,6'", acceptance)
+        self.assertIn("  schedule:\n    - cron: '0 4 * * *'", acceptance)
         self.assertIn('  workflow_dispatch:', acceptance)
 
     def test_windows_cross_build_helpers_remain_in_delivery(self):
