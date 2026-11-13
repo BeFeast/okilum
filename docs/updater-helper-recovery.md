@@ -38,8 +38,11 @@ SHA-256 before it is renamed. Sweeps touch only ledger entries: a temporary is
 deleted only when an exclusive open shows that no process holds it and the file
 is exactly the recorded one (a reused name or a replayed ledger does not match);
 an obsolete copy only while it is still a single-link regular file with the
-recorded content identity. An unbound reservation, a link, or a changed copy is
-never deleted. Unlisted files are never touched. A ledger that is not exactly
+recorded content identity. A reservation whose file exists but was never bound
+(the process died between creating the file and recording its identity) is
+deleted only if it is still empty, plain and held by no process, since data is
+written only after binding. A non-empty unbound file, a link, or a changed copy
+is never deleted. Unlisted files are never touched. A ledger that is not exactly
 what this code writes (wrong header, malformed line, over 1 MiB, not a plain
 file) means unknown ownership: nothing is swept, recovery and publication fail,
 and Okilum shows the repair state. The ledger, its pending update and a lone
@@ -70,6 +73,7 @@ through a name.
 | missing, no matching copy or no valid record | promote nothing, delete nothing, report "needs repair" |
 | present, matches the record (or no record) | keep it; delete leftovers that match the record, set unverifiable ones aside |
 | present, matches neither side while a verified copy exists | set it aside and promote the verified copy |
+| present, matches neither side and no verified copy | keep everything including the record, report repair (never a bootstrap source) |
 
 Nothing is deleted while the destination is missing, and nothing unverified is
 ever promoted. windows-result reports Win32 errors as HRESULTs (0x8007xxxx);

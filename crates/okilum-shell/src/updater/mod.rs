@@ -290,12 +290,11 @@ pub(crate) fn repair_needed() -> Option<String> {
     None
 }
 
-/// Windows: retry helper recovery now and check for updates if it succeeded.
+/// Windows: retry helper recovery off the UI thread; check for updates if it
+/// succeeded.
 pub(crate) fn retry_repair() {
     #[cfg(windows)]
-    if windows::retry_repair() {
-        check();
-    }
+    windows::retry_repair_then(check);
 }
 
 /// Windows, before `VelopackApp::run`: whether a pending package may be applied

@@ -10,9 +10,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 # Vendored Velopack as reviewed in PR 2855 (helper publication/recovery). Any further
 # updater change must update these pins in its own reviewed PR.
-MAIN_MANIFEST_SHA256 = "5c13fea0aefc198d79c06d98393ead9529c1de6dca4dfb650964529fffc97de8"
-MAIN_PATCH_SHA256 = "aef084d11828944d5763352d56f4c26407e326df36728b94aedae3321b9f2e46"
-MAIN_TREE_SHA256 = "23177faaa90ade388c87de188c3feb6a6f98e7a6c8b1ac92a22e22766c9cbe9d"
+MAIN_MANIFEST_SHA256 = "684c998efd70df890be3dc5b41b8e54d11fadae8a799340d50e86668172e2721"
+MAIN_PATCH_SHA256 = "99c81325aa6e107797de09637897baa1ff507b328da0e8f3cbbbeeca94ee5ad3"
+MAIN_TREE_SHA256 = "76adc699b1f7b95e151be9464ec49fb15d09845533a201b4c106e32d2b4649bf"
 COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "--lib"]
 
 

@@ -383,6 +383,23 @@ fn retry_repair_in_background() {
     });
 }
 
+/// Settings "Retry now": the same evaluation on a worker thread (recovery hashes
+/// files and may wait for the helper lock); `then` runs if updating is
+/// available again. Returns at once; a retry already running is not repeated.
+pub(super) fn retry_repair_then(then: fn()) -> Option<std::thread::JoinHandle<bool>> {
+    if REPAIRING.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    Some(std::thread::spawn(move || {
+        let installed = retry_repair();
+        REPAIRING.store(false, Ordering::Release);
+        if installed {
+            then();
+        }
+        installed
+    }))
+}
+
 /// Re-run helper recovery now. Returns whether updating is available again.
 pub(super) fn retry_repair() -> bool {
     let state = evaluate(BETA.load(Ordering::Relaxed));

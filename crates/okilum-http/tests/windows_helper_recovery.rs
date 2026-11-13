@@ -814,6 +814,9 @@ fn owned_temporaries_are_bound_to_their_file_identity() {
     // A reservation that was never bound (crash right after creation).
     let unbound = sibling(&helper, ".vpk-tmp-unbound");
     fs::write(&unbound, b"unknown").unwrap();
+    // Reserved and created, but the process died before binding: empty, unheld.
+    let reserved = sibling(&helper, ".vpk-tmp-reserved");
+    fs::write(&reserved, b"").unwrap();
     // A bound entry whose file is exactly the recorded one.
     let bound = sibling(&helper, ".vpk-tmp-bound");
     fs::write(&bound, b"ours").unwrap();
@@ -822,6 +825,7 @@ fn owned_temporaries_are_bound_to_their_file_identity() {
         &[
             format!("tmp Update.exe.vpk-tmp-replayed {old_id}"),
             "tmp Update.exe.vpk-tmp-unbound -".into(),
+            "tmp Update.exe.vpk-tmp-reserved -".into(),
             format!("tmp Update.exe.vpk-tmp-bound {}", file_id(&bound)),
         ],
     );
@@ -837,6 +841,10 @@ fn owned_temporaries_are_bound_to_their_file_identity() {
         "unbound temporary deleted"
     );
     assert!(!bound.exists(), "the recorded temporary was not swept");
+    assert!(
+        !reserved.exists(),
+        "an empty reservation left by a crash before binding was kept"
+    );
     fs::remove_file(&replayed).unwrap();
     fs::remove_file(&unbound).unwrap();
     assert_clean(&helper);
@@ -1047,6 +1055,58 @@ fn machine_install_never_bootstraps_from_an_unresolved_root_helper() {
     assert!(
         !helper.exists(),
         "the empty fallback was seeded from a root helper its record rejects"
+    );
+    assert!(inspect(&install.root.path().join("Update.exe")).is_some());
+}
+
+fn record_text(new: &[u8], original: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = |bytes: &[u8]| format!("{}:{:x}", bytes.len(), Sha256::digest(bytes));
+    format!(
+        "velopack-helper-transaction-v1\nid=planted\nnew={}\noriginal={}\n",
+        identity(new),
+        identity(original)
+    )
+}
+
+#[test]
+fn helper_matching_neither_side_keeps_its_record_and_needs_repair() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let record = sibling(&helper, ".vpk-txn");
+    let text = record_text(b"some other new helper", b"some other original helper");
+    fs::write(&record, &text).unwrap();
+    assert!(
+        recover(&helper).is_err(),
+        "a helper its own record rejects was accepted"
+    );
+    assert_eq!(fs::read_to_string(&record).unwrap(), text, "record deleted");
+    assert_eq!(fs::read(&helper).unwrap(), OLD);
+    assert!(publish_fault(NEW, &helper, REAL).is_err());
+    assert!(inspect(&helper).is_some());
+}
+
+#[test]
+fn machine_install_never_bootstraps_from_a_root_helper_its_record_rejects() {
+    // A crash-leftover lock in the root: recovery can open it despite the
+    // denied file creation, so only the mismatch decision protects the fallback.
+    let install = machine_install_with(|root| {
+        fs::write(
+            root.join("Update.exe.vpk-txn"),
+            record_text(b"some other new helper", b"some other original helper"),
+        )
+        .unwrap();
+        fs::write(root.join("Update.exe.vpk-lock"), b"").unwrap();
+    });
+    let helper = install.fallback.join("Update.exe");
+    locate(install.root.path()).unwrap();
+    assert!(
+        !helper.exists(),
+        "the empty fallback was seeded from a root helper its record rejects"
+    );
+    assert!(
+        install.root.path().join("Update.exe.vpk-txn").exists(),
+        "root record deleted"
     );
     assert!(inspect(&install.root.path().join("Update.exe")).is_some());
 }

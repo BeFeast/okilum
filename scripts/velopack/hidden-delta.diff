@@ -66,7 +66,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,1052 @@
+@@ -0,0 +1,1064 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -588,9 +588,17 @@
 +                                    operations.checkpoint(p, "swept-one")?;
 +                                }
 +                                failed
++                            } else if recorded.is_none() && is_plain(&file)? && file.metadata()?.len() == 0 {
++                                // Reserved and created, but the process died before
++                                // binding. Data is written only after binding, so an
++                                // empty, unheld, plain file under our reserved name
++                                // (older than this transaction: we hold the lock) is ours.
++                                let failed = delete_handle_ref(&file).is_err();
++                                drop(file);
++                                failed
 +                            } else {
-+                                // Unbound (crash right after creation) or not
-+                                // the file we created: never deleted, no longer ours.
++                                // A different file under the name, or a non-empty
++                                // unbound one: never deleted, no longer ours.
 +                                warn!("Temporary next to the update helper is not provably ours; left in place");
 +                                false
 +                            }
@@ -821,7 +829,11 @@
 +                    drop((file, aside));
 +                    return recover_locked(p, operations);
 +                }
-+                warn!("Update helper matches neither side of its transaction and no verified copy exists; keeping it");
++                // Rejected by its own record and nothing verified to replace it:
++                // keep the record as evidence and report repair. Never "clean".
++                return Err(other(
++                    "update helper matches neither side of its transaction record and no verified copy exists; record kept, repair needed",
++                ));
 +            }
 +        }
 +        // `held` denies writers and deleters of the admitted helper during cleanup.
