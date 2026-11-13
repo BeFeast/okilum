@@ -7180,26 +7180,32 @@ mod autosave_tests {
         assert_eq!(FileEditor::open(&f.file, &path).unwrap().text(), expected);
     }
 
+    /// The drawn GNOME close button (client-side decorations) closes the
+    /// Reader like a platform close: pending edit saved, origin recorded.
+    #[cfg(target_os = "linux")]
     #[gpui::test]
     fn issue2805_title_bar_close_saves_and_records_like_platform_close(cx: &mut TestAppContext) {
         let state = tempfile::tempdir().unwrap();
-        let trace = crate::reader_diagnostics::Trace::new(Some(state.path().to_owned()), None);
-        cx.update(|cx| cx.set_global(crate::reader_diagnostics::LaunchTrace(trace)));
+        cx.update(|cx| {
+            crate::reader_diagnostics::record_closes_with_drawn_controls(state.path(), cx)
+        });
         let (f, visual) = open(cx, "base");
         type_at_start(&f, visual, "closed ");
         let expected = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
         assert_ne!(on_disk(&f), expected, "the edit must still be pending");
-        let weak = f.reader.downgrade();
-        let close = visual.update(|window, cx| {
-            crate::reader_open::request_reader_close(&weak, "title bar close button", window, cx)
-        });
-        assert!(close);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let close = visual
+            .debug_bounds("window-control-close")
+            .expect("the Reader title bar draws GNOME's close button");
+        visual.simulate_click(close.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
         assert_eq!(on_disk(&f), expected);
-        let log = std::fs::read_to_string(state.path().join(crate::reader_diagnostics::LOG_FILE))
-            .unwrap();
-        assert!(log.lines().any(|line| {
-            line.contains("\"window_close_requested\"") && line.contains("title bar close button")
-        }));
+        let requested = crate::reader_diagnostics::logged(state.path(), "window_close_requested");
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0]["details"]["origin"], "title bar close button");
+        let closed = crate::reader_diagnostics::logged(state.path(), "window_closed");
+        assert_eq!(closed.len(), 1, "the click closed the Reader window");
+        assert_eq!(closed[0]["details"]["origin"], "title bar close button");
     }
 
     #[gpui::test]

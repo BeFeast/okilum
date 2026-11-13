@@ -2,15 +2,19 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
+/// A tool's own close procedure (save, blur, veto); it removes the window
+/// itself when the close may go ahead.
+pub(crate) type CloseTool = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
 #[derive(Default)]
-struct Owners(HashMap<WindowId, (AnyWindowHandle, AnyWindowHandle)>);
+struct Owners(HashMap<WindowId, (AnyWindowHandle, AnyWindowHandle, CloseTool)>);
 impl Global for Owners {}
 
 /// Commands invoked in Settings/Feedback still belong to their main window.
 pub(crate) fn owner(window: AnyWindowHandle, cx: &App) -> AnyWindowHandle {
     cx.try_global::<Owners>()
         .and_then(|owners| owners.0.get(&window.window_id()))
-        .map_or(window, |(owner, _)| *owner)
+        .map_or(window, |(owner, _, _)| *owner)
 }
 
 pub(crate) fn options(
@@ -63,7 +67,12 @@ pub(crate) fn options(
 
 /// Register only after opening succeeds. Closing a tool never closes its owner;
 /// closing an owner also removes its tools from GPUI, not just the native WM.
-pub(crate) fn register(owner: Option<AnyWindowHandle>, tool: AnyWindowHandle, cx: &mut App) {
+pub(crate) fn register(
+    owner: Option<AnyWindowHandle>,
+    tool: AnyWindowHandle,
+    close: CloseTool,
+    cx: &mut App,
+) {
     let Some(owner) = owner else { return };
     if !cx.has_global::<Owners>() {
         cx.set_global(Owners::default());
@@ -72,24 +81,31 @@ pub(crate) fn register(owner: Option<AnyWindowHandle>, tool: AnyWindowHandle, cx
     }
     cx.global_mut::<Owners>()
         .0
-        .insert(tool.window_id(), (owner, tool));
+        .insert(tool.window_id(), (owner, tool, close));
 }
 
 fn close_orphans(cx: &mut App) {
     let alive: HashSet<_> = cx.windows().into_iter().map(|w| w.window_id()).collect();
     let mut close = Vec::new();
-    cx.global_mut::<Owners>().0.retain(|id, (owner, tool)| {
-        if !alive.contains(id) {
-            return false;
-        }
-        if !alive.contains(&owner.window_id()) {
-            close.push(*tool);
-            return false;
-        }
-        true
-    });
-    for tool in close {
-        let _ = tool.update(cx, |_, window, _| window.remove_window());
+    cx.global_mut::<Owners>()
+        .0
+        .retain(|id, (owner, tool, procedure)| {
+            if !alive.contains(id) {
+                return false;
+            }
+            if !alive.contains(&owner.window_id()) {
+                close.push((*tool, procedure.clone()));
+                return false;
+            }
+            true
+        });
+    // A tool closes through its own procedure and names why (#2805); one that
+    // vetoes (for example unsaved Feedback) stays open on its own.
+    for (tool, procedure) in close {
+        let _ = tool.update(cx, |_, window, cx| {
+            reader_diagnostics::window_close_requested(window, cx, "owner window closed");
+            procedure(window, cx);
+        });
     }
 }
 

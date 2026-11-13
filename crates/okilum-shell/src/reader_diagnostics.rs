@@ -221,6 +221,27 @@ impl Trace {
     }
 }
 
+/// Test support (#2805): the logged events of one phase, in order.
+#[cfg(test)]
+pub(crate) fn logged(state: &Path, phase: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(state.join(LOG_FILE))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["phase"] == phase)
+        .collect()
+}
+
+/// Test support (#2805): log closes under a fresh trace and draw GNOME's
+/// client-side window controls, which test windows otherwise never show.
+#[cfg(test)]
+pub(crate) fn record_closes_with_drawn_controls(state: &Path, cx: &mut App) {
+    let trace = Trace::new(Some(state.to_owned()), None);
+    cx.set_global(LaunchTrace(trace.clone()));
+    trace.record_window_closes(cx);
+    cx.set_global(gpui_component::ForceClientWindowControls(true));
+}
+
 pub(crate) fn trace(cx: &App) -> Option<Trace> {
     cx.try_global::<LaunchTrace>().map(|trace| trace.0.clone())
 }
@@ -676,6 +697,40 @@ mod tests {
             .expect("actual GPUI removal must fire the observer");
         assert_eq!(closed["details"]["origin"], "native platform request");
         assert_eq!(closed["details"]["remaining_windows"], 0);
+    }
+
+    /// Negative control for the #2805 title-bar tests: the drawn close button
+    /// without a handler removes the window with no recorded request. A test
+    /// that clicks a handled button is therefore not vacuous.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn issue2805_unhandled_drawn_close_button_is_unattributed(cx: &mut TestAppContext) {
+        struct TitleSurface;
+        impl Render for TitleSurface {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                gpui::div()
+                    .size_full()
+                    .child(gpui_component::TitleBar::new().child("Unhandled"))
+            }
+        }
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| record_closes_with_drawn_controls(state.path(), cx));
+        let (_, visual) =
+            cx.add_window_view(|window, cx| Root::new(cx.new(|_| TitleSurface), window, cx));
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let close = visual
+            .debug_bounds("window-control-close")
+            .expect("forced client controls draw the close button");
+        visual.simulate_click(close.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        let closed = logged(state.path(), "window_closed");
+        assert_eq!(closed.len(), 1);
+        assert_eq!(
+            closed[0]["details"]["origin"],
+            "no recorded close request; app removal or surface destruction"
+        );
+        assert!(logged(state.path(), "window_close_requested").is_empty());
     }
 
     #[test]
