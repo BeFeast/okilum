@@ -43,7 +43,7 @@ def main():
             assert original.count(before) == 1
             source.write_bytes(original.replace(before, after))
             result = subprocess.run(COMMAND + [test, "--", "--exact", "--nocapture"], cwd=ROOT,
-                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                    text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             print(result.stdout, flush=True)
             assert result.returncode == 101 and f"{test} ... FAILED" in result.stdout, test
             print("READER_REVERT_CONTROL_FIRED " + test, flush=True)
