@@ -48,6 +48,22 @@ Output goes to `…/sprint/stages.log`, compiler output to `build.log`. On failu
 the existing report flow runs: diagnostics are filed through the feedback
 endpoint and kept in `~/Library/Logs/OkilumSprint/last-sprint-report.txt`.
 
+A failed build exits non-zero and its last line is `Sprint FAILED at stage
+<stage> (exit N)`. The script already writes `stages.log` itself, so there is no
+need to pipe it. If you do pipe it into `tee`, the shell reports `tee`'s status
+(0), not the build's (13.11: a failed assemble-sign looked like exit 0). Print
+the build's own status; macOS Terminal runs zsh, which numbers `pipestatus` from 1:
+
+```bash
+cd ~/Developer/personal/okilum && git fetch origin main && bash <(git show origin/main:scripts/dev/okilum-sprint.sh) <branch> 2>&1 | tee ~/sprint-run.log; echo "Sprint exit: ${pipestatus[1]}"
+```
+
+In bash the same value is `${PIPESTATUS[0]}`.
+
+The script from main also builds branches older than
+`okilum-macos-bundle-tools` (#2880): there it uses the old `bundled_plist` and
+`macos_app_icon` examples, which produce the same bytes.
+
 Status: the 05.11 changes (computed build number, `.noindex` staging,
 LaunchServices cleanup, stale lock) are covered by `scripts/ci/test_dev_builds.py`
 on Linux. They have not run on a Mac yet. No agent runs this script over ssh.

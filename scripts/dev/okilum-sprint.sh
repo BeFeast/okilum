@@ -412,10 +412,28 @@ acquire_lock() {
     mkdir "$lock" 2>/dev/null || { echo "Another build took $lock." >&2; return 1; }
     printf '%s %s\n' "$$" "$(process_start $$)" > "$lock/owner"
 }
+# The script runs from origin/main against any branch (README): a branch from
+# before okilum-macos-bundle-tools (#2880) still has the old examples, which
+# link dev-dependencies but produce the same bytes. Prints the cargo argv.
+sprint_bundle_tool() {
+    local tool=$1
+    if [[ -f crates/okilum-macos-bundle-tools/Cargo.toml ]]; then
+        printf '%s\n' cargo run --locked --profile sprint --target aarch64-apple-darwin \
+            -p okilum-macos-bundle-tools --bin "$tool" --
+    elif [[ $tool == okilum-launch-agent-plist ]]; then
+        printf '%s\n' cargo run --locked --profile sprint --target aarch64-apple-darwin \
+            -p okilum-sync-controller --example bundled_plist --
+    else
+        printf '%s\n' env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --locked --profile sprint \
+            --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon --
+    fi
+}
 sprint_exit() {
     result=$?
     trap - EXIT INT TERM
     if (( result != 0 )); then
+        # Visible even when the caller pipes into tee, which reports tee's status.
+        printf '\nSprint FAILED at stage %s (exit %s)\n' "$stage" "$result" >&2
         write_context || true
         python3 "$reporter" --context "$context" --stage "$stage" || true
         # Collect the rejected bundle FIRST; only then restore the working app.
@@ -563,8 +581,8 @@ mkdir -p "$bundle_stage/Contents/MacOS" "$bundle_stage/Contents/Resources" "$bun
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/okilum" "$bundle_stage/Contents/MacOS/okilum"
 install -m 755 "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/$SUPERVISOR_NAME" "$bundle_stage/$SUPERVISOR_RELATIVE"
 mkdir -p "$bundle_stage/Contents/Library/LaunchAgents"
-cargo run --locked --profile sprint --target aarch64-apple-darwin -p okilum-macos-bundle-tools \
-    --bin okilum-launch-agent-plist -- "$SUPERVISOR_RELATIVE" "$bundle_stage/Contents/Library/LaunchAgents"
+tool_command=(); while IFS= read -r word; do tool_command+=("$word"); done < <(sprint_bundle_tool okilum-launch-agent-plist)
+"${tool_command[@]}" "$SUPERVISOR_RELATIVE" "$bundle_stage/Contents/Library/LaunchAgents"
 # The Mac has no gpg (#2589): the pinned archive SHA256 still gates the bytes;
 # only the upstream signature check is skipped on a host without gpg.
 python3 - "$bundle_stage" <<'PY'
@@ -599,8 +617,8 @@ write_context
 cp "$context" "$bundle_stage/Contents/Resources/sprint-context.json"
 plutil -lint "$bundle_stage/Contents/Info.plist"
 # Reuse the approved icon rasterizer; add a bright amber sprint badge.
-cargo run --locked --profile sprint --target aarch64-apple-darwin \
-    -p okilum-macos-bundle-tools --bin okilum-app-icon-rasters -- "$root/icon-rasters"
+tool_command=(); while IFS= read -r word; do tool_command+=("$word"); done < <(sprint_bundle_tool okilum-app-icon-rasters)
+"${tool_command[@]}" "$root/icon-rasters"
 python3 scripts/macos-icon.py "$root/icon-rasters" "$bundle_stage/Contents/Resources/Okilum.icns"
 # Inside-out Developer ID signing, as in scripts/updater/sign-bundle.sh, without
 # notarization: Sync only trusts a helper and runtime signed by this team.
