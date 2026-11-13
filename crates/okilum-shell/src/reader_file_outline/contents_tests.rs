@@ -766,9 +766,19 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
         matches!(marked, tree::Row::Node { index, .. } if index == near_end),
         "positive: the click opened the groups and marks the node near the end"
     );
+    // The position scrubber's page jump is not a caret move: the top of the
+    // view leads and nothing opens.
+    let code = code(&reader, visual);
+    let pages = code.update_in(visual, |p, w, cx| p.show_page_for_tests(0, w, cx));
+    assert!(pages > 1, "positive: the fixture is paged ({pages})");
+    paint(visual);
+    let tree::Row::Group { first, .. } = marked(&view, visual) else {
+        panic!("page 0's top node sits in the closed first group")
+    };
+    assert_eq!(first, 0);
     // The viewer now holds a newer parse than the shown rows (same text, a
     // separate document): exactly the state while new rows are built.
-    let raw = code(&reader, visual)
+    let raw = code
         .read_with(visual, |p, _| p.document_raw_for_contents())
         .expect("the viewer's document");
     let shown_doc = doc(&text);

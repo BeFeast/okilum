@@ -37,6 +37,18 @@ impl CodePreview {
         self.structure.selected
     }
 
+    /// The position scrubber's page jump, and the page count.
+    #[cfg(test)]
+    pub(crate) fn show_page_for_tests(
+        &mut self,
+        page: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        self.show_page(page, window, cx);
+        self.document.as_ref().map_or(0, |doc| doc.pages.len())
+    }
+
     /// JSON, YAML, TOML and XML (#2814 9a, 9c). `.jsonc`, Rust and Python
     /// keep their private outline.
     fn contents_format(&self) -> bool {

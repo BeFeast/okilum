@@ -437,9 +437,13 @@ impl View {
         }
         let now = code.read(cx).contents_whereabouts(cx)?;
         match self.snapshot.seen.replace(now) {
-            // A new view or page (a switch, the position scrubber) is not a
-            // caret move: the top of the view leads.
-            Some(before) if before.view != now.view || before.page != now.page => {
+            // A view switch is not a caret move, nor a new page whose caret
+            // is still where loading the page put it (the position scrubber):
+            // the top of the view leads. A Find hit or a Contents click on
+            // another page places the caret inside it.
+            Some(before)
+                if before.view != now.view || (before.page != now.page && now.caret == Some(0)) =>
+            {
                 self.snapshot.follow_caret = false;
                 self.snapshot.reveal = None;
             }
