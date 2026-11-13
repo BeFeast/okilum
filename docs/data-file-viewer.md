@@ -9,10 +9,11 @@ compact JSON, missing fields stay empty and explicit null displays `null`.
 Arrays of arrays use numbered columns; scalar arrays use a Value column.
 
 Click a column heading for ascending, descending, then source order. Numeric
-columns sort numerically; other columns use case-sensitive text order. Filter
-loaded rows is a case-insensitive substring across every cell. Sorting and
+columns sort numerically; other columns use case-sensitive text order. Find in
+loaded rows matches a substring across every cell, with optional Match case. Sorting and
 filtering run on workers; obsolete results cannot replace newer queries. Copy
-uses displayed row order and clears the selection when the projection changes.
+uses displayed row order. Find selects the first matching cell; stepping reveals
+each hit on both axes, and clearing the query preserves source-cell selection.
 Both rows and columns are virtualized. The no-header CSV option retains every
 source row and provides numbered sortable column headings.
 
@@ -22,14 +23,14 @@ The first preview is bounded by 1 MiB, 1,000 displayed rows, 64,000 cells,
 Counts identify the loaded scope and partial files. Filters and sorts cover
 only that scope; the limit notice never claims the whole file was searched.
 Cut records are omitted rather than displayed as complete values. Oversized,
-malformed or unsupported JSON still has the Source view.
+malformed or unsupported JSON still has the Raw view.
 
 Open in DuckDB starts an installed DuckDB CLI using its documented
 `-cmd "CREATE VIEW ..." -ui` interface, exposing the full canonical file as
 `okilum_data` in an independent in-memory database. CLI arguments bypass the
 shell; SQL literals and file glob characters are escaped. The CLI process is
 reaped independently of the Reader. Missing/failed CLI launches display an
-inline retryable error. Installation and extension downloads belong to the
+toast with a Get DuckDB action. Installation and extension downloads belong to the
 external CLI. Okilum adds no dependency, database engine, Parquet/.duckdb
 viewer, SQL input or bundled asset; the dependency set and packaged assets are unchanged.
 
@@ -102,8 +103,8 @@ switching, folding and paging never reparse or reset
 Tree folds. Fold all never changes the selected view. Only explicit user choices
 in unguarded files update the per-type map; Go to error, Show in raw text node navigation
 and background completion never write memory. The map covers json, json-array,
-yaml, toml and xml;
-csv/tsv entries are reserved for the table step. Legacy `json_raw` migrates to
+yaml, toml, xml, csv and tsv. CSV and TSV default to Table with lazy Raw loading;
+JSON-array memory is independent. Legacy `json_raw` migrates to
 the JSON-object entry and is omitted from subsequent writes.
 
 Size guards precede memory: over 8 MiB opens Raw without formatting; a line over

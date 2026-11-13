@@ -512,13 +512,13 @@ impl CodePreview {
         }
     }
 
-    /// Tables retain their own filter until the table step (#2812).
+    /// Route Find to the active view’s shared field.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
         if self.view == View::Table {
             return self
                 .table
                 .as_ref()
-                .is_some_and(|table| table.read(cx).focus_filter(window, cx));
+                .is_some_and(|table| table.update(cx, |table, cx| table.focus_filter(window, cx)));
         }
         if !matches!(self.state, State::Content(_)) {
             return false;
@@ -641,7 +641,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
 }
 
 impl Render for CodePreview {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
         #[cfg(feature = "data-view-native-harness")]
@@ -650,12 +650,24 @@ impl Render for CodePreview {
         native_trace("chrome.begin");
         let header = self.own_header.then(|| {
             let chrome = self.compact_chrome(cx.entity(), cx);
-            reader_viewer_chrome::render_compact_header(
-                &chrome,
-                window.viewport_size().width.as_f32(),
-                window,
-                cx,
+            canvas(
+                move |bounds, window, cx| {
+                    let mut header = reader_viewer_chrome::render_compact_header(
+                        &chrome,
+                        bounds.size.width.as_f32(),
+                        window,
+                        cx,
+                    );
+                    header.layout_as_root(bounds.size.into(), window, cx);
+                    header.prepaint_at(bounds.origin, window, cx);
+                    header
+                },
+                |_, mut header, window, cx| header.paint(window, cx),
             )
+            .w_full()
+            .h(px(48.))
+            .flex_none()
+            .into_any_element()
         });
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.end");
@@ -940,7 +952,7 @@ mod tests {
         visual.simulate_resize(size(px(800.), px(500.)));
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("table-duckdb").is_some(),
+            visual.debug_bounds("delimited-viewport").is_some(),
             "JSON array opens a table"
         );
         let preview = preview.unwrap();
@@ -972,10 +984,10 @@ mod tests {
             assert!(p.input().is_some_and(|input| !input.read(cx).is_editable()));
         });
         assert!(visual.debug_bounds("code-view-menu").is_some());
-        assert!(visual.debug_bounds("table-duckdb").is_none());
+        assert!(visual.debug_bounds("delimited-viewport").is_none());
         preview.update_in(visual, |p, window, cx| p.set_view(View::Table, window, cx));
         visual.run_until_parked();
-        assert!(visual.debug_bounds("table-duckdb").is_some());
+        assert!(visual.debug_bounds("delimited-viewport").is_some());
         assert_eq!(std::fs::read_to_string(path).unwrap(), source);
     }
     use ::core::prelude::v1::test;
@@ -996,7 +1008,8 @@ mod tests {
             ("Dockerfile", Some("text")),
             (".env", Some("text")),
             ("notes/Plan.md", None),
-            ("data.csv", None),
+            ("data.csv", Some("text")),
+            ("data.tsv", Some("text")),
             ("notes.txt", Some("text")),
             ("server.log", None),
             ("photo.png", None),

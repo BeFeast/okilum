@@ -124,7 +124,9 @@ pub(crate) fn entry() -> bool {
                                                         code.read(cx).native_table().is_some()
                                                     })
                                                 }
-                                                "data.csv" => p.table.is_some(),
+                                                "data.csv" => p.code.as_ref().is_some_and(|code| {
+                                                    code.read(cx).native_table().is_some()
+                                                }),
                                                 "gateway.log" => p.log.is_some(),
                                                 "document.pdf" => p.pdf.is_some(),
                                                 "image.png" => p.image,

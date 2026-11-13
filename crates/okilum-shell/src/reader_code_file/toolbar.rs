@@ -184,6 +184,18 @@ impl CodePreview {
                 return table_chrome;
             }
         }
+        if let Some(reason) = &self.table_failure {
+            let mut warning = ViewerAction::new(
+                "table-unavailable",
+                Icon::new(IconName::TriangleAlert).text_color(brand::palette(cx).warning),
+                "Table unavailable",
+                Rc::new(|_, _| {}),
+            );
+            warning.enabled = false;
+            warning.disabled_reason = Some(reason.clone().into());
+            warning.tooltip = reason.clone().into();
+            chrome.badges.push(warning);
+        }
         if reader_delimited::eligible(&self.rel) {
             chrome.copy_actions.retain(|a| a.id != "code-copy-node");
         }
@@ -326,8 +338,7 @@ impl CodePreview {
 
     #[inline(never)]
     pub(super) fn bottom_line(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Table retains its own rows/count line until #2812; never stack a
-        // second CodePreview status line under it. The name lock remains.
+        // The hosted table supplies the one shared bottom status line.
         if self.view == View::Table {
             return div().into_any_element();
         }
