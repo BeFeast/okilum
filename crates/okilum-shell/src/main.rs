@@ -8357,8 +8357,21 @@ impl Render for Reader {
                             window.is_window_active(),
                         )
                     });
+                    // GNOME draws our own close button; it closes like the
+                    // platform request, never by bare removal (#2805).
+                    let close_target = cx.entity().downgrade();
                     view.child(
                         TitleBar::new()
+                            .on_close_window(move |_, window, cx| {
+                                if reader_open::request_reader_close(
+                                    &close_target,
+                                    "title bar close button",
+                                    window,
+                                    cx,
+                                ) {
+                                    window.remove_window();
+                                }
+                            })
                             .h(px(READER_HEADER_HEIGHT))
                             .when_some(tint, |bar, tint| bar.bg(tint))
                             // Traffic lights are hidden in full screen; drop

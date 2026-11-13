@@ -216,7 +216,8 @@ fn show_section_from(
             }
         }
         let options = window_options(owner, cx);
-        match cx.open_window(options, move |window, cx| {
+        let mut opened = None;
+        match cx.open_window(options, |window, cx| {
             window.set_window_title("Okilum Settings");
             reader_owned_windows::attach(owner, window, cx);
             let settings = cx.new(|cx| {
@@ -226,11 +227,30 @@ fn show_section_from(
                 }
                 settings
             });
+            let weak = settings.downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                // The same blur/draw procedure as Close; it removes the window.
+                weak.update(cx, |settings, cx| {
+                    settings.close("native platform request", window, cx)
+                })
+                .ok();
+                false
+            });
+            opened = Some(settings.downgrade());
             settings.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(settings, window, cx))
         }) {
             Ok(handle) => {
-                reader_owned_windows::register(owner, handle.into(), cx);
+                let weak = opened.take().expect("opened Settings view");
+                reader_owned_windows::register(
+                    owner,
+                    handle.into(),
+                    std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                        weak.update(cx, |settings, cx| settings.close_procedure(window, cx))
+                            .ok();
+                    }),
+                    cx,
+                );
                 if !cx.has_global::<SettingsOwners>() {
                     cx.set_global(SettingsOwners::default());
                 }
@@ -678,10 +698,19 @@ impl Settings {
             .ghost()
             .label("Close")
             .accessibility_label("Close Settings")
-            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+            .on_click(
+                cx.listener(|this, _, window, cx| this.close("Settings Close button", window, cx)),
+            )
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Every close of Settings names its origin (#2805) and runs the same
+    /// blur/draw procedure before removal.
+    fn close(&mut self, origin: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        reader_diagnostics::window_close_requested(window, cx, origin);
+        self.close_procedure(window, cx);
+    }
+
+    fn close_procedure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         reader_keymap::stop_recording(window, cx);
         window.blur(cx);
         // GPUI delivers focus/blur events during drawing. Let inputs and their
@@ -2102,7 +2131,7 @@ impl Render for Settings {
                     && event.keystroke.modifiers == Modifiers::default()
                     && !window.has_active_dialog(cx)
                 {
-                    this.close(window, cx);
+                    this.close("Escape in Settings", window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -2190,7 +2219,9 @@ impl Render for Settings {
             .text_color(p.text)
             .key_context("OkilumSettings")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| this.close(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.close("Close Settings command", window, cx)
+            }))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
                 window.activate_window();
                 cx.stop_propagation();
@@ -2198,15 +2229,26 @@ impl Render for Settings {
             // GPUI negotiates SSD through xdg-decoration and reports CSD when
             // unavailable (GNOME). TitleBar hides its controls under SSD.
             .when(!cfg!(target_os = "macos"), |view| {
+                // GNOME's drawn close button uses the same procedure (#2805).
+                let close_target = cx.entity().downgrade();
                 view.child(
-                    TitleBar::new().child("Settings").child(
-                        h_flex()
-                            .h_full()
-                            .items_center()
-                            .pr_3()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(self.close_button(cx)),
-                    ),
+                    TitleBar::new()
+                        .on_close_window(move |_, window, cx| {
+                            close_target
+                                .update(cx, |settings, cx| {
+                                    settings.close("title bar close button", window, cx)
+                                })
+                                .ok();
+                        })
+                        .child("Settings")
+                        .child(
+                            h_flex()
+                                .h_full()
+                                .items_center()
+                                .pr_3()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(self.close_button(cx)),
+                        ),
                 )
             })
             .when(cfg!(target_os = "macos"), |view| {
@@ -4259,6 +4301,55 @@ mod tests {
             assert!(!cx.windows().contains(&first_about.into()));
             assert!(cx.windows().contains(&second_about.into()));
         });
+    }
+
+    /// Settings records why it closed (#2805): GNOME's drawn close button and
+    /// the owner's closure both run its close procedure.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn issue2805_settings_closes_record_their_origin(cx: &mut TestAppContext) {
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            reader_diagnostics::record_closes_with_drawn_controls(state.path(), cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        let mut visual = visual.clone();
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        let open = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| {
+                window.activate_window();
+                show(None, cx);
+            });
+            visual.run_until_parked();
+            visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap())
+        };
+        let first = open(&mut visual);
+        let mut settings = VisualTestContext::from_window(first.into(), cx);
+        settings.update(|window, cx| window.draw(cx).clear(cx));
+        let close = settings
+            .debug_bounds("window-control-close")
+            .expect("Settings draws GNOME's close button");
+        settings.simulate_click(close.center(), Modifiers::default());
+        settings.run_until_parked();
+        assert!(!cx.read(|cx| cx.windows().contains(&first.into())));
+        let second = open(&mut visual);
+        visual.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| cx.windows().contains(&second.into())));
+        let origin_of = |handle: WindowHandle<Root>| {
+            let id = format!("{:?}", handle.window_id());
+            reader_diagnostics::logged(state.path(), "window_closed")
+                .into_iter()
+                .find(|event| event["details"]["window"] == id.as_str())
+                .map(|event| event["details"]["origin"].as_str().unwrap().to_owned())
+        };
+        assert_eq!(origin_of(first).as_deref(), Some("title bar close button"));
+        assert_eq!(origin_of(second).as_deref(), Some("owner window closed"));
     }
 
     #[gpui::test]

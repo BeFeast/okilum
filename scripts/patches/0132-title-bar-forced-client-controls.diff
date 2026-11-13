@@ -1,0 +1,42 @@
+diff --git a/crates/component/src/title_bar.rs b/crates/component/src/title_bar.rs
+index 4f7c3711..0ea74bb7 100644
+--- a/crates/component/src/title_bar.rs
++++ b/crates/component/src/title_bar.rs
+@@ -253,16 +253,27 @@ fn draw_client_window_controls(decorations: Decorations) -> bool {
+     matches!(decorations, Decorations::Client { .. })
+ }
+ 
++/// Draw the client-side window controls even where the platform reports
++/// server-side decorations. Headless test platforms always report `Server`;
++/// set this global there to exercise the controls and their callbacks.
++#[derive(Clone, Copy, Default)]
++pub struct ForceClientWindowControls(pub bool);
++
++impl gpui::Global for ForceClientWindowControls {}
++
+ #[derive(IntoElement)]
+ struct WindowControls {
+     on_close_window: Option<Rc<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>>,
+ }
+ 
+ impl RenderOnce for WindowControls {
+-    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
++    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+         if cfg!(target_os = "macos") || cfg!(target_family = "wasm") {
+             return div().id("window-controls");
+         }
++        let _forced = cx
++            .try_global::<ForceClientWindowControls>()
++            .is_some_and(|force| force.0);
+ 
+         // Under server-side decorations the window manager already renders
+         // its own title bar, complete with min/max/close; drawing ours as
+@@ -274,7 +285,7 @@ impl RenderOnce for WindowControls {
+         // decorated, mirroring the `is_client_decorated` gating of the
+         // title bar's window-menu overlay.
+         #[cfg(target_os = "linux")]
+-        if !draw_client_window_controls(window.window_decorations()) {
++        if !_forced && !draw_client_window_controls(window.window_decorations()) {
+             return div().id("window-controls");
+         }
+ 

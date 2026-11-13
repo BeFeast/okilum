@@ -269,7 +269,12 @@ mod view {
                 panel
             });
             let weak = panel.downgrade();
-            window.on_window_should_close(cx, move |_, cx| {
+            window.on_window_should_close(cx, move |window, cx| {
+                crate::reader_diagnostics::window_close_requested(
+                    window,
+                    cx,
+                    "native platform request",
+                );
                 weak.update(cx, |panel, cx| panel.stop(cx)).unwrap_or(true)
             });
             cx.new(|cx| Root::new(panel, window, cx))
@@ -583,7 +588,16 @@ mod view {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let loading = matches!(self.controller.state, State::Loading { .. });
             let mut body = v_flex().size_full().min_h_0()
-                .child(TitleBar::new().child("Remote Markdown"))
+                .child(TitleBar::new().on_close_window({
+                    // GNOME's drawn close button stops like the platform close (#2805).
+                    let panel = cx.entity().downgrade();
+                    move |_, window, cx| {
+                        crate::reader_diagnostics::window_close_requested(window, cx, "title bar close button");
+                        if panel.update(cx, |panel, cx| panel.stop(cx)).unwrap_or(true) {
+                            window.remove_window();
+                        }
+                    }
+                }).child("Remote Markdown"))
                 .child(h_flex().p_3().gap_2()
                     .child(div().flex_1().child(if self.browser.is_some(){"Remote folder · read-only listing".into()} else if self.edit.is_some() { "Editing a protected local draft · explicit Save only".into() } else { self.controller.state.message() }))
                     .child(self.folder_controls(cx))
