@@ -915,6 +915,14 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
 fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
     use okilum_core::deep_link::{parse, resolve, Resolution};
     super::reader_startup::supersede(cx);
+    // `okilum://logs` claims its route, malformed or not (#1441).
+    if let Some(remote) = okilum_core::remote_log::link::RemoteLink::parse(link) {
+        match remote {
+            Ok(remote) => open_remote_logs(remote, known, cx),
+            Err(error) => show_error(error, cx),
+        }
+        return;
+    }
     let link = match parse(link) {
         Ok(link) => link,
         Err(refused) => return show_error(anyhow::anyhow!(refused.message()), cx),
@@ -964,6 +972,32 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
             position,
         } => choose_link_vault(vault, roots, position, cx),
         Resolution::Unavailable(message) => show_error(anyhow::anyhow!(message), cx),
+    }
+}
+
+/// Open a Kibana log link in the Kibana window of the one vault it names.
+/// Same consent rule as notes: a vault on screen or already trusted for
+/// links opens at once; any other asks first.
+fn open_remote_logs(
+    link: okilum_core::remote_log::link::RemoteLink,
+    known: &[PathBuf],
+    cx: &mut App,
+) {
+    let root = super::reader_ui_state::state_directory(cx)
+        .and_then(|state| link.resolve_vault(known, &state));
+    let root = match root {
+        Ok(root) => root,
+        Err(error) => return show_error(error, cx),
+    };
+    if reusable_roots(cx).contains(&root) || super::reader_ui_state::link_trusted(&root, cx) {
+        super::reader_log::remote::show_link(root, link, cx);
+    } else {
+        let opts = super::Opts {
+            vault: Some(root.clone()),
+            remote_logs: Some(link),
+            ..Default::default()
+        };
+        confirm_link_vault(root, opts, cx);
     }
 }
 
@@ -1575,8 +1609,14 @@ fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App)
 
 /// Open a vault the user just chose in a prompt window: choosing it is the
 /// consent, so links may open it from now on.
-fn open_from_prompt(root: &Path, opts: super::Opts, window: &mut Window, cx: &mut App) {
+fn open_from_prompt(root: &Path, mut opts: super::Opts, window: &mut Window, cx: &mut App) {
     super::reader_ui_state::trust_for_links(root, cx);
+    if let Some(link) = opts.remote_logs.take() {
+        // The Kibana window opens synchronously, so the prompt can go now.
+        super::reader_log::remote::show_link(root.to_owned(), link, cx);
+        window.remove_window();
+        return;
+    }
     if let Err(error) = open_window(opts, cx) {
         window.remove_window();
         show_error(error, cx);
@@ -4025,6 +4065,107 @@ mod entry_tests {
             (false, 1, true),
             "Enter opens and trusts"
         );
+    }
+
+    /// #1441: an `okilum://logs` link opens the Kibana window of the one
+    /// vault that saved its source, behind the same first-link consent as
+    /// notes; a trusted vault opens at once; an unknown vault is refused.
+    #[gpui::test]
+    fn kibana_log_links_open_the_linked_vault_kibana_window(cx: &mut TestAppContext) {
+        use okilum_core::remote_log::{self, discover::TimeRange, link::RemoteLink, Source};
+        // The Kibana session worker wakes the test from an OS thread.
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Work");
+        let other = fixture.path().join("elsewhere/Work");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let root = root.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+        let state = fixture.path().join("ui-state");
+        cx.update(|cx| {
+            crate::test_init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&state, cx);
+        });
+        let state = cx
+            .update(|cx| super::super::reader_ui_state::state_directory(cx))
+            .unwrap();
+        let source = Source::import("Work", "https://logs.example/app/discover#/?_a=(index:events,query:(language:kuery,query:'service:checkout'),columns:!(description),sort:!(!('@timestamp',desc)))&_g=(time:(from:now-15m,to:now),refreshInterval:(pause:!f,value:5000))").unwrap();
+        remote_log::save_source(&state, &root, &source).unwrap();
+        let range = TimeRange {
+            from: "2026-11-13T10:00:00Z".into(),
+            to: "2026-11-13T10:15:00Z".into(),
+        };
+        let link = RemoteLink::for_view(&root, &source, &range).unwrap();
+        let encoded = link.encode().unwrap();
+        let known = [other.clone(), root.clone()];
+        let kibana = |cx: &mut TestAppContext, vault: &Path| {
+            cx.update(|cx| super::super::reader_log::remote::test_window_state(vault, cx))
+        };
+
+        // Control: a vault this computer never opened is refused.
+        let before = cx.update(|cx| cx.windows().len());
+        cx.update(|cx| open_deep_link_among(&encoded, &[other.clone()], cx));
+        cx.run_until_parked();
+        assert!(kibana(cx, &root).is_none() && kibana(cx, &other).is_none());
+        assert_eq!(
+            cx.update(|cx| cx.windows().len()),
+            before + 1,
+            "only the error window opens"
+        );
+
+        // First link to an untrusted vault asks, opening nothing yet.
+        cx.update(|cx| open_deep_link_among(&encoded, &known, cx));
+        cx.run_until_parked();
+        let prompt = cx.update(|cx| {
+            cx.global::<LinkPrompts>()
+                .0
+                .get(&root)
+                .map(|(handle, _)| *handle)
+                .expect("the logs link asks first")
+        });
+        assert!(kibana(cx, &root).is_none(), "nothing opens before consent");
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let (pending, message) = kibana(cx, &root).expect("Enter opens the vault's Kibana window");
+        assert!(
+            pending.as_ref() == Some(&link)
+                || message.contains("Linked query and fixed time range"),
+            "the window received this exact link: {pending:?} / {message}"
+        );
+        assert!(
+            kibana(cx, &other).is_none(),
+            "a same-named vault never wins"
+        );
+        cx.update(|cx| {
+            assert!(!cx.windows().contains(&prompt), "the prompt closed");
+            assert!(super::super::reader_ui_state::link_trusted(&root, cx));
+            assert_eq!(
+                cx.global::<Readers>().0.len(),
+                0,
+                "no Reader window for a logs link"
+            );
+        });
+
+        // Trusted now: the next link reuses the Kibana window without asking.
+        let windows = cx.update(|cx| cx.windows().len());
+        cx.update(|cx| open_deep_link_among(&encoded, &known, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                cx.global::<LinkPrompts>().0.get(&root).is_none(),
+                "no second prompt"
+            );
+            assert_eq!(
+                cx.windows().len(),
+                windows,
+                "the open Kibana window is reused"
+            );
+        });
+        cx.quit();
     }
 
     /// #1110: on a clean first run, choosing a vault folder on the start

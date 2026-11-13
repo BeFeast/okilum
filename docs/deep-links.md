@@ -155,6 +155,29 @@ rendered link is rewritten to the `v/` form.
 - Heading context in the outline: «Copy link to heading» (`#Heading`).
 - Clipboard is plain text; the toast says «Link copied».
 
+## Kibana log links (#1441)
+
+`okilum://logs?v=1&payload=<base64url JSON>` reopens a Kibana log view. The
+payload holds the saved source id, a vault id, the applied Discover state
+(query, filters including disabled/negated/pinned metadata, columns, sort) and
+a fixed absolute time range with live paused. It never holds the endpoint, an
+API key or event data. Payloads over 128 KiB are refused.
+
+- Producer: the Kibana window's «Copy Okilum link» copies the applied query
+  over the loaded range; a relative range («Last 15 min») is frozen to the
+  absolute range that was loaded. T3 «Open logs» emits the same form.
+- Vault id: derived from the canonical vault path that also partitions saved
+  Kibana sources, so it is local to this computer. It is never written to the
+  vault and never matched by folder name.
+- Resolution: the one known vault whose id matches and whose saved sources
+  contain the source id. Anything else answers with an error and opens nothing:
+  an unknown vault, or a source that was not saved in that vault.
+- Consent: same rule as notes. A vault on screen or already trusted for links
+  opens its Kibana window at once (reusing an open one); otherwise the vault
+  prompt asks first, and Open trusts the vault. No Reader window opens.
+- Opening fills the source's query and range; loading re-queries the server.
+  It is not an immutable snapshot, and live never starts from a link.
+
 ## Stable ids
 
 `note/<id>`, `task/<id>` and `project/<id>` (projects of the server model) are

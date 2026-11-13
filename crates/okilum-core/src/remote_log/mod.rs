@@ -179,6 +179,16 @@ pub fn vault_scope(vault: &Path) -> String {
     format!("{digest:x}")
 }
 
+/// Machine-local vault identity carried by `okilum://logs` links. It derives
+/// from the same canonical path that partitions saved sources, so resolving a
+/// link never guesses a vault by name and never writes an identity file.
+pub fn vault_id(vault: &Path) -> uuid::Uuid {
+    let digest = Sha256::digest(vault.as_os_str().as_encoded_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_custom_bytes(bytes).into_uuid()
+}
+
 /// Stored under the existing durable application state directory, partitioned
 /// by the canonical vault path. Event data and credentials never enter this file.
 pub fn load_sources(state: &Path, vault: &Path) -> Result<Vec<Source>> {

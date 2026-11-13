@@ -1054,6 +1054,9 @@ struct Opts {
     link: Option<String>,
     /// Where the link lands in `note` once it is open (#1049).
     landing: Option<okilum_core::deep_link::Position>,
+    /// An `okilum://logs` link awaiting the vault prompt (#1441): consent
+    /// opens the vault's Kibana window with it instead of a Reader.
+    remote_logs: Option<okilum_core::remote_log::link::RemoteLink>,
 }
 
 /// Payload for the custom "local-image" markdown block node. TextView's stock
