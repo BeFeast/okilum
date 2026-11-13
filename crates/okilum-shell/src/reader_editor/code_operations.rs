@@ -171,11 +171,38 @@ fn validation_with_control(language: &str, source: &str, control: &model::Contro
             Some(Ok(Err(e))) => format!("Invalid JSON · {}:{} · {}", e.line, e.column, e.message),
         };
     }
+    if language == "xml" {
+        return xml_validation(source, control);
+    }
     // Grammar trees can amplify their input substantially. Keep their existing
     // 256 KiB / 250 ms budget; JSON uses the allocation-bounded strict parser.
     if source.len() > 256 * 1024 {
         return format!("Syntax validation for {language} works with files up to 256 KiB; this file is {:.1} MiB.", source.len() as f64 / 1048576.);
     }
+    grammar_validation(language, source, control)
+}
+
+/// XML (#2912): the grammar's syntax check within its budget, then the
+/// streaming well-formedness check Format relies on, at any size up to the
+/// shared limit. Format refuses exactly what this reports as a syntax error.
+fn xml_validation(source: &str, control: &model::Control) -> String {
+    if source.len() <= 256 * 1024 {
+        let grammar = grammar_validation("xml", source, control);
+        if grammar.starts_with("Syntax error") || control.cancelled() {
+            return grammar;
+        }
+    }
+    match model::xml_validation_controlled(source, control) {
+        None => "Operation cancelled.".into(),
+        Some(Err(e)) => format!(
+            "Syntax error (xml) · {}:{} · {}",
+            e.line, e.column, e.message
+        ),
+        Some(Ok(())) => "Syntax checked (xml); semantic validation is not available.".into(),
+    }
+}
+
+fn grammar_validation(language: &str, source: &str, control: &model::Control) -> String {
     // A highlighting grammar is only a syntax check, never semantic validation.
     // Dialects without a matching grammar must not borrow a stricter language.
     if matches!(language, "jsonc" | "jsx" | "scss" | "text") {
@@ -239,6 +266,17 @@ fn validation_with_control(language: &str, source: &str, control: &model::Contro
                 );
             }
         }
+    }
+}
+
+/// One indentation level as the source editor indents: Reader sets no
+/// TabSize of its own, so this is the editor's default (two spaces).
+fn indent_unit() -> String {
+    let tab = gpui_component::input::TabSize::default();
+    if tab.hard_tabs {
+        "\t".into()
+    } else {
+        " ".repeat(tab.tab_size.max(1))
     }
 }
 
@@ -535,6 +573,7 @@ impl Reader {
         }
         let worker_trace = trace.clone();
         let worker_control = control.clone();
+        let indent = indent_unit();
         let target_root = binding_root.clone();
         let target_file = binding_file.clone();
         #[cfg(test)]
@@ -572,12 +611,30 @@ impl Reader {
                         ))
                     }
                     Action::Format => {
-                        let result = model::format_controlled(
-                            &target.language,
-                            &target.text,
-                            target.line_ending,
-                            &worker_control,
-                        )?;
+                        // XML refuses exactly what Validate reports, with its
+                        // line and column (#2912).
+                        let verdict = (target.language == "xml").then(|| {
+                            validation_with_control(&target.language, &target.text, &worker_control)
+                        });
+                        if worker_control.cancelled() {
+                            return None;
+                        }
+                        let invalid = verdict
+                            .as_deref()
+                            .filter(|v| v.starts_with("Syntax error"))
+                            .and_then(file_chrome::location);
+                        let result = match invalid {
+                            Some((line, column)) => {
+                                model::Formatted::Unchanged(model::xml_invalid_notice(line, column))
+                            }
+                            None => model::format_indented(
+                                &target.language,
+                                &target.text,
+                                target.line_ending,
+                                &indent,
+                                &worker_control,
+                            )?,
+                        };
                         match &result {
                             model::Formatted::Changed(text) => {
                                 status = Some(validation_with_control(
@@ -588,13 +645,16 @@ impl Reader {
                             }
                             model::Formatted::Unchanged(reason)
                                 if reason == "Already formatted."
-                                    || reason.starts_with("JSON is invalid") =>
+                                    || reason.starts_with("JSON is invalid")
+                                    || reason.starts_with("XML is invalid") =>
                             {
-                                status = Some(validation_with_control(
-                                    &target.language,
-                                    &target.text,
-                                    &worker_control,
-                                ))
+                                status = Some(verdict.unwrap_or_else(|| {
+                                    validation_with_control(
+                                        &target.language,
+                                        &target.text,
+                                        &worker_control,
+                                    )
+                                }))
                             }
                             _ => {}
                         }
@@ -1490,6 +1550,25 @@ mod tests {
             assert_eq!(
                 value(&f, cx),
                 original.replace("{\"a\":1}", "{\r\n  \"a\": 1\r\n}")
+            );
+        });
+        visual.dispatch_action(Undo);
+        settle(visual);
+        f.reader
+            .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
+    }
+
+    /// #2912: an `xml` fence in a note formats in place like a JSON fence,
+    /// as one Undo step; the note around it is untouched.
+    #[gpui::test]
+    fn xml2912_xml_fence_formats_in_place_as_one_undo_step(cx: &mut TestAppContext) {
+        let original = "Before\n```xml\n<a><b>{x} &amp; y</b><!-- c --><d/></a>\n```\nAfter\n";
+        let (f, visual) = open(cx, original);
+        click(visual, "source-code-format");
+        f.reader.read_with(visual, |_, cx| {
+            assert_eq!(
+                value(&f, cx),
+                "Before\n```xml\n<a>\n  <b>{x} &amp; y</b>\n  <!-- c -->\n  <d/>\n</a>\n```\nAfter\n"
             );
         });
         visual.dispatch_action(Undo);

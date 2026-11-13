@@ -30,6 +30,32 @@ validator, which never builds a value tree. Unsupported formatters/repairs remai
 explicitly unavailable. A size/depth/output refusal is one message containing the
 limit and source size, never a syntax verdict.
 
+### XML Format (#2912)
+
+Format code on XML/XSD/XSL files and `xml` fences pretty-prints with the
+editor's indent unit (its default TabSize, two spaces, as JSON Format writes).
+A streaming two-pass formatter in `okilum-core` builds no tree and expands no
+entity. An element whose content is only child elements, comments or
+processing instructions separated by whitespace gets one child per line, one
+level deeper. Everything else is copied byte for byte: start and end tags
+(attribute order, quotes and spacing), text-only leaves, mixed content (text
+next to elements, as in XHTML or DocBook), `xml:space="preserve"` subtrees,
+comments, CDATA, processing instructions, the XML declaration and DOCTYPE.
+One blank line before a child survives; BOM, CRLF/LF and the final newline
+follow the source, and mixed line endings are refused as for JSON.
+Whitespace-only text between elements is treated as insignificant, as in every
+XML pretty-printer: an element relying on it without any other text of its
+own is the documented limit.
+
+Validate for XML runs the grammar's syntax check within its 256 KiB budget and
+then the formatter's well-formedness check (matched tags, one root, quoted and
+unique attributes, references, no text outside the root) at any size up to
+64 MiB. Format refuses exactly what Validate reports as a syntax error, with
+the same line and column and Go to error; nothing changes. The 64 MiB input and
+output limits, the worker, Cancel and the single Undo step are JSON's. In Read,
+Format does what it does for JSON. XML declaring a non-UTF-8 encoding stays
+read-only, so Format never reaches it.
+
 Explicit file Edit admission retains the viewer's 4 MiB UI cap. An existing
 editing session can grow beyond that cap and keeps the 64 MiB JSON operations
 budget. The read-only viewer, pagination, Tree, Find, shaping and save pipeline

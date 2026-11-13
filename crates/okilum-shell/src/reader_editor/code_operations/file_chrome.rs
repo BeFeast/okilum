@@ -836,7 +836,7 @@ fn badge(_reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
     .into_any_element()
 }
 
-fn location(text: &str) -> Option<(usize, usize)> {
+pub(super) fn location(text: &str) -> Option<(usize, usize)> {
     let at = text
         .split(" · ")
         .nth(1)
@@ -865,7 +865,7 @@ fn status_text(text: &str, language: &str, operation: Option<Action>, bytes: usi
                 language.to_uppercase()
             );
         }
-        if text.starts_with("JSON is invalid") {
+        if text.starts_with("JSON is invalid") || text.starts_with("XML is invalid") {
             return format!(
                 "Not formatted. The text has a syntax error on line {line}. Nothing was changed."
             );
