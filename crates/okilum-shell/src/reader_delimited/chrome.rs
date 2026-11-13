@@ -114,8 +114,13 @@ impl TablePreview {
         }
         if let Some((rows, columns)) = self.selection() {
             self.copy(cx);
+            let cells = rows.len() * columns.len();
             reader_toast::transient(
-                format!("Copied {} cells.", grouped(rows.len() * columns.len())),
+                if cells == 1 {
+                    "Copied 1 cell.".to_owned()
+                } else {
+                    format!("Copied {} cells.", grouped(cells))
+                },
                 window,
                 cx,
             );
