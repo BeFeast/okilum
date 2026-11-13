@@ -1,12 +1,19 @@
 import copy
+import hashlib
 import json
+import os
+from pathlib import Path
+import struct
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from analyze import (EvidenceError, correlate_markers, decode, frame_analysis, loss_check,
                      overlap_components, scheduler_segments)
 from export_raw import MARKER, RAW_MODE, verify_layouts
-from runner import validate_receipt
-from provenance import reference
+from runner import postflight, preflight, run_case, validate_receipt
+from provenance import build_environment, native_environment, reference, validate_build_environment
+from capsule import SOURCES
 
 
 def frame():
@@ -55,6 +62,72 @@ def receipt():
 
 
 class ParserControls(unittest.TestCase):
+    def test_all_release_and_target_rustflags_are_recorded_and_tuning_rejected(self):
+        normal = {'CARGO_BUILD_JOBS': '4', 'CARGO_INCREMENTAL': '0', 'UNRELATED_TOKEN': 'not-recorded'}
+        self.assertEqual(validate_build_environment(normal), {'CARGO_BUILD_JOBS': '4', 'CARGO_INCREMENTAL': '0'})
+        for key, value in [('CARGO_PROFILE_RELEASE_OPT_LEVEL', '1'),
+                           ('CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG', 'true'),
+                           ('CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS', '-Clink-arg=/STACK:8388608'),
+                           ('CARGO_ENCODED_RUSTFLAGS', '-C\x1fopt-level=1')]:
+            environment = dict(normal, **{key: value})
+            self.assertEqual(build_environment(environment)['environment'][key], value)
+            with self.subTest(key=key), self.assertRaisesRegex(AssertionError, 'unexpected release profile/target Rustflags'):
+                validate_build_environment(environment)
+
+    def test_native_environment_cannot_inherit_another_harness_or_control(self):
+        self.assertEqual(native_environment({'PATH': 'keep', 'OKILUM_UNKNOWN_CONTROL': 'bad',
+                                             'OKILUM_DATA_VIEW_NATIVE_FIXTURE': 'other'}), {'PATH': 'keep'})
+
+    def test_only_two_build_info_probes_before_pairs_and_no_probe_per_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs, out = root / 'inputs', root / 'out'
+            raw = bytearray(256)
+            struct.pack_into('<I', raw, 0x3c, 0x80)
+            struct.pack_into('<H', raw, 0x98, 0x20b)
+            struct.pack_into('<QQ', raw, 0x98 + 72, 1048576, 4096)
+            digest = hashlib.sha256(raw).hexdigest()
+            input_hashes = dict.fromkeys(['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+                'scripts/gpui-pre-windows/manifest.json',
+                'scripts/patches/gpui-pre-windows/0001-directx-atlas-upload.diff'], 'same')
+            for kind in SOURCES:
+                folder = inputs / kind
+                folder.mkdir(parents=True)
+                (folder / 'okilum.exe').write_bytes(raw)
+                (folder / 'build-manifest.json').write_text(json.dumps({'kind': kind,
+                    'base_source': SOURCES[kind], 'diagnostic_commit': 'd' * 40,
+                    'binary_sha256': digest, 'input_sha256': input_hashes}))
+
+            def probe(args, **kwargs):
+                self.assertEqual(args[1:], ['--build-info'])
+                self.assertFalse(any(k.startswith('OKILUM_') for k in kwargs['env']))
+                return 'source=' + 'd' * 40 + '\ngpui-test-support: no\n'
+
+            with patch('runner.git', return_value=b'controller'), \
+                    patch('runner.subprocess.check_output', side_effect=probe) as probes, \
+                    patch.dict(os.environ, {'OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE': 'other'}):
+                preflight(inputs, out)
+                self.assertEqual(probes.call_count, 2)
+            pinned = json.loads((out / 'preflight.json').read_text())
+
+            def native(binary, env, log_path):
+                self.assertEqual(sorted(k for k in env if k.startswith('OKILUM_')),
+                                 ['OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE', 'OKILUM_DIAG_COLLECT_ALL'])
+                value = receipt()
+                for f in value['frames']:
+                    f['subtree_work'] = {'diagnostic_qpc': {'before': {'pid': 100, 'tid': 200}}}
+                (Path(env['OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE']) / 'toolbar-diagnostic-receipt.json').write_text(json.dumps(value))
+                log_path.write_text('CODE2811_QPC_CENSUS_COMPLETE frames=96 strict_pass=true')
+                return 100, 200, 0, False
+
+            text = b'synthetic fixture for controller process-count test'
+            with patch('runner.launch', side_effect=native), \
+                    patch('runner.subprocess.check_output', side_effect=AssertionError('extra build-info inside trace')), \
+                    patch('runner.FIXTURE_SHA', hashlib.sha256(text).hexdigest()):
+                result = run_case(pinned, 'main', out / 'case', text)
+                self.assertTrue(result['complete'])
+                postflight(inputs, out)
+
     def test_pending_source_pin_cannot_dispatch_a_build(self):
         with self.assertRaisesRegex(AssertionError, 'not ready'):
             reference('toolbar', {'status': 'WAITING_FOR_FINAL_SOURCE'})

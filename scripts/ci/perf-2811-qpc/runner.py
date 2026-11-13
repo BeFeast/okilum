@@ -12,7 +12,7 @@ import subprocess
 import time
 
 from capsule import ROOT, SOURCES, git
-from provenance import pe_stack
+from provenance import native_environment, pe_stack
 
 FIXTURE_SHA = '3111144a60615a0a1870164cfc22dae16d60a5a7c0813c7e3e74d294ad47af88'
 PLAN = [(pair, kind) for pair in range(5) for kind in ['main', 'toolbar']]
@@ -84,23 +84,57 @@ def launch(binary, env, log_path):
     return pid, tid, code, timed_out
 
 
-def run_case(inputs, kind, out, text):
+def preflight(inputs, out):
+    inputs, out = inputs.resolve(), out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    result = {'completed_unix_ns': None, 'controller': git('rev-parse', 'HEAD').decode().strip(),
+              'build_info_processes': 2, 'binaries': {}}
+    for kind in SOURCES:
+        manifest = json.loads((inputs / kind / 'build-manifest.json').read_text())
+        assert manifest['kind'] == kind and manifest['base_source'] == SOURCES[kind]
+        binary = (inputs / kind / 'okilum.exe').resolve()
+        raw = binary.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == manifest['binary_sha256']
+        assert pe_stack(raw) == (1048576, 4096)
+        info = subprocess.check_output([str(binary), '--build-info'], text=True,
+                                       env=native_environment(os.environ))
+        assert manifest['diagnostic_commit'] in info and 'gpui-test-support: no' in info
+        status = binary.stat()
+        result['binaries'][kind] = {'manifest': manifest, 'build_info': info,
+                                   'binary_path': str(binary), 'size': status.st_size,
+                                   'mtime_ns': status.st_mtime_ns}
+    # Compile inputs relevant to this measurement must match across both bases.
+    for path in ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+                 'scripts/gpui-pre-windows/manifest.json',
+                 'scripts/patches/gpui-pre-windows/0001-directx-atlas-upload.diff']:
+        assert result['binaries']['main']['manifest']['input_sha256'][path] == \
+               result['binaries']['toolbar']['manifest']['input_sha256'][path], path
+    result['completed_unix_ns'] = time.time_ns()
+    (out / 'preflight.json').write_text(json.dumps(result, indent=2))
+
+
+def postflight(inputs, out):
+    pinned = json.loads((out / 'preflight.json').read_text())
+    for kind, value in pinned['binaries'].items():
+        binary = inputs / kind / 'okilum.exe'
+        assert hashlib.sha256(binary.read_bytes()).hexdigest() == value['manifest']['binary_sha256']
+        assert binary.stat().st_mtime_ns == value['mtime_ns']
+    (out / 'postflight.json').write_text(json.dumps({'immutable_binaries_verified': True,
+        'completed_unix_ns': time.time_ns(), 'expected_native_processes_in_trace': 10}, indent=2))
+
+
+def run_case(pinned, kind, out, text):
     out.mkdir(parents=True, exist_ok=False)
-    manifest = json.loads((inputs / kind / 'build-manifest.json').read_text())
-    assert manifest['kind'] == kind and manifest['base_source'] == SOURCES[kind]
-    binary = (inputs / kind / 'okilum.exe').resolve()
-    assert hashlib.sha256(binary.read_bytes()).hexdigest() == manifest['binary_sha256']
-    assert pe_stack(binary.read_bytes()) == (1048576, 4096)
-    info = subprocess.check_output([str(binary), '--build-info'], text=True)
-    assert manifest['diagnostic_commit'] in info and 'gpui-test-support: no' in info
-    (out / 'build-info.txt').write_text(info)
+    value = pinned['binaries'][kind]
+    manifest, binary = value['manifest'], Path(value['binary_path'])
+    status = binary.stat()
+    assert status.st_size == value['size'] and status.st_mtime_ns == value['mtime_ns'], 'binary changed after preflight'
+    (out / 'build-info.txt').write_text(value['build_info'])
     root = out / 'fixture'
     (root / 'vault').mkdir(parents=True)
     path = root / 'vault/api.json'
     path.write_bytes(text)
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('OKILUM_DIAG_', 'OKILUM_ATLAS_', 'OKILUM_TREE_', 'OKILUM_GLYPH_'))}
-    env.pop('OKILUM_CODE_TOOLBAR_NATIVE_SMOKE', None)
+    env = native_environment(os.environ)
     env.update(OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE=str(root), OKILUM_DIAG_COLLECT_ALL='1')
     result = {'kind': kind, 'base_source': SOURCES[kind],
               'diagnostic_commit': manifest['diagnostic_commit'],
@@ -133,6 +167,8 @@ def main(inputs, out):
     assert os.name == 'nt'
     inputs, out = inputs.resolve(), out.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    pinned = json.loads((out / 'preflight.json').read_text())
+    assert pinned['controller'] == git('rev-parse', 'HEAD').decode().strip()
     (out / 'plan.json').write_text(json.dumps(PLAN))
     (out / 'host.json').write_text(json.dumps({'platform': platform.platform(), 'cpus': os.cpu_count(),
         'runner': os.environ.get('RUNNER_NAME'), 'controller': git('rev-parse', 'HEAD').decode().strip(),
@@ -140,7 +176,7 @@ def main(inputs, out):
     results = []
     text = fixture()
     for pair, kind in PLAN:
-        result = run_case(inputs, kind, out / f'{pair}-{kind}', text)
+        result = run_case(pinned, kind, out / f'{pair}-{kind}', text)
         result['case'] = f'{pair}-{kind}'
         results.append(result)
         (out / 'cases.json').write_text(json.dumps(results, indent=2))
@@ -167,5 +203,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--mode', choices=['preflight', 'pairs', 'postflight'], default='pairs')
     args = parser.parse_args()
-    main(args.inputs, args.out)
+    if args.mode == 'preflight':
+        preflight(args.inputs, args.out)
+    elif args.mode == 'postflight':
+        postflight(args.inputs, args.out)
+    else:
+        main(args.inputs, args.out)

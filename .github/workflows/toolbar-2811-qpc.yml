@@ -71,6 +71,7 @@ jobs:
           python scripts/ci/perf-2811-qpc/provenance.py prepare --kind "$KIND" --source "$source_sha" --destination "$capsule" --output "$output"
           export OKILUM_SOURCE_COMMIT="$source_sha"
           export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/icon/okilum.ico")"
+          python scripts/ci/perf-2811-qpc/provenance.py environment --output "$output"
           cd "$capsule"
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify

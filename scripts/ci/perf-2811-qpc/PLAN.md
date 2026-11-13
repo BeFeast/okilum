@@ -43,8 +43,11 @@ Build metadata MUST name the actual committed diagnostic HEAD, with the base
 SHA recorded separately. It never labels an instrumented binary unchanged.
 provenance.py rejects anything except the two approved source paths, checks
 their bytes against the controller, and records source/controller/input hashes,
-complete observer diff, rustc/cargo versions and a specific non-secret build
-environment whitelist. --build-info, binary hash/size, checksum-pinned backend
+complete observer diff, rustc/cargo versions, every CARGO_PROFILE_RELEASE_*
+and every *RUSTFLAGS value (including target-specific and encoded flags), plus
+the ordinary explicit build environment. Nonempty release-profile overrides
+or Rustflags are rejected before cargo and checked again after build; none
+are expected in this unchanged release configuration. --build-info, binary hash/size, checksum-pinned backend
 manifest and default PE stack reserve/commit (1 MiB/4 KiB) are retained.
 
 Use the original locked release build with data-view-native-harness. No changes
@@ -74,6 +77,26 @@ No retries or successful-run selection. Complete data is 480 frames per base,
 240 unmarked and 240 marked. Builds are serial and use the same constant capsule
 checkout path in both matrix jobs; compiler flags are unchanged. These
 instrumented measurements remain separate from the original production run.
+
+## Capture setup and preflight
+
+The earlier successful capture used a preinstalled WPT in the standard Windows
+SDK directory. wpt-setup.ps1 now resolves that directory or Get-Command, records
+xperf path/file version/SHA and help, and verifies clocktype/stackwalk support
+BEFORE starting any session. If missing, it installs only the SDK WPT feature
+from the cached SDK BundleCachePath, falling back to the official Windows SDK
+bootstrapper used by [runner-images provisioning](https://github.com/actions/runner-images/blob/main/images/windows/scripts/build/Install-VisualStudio.ps1).
+The WPT-only [feature invocation](https://github.com/mvaneerde/blog/blob/a34c030d981897e5eba72241b6e732bbb45cb9ad/install/windows-performance-tools.ps1)
+is OptionId.WindowsPerformanceToolkit. No tool installation has run locally.
+
+Both immutable native binaries receive exactly one sanitized --build-info
+preflight each BEFORE xperf starts. All inherited OKILUM_* fixture/control
+variables are removed; real cases add only their own synthetic fixture and
+collect-all mode. The traced group creates exactly ten native app launches,
+without per-case --build-info helpers. Each launch checks file identity; after
+ETW has stopped, postflight checks both full binary hashes/mtimes again.
+Missing postflight invalidates provenance. WPT setup, native command dispatch
+and Rust builds remain unverified until the authorized Windows workflow runs.
 
 ## Raw ETW and fail-closed analysis
 

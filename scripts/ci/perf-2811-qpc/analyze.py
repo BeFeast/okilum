@@ -260,6 +260,8 @@ def frame_analysis(frame, segments, frequency):
 
 
 def analyze(root):
+    require(json.loads((root / 'postflight.json').read_text())['immutable_binaries_verified'] is True,
+            'binary immutability not established after trace')
     cases = json.loads((root / 'cases.json').read_text())
     require(len(cases) == 10 and all(c['complete'] for c in cases), 'incomplete census is NO_EVIDENCE')
     require([(int(c['case'].split('-')[0]), c['kind']) for c in cases] ==

@@ -1,6 +1,11 @@
 param([string]$InputsDirectory = 'inputs', [string]$OutputDirectory = 'diagnostics')
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
+& "$PSScriptRoot/wpt-setup.ps1" -OutputDirectory $OutputDirectory
+# Exactly two --build-info processes, with all harness/control env removed,
+# finish BEFORE either ETW session starts. The traced group has only 10 launches.
+python scripts/ci/perf-2811-qpc/runner.py --inputs $InputsDirectory --out $OutputDirectory --mode preflight
+if ($LASTEXITCODE) { throw 'Immutable native binary preflight failed before ETW start' }
 $kernelStarted = $false
 $markersStarted = $false
 $censusExit = 1
@@ -31,6 +36,8 @@ if ($LASTEXITCODE) { throw 'Raw ETL merge failed' }
 # Readability copy only. Attribution uses ProcessTrace RAW_TIMESTAMP exports.
 tracerpt.exe "$OutputDirectory/reader.etl" -of XML -o "$OutputDirectory/reader.xml" -y
 if ($LASTEXITCODE) { throw 'Readability XML export failed' }
+python scripts/ci/perf-2811-qpc/runner.py --inputs $InputsDirectory --out $OutputDirectory --mode postflight
+if ($LASTEXITCODE) { throw 'Immutable binary postflight failed after ETW stopped' }
 @{ census_exit = $censusExit; strict_gate_changed = $false; attempts = 1 } |
     ConvertTo-Json | Set-Content "$OutputDirectory/capture-state.json"
 exit $censusExit

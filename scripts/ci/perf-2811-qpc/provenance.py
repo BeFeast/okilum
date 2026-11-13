@@ -17,6 +17,29 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def native_environment(environment):
+    # Native harness dispatch precedes --build-info parsing. Never inherit a
+    # different fixture, style control or diagnostic mode into either path.
+    return {key: value for key, value in environment.items() if not key.startswith('OKILUM_')}
+
+
+def build_environment(environment):
+    selected = {key: value for key, value in environment.items()
+                if key.startswith('CARGO_PROFILE_RELEASE_') or key.endswith('RUSTFLAGS') or
+                key in ['CARGO_INCREMENTAL', 'CARGO_BUILD_JOBS', 'CARGO_TARGET_DIR',
+                        'OKILUM_SOURCE_COMMIT', 'OKILUM_WINDOWS_ICON']}
+    invalid = [key for key, value in selected.items() if value.strip() and
+               (key.startswith('CARGO_PROFILE_RELEASE_') or key.endswith('RUSTFLAGS'))]
+    return {'environment': selected, 'unexpected_profile_or_rustflags': sorted(invalid)}
+
+
+def validate_build_environment(environment):
+    report = build_environment(environment)
+    assert not report['unexpected_profile_or_rustflags'], (
+        'unexpected release profile/target Rustflags tuning', report['unexpected_profile_or_rustflags'])
+    return report['environment']
+
+
 def pe_stack(raw):
     offset = struct.unpack_from('<I', raw, 0x3c)[0] + 24
     assert struct.unpack_from('<H', raw, offset)[0] == 0x20b, 'PE32+ required'
@@ -72,7 +95,7 @@ def finish(destination, output):
     raw = binary.read_bytes()
     assert pe_stack(raw) == (1048576, 4096), 'stack reserve/commit must remain unchanged'
     shutil.copy2(binary, output / 'okilum.exe')
-    info = subprocess.check_output([str(binary), '--build-info'], text=True)
+    info = subprocess.check_output([str(binary), '--build-info'], text=True, env=native_environment(os.environ))
     assert manifest['diagnostic_commit'] in info and 'gpui-test-support: no' in info
     (output / 'build-info.txt').write_text(info)
     (output / 'backend-manifest.json').write_bytes((destination / 'scripts/gpui-pre-windows/manifest.json').read_bytes())
@@ -80,11 +103,7 @@ def finish(destination, output):
                      'stack_reserve': 1048576, 'stack_commit': 4096,
                      'rustc': subprocess.check_output(['rustc', '-Vv'], cwd=destination, text=True),
                      'cargo': subprocess.check_output(['cargo', '-V'], cwd=destination, text=True),
-                     'build_environment': {k: os.environ[k] for k in [
-                         'CARGO_INCREMENTAL', 'CARGO_BUILD_JOBS', 'CARGO_TARGET_DIR',
-                         'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_PROFILE_RELEASE_DEBUG',
-                         'CARGO_PROFILE_RELEASE_CODEGEN_UNITS', 'OKILUM_SOURCE_COMMIT',
-                         'OKILUM_WINDOWS_ICON'] if k in os.environ}})
+                     'build_environment': validate_build_environment(os.environ)})
     assert manifest['rustc'].startswith('rustc 1.100.0 ')
     assert os.environ['OKILUM_SOURCE_COMMIT'] == manifest['diagnostic_commit']
     (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2))
@@ -92,7 +111,7 @@ def finish(destination, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['source', 'verify', 'prepare', 'finish'])
+    parser.add_argument('command', choices=['source', 'verify', 'environment', 'prepare', 'finish'])
     parser.add_argument('--kind', choices=SOURCES)
     parser.add_argument('--source')
     parser.add_argument('--destination', type=Path)
@@ -102,6 +121,9 @@ if __name__ == '__main__':
         print(reference(args.kind, json.loads((ROOT / 'scripts/ci/perf-2811-qpc/references.json').read_text())))
     elif args.command == 'verify':
         print(validate_source(args.kind, args.source)[1])
+    elif args.command == 'environment':
+        (args.output / 'build-environment-preflight.json').write_text(json.dumps(build_environment(os.environ), indent=2))
+        validate_build_environment(os.environ)
     elif args.command == 'prepare':
         prepare(args.kind, args.source, args.destination.resolve(), args.output.resolve())
     else:
