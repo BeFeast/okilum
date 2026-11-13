@@ -489,3 +489,50 @@ fn appimage_children_lose_only_the_bundles_environment() {
         "a sibling prefix is not inside APPDIR; unchanged variables are left alone"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn without_shell_the_wrapper_starts_the_accounts_login_shell() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let login = root.path().join("login-shell");
+    let script = |path: &std::path::Path, body: String| {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    script(&login, "#!/bin/sh\necho login-shell\n".into());
+    // A fake passwd lookup: the account's shell field names `login`.
+    script(
+        &bin.join("getent"),
+        format!(
+            "#!/bin/sh\necho \"me:x:1000:1000::/home/me:{}\"\n",
+            login.display()
+        ),
+    );
+    let folder = root.path().join("-rf folder");
+    std::fs::create_dir(&folder).unwrap();
+    let plan = folder_plan("linux", folder.to_str().unwrap(), "xdg-terminal-exec", "");
+    let run = |shell: Option<&str>| {
+        let mut command = std::process::Command::new(&plan.args[0]);
+        command
+            .args(&plan.args[1..])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("SHELL");
+        if let Some(shell) = shell {
+            command.env("SHELL", shell);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert_eq!(run(None).trim(), "login-shell", "SHELL unset: login shell");
+    // Positive control: a set SHELL still wins over the account entry.
+    let set = root.path().join("set-shell");
+    script(&set, "#!/bin/sh\npwd -P\n".into());
+    assert_eq!(
+        run(Some(set.to_str().unwrap())).trim(),
+        folder.canonicalize().unwrap().to_str().unwrap()
+    );
+}

@@ -136,13 +136,16 @@ fn quote(value: &str) -> String {
 
 // The POSIX shell receives data exclusively as positional arguments. It stays
 // interactive after SSH/custom command exit; failed cd never runs in another cwd.
+// A terminal started by the session manager (xdg-terminal-exec through uwsm or
+// systemd-run) may lack SHELL; the account's login shell is used then (#2837).
 const POSIX: &str = r#"if [ "$1" = cd ]; then
     cd -- "$2" || exit
 else
     shift
     "$@"
 fi
-exec "${SHELL:-/bin/sh}""#;
+login=${SHELL:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f7)}
+exec "${login:-/bin/sh}""#;
 
 fn posix_args(initial: &Initial) -> Vec<String> {
     let mut args = vec![

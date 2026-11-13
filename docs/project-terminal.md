@@ -35,7 +35,9 @@ Missing launchers and failed processes show a toast with the cause.
 
 Commands remain argv data. Linux uses a fixed POSIX wrapper with positional
 arguments; local launch changes directory before starting the interactive
-shell. Terminal.app only accepts shell text, so each wrapper/argv word is
+shell. The interactive shell is SHELL, or the account's login shell from
+`getent passwd` when the terminal starts without SHELL (xdg-terminal-exec
+through uwsm/systemd-run on Omarchy, #2837), then /bin/sh. Terminal.app only accepts shell text, so each wrapper/argv word is
 POSIX-quoted and passed as AppleScript argv, never embedded in AppleScript.
 Windows passes only fixed switches and an encoded PowerShell program across
 wt/cmd parsing: JSON carries argv/directory as base64 data, then the program
