@@ -1724,9 +1724,9 @@ mod tests {
     fn code2909_named_fence_has_a_label_and_only_an_unnamed_fence_a_picker(
         cx: &mut TestAppContext,
     ) {
-        let original = "```xml\n<a/>\n```\nBetween\n```\nplain\n```\n";
+        let original = "```json\n{\"a\":1}\n```\nBetween\n```\nplain\n```\n";
         let (f, visual) = open(cx, original);
-        for (needle, picker) in [("<a/>", false), ("plain", true)] {
+        for (needle, picker) in [("\"a\"", false), ("plain", true)] {
             let at = original.find(needle).unwrap();
             f.input
                 .update(visual, |state, cx| state.set_selected_range(at..at, cx));
