@@ -115,9 +115,10 @@ pub(crate) fn eligible(rel: &str) -> bool {
     language(rel).is_some()
 }
 
-/// Preview eligibility does not grant a new writable file format (#2669).
+/// Every previewable code/data format edits through the source editor; XML
+/// joined YAML and TOML in #2887. HAR captures stay read-only (#2836).
 pub(crate) fn editable_format(rel: &str) -> bool {
-    eligible(rel) && language(rel) != Some("xml") && !crate::reader_har::eligible(rel)
+    eligible(rel) && !crate::reader_har::eligible(rel)
 }
 
 enum State {

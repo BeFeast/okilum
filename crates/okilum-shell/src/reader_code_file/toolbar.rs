@@ -238,9 +238,6 @@ impl CodePreview {
         if let Some(reason) = &self.storage_reason {
             return Some(reason.clone());
         }
-        if language(&self.rel) == Some("xml") {
-            return Some("XML files are view-only".into());
-        }
         self.source_bytes
             .filter(|bytes| *bytes > EDIT_BYTES && !reader_delimited::eligible(&self.rel))
             .map(|bytes| format!("{} is over the 4 MB editing limit", view::size(bytes)))
