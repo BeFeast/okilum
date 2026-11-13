@@ -110,8 +110,11 @@ jobs:
           PYSELECT
 
   shared-local:
-    needs: [shared-select]
-    if: needs.shared-select.outputs.lane == 'local'
+    # These two heavy jobs can land on the SAME multi-capacity runner. Keep
+    # their compile/runtime budgets independent without competing on that host.
+    # A Linux failure still leaves the complete shared result observable.
+    needs: [shared-select, linux-local]
+    if: always() && !cancelled() && needs.shared-select.outputs.lane == 'local'
     # ubuntu-latest also matches light runners capped below shell test RSS.
     runs-on: heavy
     timeout-minutes: 60

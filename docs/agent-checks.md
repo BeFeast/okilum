@@ -537,3 +537,21 @@ standalone group now inherits its own private CI account with after-reap cleanup
 using the same tested supervisor as issue2486/Live Preview. All nine cases,
 publication fences and original120s deadline remain. Regression controls exercise
 the real shell entrypoint and require the private-account option for this group.
+
+
+Canonical26859 proved the two heavy jobs actually overlapped on the SAME runner
+UUID: Linux began08:13UTC and shared08:24UTC. Linux later exhausted HTTP180s and
+agent-import120s groups while shared compilation/runtime was active. The local
+shared job now waits for linux-local, retaining its own60min cap and every suite;
+Linux keeps80min. always()+!cancelled() preserves independent shared evidence
+after a Linux failure or lane skip. Hosted/platform lanes remain independent.
+This removes that observed collision without changing runner/host configuration
+or any operation deadline; its measured effect still needs exact-source proof.
+The standalone issue1588 reader fixtures also receive a private inherited CI
+account, as do the other independent reader groups.
+
+The empty remote-log async deadline control previously spent its120ms before a
+single poll reached the loopback server. It now uses the existing cfg(test)
+HTTP clock: observe the real held empty poll, expire exactly120ms, require the
+actual timer to fire, then retain all timeout/partial/empty-result assertions.
+The production transport and its real timers are unchanged.
