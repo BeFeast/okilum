@@ -1600,7 +1600,14 @@ impl HarView {
         } else {
             String::new()
         };
-        let name = details::file_name(&listed.url, &mime);
+        let mut name = details::file_name(&listed.url, &mime);
+        if self
+            .path
+            .file_name()
+            .is_some_and(|own| own.to_string_lossy().eq_ignore_ascii_case(&name))
+        {
+            name = format!("body-{name}");
+        }
         let directory = self
             .path
             .parent()
@@ -1799,11 +1806,15 @@ fn request_text(
                     }
                 }
             }
+            let command = curl::command(&request, shell);
             let mut copied = details::Copied {
-                text: curl::command(&request, shell),
+                text: command.text,
                 cut_at: None,
             };
-            if request.body_omitted {
+            if command.left_out {
+                // Marks the cmd label: values with `!` were left out.
+                copied.cut_at = Some(1);
+            } else if request.body_omitted {
                 copied.cut_at = Some(0);
             }
             Ok(copied)
@@ -1838,6 +1849,13 @@ fn save_to(
             "the capture has no such body".into(),
         ));
     };
+    // Never replace the capture itself (also through a link or another
+    // spelling of its name on a case-insensitive file system).
+    if same_file(target, path) {
+        return Err(har::DetailError::Failed(
+            "that is the HAR file itself; choose another name".into(),
+        ));
+    }
     let folder = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -1855,6 +1873,31 @@ fn save_to(
     drop(out);
     temporary.persist(target).map_err(|e| failed(e.error))?;
     Ok(bytes)
+}
+
+/// Whether `a` and `b` name the same existing file: by device and inode on
+/// Unix (links, hard links and case-folding names all match), by the final
+/// canonical path elsewhere.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => {
+                a == b
+                    || a.to_string_lossy()
+                        .eq_ignore_ascii_case(&b.to_string_lossy())
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A detail-row context menu command.

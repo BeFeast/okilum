@@ -1074,3 +1074,56 @@ fn part2_write_body_streams_whole_bodies_and_verifies_the_entry() {
     );
     assert!(out.is_empty());
 }
+
+// --- Review of PR 2904: each case fails on head 71f57085. ---
+
+/// P1-3: "=" then a flood of "A" must fail at once with a bounded tail.
+#[test]
+fn review2904_base64_stream_rejects_bad_padding_at_once_and_keeps_three_bytes() {
+    let mut stream = Base64Stream::default();
+    let mut sink = |_: &[u8]| Ok(());
+    let flood = vec![b'A'; 256 * 1024];
+    let mut first = b"=".to_vec();
+    first.extend_from_slice(&flood);
+    assert!(
+        stream.feed(&first, &mut sink).is_err(),
+        "misplaced = fails on the first chunk"
+    );
+    assert!(stream.carry.len() <= 3);
+    // Padding ends the text: more data after a padded group fails at once.
+    let mut stream = Base64Stream::default();
+    stream.feed(b"QQ==", &mut sink).unwrap();
+    assert!(stream.feed(b"QUJD", &mut sink).is_err());
+    // Control: valid text in odd chunks decodes whole, never keeping > 3.
+    use base64::Engine as _;
+    let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 253) as u8).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+    let mut stream = Base64Stream::default();
+    let mut decoded = Vec::new();
+    for chunk in encoded.as_bytes().chunks(7) {
+        stream
+            .feed(chunk, &mut |bytes| {
+                decoded.extend_from_slice(bytes);
+                Ok(())
+            })
+            .unwrap();
+        assert!(stream.carry.len() <= 3, "{}", stream.carry.len());
+    }
+    stream.finish(&mut |_| Ok(())).unwrap();
+    assert_eq!(decoded, payload);
+    // Through write_body: an inline body with the reviewer's shape fails.
+    let body = format!("={}", "A".repeat(1_000_000));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unused");
+    let mut out = Vec::new();
+    assert!(write_body(
+        &path,
+        &Text::Inline(body),
+        true,
+        None,
+        &mut out,
+        &AtomicBool::new(false)
+    )
+    .is_err());
+    assert!(out.is_empty());
+}

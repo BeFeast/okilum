@@ -1133,3 +1133,42 @@ fn part2_right_click_selects_the_request_for_its_menu(cx: &mut TestAppContext) {
     assert_eq!(har.read_with(visual, |har, _| har.selected), Some(2));
     visual.simulate_keystrokes("escape");
 }
+
+/// Review of PR 2904 (P2-4): Save as never replaces the capture itself,
+/// also through a symbolic link; the suggested name avoids it.
+#[gpui::test]
+fn review2904_save_as_refuses_the_capture_itself(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(3, cx));
+    draw(visual);
+    let capture_path = temp.path().join("vault/p2.har");
+    let mut targets = vec![capture_path.clone()];
+    #[cfg(unix)]
+    {
+        let link = temp.path().join("link.har");
+        std::os::unix::fs::symlink(&capture_path, &link).unwrap();
+        targets.push(link);
+    }
+    for target in targets {
+        invoke(&reader, visual, "har-save-response");
+        visual.simulate_new_path_selection(move |_| Some(target));
+        draw(visual);
+        assert_eq!(
+            std::fs::read_to_string(&capture_path).unwrap(),
+            text,
+            "the capture is unchanged"
+        );
+    }
+    // Control: another name is written.
+    let other = temp.path().join("other.png");
+    invoke(&reader, visual, "har-save-response");
+    visual.simulate_new_path_selection({
+        let other = other.clone();
+        move |_| Some(other)
+    });
+    draw(visual);
+    assert_eq!(std::fs::read(&other).unwrap(), png_bytes());
+    assert!(same_file(&capture_path, &capture_path) && !same_file(&capture_path, &other));
+}

@@ -1230,46 +1230,62 @@ pub fn write_body(
     Ok(written)
 }
 
-/// Streaming base64: whitespace is ignored, whole 4-character groups are
-/// decoded as they arrive; the remainder (with padding) at the end.
+/// Streaming base64: whitespace is ignored and every complete 4-character
+/// group is decoded as soon as it arrives, so at most 3 characters are kept.
+/// Padding may only end the text: a padded group ends it, anything after it
+/// (or a misplaced `=`) is an error at once.
 #[derive(Default)]
 struct Base64Stream {
     carry: Vec<u8>,
+    ended: bool,
 }
 
 impl Base64Stream {
+    fn invalid() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::InvalidData)
+    }
+
     fn feed(
         &mut self,
         bytes: &[u8],
         out: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        self.carry
-            .extend(bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()));
-        // Keep a padded tail for `finish`: a group with `=` may only end it.
-        let whole = self.carry.len() / 4 * 4;
-        let whole = if self.carry[..whole].contains(&b'=') {
-            0
-        } else {
-            whole
-        };
-        if whole >= 4096 || (whole > 0 && self.carry.len() > 8192) {
-            use base64::Engine as _;
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(&self.carry[..whole])
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-            out(&decoded)?;
-            self.carry.drain(..whole);
+        use base64::Engine as _;
+        let mut groups = std::mem::take(&mut self.carry);
+        for &byte in bytes.iter().filter(|b| !b.is_ascii_whitespace()) {
+            if self.ended {
+                return Err(Self::invalid());
+            }
+            groups.push(byte);
+            // A group is complete: check where padding may appear.
+            if groups.len().is_multiple_of(4) {
+                let group = &groups[groups.len() - 4..];
+                if let Some(first) = group.iter().position(|&b| b == b'=') {
+                    if first < 2 || group[first..].iter().any(|&b| b != b'=') {
+                        return Err(Self::invalid());
+                    }
+                    self.ended = true;
+                }
+            }
         }
+        let whole = groups.len() / 4 * 4;
+        if whole > 0 {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&groups[..whole])
+                .map_err(|_| Self::invalid())?;
+            out(&decoded)?;
+        }
+        groups.drain(..whole);
+        self.carry = groups;
         Ok(())
     }
 
     fn finish(&mut self, out: &mut dyn FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
-        use base64::Engine as _;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&self.carry)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-        self.carry.clear();
-        out(&decoded)
+        // Unpadded text must end on a whole group.
+        if !self.carry.is_empty() {
+            return Err(Self::invalid());
+        }
+        out(&[])
     }
 }
 

@@ -119,13 +119,32 @@ impl std::fmt::Debug for Preview {
 /// Image bodies up to this decoded size are previewed.
 pub(crate) const IMAGE_BYTES: usize = 8 << 20;
 
-/// A thumbnail of a raster image body (PNG, JPEG, GIF, WebP, BMP), with
-/// decoder limits; anything else (SVG included) is not rendered.
+/// Largest decoded image (all frames' pixel buffer) a preview may allocate.
+pub(crate) const IMAGE_ALLOC: u64 = 64 * 1024 * 1024;
+
+/// Why an image body is not previewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoPreview {
+    /// Not PNG, JPEG, GIF, WebP or BMP (SVG and markup are never rendered).
+    Format,
+    /// Wider or taller than 8192 px, or a decoded buffer above
+    /// [`IMAGE_ALLOC`]: refused from the header, before any allocation.
+    TooLarge,
+    Damaged,
+}
+
+/// A thumbnail of a raster image body (PNG, JPEG, GIF, WebP, BMP). The
+/// header's dimensions and decoded size are checked before the pixel buffer
+/// is allocated; anything else is not rendered.
 pub(crate) fn preview(bytes: &[u8]) -> Option<Preview> {
+    preview_checked(bytes).ok()
+}
+
+pub(crate) fn preview_checked(bytes: &[u8]) -> Result<Preview, NoPreview> {
     use image::ImageDecoder as _;
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .ok()?;
+        .map_err(|_| NoPreview::Damaged)?;
     if !matches!(
         reader.format(),
         Some(
@@ -136,23 +155,31 @@ pub(crate) fn preview(bytes: &[u8]) -> Option<Preview> {
                 | image::ImageFormat::Bmp
         )
     ) {
-        return None;
+        return Err(NoPreview::Format);
     }
     let mut reader = reader;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_alloc = Some(IMAGE_ALLOC);
     reader.limits(limits);
-    let decoder = reader.into_decoder().ok()?;
+    let decoder = reader.into_decoder().map_err(|error| match error {
+        image::ImageError::Limits(_) => NoPreview::TooLarge,
+        _ => NoPreview::Damaged,
+    })?;
     let (width, height) = decoder.dimensions();
-    let decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+    // `DynamicImage::from_decoder` allocates `total_bytes` without
+    // consulting `max_alloc`: refuse oversized buffers from the header.
+    if width > 8192 || height > 8192 || decoder.total_bytes() > IMAGE_ALLOC {
+        return Err(NoPreview::TooLarge);
+    }
+    let decoded = image::DynamicImage::from_decoder(decoder).map_err(|_| NoPreview::Damaged)?;
     let mut thumbnail = decoded.thumbnail(480, 360).into_rgba8();
     // GPUI RenderImage frames are BGRA.
     for pixel in thumbnail.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Some(Preview {
+    Ok(Preview {
         image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(thumbnail)])),
         width,
         height,
@@ -1027,6 +1054,7 @@ impl Copied {
         match self.cut_at {
             None => "Copied".into(),
             Some(0) => "Copied without the binary request body".into(),
+            Some(1) => "Copied without the values containing ! (unsafe in cmd; use bash or PowerShell for them)".into(),
             Some(limit) => format!(
                 "Copied the first {}; the value is longer",
                 model::bytes(limit as i64)
@@ -1387,5 +1415,53 @@ mod tests {
         let body = resolve(&path, vec![Part::Cut("partial".into())], None, 4096, &open).unwrap();
         assert_eq!(body.cut_at, Some(BODY_PREVIEW));
         assert!(body.label().starts_with("Copied the first"));
+    }
+
+    /// A PNG header for `width`×`height` RGBA16 with a tiny zlib IDAT: the
+    /// header alone claims the size; no pixel data is needed to test it.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&crc.sum().to_be_bytes());
+        }
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[16, 6, 0, 0, 0]);
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(
+            &mut png,
+            b"IDAT",
+            &[0x78, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+        );
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    /// Review of PR 2904 (P1-2): an 8192×8192 RGBA16 PNG (512 MiB decoded,
+    /// a few bytes of input) is refused from its header.
+    #[test]
+    fn review2904_huge_images_are_refused_before_allocation() {
+        let huge = png_header(8192, 8192);
+        assert!(huge.len() < 8 * 1024 * 1024);
+        assert_eq!(preview_checked(&huge).err(), Some(NoPreview::TooLarge));
+        // Control: a small image of the same kind decodes.
+        let mut small = std::io::Cursor::new(Vec::new());
+        image::ImageBuffer::<image::Rgba<u16>, _>::from_pixel(
+            4,
+            3,
+            image::Rgba([0, 1000, 2000, 65535]),
+        )
+        .write_to(&mut small, image::ImageFormat::Png)
+        .unwrap();
+        let preview = preview_checked(small.get_ref()).unwrap();
+        assert_eq!((preview.width, preview.height), (4, 3));
+        assert_eq!(preview_checked(b"<svg/>").err(), Some(NoPreview::Format));
     }
 }
