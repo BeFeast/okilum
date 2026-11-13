@@ -241,13 +241,13 @@ fn table2812_sort_header_toggle_status_and_copy_toast(cx: &mut TestAppContext) {
         assert!(!reader_ui_state::delimited_header(&p.path, cx));
         assert_eq!(p.order.len(), 1201);
     });
+    // The preference is keyed by the path the Reader opened (canonical, e.g.
+    // /private/var on macOS), not by a re-joined temporary path.
+    let path = t.read_with(v, |p, _| p.path.clone());
     v.update(|_, cx| {
         reader_ui_state::flush(cx);
         reader_ui_state::install(&temp.path().join("state"), cx);
-        assert!(!reader_ui_state::delimited_header(
-            &temp.path().join("vault/status.csv"),
-            cx
-        ));
+        assert!(!reader_ui_state::delimited_header(&path, cx));
     });
     assert_eq!(
         std::fs::read_to_string(temp.path().join("vault/status.csv")).unwrap(),
