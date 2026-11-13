@@ -2761,7 +2761,9 @@ mod tests {
             )
             .unwrap();
             cx.update(|cx| {
-                cx.remove_global::<Store>();
+                if cx.has_global::<Store>() {
+                    cx.remove_global::<Store>();
+                }
                 install(&state, cx);
                 assert!(installed(cx), "{value}: the saved UI state still loads");
                 assert!(tree_auto_reveal(cx), "{value}: other settings are kept");
