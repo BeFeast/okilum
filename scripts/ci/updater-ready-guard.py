@@ -31,8 +31,13 @@ CONTROLS = [
      'helper_launch_is_locked_and_reverified_across_processes', 'launch must re-verify the helper under the lock'),
     ('repair-label', b'        (Some(true), _) | (None, None) => Install::Portable,\n',
      b'        (Some(true), _) | (None, None) => Install::Portable,\n'
-     b'        (None, Some(_)) if updater_guard_control("repair-label") => Install::Portable,\n',
+     b'        (None, Some(_)) if updater_guard_control("repair-label") => Install::Portable,\n'
+     b'        (Some(false), Some(_)) if updater_guard_control("installed-repair") => Install::Installed,\n',
      'helper_needing_repair_is_not_reported_as_portable', 'must not be called Portable'),
+    # Same injected arms as repair-label (one source edit); this switch bypasses
+    # only the located-install classification.
+    ('installed-repair', None, None,
+     'helper_needing_repair_is_not_reported_as_portable', 'must not be called Installed'),
 ]
 
 
@@ -52,6 +57,8 @@ def main():
     original = SOURCE.read_bytes()
     mutated = original
     for _, before, after, _, _ in CONTROLS:
+        if before is None:
+            continue
         assert mutated.count(before) == 1, before
         mutated = mutated.replace(before, after)
     missed = []

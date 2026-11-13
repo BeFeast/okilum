@@ -19,12 +19,6 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     name.push(suffix);
     path.with_file_name(name)
 }
-fn staged(path: &Path) -> tempfile::NamedTempFile {
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
-    file.write_all(NEW).unwrap();
-    file.as_file().sync_all().unwrap();
-    file
-}
 fn fixture(root: &Path) -> PathBuf {
     fs::create_dir_all(root.join("current")).unwrap();
     fs::create_dir_all(root.join("packages")).unwrap();
@@ -64,17 +58,25 @@ fn quarantined(helper: &Path) -> Vec<Vec<u8>> {
     found
 }
 fn assert_clean(helper: &Path) {
-    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-txn", ".vpk-lock"] {
+    for suffix in [
+        ".vpk-stage",
+        ".vpk-backup",
+        ".vpk-txn",
+        ".vpk-lock",
+        ".vpk-owned",
+        ".vpk-owned.next",
+    ] {
         assert!(
             fs::symlink_metadata(sibling(helper, suffix)).is_err(),
             "transaction not cleaned: {suffix}"
         );
     }
+    assert_eq!(leftovers(helper, ".vpk-tmp-"), 0, "temporary left behind");
 }
 /// Missing helper, original in the backup, new helper staged, valid record.
 fn interrupted_between_renames(root: &Path) -> PathBuf {
     let helper = fixture(root);
-    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterBackupMove).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::LeaveAfterBackupMove).is_err());
     assert!(!helper.exists());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
@@ -97,7 +99,7 @@ fn documented_replacefile_errors_converge_to_a_verified_helper() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let helper = fixture(root.path());
-        let result = publish_fault(staged(&helper), &helper, fault);
+        let result = publish_fault(NEW, &helper, fault);
         // Success is decided by identity: only an installed new helper is Ok.
         assert_eq!(result.is_ok(), installed == NEW, "{fault:?}: {result:?}");
         assert_eq!(fs::read(&helper).unwrap(), installed, "{fault:?}");
@@ -118,7 +120,7 @@ fn real_replacefile_partial_failures_report_plain_win32_codes() {
         let helper = fixture(root.path());
         let held = hold_destination.then(|| hold(&helper));
         let result = publish_fault(
-            staged(&helper),
+            NEW,
             &helper,
             Fault::Real {
                 hold_stage,
@@ -146,7 +148,7 @@ fn real_replacefile_partial_failures_report_plain_win32_codes() {
 fn refused_promotion_keeps_every_copy_then_startup_recovers() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
-    assert!(publish_fault(staged(&helper), &helper, Fault::PromotionBlocked).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::PromotionBlocked).is_err());
     assert!(!helper.exists());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     assert_eq!(fs::read(sibling(&helper, ".vpk-stage")).unwrap(), NEW);
@@ -169,7 +171,7 @@ fn startup_recovers_every_interruption_state_including_real_replace_backup() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let helper = fixture(root.path());
-        assert!(publish_fault(staged(&helper), &helper, fault).is_err());
+        assert!(publish_fault(NEW, &helper, fault).is_err());
         assert!(sibling(&helper, ".vpk-txn").exists(), "{fault:?}");
         if matches!(fault, Fault::LeaveAfterSwap) {
             // This is the real Windows API, not a fake backup. Passing NULL to
@@ -256,13 +258,13 @@ fn first_install_and_interrupted_first_install_publish_the_staged_helper() {
     let helper = fixture(root.path());
     fs::remove_file(&helper).unwrap();
     // No destination: publication is a verified rename by handle.
-    publish_fault(staged(&helper), &helper, Fault::RemoveReplaced).unwrap();
+    publish_fault(NEW, &helper, Fault::RemoveReplaced).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
 
     // The helper vanished after staging: the record proves the stage.
     fs::write(&helper, OLD).unwrap();
-    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveBeforeSwap).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::LeaveBeforeSwap).is_err());
     fs::remove_file(&helper).unwrap();
     let locator = locate(root.path()).unwrap();
     assert_eq!(fs::read(locator.get_update_path()).unwrap(), NEW);
@@ -292,7 +294,7 @@ fn present_destination_sets_unverifiable_leftovers_aside_without_blocking() {
 fn refused_cleanup_never_disables_discovery_of_an_existing_helper() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
-    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveBeforeSwap).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::LeaveBeforeSwap).is_err());
     let stage = sibling(&helper, ".vpk-stage");
     let held = hold(&stage);
     // Cleanup is refused, but Update.exe exists and must still be located.
@@ -343,12 +345,12 @@ fn long_path_replacement_and_recovery_do_not_require_host_max_path_opt_in() {
     assert!(native_path_for_test(&helper)
         .unwrap()
         .starts_with(&[92, 92, 63, 92]));
-    assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterSwap).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::LeaveAfterSwap).is_err());
     assert_eq!(fs::read(sibling(&helper, ".vpk-backup")).unwrap(), OLD);
     recover(&helper).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
-    assert!(publish_fault(staged(&helper), &helper, Fault::PromotionBlocked).is_err());
+    assert!(publish_fault(NEW, &helper, Fault::PromotionBlocked).is_err());
     recover(&helper).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
@@ -359,7 +361,7 @@ fn killed_process_does_not_lose_recovery_files_and_next_locator_restores_helper(
     const CHILD: &str = "OKILUM_HELPER_RECOVERY_ABORT_ROOT";
     if let Some(root) = std::env::var_os(CHILD) {
         let helper = PathBuf::from(root).join("Update.exe");
-        assert!(publish_fault(staged(&helper), &helper, Fault::LeaveAfterBackupMove).is_err());
+        assert!(publish_fault(NEW, &helper, Fault::LeaveAfterBackupMove).is_err());
         assert!(!helper.exists());
         std::process::abort();
     }
@@ -427,7 +429,7 @@ fn helper_lock_excludes_publication_from_another_process() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let result = publish_fault(
-        staged(&helper),
+        NEW,
         &helper,
         Fault::Real {
             hold_stage: false,
@@ -442,7 +444,7 @@ fn helper_lock_excludes_publication_from_another_process() {
     fs::write(root.path().join("release"), b"").unwrap();
     assert!(holder.0.wait().unwrap().success());
     publish_fault(
-        staged(&helper),
+        NEW,
         &helper,
         Fault::Real {
             hold_stage: false,
@@ -500,7 +502,7 @@ fn running_helper_is_replaced_or_kept_and_retry_converges() {
         running.try_wait().unwrap().is_none(),
         "helper is not running"
     );
-    let result = publish_fault(staged(&helper), &helper, REAL);
+    let result = publish_fault(NEW, &helper, REAL);
     println!(
         "RUNNING_HELPER_PUBLISH {:?}",
         result.as_ref().map_err(|e| e.to_string())
@@ -512,7 +514,7 @@ fn running_helper_is_replaced_or_kept_and_retry_converges() {
     assert_no_transaction(&helper);
     running.kill().unwrap();
     running.wait().unwrap();
-    publish_fault(staged(&helper), &helper, REAL).unwrap();
+    publish_fault(NEW, &helper, REAL).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
     assert_eq!(
@@ -529,7 +531,7 @@ fn read_only_helper_fails_safely_or_keeps_its_attribute_and_retry_converges() {
     let mut permissions = fs::metadata(&helper).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&helper, permissions).unwrap();
-    let result = publish_fault(staged(&helper), &helper, REAL);
+    let result = publish_fault(NEW, &helper, REAL);
     println!(
         "READ_ONLY_HELPER_PUBLISH {:?}",
         result.as_ref().map_err(|e| e.to_string())
@@ -546,7 +548,7 @@ fn read_only_helper_fails_safely_or_keeps_its_attribute_and_retry_converges() {
     #[allow(clippy::permissions_set_readonly_false)]
     permissions.set_readonly(false);
     fs::set_permissions(&helper, permissions).unwrap();
-    publish_fault(staged(&helper), &helper, REAL).unwrap();
+    publish_fault(NEW, &helper, REAL).unwrap();
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
 }
@@ -558,12 +560,6 @@ fn power_cut_bytes(seed: u8) -> Vec<u8> {
     (0..8 * 1024 * 1024u32)
         .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ (i >> 13) as u8)
         .collect()
-}
-fn staged_bytes(path: &Path, bytes: &[u8]) -> tempfile::NamedTempFile {
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
-    file.write_all(bytes).unwrap();
-    file.as_file().sync_all().unwrap();
-    file
 }
 
 /// VM driver (never in CI): publish with the production state machine and
@@ -588,16 +584,12 @@ fn power_cut_writer() {
     if phase == "loop" {
         for round in 0u64.. {
             let bytes = power_cut_bytes(if round % 2 == 0 { 2 } else { 1 });
-            publish_fault(staged_bytes(&helper, &bytes), &helper, REAL).unwrap();
+            publish_fault(&bytes, &helper, REAL).unwrap();
             fs::write(root.join("power-cut-progress"), round.to_string()).unwrap();
         }
     }
     let phase: &'static str = Box::leak(phase.into_boxed_str());
-    let _ = publish_fault(
-        staged_bytes(&helper, &power_cut_bytes(2)),
-        &helper,
-        Fault::Pause(phase),
-    );
+    let _ = publish_fault(&power_cut_bytes(2), &helper, Fault::Pause(phase));
     panic!("phase {phase} was never reached");
 }
 
@@ -647,32 +639,46 @@ fn power_cut_verify() {
     let installed = installed.unwrap();
     assert!(installed == old || installed == new, "helper is neither");
     assert_clean(&helper);
-    assert_eq!(
-        quarantined(&helper).len(),
-        0,
-        "unexpected unverifiable copy"
-    );
-    let temporaries = fs::read_dir(&root)
+    // Every entry must be expected: the helper, the fixture and driver files.
+    let allowed = [
+        "Update.exe",
+        "current",
+        "packages",
+        "writer.log",
+        "power-cut-ready",
+        "power-cut-progress",
+    ];
+    let unexpected: Vec<String> = fs::read_dir(&root)
         .unwrap()
-        .filter(|e| {
-            e.as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".vpk-tmp-")
-        })
-        .count();
-    assert_eq!(temporaries, 0, "orphaned temporary survived recovery");
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !allowed.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "leftovers survived recovery: {unexpected:?}"
+    );
+}
+
+/// Write the ownership ledger the way production does (test fixture only).
+fn write_ledger(helper: &Path, lines: &[String]) {
+    let mut text = String::from("velopack-helper-owned-v1\n");
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    fs::write(sibling(helper, ".vpk-owned"), text).unwrap();
 }
 
 #[test]
-fn orphaned_temporaries_are_removed_but_open_ones_are_kept() {
+fn only_owned_orphaned_temporaries_are_swept() {
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
-    // An interrupted extraction left this behind; nothing holds it open.
-    fs::write(root.path().join(".vpk-tmp-orphan"), NEW).unwrap();
-    // Another process is still writing this one (tempfile shares everything).
-    let busy = root.path().join(".vpk-tmp-busy");
+    let orphan = sibling(&helper, ".vpk-tmp-orphan");
+    let busy = sibling(&helper, ".vpk-tmp-busy");
+    let unowned = sibling(&helper, ".vpk-tmp-unowned");
+    fs::write(&orphan, NEW).unwrap();
+    fs::write(&unowned, b"not created by the updater").unwrap();
+    // Owned but still being written by another process.
     let writer = fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -680,13 +686,210 @@ fn orphaned_temporaries_are_removed_but_open_ones_are_kept() {
         .share_mode(7)
         .open(&busy)
         .unwrap();
-    publish_fault(staged(&helper), &helper, REAL).unwrap();
-    assert_eq!(fs::read(&helper).unwrap(), NEW);
-    assert!(
-        !root.path().join(".vpk-tmp-orphan").exists(),
-        "orphaned temporary kept"
+    write_ledger(
+        &helper,
+        &[
+            "tmp Update.exe.vpk-tmp-orphan".into(),
+            "tmp Update.exe.vpk-tmp-busy".into(),
+        ],
     );
+    publish_fault(NEW, &helper, REAL).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert!(!orphan.exists(), "owned orphaned temporary kept");
     assert!(busy.exists(), "a temporary in use was removed");
+    assert_eq!(
+        fs::read(&unowned).unwrap(),
+        b"not created by the updater",
+        "an unowned file was removed by name"
+    );
     drop(writer);
+    recover(&helper).unwrap();
+    assert!(!busy.exists(), "released owned temporary kept");
+    fs::remove_file(&unowned).unwrap();
+    assert_clean(&helper);
+}
+
+#[test]
+fn owned_names_that_became_links_or_changed_are_never_deleted() {
+    use std::os::windows::fs::MetadataExt;
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    // An owned temporary name now hard-links someone else's hidden file.
+    let elsewhere = root.path().join("elsewhere.bin");
+    fs::write(&elsewhere, b"someone else's data").unwrap();
+    let hidden = 0x2;
+    let wide: Vec<u16> = elsewhere
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), hidden)
+        },
+        0
+    );
+    fs::hard_link(&elsewhere, sibling(&helper, ".vpk-tmp-linked")).unwrap();
+    // An owned obsolete name whose bytes no longer match its recorded identity.
+    fs::write(sibling(&helper, ".vpk-obsolete-changed"), b"replaced bytes").unwrap();
+    write_ledger(
+        &helper,
+        &[
+            "tmp Update.exe.vpk-tmp-linked".into(),
+            format!(
+                "obsolete Update.exe.vpk-obsolete-changed 3:{}",
+                "00".repeat(32)
+            ),
+        ],
+    );
+    recover(&helper).unwrap();
+    assert_eq!(fs::read(&elsewhere).unwrap(), b"someone else's data");
+    assert_ne!(
+        fs::metadata(&elsewhere).unwrap().file_attributes() & hidden,
+        0,
+        "attributes of a linked file were changed"
+    );
+    let aside = quarantined(&helper);
+    assert!(
+        aside.contains(&b"someone else's data".to_vec())
+            && aside.contains(&b"replaced bytes".to_vec()),
+        "link or changed copy was deleted instead of set aside: {aside:?}"
+    );
+    assert_clean(&helper);
+}
+
+#[test]
+fn crash_after_extraction_before_the_record_is_swept() {
+    const CHILD: &str = "OKILUM_HELPER_EXTRACTED_ROOT";
+    if let Some(root) = std::env::var_os(CHILD) {
+        let helper = PathBuf::from(root).join("Update.exe");
+        let _ = publish_fault(NEW, &helper, Fault::Pause("extracted"));
+        unreachable!("pause returns only by process death");
+    }
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "crash_after_extraction_before_the_record_is_swept",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, root.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let marker = root.path().join("power-cut-ready");
+    for _ in 0..3000 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(marker.exists(), "child never reached the extracted phase");
+    // Only a temporary, the ledger and the lock remain: no record yet.
+    assert!(!sibling(&helper, ".vpk-txn").exists());
+    assert_eq!(leftovers(&helper, ".vpk-tmp-"), 1);
+    recover(&helper).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), OLD);
+    fs::remove_file(&marker).unwrap();
+    assert_clean(&helper);
+    // A lone lock from a crash is pending too.
+    fs::write(sibling(&helper, ".vpk-lock"), b"").unwrap();
+    recover(&helper).unwrap();
+    assert_clean(&helper);
+}
+
+/// Restores the root's DACL and removes the per-user fallback on drop.
+struct MachineInstall {
+    root: tempfile::TempDir,
+    fallback: PathBuf,
+}
+impl Drop for MachineInstall {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("icacls")
+            .arg(self.root.path())
+            .args(["/remove:d", "*S-1-1-0"])
+            .output();
+        let _ = fs::remove_dir_all(&self.fallback);
+    }
+}
+fn machine_install() -> MachineInstall {
+    let root = tempfile::tempdir().unwrap();
+    let id = format!(
+        "OkilumHelperFallback{}x{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    fs::create_dir_all(root.path().join("current")).unwrap();
+    fs::write(root.path().join("current").join("sq.version"), format!("<package><metadata><id>{id}</id><version>1.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>")).unwrap();
+    fs::write(root.path().join("Update.exe"), OLD).unwrap();
+    // An unwritable root sends Velopack to the per-user fallback.
+    let output = std::process::Command::new("icacls")
+        .arg(root.path())
+        .args(["/deny", "*S-1-1-0:(AD,WD)"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "icacls deny failed");
+    let fallback = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join(&id);
+    fs::create_dir_all(&fallback).unwrap();
+    MachineInstall { root, fallback }
+}
+
+#[test]
+fn machine_install_fallback_never_bootstraps_over_an_unresolved_transaction() {
+    let install = machine_install();
+    let helper = install.fallback.join("Update.exe");
+    // An interrupted replacement in the per-user fallback: helper missing.
+    fs::write(&helper, b"previous fallback helper").unwrap();
+    assert!(publish_fault(NEW, &helper, Fault::LeaveAfterBackupMove).is_err());
+    assert!(!helper.exists());
+    // Recovery is refused while another process holds both copies.
+    let held = (
+        hold(&sibling(&helper, ".vpk-stage")),
+        hold(&sibling(&helper, ".vpk-backup")),
+    );
+    let locator = locate(install.root.path()).unwrap();
+    assert_eq!(
+        locator
+            .get_update_path()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap(),
+        install.fallback.canonicalize().unwrap(),
+        "discovery must use the per-user fallback"
+    );
+    assert!(
+        !helper.exists(),
+        "root helper copied over an unresolved fallback transaction"
+    );
+    assert!(sibling(&helper, ".vpk-txn").exists());
+    assert!(inspect(&helper).unwrap().contains("missing"));
+    drop(held);
+    // The next discovery resolves the transaction by identity: the verified
+    // new helper, not a copy of the root helper.
+    locate(install.root.path()).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_clean(&helper);
+}
+
+#[test]
+fn machine_install_bootstrap_is_locked_and_atomic() {
+    let install = machine_install();
+    let helper = install.fallback.join("Update.exe");
+    // Another process holds the fallback helper's transaction lock.
+    let held = lock(&helper).unwrap();
+    locate(install.root.path()).unwrap();
+    assert!(!helper.exists(), "bootstrap copied without the helper lock");
+    drop(held);
+    locate(install.root.path()).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), OLD);
     assert_clean(&helper);
 }

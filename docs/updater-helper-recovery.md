@@ -25,11 +25,20 @@ before it reports Ready.
 ## Transaction and recovery: identity, not names
 
 Names beside the destination: `Update.exe.vpk-txn` (record), `.vpk-stage`,
-`.vpk-backup`, `.vpk-lock`, `.vpk-quarantine-<id>` for anything unverifiable set
-aside, and `.vpk-obsolete-<id>` for a verified obsolete copy that could not be
-deleted yet (a still-running helper image), swept later. Temporary extraction
-and record files use the `.vpk-tmp-` prefix; under the lock, recovery deletes
-the ones no process holds open (an exclusive open succeeds only for orphans).
+`.vpk-backup`, `.vpk-lock`, `.vpk-owned` (ownership ledger),
+`.vpk-quarantine-<id>` for anything unverifiable set aside, `.vpk-tmp-<id>` for
+temporaries and `.vpk-obsolete-<id>` for a verified obsolete copy that could not
+be deleted yet (a still-running helper image).
+
+**Ownership.** Extraction takes the lock first, lists its temporaries in the
+ledger (flushed, atomically replaced), and only then creates them. A verified
+obsolete copy is listed with its size and SHA-256 before it is renamed. Sweeps
+touch only ledger entries: a temporary is deleted when an exclusive open shows
+that no process holds it; an obsolete copy only while it is still a single-link
+regular file with exactly the recorded identity. A listed name that has become
+a link or changed is renamed aside, never deleted and never has its attributes
+changed. Unlisted files are never touched. The ledger and a lone lock count as
+pending, so a crash before the record is cleaned up on the next attempt.
 
 1. An exclusive (share mode 0) handle on the lock file serializes publication,
    recovery and helper launch across processes. The lock file is deleted after
@@ -65,16 +74,22 @@ A native test drives real ReplaceFileW partial failures (held destination,
 held stage, occupied backup name) and requires plain Win32 codes.
 
 Locators run recovery before checking that `Update.exe` exists and only log a
-refused recovery, so an existing helper is always found. Native API paths use
+refused recovery, so an existing helper is always found. For machine installs
+(unwritable root) Velopack uses a per-user fallback helper. It is bootstrapped
+from the root helper only when recovery there succeeded and the fallback is
+missing, and only as a locked, verified publication (stage, record, rename by
+handle), never as a plain copy that could leave a partial executable. Native API paths use
 the extended-length prefix regardless of the host's long-path policy.
 
 ## Okilum
 
-- **Needs repair is not Portable.** If the installation cannot be located while
-  recovery files remain, Settings says updates are paused because the update
-  helper needs repair, shows a path-free diagnostic line, and offers Retry now
-  plus the Releases link to reinstall. The state is not cached for the session:
-  Okilum retries recovery in the background every minute.
+- **Needs repair is neither Portable nor Installed.** When the helper the
+  installation uses (root or per-user fallback) is missing or its transaction is
+  unresolved, whether or not the installation can be located, Settings says
+  updates are paused because the update helper needs repair, shows a path-free
+  diagnostic line, and offers Retry now plus the Releases link to reinstall. The
+  state is not cached for the session: Okilum retries recovery in the background
+  every minute.
 - **Verify and launch are one cross-process transaction.** Restart takes the
   helper lock, re-verifies that the pending package is unchanged and that the
   helper matches it, launches the helper, then releases the lock. Another
@@ -85,7 +100,7 @@ the extended-length prefix regardless of the host's long-path policy.
 
 `.github/workflows/updater-helper-compat.yml` runs on native Windows:
 
-- `scripts/ci/updater-helper-controls.py`: the vendor suites, then 23 revert
+- `scripts/ci/updater-helper-controls.py`: the vendor suites, then 28 revert
   controls, each reverting one fix, rebuilding and requiring its named test to
   fail; then the real checksum-pinned beta Full and Delta packages are applied
   with fallback forbidden and installed payload hashes compared.

@@ -269,42 +269,68 @@ fn manager_with_token(
 
 /// A portable copy has no helper transaction. A helper that cannot be located
 /// while its recovery files remain needs repair, which is not "Portable".
-fn classify(portable: Option<bool>, pending: Option<&str>, detail: Option<&str>) -> Install {
-    match (portable, pending) {
-        (Some(false), _) => Install::Installed,
+fn classify(portable: Option<bool>, helper: Option<&str>) -> Install {
+    match (portable, helper) {
         (Some(true), _) | (None, None) => Install::Portable,
-        (None, Some(pending)) => Install::Repair(match detail {
-            Some(detail) => format!("{pending}; last error: {detail}"),
-            None => pending.to_owned(),
-        }),
+        (Some(false), None) => Install::Installed,
+        // Installed but the helper is missing or its transaction is unresolved:
+        // updating cannot work, so say so instead of "Installed" or "Portable".
+        (Some(false), Some(detail)) | (None, Some(detail)) => Install::Repair(detail.to_owned()),
     }
 }
 
-fn helper_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.parent()?.join("Update.exe"))
+/// Where Update.exe can live: the install root (per-user installs) and the
+/// per-user fallback Velopack uses when the root is not writable.
+fn helper_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_owned()))
+    {
+        candidates.push(root.join("Update.exe"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let fallback = std::path::PathBuf::from(local)
+            .join("BeFeast.Okilum")
+            .join("Update.exe");
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
 }
 
-/// Locating the installation already ran helper recovery; when it still fails
-/// and recovery files remain, retry recovery once more and keep its error.
+/// Locating the installation already ran helper recovery. A located install
+/// still reports a helper that is missing or unresolved; when locating fails,
+/// any candidate with recovery files gets one more attempt and keeps its error.
 fn evaluate(beta: bool) -> Install {
     if let Ok(manager) = manager_for(beta) {
-        return classify(Some(manager.get_is_portable()), None, None);
+        let portable = manager.get_is_portable();
+        let helper = if portable {
+            None
+        } else {
+            manager.update_helper_state()
+        };
+        return classify(Some(portable), helper.as_deref());
     }
-    let Some(helper) = helper_path() else {
-        return Install::Portable;
-    };
-    let Some(pending) = velopack::helper_replace::inspect(&helper) else {
-        return Install::Portable;
-    };
-    let detail = match velopack::helper_replace::recover(&helper) {
-        Ok(()) => match manager_for(beta) {
-            Ok(manager) => return classify(Some(manager.get_is_portable()), None, None),
-            Err(_) => "the update helper could not be located".to_owned(),
-        },
-        Err(error) => error.to_string(),
-    };
-    classify(None, Some(&pending), Some(&detail))
+    for helper in helper_candidates() {
+        let Some(pending) = velopack::helper_replace::inspect(&helper) else {
+            continue;
+        };
+        let detail = match velopack::helper_replace::recover(&helper) {
+            Ok(()) => match manager_for(beta) {
+                Ok(manager) => {
+                    let portable = manager.get_is_portable();
+                    let helper = (!portable).then(|| manager.update_helper_state()).flatten();
+                    return classify(Some(portable), helper.as_deref());
+                }
+                Err(_) => format!("{pending}; the update helper could not be located"),
+            },
+            Err(error) => format!("{pending}; last error: {error}"),
+        };
+        return classify(None, Some(&detail));
+    }
+    classify(None, None)
 }
 
 fn install() -> Install {
@@ -826,21 +852,20 @@ mod tests {
 
     #[test]
     fn helper_needing_repair_is_not_reported_as_portable() {
-        assert_eq!(classify(Some(false), None, None), Install::Installed);
-        assert_eq!(classify(Some(true), None, None), Install::Portable);
-        assert_eq!(classify(None, None, None), Install::Portable);
-        let repair = classify(
-            None,
-            Some("update helper missing; recovery files kept: staged copy"),
-            Some("IO error: sharing violation"),
-        );
+        assert_eq!(classify(Some(false), None), Install::Installed);
+        assert_eq!(classify(Some(true), None), Install::Portable);
+        assert_eq!(classify(None, None), Install::Portable);
+        let detail = "update helper missing; recovery files kept: staged copy; last error: IO error: sharing violation";
         assert_eq!(
-            repair,
-            Install::Repair(
-                "update helper missing; recovery files kept: staged copy; last error: IO error: sharing violation"
-                    .into()
-            ),
+            classify(None, Some(detail)),
+            Install::Repair(detail.into()),
             "a helper needing repair must not be called Portable"
+        );
+        // A located machine install whose fallback helper is unresolved.
+        assert_eq!(
+            classify(Some(false), Some(detail)),
+            Install::Repair(detail.into()),
+            "an installed copy whose helper needs repair must not be called Installed"
         );
     }
 }
