@@ -415,8 +415,14 @@ mod tests {
             .get()
             .expect("native Mac text system must be initialized on the process main thread")
             .clone();
+        // Windows headless platforms use NoopTextSystem. Create DirectWrite
+        // instead, keeping the platform alive through font registration below.
+        #[cfg(windows)]
+        let platform = gpui_platform::current_platform(false);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let platform = gpui_platform::current_platform(true);
         #[cfg(not(target_os = "macos"))]
-        let native = gpui_platform::current_platform(true).text_system();
+        let native = platform.text_system();
         let shaper = super::super::text_platform::shaper(native);
         // The bundled fonts the reader uses (brand::load_fonts); scripts they
         // lack fall back to the system fonts, as in the application.
