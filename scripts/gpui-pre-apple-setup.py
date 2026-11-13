@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-SPECS = ("gpui-pre-macos",)
+SPECS = ("gpui-pre-macos", "gpui-pre-apple")
 
 
 def digest(data):

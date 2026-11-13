@@ -1,0 +1,17 @@
+{
+  "package": "gpui-pre-apple",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre-apple/gpui-pre-apple-0.3.3.crate",
+  "archive_sha256": "38e027ea436bb876a8da6962862ffdbf9708c6b8352415325647c4fc2a48467d",
+  "patches": [
+    {
+      "path": "../patches/gpui-pre-apple/0001-shared-background-metal-pipelines.diff",
+      "sha256": "678f36e06682e8bc552d9c2df61a208056d0ae133894b28922558bc93a95ce35"
+    }
+  ],
+  "tree_sha256": "d13ef2dc075f944557713cc1876b2df3076ba113f0be840eff89650185d0b7e1",
+  "generated_path": "vendor/gpui-pre-apple-0.3.3",
+  "changed_files": [
+    "src/metal_renderer.rs"
+  ]
+}

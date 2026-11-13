@@ -7,11 +7,16 @@
     {
       "path": "../patches/gpui-pre-macos/0001-skip-tab-group-without-tabbing.diff",
       "sha256": "3d47a61a6d85da1aca17668796089d5485f5d4e48d4f663f11110967a5d2c7b2"
+    },
+    {
+      "path": "../patches/gpui-pre-macos/0002-prepare-metal-pipelines-at-startup.diff",
+      "sha256": "44de949c8d9636e040dc739a2a88c9d247430d4210e75d9046d3d47b3047f031"
     }
   ],
-  "tree_sha256": "56890324e0326c5751b78c908bae6cdef992e9e73b64726ce075a2a7f40408b3",
+  "tree_sha256": "bb4b1aa80172a3213edad5641934bb96a718de742624877f6d844e8c45d9af83",
   "generated_path": "vendor/gpui-pre-macos-0.3.3",
   "changed_files": [
+    "src/platform.rs",
     "src/window.rs"
   ]
 }

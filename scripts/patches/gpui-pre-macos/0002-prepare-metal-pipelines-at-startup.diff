@@ -1,0 +1,24 @@
+gpui_macos: start building Metal pipelines when the platform starts
+
+Calls `gpui_apple::metal_renderer::prepare_pipelines` from `MacPlatform::new`
+(not for headless platforms), so the shader library and render pipelines are
+compiled while the app finishes launching instead of inside the first
+window's creation. Depends on the gpui_apple change that shares them.
+
+diff --git a/src/platform.rs b/src/platform.rs
+index c6f75a8..aea6b9a 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -212,6 +212,12 @@ impl MacPlatform {
+             Arc::new(gpui::NoopTextSystem::new())
+         };
+ 
++        // Compile the shader library and render pipelines while the app
++        // starts, instead of inside the first window's creation.
++        if !headless {
++            renderer::prepare_pipelines();
++        }
++
+         let keyboard_layout = MacKeyboardLayout::new();
+         let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
+ 
