@@ -64,7 +64,9 @@ def main():
         names = list(text) + ['document.pdf', 'image.png', 'archive.zip']
         before = {n: hashlib.sha256((vault / n).read_bytes()).hexdigest() for n in names}
         with log_path.open('w') as log:
-            process = subprocess.Popen([binary], env=dict(os.environ, OKILUM_READER_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
+            debugger = os.environ.get('DIAG_2825_CDB')
+            command = [debugger, '-g', '-G', '-lines', '-y', str(Path(binary).parent), '-c', '.kframes 0x4000; sxd av; sxd eh; sxd clr; sxd cpr; sxd epr; sxd ld; sxe -c "r rsp; kf; !teb; .echo DIAG_2825_SOV_END; q" sov; g', binary] if debugger else [binary]
+            process = subprocess.Popen(command, env=dict(os.environ, OKILUM_READER_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
             try:
                 assert process.wait(timeout=240) == 0, log_path.read_text(encoding='utf-8')[-10000:]
                 assert (directory / 'complete').exists(), 'Reader harness never completed'

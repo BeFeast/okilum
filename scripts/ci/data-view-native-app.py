@@ -48,6 +48,10 @@ def main():
         log_path = Path(os.environ['RUNNER_TEMP']) / 'data-view-native-app.log'
         with log_path.open('w') as log:
             process = subprocess.Popen([binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
+            sampler = None
+            if sys.platform == 'darwin' and os.environ.get('DIAG_2825_SAMPLE'):
+                # Diagnostic only: 1 ms main-thread call tree across data.xml open.
+                sampler = subprocess.Popen(['sample', str(process.pid), '7', '1', '-mayDie', '-fullPaths', '-file', os.environ['DIAG_2825_SAMPLE']], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             try:
                 for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
@@ -66,6 +70,8 @@ def main():
                         time.sleep(.1)
                     else:
                         raise AssertionError('native viewer timeout: ' + name)
+                if sampler is not None:
+                    sampler.wait(timeout=60)
                 assert process.wait(timeout=20) == 0, log_path.read_text(encoding="utf-8")[-6000:]
                 assert (directory / 'complete').exists()
                 trace = log_path.read_text(encoding='utf-8')
