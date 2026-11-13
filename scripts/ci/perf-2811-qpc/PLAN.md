@@ -4,7 +4,9 @@ Status: LOCAL REVIEW ONLY. No Rust build, push or native capture has run.
 The controller worktree is based on e4da51d3d; the compared feature source is
 now pinned to 46194f96dcaf20e653843da66bcb292dfbdc1f25, main to
 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Separate observer commits are prepared
-from those exact bases. The feature worktree and
+from those exact bases. The local source refs are main `4ed83ebc3` and
+toolbar `ae6dd4ea4`; both have only the same two-path observer patch. The feature
+worktree and
 the separate running-time gate proposal are untouched.
 
 ## Evidence and scope
@@ -34,7 +36,8 @@ worktrees with capsule.py. Commit only the common observer patch in each one:
 toolbar_native.rs plus its new qpc_clock.rs module. Their parents are the exact
 main/feature sources and their observer bytes are identical. Then record the
 two actual diagnostic commit SHAs in references.json and commit the controller.
-No source ref is created from a stale or pending pin.
+The two local refs were created only after that final source pin; no stale
+e4da observer binary will be used.
 
 Build metadata MUST name the actual committed diagnostic HEAD, with the base
 SHA recorded separately. It never labels an instrumented binary unchanged.
@@ -134,9 +137,15 @@ The push-triggered workflow is toolbar-2811-qpc.yml. Once the manager approves
 AND references.json contains the two committed diagnostic sources, push those
 new refs first and the controller to a NEW diagnostic-toolbar-2811/qpc-controller-*
 branch last. No force push. That final controller push is the capture command;
-it must not happen during this review hold. The final report will provide the
-exact source/controller SHAs and ready-to-run push commands after the new source
-pin is available.
+it must not happen during this review hold. The source SHAs are now pinned; the manager must still review runner,
+provenance and capture details before launch. The exact launch command is:
+
+```bash
+cd /home/god/Developer/worktrees/okilum/2811-qpc-diagnostic-e4da
+bash scripts/ci/perf-2811-qpc/launch-reviewed.sh
+```
+
+This command has NOT run. It is the explicit launch step after final review.
 
 Publish every new miss with main/head counts, raw wall verdict, Running/Ready/
 Waiting/Unknown ranges, uncertainty and separate causal status. No automatic
