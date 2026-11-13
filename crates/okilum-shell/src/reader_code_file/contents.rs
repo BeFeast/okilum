@@ -71,7 +71,13 @@ impl CodePreview {
                 let input = input.read(cx);
                 let line = input.top_visible_line()?;
                 let local = input.text().line_start_offset(line);
-                let at = active.pages.get(self.page)?.start + local;
+                let mut at = active.pages.get(self.page)?.start + local;
+                // The line's indentation belongs to the parent; its first
+                // character names the node on that line.
+                at += active.text[at..]
+                    .bytes()
+                    .take_while(|b| *b == b' ' || *b == b'\t')
+                    .count();
                 active.row_at(&(at..at))?
             }
             View::Table => return None,

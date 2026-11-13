@@ -624,11 +624,7 @@ fn contents2814_yaml_toml_xml_rows_states_and_where_you_are(cx: &mut TestAppCont
         let rows = shown(v);
         assert_eq!(rows[0], "version \"3.9\"");
         assert!(rows.contains(&"services 2 keys".to_owned()), "{rows:?}");
-        assert!(
-            rows.contains(&"      0 \"8080:80\"".to_owned())
-                || rows.iter().any(|r| r.trim() == "ports 2 items"),
-            "{rows:?}"
-        );
+        assert!(rows.iter().any(|r| r.trim() == "ports 2 items"), "{rows:?}");
     });
     // Where you are: the viewer's top line is in «accounts»; the mark sits on it.
     let code = code(&reader, visual);
