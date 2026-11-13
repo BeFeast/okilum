@@ -6218,7 +6218,7 @@ dependencies = [
  "uuid",
  "velopack",
  "windows-sys 0.61.2",
- "zip",
+ "zip 8.6.0",
 ]
 
 [[package]]
