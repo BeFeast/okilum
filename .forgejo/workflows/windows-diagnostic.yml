@@ -29,8 +29,10 @@ on:
 # Manual, pinned, archive and re-sign dispatches keep their own groups and finish.
 concurrency:
   group: windows-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
-  # A running beta always finishes (manager 13.11); a stale queued push run
-  # skips in select because main moved on.
+  # A running beta always finishes (manager 13.11). Forgejo queues this group
+  # FIFO and never replaces a pending run, so the push run that starts cancels
+  # older queued push runs and keeps the newest (hourly_beta.coalesce_queued_pushes);
+  # a stale push run that starts anyway skips in select because main moved on.
   cancel-in-progress: false
 
 jobs:

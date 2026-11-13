@@ -31,7 +31,7 @@ class Admission(unittest.TestCase):
         self.now = datetime(2026, 11, 5, 17, 17, tzinfo=timezone.utc)
         self.env = dict(GITHUB_REF='refs/heads/main', GITHUB_RUN_ID='100')
         self.descriptor = Mock(return_value=None)
-        def api(path, method='GET', body=None):
+        def api(path, method='GET', body=None, timeout=None):
             self.calls.append((path, method, body))
             if path == '/branches/main':
                 return {'commit': {'id': self.tip}}
@@ -83,7 +83,7 @@ class Admission(unittest.TestCase):
         self.assertFalse(self.writes())
 
     def test_push_builds_when_main_tip_cannot_be_read(self):
-        def broken(path, method='GET', body=None):
+        def broken(path, method='GET', body=None, timeout=None):
             raise OSError('offline')
         with patch.object(hourly, 'api', side_effect=broken):
             for platform in hourly.WORKFLOWS:
@@ -110,7 +110,7 @@ class Admission(unittest.TestCase):
         self.assertTrue(build, 'a source deeper than the bound builds')
         self.assertLessEqual(len([p for p, _, _ in self.calls if p.startswith('/git/commits/')]),
                              hourly.SUPERSEDE_DEPTH)
-        def history_fails(path, method='GET', body=None):
+        def history_fails(path, method='GET', body=None, timeout=None):
             if path == '/branches/main':
                 return {'commit': {'id': newer}}
             raise OSError('history offline')
@@ -118,6 +118,62 @@ class Admission(unittest.TestCase):
             build, _, reason = self.push('linux', SOURCE)
             self.assertTrue(build)
             self.assertIn('main history unreadable', reason)
+
+    def test_slow_successful_history_falls_back_to_build_within_the_budget(self):
+        # Review of #2890: 150 commits behind at 2 s per answer would take 302 s,
+        # beyond the 3-minute select job. The wall-clock budget builds instead.
+        chain = ['%040x' % n for n in range(1, 152)]
+        for child, parent in zip(chain[1:], chain):
+            self.parents[child] = parent
+        self.parents[chain[0]] = None
+        self.tip = chain[-1]
+        clock = [1000.0]
+        timeouts = []
+        original = hourly.api.side_effect
+        def slow(path, method='GET', body=None, timeout=None):
+            timeouts.append(timeout)
+            clock[0] += 2
+            return original(path, method, body, timeout)
+        self.calls.clear()
+        with patch.object(hourly, 'api', side_effect=slow), \
+                patch.object(hourly.time, 'monotonic', side_effect=lambda: clock[0]):
+            build, source, reason = self.push('linux', chain[0])
+        self.assertEqual((build, source), (True, chain[0]))
+        self.assertIn('TimeoutError', reason)
+        self.assertLessEqual(clock[0] - 1000.0, hourly.SUPERSEDE_BUDGET_SECONDS + 2)
+        self.assertTrue(all(0 < t <= hourly.SUPERSEDE_REQUEST_SECONDS for t in timeouts), timeouts)
+        # Control: the same chain answered quickly is within the bound and skips.
+        self.calls.clear()
+        self.assertEqual(self.push('linux', chain[-40])[0], False)
+
+    def test_starting_push_run_cancels_older_queued_pushes_and_keeps_the_newest(self):
+        # Forgejo 17 queues cancel-in-progress: false groups FIFO and never replaces
+        # a pending run; a burst of merges must not pile up select jobs.
+        def run(run_id, status='waiting', event='push', workflow='linux-release.yml', ref='main'):
+            return dict(id=run_id, status=status, trigger_event=event, workflow_id=workflow, prettyref=ref)
+        self.runs[:] = [run(99, status='running'), run(100), run(101), run(102), run(103),
+                        run(104, event='workflow_dispatch'), run(105, workflow='windows-diagnostic.yml'),
+                        run(106, ref='feature')]
+        self.push('linux')
+        self.assertEqual(self.writes(), [('/actions/runs/101/cancel', None), ('/actions/runs/102/cancel', None)])
+        query = next(p for p, m, _ in self.calls if p.startswith('/actions/runs?'))
+        self.assertIn('workflow_id=linux-release.yml', query)
+        self.assertIn('event=push', query)
+        self.assertIn('status=waiting', query)
+        # One queued run (the newest) is never cancelled.
+        self.calls.clear()
+        self.runs[:] = [run(99, status='running'), run(103)]
+        self.push('linux')
+        self.assertFalse(self.writes())
+        # A failed inventory or cancel never changes the run's own decision.
+        self.runs[:] = [run(101), run(102)]
+        original = hourly.api.side_effect
+        def cancel_fails(path, method='GET', body=None, timeout=None):
+            if path.endswith('/cancel'):
+                raise OSError('forbidden')
+            return original(path, method, body, timeout)
+        with patch.object(hourly, 'api', side_effect=cancel_fails):
+            self.assertEqual(self.push('linux')[:2], (True, SOURCE))
 
     def test_push_of_the_current_beta_head_builds_nothing(self):
         for platform in hourly.WORKFLOWS:

@@ -51,7 +51,13 @@ the concurrency group `<platform>-beta-main` without `cancel-in-progress`: a
 newer push waits for the running one. When a queued push run starts and main
 has moved on, its select step skips (`hourly_beta.push_select` reads main's tip;
 the newer push's own run builds it). If the tip cannot be read, the run builds as
-before rather than skip. The beta is therefore at most one build behind main. The hosted GitHub producers follow: Linux
+before rather than skip; the same holds when the check exceeds its 60-second
+budget, and for a source outside main's last 200 first-parent commits (it builds;
+it does not fail closed, and publishers still refuse a build older than the feed).
+Forgejo 17 queues the group FIFO and never replaces a pending run, so the push
+run that starts cancels every older queued push run of its workflow and keeps
+only the newest (`coalesce_queued_pushes`); a burst of merges costs one extra
+select at most. The beta is therefore at most one build behind main. The hosted GitHub producers follow: Linux
 AppImage producers share the GitHub group `forgejo-linux-beta`, and Mac beta
 signing runs share `macos-shipping-beta`, both cancelling the older run
 (the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
