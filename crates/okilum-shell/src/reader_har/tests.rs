@@ -321,7 +321,7 @@ fn har2836_details_load_lazily_cancel_stale_reads_and_keep_focus(cx: &mut TestAp
     });
     let field = |name: &str| {
         rows.iter().find_map(|row| match row {
-            Row::Field { name: n, value } if n.as_ref() == name => Some(value.to_string()),
+            Row::Field { name: n, value, .. } if n.as_ref() == name => Some(value.to_string()),
             _ => None,
         })
     };
@@ -626,8 +626,314 @@ fn review2878_a_replaced_file_is_read_again_before_details(cx: &mut TestAppConte
     view.read_with(visual, |har, _| match &har.detail {
         Some(Detail::Ready(rows)) => assert!(rows.rows.iter().any(|row| matches!(
             row,
-            Row::Field { name, value } if name.as_ref() == "URL" && value.as_ref() == "https://zpi.example.test/v1/login"
+            Row::Field { name, value, .. } if name.as_ref() == "URL" && value.as_ref() == "https://zpi.example.test/v1/login"
         ))),
         _ => panic!("details of the new revision"),
     });
+}
+
+/// #2888: detail values can be selected and copied in full with Cmd/Ctrl+C
+/// and the context menu; the row shows a bounded value, the copy is whole.
+#[gpui::test]
+fn fix2888_detail_values_select_and_copy_in_full(cx: &mut TestAppContext) {
+    let long_url = format!("https://long.example.test/{}", "u".repeat(70_000));
+    let long_header = "h".repeat(10_000);
+    let text = capture(vec![entry(
+        "GET",
+        &long_url,
+        200,
+        "2026-11-13T08:00:00.000Z",
+        serde_json::json!({ "request": {
+            "method": "GET", "url": long_url,
+            "headers": [
+                { "name": "authorization", "value": format!("Bearer {SECRET}") },
+                { "name": "x-long", "value": long_header }
+            ]
+        }}),
+    )]);
+    let (reader, visual, _temp) = open(cx, &[("long.har", &text)], "long.har");
+    visual.simulate_resize(size(px(1440.), px(900.)));
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    let rows = har.read_with(visual, |har, _| match &har.detail {
+        Some(Detail::Ready(rows)) => rows.rows.clone(),
+        _ => panic!("details are ready"),
+    });
+    let row_of = |wanted: &str| {
+        rows.iter()
+            .position(|row| matches!(row, Row::Field { name, .. } if name.as_ref() == wanted))
+            .unwrap()
+    };
+    let (url, header) = (row_of("URL"), row_of("x-long"));
+    let clipboard = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    };
+    let sentinel = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())))
+    };
+    // The row shows a bounded value (control: the copy is longer than the row).
+    assert!(matches!(&rows[url], Row::Field { value, .. } if value.len() < long_url.len()));
+
+    // Click selects the value; Cmd/Ctrl+C copies all of it, read from the file.
+    sentinel(visual);
+    let bounds = measured_bounds(
+        visual,
+        Box::leak(format!("har-detail-row-{url}").into_boxed_str()),
+    )
+    .expect("the URL row is rendered");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    draw(visual);
+    assert_eq!(har.read_with(visual, |har, _| har.detail_row), Some(url));
+    visual.simulate_keystrokes("secondary-c");
+    draw(visual);
+    assert_eq!(clipboard(visual).as_deref(), Some(long_url.as_str()));
+
+    // A long header copies whole too.
+    sentinel(visual);
+    har.update(visual, |har, cx| {
+        har.detail_row = Some(header);
+        cx.notify();
+    });
+    visual.simulate_keystrokes("secondary-c");
+    draw(visual);
+    assert_eq!(clipboard(visual).as_deref(), Some(long_header.as_str()));
+
+    // The context menu offers name, name: value and the whole section.
+    sentinel(visual);
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Right, Modifiers::default());
+    draw(visual);
+    assert_eq!(har.read_with(visual, |har, _| har.detail_row), Some(url));
+    let items: Vec<String> = har.read_with(visual, |har, _| match &har.detail {
+        Some(Detail::Ready(rows)) => copy_items(&rows.rows, url)
+            .into_iter()
+            .map(|(l, _)| l.to_string())
+            .collect(),
+        _ => Vec::new(),
+    });
+    assert_eq!(
+        items,
+        [
+            "Copy value",
+            "Copy name",
+            "Copy name: value",
+            "Copy all general"
+        ]
+    );
+    visual.simulate_keystrokes("escape");
+    draw(visual);
+    for (index, kind, expected) in [
+        (url, CopyKind::Name, "URL".to_owned()),
+        (url, CopyKind::Pair, format!("URL: {long_url}")),
+        (
+            header,
+            CopyKind::Section,
+            format!("authorization: Bearer {SECRET}\nx-long: {long_header}"),
+        ),
+    ] {
+        sentinel(visual);
+        har.update_in(visual, |har, window, cx| {
+            har.copy_detail(index, kind, window, cx)
+        });
+        draw(visual);
+        assert_eq!(clipboard(visual), Some(expected), "{kind:?}");
+    }
+}
+
+// --- Review of PR 2900 (#2888): each case fails on head 7ebc1903. ---
+
+struct CopyFixture {
+    long_url: String,
+    long_redirect: String,
+    long_name: String,
+}
+
+fn copy_capture() -> (String, CopyFixture) {
+    let fixture = CopyFixture {
+        long_url: format!("https://long.example.test/{}", "u".repeat(70_000)),
+        long_redirect: format!("https://redirect.example.test/{}", "r".repeat(70_000)),
+        long_name: format!("x-{}", "n".repeat(300)),
+    };
+    let text = capture(vec![
+        entry(
+            "GET",
+            &fixture.long_url,
+            301,
+            "2026-11-13T08:00:00.000Z",
+            serde_json::json!({
+                "request": {
+                    "method": "GET", "url": fixture.long_url,
+                    "headers": [
+                        { "name": fixture.long_name, "value": "named" },
+                        { "name": "accept", "value": "*/*" }
+                    ]
+                },
+                "response": {
+                    "status": 301, "statusText": "Moved", "headers": [],
+                    "content": { "size": 0, "mimeType": "text/html" },
+                    "redirectURL": fixture.long_redirect
+                }
+            }),
+        ),
+        entry(
+            "GET",
+            "https://short.example.test/",
+            200,
+            "2026-11-13T08:00:01.000Z",
+            serde_json::json!({}),
+        ),
+    ]);
+    (text, fixture)
+}
+
+fn ready_rows(har: &Entity<HarView>, visual: &mut VisualTestContext) -> Vec<Row> {
+    har.read_with(visual, |har, _| match &har.detail {
+        Some(Detail::Ready(rows)) => rows.rows.clone(),
+        _ => panic!("details are ready"),
+    })
+}
+
+fn row_named(rows: &[Row], wanted: &str) -> usize {
+    rows.iter()
+        .position(|row| matches!(row, Row::Field { name, .. } if name.as_ref() == wanted))
+        .unwrap_or_else(|| panic!("no row {wanted}"))
+}
+
+fn clipboard_text(visual: &mut VisualTestContext) -> Option<String> {
+    visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+}
+
+fn set_sentinel(visual: &mut VisualTestContext) {
+    visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+}
+
+/// P2-1: a replacement with the same size and mtime (Syncthing) must not
+/// copy new bytes under stale values; the request list is read again.
+#[gpui::test]
+fn review2900_long_copies_verify_the_request_bytes(cx: &mut TestAppContext) {
+    let (text, fixture) = copy_capture();
+    let (reader, visual, temp) = open(cx, &[("copy.har", &text)], "copy.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    let url = row_named(&ready_rows(&har, visual), "URL");
+    // Control: unchanged, the whole URL copies.
+    set_sentinel(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx)
+    });
+    draw(visual);
+    assert_eq!(clipboard_text(visual), Some(fixture.long_url.clone()));
+    let path = temp.path().join("vault/copy.har");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let replaced = text.replacen("uuuu", "vvvv", 1);
+    assert_eq!(replaced.len(), text.len());
+    std::fs::write(&path, &replaced).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    set_sentinel(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx)
+    });
+    draw(visual);
+    assert_eq!(
+        clipboard_text(visual).as_deref(),
+        Some("sentinel"),
+        "no copy of other bytes"
+    );
+    har.read_with(visual, |har, _| {
+        assert!(har.notice.is_some() && har.detail.is_none())
+    });
+}
+
+/// P2-2: an older copy never overwrites a newer copy, another request or a
+/// closed pane.
+#[gpui::test]
+fn review2900_stale_copies_never_reach_the_clipboard(cx: &mut TestAppContext) {
+    let (text, fixture) = copy_capture();
+    let (reader, visual, _temp) = open(cx, &[("copy.har", &text)], "copy.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    let rows = ready_rows(&har, visual);
+    let (url, method) = (row_named(&rows, "URL"), row_named(&rows, "Method"));
+    // A long read, then a short copy before the read finishes.
+    set_sentinel(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx);
+        har.copy_detail(method, CopyKind::Value, window, cx);
+    });
+    draw(visual);
+    assert_eq!(clipboard_text(visual).as_deref(), Some("GET"));
+    // A long read, then closing details.
+    set_sentinel(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx);
+        har.close_details(cx);
+    });
+    draw(visual);
+    assert_eq!(clipboard_text(visual).as_deref(), Some("sentinel"));
+    // A long read, then another request.
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    set_sentinel(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx);
+        har.select(1, cx);
+    });
+    draw(visual);
+    assert_eq!(clipboard_text(visual).as_deref(), Some("sentinel"));
+    // Control: left alone, the long read does copy.
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    har.update_in(visual, |har, window, cx| {
+        har.copy_detail(url, CopyKind::Value, window, cx)
+    });
+    draw(visual);
+    assert_eq!(clipboard_text(visual), Some(fixture.long_url));
+}
+
+/// P2-3 and P2-4: General fields above 64 KiB and names above the 200-char
+/// display copy whole, in every copy form.
+#[gpui::test]
+fn review2900_long_fields_and_names_copy_whole(cx: &mut TestAppContext) {
+    let (text, fixture) = copy_capture();
+    let (reader, visual, _temp) = open(cx, &[("copy.har", &text)], "copy.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    let rows = ready_rows(&har, visual);
+    let redirect = row_named(&rows, "Redirect");
+    let name_row = rows
+        .iter()
+        .position(|row| matches!(row, Row::Field { value, .. } if value.as_ref() == "named"))
+        .unwrap();
+    for (index, kind, expected) in [
+        (redirect, CopyKind::Value, fixture.long_redirect.clone()),
+        (name_row, CopyKind::Name, fixture.long_name.clone()),
+        (
+            name_row,
+            CopyKind::Pair,
+            format!("{}: named", fixture.long_name),
+        ),
+        (
+            name_row,
+            CopyKind::Section,
+            format!("{}: named\naccept: */*", fixture.long_name),
+        ),
+    ] {
+        set_sentinel(visual);
+        har.update_in(visual, |har, window, cx| {
+            har.copy_detail(index, kind, window, cx)
+        });
+        draw(visual);
+        let copied = clipboard_text(visual).unwrap();
+        assert!(!copied.contains('…'), "{kind:?}: no display ellipsis");
+        assert_eq!(copied, expected, "{kind:?}");
+    }
 }

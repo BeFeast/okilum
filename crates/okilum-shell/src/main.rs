@@ -554,6 +554,7 @@ fn bind_keys(cx: &mut App) {
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
     reader_delimited::bind_keys(cx);
+    reader_har::bind_keys(cx);
     reader_code_file::bind_keys(cx);
     for context in ["ReaderFileEdit", "ReaderFileEdit > Input"] {
         cx.bind_keys([
