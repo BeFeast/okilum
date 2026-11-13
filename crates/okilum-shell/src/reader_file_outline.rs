@@ -16,6 +16,10 @@ pub(crate) mod tree;
 const READING_DELAY: Duration = Duration::from_millis(300);
 
 /// Contents from the viewer's whole-file tree (#2814): JSON in Read.
+/// Listed group rows by parent: `(first_index, last_index, row)` sorted by
+/// `first_index`, inner groups after the outer group they share it with.
+type GroupRows = HashMap<usize, Vec<(usize, usize, usize)>>;
+
 #[derive(Default)]
 struct Snapshot {
     active: bool,
@@ -28,10 +32,8 @@ struct Snapshot {
     rows: Arc<Vec<tree::Row>>,
     /// Row position of each listed node, computed with the rows.
     positions: Arc<HashMap<usize, usize>>,
-    /// Listed group rows by parent, computed with the rows: `(first_index,
-    /// last_index, row)` sorted by `first_index`, inner groups after the
-    /// outer group they share it with.
-    groups: Arc<HashMap<usize, Vec<(usize, usize, usize)>>>,
+    /// Listed group rows by parent, computed with the rows.
+    groups: Arc<GroupRows>,
     /// The marked row: the node where you are, or its nearest listed ancestor.
     current: Option<usize>,
     generation: u64,
@@ -471,7 +473,7 @@ impl View {
                 .spawn(async move {
                     let rows = tree::visible_rows(&doc, &expansion);
                     let mut positions = HashMap::new();
-                    let mut groups: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+                    let mut groups = GroupRows::new();
                     for (at, row) in rows.iter().enumerate() {
                         match row {
                             tree::Row::Node { index, .. } => {

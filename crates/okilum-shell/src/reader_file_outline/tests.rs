@@ -542,90 +542,70 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
             .unwrap()
     });
     // #2814 9c: in Read, YAML Contents reads the viewer's tree (covered by
-    // `contents2814_yaml_toml_xml_rows_and_where_you_are`); the private
+    // `contents2814_yaml_toml_xml_rows_states_and_where_you_are`); the private
     // outline remains the Source editor's, exercised here.
-    for editable in [true] {
-        if editable {
-            reader.update_in(visual, |reader, window, cx| {
-                reader.toggle_source(window, cx)
-            });
-            settle(visual);
-        }
-        let input = outline.read_with(visual, |view, _| view.input.clone().unwrap());
-        reader.read_with(visual, |reader, cx| {
-            if editable {
-                assert_eq!(
-                    Some(input.clone()),
-                    reader.source_input(),
-                    "Source owns the outline"
-                );
-            } else {
-                assert_eq!(
-                    input,
-                    reader
-                        .file_preview
-                        .as_ref()
-                        .unwrap()
-                        .code
-                        .as_ref()
-                        .unwrap()
-                        .read(cx)
-                        .input()
-                        .unwrap()
-                );
-            }
-        });
-        input.update(visual, |input, cx| input.set_selected_range(0..5, cx));
-        settle(visual);
-        let before = input.read_with(visual, |input, _| {
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    settle(visual);
+    let input = outline.read_with(visual, |view, _| view.input.clone().unwrap());
+    reader.read_with(visual, |reader, _| {
+        assert_eq!(
+            Some(input.clone()),
+            reader.source_input(),
+            "Source owns the outline"
+        );
+    });
+    input.update(visual, |input, cx| input.set_selected_range(0..5, cx));
+    settle(visual);
+    let before = input.read_with(visual, |input, _| {
+        (
+            input.selected_range(),
+            input.cursor_position(),
+            input.text().clone(),
+        )
+    });
+    // The strict surface regression above clicks the real row. A cached
+    // subtree intentionally has no debug bounds on reused frames; invoke
+    // its same jump action here without invalidating the cache for a probe.
+    outline.update_in(visual, |view, window, cx| view.jump(2, window, cx));
+    settle(visual);
+    assert_eq!(
+        input.read_with(visual, |input, _| input.top_visible_line()),
+        Some(102)
+    );
+    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
+    let viewport = visual.debug_bounds("reader-document").unwrap();
+    visual.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+        ..Default::default()
+    });
+    settle(visual);
+    input.read_with(visual, |input, _| {
+        assert!(
+            (2..102).contains(&input.top_visible_line().unwrap()),
+            "real wheel moved the viewport"
+        );
+        assert_eq!(
             (
                 input.selected_range(),
                 input.cursor_position(),
-                input.text().clone(),
-            )
-        });
-        // The strict surface regression above clicks the real row. A cached
-        // subtree intentionally has no debug bounds on reused frames; invoke
-        // its same jump action here without invalidating the cache for a probe.
-        outline.update_in(visual, |view, window, cx| view.jump(2, window, cx));
-        settle(visual);
-        assert_eq!(
-            input.read_with(visual, |input, _| input.top_visible_line()),
-            Some(102)
+                input.text().clone()
+            ),
+            before
         );
-        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(2)));
-        let viewport = visual.debug_bounds("reader-document").unwrap();
-        visual.simulate_event(ScrollWheelEvent {
-            position: viewport.center(),
-            delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
-            ..Default::default()
-        });
-        settle(visual);
-        input.read_with(visual, |input, _| {
-            assert!(
-                (2..102).contains(&input.top_visible_line().unwrap()),
-                "real wheel moved the viewport"
-            );
-            assert_eq!(
-                (
-                    input.selected_range(),
-                    input.cursor_position(),
-                    input.text().clone()
-                ),
-                before
-            );
-        });
-        outline.read_with(visual, |view, _| {
-            assert_eq!(view.current, Some(0), "collapsed child maps to parent");
-            assert!(!view.sample_pending);
-        });
-        outline.update(visual, |view, cx| view.toggle(0, cx));
-        settle(visual);
-        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
-        outline.update(visual, |view, cx| view.toggle(0, cx));
-        settle(visual);
-        outline.read_with(visual, |view, _| assert_eq!(view.current, Some(0)));
-    }
+    });
+    outline.read_with(visual, |view, _| {
+        assert_eq!(view.current, Some(0), "collapsed child maps to parent");
+        assert!(!view.sample_pending);
+    });
+    outline.update(visual, |view, cx| view.toggle(0, cx));
+    settle(visual);
+    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(1)));
+    outline.update(visual, |view, cx| view.toggle(0, cx));
+    settle(visual);
+    outline.read_with(visual, |view, _| assert_eq!(view.current, Some(0)));
     assert_eq!(
         std::fs::read_to_string(root.path().join("config.yaml")).unwrap(),
         source
