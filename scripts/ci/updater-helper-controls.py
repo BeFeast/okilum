@@ -13,6 +13,7 @@ def suite(target, *extra):
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")
     suite('zip_compat')
     suite('windows_helper_recovery')
     source = ROOT / 'vendor/velopack-1.2.161/src/helper_replace.rs'
@@ -29,7 +30,7 @@ def main():
             assert original.count(before) == 1, before
             source.write_bytes(original.replace(before, after))
             result = subprocess.run(COMMAND + ['--test', 'windows_helper_recovery', test, '--', '--exact', '--nocapture'],
-                                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                    cwd=ROOT, text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             print(result.stdout, flush=True)
             assert result.returncode == 101 and f'{test} ... FAILED' in result.stdout, test
             print('HELPER_RECOVERY_REVERT_CONTROL_FIRED ' + test, flush=True)
