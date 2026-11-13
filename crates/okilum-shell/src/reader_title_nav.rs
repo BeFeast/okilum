@@ -343,85 +343,103 @@ impl Reader {
         if self.single_file {
             return row;
         }
+        // Each control is built in its own frame (#2825).
         if reader_features::enabled(reader_features::Feature::Agents, cx) {
-            // «Projects ▾» outside a project, «◆ <project> ▾» inside (#1519).
-            // The vault's own name lives in the sidebar header, not here.
-            let active = self.project_navigation.active.as_ref();
-            let (label, icon, tip) = switcher_face(active);
-            let avatar = active.map(|project| {
-                okilum_shell::project_avatar::project_avatar(project, SWITCHER_AVATAR, cx)
-            });
-            let face = match (icon, avatar) {
-                (_, Some(avatar)) => Button::new("title-switcher").ghost().child(
-                    h_flex()
-                        .gap_1p5()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .debug_selector(|| "title-switcher-avatar".into())
-                                .flex_none()
-                                .child(avatar),
-                        )
-                        .child(div().min_w_0().truncate().child(label)),
-                ),
-                (Some(icon), None) => Button::new("title-switcher")
-                    .ghost()
-                    .icon(icon)
-                    .label(label),
-                (None, None) => Button::new("title-switcher").ghost().label(label),
-            };
-            row = row.child(
-                self.trigger_probe(
-                    face.dropdown_caret(true)
-                        .selected(self.title_nav.switcher_open)
-                        .h(px(28.))
-                        .max_w(px(220.))
-                        .overflow_hidden()
-                        .rounded(px(6.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .tooltip(tip)
-                        .debug_selector(|| "title-switcher".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_project_switcher(window, cx)
-                        })),
-                    |t, b| t.switcher = b,
-                )
-                // Right-click on «◆ project ▾»: Change icon… (#1627).
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(|this, _, window, cx| {
-                        if let Some(project) = this.project_navigation.active.clone() {
-                            cx.stop_propagation();
-                            this.open_project_menu(project, window, cx);
-                        }
-                    }),
-                ),
-            );
+            row = row.child(self.render_title_switcher(cx));
         }
         for (menu, label, icon) in [
             (Menu::Recent, "Recent", brand::READER_CLOCK_ICON),
             (Menu::Pinned, "Pinned", brand::READER_PIN_ICON),
         ] {
-            let selector = format!("title-{}", menu.id());
-            let button = Button::new(SharedString::from(selector.clone()))
-                .ghost()
-                .icon(Icon::default().path(icon))
-                .when(!compact, |b| b.label(label).dropdown_caret(true))
-                .when(compact, |b| b.w(px(28.)))
-                .selected(self.title_nav.menu == Some(menu))
-                .h(px(28.))
-                .rounded(px(6.))
-                .tooltip(label)
-                .debug_selector(move || selector.clone())
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.toggle_nav_menu(menu, window, cx)),
-                );
-            row = row.child(self.trigger_probe(button, move |t, b| match menu {
-                Menu::Recent => t.recent = b,
-                Menu::Pinned => t.pinned = b,
-            }));
+            row = row.child(self.render_title_menu_button(menu, label, icon, compact, cx));
         }
         row
+    }
+
+    #[inline(never)]
+    fn render_title_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
+        // «Projects ▾» outside a project, «◆ <project> ▾» inside (#1519).
+        // The vault's own name lives in the sidebar header, not here.
+        let active = self.project_navigation.active.as_ref();
+        let (label, icon, tip) = switcher_face(active);
+        let avatar = active.map(|project| {
+            okilum_shell::project_avatar::project_avatar(project, SWITCHER_AVATAR, cx)
+        });
+        let face = match (icon, avatar) {
+            (_, Some(avatar)) => Button::new("title-switcher").ghost().child(
+                h_flex()
+                    .gap_1p5()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .debug_selector(|| "title-switcher-avatar".into())
+                            .flex_none()
+                            .child(avatar),
+                    )
+                    .child(div().min_w_0().truncate().child(label)),
+            ),
+            (Some(icon), None) => Button::new("title-switcher")
+                .ghost()
+                .icon(icon)
+                .label(label),
+            (None, None) => Button::new("title-switcher").ghost().label(label),
+        };
+        self.trigger_probe(
+            face.dropdown_caret(true)
+                .selected(self.title_nav.switcher_open)
+                .h(px(28.))
+                .max_w(px(220.))
+                .overflow_hidden()
+                .rounded(px(6.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .tooltip(tip)
+                .debug_selector(|| "title-switcher".into())
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.toggle_project_switcher(window, cx)),
+                ),
+            |t, b| t.switcher = b,
+        )
+        // Right-click on «◆ project ▾»: Change icon… (#1627).
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|this, _, window, cx| {
+                if let Some(project) = this.project_navigation.active.clone() {
+                    cx.stop_propagation();
+                    this.open_project_menu(project, window, cx);
+                }
+            }),
+        )
+        .into_any_element()
+    }
+
+    #[inline(never)]
+    fn render_title_menu_button(
+        &self,
+        menu: Menu,
+        label: &'static str,
+        icon: &'static str,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selector = format!("title-{}", menu.id());
+        let button = Button::new(SharedString::from(selector.clone()))
+            .ghost()
+            .icon(Icon::default().path(icon))
+            .when(!compact, |b| b.label(label).dropdown_caret(true))
+            .when(compact, |b| b.w(px(28.)))
+            .selected(self.title_nav.menu == Some(menu))
+            .h(px(28.))
+            .rounded(px(6.))
+            .tooltip(label)
+            .debug_selector(move || selector.clone())
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.toggle_nav_menu(menu, window, cx)),
+            );
+        self.trigger_probe(button, move |t, b| match menu {
+            Menu::Recent => t.recent = b,
+            Menu::Pinned => t.pinned = b,
+        })
+        .into_any_element()
     }
 
     fn trigger_probe(
