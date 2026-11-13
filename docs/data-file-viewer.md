@@ -33,6 +33,56 @@ inline retryable error. Installation and extension downloads belong to the
 external CLI. Okilum adds no dependency, database engine, Parquet/.duckdb
 viewer, SQL input or bundled asset; the dependency set and packaged assets are unchanged.
 
+## HAR captures (#2836)
+
+A `.har` file (HTTP Archive 1.2, as saved by Chrome, Firefox, Safari or a
+proxy) opens as a request list with Method, Status, Name (host + path), Type,
+Size, Time and Started columns. Type and Started appear when the list pane
+itself is at least 600 and 800 px wide; the window width does not decide.
+Click a heading for ascending, descending, then file order. The header Find
+filters requests (case-insensitive across method, URL, status, type, MIME type
+and browser error) and shows `shown of total`. Up/Down move the selection,
+Esc closes the details.
+
+Selecting a request shows its details below the list: General (URL, method,
+status, protocol, remote address, type, size, start with the offset from the
+first request, total time, redirect, browser error), Timing with one bar per
+phase, request and response headers, query string, cookies with their
+attributes, and both bodies. Sections fold by their title. Bodies are decoded
+(`encoding: base64` included) up to 256 KB; whole valid JSON is indented
+without changing key order, numbers or escapes; other text is shown as written,
+never rendered (HTML stays text, nothing loads from the network, no link
+opens). Binary content shows its size and type. A body the capture omitted
+says so.
+
+Source switches the same header to the existing JSON viewer for this file
+(Formatted, Tree, Raw, Find, Copy, folding), with Requests to come back. Source
+follows the code viewer's 64 MB limit. Neither view writes the file and HAR
+files never become editable.
+
+Indexing streams the file once on a worker with a 256 KB buffer, keeping only
+the list fields (URL text up to 2 KB) and each request's byte range; requests
+appear as they are read and the bottom line shows progress, then the totals:
+requests, bytes transferred (`_transferSize`, else headers + body size), the
+span from the first start to the last end, and errors (no response, status 0,
+4xx/5xx or a browser error). Details are parsed again from the selected
+request's range on a worker, after checking the file's size and modification
+time and a hash of the request's own bytes against the index; a changed file
+is read again with a notice. Duplicate keys follow one rule everywhere: the
+last occurrence wins; strings above 64 KB stay on disk until a body is
+decoded. Filtering and sorting run on workers and newer queries supersede older
+ones. Selecting another request cancels the previous detail read, and switching
+files cancels the index and every pending read.
+
+Limits: files above 1 GB are not indexed (a message says so; use another app).
+At most 200,000 requests are listed, with a warning in the bottom line; the
+rest of the file is not read. Details keep the first 5,000 headers, cookies or
+parameters per list and say how many there were. A damaged file lists the
+requests read before the damage, names the byte offset and offers Source;
+a file without `log.entries` says it is not a HAR file. HAR files contain
+cookies, tokens and passwords: their content is never written to logs,
+diagnostics or feedback reports.
+
 ## Source viewing
 
 JSON/JSONC, XML/XSD/XSL, TOML, YAML and TXT use the Reader's code viewer.

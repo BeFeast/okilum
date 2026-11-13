@@ -141,6 +141,10 @@ original combined titlebar and document controls:
   backgrounds are not used for scrollbar ticks. Overlapping opaque other-hit
   ticks are painted as their exact union, preserving gaps and the 1,000-hit
   sample while avoiding repeated quad submissions on each scroll.
+- **HAR captures (#2836).** Requests and Source are header views; Source is the
+  JSON viewer with Requests added. The header Find filters the request list;
+  its summary and reading progress are in the bottom line. Details sit under
+  the list behind the shared split handle (docs/data-file-viewer.md).
 - **Simple file viewers (#2807).** ZIP extraction lives in viewer actions, with
   a filled, pinned Extract all button. Its summary is in the bottom line.
   Canvas uses a 28 px read-only lock badge, header Fit/zoom and percentage;

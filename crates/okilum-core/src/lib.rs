@@ -34,6 +34,7 @@ pub mod file_editor;
 pub mod folder_registration;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
+pub mod har;
 pub mod ir;
 pub mod link_candidates;
 pub mod link_registration;

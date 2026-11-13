@@ -209,6 +209,8 @@ pub(crate) struct FilePreview {
     pub table: Option<Entity<reader_delimited::TablePreview>>,
     /// A ZIP archive's entries, previews and extraction (#996).
     pub archive: Option<Entity<reader_archive::ArchivePreview>>,
+    /// A HAR capture's requests (#2836). Its Source view is `code`.
+    pub har: Option<Entity<reader_har::HarView>>,
     pub audio: Option<Entity<reader_audio::AudioView>>,
     pub canvas: Option<Entity<reader_canvas::CanvasView>>,
     pub drawing: Option<Entity<reader_drawing::FileHandle>>,
@@ -242,6 +244,7 @@ impl FilePreview {
             _live: None,
             table: None,
             archive: None,
+            har: None,
             audio: None,
             canvas: None,
             drawing: None,
@@ -510,6 +513,12 @@ impl Reader {
                     });
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
+                } else if reader_har::eligible(rel) {
+                    let (root, path) = (self.vault_root.clone(), preview.path.clone());
+                    let reader = cx.entity().downgrade();
+                    preview.har = Some(cx.new(|cx| {
+                        reader_har::HarView::new(root, rel.into(), path, reader, window, cx)
+                    }));
                 } else if reader_archive::eligible(rel) {
                     let path = preview.path.clone();
                     preview.archive =
@@ -542,6 +551,7 @@ impl Reader {
                     && preview.code.is_none()
                     && preview.table.is_none()
                     && preview.archive.is_none()
+                    && preview.har.is_none()
                     && !reader_media::is_video(&preview.path)
                     && preview.audio.is_none()
                     && preview.canvas.is_none()
@@ -632,6 +642,18 @@ impl Reader {
                         .text_color(cx.theme().muted_foreground)
                         .child(message.clone()),
                 )
+                .into_any_element();
+        }
+        // In Source mode `code` holds the JSON viewer and renders below.
+        if let Some(har) = preview.har.as_ref().filter(|_| preview.code.is_none()) {
+            return v_flex()
+                .id("reader-har-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .min_h_0()
+                .child(self.render_file_header_viewport(window, cx))
+                .child(har.clone())
                 .into_any_element();
         }
         if let Some(archive) = &preview.archive {
