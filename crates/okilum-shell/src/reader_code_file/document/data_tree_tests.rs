@@ -263,3 +263,61 @@ fn data2813_deep_and_multi_megabyte_files_index_iteratively_in_bounded_memory() 
         "a multi-megabyte XML parses and indexes on a worker in {elapsed:?}"
     );
 }
+
+#[test]
+fn toml2813_trailing_comments_never_replace_values() {
+    let d = doc(
+        "toml",
+        "a = [1,2] # ports\nb = { x = 1 } # inline\nc = \"s\" # note\n",
+    );
+    assert_eq!(labels(&d, 0), ["a 2 items", "b 1 key", "c \"s\""]);
+    assert_eq!(labels(&d, find_key(&d, "a")), ["[0] 1", "[1] 2"]);
+    assert_eq!(labels(&d, find_key(&d, "b")), ["x 1"]);
+}
+
+#[test]
+fn yaml2813_comments_after_anchor_tag_or_dash_keep_the_content() {
+    let d = doc(
+        "yaml",
+        "x: &ref # comment\n  a: 1\n  b: 2\nlist:\n  - # note\n    k: v\n",
+    );
+    assert!(d.invalid.is_none(), "{:?}", d.invalid);
+    assert_eq!(labels(&d, 0), ["x 2 keys", "list 1 item"]);
+    assert_eq!(labels(&d, find_key(&d, "x")), ["a 1", "b 2"]);
+    assert_eq!(labels(&d, find_key(&d, "list")), ["[0] 1 key"]);
+}
+
+#[test]
+fn toml2813_sub_tables_between_array_blocks_stay_in_one_array_row() {
+    let text = "[[bin]]\nname = \"a\"\n[bin.meta]\nk = 1\n[[bin]]\nname = \"b\"\n";
+    let d = doc("toml", text);
+    assert_eq!(
+        labels(&d, 0),
+        ["bin 2 items"],
+        "one row, not two restarting at 0"
+    );
+    let bin = find_key(&d, "bin");
+    assert_eq!(labels(&d, bin), ["[0] 2 keys", "[1] 1 key"]);
+    let first = d.children(bin).next().unwrap();
+    assert_eq!(labels(&d, first), ["name \"a\"", "meta 1 key"]);
+    // Rows still enclose their children, so the sorted lookup finds `k`.
+    let at = text.find("k = 1").unwrap();
+    assert_eq!(d.row_at(&(at..at + 1)), Some(find_key(&d, "k")));
+}
+
+#[test]
+fn xml2813_root_chevron_and_left_cannot_close_the_root() {
+    let d = doc("xml", FEED);
+    let mut tree = super::super::structure::Structure::default();
+    tree.reset(&d);
+    // Chevron clicks and the Left key both go through `toggle`.
+    tree.toggle(1, &d);
+    assert!(!tree.folded(1), "the root stays open");
+    assert!(tree.visible.len() > 1);
+    let child = d.children(1).nth(1).unwrap();
+    tree.toggle(child, &d);
+    assert!(
+        !tree.folded(child),
+        "positive: other rows still open and close"
+    );
+}

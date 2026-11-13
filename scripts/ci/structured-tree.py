@@ -49,6 +49,10 @@ CONTROLS = [
  ('first-document-only', 'yaml2813_keys_sequences_anchors_and_documents'),
  ('grammar-verdict', 'verdicts2813_yaml_strict_toml_and_xml_syntax_only'),
  ('syntax-is-invalid', 'verdicts2813_yaml_strict_toml_and_xml_syntax_only'),
+ ('toml-comment-value', 'toml2813_trailing_comments_never_replace_values'),
+ ('yaml-comment-content', 'yaml2813_comments_after_anchor_tag_or_dash_keep_the_content'),
+ ('no-subtable-merge', 'toml2813_sub_tables_between_array_blocks_stay_in_one_array_row'),
+ ('root-toggle-closes', 'xml2813_root_chevron_and_left_cannot_close_the_root'),
  ('tree-json-only', 'data2813_tree_find_in_normal_size_yaml_and_xml_opens_parents_and_marks_the_row'),
 ]
 TESTS = 'data2813_ xml2813_ toml2813_ yaml2813_ verdicts2813_ corpus2813_'.split()
@@ -66,10 +70,14 @@ try:
          '.filter(|child| child.kind() == "element" || wrapper(child) || (crate::tree2813_control("comments-as-rows") && child.kind() == "Comment"))')
     edit(tree, '        if node.kind() == "element" {\n            out.push(node);',
          '        if node.kind() == "element" || node.kind() == "Comment" {\n            out.push(node);')
-    edit(tree, '.is_some_and(|&first| header(first) != header(child))',
-         '.is_some_and(|&first| crate::tree2813_control("no-toml-merge") || header(first) != header(child))')
+    edit(tree, '.is_some_and(|first| header(first.node) != header(child))',
+         '.is_some_and(|first| crate::tree2813_control("no-toml-merge") || header(first.node) != header(child))')
     edit(tree, '.filter(|node| node.kind() == "document")',
          '.filter(|node| node.kind() == "document").take(if crate::tree2813_control("first-document-only") { 1 } else { usize::MAX })')
+    edit(tree, '!child.is_error() && child.kind() != "comment")\n        .last();', '!child.is_error() && (child.kind() != "comment" || crate::tree2813_control("toml-comment-value")))\n        .last();')
+    edit(tree, '!matches!(child.kind(), "anchor" | "tag" | "comment")', '!matches!(child.kind(), "anchor" | "tag") && (child.kind() != "comment" || crate::tree2813_control("yaml-comment-content"))')
+    edit(tree, "let rest = text[key.byte_range()].strip_prefix(name)?;", "let rest = text[key.byte_range()].strip_prefix(name).filter(|_| !crate::tree2813_control(\"no-subtable-merge\"))?;")
+    edit('reader_code_file/structure.rs', 'if Some(index) == Self::pinned_open(doc) && !self.folded(index) {', 'if !crate::tree2813_control("root-toggle-closes") && Some(index) == Self::pinned_open(doc) && !self.folded(index) {')
     doc = 'reader_code_file/document.rs'
     edit(doc, '        let syntax = match (data, &tree) {',
          '        let invalid = if data.is_some() && crate::tree2813_control("grammar-verdict") {\n'

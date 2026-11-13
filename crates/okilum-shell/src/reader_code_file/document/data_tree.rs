@@ -29,10 +29,29 @@ enum Value<'t> {
     Node(Node<'t>),
     /// A key without a value (`key:` in YAML).
     Empty(usize),
-    /// Consecutive TOML `[[name]]` blocks shown as one array row.
-    Group(Vec<Node<'t>>),
+    /// TOML `[[name]]` blocks shown as one array row; `[name.sub]` tables
+    /// between them belong to the block before them.
+    Group(Vec<Block<'t>>),
+    /// One `[[name]]` block: its keys, then its sub-tables.
+    Block(Block<'t>),
     /// The hidden root row: the entries of the whole document.
     Root(ContainerKind, Vec<Entry<'t>>),
+}
+
+struct Block<'t> {
+    node: Node<'t>,
+    /// Sub-tables of this block with the key range after `name.`.
+    tables: Vec<(Node<'t>, Range<usize>)>,
+}
+
+impl Block<'_> {
+    fn range(&self) -> Range<usize> {
+        let end = self
+            .tables
+            .last()
+            .map_or(self.node.end_byte(), |(table, _)| table.end_byte());
+        self.node.start_byte()..end
+    }
 }
 
 struct Entry<'t> {
@@ -138,16 +157,16 @@ fn expand<'t>(format: Format, value: Value<'t>, text: &str) -> Expanded<'t> {
             aside: None,
         },
         Value::Group(blocks) => {
-            let range = blocks[0].start_byte()..blocks[blocks.len() - 1].end_byte();
+            let range = blocks[0].range().start..blocks[blocks.len() - 1].range().end;
             let children = blocks
                 .into_iter()
                 .enumerate()
                 .map(|(i, block)| Entry {
-                    owner: block.byte_range(),
-                    line: line(block),
+                    owner: block.range(),
+                    line: line(block.node),
                     key: None,
                     ordinal: Some(i),
-                    value: Value::Node(block),
+                    value: Value::Block(block),
                 })
                 .collect();
             Expanded {
@@ -156,6 +175,19 @@ fn expand<'t>(format: Format, value: Value<'t>, text: &str) -> Expanded<'t> {
                 container: Some((ContainerKind::Array, children)),
                 aside: None,
             }
+        }
+        Value::Block(block) => {
+            let mut out = toml_expand(block.node);
+            if let Some((_, entries)) = &mut out.container {
+                entries.extend(block.tables.into_iter().map(|(table, key)| Entry {
+                    owner: table.byte_range(),
+                    line: line(table),
+                    key: Some(key),
+                    ordinal: None,
+                    value: Value::Node(table),
+                }));
+            }
+            out
         }
         Value::Node(node) => match format {
             Format::Yaml => yaml_expand(node),
@@ -187,7 +219,7 @@ fn unquoted(node: Node<'_>) -> Range<usize> {
 fn yaml_content(mut node: Node<'_>) -> Node<'_> {
     // block_node / flow_node wrap the content after an optional anchor and tag.
     while matches!(node.kind(), "block_node" | "flow_node") {
-        match named(node).find(|child| !matches!(child.kind(), "anchor" | "tag")) {
+        match named(node).find(|child| !matches!(child.kind(), "anchor" | "tag" | "comment")) {
             Some(child) => node = child,
             None => break,
         }
@@ -293,7 +325,7 @@ fn yaml_expand(node: Node<'_>) -> Expanded<'_> {
                     key: None,
                     ordinal: Some(i),
                     value: if item.kind() == "block_sequence_item" {
-                        match named(item).next() {
+                        match named(item).find(|child| child.kind() != "comment") {
                             Some(value) => Value::Node(value),
                             None => Value::Empty(item.end_byte()),
                         }
@@ -342,7 +374,7 @@ fn toml_key(node: Node<'_>) -> Option<Node<'_>> {
 fn toml_pair(pair: Node<'_>) -> Entry<'_> {
     let key = toml_key(pair);
     let value = named(pair)
-        .filter(|child| Some(*child) != key && !child.is_error())
+        .filter(|child| Some(*child) != key && !child.is_error() && child.kind() != "comment")
         .last();
     Entry {
         owner: pair.byte_range(),
@@ -356,18 +388,19 @@ fn toml_pair(pair: Node<'_>) -> Entry<'_> {
     }
 }
 
-/// Pairs and tables in source order; consecutive `[[name]]` blocks with the
-/// same header merge into one array row.
+/// Pairs and tables in source order. `[[name]]` blocks with the same header
+/// form one array row, and a `[name.sub]` table between them belongs to the
+/// block before it (TOML semantics), so the blocks stay one row.
 fn toml_entries<'t>(node: Node<'t>, text: &str) -> Vec<Entry<'t>> {
     let header = |block: Node<'_>| toml_key(block).map(|key| &text[key.byte_range()]);
     let mut entries: Vec<Entry<'t>> = Vec::new();
-    let mut group: Vec<Node<'t>> = Vec::new();
-    let flush = |group: &mut Vec<Node<'t>>, entries: &mut Vec<Entry<'t>>| {
-        if let (Some(&first), Some(&last)) = (group.first(), group.last()) {
+    let mut group: Vec<Block<'t>> = Vec::new();
+    let flush = |group: &mut Vec<Block<'t>>, entries: &mut Vec<Entry<'t>>| {
+        if let (Some(first), Some(last)) = (group.first(), group.last()) {
             entries.push(Entry {
-                owner: first.start_byte()..last.end_byte(),
-                line: line(first),
-                key: toml_key(first).map(unquoted),
+                owner: first.range().start..last.range().end,
+                line: line(first.node),
+                key: toml_key(first.node).map(unquoted),
                 ordinal: None,
                 value: Value::Group(std::mem::take(group)),
             });
@@ -378,25 +411,41 @@ fn toml_entries<'t>(node: Node<'t>, text: &str) -> Vec<Entry<'t>> {
             "table_array_element" => {
                 if group
                     .first()
-                    .is_some_and(|&first| header(first) != header(child))
+                    .is_some_and(|first| header(first.node) != header(child))
                 {
                     flush(&mut group, &mut entries);
                 }
-                group.push(child);
+                group.push(Block {
+                    node: child,
+                    tables: Vec::new(),
+                });
+            }
+            "table" => {
+                let sub = group.first().and_then(|first| {
+                    let name = header(first.node)?;
+                    let key = toml_key(child)?;
+                    // `[bin.meta]` under `[[bin]]`: the key after `bin.`.
+                    let rest = text[key.byte_range()].strip_prefix(name)?;
+                    let rest = rest.trim_start().strip_prefix('.')?.trim_start();
+                    Some(key.end_byte() - rest.len()..key.end_byte())
+                });
+                match sub {
+                    Some(key) => group.last_mut().unwrap().tables.push((child, key)),
+                    None => {
+                        flush(&mut group, &mut entries);
+                        entries.push(Entry {
+                            owner: child.byte_range(),
+                            line: line(child),
+                            key: toml_key(child).map(unquoted),
+                            ordinal: None,
+                            value: Value::Node(child),
+                        });
+                    }
+                }
             }
             "pair" => {
                 flush(&mut group, &mut entries);
                 entries.push(toml_pair(child));
-            }
-            "table" => {
-                flush(&mut group, &mut entries);
-                entries.push(Entry {
-                    owner: child.byte_range(),
-                    line: line(child),
-                    key: toml_key(child).map(unquoted),
-                    ordinal: None,
-                    value: Value::Node(child),
-                });
             }
             _ => {}
         }

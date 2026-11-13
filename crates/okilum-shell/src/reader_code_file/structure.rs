@@ -114,6 +114,11 @@ impl Structure {
         }
     }
     pub(super) fn toggle(&mut self, index: usize, doc: &Document) {
+        // The pinned XML root never closes: chevron and Left are no-ops on it.
+        if Some(index) == Self::pinned_open(doc) && !self.folded(index) {
+            self.selected = Some(index);
+            return;
+        }
         self.set_folded(index, !self.folded(index));
         self.find_opened.remove(&index);
         self.selected = Some(index);
