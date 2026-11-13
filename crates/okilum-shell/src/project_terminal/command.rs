@@ -594,12 +594,13 @@ pub fn appimage_env(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, 
         APPIMAGE_ONLY.iter().map(|name| (*name, None)).collect();
     for name in APPIMAGE_PATH_LISTS {
         let Some(value) = get(name) else { continue };
-        let separator = if *name == "LD_PRELOAD" && !value.contains(':') {
-            ' '
-        } else {
-            ':'
-        };
-        let entries: Vec<&str> = value.split(separator).filter(|e| !e.is_empty()).collect();
+        // ld.so splits LD_PRELOAD at colons and whitespace alike, and AppRun
+        // prepends with `:` to a possibly space-separated list (#2837 review).
+        let preload = *name == "LD_PRELOAD";
+        let entries: Vec<&str> = value
+            .split(|c: char| c == ':' || (preload && c.is_whitespace()))
+            .filter(|e| !e.is_empty())
+            .collect();
         let mut kept: Vec<&str> = entries.iter().copied().filter(|e| !inside(e)).collect();
         if *name == "LD_PRELOAD" {
             // AppRun prepended exactly this host loader; the user's own stay.
@@ -611,10 +612,7 @@ pub fn appimage_env(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, 
             }
         }
         if kept.len() != entries.len() {
-            edits.push((
-                name,
-                (!kept.is_empty()).then(|| kept.join(&separator.to_string())),
-            ));
+            edits.push((name, (!kept.is_empty()).then(|| kept.join(":"))));
         }
     }
     edits
