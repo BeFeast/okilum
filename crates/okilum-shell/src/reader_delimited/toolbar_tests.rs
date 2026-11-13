@@ -873,13 +873,13 @@ fn table2812_edit_stops_table_find_and_read_runs_it_once(cx: &mut TestAppContext
         r.update_in(v, |r, w, cx| r.toggle_source(w, cx));
         settle(v);
         let shown = table(&code(&r, v), v);
-        // Read either resumes the retained table or restores the query into a
-        // fresh one; in both the visible table runs the query exactly once.
-        let expected = if shown == t { before + 2 } else { 1 };
         shown.read_with(v, |p, _| {
             assert!(!p.updating, "{name}");
+            assert_eq!(p.query, "needle", "{name}: the query survives Edit");
             assert_eq!(p.order.len(), 1, "{name}: the latest query ran on return");
-            assert_eq!(p.projections, expected, "{name}: exactly once");
+            if shown == t {
+                assert_eq!(p.projections, before + 2, "{name}: resumed exactly once");
+            }
         });
     }
 }

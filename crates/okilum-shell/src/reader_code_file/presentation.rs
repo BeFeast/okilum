@@ -66,9 +66,12 @@ impl CodePreview {
         let Some(saved) = self.restored_presentation.clone() else {
             return;
         };
+        // A JSON array attaches its table after the worker parse: keep the
+        // saved table state until that table exists.
         if let Some(mut table_saved) = self
             .restored_presentation
             .as_mut()
+            .filter(|_| self.table.is_some())
             .and_then(|saved| saved.table.take())
         {
             if saved.view == View::Table {
