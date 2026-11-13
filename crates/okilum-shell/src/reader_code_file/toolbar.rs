@@ -102,6 +102,9 @@ impl CodePreview {
                 } else {
                     action.with_action(UnfoldAll, cx)
                 };
+                // Optional toolbar labels from about 1,400 px (#2813 8b);
+                // the overflow function drops them before anything else.
+                action.labelled = true;
                 if let Availability::Disabled(reason) = &folding {
                     action.enabled = false;
                     action.disabled_reason = Some(reason.clone().into());

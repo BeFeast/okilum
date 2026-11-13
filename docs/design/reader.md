@@ -75,7 +75,17 @@ original combined titlebar and document controls:
   with the same compact action builders; it has no second code toolbar.
   Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
   large-file reasons and paged position/slider. Code/data read views use the
-  shared header Find; table inner chrome remains for its own step.
+  shared header Find. With «Show labels on toolbar buttons» on, Fold all,
+  Unfold all, Copy, Edit and Open with carry labels from about 1,400 px; the
+  overflow function drops those labels before anything else leaves the row.
+- **Tables (#2812).** CSV, TSV and the Table view of a JSON array have no rows
+  of their own: Find in loaded rows, Table / Raw (four views for an array),
+  First row is header and Reset sort sit in the header; Copy cells is in Copy
+  and Open in DuckDB in Open with; counts, notices and Load more rows share the
+  bottom line. Raw text loads on first use; a hidden table runs no projection.
+- **YAML, TOML and XML (#2813).** Tree / Raw at any size with semantic rows,
+  Find in Tree, and per-format signals: `serde_yaml` decides «Not valid YAML»;
+  TOML and XML only report «Syntax problem» and keep Tree.
   Focus changes re-render the GPUI cached header; source edits,
   query typing and page changes do not invalidate its slot key.
 - **File Edit header (#2811).** Edit keeps this header and its shared Find.
@@ -113,8 +123,9 @@ original combined titlebar and document controls:
   on the UI thread. Both targets remember Match case and unfold a hit. Enter and
   Shift+Enter step; Esc clears marks and retains the selected visible hit. Tree
   folds back Find-only branches outside that hit's ancestor path. The placeholder
-  is “Find in whole file” for paged text or a file over 4 MiB, “Find” otherwise. JSON Table retains
-  its own filter until the table step. Bare/native and ZIP hosts reserve an icon
+  is “Find in whole file” for paged text or a file over 4 MiB, “Find” otherwise, and
+  “Find in loaded rows” while a table (CSV, TSV, JSON array) is active (#2812).
+  Bare/native and ZIP hosts reserve an icon
   at compact widths and open the same field over their row. No legacy whole-file
   row or toolkit search strip remains in code/data read mode.
   Tree hides its synthetic document root and starts with top-level keys at
@@ -326,7 +337,7 @@ the last line to scroll to a comfortable reading position.
 | Header / panel header height | 46 |
 | Tree / list row height | 28, radius 6, indent 14 per level |
 | Icon button | 28 × 28, icon 16, radius 6 |
-| Sidebar / right panel default width | 264 / 256 (resizable, persisted, min 200) |
+| Sidebar / right panel default width | 280 / 280 (`reader_layout::DEFAULT_PANEL_WIDTH`; resizable, persisted, min 200) |
 | Toolbar controls | 28 high, icon 16, radius 6; optional mode labels yield to glyphs |
 | Callout | padding 12×16, radius 8, 1 px border |
 | Popover / palette | radius 8 / 12 |

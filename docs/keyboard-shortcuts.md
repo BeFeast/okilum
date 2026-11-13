@@ -123,13 +123,20 @@ live keymap. macOS Mission Control priority requires installed-beta verification
 
 ### Code/data Tree rows
 
-In a read-only code/data file Ctrl/Cmd+F focuses the shared header field, except
-JSON Table, which retains its own filter until its toolbar conversion. Enter and
+In a read-only code/data file Ctrl/Cmd+F focuses the shared header field; in a
+table (CSV, TSV, JSON array) the field reads «Find in loaded rows» and Enter and
+Shift+Enter step through matching cells (#2812). Enter and
 Shift+Enter step; Esc clears and leaves Find. Tree owns Up/Down, Right to expand
 or enter a child, Left to collapse or select its parent, and Enter to show the
 selected node in Raw. Copy node uses Ctrl+Shift+C on Linux, Windows **and Mac**;
 Copy as Markdown keeps its existing note contexts. Row menus/tooltips resolve
 these commands from the active keymap.
+
+Tables add catalogued menu commands without default keys: First row is header,
+Reset table sort, Open in DuckDB, Load more rows and Go to table error. Copy
+selected table cells keeps Ctrl+C (Cmd+C on Mac) inside the grid. YAML, TOML and
+XML use the same Alt+1…4 / Control+1…4 view keys and Tree keys (#2813). No new
+default uses Ctrl+Alt+letter, which AltGr layouts produce for printable keys.
 
 The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The

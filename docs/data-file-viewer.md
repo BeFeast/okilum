@@ -198,9 +198,9 @@ ZIP merges them with its breadcrumb in one measured compact bar. Copy holds
 Copy selection (disabled in Tree) and Copy node with `Copied node · N lines`.
 The old tools, Structure/Source, page and Pretty/Raw rows are removed. The shared
 header field owns read-mode Find in every format; there is no whole-file row or
-toolkit strip. The table's inner rows and all edit chrome remain for their ordered
-steps. While JSON Table is active the field is absent and Ctrl/Cmd+F focuses its
-existing filter.
+toolkit strip. Tables have no rows of their own: while Table is active (CSV, TSV,
+a JSON array) the same field reads «Find in loaded rows», narrows the grid and
+steps through matching cells, and Ctrl/Cmd+F focuses it (#2812).
 
 The name has a read-only lock with its reason and, independently, a warning that
 jumps to a JSON error. Storage writability is never inferred from opening a file;
