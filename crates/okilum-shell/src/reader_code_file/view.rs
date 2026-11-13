@@ -62,6 +62,23 @@ impl CodePreview {
         self
     }
     pub(crate) fn availability(&self, view: View) -> Availability {
+        if reader_delimited::eligible(&self.rel) {
+            return match view {
+                View::Table => self
+                    .table_failure
+                    .as_deref()
+                    .map_or(Availability::Available, |reason| {
+                        Availability::Disabled(reason.into())
+                    }),
+                View::Raw if self.source_bytes.is_some_and(|n| n as u64 > MAX_BYTES) => {
+                    Availability::Disabled(
+                        "Too large to preview as text: the limit is 64 MB".into(),
+                    )
+                }
+                View::Raw => Availability::Available,
+                _ => Availability::Absent,
+            };
+        }
         let Some(raw) = &self.raw_document else {
             return if view == View::Raw {
                 Availability::Disabled(match &self.state {
@@ -76,7 +93,9 @@ impl CodePreview {
             return Availability::Available;
         }
         if view == View::Table {
-            return if self.table.is_some() {
+            return if let Some(reason) = &self.table_failure {
+                Availability::Disabled(reason.clone())
+            } else if self.table.is_some() {
                 Availability::Available
             } else {
                 Availability::Absent
@@ -113,11 +132,21 @@ impl CodePreview {
         Availability::Available
     }
     fn guarded(&self) -> bool {
+        if reader_delimited::eligible(&self.rel) {
+            return false;
+        }
         self.raw_document
             .as_ref()
             .is_some_and(|doc| doc.text.len() > PRETTY_BYTES || doc.pages.len() > 1)
     }
     fn type_key(&self) -> Option<&'static str> {
+        if reader_delimited::eligible(&self.rel) {
+            return Some(if self.rel.to_ascii_lowercase().ends_with(".tsv") {
+                "tsv"
+            } else {
+                "csv"
+            });
+        }
         match language(&self.rel)? {
             "json" if is_json(&self.rel) => Some(if self.table.is_some() {
                 "json-array"
@@ -131,6 +160,9 @@ impl CodePreview {
         }
     }
     pub(super) fn first_view(&self, cx: &App) -> View {
+        if reader_delimited::eligible(&self.rel) {
+            return self.view;
+        }
         let Some(raw) = &self.raw_document else {
             return View::Raw;
         };
@@ -205,6 +237,12 @@ impl CodePreview {
     /// Navigation and worker completion never persist a choice or move focus.
     pub(super) fn apply_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
         if !self.read_active || !self.availability(view).available() {
+            return;
+        }
+        if reader_delimited::eligible(&self.rel) && view == View::Raw && !self.raw_requested {
+            self.view = View::Raw;
+            self.load_text(window, cx);
+            cx.notify();
             return;
         }
         if let Some(json) = &mut self.json {

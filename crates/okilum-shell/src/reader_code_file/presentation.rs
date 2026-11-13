@@ -13,6 +13,7 @@ pub(crate) struct PresentationState {
     match_index: usize,
     selection: std::ops::Range<usize>,
     scroll: Point<Pixels>,
+    table: Option<reader_delimited::Saved>,
 }
 
 impl CodePreview {
@@ -27,6 +28,7 @@ impl CodePreview {
             tree: self.structure.save(),
             query: self.find.read(cx).value().to_string(),
             case_sensitive: self.case_sensitive.get(),
+            table: self.table.as_ref().map(|t| t.read(cx).save_presentation()),
             match_index: self.match_index,
             selection: self
                 .input()
@@ -57,6 +59,25 @@ impl CodePreview {
         let Some(saved) = self.restored_presentation.clone() else {
             return;
         };
+        if let Some(table_saved) = self
+            .restored_presentation
+            .as_mut()
+            .and_then(|saved| saved.table.take())
+        {
+            if let Some(table) = &self.table {
+                table.update(cx, |table, cx| {
+                    table.restore_presentation(table_saved, window, cx)
+                });
+            }
+        }
+        if reader_delimited::eligible(&self.rel)
+            && saved.view == View::Table
+            && self.availability(View::Table).available()
+        {
+            self.apply_view(View::Table, window, cx);
+            self.restored_presentation = None;
+            return;
+        }
         if self.document.is_none() {
             return;
         }

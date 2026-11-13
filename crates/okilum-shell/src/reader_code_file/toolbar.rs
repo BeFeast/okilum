@@ -28,7 +28,9 @@ impl CodePreview {
     }
     fn describe(&self, entity: Entity<Self>, cx: &App, live: bool) -> ViewerChrome {
         let mut chrome = ViewerChrome::default();
-        if !matches!(self.state, State::Content(_)) {
+        if !matches!(self.state, State::Content(_))
+            && !(reader_delimited::eligible(&self.rel) && self.table.is_some())
+        {
             return chrome;
         }
         for view in View::ALL {
@@ -74,7 +76,7 @@ impl CodePreview {
         if chrome.views.len() < 2 {
             chrome.views.clear();
         }
-        if self.view != View::Table {
+        if self.view != View::Table || self.table.is_some() {
             chrome.find = Some(if live {
                 self.find_target(entity.clone(), cx)
             } else {
@@ -172,6 +174,19 @@ impl CodePreview {
                 chrome.state = Some(warning);
             }
         }
+        if self.view == View::Table {
+            if let Some(table) = &self.table {
+                let mut table_chrome = table.read(cx).chrome(table.clone(), live, cx);
+                table_chrome.views = chrome.views;
+                if let Some(lock) = chrome.state {
+                    table_chrome.badges.push(lock);
+                }
+                return table_chrome;
+            }
+        }
+        if reader_delimited::eligible(&self.rel) {
+            chrome.copy_actions.retain(|a| a.id != "code-copy-node");
+        }
         chrome
     }
 
@@ -194,6 +209,15 @@ impl CodePreview {
     }
     pub(super) fn status(&self, entity: Entity<Self>, cx: &App) -> reader_status_line::StatusLine {
         use reader_status_line::{StatusLine, Tone};
+        if self.view == View::Raw {
+            if let Some(reason) = &self.table_failure {
+                return StatusLine {
+                    text: reason.clone().into(),
+                    tone: Tone::Warning,
+                    ..Default::default()
+                };
+            }
+        }
         let Some(raw) = &self.raw_document else {
             return StatusLine::default();
         };

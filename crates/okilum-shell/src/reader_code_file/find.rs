@@ -23,6 +23,11 @@ impl CodePreview {
     }
 
     pub(crate) fn find_target(&self, entity: Entity<Self>, cx: &App) -> reader_find_field::Target {
+        if self.view == View::Table {
+            if let Some(table) = &self.table {
+                return table.read(cx).find_target(table.clone(), true, cx);
+            }
+        }
         if let Some(editor) = self.editor_find.as_ref().filter(|_| !self.whole_find()) {
             let mut target = reader_find_field::editor::EditorTarget::target(editor, cx);
             target.large_file = self.large_find();
@@ -59,8 +64,13 @@ impl CodePreview {
     pub(super) fn find_descriptor(
         &self,
         entity: Entity<Self>,
-        _cx: &App,
+        cx: &App,
     ) -> reader_find_field::Target {
+        if self.view == View::Table {
+            if let Some(table) = &self.table {
+                return table.read(cx).find_target(table.clone(), false, cx);
+            }
+        }
         let case = entity.clone();
         let step = entity.clone();
         let close = entity.clone();

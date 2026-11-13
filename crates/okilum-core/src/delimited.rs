@@ -13,15 +13,44 @@ pub fn view_rows(
     filter: &str,
     sort: Option<(usize, bool)>,
 ) -> Vec<usize> {
-    let query = filter.to_lowercase();
+    view_rows_case(table, start, count, filter, sort, false)
+}
+
+fn view_rows_case(
+    table: &Table,
+    start: usize,
+    count: usize,
+    filter: &str,
+    sort: Option<(usize, bool)>,
+    sensitive: bool,
+) -> Vec<usize> {
+    let query = if sensitive {
+        filter.to_owned()
+    } else {
+        filter.to_lowercase()
+    };
     let mut rows: Vec<_> = (start..table.rows.len().min(start.saturating_add(count)))
         .filter(|&row| {
             query.is_empty()
-                || table.rows[row]
-                    .iter()
-                    .any(|v| v.to_lowercase().contains(&query))
+                || table.rows[row].iter().any(|v| {
+                    if sensitive {
+                        v.contains(&query)
+                    } else {
+                        v.to_lowercase().contains(&query)
+                    }
+                })
         })
         .collect();
+    sort_rows(table, &mut rows, sort, None);
+    rows
+}
+
+fn sort_rows(
+    table: &Table,
+    rows: &mut [usize],
+    sort: Option<(usize, bool)>,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) {
     if let Some((column, descending)) = sort {
         let numeric = rows.iter().all(|&row| {
             table.cell(row, column).is_empty()
@@ -31,6 +60,9 @@ pub fn view_rows(
                     .is_ok_and(f64::is_finite)
         });
         rows.sort_by(|&a, &b| {
+            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                return std::cmp::Ordering::Equal;
+            }
             let (a, b) = (table.cell(a, column), table.cell(b, column));
             let order = if numeric {
                 match (a.parse::<i128>(), b.parse::<i128>()) {
@@ -50,7 +82,72 @@ pub fn view_rows(
             }
         });
     }
-    rows
+}
+
+/// One worker projection supplies both row order and matching-cell navigation.
+/// Match row indices refer to `rows`, not to mutable on-screen coordinates.
+pub struct Projection {
+    pub rows: Vec<usize>,
+    pub matches: Vec<(usize, usize)>,
+}
+
+pub fn project_rows(
+    table: &Table,
+    start: usize,
+    count: usize,
+    filter: &str,
+    sort: Option<(usize, bool)>,
+    sensitive: bool,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Option<Projection> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if cancelled.load(Relaxed) {
+        return None;
+    }
+    let query = if sensitive {
+        filter.to_owned()
+    } else {
+        filter.to_lowercase()
+    };
+    let mut rows = Vec::new();
+    let mut columns = std::collections::HashMap::new();
+    for row in start..table.rows.len().min(start.saturating_add(count)) {
+        if cancelled.load(Relaxed) {
+            return None;
+        }
+        let mut hits = Vec::new();
+        if !query.is_empty() {
+            for (column, value) in table.rows[row].iter().enumerate() {
+                if cancelled.load(Relaxed) {
+                    return None;
+                }
+                if if sensitive {
+                    value.contains(&query)
+                } else {
+                    value.to_lowercase().contains(&query)
+                } {
+                    hits.push(column);
+                }
+            }
+        }
+        if query.is_empty() || !hits.is_empty() {
+            rows.push(row);
+            if !hits.is_empty() {
+                columns.insert(row, hits);
+            }
+        }
+    }
+    sort_rows(table, &mut rows, sort, Some(cancelled));
+    if cancelled.load(Relaxed) {
+        return None;
+    }
+    let mut matches = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(columns) = columns.remove(row) {
+            matches.extend(columns.into_iter().map(|column| (index, column)));
+        }
+    }
+    Some(Projection { rows, matches })
 }
 
 /// Resource bounds for an attachment projection, including pathological rows
@@ -81,6 +178,8 @@ pub struct Table {
     pub malformed: bool,
     pub ragged: bool,
     pub ambiguous: bool,
+    /// Source record index, when a malformed location is known exactly.
+    pub first_bad_row: Option<usize>,
     /// More source exists, or a record/cell/column budget stopped parsing.
     pub limited: bool,
 }
@@ -146,6 +245,9 @@ impl Table {
         let ragged = rows
             .first()
             .is_some_and(|first| rows.iter().any(|row| row.len() != first.len()));
+        let first_bad_row = rows
+            .first()
+            .and_then(|first| rows.iter().position(|row| row.len() != first.len()));
         Self {
             rows,
             columns,
@@ -153,6 +255,7 @@ impl Table {
             malformed,
             ragged,
             ambiguous,
+            first_bad_row,
             limited: !complete || stopped,
         }
     }
