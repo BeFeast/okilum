@@ -27,6 +27,28 @@ impl HoverProvider for SourceHover {
             return Task::ready(Ok(None));
         };
         let state = reader.read(cx);
+        // A transliterated term in an agent file (#1593): its Latin form,
+        // only while the published check matches this exact text.
+        if let Some((range, value)) = state
+            .agent_language
+            .as_ref()
+            .and_then(|controller| controller.published())
+            .filter(|published| {
+                crate::reader_agent_language::same_text(&published.snapshot.source, text)
+            })
+            .and_then(|published| crate::reader_agent_language::hover_at(&published.report, offset))
+        {
+            return Task::ready(Ok(Some(lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                    kind: lsp_types::MarkupKind::PlainText,
+                    value,
+                }),
+                range: Some(lsp_types::Range::new(
+                    text.offset_to_position(range.start),
+                    text.offset_to_position(range.end),
+                )),
+            })));
+        }
         let vault = state.vault.clone();
         let note = state.current_rel.clone();
         let generation = state.navigation.preparation_generation;

@@ -3,6 +3,8 @@ use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::ops::Range;
 
+/// Vault-relative location of the language policy (#2847: only `@` is special).
+pub const POLICY_PATH: &str = "@Schema/language.yaml";
 pub const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub const MAX_DIAGNOSTICS: usize = 2048;

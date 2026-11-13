@@ -2,7 +2,7 @@
 //! No source writes, background requests or implicit vault traversal.
 use okilum_core::agent_language::{self, Report, Status};
 
-pub const POLICY_PATH: &str = "@Schema/language.yaml";
+pub use okilum_core::agent_language::POLICY_PATH;
 
 /// The parent reader owns loading the bounded policy snapshot and presenting
 /// `status_text` plus range/hover decorations. Call on current source or policy
@@ -29,6 +29,45 @@ pub fn status_text(report: &Report) -> String {
     }
 }
 
+/// Byte ranges to mark in the editor, in source order.
+pub fn mark_ranges(report: &Report) -> Vec<std::ops::Range<usize>> {
+    report.diagnostics.iter().map(|d| d.range.clone()).collect()
+}
+
+/// Wavy underline in the warning color, the same mark as a missing link.
+pub fn mark_style(color: gpui::Hsla) -> gpui::HighlightStyle {
+    gpui::HighlightStyle {
+        underline: Some(gpui::UnderlineStyle {
+            thickness: gpui::px(1.),
+            color: Some(color),
+            wavy: true,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Hover text for the term under `offset`, with the matched byte range.
+pub fn hover_at(report: &Report, offset: usize) -> Option<(std::ops::Range<usize>, String)> {
+    report
+        .diagnostics
+        .iter()
+        .find(|d| d.range.start <= offset && offset < d.range.end)
+        .map(|d| {
+            (
+                d.range.clone(),
+                format!(
+                    "Transliterated term. Latin form: {}\n\nRule from the vault's language policy.",
+                    d.replacement
+                ),
+            )
+        })
+}
+
+/// Published ranges apply only to the exact captured text.
+pub fn same_text(source: &str, text: &gpui_component::input::Rope) -> bool {
+    text.len() == source.len() && text == source
+}
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
@@ -51,6 +90,13 @@ pub struct Snapshot {
 pub struct Published {
     pub snapshot: Snapshot,
     pub report: Report,
+}
+
+/// Process-unique identity of each applied publication. A policy-only refresh
+/// re-checks the same captured source `Arc`, so the source cannot identify it.
+fn next_publication() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 struct Job {
@@ -84,6 +130,7 @@ pub struct Controller {
     notify: Arc<dyn Fn() + Send + Sync>,
     current: Option<Job>,
     published: Option<Published>,
+    publication: u64,
 }
 impl Controller {
     pub fn new(notify: impl Fn() + Send + Sync + 'static) -> std::io::Result<Self> {
@@ -149,6 +196,7 @@ impl Controller {
             notify,
             current: None,
             published: None,
+            publication: 0,
         })
     }
 
@@ -220,11 +268,18 @@ impl Controller {
             return false;
         }
         self.published = Some(completion.value);
+        self.publication = next_publication();
         true
     }
 
     pub fn published(&self) -> Option<&Published> {
         self.published.as_ref()
+    }
+
+    /// Identity of the current publication, distinct for every `apply_ready`
+    /// that replaced it (also when only the policy changed).
+    pub fn publication(&self) -> Option<u64> {
+        self.published.as_ref().map(|_| self.publication)
     }
 }
 impl Drop for Controller {
@@ -253,6 +308,40 @@ mod tests {
         assert!(status_text(&report).contains("missing"));
     }
 
+    #[test]
+    fn marks_and_hover_cover_transliterations_but_not_code_or_urls() {
+        let policy = "backlog:\n  - pattern: 'воркер'\n    good: worker\n  - pattern: 'мерж\\w*'\n    good: merge\n";
+        let source =
+            "Воркер мержит.\n\n`воркер`\n\n```\nворкер\n```\n\nhttps://example.test/воркер\n";
+        let report = diagnostics(true, "Dev/AGENTS.md", source, Ok(policy));
+        let ranges = mark_ranges(&report);
+        assert_eq!(ranges.len(), 2, "{report:?}");
+        assert_eq!(&source[ranges[0].clone()], "Воркер");
+        assert_eq!(&source[ranges[1].clone()], "мержит");
+        let (range, text) = hover_at(&report, ranges[0].start + 2).unwrap();
+        assert_eq!(range, ranges[0]);
+        assert!(text.contains("Latin form: worker"));
+        assert!(hover_at(&report, ranges[1].start)
+            .unwrap()
+            .1
+            .contains("merge"));
+        assert!(
+            hover_at(&report, ranges[0].end).is_none(),
+            "end is exclusive"
+        );
+        let style = mark_style(gpui::Hsla::default());
+        assert!(style.underline.unwrap().wavy);
+        let contract = diagnostics(true, "@AgentContract.md", "воркер", Ok(policy));
+        assert_eq!(
+            mark_ranges(&contract).len(),
+            1,
+            "root contract is an agent file"
+        );
+        let rope = gpui_component::input::Rope::from(source);
+        assert!(same_text(source, &rope));
+        assert!(!same_text("other", &rope));
+    }
+
     fn capture(revision: &str, source: &str) -> Snapshot {
         Snapshot {
             document: "vault-a/AGENTS.md".into(),
@@ -266,6 +355,35 @@ mod tests {
     fn received<T>(rx: &std::sync::mpsc::Receiver<T>) -> T {
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .expect("worker positive control")
+    }
+
+    #[test]
+    fn policy_only_refresh_of_the_same_source_is_a_new_publication() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut controller = Controller::new(move || {
+            tx.send(()).unwrap();
+        })
+        .unwrap();
+        assert_eq!(controller.publication(), None);
+        let first = capture("r1", "воркер мержит");
+        controller.observe(first.clone());
+        received(&rx);
+        assert!(controller.apply_ready());
+        let before = controller.publication().expect("published");
+        // The reader re-observes with the very same source Arc (#1593).
+        let mut refreshed = first.clone();
+        refreshed.schema_revision = "policy-2".into();
+        refreshed.policy = Ok(
+            "backlog:\n  - pattern: 'воркер'\n    good: w\n  - pattern: 'мерж\\w*'\n    good: m\n"
+                .into(),
+        );
+        assert!(Arc::ptr_eq(&first.source, &refreshed.source));
+        assert!(controller.observe(refreshed));
+        assert_eq!(controller.publication(), None, "retired until republished");
+        received(&rx);
+        assert!(controller.apply_ready());
+        assert_eq!(controller.published().unwrap().report.diagnostics.len(), 2);
+        assert_ne!(controller.publication(), Some(before));
     }
 
     #[test]

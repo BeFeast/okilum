@@ -42,11 +42,15 @@ pub struct Changes {
     pub directories: BTreeSet<String>,
     /// Dropped events require a complete metadata scan.
     pub rescan: bool,
+    /// The vault's language policy ([`crate::agent_language::POLICY_PATH`])
+    /// was written, created or removed. Never note/index input; agent-file
+    /// language checks re-read the policy.
+    pub language_policy: bool,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.metadata.is_empty() && self.notes_empty()
+        self.metadata.is_empty() && !self.language_policy && self.notes_empty()
     }
 
     pub fn notes_empty(&self) -> bool {
@@ -299,6 +303,10 @@ impl VaultWatcher {
                     self.pending.metadata.insert(context);
                     relevant = true;
                 }
+                if is_language_policy(relative) {
+                    self.pending.language_policy = true;
+                    relevant = true;
+                }
                 if crate::vault::service_path(relative)
                     || p.file_name()
                         .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))
@@ -435,6 +443,11 @@ impl VaultWatcher {
     }
 }
 
+/// The exact policy file only, so an ordinary YAML write never wakes the check.
+fn is_language_policy(relative: &Path) -> bool {
+    relative == Path::new(crate::agent_language::POLICY_PATH)
+}
+
 /// Only service-set changes, never ordinary ops notes/runbooks. Directory
 /// endpoints cover whole-layout rename/delete and absent-directory creation.
 fn metadata_context(path: &Path, kind: EventKind) -> Option<String> {
@@ -536,6 +549,53 @@ mod service_metadata_tests {
             changes.metadata.is_empty(),
             "never classify the whole ops folder as application metadata"
         );
+    }
+
+    #[test]
+    fn language_policy_write_is_delivered_without_becoming_a_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("@Schema")).unwrap();
+        std::fs::create_dir_all(root.join("_Schema")).unwrap();
+        std::fs::write(root.join("@Schema/language.yaml"), "backlog: []\n").unwrap();
+        std::fs::write(root.join("@Schema/other.yaml"), "x: 0\n").unwrap();
+        std::fs::write(root.join("_Schema/language.yaml"), "backlog: []\n").unwrap();
+        let mut watcher = VaultWatcher::new(&root).unwrap();
+        let baseline_deadline = Instant::now() + Duration::from_secs(8);
+        while watcher.wait(Duration::from_secs(2)).is_some() {
+            assert!(
+                Instant::now() < baseline_deadline,
+                "fixture must become quiet"
+            );
+        }
+        // Control: another YAML file in the same folder stays silent.
+        std::fs::write(root.join("@Schema/other.yaml"), "x: 1\n").unwrap();
+        assert!(watcher.wait(Duration::from_secs(2)).is_none());
+        // #2847: an `_Schema` copy is an ordinary file, not the policy.
+        std::fs::write(root.join("_Schema/language.yaml"), "backlog: [x]\n").unwrap();
+        let ordinary = watcher.wait(Duration::from_secs(5));
+        assert!(
+            ordinary
+                .as_ref()
+                .is_none_or(|changes| !changes.language_policy),
+            "{ordinary:?}"
+        );
+        std::fs::write(
+            root.join("@Schema/language.yaml"),
+            "backlog:\n  - pattern: 'x'\n    good: y\n",
+        )
+        .unwrap();
+        let changes = watcher
+            .wait(Duration::from_secs(5))
+            .expect("a policy-only write must be delivered");
+        assert!(changes.language_policy, "{changes:?}");
+        assert!(changes.notes_empty() && changes.metadata.is_empty());
+        assert!(!changes.is_empty());
+        assert!(is_language_policy(Path::new("@Schema/language.yaml")));
+        assert!(!is_language_policy(Path::new("@Schema")));
+        assert!(!is_language_policy(Path::new("_Schema/language.yaml")));
+        assert!(!is_language_policy(Path::new("Area/@Schema/language.yaml")));
+        assert!(!is_language_policy(Path::new("@Schema/other.yaml")));
     }
 
     #[test]
