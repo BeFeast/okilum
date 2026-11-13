@@ -3,7 +3,7 @@ use super::*;
 use anyhow::Result;
 use gpui_component::WindowExt;
 
-const LOG_FILE: &str = "reader-diagnostic.log";
+pub(crate) const LOG_FILE: &str = "reader-diagnostic.log";
 const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Timings use one process clock. UI callbacks only enqueue; disk I/O is owned
