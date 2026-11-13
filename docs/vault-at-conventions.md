@@ -26,7 +26,10 @@ Both full scans and cached/incremental publications preserve this separation,
 including deletion of a containing directory. Ordinary `@` notes remain notes.
 The legacy `_Assets/Daily Notes/` exception is unchanged.
 
-The templates branch retains its existing visibility exception. Settings and
+Templates and their ancestors follow the same hidden-files preference as other
+paths (#2844). Show hidden files reveals special paths muted with the marker;
+ordinary configured template folders stay visible. New note from template and
+Settings retain access regardless of tree visibility. Settings and
 Obsidian template settings win; otherwise the default is existing
 `@Schema/Templates`, then existing `_Assets/Templates`, then `@Schema/Templates`.
 
@@ -62,8 +65,7 @@ nonempty destination. No private vault data, identities or paths are included.
 
 Expected native evidence:
 
-- Show hidden off: no `@Assets`, `@Private`, `_Private` or root contract rows;
-  the configured `@Schema/Templates` ancestor branch is the documented exception.
+- Show hidden off: no `@Assets`, `@Private`, `_Private`, `@Schema` or root contract rows.
   Area, Legacy and Mixed have their index row first; root `@Index.md` is Vault Index.
 - Show hidden on: hidden paths have the existing muted marker. Clicking Mixed
   opens its `@index.md`; Twice remains Several where supported.

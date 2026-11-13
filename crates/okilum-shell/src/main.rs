@@ -3734,16 +3734,6 @@ impl Reader {
             self.tree.refresh(&self.vault_root, &self.vault.entries);
             self.tree_sticky.clear();
             self.tree_earlier_roots.clear();
-            #[cfg(any(unix, windows))]
-            if !self.single_file {
-                let folder = self
-                    .creation_templates()
-                    .map(|catalog| catalog.folder.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| {
-                        okilum_core::note_templates::default_folder(&self.vault_root).into()
-                    });
-                self.tree.set_templates_folder(folder);
-            }
             self.tree_source = Some(self.vault.clone());
             // Reconciliation must not re-center a tree the user already scrolled.
             if !same_root || self.tree.cursor.is_none() {
