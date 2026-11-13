@@ -88,9 +88,14 @@ diagnostics or feedback reports.
 
 JSON/JSONC, XML/XSD/XSL, TOML, YAML and TXT use the Reader's code viewer.
 XML uses the pinned MIT tree-sitter-xml 0.7.0 grammar; no network resolution or
-DTD/entity expansion occurs. Existing source-format editors stay explicit; XML
-preview eligibility never grants save/recovery authority. Viewing, Pretty, Find,
-folding and copying do not write canonical files.
+DTD/entity expansion occurs. Viewing, Pretty, Find, folding and copying do not
+write canonical files; only an explicit Edit does. XML/XSD/XSL edit like YAML and
+TOML (#2887): Edit, Save, Validate (the tree-sitter syntax check) and the Format
+menu, which has no XML formatter and leaves the text unchanged. The editor
+saves UTF-8, so an XML file whose declaration names another encoding
+(ISO-8859-1, Windows-1251, UTF-16, …) stays read-only with «Editing XML in
+<encoding> isn't supported; the file stays as is». No declaration, `UTF-8` or
+`UTF8` (any case) is editable. HAR captures remain read-only.
 
 The viewer has line numbers, Find with a match count, native selection Copy,
 Copy node at the caret, Fold all/Unfold all and per-node gutter folding. Copy node
@@ -209,8 +214,8 @@ attempt probes an empty temporary sibling in the document
 directory, immediately removes it and records only that location's permission or
 read-only failure. Private recovery-state failures never mark the vault read-only.
 One bottom line chooses invalid JSON, formatting, large/raw or long-line,
-then size/storage read-only in that order; a view-only format such as XML uses
-only the name lock. The lock always retains the read-only reason. View switches
+then size/storage read-only in that order. The lock always retains the
+read-only reason. View switches
 never focus the read-only text Input; Tree retains a mounted CodePreview target.
 Async formatting preserves focus and never applies after Edit entry or a newer
 view request. An explicit Formatted request completes even if Find gains focus:

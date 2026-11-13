@@ -43,6 +43,7 @@ impl CodePreview {
                 this.state = match result {
                     Ok(Loaded::Text(text)) => {
                         this.source_bytes = Some(text.len());
+                        this.encoding_reason = xml_encoding_refusal(&this.rel, &text);
                         let range = document::first_page(&text);
                         this.paged = range.end < text.len();
                         this.find.update(cx, |find, cx| {
