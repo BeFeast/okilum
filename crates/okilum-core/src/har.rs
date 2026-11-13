@@ -1164,6 +1164,131 @@ pub fn body_bytes(
     }
 }
 
+/// Writes a whole body to `out`, decoding JSON escapes (and base64 when
+/// `base64`) as it streams; memory stays bounded by the read buffer. When
+/// `entry` is given (span, revision, hash) the request's bytes are verified
+/// first. Returns the bytes written.
+pub fn write_body(
+    path: &Path,
+    text: &Text,
+    base64: bool,
+    entry: Option<(&Range<u64>, Option<Revision>, u64)>,
+    out: &mut dyn std::io::Write,
+    cancel: &AtomicBool,
+) -> Result<u64, DetailError> {
+    let failed = |e: std::io::Error| DetailError::Failed(e.to_string());
+    let revision = entry.and_then(|(_, revision, _)| revision);
+    if let Some((span, revision, hash)) = entry {
+        verify_entry(path, span, revision, hash, cancel)?;
+    }
+    let mut decoder = Base64Stream::default();
+    let mut written = 0u64;
+    let mut emit = |bytes: &[u8], written: &mut u64| -> std::io::Result<()> {
+        if base64 {
+            decoder.feed(bytes, &mut |decoded| {
+                *written += decoded.len() as u64;
+                out.write_all(decoded)
+            })
+        } else {
+            *written += bytes.len() as u64;
+            out.write_all(bytes)
+        }
+    };
+    match text {
+        Text::Inline(inline) => emit(inline.as_bytes(), &mut written).map_err(failed)?,
+        Text::Long { span, .. } => {
+            let reader = open_range(path, span, revision)?;
+            let mut s = Scanner::new(reader, cancel, span.start);
+            let mut io_error = None;
+            let result = (|| -> Step {
+                if s.next()? != b'"' {
+                    return Err(s.error("Expected a string"));
+                }
+                s.string_to(&mut |bytes| {
+                    emit(bytes, &mut written).map_err(|error| {
+                        let kind = error.kind();
+                        io_error = Some(error);
+                        Stop::Io(std::io::Error::from(kind))
+                    })
+                })
+            })();
+            if let Some(error) = io_error {
+                return Err(failed(error));
+            }
+            result.map_err(|stop| detail_error(stop, "body"))?;
+        }
+    }
+    if base64 {
+        decoder
+            .finish(&mut |decoded| {
+                written += decoded.len() as u64;
+                out.write_all(decoded)
+            })
+            .map_err(|_| DetailError::Failed("The body is not valid base64.".into()))?;
+    }
+    out.flush().map_err(failed)?;
+    Ok(written)
+}
+
+/// Streaming base64: whitespace is ignored and every complete 4-character
+/// group is decoded as soon as it arrives, so at most 3 characters are kept.
+/// Padding may only end the text: a padded group ends it, anything after it
+/// (or a misplaced `=`) is an error at once.
+#[derive(Default)]
+struct Base64Stream {
+    carry: Vec<u8>,
+    ended: bool,
+}
+
+impl Base64Stream {
+    fn invalid() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::InvalidData)
+    }
+
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        out: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        use base64::Engine as _;
+        let mut groups = std::mem::take(&mut self.carry);
+        for &byte in bytes.iter().filter(|b| !b.is_ascii_whitespace()) {
+            if self.ended {
+                return Err(Self::invalid());
+            }
+            groups.push(byte);
+            // A group is complete: check where padding may appear.
+            if groups.len().is_multiple_of(4) {
+                let group = &groups[groups.len() - 4..];
+                if let Some(first) = group.iter().position(|&b| b == b'=') {
+                    if first < 2 || group[first..].iter().any(|&b| b != b'=') {
+                        return Err(Self::invalid());
+                    }
+                    self.ended = true;
+                }
+            }
+        }
+        let whole = groups.len() / 4 * 4;
+        if whole > 0 {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&groups[..whole])
+                .map_err(|_| Self::invalid())?;
+            out(&decoded)?;
+        }
+        groups.drain(..whole);
+        self.carry = groups;
+        Ok(())
+    }
+
+    fn finish(&mut self, out: &mut dyn FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        // Unpadded text must end on a whole group.
+        if !self.carry.is_empty() {
+            return Err(Self::invalid());
+        }
+        out(&[])
+    }
+}
+
 /// Decodes the JSON string at `span` (quotes included) up to `cap` bytes.
 fn read_string(
     path: &Path,
@@ -1372,6 +1497,34 @@ impl<'c, R: Read> Scanner<'c, R> {
                     return Ok(false);
                 }
             }
+        }
+    }
+
+    /// Streams a string whose opening quote was consumed to `sink`, decoded.
+    fn string_to(&mut self, sink: &mut dyn FnMut(&[u8]) -> Step) -> Step {
+        let mut escaped = Vec::with_capacity(8);
+        loop {
+            if !self.fill()? {
+                return Err(self.error("The file ends inside a string"));
+            }
+            let chunk = &self.buf[self.pos..self.len];
+            let found = memchr::memchr2(b'"', b'\\', chunk);
+            let plain = found.unwrap_or(chunk.len());
+            if let Some(control) = chunk[..plain].iter().position(|&b| b < 0x20) {
+                self.pos += control;
+                return Err(self.error("Unescaped control character in a string"));
+            }
+            sink(&self.buf[self.pos..self.pos + plain])?;
+            self.pos += plain;
+            if found.is_none() {
+                continue;
+            }
+            if self.raw()? == b'"' {
+                return Ok(());
+            }
+            escaped.clear();
+            self.escape(&mut escaped)?;
+            sink(&escaped)?;
         }
     }
 

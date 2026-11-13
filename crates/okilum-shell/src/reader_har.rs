@@ -16,6 +16,7 @@ use reader_viewer_chrome::{ViewerAction, ViewerChrome, ViewerView};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub(crate) mod curl;
 pub(crate) mod details;
 pub(crate) mod model;
 #[cfg(test)]
@@ -36,7 +37,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
 }
 
 const DETAIL_CONTEXT: &str = "HarDetails";
-use model::{Column, Entries, Query, Rows, Stats};
+use model::{Column, Entries, Filters, Query, Rows, Stats, StatusClass};
 
 const ROW_HEIGHT: f32 = 26.;
 const DETAIL_SHARE: f32 = 0.55;
@@ -82,6 +83,10 @@ pub(crate) struct HarView {
     stats: Stats,
     filter: Entity<InputState>,
     sort: Option<(Column, bool)>,
+    /// The header's Status, Method and Type filters.
+    filters: Filters,
+    /// Methods in the capture, for the Method filter (bounded).
+    methods: Vec<Box<str>>,
     rows: Rows,
     /// The query the current `rows` answer, and the newest one asked.
     shown_query: Query,
@@ -184,6 +189,8 @@ impl HarView {
             stats: Stats::default(),
             filter,
             sort: None,
+            filters: Filters::default(),
+            methods: Vec::new(),
             rows: Rows::default(),
             shown_query: Query::default(),
             projection: 0,
@@ -277,6 +284,16 @@ impl HarView {
                 }
                 for entry in &entries {
                     self.stats.add(entry);
+                    if self.methods.len() < 32
+                        && !entry.method.is_empty()
+                        && !self
+                            .methods
+                            .iter()
+                            .any(|m| m.eq_ignore_ascii_case(&entry.method))
+                    {
+                        self.methods.push(entry.method.to_ascii_uppercase().into());
+                        self.methods.sort();
+                    }
                 }
                 self.entries.push(entries);
                 if let Index::Reading { offset: read } = &mut self.index {
@@ -311,6 +328,7 @@ impl HarView {
         self.reset_detail_rows();
         self.entries = Entries::default();
         self.stats = Stats::default();
+        self.methods.clear();
         self.rows = Rows::default();
         self.revision = None;
         self.index = Index::Reading { offset: 0 };
@@ -340,6 +358,7 @@ impl HarView {
         Query {
             text: self.filter.read(cx).value().to_string(),
             sort: self.sort,
+            filters: self.filters.clone(),
         }
     }
 
@@ -753,9 +772,187 @@ pub(crate) fn chrome(viewer: &Entity<HarView>, cx: &App) -> ViewerChrome {
             source_view(viewer, false, cx),
         ],
         find: Some(find),
+        actions: filter_actions(viewer, cx),
+        copy_actions: request_copy_actions(viewer, cx),
         status: Some(state.status_line()),
         ..Default::default()
     }
+}
+
+/// Status, Method and Type filters as header menus; each shows its choice.
+fn filter_actions(viewer: &Entity<HarView>, cx: &App) -> Vec<ViewerAction> {
+    let state = viewer.read(cx);
+    let filter = |id: &'static str,
+                  name: &str,
+                  choice: Option<String>,
+                  build: reader_viewer_chrome::BuildMenu| {
+        let mut action = ViewerAction::new(
+            id,
+            Icon::default().path(brand::READER_FILTER_ICON),
+            match &choice {
+                Some(choice) => format!("{name}: {choice}"),
+                None => name.to_owned(),
+            },
+            Rc::new(|_, _| {}),
+        );
+        action.tooltip = format!("Show requests by {}", name.to_lowercase()).into();
+        action.menu = Some(build);
+        action.caret = true;
+        action.labelled = true;
+        action.label_by_default = true;
+        action.toggled = choice.is_some();
+        action.priority = 40;
+        action.collapse_priority = 20;
+        action
+    };
+    let status_view = viewer.clone();
+    let method_view = viewer.clone();
+    let kind_view = viewer.clone();
+    vec![
+        filter(
+            "har-filter-status",
+            "Status",
+            state.filters.status.map(|class| class.label().to_owned()),
+            Rc::new(move |mut menu, _, cx| {
+                let current = status_view.read(cx).filters.status;
+                for choice in std::iter::once(None).chain(StatusClass::ALL.map(Some)) {
+                    let view = status_view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(choice.map_or("All statuses", StatusClass::label))
+                            .checked(current == choice)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.set_filters(|f| f.status = choice, cx)
+                                })
+                            }),
+                    );
+                }
+                menu
+            }),
+        ),
+        filter(
+            "har-filter-method",
+            "Method",
+            state.filters.method.clone(),
+            Rc::new(move |mut menu, _, cx| {
+                let (current, methods) = {
+                    let state = method_view.read(cx);
+                    (state.filters.method.clone(), state.methods.clone())
+                };
+                let choices =
+                    std::iter::once(None).chain(methods.iter().map(|m| Some(m.to_string())));
+                for choice in choices {
+                    let view = method_view.clone();
+                    let label = choice.clone().unwrap_or_else(|| "All methods".into());
+                    let checked = current == choice;
+                    menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                        move |_, _, cx| {
+                            let choice = choice.clone();
+                            view.update(cx, |this, cx| this.set_filters(|f| f.method = choice, cx))
+                        },
+                    ));
+                }
+                menu
+            }),
+        ),
+        filter(
+            "har-filter-type",
+            "Type",
+            state.filters.kind.map(|kind| kind.label().to_owned()),
+            Rc::new(move |mut menu, _, cx| {
+                let current = kind_view.read(cx).filters.kind;
+                for choice in std::iter::once(None).chain(har::Kind::ALL.map(Some)) {
+                    let view = kind_view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(choice.map_or("All types", har::Kind::label))
+                            .checked(current == choice)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.set_filters(|f| f.kind = choice, cx)
+                                })
+                            }),
+                    );
+                }
+                menu
+            }),
+        ),
+    ]
+}
+
+/// What the request copy commands produce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestCopy {
+    Url,
+    Curl(curl::Dialect),
+    Response,
+}
+
+impl RequestCopy {
+    fn all() -> Vec<RequestCopy> {
+        let mut all = vec![RequestCopy::Url];
+        all.extend(curl::Dialect::ALL.map(RequestCopy::Curl));
+        all.push(RequestCopy::Response);
+        all
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            RequestCopy::Url => "Copy URL",
+            RequestCopy::Curl(shell) => shell.label(),
+            RequestCopy::Response => "Copy response body",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            RequestCopy::Url => "har-copy-url",
+            RequestCopy::Curl(shell) => shell.id(),
+            RequestCopy::Response => "har-copy-response",
+        }
+    }
+}
+
+/// The header Copy menu: the selected request as URL, cURL or body.
+fn request_copy_actions(viewer: &Entity<HarView>, cx: &App) -> Vec<ViewerAction> {
+    let selected = viewer.read(cx).selected;
+    let mut actions: Vec<ViewerAction> = RequestCopy::all()
+        .into_iter()
+        .map(|what| {
+            let target = viewer.clone();
+            let mut action = ViewerAction::new(
+                what.id(),
+                Icon::new(IconName::Copy),
+                what.label(),
+                Rc::new(move |window, cx| {
+                    target.update(cx, |this, cx| {
+                        if let Some(entry) = this.selected {
+                            this.copy_request(entry, what, window, cx)
+                        }
+                    })
+                }),
+            );
+            action.enabled = selected.is_some();
+            action.disabled_reason = selected.is_none().then(|| "Select a request".into());
+            action
+        })
+        .collect();
+    let target = viewer.clone();
+    let mut save = ViewerAction::new(
+        "har-save-response",
+        Icon::default().path(brand::READER_DOWNLOAD_ICON),
+        "Save response body as…",
+        Rc::new(move |window, cx| {
+            target.update(cx, |this, cx| {
+                if let Some(entry) = this.selected {
+                    this.save_body(entry, Section::ResponseBody, window, cx)
+                }
+            })
+        }),
+    );
+    save.enabled = selected.is_some();
+    save.disabled_reason = selected.is_none().then(|| "Select a request".into());
+    actions.push(save);
+    actions
 }
 
 /// Adds Requests to the JSON viewer's views while Source is shown.
@@ -839,7 +1036,11 @@ impl HarView {
             .cursor_pointer()
             .when(selected, |row| row.bg(palette.selected))
             .when(!selected, |row| row.hover(move |row| row.bg(hover)))
-            .on_click(cx.listener(move |this, _, _, cx| this.select(index, cx)));
+            .on_click(cx.listener(move |this, _, _, cx| this.select(index, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| this.select(index, cx)),
+            );
         for &column in columns {
             let content: AnyElement = match column {
                 Column::Method => cell(column)
@@ -854,31 +1055,38 @@ impl HarView {
                     })
                     .into_any_element(),
                 Column::Name => {
+                    // One text run: the host stays muted and the line is cut
+                    // once at its end, with no gap between host and path.
                     let host = entry.host();
+                    let path = entry.path();
+                    let text = if host.is_empty() {
+                        path.to_owned()
+                    } else {
+                        format!("{host} {path}")
+                    };
+                    let path_start = text.len() - path.len();
+                    let mut highlights = Vec::new();
+                    if !host.is_empty() {
+                        highlights.push((
+                            0..host.len(),
+                            HighlightStyle {
+                                color: Some(palette.text_muted),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    if failed {
+                        highlights.push((
+                            path_start..text.len(),
+                            HighlightStyle {
+                                color: Some(palette.danger),
+                                ..Default::default()
+                            },
+                        ));
+                    }
                     cell(column)
-                        .child(
-                            h_flex()
-                                .min_w_0()
-                                .gap_1()
-                                .when(!host.is_empty(), |name| {
-                                    name.child(
-                                        div()
-                                            .flex_shrink(1.)
-                                            .max_w(relative(0.45))
-                                            .truncate()
-                                            .text_color(palette.text_muted)
-                                            .child(host.to_owned()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .when(failed, |c| c.text_color(palette.danger))
-                                        .child(entry.path().to_owned()),
-                                ),
-                        )
+                        .debug_selector(move || format!("har-name-{index}"))
+                        .child(StyledText::new(text).with_highlights(highlights))
                         .into_any_element()
                 }
                 Column::Type => cell(column)
@@ -904,7 +1112,28 @@ impl HarView {
             };
             row = row.child(content);
         }
-        row.into_any_element()
+        let view = cx.entity().downgrade();
+        row.context_menu(move |mut menu: PopupMenu, _, _| {
+            for what in RequestCopy::all() {
+                let view = view.clone();
+                menu = menu.item(PopupMenuItem::new(what.label()).on_click(
+                    move |_, window, cx| {
+                        let _ =
+                            view.update(cx, |this, cx| this.copy_request(index, what, window, cx));
+                    },
+                ));
+            }
+            let view = view.clone();
+            menu.separator()
+                .item(PopupMenuItem::new("Save response body as…").on_click(
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.save_body(index, Section::ResponseBody, window, cx)
+                        });
+                    },
+                ))
+        })
+        .into_any_element()
     }
 
     fn render_list(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1017,7 +1246,8 @@ impl HarView {
         };
         let selected = self.detail_row == Some(index);
         let palette = brand::palette(cx);
-        let items = copy_items(&rows.rows, index);
+        // Menu items are worked out when the menu opens, not every frame.
+        let menu_rows = rows.clone();
         let view = cx.entity().downgrade();
         div()
             .id(("har-detail-row", index))
@@ -1044,17 +1274,24 @@ impl HarView {
             )
             .child(self.render_detail_content(row, cx))
             .context_menu(move |mut menu: PopupMenu, _, _| {
-                for (position, (label, kind)) in items.iter().enumerate() {
-                    if position > 0 && *kind == CopyKind::Section {
+                let items = copy_items(&menu_rows, index);
+                for (position, (label, command)) in items.into_iter().enumerate() {
+                    let separate =
+                        matches!(command, Command::Copy(CopyKind::Section) | Command::Save(_));
+                    if position > 0 && separate {
                         menu = menu.separator();
                     }
-                    let (view, kind) = (view.clone(), *kind);
-                    menu = menu.item(PopupMenuItem::new(label.clone()).on_click(
-                        move |_, window, cx| {
-                            let _ = view
-                                .update(cx, |this, cx| this.copy_detail(index, kind, window, cx));
-                        },
-                    ));
+                    let view = view.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| match command {
+                            Command::Copy(kind) => this.copy_detail(index, kind, window, cx),
+                            Command::Save(section) => {
+                                if let Some(entry) = this.selected {
+                                    this.save_body(entry, section, window, cx)
+                                }
+                            }
+                        });
+                    }));
                 }
                 menu
             })
@@ -1169,6 +1406,24 @@ impl HarView {
                 .text_xs()
                 .child(text.clone())
                 .into_any_element(),
+            Row::Image(preview) => v_flex()
+                .w_full()
+                .px_4()
+                .py_2()
+                .gap_1()
+                .child(
+                    img(ImageSource::Render(preview.image.clone()))
+                        .max_w(px(480.))
+                        .max_h(px(360.))
+                        .object_fit(ObjectFit::Contain),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(palette.text_muted)
+                        .child(format!("{} × {} px", preview.width, preview.height)),
+                )
+                .into_any_element(),
             Row::Note(text) => div()
                 .w_full()
                 .px_4()
@@ -1267,6 +1522,131 @@ impl HarView {
 
 impl HarView {
     /// Drops any copy in flight: its result never reaches the clipboard.
+    fn set_filters(&mut self, change: impl FnOnce(&mut Filters), cx: &mut Context<Self>) {
+        change(&mut self.filters);
+        self.refresh(cx);
+        cx.notify();
+    }
+
+    /// Where request `entry` lives in the indexed file.
+    fn origin(&self, entry: usize) -> Option<details::Origin> {
+        let entry = self.entries.get(entry)?;
+        Some(details::Origin {
+            span: entry.span.clone(),
+            revision: self.revision,
+            hash: entry.hash,
+        })
+    }
+
+    /// Copies request `entry` as its URL, a cURL command or its response
+    /// body. The request is read on a worker (verified against the index);
+    /// a newer copy, request or close drops the result.
+    pub(crate) fn copy_request(
+        &mut self,
+        entry: usize,
+        what: RequestCopy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.invalidate_copies();
+        let Some(origin) = self.origin(entry) else {
+            return;
+        };
+        let generation = self.copy_generation;
+        let (path, cancel) = (self.path.clone(), self.copy_cancel.clone());
+        let work = cx
+            .background_executor()
+            .spawn(async move { request_text(&path, &origin, what, &cancel) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.copy_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(copied) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copied.text.clone()));
+                        reader_toast::transient(copied.label(), window, cx);
+                    }
+                    Err(har::DetailError::Changed) => this.reindex(cx),
+                    Err(har::DetailError::Cancelled) => {}
+                    Err(error) => {
+                        reader_toast::error(format!("Nothing was copied: {error}"), window, cx)
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Saves a body of request `entry` to a file the user chooses. The whole
+    /// decoded body is streamed from the capture into a temporary file next
+    /// to the target, which replaces the target only when complete.
+    pub(crate) fn save_body(
+        &mut self,
+        entry: usize,
+        section: Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(origin) = self.origin(entry) else {
+            return;
+        };
+        let Some(listed) = self.entries.get(entry) else {
+            return;
+        };
+        let mime = if section == Section::ResponseBody {
+            listed.mime.to_string()
+        } else {
+            String::new()
+        };
+        let mut name = details::file_name(&listed.url, &mime);
+        if self
+            .path
+            .file_name()
+            .is_some_and(|own| own.to_string_lossy().eq_ignore_ascii_case(&name))
+        {
+            name = format!("body-{name}");
+        }
+        let directory = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let picker = cx.prompt_for_new_path(&directory, Some(&name));
+        let (path, cancel) = (self.path.clone(), self.cancel.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(target))) = picker.await else {
+                return;
+            };
+            let Ok(work) = this.update(cx, |_, cx| {
+                cx.background_executor().spawn(async move {
+                    save_to(&path, &origin, section, &target, &cancel).map(|bytes| (bytes, target))
+                })
+            }) else {
+                return;
+            };
+            let result = work.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok((bytes, target)) => reader_toast::transient(
+                    format!(
+                        "Saved {} to {}",
+                        model::bytes(bytes as i64),
+                        target.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    window,
+                    cx,
+                ),
+                Err(har::DetailError::Changed) => this.reindex(cx),
+                Err(har::DetailError::Cancelled) => {}
+                Err(error) => {
+                    reader_toast::error(format!("Nothing was saved: {error}"), window, cx)
+                }
+            });
+        })
+        .detach();
+    }
+
     fn invalidate_copies(&mut self) {
         self.copy_cancel.store(true, Ordering::Relaxed);
         self.copy_cancel = Arc::new(AtomicBool::new(false));
@@ -1339,37 +1719,238 @@ impl HarView {
     }
 }
 
-/// The copy commands a detail row offers, in menu order.
-fn copy_items(rows: &[Row], index: usize) -> Vec<(SharedString, CopyKind)> {
-    let section = details::section_of(rows, index).and_then(|start| match &rows[start] {
+/// The text a request copy produces, read from the capture on a worker.
+fn request_text(
+    path: &Path,
+    origin: &details::Origin,
+    what: RequestCopy,
+    cancel: &AtomicBool,
+) -> Result<details::Copied, har::DetailError> {
+    let parsed = har::details(
+        path,
+        origin.span.clone(),
+        origin.revision,
+        Some(origin.hash),
+        cancel,
+    )?;
+    let whole = |text: &har::Text| {
+        details::resolve(
+            path,
+            vec![details::text_part(text)],
+            Some(origin),
+            details::COPY_BYTES,
+            cancel,
+        )
+    };
+    match what {
+        RequestCopy::Url => whole(&parsed.url),
+        RequestCopy::Response => {
+            let Some(text) = parsed
+                .response_body
+                .as_ref()
+                .and_then(|body| body.text.clone())
+            else {
+                return Err(har::DetailError::Failed(
+                    "the capture has no response body".into(),
+                ));
+            };
+            let base64 = parsed.response_body.as_ref().is_some_and(har::Body::base64);
+            let bytes = har::body_bytes(
+                path,
+                &text,
+                base64,
+                details::COPY_BYTES,
+                origin.revision,
+                cancel,
+            )?;
+            match details::classify(&bytes.bytes, bytes.complete) {
+                details::Content::Text(text) => Ok(details::Copied {
+                    text,
+                    cut_at: (!bytes.complete).then_some(details::COPY_BYTES),
+                }),
+                details::Content::Binary => Err(har::DetailError::Failed(
+                    "the response body is binary; use Save response body as…".into(),
+                )),
+            }
+        }
+        RequestCopy::Curl(shell) => {
+            let method = match parsed.long("method") {
+                Some(long) => whole(long)?.text,
+                None => parsed.method.clone(),
+            };
+            let mut request = curl::Request {
+                method,
+                url: whole(&parsed.url)?.text,
+                ..Default::default()
+            };
+            for header in &parsed.request_headers {
+                let name = match &header.name_long {
+                    Some(long) => whole(long)?.text,
+                    None => header.name.clone(),
+                };
+                request.headers.push((name, whole(&header.value)?.text));
+            }
+            if let Some(body) = &parsed.request_body {
+                if let Some(text) = body.text.as_ref().filter(|text| !text.is_empty()) {
+                    let bytes = har::body_bytes(
+                        path,
+                        text,
+                        body.base64(),
+                        details::COPY_BYTES,
+                        origin.revision,
+                        cancel,
+                    )?;
+                    match (details::classify(&bytes.bytes, true), bytes.complete) {
+                        (details::Content::Text(text), true) => request.body = Some(text),
+                        _ => request.body_omitted = true,
+                    }
+                }
+            }
+            let mut copied = details::Copied {
+                text: curl::command(&request, shell),
+                cut_at: None,
+            };
+            if request.body_omitted {
+                copied.cut_at = Some(0);
+            }
+            Ok(copied)
+        }
+    }
+}
+
+/// Streams one body of the request at `origin` into `target` through a
+/// temporary file in the same folder; returns the bytes written.
+fn save_to(
+    path: &Path,
+    origin: &details::Origin,
+    section: Section,
+    target: &Path,
+    cancel: &AtomicBool,
+) -> Result<u64, har::DetailError> {
+    let failed = |e: std::io::Error| har::DetailError::Failed(e.to_string());
+    let parsed = har::details(
+        path,
+        origin.span.clone(),
+        origin.revision,
+        Some(origin.hash),
+        cancel,
+    )?;
+    let body = match section {
+        Section::RequestBody => parsed.request_body.as_ref(),
+        _ => parsed.response_body.as_ref(),
+    };
+    let Some((text, base64)) = body.and_then(|body| Some((body.text.clone()?, body.base64())))
+    else {
+        return Err(har::DetailError::Failed(
+            "the capture has no such body".into(),
+        ));
+    };
+    // Never replace the capture itself (also through a link or another
+    // spelling of its name on a case-insensitive file system).
+    if same_file(target, path) {
+        return Err(har::DetailError::Failed(
+            "that is the HAR file itself; choose another name".into(),
+        ));
+    }
+    let folder = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temporary = tempfile::NamedTempFile::new_in(folder).map_err(failed)?;
+    let mut out = std::io::BufWriter::new(temporary.as_file());
+    let bytes = har::write_body(
+        path,
+        &text,
+        base64,
+        Some((&origin.span, origin.revision, origin.hash)),
+        &mut out,
+        cancel,
+    )?;
+    drop(out);
+    temporary.persist(target).map_err(|e| failed(e.error))?;
+    Ok(bytes)
+}
+
+/// Whether `a` and `b` name the same existing file: by device and inode on
+/// Unix (links, hard links and case-folding names all match), by the final
+/// canonical path elsewhere.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Volume serial + 128-bit file ID of the opened files: hard links,
+        // links and other spellings of the name all match.
+        let identity = |path: &Path| {
+            std::fs::File::open(path).ok().and_then(|file| {
+                okilum_write_authority::filesystem_identity::file_identity(&file).ok()
+            })
+        };
+        let same_id = matches!((identity(a), identity(b)), (Some(x), Some(y)) if x == y);
+        let same_path = matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(x), Ok(y)) if x == y || x.to_string_lossy().eq_ignore_ascii_case(&y.to_string_lossy())
+        );
+        same_id || same_path
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
+/// A detail-row context menu command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    Copy(CopyKind),
+    /// Save the body of the section titled at this row.
+    Save(Section),
+}
+
+/// The commands a detail row offers, in menu order.
+fn copy_items(rows: &DetailRows, index: usize) -> Vec<(SharedString, Command)> {
+    let start = details::section_of(&rows.rows, index);
+    let section = start.and_then(|start| match &rows.rows[start] {
         Row::Section { section, body, .. } => Some((*section, body.is_some())),
         _ => None,
     });
-    let all = |items: &mut Vec<(SharedString, CopyKind)>| {
-        if let Some((section, body)) = section {
+    let has_all = details::clip(&rows.rows, index, CopyKind::Section).is_some();
+    let all = |items: &mut Vec<(SharedString, Command)>| {
+        if let Some((section, body)) = section.filter(|_| has_all) {
             items.push((
                 if body {
                     "Copy body".into()
                 } else {
                     format!("Copy all {}", section.title().to_lowercase()).into()
                 },
-                CopyKind::Section,
+                Command::Copy(CopyKind::Section),
             ));
+        }
+        if let (Some(start), Some((section, _))) = (start, section) {
+            if rows.sources.iter().any(|(row, _)| *row == start) {
+                items.push(("Save body as…".into(), Command::Save(section)));
+            }
         }
     };
     let mut items = Vec::new();
-    match rows.get(index) {
+    match rows.rows.get(index) {
         Some(Row::Field { .. } | Row::Timing { .. }) => {
-            items.push(("Copy value".into(), CopyKind::Value));
-            items.push(("Copy name".into(), CopyKind::Name));
-            items.push(("Copy name: value".into(), CopyKind::Pair));
+            items.push(("Copy value".into(), Command::Copy(CopyKind::Value)));
+            items.push(("Copy name".into(), Command::Copy(CopyKind::Name)));
+            items.push(("Copy name: value".into(), Command::Copy(CopyKind::Pair)));
             all(&mut items);
         }
         Some(Row::Note(_)) => {
-            items.push(("Copy text".into(), CopyKind::Value));
+            items.push(("Copy text".into(), Command::Copy(CopyKind::Value)));
             all(&mut items);
         }
-        Some(Row::Section { .. } | Row::Text(_)) => all(&mut items),
+        Some(Row::Section { .. } | Row::Text(_) | Row::Image(_)) => all(&mut items),
         None => {}
     }
     items

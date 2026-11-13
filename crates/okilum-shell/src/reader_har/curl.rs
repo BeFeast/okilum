@@ -1,0 +1,303 @@
+//! Copy as cURL (#2836): a request as a bash command or a PowerShell
+//! `Invoke-WebRequest`. Every value is quoted for exactly one shell so that
+//! no value, however hostile, becomes shell syntax or a curl option.
+//!
+//! There is deliberately no cmd.exe variant: cmd expands `%…%` (and `!…!`
+//! with delayed expansion) in ways no quoting makes safe for every caller,
+//! interactive and batch alike. On Windows, PowerShell (or bash) is offered.
+//!
+//! - The URL is always passed with `--url`: a capture whose URL starts with
+//!   `-` must not become a curl option such as `-o`.
+//! - Header names must be HTTP tokens (so `@file` cannot make curl read a
+//!   file); CR/LF in values are replaced with spaces (no header injection).
+//! - HTTP/2 pseudo-headers and `Content-Length` are left to curl.
+//! - NUL cannot be passed in any argument and is dropped.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    Bash,
+    PowerShell,
+}
+
+impl Dialect {
+    pub(crate) const ALL: [Dialect; 2] = [Dialect::Bash, Dialect::PowerShell];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Dialect::Bash => "Copy as cURL (bash)",
+            Dialect::PowerShell => "Copy as PowerShell",
+        }
+    }
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Dialect::Bash => "har-copy-curl-bash",
+            Dialect::PowerShell => "har-copy-powershell",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Request {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// A text body; binary bodies are left out (`body_omitted`).
+    pub body: Option<String>,
+    pub body_omitted: bool,
+}
+
+/// RFC 9110 token characters.
+fn token(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
+fn header_value(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").replace('\0', "")
+}
+
+/// Headers curl should send: valid names, no pseudo-headers or length.
+pub(crate) fn headers(request: &Request) -> Vec<(&str, String)> {
+    request
+        .headers
+        .iter()
+        .filter(|(name, _)| token(name) && !name.eq_ignore_ascii_case("content-length"))
+        .map(|(name, value)| (name.as_str(), header_value(value)))
+        .collect()
+}
+
+fn method(request: &Request) -> Option<&str> {
+    let method = request.method.as_str();
+    let implied = match &request.body {
+        Some(_) => "POST",
+        None => "GET",
+    };
+    (token(method) && !method.eq_ignore_ascii_case(implied)).then_some(method)
+}
+
+pub(crate) fn command(request: &Request, shell: Dialect) -> String {
+    match shell {
+        Dialect::Bash => posix_like(request, bash, " \\\n  "),
+        Dialect::PowerShell => powershell(request),
+    }
+}
+
+fn posix_like(request: &Request, quote: fn(&str) -> String, newline: &str) -> String {
+    let mut parts = vec![format!("curl --url {}", quote(&request.url))];
+    if let Some(method) = method(request) {
+        parts.push(format!("-X {}", quote(method)));
+    }
+    for (name, value) in headers(request) {
+        parts.push(format!("-H {}", quote(&format!("{name}: {value}"))));
+    }
+    if let Some(body) = &request.body {
+        parts.push(format!("--data-raw {}", quote(body)));
+    }
+    parts.join(newline)
+}
+
+/// bash: single quotes are fully literal; a quote is closed, escaped, reopened.
+pub(crate) fn bash(value: &str) -> String {
+    format!("'{}'", value.replace('\0', "").replace('\'', r"'\''"))
+}
+
+/// PowerShell single-quoted strings are literal except for quote characters,
+/// including the typographic ones PowerShell also accepts; each is doubled.
+pub(crate) fn powershell_quote(value: &str) -> String {
+    let mut out = String::from("'");
+    for c in value.chars() {
+        match c {
+            '\0' => {}
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => {
+                out.push(c);
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// `Invoke-WebRequest` takes every value as a PowerShell string, so nothing
+/// passes through native argument parsing. User-Agent and Content-Type have
+/// their own parameters in Windows PowerShell 5.1.
+fn powershell(request: &Request) -> String {
+    let q = powershell_quote;
+    let mut lines = vec![format!(
+        "Invoke-WebRequest -UseBasicParsing -Uri {} -Method {}",
+        q(&request.url),
+        q(if token(&request.method) {
+            &request.method
+        } else {
+            "GET"
+        })
+    )];
+    let mut table = Vec::new();
+    for (name, value) in headers(request) {
+        if name.eq_ignore_ascii_case("user-agent") {
+            lines.push(format!("-UserAgent {}", q(&value)));
+        } else if name.eq_ignore_ascii_case("content-type") {
+            lines.push(format!("-ContentType {}", q(&value)));
+        } else if !name.eq_ignore_ascii_case("host") && !name.eq_ignore_ascii_case("connection") {
+            table.push(format!("  {} = {}", q(name), q(&value)));
+        }
+    }
+    if !table.is_empty() {
+        lines.push(format!("-Headers @{{\n{}\n}}", table.join("\n")));
+    }
+    if let Some(body) = &request.body {
+        lines.push(format!("-Body {}", q(body)));
+    }
+    lines.join(" `\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    const HOSTILE: [&str; 8] = [
+        "it's",
+        "$(touch /tmp/okilum-pwned) `id` $HOME !! \\",
+        "a\"b\\\"c\\",
+        "100% %PATH% ^&|<>()",
+        "line1\nline2\r\nline3",
+        "‘curly’ ‚low‛",
+        "-o /tmp/x",
+        "nul\0byte",
+    ];
+
+    fn request(value: &str) -> Request {
+        Request {
+            method: "PUT".into(),
+            url: format!("https://e.test/?q={value}"),
+            headers: vec![
+                (":authority".into(), "e.test".into()),
+                ("x-token".into(), value.into()),
+                ("@/etc/passwd".into(), "read me".into()),
+                ("Content-Length".into(), "3".into()),
+                ("x-inject".into(), "a\r\nEvil: 1".into()),
+            ],
+            body: Some(value.into()),
+            body_omitted: false,
+        }
+    }
+
+    /// bash quoting round-trips through a real bash for every hostile value.
+    #[cfg(unix)]
+    #[test]
+    fn bash_arguments_round_trip_through_bash() {
+        for value in HOSTILE {
+            let script = format!("printf '%s\\0' {}", bash(value));
+            let output = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let expected = format!("{}\0", value.replace('\0', ""));
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                expected,
+                "{value:?}"
+            );
+        }
+        // The whole command parses into exactly the intended argv.
+        let command = command(&request(HOSTILE[1]), Dialect::Bash);
+        let script = format!(
+            "set -- {}; printf '%s\\0' \"$@\"",
+            &command["curl ".len()..]
+        );
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .unwrap();
+        let argv: Vec<String> = String::from_utf8(output.stdout)
+            .unwrap()
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                "--url".to_owned(),
+                format!("https://e.test/?q={}", HOSTILE[1]),
+                "-X".into(),
+                "PUT".into(),
+                "-H".into(),
+                format!("x-token: {}", HOSTILE[1]),
+                "-H".into(),
+                "x-inject: a  Evil: 1".into(),
+                "--data-raw".into(),
+                HOSTILE[1].into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsafe_headers_and_options_never_reach_curl() {
+        for shell in Dialect::ALL {
+            let text = command(&request("-o /tmp/x"), shell);
+            assert!(!text.contains("authority"), "{shell:?}: pseudo-header");
+            assert!(!text.contains("passwd"), "{shell:?}: @file header");
+            assert!(!text.contains("Content-Length"), "{shell:?}");
+            assert!(!text.contains("\nEvil"), "{shell:?}: header injection");
+        }
+        let bash = command(&request("-o /tmp/x"), Dialect::Bash);
+        assert!(bash.starts_with("curl --url 'https://e.test/?q=-o /tmp/x'"));
+    }
+
+    #[test]
+    fn powershell_strings_are_literal() {
+        assert_eq!(powershell_quote("it's $x `n"), "'it''s $x `n'");
+        assert_eq!(powershell_quote("‘a’"), "'‘‘a’’'");
+        let text = command(&request("it's"), Dialect::PowerShell);
+        assert!(text.starts_with(
+            "Invoke-WebRequest -UseBasicParsing -Uri 'https://e.test/?q=it''s' -Method 'PUT'"
+        ));
+        assert!(text.contains("'x-token' = 'it''s'"));
+        assert!(text.contains("-Body 'it''s'"));
+        // Every single-quoted run is balanced (no value closes its string).
+        for value in HOSTILE {
+            let quoted = powershell_quote(value);
+            let inner = &quoted[1..quoted.len() - 1];
+            let quotes = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                if quotes.contains(&c) {
+                    assert_eq!(chars.next(), Some(c), "{value:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn method_is_implied_when_curl_would_choose_it() {
+        let mut get = Request {
+            method: "GET".into(),
+            url: "https://e.test/".into(),
+            ..Default::default()
+        };
+        assert_eq!(command(&get, Dialect::Bash), "curl --url 'https://e.test/'");
+        get.method = "POST".into();
+        get.body = Some("x".into());
+        assert_eq!(
+            command(&get, Dialect::Bash),
+            "curl --url 'https://e.test/' \\\n  --data-raw 'x'"
+        );
+    }
+
+    /// Review of PR 2904: no cmd.exe variant is offered (cmd expansion
+    /// cannot be made safe for every caller).
+    #[test]
+    fn review2904_no_cmd_variant_is_offered() {
+        let labels: Vec<_> = Dialect::ALL.iter().map(|d| d.label()).collect();
+        assert_eq!(labels, ["Copy as cURL (bash)", "Copy as PowerShell"]);
+        assert!(Dialect::ALL.iter().all(|d| !d.id().contains("cmd")));
+    }
+}

@@ -706,7 +706,7 @@ fn fix2888_detail_values_select_and_copy_in_full(cx: &mut TestAppContext) {
     draw(visual);
     assert_eq!(har.read_with(visual, |har, _| har.detail_row), Some(url));
     let items: Vec<String> = har.read_with(visual, |har, _| match &har.detail {
-        Some(Detail::Ready(rows)) => copy_items(&rows.rows, url)
+        Some(Detail::Ready(rows)) => copy_items(rows, url)
             .into_iter()
             .map(|(l, _)| l.to_string())
             .collect(),
@@ -936,4 +936,247 @@ fn review2900_long_fields_and_names_copy_whole(cx: &mut TestAppContext) {
         assert!(!copied.contains('…'), "{kind:?}: no display ellipsis");
         assert_eq!(copied, expected, "{kind:?}");
     }
+}
+
+// --- #2836 part 2: filters, Copy as cURL / URL / response, Save as, images. ---
+
+fn png_bytes() -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 128, 255, 255]))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+fn part2_capture() -> String {
+    use base64::Engine as _;
+    let png = base64::engine::general_purpose::STANDARD.encode(png_bytes());
+    let mut entries = serde_json::from_str::<serde_json::Value>(&sample()).unwrap()["log"]
+        ["entries"]
+        .as_array()
+        .unwrap()
+        .clone();
+    entries.push(entry(
+        "GET",
+        "https://cdn.example.test/pixel.png",
+        200,
+        "2026-11-13T08:00:00.400Z",
+        serde_json::json!({ "response": {
+            "status": 200, "statusText": "OK", "headers": [],
+            "content": { "size": 70, "mimeType": "image/png", "encoding": "base64", "text": png }
+        }}),
+    ));
+    capture(entries)
+}
+
+fn invoke(reader: &Entity<Reader>, visual: &mut VisualTestContext, id: &str) {
+    reader.update_in(visual, |reader, window, cx| {
+        reader.invoke_viewer_action(id, window, cx)
+    });
+    draw(visual);
+}
+
+#[gpui::test]
+fn part2_header_filters_narrow_the_list_and_show_their_choice(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, _temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    let labels = |reader: &Entity<Reader>, visual: &mut VisualTestContext| {
+        reader.read_with(visual, |reader, cx| {
+            reader
+                .viewer_chrome(cx)
+                .actions
+                .iter()
+                .map(|a| a.label.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(labels(&reader, visual), ["Status", "Method", "Type"]);
+    har.update(visual, |har, cx| {
+        har.set_filters(|f| f.status = Some(StatusClass::ClientError), cx)
+    });
+    draw(visual);
+    assert_eq!(rows(&har, visual), [1]);
+    assert_eq!(labels(&reader, visual)[0], "Status: 4xx");
+    har.update(visual, |har, cx| {
+        har.set_filters(
+            |f| {
+                f.status = None;
+                f.kind = Some(har::Kind::Image);
+            },
+            cx,
+        )
+    });
+    draw(visual);
+    assert_eq!(rows(&har, visual), [3]);
+    har.update(visual, |har, cx| {
+        har.set_filters(|f| f.method = Some("POST".into()), cx)
+    });
+    draw(visual);
+    assert_eq!(rows(&har, visual), Vec::<usize>::new());
+    // The Method menu lists the capture's methods.
+    assert_eq!(
+        har.read_with(visual, |har, _| har.methods.clone()),
+        vec!["GET".into(), "POST".into()] as Vec<Box<str>>
+    );
+}
+
+#[gpui::test]
+fn part2_header_copy_menu_copies_url_curl_and_response(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, _temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    // Disabled until a request is selected.
+    let enabled = reader.read_with(visual, |reader, cx| {
+        reader
+            .viewer_chrome(cx)
+            .copy_actions
+            .iter()
+            .any(|a| a.enabled)
+    });
+    assert!(!enabled);
+    har.update(visual, |har, cx| har.select(1, cx));
+    draw(visual);
+    for (id, expected) in [
+        ("har-copy-url", "https://api.example.test/v1/login".to_owned()),
+        (
+            "har-copy-curl-bash",
+            "curl --url 'https://api.example.test/v1/login' \\\n  --data-raw '{\"user\":\"ann\",\"password\":\"hunter2\"}'".to_owned(),
+        ),
+        ("har-copy-response", "{\"ok\":true,\"n\":1}".to_owned()),
+    ] {
+        set_sentinel(visual);
+        invoke(&reader, visual, id);
+        assert_eq!(clipboard_text(visual), Some(expected), "{id}");
+    }
+    set_sentinel(visual);
+    invoke(&reader, visual, "har-copy-powershell");
+    let powershell = clipboard_text(visual).unwrap();
+    assert!(powershell.starts_with("Invoke-WebRequest -UseBasicParsing -Uri 'https://api.example.test/v1/login' -Method 'POST'"));
+    // No cmd.exe variant anywhere: header Copy menu and the row menu.
+    let ids: Vec<&str> = reader.read_with(visual, |reader, cx| {
+        reader
+            .viewer_chrome(cx)
+            .copy_actions
+            .iter()
+            .map(|a| a.id)
+            .collect()
+    });
+    assert!(!ids.iter().any(|id| id.contains("cmd")), "{ids:?}");
+    assert!(RequestCopy::all()
+        .iter()
+        .all(|what| !what.label().contains("cmd")));
+    // A binary response is not pasted as text.
+    har.update(visual, |har, cx| har.select(3, cx));
+    draw(visual);
+    set_sentinel(visual);
+    invoke(&reader, visual, "har-copy-response");
+    assert_eq!(clipboard_text(visual).as_deref(), Some("sentinel"));
+}
+
+#[gpui::test]
+fn part2_save_as_writes_the_whole_decoded_body(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(3, cx));
+    draw(visual);
+    invoke(&reader, visual, "har-save-response");
+    assert!(visual.did_prompt_for_new_path(), "asks where to save");
+    let target = temp.path().join("pixel.png");
+    visual.simulate_new_path_selection({
+        let target = target.clone();
+        move |_| Some(target)
+    });
+    draw(visual);
+    assert_eq!(std::fs::read(&target).unwrap(), png_bytes());
+    // Cancelling the dialog writes nothing.
+    invoke(&reader, visual, "har-save-response");
+    visual.simulate_new_path_selection(|_| None);
+    draw(visual);
+    assert_eq!(std::fs::read(&target).unwrap(), png_bytes());
+    let leftovers: Vec<_> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no temporary file is left: {leftovers:?}"
+    );
+}
+
+#[gpui::test]
+fn part2_small_raster_bodies_are_previewed(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, _temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(3, cx));
+    draw(visual);
+    let rows = ready_rows(&har, visual);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, Row::Image(p) if (p.width, p.height) == (3, 2))),
+        "{rows:?}"
+    );
+    // Control: a text body has no preview.
+    har.update(visual, |har, cx| har.select(0, cx));
+    draw(visual);
+    assert!(!ready_rows(&har, visual)
+        .iter()
+        .any(|row| matches!(row, Row::Image(_))));
+}
+
+#[gpui::test]
+fn part2_right_click_selects_the_request_for_its_menu(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, _temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    visual.simulate_resize(size(px(1440.), px(900.)));
+    draw(visual);
+    let har = har(&reader, visual);
+    let row = measured_bounds(visual, "har-row-2").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    draw(visual);
+    assert_eq!(har.read_with(visual, |har, _| har.selected), Some(2));
+    visual.simulate_keystrokes("escape");
+}
+
+/// Review of PR 2904 (P2-4): Save as never replaces the capture itself,
+/// also through a symbolic link; the suggested name avoids it.
+#[gpui::test]
+fn review2904_save_as_refuses_the_capture_itself(cx: &mut TestAppContext) {
+    let text = part2_capture();
+    let (reader, visual, temp) = open(cx, &[("p2.har", &text)], "p2.har");
+    let har = har(&reader, visual);
+    har.update(visual, |har, cx| har.select(3, cx));
+    draw(visual);
+    let capture_path = temp.path().join("vault/p2.har");
+    let mut targets = vec![capture_path.clone()];
+    #[cfg(unix)]
+    {
+        let link = temp.path().join("link.har");
+        std::os::unix::fs::symlink(&capture_path, &link).unwrap();
+        targets.push(link);
+    }
+    for target in targets {
+        invoke(&reader, visual, "har-save-response");
+        visual.simulate_new_path_selection(move |_| Some(target));
+        draw(visual);
+        assert_eq!(
+            std::fs::read_to_string(&capture_path).unwrap(),
+            text,
+            "the capture is unchanged"
+        );
+    }
+    // Control: another name is written.
+    let other = temp.path().join("other.png");
+    invoke(&reader, visual, "har-save-response");
+    visual.simulate_new_path_selection({
+        let other = other.clone();
+        move |_| Some(other)
+    });
+    draw(visual);
+    assert_eq!(std::fs::read(&other).unwrap(), png_bytes());
+    assert!(same_file(&capture_path, &capture_path) && !same_file(&capture_path, &other));
 }

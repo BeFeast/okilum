@@ -84,6 +84,34 @@ a file without `log.entries` says it is not a HAR file. HAR files contain
 cookies, tokens and passwords: their content is never written to logs,
 diagnostics or feedback reports.
 
+### Copying, saving and filters (#2836 part 2, #2888)
+
+Detail rows are selectable: a click selects a row, Cmd/Ctrl+C copies its value
+and the row's context menu offers Copy value, Copy name, Copy name: value, Copy
+all for the section (Copy body for bodies) and Save body as…. Copies are the
+whole original values, not the bounded display; values kept in the capture are
+read after the request's bytes are verified, and a copy cut at its 64 MB cap
+says so.
+
+The header Copy menu and a request's context menu offer Copy URL, Copy as cURL
+(bash), Copy as PowerShell (`Invoke-WebRequest`), Copy response body and Save
+response body as…. Each command quotes values for its one shell: bash single
+quotes; PowerShell single-quoted strings with every quote character doubled.
+There is no cmd.exe variant: cmd expands `%…%` (and `!…!` with delayed
+expansion) in ways no quoting makes safe for every caller; on Windows use
+PowerShell or bash. The URL is passed with `--url`, header names must be HTTP
+tokens, CR/LF in header values become spaces, pseudo-headers and
+Content-Length are left to curl, and a binary request body is left out (the
+toast says so). Save as refuses the HAR file itself (same file identity,
+including links).
+Save as streams the whole decoded body (base64 included) from the capture into
+a temporary file next to the chosen name, which replaces it only when complete.
+
+PNG, JPEG, GIF, WebP and BMP bodies up to 8 MB show a 480×360 thumbnail in
+details, decoded on the worker with size and allocation limits; SVG and other
+markup are never rendered. Status (2xx, 3xx, 4xx, 5xx, Failed, 1xx), Method
+and Type are header filters, combined with Find in the worker projection.
+
 ## Source viewing
 
 JSON/JSONC, XML/XSD/XSL, TOML, YAML and TXT use the Reader's code viewer.

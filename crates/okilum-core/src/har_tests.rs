@@ -993,3 +993,137 @@ fn review2878b_duplicates_past_the_item_limit_still_agree() {
     .unwrap();
     assert!(d.incomplete);
 }
+
+// --- #2836 part 2: Save as writes whole bodies. ---
+
+#[test]
+fn part2_write_body_streams_whole_bodies_and_verifies_the_entry() {
+    use base64::Engine as _;
+    let payload: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+    let text_body = format!("line1\\nline\\\"2\\u00e9{}", "t".repeat(400_000));
+    let har = format!(
+        r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"u"}},"response":{{"status":200,"content":{{"mimeType":"image/png","encoding":"base64","text":"{encoded}"}}}}}},{{"request":{{"method":"GET","url":"v"}},"response":{{"status":200,"content":{{"mimeType":"text/plain","text":"{text_body}"}}}}}}]}}}}"#
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "save.har", har.as_bytes());
+    let mut revision = None;
+    let mut entries = Vec::new();
+    index_file(&path, &AtomicBool::new(false), &mut |batch| {
+        revision = batch.revision;
+        entries.extend(batch.entries)
+    })
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let body = |index: usize| {
+        let e = &entries[index];
+        details(&path, e.span.clone(), revision, Some(e.hash), &cancel)
+            .unwrap()
+            .response_body
+            .unwrap()
+    };
+    // Binary (base64) beyond the 256 KB preview, written whole.
+    let image = body(0);
+    assert!(matches!(image.text, Some(Text::Long { .. })));
+    let mut out = Vec::new();
+    let e = &entries[0];
+    let written = write_body(
+        &path,
+        image.text.as_ref().unwrap(),
+        image.base64(),
+        Some((&e.span, revision, e.hash)),
+        &mut out,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!((written as usize, out == payload), (payload.len(), true));
+    // Text with escapes, written decoded and whole.
+    let text = body(1);
+    let mut out = Vec::new();
+    write_body(
+        &path,
+        text.text.as_ref().unwrap(),
+        false,
+        None,
+        &mut out,
+        &cancel,
+    )
+    .unwrap();
+    let expected = format!("line1\nline\"2\u{e9}{}", "t".repeat(400_000));
+    assert_eq!(String::from_utf8(out).unwrap(), expected);
+    // A changed request is refused before anything is written.
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, har.replacen("image/png", "image/pnh", 1)).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let mut out = Vec::new();
+    assert_eq!(
+        write_body(
+            &path,
+            image.text.as_ref().unwrap(),
+            true,
+            Some((&e.span, revision, e.hash)),
+            &mut out,
+            &cancel
+        ),
+        Err(DetailError::Changed)
+    );
+    assert!(out.is_empty());
+}
+
+// --- Review of PR 2904: each case fails on head 71f57085. ---
+
+/// P1-3: "=" then a flood of "A" must fail at once with a bounded tail.
+#[test]
+fn review2904_base64_stream_rejects_bad_padding_at_once_and_keeps_three_bytes() {
+    let mut stream = Base64Stream::default();
+    let mut sink = |_: &[u8]| Ok(());
+    let flood = vec![b'A'; 256 * 1024];
+    let mut first = b"=".to_vec();
+    first.extend_from_slice(&flood);
+    assert!(
+        stream.feed(&first, &mut sink).is_err(),
+        "misplaced = fails on the first chunk"
+    );
+    assert!(stream.carry.len() <= 3);
+    // Padding ends the text: more data after a padded group fails at once.
+    let mut stream = Base64Stream::default();
+    stream.feed(b"QQ==", &mut sink).unwrap();
+    assert!(stream.feed(b"QUJD", &mut sink).is_err());
+    // Control: valid text in odd chunks decodes whole, never keeping > 3.
+    use base64::Engine as _;
+    let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 253) as u8).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+    let mut stream = Base64Stream::default();
+    let mut decoded = Vec::new();
+    for chunk in encoded.as_bytes().chunks(7) {
+        stream
+            .feed(chunk, &mut |bytes| {
+                decoded.extend_from_slice(bytes);
+                Ok(())
+            })
+            .unwrap();
+        assert!(stream.carry.len() <= 3, "{}", stream.carry.len());
+    }
+    stream.finish(&mut |_| Ok(())).unwrap();
+    assert_eq!(decoded, payload);
+    // Through write_body: an inline body with the reviewer's shape fails.
+    let body = format!("={}", "A".repeat(1_000_000));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unused");
+    let mut out = Vec::new();
+    assert!(write_body(
+        &path,
+        &Text::Inline(body),
+        true,
+        None,
+        &mut out,
+        &AtomicBool::new(false)
+    )
+    .is_err());
+    assert!(out.is_empty());
+}

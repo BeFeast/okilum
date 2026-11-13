@@ -82,17 +82,89 @@ impl Column {
     }
 }
 
-/// What the list shows: a filter text and an optional sort.
+/// What the list shows: a filter text, the header filters and a sort.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Query {
     pub text: String,
     pub sort: Option<(Column, bool)>,
+    pub filters: Filters,
 }
 
 impl Query {
     /// Source order with no filter needs no projection.
     pub(crate) fn identity(&self) -> bool {
-        self.text.trim().is_empty() && self.sort.is_none()
+        self.text.trim().is_empty() && self.sort.is_none() && self.filters == Filters::default()
+    }
+}
+
+/// The header's Status, Method and Type filters (each one choice or all).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Filters {
+    pub status: Option<StatusClass>,
+    pub method: Option<String>,
+    pub kind: Option<okilum_core::har::Kind>,
+}
+
+impl Filters {
+    pub(crate) fn matches(&self, entry: &Entry) -> bool {
+        self.status.is_none_or(|class| class.matches(entry))
+            && self
+                .method
+                .as_deref()
+                .is_none_or(|method| entry.method.eq_ignore_ascii_case(method))
+            && self.kind.is_none_or(|kind| entry.kind() == kind)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusClass {
+    Informational,
+    Success,
+    Redirect,
+    ClientError,
+    ServerError,
+    /// No response, status 0 or a browser error.
+    Failed,
+}
+
+impl StatusClass {
+    pub(crate) const ALL: [StatusClass; 6] = [
+        StatusClass::Success,
+        StatusClass::Redirect,
+        StatusClass::ClientError,
+        StatusClass::ServerError,
+        StatusClass::Failed,
+        StatusClass::Informational,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            StatusClass::Informational => "1xx",
+            StatusClass::Success => "2xx",
+            StatusClass::Redirect => "3xx",
+            StatusClass::ClientError => "4xx",
+            StatusClass::ServerError => "5xx",
+            StatusClass::Failed => "Failed",
+        }
+    }
+
+    pub(crate) fn matches(self, entry: &Entry) -> bool {
+        let failed = !entry.error.is_empty() || entry.status.is_none_or(|s| s == 0);
+        match self {
+            StatusClass::Failed => failed,
+            _ if failed => false,
+            class => {
+                let status = entry.status.unwrap_or(0);
+                let range = match class {
+                    StatusClass::Informational => 100..200,
+                    StatusClass::Success => 200..300,
+                    StatusClass::Redirect => 300..400,
+                    StatusClass::ClientError => 400..500,
+                    _ => 500..600,
+                };
+                range.contains(&status)
+            }
+        }
     }
 }
 
@@ -142,7 +214,9 @@ pub(crate) fn project(entries: &Entries, query: &Query, cancel: &AtomicBool) -> 
         if index.is_multiple_of(4096) && cancel.load(Ordering::Relaxed) {
             return None;
         }
-        if needle.is_empty() || needle.matches_entry(entry, &mut status) {
+        if query.filters.matches(entry)
+            && (needle.is_empty() || needle.matches_entry(entry, &mut status))
+        {
             rows.push(index as u32);
         }
     }
@@ -419,6 +493,7 @@ mod tests {
                 &Query {
                     text: text.into(),
                     sort: None,
+                    filters: Filters::default(),
                 },
                 &AtomicBool::new(false),
             )
@@ -442,6 +517,7 @@ mod tests {
                 &Query {
                     text: String::new(),
                     sort: Some(sort),
+                    filters: Filters::default(),
                 },
                 &AtomicBool::new(false),
             )
@@ -543,5 +619,41 @@ mod tests {
             });
         }
         assert_eq!(stats.transferred, i64::MAX);
+    }
+
+    #[test]
+    fn part2_header_filters_combine_with_find() {
+        let entries = sample();
+        let run = |filters: Filters, text: &str| {
+            project(
+                &entries,
+                &Query {
+                    text: text.into(),
+                    sort: None,
+                    filters,
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let status = |class| Filters {
+            status: Some(class),
+            ..Default::default()
+        };
+        assert_eq!(run(status(StatusClass::Success), ""), [0]);
+        assert_eq!(run(status(StatusClass::ClientError), ""), [1]);
+        assert_eq!(run(status(StatusClass::ServerError), ""), [3]);
+        assert_eq!(run(status(StatusClass::Failed), ""), [2]);
+        let get = Filters {
+            method: Some("get".into()),
+            ..Default::default()
+        };
+        assert_eq!(run(get.clone(), ""), [0, 2, 3]);
+        assert_eq!(run(get, "a.test"), [0, 2]);
+        assert!(!Query {
+            filters: status(StatusClass::Success),
+            ..Default::default()
+        }
+        .identity());
     }
 }
