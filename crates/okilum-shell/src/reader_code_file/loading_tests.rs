@@ -261,8 +261,11 @@ fn code2809_explicit_table_choice_keeps_a_mounted_focus_target(cx: &mut TestAppC
         );
     });
     settle(visual);
-    assert!(visual.debug_bounds("table-duckdb").is_some());
-    assert!(visual.debug_bounds("viewer-find-field").is_none());
+    assert!(visual.debug_bounds("delimited-viewport").is_some());
+    assert!(
+        visual.debug_bounds("viewer-find-field").is_some(),
+        "Table keeps shared Find mounted"
+    );
 }
 
 #[gpui::test]

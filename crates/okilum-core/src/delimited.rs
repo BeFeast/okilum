@@ -41,16 +41,11 @@ fn view_rows_case(
                 })
         })
         .collect();
-    sort_rows(table, &mut rows, sort, None);
+    sort_rows(table, &mut rows, sort);
     rows
 }
 
-fn sort_rows(
-    table: &Table,
-    rows: &mut [usize],
-    sort: Option<(usize, bool)>,
-    cancelled: Option<&std::sync::atomic::AtomicBool>,
-) {
+fn sort_rows(table: &Table, rows: &mut [usize], sort: Option<(usize, bool)>) {
     if let Some((column, descending)) = sort {
         let numeric = rows.iter().all(|&row| {
             table.cell(row, column).is_empty()
@@ -60,9 +55,6 @@ fn sort_rows(
                     .is_ok_and(f64::is_finite)
         });
         rows.sort_by(|&a, &b| {
-            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
-                return std::cmp::Ordering::Equal;
-            }
             let (a, b) = (table.cell(a, column), table.cell(b, column));
             let order = if numeric {
                 match (a.parse::<i128>(), b.parse::<i128>()) {
@@ -137,7 +129,7 @@ pub fn project_rows(
             }
         }
     }
-    sort_rows(table, &mut rows, sort, Some(cancelled));
+    sort_rows(table, &mut rows, sort);
     if cancelled.load(Relaxed) {
         return None;
     }

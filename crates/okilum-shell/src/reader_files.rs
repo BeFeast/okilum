@@ -206,7 +206,6 @@ pub(crate) struct FilePreview {
     pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
     /// Source code with syntax highlighting (#998).
     pub code: Option<Entity<reader_code_file::CodePreview>>,
-    pub table: Option<Entity<reader_delimited::TablePreview>>,
     /// A ZIP archive's entries, previews and extraction (#996).
     pub archive: Option<Entity<reader_archive::ArchivePreview>>,
     pub audio: Option<Entity<reader_audio::AudioView>>,
@@ -240,7 +239,6 @@ impl FilePreview {
             image_cache: None,
             live_identity: Arc::new(()),
             _live: None,
-            table: None,
             archive: None,
             audio: None,
             canvas: None,
@@ -535,7 +533,6 @@ impl Reader {
                     && preview.log.is_none()
                     && preview.text.is_none()
                     && preview.code.is_none()
-                    && preview.table.is_none()
                     && preview.archive.is_none()
                     && !reader_media::is_video(&preview.path)
                     && preview.audio.is_none()
@@ -646,14 +643,6 @@ impl Reader {
                 .min_h_0()
                 .child(self.render_file_header_viewport(window, cx))
                 .child(div().flex_1().min_h_0().child(canvas.clone()))
-                .into_any_element();
-        }
-        if let Some(table) = &preview.table {
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .child(self.render_file_header_viewport(window, cx))
-                .child(table.clone())
                 .into_any_element();
         }
         if let Some(log) = &preview.log {
@@ -1201,7 +1190,16 @@ mod tests {
             );
             reader.update_in(visual, |r, window, cx| {
                 if reader_delimited::eligible(name) {
-                    assert!(r.file_preview.as_ref().unwrap().table.is_some());
+                    assert!(r
+                        .file_preview
+                        .as_ref()
+                        .unwrap()
+                        .code
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .table_view()
+                        .is_some());
                 }
                 r.toggle_source(window, cx);
                 r.toggle_live_preview(window, cx);
@@ -1550,7 +1548,13 @@ mod tests {
             assert!(!reader.single_file, "vault-mode positive control");
             reader.preview_file("plain.csv", window, cx);
             let preview = reader.file_preview.as_ref().unwrap();
-            assert!(preview.table.is_some());
+            assert!(preview
+                .code
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .table_view()
+                .is_some());
             assert!(preview.text.is_none());
             assert!(
                 preview.log.is_none(),

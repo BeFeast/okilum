@@ -93,20 +93,22 @@ impl TablePreview {
         chrome
     }
 
-    fn toggle_header(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_header(&mut self, cx: &mut Context<Self>) {
         if self.json() {
             return;
         }
         self.header = !self.header;
+        self.anchor = None;
+        self.end = None;
         reader_ui_state::set_delimited_header(self.path.clone(), self.header, cx);
         self.refilter(cx);
     }
-    fn reset_sort(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn reset_sort(&mut self, cx: &mut Context<Self>) {
         if self.sort.take().is_some() {
             self.refilter(cx);
         }
     }
-    fn copy_feedback(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn copy_feedback(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.updating {
             return;
         }
@@ -119,7 +121,7 @@ impl TablePreview {
             );
         }
     }
-    fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.table.as_ref().and_then(|t| t.first_bad_row) else {
             return;
         };
@@ -134,10 +136,14 @@ impl TablePreview {
                 .unwrap()
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.focus.focus(window, cx);
-            self.refilter(cx);
+            if !self.all && row >= INITIAL_ROWS + usize::from(self.header) {
+                self.load(true, cx);
+            } else {
+                self.refilter(cx);
+            }
         }
     }
-    fn notices(&self) -> Vec<&'static str> {
+    pub(super) fn notices(&self) -> Vec<&'static str> {
         let mut result = Vec::new();
         if let Some(table) = &self.table {
             if table.ragged {
@@ -163,13 +169,13 @@ impl TablePreview {
         }
         result
     }
-    fn status_element(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn status(&self, owner: Entity<Self>, cx: &App) -> reader_status_line::StatusLine {
         use reader_status_line::{StatusLine, Tone};
         let mut status = StatusLine::default();
         let notices = self.notices();
         let Some(table) = &self.table else {
             status.text = self.error.unwrap_or("Opening table…").into();
-            return reader_status_line::render(&status, "table-status", None, cx);
+            return status;
         };
         let loaded = table.rows.len().saturating_sub(usize::from(self.header));
         let count = loaded.min(if self.all { usize::MAX } else { INITIAL_ROWS });
@@ -217,7 +223,7 @@ impl TablePreview {
             status.icon = Some(Icon::new(IconName::TriangleAlert));
         }
         if !self.all && partial {
-            let target = cx.entity();
+            let target = owner;
             let mut more = ViewerAction::new(
                 "table-load-more",
                 Icon::new(IconName::ArrowDown),
@@ -229,11 +235,16 @@ impl TablePreview {
             more.enabled = !self.loading;
             status.actions.push(more);
         }
-        reader_status_line::render(&status, "table-status", None, cx)
+        status
     }
 
     #[inline(never)]
-    fn compact_header(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn status_element(&self, cx: &Context<Self>) -> AnyElement {
+        reader_status_line::render(&self.status(cx.entity(), cx), "table-status", None, cx)
+    }
+
+    #[inline(never)]
+    pub(super) fn compact_header(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let chrome = self.chrome(cx.entity(), true, cx);
         let pane = self.pane_bounds.clone();
         canvas(

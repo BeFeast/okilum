@@ -31,14 +31,14 @@ impl TablePreview {
         self.refilter(cx);
     }
 
-    fn cancel_projection(&mut self) {
+    pub(super) fn cancel_projection(&mut self) {
         self.projection_cancel.store(true, Ordering::Relaxed);
         self.projection_task = None;
         self.projection_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.revision += 1;
     }
 
-    fn schedule_filter(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn schedule_filter(&mut self, cx: &mut Context<Self>) {
         self.cancel_projection();
         self.updating = true;
         let revision = self.revision;
@@ -55,7 +55,7 @@ impl TablePreview {
         cx.notify();
     }
 
-    fn refilter(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refilter(&mut self, cx: &mut Context<Self>) {
         self.cancel_projection();
         self.projection_all = self.all;
         let revision = self.revision;
@@ -77,6 +77,10 @@ impl TablePreview {
         self.updating = true;
         self.anchor = None;
         self.end = None;
+        #[cfg(test)]
+        {
+            self.projections += 1;
+        }
         let task = cx.background_executor().spawn(async move {
             okilum_core::delimited::project_rows(
                 &table, start, count, &query, sort, sensitive, &cancel,
@@ -131,7 +135,7 @@ impl TablePreview {
         cx.notify();
     }
 
-    fn source_cell(&self, cell: Cell) -> Option<Cell> {
+    pub(super) fn source_cell(&self, cell: Cell) -> Option<Cell> {
         let start = usize::from(self.header);
         let row = if self.header && cell.row == 0 {
             0
@@ -143,7 +147,7 @@ impl TablePreview {
             column: cell.column,
         })
     }
-    fn display_cell(&self, cell: Cell) -> Option<Cell> {
+    pub(super) fn display_cell(&self, cell: Cell) -> Option<Cell> {
         let row = if self.header && cell.row == 0 {
             0
         } else {
@@ -154,7 +158,7 @@ impl TablePreview {
             column: cell.column,
         })
     }
-    fn reveal_cell(&self, cell: Cell) {
+    pub(super) fn reveal_cell(&self, cell: Cell) {
         self.scroll.scroll_to_item(
             cell.row.saturating_sub(usize::from(self.header)),
             ScrollStrategy::Top,
@@ -172,7 +176,12 @@ impl TablePreview {
         };
         self.horizontal.set_offset(point(px(-next.max(0.)), px(0.)));
     }
-    fn step_hit(&mut self, direction: i32, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn step_hit(
+        &mut self,
+        direction: i32,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.updating || self.hits.is_empty() {
             return;
         }
@@ -230,7 +239,7 @@ impl TablePreview {
                 step.update(cx, |this, cx| this.step_hit(direction, window, cx))
             })),
             steps_visible: true,
-            close: Rc::new(move |window, cx| close.read(cx).focus.focus(window, cx)),
+            close: Rc::new(move |window, cx| close.read(cx).focus.clone().focus(window, cx)),
             large_file: self.file_bytes.is_some_and(|bytes| bytes > 4 * 1024 * 1024),
         }
     }

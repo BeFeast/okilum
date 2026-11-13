@@ -12,6 +12,14 @@ import time
 
 
 def clipboard():
+    if sys.platform == 'linux':
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            return root.clipboard_get().rstrip('\r\n')
+        finally:
+            root.destroy()
     args = ['pbpaste'] if sys.platform == 'darwin' else [
         'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
         '[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-Clipboard -Raw']
@@ -19,7 +27,7 @@ def clipboard():
 
 
 def main():
-    assert sys.platform in ('darwin', 'win32')
+    assert sys.platform in ('darwin', 'win32', 'linux')
     binary = str(Path(sys.argv[1]).resolve())
     if sys.platform == 'win32':
         # Record the linked reserve; fixing a render frame must not be confused

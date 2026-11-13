@@ -13,6 +13,8 @@ mod controls;
 mod find;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+#[cfg(test)]
+mod toolbar_tests;
 
 const ROW_HEIGHT: f32 = 30.;
 const COLUMN_WIDTH: f32 = 200.;
@@ -82,8 +84,8 @@ struct Cell {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Saved {
-    query: String,
-    sensitive: bool,
+    pub(crate) query: String,
+    pub(crate) sensitive: bool,
     sort: Option<(usize, bool)>,
     anchor: Option<Cell>,
     end: Option<Cell>,
@@ -113,6 +115,8 @@ pub(crate) struct TablePreview {
     visible_columns: Range<usize>,
     external_error: Option<String>,
     external_pending: bool,
+    #[cfg(test)]
+    duckdb_override: Option<Option<PathBuf>>,
     own_header: bool,
     file_bytes: Option<u64>,
     case_sensitive: bool,
@@ -120,6 +124,8 @@ pub(crate) struct TablePreview {
     reveal_source: Option<Cell>,
     restored: Option<Saved>,
     hit_index: usize,
+    #[cfg(test)]
+    projections: usize,
     projection_task: Option<Task<()>>,
     projection_cancel: Arc<std::sync::atomic::AtomicBool>,
     pane_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
@@ -167,6 +173,8 @@ impl TablePreview {
             visible_columns: 0..0,
             external_error: None,
             external_pending: false,
+            #[cfg(test)]
+            duckdb_override: None,
             own_header: true,
             file_bytes: None,
             case_sensitive: reader_ui_state::find_case_sensitive(cx),
@@ -174,6 +182,8 @@ impl TablePreview {
             reveal_source: None,
             restored: None,
             hit_index: 0,
+            #[cfg(test)]
+            projections: 0,
             projection_task: None,
             projection_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pane_bounds: Default::default(),
@@ -806,9 +816,10 @@ mod tests {
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
             assert_eq!(p.order, [3], "native filter subscription fired");
-            assert!(
-                p.anchor.is_none(),
-                "a reordered selection cannot copy stale rows"
+            assert_eq!(
+                p.anchor,
+                Some(Cell { row: 1, column: 0 }),
+                "Find selects the first actual matching cell"
             );
         });
         // Successive requests must discard any old worker result.
@@ -1402,7 +1413,7 @@ mod tests {
             assert_eq!(header.size.height, px(ROW_HEIGHT));
             assert_eq!(first.top(), header.bottom());
             assert!(visual.debug_bounds("delimited-row-9000").is_none());
-            assert!(visual.debug_bounds("delimited-show-all").is_some());
+            assert!(visual.debug_bounds("table-load-more").is_some());
             preview.update(visual, |p, cx| {
                 p.scroll.scroll_to_item_strict(999, ScrollStrategy::Top);
                 cx.notify();
@@ -1414,7 +1425,7 @@ mod tests {
             );
             assert!(visual.debug_bounds("delimited-row-1001").is_none());
             assert_eq!(visual.debug_bounds("delimited-row-0").unwrap(), header);
-            let show = visual.debug_bounds("delimited-show-all").unwrap();
+            let show = visual.debug_bounds("table-load-more").unwrap();
             visual.simulate_click(show.center(), Modifiers::default());
             visual.run_until_parked();
             preview.update(visual, |p, cx| {
@@ -1477,7 +1488,7 @@ mod tests {
             assert_eq!(table.columns, 2);
             assert_eq!(table.rows.len(), 1);
         });
-        let show = visual.debug_bounds("delimited-show-all").unwrap();
+        let show = visual.debug_bounds("table-load-more").unwrap();
         visual.simulate_click(show.center(), Modifiers::default());
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
@@ -1485,8 +1496,8 @@ mod tests {
             assert!(p.table.as_ref().unwrap().limited);
         });
         assert!(visual.debug_bounds("delimited-row-0").is_some());
-        assert!(visual.debug_bounds("delimited-notice").is_some());
-        assert!(visual.debug_bounds("delimited-show-all").is_none());
+        assert!(visual.debug_bounds("table-status-line").is_some());
+        assert!(visual.debug_bounds("table-load-more").is_none());
         assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
     }
 

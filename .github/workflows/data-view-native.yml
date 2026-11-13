@@ -146,6 +146,14 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/file-edit-toolbar.py
+      - name: Exercise shared table toolbar compiled negative controls
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          python3 scripts/ci/table-toolbar.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -155,6 +163,7 @@ jobs:
             ${{ runner.temp }}/data-table-native-app.log
             ${{ runner.temp }}/reader-viewer-native-app.log
             target/file-edit-toolbar-controls/
+            target/table-toolbar-controls/
             ${{ runner.temp }}/code-toolbar-native-app.log
             ${{ runner.temp }}/code-toolbar-native-receipt.json
           if-no-files-found: ignore

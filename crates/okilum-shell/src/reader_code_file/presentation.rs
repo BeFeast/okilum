@@ -26,8 +26,15 @@ impl CodePreview {
             view: self.view,
             page: self.page,
             tree: self.structure.save(),
-            query: self.find.read(cx).value().to_string(),
-            case_sensitive: self.case_sensitive.get(),
+            query: if self.view == View::Table {
+                self.table
+                    .as_ref()
+                    .map(|table| table.read(cx).save_presentation().query)
+                    .unwrap_or_default()
+            } else {
+                self.find.read(cx).value().to_string()
+            },
+            case_sensitive: reader_ui_state::find_case_sensitive(cx),
             table: self.table.as_ref().map(|t| t.read(cx).save_presentation()),
             match_index: self.match_index,
             selection: self
@@ -59,11 +66,15 @@ impl CodePreview {
         let Some(saved) = self.restored_presentation.clone() else {
             return;
         };
-        if let Some(table_saved) = self
+        if let Some(mut table_saved) = self
             .restored_presentation
             .as_mut()
             .and_then(|saved| saved.table.take())
         {
+            if saved.view == View::Table {
+                table_saved.query = saved.query.clone();
+                table_saved.sensitive = saved.case_sensitive;
+            }
             if let Some(table) = &self.table {
                 table.update(cx, |table, cx| {
                     table.restore_presentation(table_saved, window, cx)
