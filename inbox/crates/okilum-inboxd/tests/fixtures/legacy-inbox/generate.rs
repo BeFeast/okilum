@@ -22,6 +22,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; VACUUM;")?;
         assert_eq!(db.pragma_query_value::<i64,_>(None,"user_version",|r| r.get(0))?,version);
     }
+    // Keep a second connection alive so closing Store cannot checkpoint WAL.
+    // Snapshot both files before either connection closes; omit the rebuildable SHM.
+    let scratch = tempfile::tempdir()?;
+    let path = scratch.path().join("legacy-wal.db");
+    std::fs::copy(output.join("rusqlite-0.37-schema-12.db"), &path)?;
+    let guard = Connection::open(&path)?;
+    guard.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")?;
+    let pending = Capture {
+        operation_id: Uuid::from_u128(6),
+        item_id: Uuid::from_u128(7),
+        text: "Committed only in the legacy WAL 📝\r\n".into(),
+    };
+    let mut writer = Store::open(&path)?;
+    writer.capture(owner, &pending, 789)?;
+    assert_eq!(guard.query_row("SELECT count(*) FROM captures", [], |r| r.get::<_, i64>(0))?, 2);
+    assert!(std::fs::metadata(path.with_file_name("legacy-wal.db-wal"))?.len() > 32);
+    std::fs::copy(&path, output.join("rusqlite-0.37-wal.db"))?;
+    std::fs::copy(path.with_file_name("legacy-wal.db-wal"), output.join("rusqlite-0.37-wal.db-wal"))?;
+    drop(writer);
     println!("SQLite writer version: {}", rusqlite::version());
     Ok(())
 }

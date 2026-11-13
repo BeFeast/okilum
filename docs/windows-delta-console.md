@@ -42,3 +42,5 @@ the application graph even after the Reader moves to ZIP 9. The SDK version,
 delta process patch, compression features, download/checksum validation and
 full-package fallback remain unchanged. The existing native hidden-child and
 unhidden-child negative controls still exercise the actual patched SDK.
+
+Real published Full/Delta application is covered separately by the historical Windows control in [storage compatibility](storage-compatibility.md). The console fixture uses a stand-in patcher and now returns a valid ZIP; it remains a console-inheritance control, not evidence of real patching.

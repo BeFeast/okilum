@@ -12,8 +12,19 @@ unsafe extern "system" {
     fn GetConsoleWindow() -> *mut std::ffi::c_void;
 }
 
-struct DeltaSource;
-const PROPOSED: &[u8] = b"fixture reconstructed full package";
+struct DeltaSource(Vec<u8>);
+const HELPER_BYTES: &[u8] = b"fixture replacement helper";
+fn proposed() -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file(
+        "lib/net45/Squirrel.exe",
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    zip.write_all(HELPER_BYTES).unwrap();
+    zip.finish().unwrap().into_inner()
+}
 impl UpdateSource for DeltaSource {
     fn get_release_feed(
         &self,
@@ -34,7 +45,7 @@ impl UpdateSource for DeltaSource {
             asset.Type, "Delta",
             "full fallback must not mask a broken patcher"
         );
-        fs::write(destination, PROPOSED)?;
+        fs::write(destination, &self.0)?;
         Ok(())
     }
 }
@@ -73,7 +84,8 @@ fn windows_delta_preparation_has_no_console_and_keeps_the_delta_path() {
     fs::copy(helper, &update).unwrap();
     let base = asset("Full", b"fixture base");
     fs::write(packages.join(&base.FileName), b"fixture base").unwrap();
-    let full = asset("Full", PROPOSED);
+    let proposed = proposed();
+    let full = asset("Full", &proposed);
     // Use a distinct version/name for the existing base package.
     let old = "Okilum.DeltaConsoleFixture-1.0.0-Full.nupkg";
     fs::rename(packages.join(&base.FileName), packages.join(old)).unwrap();
@@ -83,11 +95,11 @@ fn windows_delta_preparation_has_no_console_and_keeps_the_delta_path() {
         ..base
     };
     let manager = UpdateManager::new(
-        DeltaSource,
+        DeltaSource(proposed.clone()),
         None,
         Some(VelopackLocatorConfig {
             RootAppDir: root,
-            UpdateExePath: update,
+            UpdateExePath: update.clone(),
             PackagesDir: packages.clone(),
             ManifestPath: manifest,
             CurrentBinaryDir: current,
@@ -100,13 +112,14 @@ fn windows_delta_preparation_has_no_console_and_keeps_the_delta_path() {
             &UpdateInfo {
                 TargetFullRelease: full.clone(),
                 BaseRelease: Some(base),
-                DeltasToTarget: vec![asset("Delta", PROPOSED)],
+                DeltasToTarget: vec![asset("Delta", &proposed)],
                 IsDowngrade: false,
             },
             None,
         )
         .unwrap();
-    assert_eq!(fs::read(packages.join(&full.FileName)).unwrap(), PROPOSED);
+    assert_eq!(fs::read(packages.join(&full.FileName)).unwrap(), proposed);
+    assert_eq!(fs::read(update).unwrap(), HELPER_BYTES);
     let console =
         fs::read_to_string(packages.join(&full.FileName).with_extension("console")).unwrap();
     assert_eq!(console, "0", "delta patcher must not have a console");
