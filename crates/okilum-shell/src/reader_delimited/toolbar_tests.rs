@@ -607,10 +607,151 @@ fn table2812_raw_cap_does_not_eagerly_read_a_large_csv(cx: &mut TestAppContext) 
     r.update_in(v, |r, w, cx| r.preview_file("large.csv", w, cx));
     settle(v);
     let c = code(&r, v);
-    c.read_with(v,|p,_| {assert!(p.input().is_none());assert!(!p.editable());assert_eq!(p.availability(View::Table),Availability::Available);assert!(matches!(p.availability(View::Raw),Availability::Disabled(reason) if reason.contains("64 MB")));});
+    c.read_with(v, |p, _| {
+        assert!(p.input().is_none());
+        assert!(
+            p.editable(),
+            "CSV Edit keeps the source editor without the code viewer's caps"
+        );
+        assert_eq!(p.availability(View::Table), Availability::Available);
+        assert!(
+            matches!(p.availability(View::Raw), Availability::Disabled(reason) if reason.contains("64 MB"))
+        );
+    });
+}
+
+fn sparse_csv(path: &std::path::Path, bytes: u64) {
+    std::fs::write(path, "a,b\n1,2\n").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+}
+
+#[gpui::test]
+fn table2812_remembered_raw_yields_to_table_when_raw_is_over_its_budget(cx: &mut TestAppContext) {
+    let (r, v, temp) = fixture_with_files(cx, "small.csv", &[("small.csv", "a,b\n1,2\n")]);
+    settle(v);
+    let c = code(&r, v);
+    c.update_in(v, |p, w, cx| p.set_view(View::Raw, w, cx));
+    settle(v);
+    v.update(|_, cx| assert_eq!(reader_ui_state::code_view("csv", cx), Some(View::Raw)));
+    sparse_csv(
+        &temp.path().join("vault/large.csv"),
+        reader_code_file::MAX_BYTES + 1,
+    );
+    r.update_in(v, |r, w, cx| r.preview_file("large.csv", w, cx));
+    settle(v);
+    let c = code(&r, v);
+    c.read_with(v, |p, _| {
+        assert_eq!(
+            p.active_view(),
+            View::Table,
+            "Raw is unavailable here, so the bounded table opens"
+        );
+        assert!(
+            matches!(p.availability(View::Raw), Availability::Disabled(reason) if reason.contains("64 MB")),
+            "Raw keeps its reason"
+        );
+    });
+    assert!(measured_bounds(v, "delimited-viewport").is_some());
+    v.update(|_, cx| {
+        assert_eq!(
+            reader_ui_state::code_view("csv", cx),
+            Some(View::Raw),
+            "the remembered per-type choice is not overwritten"
+        )
+    });
+}
+
+#[gpui::test]
+fn table2812_five_mib_csv_still_opens_the_source_editor(cx: &mut TestAppContext) {
+    let row = "item,1234567890,abcdefghijklmnopqrstuvwxyz\n";
+    let source = format!(
+        "name,n,text\n{}",
+        row.repeat(5 * 1024 * 1024 / row.len() + 1)
+    );
+    assert!(source.len() > 5 * 1024 * 1024);
+    let (r, v, _temp) = fixture_with_files(cx, "big.csv", &[("big.csv", &source)]);
+    settle(v);
+    let c = code(&r, v);
+    c.read_with(v, |p, _| assert!(p.editable(), "no 4 MiB cap for CSV Edit"));
+    assert!(
+        measured_bounds(v, "code-readonly").is_none(),
+        "no size lock by the name"
+    );
+    r.update_in(v, |r, w, cx| r.toggle_source(w, cx));
+    settle(v);
+    r.read_with(v, |r, cx| {
+        let editing = r.editing.as_ref().expect("Edit opens the source editor");
+        assert_eq!(editing.test_input().read(cx).value().len(), source.len());
+    });
+}
+
+#[gpui::test]
+fn table2812_read_only_lock_stays_by_the_name_in_table(cx: &mut TestAppContext) {
+    // One item per line: a long single line would open in Tree, not Table.
+    let item = "{\"name\":\"needle\",\"value\":12345678901234567890},\n";
+    let body = item.repeat(4 * 1024 * 1024 / item.len() + 2);
+    let source = format!("[\n{}]", body.trim_end_matches(",\n"));
+    let (r, v, _temp) = fixture_with_files(cx, "array.json", &[("array.json", &source)]);
+    settle(v);
+    let c = code(&r, v);
+    c.read_with(v, |p, _| {
+        assert_eq!(p.active_view(), View::Table, "positive: Table is active");
+        assert!(!p.editable(), "positive: over the JSON editing limit");
+    });
     assert!(
         measured_bounds(v, "code-readonly").is_some(),
         "the file's read-only lock stays by the name while Table is active"
+    );
+}
+
+#[gpui::test]
+fn table2812_find_scan_stops_when_table_is_hidden_or_closed(cx: &mut TestAppContext) {
+    let (r, v, _temp) = fixture_with_files(
+        cx,
+        "scan.csv",
+        &[
+            ("scan.csv", "name,value\nneedle,1\nother,2\n"),
+            ("next.csv", "a\n1\n"),
+        ],
+    );
+    settle(v);
+    let c = code(&r, v);
+    let t = table(&c, v);
+    // In flight: the worker has not run yet when the view changes.
+    let flag = t.update(v, |p, cx| {
+        p.query = "needle".into();
+        p.refilter(cx);
+        p.projection_cancel.clone()
+    });
+    c.update_in(v, |p, w, cx| p.set_view(View::Raw, w, cx));
+    assert!(
+        flag.load(std::sync::atomic::Ordering::Relaxed),
+        "hiding Table stops the scan"
+    );
+    settle(v);
+    c.update_in(v, |p, w, cx| p.set_view(View::Table, w, cx));
+    settle(v);
+    t.read_with(v, |p, _| {
+        assert!(!p.updating);
+        assert_eq!(p.order, [1], "the latest query reruns when Table returns");
+    });
+    let flag = t.update(v, |p, cx| {
+        p.query = "other".into();
+        p.refilter(cx);
+        p.projection_cancel.clone()
+    });
+    drop(t);
+    drop(c);
+    r.update_in(v, |r, w, cx| r.preview_file("next.csv", w, cx));
+    settle(v);
+    assert!(
+        flag.load(std::sync::atomic::Ordering::Relaxed),
+        "closing the file releases the table and stops its scan"
     );
 }
 

@@ -78,15 +78,21 @@ impl CodePreview {
                         this.prepare_loaded(text, table_path.clone(), json, window, cx);
                         State::Content(input)
                     }
-                    Ok(Loaded::TooLarge(bytes)) => State::Message(format!(
-                        "Too large to preview. {}, the limit is 64 MB.",
-                        view::size(bytes as usize)
-                    )),
+                    Ok(Loaded::TooLarge(bytes)) => {
+                        if reader_delimited::eligible(&this.rel) {
+                            this.source_bytes = usize::try_from(bytes).ok();
+                        }
+                        State::Message(format!(
+                            "Too large to preview. {}, the limit is 64 MB.",
+                            view::size(bytes as usize)
+                        ))
+                    }
                     Ok(Loaded::Unsupported) => {
                         State::Message("This file cannot be previewed as text.".into())
                     }
                     Err(_) => State::Message("This file could not be read.".into()),
                 };
+                this.admit_table_when_raw_unavailable(window, cx);
                 cx.notify();
             });
         })
@@ -120,8 +126,28 @@ impl CodePreview {
                     this.apply_view(View::Raw, window, cx);
                     cx.notify();
                 }
+                this.admit_table_when_raw_unavailable(window, cx);
             }));
         self.table = Some(table);
+    }
+
+    /// A remembered Raw cannot apply to a CSV/TSV over the 64 MB text budget:
+    /// show its bounded table instead. Worker completion never writes the
+    /// per-type memory, so the remembered choice stays Raw for the next file.
+    pub(super) fn admit_table_when_raw_unavailable(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if reader_delimited::eligible(&self.rel)
+            && self.view == View::Raw
+            && self.table.is_some()
+            && self.table_failure.is_none()
+            && !self.availability(View::Raw).available()
+        {
+            self.apply_view(View::Table, window, cx);
+            cx.notify();
+        }
     }
 
     /// Observe only the provisional editor. Never forward Input notifications:

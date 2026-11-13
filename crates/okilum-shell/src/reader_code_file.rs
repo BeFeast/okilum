@@ -547,7 +547,11 @@ impl CodePreview {
             || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
             && editable_format(&self.rel)
-            && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
+            // CSV/TSV edit through the existing source editor without the code
+            // viewer's 4 MiB UI cap, exactly as before they shared this owner.
+            && self
+                .source_bytes
+                .is_some_and(|bytes| reader_delimited::eligible(&self.rel) || bytes <= EDIT_BYTES)
     }
 
     /// The file is still being read; whether it is editable is not known yet.
