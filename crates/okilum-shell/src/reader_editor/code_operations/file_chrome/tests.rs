@@ -1155,6 +1155,7 @@ fn file2811_app_teardown_releases_live_parts_and_pending_json_validation(cx: &mu
 #[gpui::test]
 fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mut TestAppContext) {
     let (reader, _file, input, visual, temp) = open(cx, "test1.json", "{\"a\":1}");
+    settle_startup(&reader, visual);
     reader.update(visual, |r, cx| {
         r.link_notice = Some("Unrelated notice remains visible".into());
         cx.notify();
@@ -1172,7 +1173,9 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
     // Retire only the unrelated positive-control fixture before the conflict.
     // The conflict below must keep the notification host empty on its own.
     visual.update(|w, cx| w.clear_notifications(cx));
-    frame(visual);
+    // NotificationList retains dismissed entities through its 200 ms exit
+    // animation; drive that lifecycle as its own flush_dismiss control does.
+    tick(visual, 250);
     assert!(visual.update(|w, cx| w.notifications(cx).is_empty()));
     input.update_in(visual, |i, w, cx| i.replace_source_range(0..0, " ", w, cx));
     let path = temp.path().join("vault/test1.json");
