@@ -121,6 +121,55 @@ pub(crate) fn editable_format(rel: &str) -> bool {
     eligible(rel) && !crate::reader_har::eligible(rel)
 }
 
+/// The editor saves UTF-8. An XML file whose declaration names another
+/// encoding (ISO-8859-1, Windows-1251, UTF-16, …) would get UTF-8 bytes under
+/// that declaration, so it stays read-only with this reason (#2887). No
+/// declaration, or `UTF-8`/`UTF8` in any case, is UTF-8 and editable.
+pub(crate) fn xml_encoding_refusal(rel: &str, text: &str) -> Option<String> {
+    if language(rel) != Some("xml") {
+        return None;
+    }
+    let encoding = xml_declared_encoding(text)?;
+    if encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8") {
+        return None;
+    }
+    let shown: String = encoding
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(40)
+        .collect();
+    Some(format!(
+        "Editing XML in {shown} isn't supported; the file stays as is"
+    ))
+}
+
+/// The `encoding` pseudo-attribute of a leading `<?xml …?>` declaration.
+fn xml_declared_encoding(text: &str) -> Option<&str> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let rest = text.strip_prefix("<?xml")?;
+    // `<?xml-stylesheet …?>` is a processing instruction, not the declaration.
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    let mut rest = &rest[..rest.find("?>")?];
+    loop {
+        rest = rest.trim_start();
+        let name_end = rest.find(|c: char| c == '=' || c.is_ascii_whitespace())?;
+        let name = &rest[..name_end];
+        rest = rest[name_end..]
+            .trim_start()
+            .strip_prefix('=')?
+            .trim_start();
+        let quote = rest.chars().next().filter(|q| *q == '"' || *q == '\'')?;
+        rest = &rest[1..];
+        let value_end = rest.find(quote)?;
+        if name == "encoding" {
+            return Some(rest[..value_end].trim());
+        }
+        rest = &rest[value_end + 1..];
+    }
+}
+
 enum State {
     Loading,
     Content(Entity<EditorState>),
@@ -138,6 +187,8 @@ pub(crate) struct CodePreview {
     state: State,
     source_bytes: Option<usize>,
     storage_reason: Option<String>,
+    /// A non-UTF-8 XML declaration keeps the file read-only (#2887).
+    encoding_reason: Option<String>,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
     table: Option<Entity<reader_delimited::TablePreview>>,
@@ -374,6 +425,7 @@ impl CodePreview {
             state: State::Loading,
             source_bytes: None,
             storage_reason: None,
+            encoding_reason: None,
             json: None,
             table: None,
             view: initial,
@@ -547,6 +599,7 @@ impl CodePreview {
         (matches!(self.state, State::Content(_))
             || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
+            && self.encoding_reason.is_none()
             && editable_format(&self.rel)
             // CSV/TSV edit through the existing source editor without the code
             // viewer's 4 MiB UI cap, exactly as before they shared this owner.
@@ -941,6 +994,52 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml2887_only_a_non_utf8_declaration_refuses_editing() {
+        let refused = |rel: &str, text: &str| xml_encoding_refusal(rel, text);
+        for (text, encoding) in [
+            (
+                "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a/>",
+                "ISO-8859-1",
+            ),
+            (
+                "<?xml version='1.0' encoding='windows-1251'?>\n<a/>",
+                "windows-1251",
+            ),
+            (
+                "\u{feff}<?xml version=\"1.0\"\n  encoding = \"UTF-16\" ?><a/>",
+                "UTF-16",
+            ),
+            (
+                "<?xml version=\"1.0\" encoding=\"us-ascii\" standalone=\"yes\"?>",
+                "us-ascii",
+            ),
+        ] {
+            assert_eq!(
+                refused("feed.xml", text).as_deref(),
+                Some(
+                    format!("Editing XML in {encoding} isn't supported; the file stays as is")
+                        .as_str()
+                ),
+                "{text}"
+            );
+            assert!(refused("schema.xsd", text).is_some(), "XSD shares the gate");
+            assert!(refused("notes.txt", text).is_none(), "only XML is gated");
+        }
+        for text in [
+            "<a>no declaration</a>",
+            "<?xml version=\"1.0\"?><a/>",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>",
+            "<?xml version=\"1.0\" encoding='utf-8'?><a/>",
+            "<?xml version=\"1.0\" encoding=\"UTF8\"?><a/>",
+            "\u{feff}<?xml version=\"1.0\" encoding=\"Utf-8\"?><a/>",
+            "<?xml-stylesheet href=\"x.xsl\" encoding=\"latin1\"?><a/>",
+            "<a><?xml version=\"1.0\" encoding=\"latin1\"?></a>",
+        ] {
+            assert_eq!(refused("feed.xml", text), None, "{text}");
+        }
+    }
     #[gpui::test]
     fn data_table_2735_json_defaults_to_table_and_keeps_source(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();

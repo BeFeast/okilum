@@ -235,7 +235,11 @@ impl CodePreview {
         }
     }
     fn readonly_reason(&self) -> Option<String> {
-        if let Some(reason) = &self.storage_reason {
+        if let Some(reason) = self
+            .storage_reason
+            .as_ref()
+            .or(self.encoding_reason.as_ref())
+        {
             return Some(reason.clone());
         }
         self.source_bytes
@@ -355,6 +359,7 @@ impl CodePreview {
             .into();
         } else if let Some(reason) = self.readonly_reason().filter(|_| {
             self.storage_reason.is_some()
+                || self.encoding_reason.is_some()
                 || self.source_bytes.is_some_and(|bytes| bytes > EDIT_BYTES)
         }) {
             status.icon = Some(Icon::default().path("icons/lock.svg"));

@@ -1283,3 +1283,57 @@ fn xml2887_edit_button_typing_validate_format_and_save(cx: &mut TestAppContext) 
     let bottom = drawn(&input).1;
     assert!(bottom.starts_with("Syntax problem in XML."), "{bottom}");
 }
+
+/// #2887 review: Edit is not offered for an XML file declaring a non-UTF-8
+/// encoding; Ctrl/Cmd+E does nothing and the bytes stay as they were.
+#[gpui::test]
+fn xml2887_non_utf8_declaration_offers_no_edit_and_never_writes(cx: &mut TestAppContext) {
+    for (name, encoding) in [
+        ("latin.xml", "ISO-8859-1"),
+        ("cyrillic.xml", "Windows-1251"),
+    ] {
+        cx.executor().allow_parking();
+        let source = format!("<?xml version=\"1.0\" encoding=\"{encoding}\"?>\n<a>cafe</a>\n");
+        let (reader, visual, temp) =
+            crate::reader_viewer_chrome::tests::fixture_with_files(cx, name, &[(name, &source)]);
+        visual.simulate_resize(size(px(1440.), px(900.)));
+        tick(visual, 130);
+        reader.update_in(visual, |r, w, cx| {
+            assert_eq!(r.selected_file(), name);
+            assert!(!r.code_file_editable(cx), "{name}");
+            r.toggle_source(w, cx);
+            assert!(r.editing.is_none(), "{name}: Edit must not open");
+        });
+        frame(visual);
+        assert!(visual.debug_bounds("reader-edit").is_none(), "{name}");
+        assert_eq!(
+            std::fs::read(temp.path().join("vault").join(name)).unwrap(),
+            source.as_bytes()
+        );
+    }
+}
+
+/// #2887 review: a UTF-8 XML file round-trips non-ASCII text byte for byte.
+#[gpui::test]
+fn xml2887_utf8_non_ascii_round_trip(cx: &mut TestAppContext) {
+    let source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<a>Жcafé</a>\r\n";
+    let (reader, _file, input, visual, temp) = open(cx, "utf8.xml", source);
+    input.update_in(visual, |i, w, cx| {
+        i.focus(w, cx);
+        let position = gpui_component::input::Position {
+            line: 2,
+            character: 0,
+        };
+        i.set_cursor_position(position, w, cx);
+    });
+    frame(visual);
+    visual.simulate_input("<!-- café Ж -->");
+    frame(visual);
+    let expected = format!("{source}<!-- café Ж -->");
+    assert_eq!(text(&input, visual), expected);
+    reader.update(visual, |r, cx| assert!(r.save_source(cx)));
+    assert_eq!(
+        std::fs::read(temp.path().join("vault/utf8.xml")).unwrap(),
+        expected.as_bytes()
+    );
+}
