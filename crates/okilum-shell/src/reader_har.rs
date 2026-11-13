@@ -95,6 +95,12 @@ pub(crate) struct HarView {
     collapsed: std::collections::HashSet<Section>,
     /// The detail row Cmd/Ctrl+C and the context menu copy from (#2888).
     detail_row: Option<usize>,
+    /// Where the shown request lives, for copies that read the file.
+    detail_origin: Option<details::Origin>,
+    /// Each copy owns a generation and a cancel flag: a newer copy, another
+    /// request, closing details or a reindex drops an older copy's result.
+    copy_generation: u64,
+    copy_cancel: Arc<AtomicBool>,
     detail_visible: Vec<usize>,
     detail_list: ListState,
     scroll: UniformListScrollHandle,
@@ -189,6 +195,9 @@ impl HarView {
             _detail_task: None,
             collapsed: Default::default(),
             detail_row: None,
+            detail_origin: None,
+            copy_generation: 0,
+            copy_cancel: Arc::new(AtomicBool::new(false)),
             detail_visible: Vec::new(),
             detail_list: ListState::new(0, ListAlignment::Top, px(400.)),
             scroll: UniformListScrollHandle::new(),
@@ -295,6 +304,8 @@ impl HarView {
         self.selected = None;
         self.detail = None;
         self.detail_row = None;
+        self.detail_origin = None;
+        self.invalidate_copies();
         self.detail_cancel.store(true, Ordering::Relaxed);
         self.detail_generation = self.detail_generation.wrapping_add(1);
         self.reset_detail_rows();
@@ -402,6 +413,12 @@ impl HarView {
         let generation = self.detail_generation;
         self.detail = Some(Detail::Loading);
         self.detail_row = None;
+        self.detail_origin = Some(details::Origin {
+            span: span.clone(),
+            revision: self.revision,
+            hash,
+        });
+        self.invalidate_copies();
         self.reset_detail_rows();
         let (path, cancel, start, revision) = (
             self.path.clone(),
@@ -442,6 +459,8 @@ impl HarView {
     fn close_details(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
         self.detail_row = None;
+        self.detail_origin = None;
+        self.invalidate_copies();
         self.detail = None;
         self.detail_cancel.store(true, Ordering::Relaxed);
         self.detail_generation = self.detail_generation.wrapping_add(1);
@@ -1247,8 +1266,16 @@ impl HarView {
 }
 
 impl HarView {
+    /// Drops any copy in flight: its result never reaches the clipboard.
+    fn invalidate_copies(&mut self) {
+        self.copy_cancel.store(true, Ordering::Relaxed);
+        self.copy_cancel = Arc::new(AtomicBool::new(false));
+        self.copy_generation = self.copy_generation.wrapping_add(1);
+    }
+
     /// Copies `kind` of detail row `index`. Values longer than the row shows
-    /// are copied in full; parts kept in the capture are read on a worker.
+    /// are copied in full; parts kept in the capture are read on a worker
+    /// after the request's bytes are verified. A cut copy says so.
     fn copy_detail(
         &mut self,
         index: usize,
@@ -1256,37 +1283,55 @@ impl HarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_copies();
         let Some(Detail::Ready(rows)) = &self.detail else {
             return;
         };
         let Some(parts) = details::clip(&rows.rows, index, kind) else {
             return;
         };
-        if parts
+        let reads = parts
             .iter()
-            .all(|part| matches!(part, details::Part::Literal(_)))
-        {
-            let text = details::resolve(&self.path, parts, None, &AtomicBool::new(false))
-                .unwrap_or_default();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-            reader_toast::transient("Copied", window, cx);
+            .any(|part| matches!(part, details::Part::File(har::Text::Long { .. })));
+        if !reads {
+            if let Ok(copied) = details::resolve(
+                &self.path,
+                parts,
+                None,
+                details::COPY_BYTES,
+                &AtomicBool::new(false),
+            ) {
+                cx.write_to_clipboard(ClipboardItem::new_string(copied.text.clone()));
+                reader_toast::transient(copied.label(), window, cx);
+            }
             return;
         }
-        let (path, revision, cancel) = (self.path.clone(), self.revision, self.cancel.clone());
-        let work = cx
-            .background_executor()
-            .spawn(async move { details::resolve(&path, parts, revision, &cancel) });
+        let generation = self.copy_generation;
+        let (path, origin, cancel) = (
+            self.path.clone(),
+            self.detail_origin.clone(),
+            self.copy_cancel.clone(),
+        );
+        let work = cx.background_executor().spawn(async move {
+            details::resolve(&path, parts, origin.as_ref(), details::COPY_BYTES, &cancel)
+        });
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(text) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    reader_toast::transient("Copied", window, cx);
+            let _ = this.update_in(cx, |this, window, cx| {
+                // Another copy, request, close or reindex owns the clipboard now.
+                if this.copy_generation != generation {
+                    return;
                 }
-                Err(har::DetailError::Changed) => this.reindex(cx),
-                Err(har::DetailError::Cancelled) => {}
-                Err(error) => {
-                    reader_toast::error(format!("Nothing was copied: {error}"), window, cx)
+                match result {
+                    Ok(copied) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copied.text.clone()));
+                        reader_toast::transient(copied.label(), window, cx);
+                    }
+                    Err(har::DetailError::Changed) => this.reindex(cx),
+                    Err(har::DetailError::Cancelled) => {}
+                    Err(error) => {
+                        reader_toast::error(format!("Nothing was copied: {error}"), window, cx)
+                    }
                 }
             });
         })

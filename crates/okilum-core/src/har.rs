@@ -614,12 +614,16 @@ impl Default for Text {
 pub struct Pair {
     pub name: String,
     pub value: Text,
+    /// The whole name when it is longer than [`INLINE_TEXT`].
+    pub name_long: Option<Text>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cookie {
     pub name: String,
     pub value: Text,
+    /// The whole name when it is longer than [`INLINE_TEXT`].
+    pub name_long: Option<Text>,
     /// Remaining attributes, as `name=value` text.
     pub attributes: Vec<String>,
 }
@@ -674,6 +678,19 @@ pub struct Details {
     pub incomplete: bool,
     /// Values built by the parse (bounded by [`MAX_DETAIL_NODES`]).
     pub nodes: usize,
+    /// Scalar fields longer than [`INLINE_TEXT`], by field name (`method`,
+    /// `redirect`, …); the `String` fields above keep only their prefix.
+    pub long: Vec<(&'static str, Text)>,
+}
+
+impl Details {
+    /// The whole value of a scalar field kept in [`Details::long`].
+    pub fn long(&self, field: &str) -> Option<&Text> {
+        self.long
+            .iter()
+            .find(|(name, _)| *name == field)
+            .map(|(_, text)| text)
+    }
 }
 
 /// Why details or a body could not be read.
@@ -733,13 +750,27 @@ pub fn details(
     cancel: &AtomicBool,
 ) -> Result<Details, DetailError> {
     if let Some(expected) = hash {
-        let mut reader = open_range(path, &span, revision)?;
-        if hash_bytes(&mut reader, cancel)? != expected {
-            return Err(DetailError::Changed);
-        }
+        verify_entry(path, &span, revision, expected, cancel)?;
     }
     let reader = open_range(path, &span, revision)?;
     parse_details(reader, span.start, cancel)
+}
+
+/// Checks that `span` of `path` still holds the indexed entry: the file
+/// `revision` and the entry's own bytes ([`Entry::hash`]).
+pub fn verify_entry(
+    path: &Path,
+    span: &Range<u64>,
+    revision: Option<Revision>,
+    hash: u64,
+    cancel: &AtomicBool,
+) -> Result<(), DetailError> {
+    let mut reader = open_range(path, span, revision)?;
+    if hash_bytes(&mut reader, cancel)? == hash {
+        Ok(())
+    } else {
+        Err(DetailError::Changed)
+    }
 }
 
 /// The same streaming hash the index computes over an entry's bytes.
@@ -905,6 +936,14 @@ impl Node {
     }
 }
 
+/// A string field kept in the file because it is longer than [`INLINE_TEXT`].
+fn long_text(node: &Node, key: &str) -> Option<Text> {
+    match node.get(key) {
+        Some(Node::Text(long @ Text::Long { .. })) => Some(long.clone()),
+        _ => None,
+    }
+}
+
 fn format_number(n: f64) -> String {
     if n.fract() == 0. && n.abs() < 1e15 {
         format!("{}", n as i64)
@@ -989,6 +1028,28 @@ impl Details {
                 }
             }
         }
+        let null = Node::Null;
+        let request = entry.get("request").unwrap_or(&null);
+        let response = entry.get("response").unwrap_or(&null);
+        let content = response.get("content").unwrap_or(&null);
+        for (field, node, key) in [
+            ("started", &entry, "startedDateTime"),
+            ("server", &entry, "serverIPAddress"),
+            ("connection", &entry, "connection"),
+            ("resource_type", &entry, "_resourceType"),
+            ("error", &entry, "_error"),
+            ("method", request, "method"),
+            ("request_version", request, "httpVersion"),
+            ("status_text", response, "statusText"),
+            ("response_version", response, "httpVersion"),
+            ("redirect", response, "redirectURL"),
+            ("response_error", response, "_error"),
+            ("mime", content, "mimeType"),
+        ] {
+            if let Some(long) = long_text(node, key) {
+                details.long.push((field, long));
+            }
+        }
         details
     }
 
@@ -1002,6 +1063,7 @@ impl Details {
             .map(|item| Pair {
                 name: item.text("name"),
                 value: item.full_text("value"),
+                name_long: long_text(item, "name"),
             })
             .collect()
     }
@@ -1032,6 +1094,7 @@ impl Details {
                 Cookie {
                     name: item.text("name"),
                     value: item.full_text("value"),
+                    name_long: long_text(item, "name"),
                     attributes,
                 }
             })
