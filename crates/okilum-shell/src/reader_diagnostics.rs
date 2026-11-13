@@ -3,7 +3,7 @@ use super::*;
 use anyhow::Result;
 use gpui_component::WindowExt;
 
-const LOG_FILE: &str = "reader-diagnostic.log";
+pub(crate) const LOG_FILE: &str = "reader-diagnostic.log";
 const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Timings use one process clock. UI callbacks only enqueue; disk I/O is owned
@@ -197,7 +197,7 @@ impl Trace {
         }));
     }
 
-    fn record_window_closes(&self, cx: &mut App) {
+    pub(crate) fn record_window_closes(&self, cx: &mut App) {
         let closed_trace = self.clone();
         cx.on_window_closed(move |cx, id| {
             let origin = cx.default_global::<WindowCloseRequests>().0.remove(&id);
