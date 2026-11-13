@@ -8,6 +8,7 @@ the beta gate. Fast certification stays source-pinned and on demand; it gates
 Stable only (`fast / shell-full` on the exact candidate).
 (The module keeps its historical name; nothing here runs hourly any more.)
 """
+import itertools
 import json
 import os
 from pathlib import Path
@@ -115,6 +116,9 @@ def candidate(tip, platform, descriptor, expected=''):
     return tip if not expected or expected == tip else None
 
 
+SUPERSEDE_DEPTH = 200
+
+
 def push_select(source, platform, env, descriptor):
     """A main push builds exactly the pushed commit (Oleg 05.11).
 
@@ -133,17 +137,22 @@ def push_select(source, platform, env, descriptor):
         raise ValueError('Invalid beta publication descriptor')
     if published and published.get('source') == source:
         return False, source, f'Pushed main {source} already is the {platform} beta'
+    # Bounded so a deep queue or a slow API cannot exhaust the 3-minute select
+    # job (review of PR 2890): any lookup failure, or a source not among the
+    # last SUPERSEDE_DEPTH first-parent commits, builds rather than skips.
     try:
         tip = api('/branches/main')['commit']['id']
-    except Exception as error:  # an unreadable tip must not skip a beta
-        return True, source, f'Build pushed main {source} (main tip unreadable: {type(error).__name__})'
-    if not re.fullmatch('[0-9a-f]{40}', tip or ''):
-        return True, source, f'Build pushed main {source} (main tip invalid)'
-    if tip != source:
-        if source not in main_history(tip):
-            raise ValueError('Pushed source is not a first-parent main commit')
+        if not re.fullmatch('[0-9a-f]{40}', tip or ''):
+            return True, source, f'Build pushed main {source} (main tip invalid)'
+        if tip == source:
+            return True, source, f'Build pushed main {source}'
+        recent = itertools.islice(main_history(tip), SUPERSEDE_DEPTH)
+        superseded = any(commit == source for commit in recent)
+    except Exception as error:  # an unreadable tip or history must not skip a beta
+        return True, source, f'Build pushed main {source} (main history unreadable: {type(error).__name__})'
+    if superseded:
         return False, source, f'Pushed main {source} is superseded by main {tip}; that push builds it'
-    return True, source, f'Build pushed main {source}'
+    return True, source, f'Build pushed main {source} (not within {SUPERSEDE_DEPTH} commits of main {tip})'
 
 
 def certification_source(env):

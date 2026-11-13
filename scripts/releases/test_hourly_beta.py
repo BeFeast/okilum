@@ -89,15 +89,35 @@ class Admission(unittest.TestCase):
             for platform in hourly.WORKFLOWS:
                 build, source, reason = self.push(platform, SOURCE)
                 self.assertEqual((build, source), (True, SOURCE))
-                self.assertIn('main tip unreadable', reason)
+                self.assertIn('main history unreadable', reason)
 
-    def test_push_off_first_parent_main_fails_closed(self):
+    def test_push_outside_recent_main_or_unreadable_history_builds(self):
+        # Review of PR 2890: the walk is bounded and every failure builds.
         newer, foreign = 'c' * 40, 'd' * 40
         self.tip = newer
         self.parents[newer] = OLD
         self.parents[OLD] = None
-        with self.assertRaises(ValueError):
-            self.push('linux', foreign)
+        build, source, reason = self.push('linux', foreign)
+        self.assertEqual((build, source), (True, foreign))
+        self.assertIn('not within', reason)
+        chain = ['%040x' % n for n in range(1, hourly.SUPERSEDE_DEPTH + 3)]
+        self.tip = chain[-1]
+        for child, parent in zip(chain[1:], chain):
+            self.parents[child] = parent
+        self.parents[chain[0]] = None
+        self.calls.clear()
+        build, _, _ = self.push('linux', chain[0])
+        self.assertTrue(build, 'a source deeper than the bound builds')
+        self.assertLessEqual(len([p for p, _, _ in self.calls if p.startswith('/git/commits/')]),
+                             hourly.SUPERSEDE_DEPTH)
+        def history_fails(path, method='GET', body=None):
+            if path == '/branches/main':
+                return {'commit': {'id': newer}}
+            raise OSError('history offline')
+        with patch.object(hourly, 'api', side_effect=history_fails):
+            build, _, reason = self.push('linux', SOURCE)
+            self.assertTrue(build)
+            self.assertIn('main history unreadable', reason)
 
     def test_push_of_the_current_beta_head_builds_nothing(self):
         for platform in hourly.WORKFLOWS:
