@@ -1,6 +1,9 @@
 use super::*;
 use std::process::{Command, Stdio};
 
+/// Toast text when no DuckDB executable is found (frame 7, «DuckDB is not installed»).
+pub(super) const MISSING_DUCKDB: &str = "DuckDB was not found on this computer.";
+
 impl TablePreview {
     pub(super) fn open_duckdb(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.external_pending {
@@ -11,53 +14,45 @@ impl TablePreview {
         let path = self.path.clone();
         #[cfg(test)]
         let program_override = self.duckdb_override.clone();
-        let (send, receive) = std::sync::mpsc::channel();
+        let (send, receive) = async_channel::bounded(1);
         // The external UI can outlive this view; reap it without occupying a
         // GPUI executor. Keep stdin open so the CLI cannot exit at pipe EOF.
         let started = std::thread::Builder::new().name("duckdb-ui".into()).spawn(move || {
-            let result = (|| -> anyhow::Result<()> {
-                #[cfg(not(test))]
-                let program = duckdb_program();
-                #[cfg(test)]
-                let program = program_override.unwrap_or_else(duckdb_program);
-                let program = program.ok_or_else(|| anyhow::anyhow!("Install the DuckDB CLI with UI support from duckdb.org/docs/installation, then retry."))?;
-                let args = duckdb_args(&path)?;
-                let mut child = Command::new(program).args(args).stdin(Stdio::piped())
-                    .stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-                let _input = child.stdin.take();
-                anyhow::ensure!(child.wait()?.success(), "DuckDB could not open this file. Check that your DuckDB CLI supports -ui and this file format.");
-                Ok(())
-            })();
-            let _ = send.send(result.map_err(|e| format!("Cannot open in DuckDB: {e:#}")));
+            #[cfg(not(test))]
+            let program = duckdb_program();
+            #[cfg(test)]
+            let program = program_override.unwrap_or_else(duckdb_program);
+            let result = match program {
+                None => Err(MISSING_DUCKDB.to_owned()),
+                Some(program) => (|| -> anyhow::Result<()> {
+                    let args = duckdb_args(&path)?;
+                    let mut child = Command::new(program).args(args).stdin(Stdio::piped())
+                        .stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+                    let _input = child.stdin.take();
+                    anyhow::ensure!(child.wait()?.success(), "DuckDB could not open this file. Check that your DuckDB CLI supports -ui and this file format.");
+                    Ok(())
+                })()
+                .map_err(|e| format!("Cannot open in DuckDB: {e:#}")),
+            };
+            let _ = send.send_blocking(result);
         });
         if let Err(error) = started {
             self.external_pending = false;
             self.external_error = Some(format!("Cannot start DuckDB: {error}"));
             reader_toast::duckdb_error(self.external_error.clone().unwrap(), window, cx);
         } else {
-            cx.spawn_in(window, async move |this, cx| loop {
-                if this.upgrade().is_none() {
-                    break;
+            // Wakes only when the reaper thread reports; nothing polls on the UI thread.
+            cx.spawn_in(window, async move |this, cx| {
+                if let Ok(result) = receive.recv().await {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.external_pending = false;
+                        this.external_error = result.err();
+                        if let Some(error) = &this.external_error {
+                            reader_toast::duckdb_error(error.clone(), window, cx);
+                        }
+                        cx.notify();
+                    });
                 }
-                let result = match receive.try_recv() {
-                    Ok(result) => result,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await;
-                        continue;
-                    }
-                };
-                let _ = this.update_in(cx, |this, window, cx| {
-                    this.external_pending = false;
-                    this.external_error = result.err();
-                    if let Some(error) = &this.external_error {
-                        reader_toast::duckdb_error(error.clone(), window, cx);
-                    }
-                    cx.notify();
-                });
-                break;
             })
             .detach();
         }

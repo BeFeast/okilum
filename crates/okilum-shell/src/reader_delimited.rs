@@ -710,8 +710,13 @@ impl Render for TablePreview {
             as usize)
             .saturating_sub(1)
             .min(table.columns);
-        let column_count =
-            (f32::from(window.viewport_size().width) / COLUMN_WIDTH).ceil() as usize + 3;
+        // Virtualize against the measured pane; the window is only a fallback
+        // before the first paint.
+        let pane_width = match f32::from(self.pane_bounds.get().size.width) {
+            width if width > 0. => width,
+            _ => f32::from(window.viewport_size().width),
+        };
+        let column_count = (pane_width / COLUMN_WIDTH).ceil() as usize + 3;
         self.visible_columns = first_column..(first_column + column_count).min(table.columns);
         let table = self.table.as_ref().unwrap();
         let width = px(GUTTER + COLUMN_WIDTH * table.columns as f32);
