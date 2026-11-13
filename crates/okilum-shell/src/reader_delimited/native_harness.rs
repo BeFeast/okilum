@@ -35,7 +35,7 @@ pub(crate) fn entry() -> bool {
                         code = Some(view.clone());
                         view.into()
                     } else {
-                        let view = cx.new(|cx| TablePreview::new(directory.join(name), cx));
+                        let view = cx.new(|cx| TablePreview::new(directory.join(name), window, cx));
                         preview = Some(view.clone());
                         view.into()
                     };

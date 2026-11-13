@@ -85,7 +85,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "xml" | "xsd" | "xsl" => "xml",
-        "txt" => "text",
+        "txt" | "csv" | "tsv" => "text",
         "sql" => "sql",
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
@@ -129,6 +129,10 @@ enum State {
 pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
+    path: PathBuf,
+    raw_requested: bool,
+    _table_subscription: Option<Subscription>,
+    table_failure: Option<String>,
     opened_at: Instant,
     state: State,
     source_bytes: Option<usize>,
@@ -271,6 +275,10 @@ impl CodePreview {
         self.source_bytes = Some(bytes);
     }
 
+    pub(crate) fn table_view(&self) -> Option<Entity<reader_delimited::TablePreview>> {
+        self.table.clone()
+    }
+
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
@@ -279,6 +287,9 @@ impl CodePreview {
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_source_ready(&self) -> bool {
         self.document.is_some()
+            || self.view == View::Table
+                && self.source_bytes.is_some()
+                && self.table_failure.is_none()
     }
 
     pub(crate) fn preserve_zoom_anchor(
@@ -299,87 +310,6 @@ impl CodePreview {
         cx: &mut Context<Self>,
     ) -> Self {
         let started = Instant::now();
-        let json = is_json(&rel);
-        let table_path = path.clone();
-        let language = language(&rel).unwrap_or("text");
-        let task = cx.background_executor().spawn(async move {
-            let bytes = std::fs::metadata(&path)?.len();
-            if bytes > MAX_BYTES {
-                return anyhow::Ok(Loaded::TooLarge(bytes));
-            }
-            Ok(
-                match String::from_utf8({
-                    use std::io::Read as _;
-                    let mut bytes = Vec::new();
-                    std::fs::File::open(&path)?
-                        .take(MAX_BYTES + 1)
-                        .read_to_end(&mut bytes)?;
-                    if bytes.len() as u64 > MAX_BYTES {
-                        return Ok(Loaded::TooLarge(bytes.len() as u64));
-                    }
-                    bytes
-                }) {
-                    Ok(text) => Loaded::Text(text),
-                    Err(_) => Loaded::Unsupported,
-                },
-            )
-        });
-        crate::source_presentation::code_languages::install();
-        // Each selection owns its own entity; a late read cannot reach a newer one.
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.state = match result {
-                    Ok(Loaded::Text(text)) => {
-                        this.source_bytes = Some(text.len());
-                        let range = document::first_page(&text);
-                        this.paged = range.end < text.len();
-                        this.find.update(cx, |find, cx| {
-                            find.set_placeholder(
-                                if this.paged || text.len() > EDIT_BYTES {
-                                    "Find in whole file"
-                                } else {
-                                    "Find"
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                        let input = cx.new(|cx| editor(language, &text[range], window, cx));
-                        this.document_revision += 1;
-                        this.applied_page = Some((this.document_revision, 0));
-                        #[cfg(test)]
-                        {
-                            this.first_content_ms = Some(started.elapsed().as_millis());
-                        }
-                        timing(&input, started, cx);
-                        this.watch_provisional(&input, cx);
-                        this.editor_find = Some(cx.new(|cx| {
-                            reader_find_field::editor::EditorTarget::with_query(
-                                input.clone(),
-                                this.find.clone(),
-                                this.case_sensitive.clone(),
-                                cx,
-                            )
-                        }));
-                        // Text is available before any full-file parse/index or
-                        // formatted snapshot. Those run on subsequent workers.
-                        this.prepare_loaded(text, table_path.clone(), json, window, cx);
-                        State::Content(input)
-                    }
-                    Ok(Loaded::TooLarge(bytes)) => State::Message(format!(
-                        "Too large to preview. {}, the limit is 64 MB.",
-                        view::size(bytes as usize)
-                    )),
-                    Ok(Loaded::Unsupported) => {
-                        State::Message("This file cannot be previewed as text.".into())
-                    }
-                    Err(_) => State::Message("This file could not be read.".into()),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
         let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
         let find_subscription =
             cx.subscribe_in(&find, window, |this, _, event, window, cx| match event {
@@ -411,16 +341,35 @@ impl CodePreview {
             },
         )
         .detach();
-        Self {
+        let delimited = reader_delimited::eligible(&rel);
+        let initial = if delimited {
+            reader_ui_state::code_view(
+                if rel.to_ascii_lowercase().ends_with(".tsv") {
+                    "tsv"
+                } else {
+                    "csv"
+                },
+                cx,
+            )
+            .filter(|v| matches!(v, View::Raw | View::Table))
+            .unwrap_or(View::Table)
+        } else {
+            View::Raw
+        };
+        let mut preview = Self {
             root,
             rel,
+            path: path.clone(),
+            raw_requested: false,
+            _table_subscription: None,
+            table_failure: None,
             opened_at: started,
             state: State::Loading,
             source_bytes: None,
             storage_reason: None,
             json: None,
             table: None,
-            view: View::Raw,
+            view: initial,
             own_header: true,
             raw_document: None,
             scrubber,
@@ -468,7 +417,19 @@ impl CodePreview {
             search_installs: 0,
             focus: cx.focus_handle(),
             _find_subscription: find_subscription,
+        };
+        if delimited {
+            let table =
+                cx.new(|cx| reader_delimited::TablePreview::new(path, window, cx).without_header());
+            preview.attach_table(table, window, cx);
+            preview.automatic_view = false;
+            if initial == View::Raw {
+                preview.load_text(window, cx);
+            }
+        } else {
+            preview.load_text(window, cx);
         }
+        preview
     }
 
     fn show_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,6 +514,12 @@ impl CodePreview {
 
     /// Tables retain their own filter until the table step (#2812).
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.view == View::Table {
+            return self
+                .table
+                .as_ref()
+                .is_some_and(|table| table.read(cx).focus_filter(window, cx));
+        }
         if !matches!(self.state, State::Content(_)) {
             return false;
         }
@@ -570,7 +537,8 @@ impl CodePreview {
 
     /// UI editing admission is independent of the 64 MiB source-tool budget.
     pub(crate) fn editable(&self) -> bool {
-        matches!(self.state, State::Content(_))
+        (matches!(self.state, State::Content(_))
+            || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
             && editable_format(&self.rel)
             && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
@@ -579,6 +547,7 @@ impl CodePreview {
     /// The file is still being read; whether it is editable is not known yet.
     pub(crate) fn loading(&self) -> bool {
         matches!(self.state, State::Loading)
+            && (!reader_delimited::eligible(&self.rel) || self.source_bytes.is_none())
     }
 
     /// Shared immutable whole-file parse for Contents (#2795). Node indices,

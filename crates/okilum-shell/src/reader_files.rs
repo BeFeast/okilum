@@ -500,11 +500,6 @@ impl Reader {
                     let path = preview.path.clone();
                     preview.archive =
                         Some(cx.new(|cx| reader_archive::ArchivePreview::new(path, window, cx)));
-                } else if reader_delimited::eligible(rel) {
-                    preview.table =
-                        Some(cx.new(|cx| {
-                            reader_delimited::TablePreview::new(preview.path.clone(), cx)
-                        }));
                 } else if reader_code_file::eligible(rel) {
                     let (root, path) = (self.vault_root.clone(), preview.path.clone());
                     preview.code = Some(cx.new(|cx| {

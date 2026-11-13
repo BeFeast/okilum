@@ -23,6 +23,7 @@ impl Table {
             malformed: false,
             ragged: false,
             ambiguous: false,
+            first_bad_row: None,
             limited: !complete,
         };
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
