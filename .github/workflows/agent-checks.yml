@@ -131,10 +131,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
           printf 'source=%s\ncpus=%s\n' "$OKILUM_SOURCE_COMMIT" "$(nproc)"
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          df -h /
-      - name: Reclaim unused hosted SDKs for Rust artifacts
-        run: |
-          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          # Clippy's check artifacts fit the stock image (86G free measured);
+          # the SDK reclaim the full build needs took up to 279 s here.
           df -h /
       - name: Install system libraries
         timeout-minutes: 10
