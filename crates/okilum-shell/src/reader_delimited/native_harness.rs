@@ -29,16 +29,10 @@ pub(crate) fn entry() -> bool {
                 let mut preview = None;
                 let mut code = None;
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
-                    let view: AnyView = if name.ends_with("json") {
-                        let view = cx.new(|cx| reader_code_file::CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
-                        preview = view.read(cx).native_table();
-                        code = Some(view.clone());
-                        view.into()
-                    } else {
-                        let view = cx.new(|cx| TablePreview::new(directory.join(name), window, cx));
-                        preview = Some(view.clone());
-                        view.into()
-                    };
+                    let view = cx.new(|cx| reader_code_file::CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
+                    preview = view.read(cx).native_table();
+                    code = Some(view.clone());
+                    let view: AnyView = view.into();
                     cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
                 })).unwrap();
                 let mut previous = started;
@@ -66,6 +60,13 @@ pub(crate) fn entry() -> bool {
                     });
                     if !ready { continue; }
                     if phase == 0 {
+                        handle.update(cx,|_,window,cx| {
+                            let code = code.as_ref().expect("table owner");
+                            if !name.ends_with("json") {
+                                assert!(code.read(cx).input().is_none(),"CSV Raw stays unloaded in the native table");
+                            }
+                            code.update(cx,|code,cx| code.set_view(reader_code_file::View::Table,window,cx));
+                        }).unwrap();
                         cx.update(|cx| preview.update(cx, |p, cx| {
                             assert!(p.table.as_ref().unwrap().limited, "large file preview must be bounded");
                             p.load(true, cx);
@@ -84,6 +85,7 @@ pub(crate) fn entry() -> bool {
                 let preview = preview.expect("completed native table");
                 cx.update(|cx| preview.update(cx, |p, cx| {
                     assert!(!p.order.is_empty(), "filter must exercise actual rows");
+                    assert!(!p.visible_columns.is_empty(), "table grid was rendered on the native platform");
                     assert!(p.table.as_ref().unwrap().cell(p.order[0], 0).contains("needle"));
                     p.anchor = Some(Cell { row: 1, column: 0 });
                     p.end = p.anchor;
@@ -93,7 +95,7 @@ pub(crate) fn entry() -> bool {
                         assert!(p.visible_columns.len() < 20, "columns are virtualized on the real platform");
                     }
                 }));
-                let receipt = serde_json::json!({"file":name,"ticks":ticks,"max_event_loop_gap_ms":maximum.as_millis(),"ready_ms":started.elapsed().as_millis(),"real_native_platform":true});
+                let receipt = serde_json::json!({"file":name,"ticks":ticks,"max_event_loop_gap_ms":maximum.as_millis(),"ready_ms":started.elapsed().as_millis(),"real_native_platform":true,"owner":"CodePreview","lazy_raw":!name.ends_with("json")});
                 std::fs::write(directory.join(format!("ready-{name}")), receipt.to_string()).unwrap();
                 let wait_started = Instant::now();
                 while !directory.join(format!("ack-{name}")).exists() {

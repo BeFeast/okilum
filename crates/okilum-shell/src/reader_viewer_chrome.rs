@@ -122,7 +122,6 @@ impl HeaderKey {
                     [
                         preview.pdf.as_ref().map(Entity::entity_id),
                         preview.code.as_ref().map(Entity::entity_id),
-                        preview.table.as_ref().map(Entity::entity_id),
                         preview.archive.as_ref().map(Entity::entity_id),
                         preview.audio.as_ref().map(Entity::entity_id),
                         preview.canvas.as_ref().map(Entity::entity_id),
@@ -1311,9 +1310,10 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
 }
 
 pub(crate) fn copy_content_available(reader: &Reader) -> bool {
-    reader.file_preview.as_ref().is_some_and(|p| {
-        p.code.is_some() || p.table.is_some() || p.text.is_some() || p.log.is_some()
-    })
+    reader
+        .file_preview
+        .as_ref()
+        .is_some_and(|p| p.code.is_some() || p.text.is_some() || p.log.is_some())
 }
 
 fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool, cx: &App) -> PopupMenu {

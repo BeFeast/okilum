@@ -12,7 +12,7 @@ import time
 
 
 def main():
-    assert sys.platform in ('darwin', 'win32')
+    assert sys.platform in ('darwin', 'win32', 'linux')
     clipboard = runpy.run_path(str(Path(__file__).with_name('data-view-native-app.py')))['clipboard']
     binary = str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix='data-table-2735-', dir=os.environ['RUNNER_TEMP']) as tmp:
@@ -49,6 +49,8 @@ def main():
                             assert clipboard() == 'needle', (name, clipboard())
                             receipt = json.loads(ready.read_text(encoding='utf-8'))
                             assert receipt['real_native_platform'] and receipt['ticks'] >= 6
+                            assert receipt['owner'] == 'CodePreview'
+                            assert receipt['lazy_raw'] == (not name.endswith('.json'))
                             assert receipt['max_event_loop_gap_ms'] < 2000
                             print(json.dumps(receipt), flush=True)
                             (directory / ('ack-' + name)).write_text('observed')

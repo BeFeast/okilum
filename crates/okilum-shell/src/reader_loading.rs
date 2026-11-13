@@ -3388,7 +3388,16 @@ mod tests {
             assert!(r.single_file);
             assert_eq!(r.selected_file(), "sheet.tsv");
             assert!(r.searcher.is_none() && r.watcher.is_some());
-            assert!(r.file_preview.as_ref().unwrap().table.is_some());
+            assert!(r
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .code
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .table_view()
+                .is_some());
             r.toggle_source(window, cx);
             assert_eq!(
                 r.editing
@@ -3402,7 +3411,16 @@ mod tests {
             );
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
-            assert!(r.file_preview.as_ref().unwrap().table.is_some());
+            assert!(r
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .code
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .table_view()
+                .is_some());
         });
         assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
     }
@@ -8603,7 +8621,6 @@ mod quick_view_tests {
                 let preview = r.file_preview.as_ref().expect("typed file is displayed");
                 (
                     preview.text.as_ref().map(Entity::entity_id),
-                    preview.table.as_ref().map(Entity::entity_id),
                     preview.log.as_ref().map(Entity::entity_id),
                     preview.code.as_ref().map(Entity::entity_id),
                 )
@@ -8613,10 +8630,7 @@ mod quick_view_tests {
                 assert_eq!(r.selected_file(), name);
                 let identities = preview_ids(r);
                 assert!(
-                    identities.0.is_some()
-                        || identities.1.is_some()
-                        || identities.2.is_some()
-                        || identities.3.is_some(),
+                    identities.0.is_some() || identities.1.is_some() || identities.2.is_some(),
                     "positive control: mounted typed viewer"
                 );
                 identities
