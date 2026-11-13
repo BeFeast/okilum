@@ -76,3 +76,19 @@ jobs:
           cargo fmt --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
+      - name: Export the new-writer database for the old-stack downgrade probe
+        run: |
+          INBOX_DOWNGRADE_DB="$RUNNER_TEMP/inbox-downgrade.db" cargo test --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --test legacy_sqlite legacy_uncheckpointed_wal_is_recovered_before_open_and_replay -- --exact --nocapture
+      - uses: actions/checkout@v4
+        with:
+          ref: bed1dfd462766ddbed9895cc519b540535446043
+          path: old-stack
+          persist-credentials: false
+      - name: Reopen and write with the actual old Store and SQLite
+        run: |
+          mkdir -p old-stack/inbox/crates/okilum-inboxd/examples
+          cp inbox/crates/okilum-inboxd/tests/fixtures/legacy-inbox/downgrade.rs old-stack/inbox/crates/okilum-inboxd/examples/downgrade.rs
+          cd old-stack
+          cargo update --manifest-path inbox/Cargo.toml -p rusqlite --precise 0.37.0
+          cargo tree --manifest-path inbox/Cargo.toml -p rusqlite
+          INBOX_DOWNGRADE_DB="$RUNNER_TEMP/inbox-downgrade.db" cargo run --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --example downgrade
