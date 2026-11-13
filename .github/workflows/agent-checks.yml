@@ -103,6 +103,11 @@ jobs:
         run: |
           python scripts/ci/windows-atlas-upload.py
           exit $LASTEXITCODE
+      - name: Run native Windows terminal console controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-terminal-console.py
+          exit $LASTEXITCODE
   # Pre-merge gate: no compilation, no Rust tests (Oleg 13.11 ~14:20).
   pre-merge:
     if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
