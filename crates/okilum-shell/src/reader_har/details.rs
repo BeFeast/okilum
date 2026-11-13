@@ -5,6 +5,7 @@ use gpui::SharedString;
 use okilum_core::har::{self, Body, Cookie, DetailError, Details, Pair, Revision, Text};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Decoded bytes of a body shown in details.
 pub(crate) const BODY_PREVIEW: usize = 256 * 1024;
@@ -53,10 +54,14 @@ pub(crate) enum Row {
     Section {
         section: Section,
         count: Option<usize>,
+        /// A body section's decoded text, for copying in full (#2888).
+        body: Option<Arc<str>>,
     },
     Field {
         name: SharedString,
         value: SharedString,
+        /// The whole value when `value` shows only part of it (#2888).
+        full: Option<Text>,
     },
     /// A timing phase: its duration and its bar inside the request's total.
     Timing {
@@ -167,10 +172,22 @@ pub(crate) fn build(
 fn field(rows: &mut Vec<Row>, name: &str, value: impl Into<String>) {
     let value = value.into();
     if !value.is_empty() {
-        rows.push(Row::Field {
-            name: name.to_owned().into(),
-            value: bounded(&value, VALUE).into(),
-        });
+        rows.push(field_row(name, Text::Inline(value)));
+    }
+}
+
+/// A name/value row; `full` keeps the whole value when the row shows part.
+fn field_row(name: &str, value: Text) -> Row {
+    let display = bounded(&shown(&value), VALUE);
+    let full = match &value {
+        Text::Long { .. } => Some(value),
+        Text::Inline(text) if display != *text => Some(value),
+        Text::Inline(_) => None,
+    };
+    Row::Field {
+        name: bounded(name, 200).into(),
+        value: display.into(),
+        full,
     }
 }
 
@@ -193,8 +210,11 @@ fn general(details: &Details, capture_start: Option<f64>, rows: &mut Vec<Row>) {
     rows.push(Row::Section {
         section: Section::General,
         count: None,
+        body: None,
     });
-    field(rows, "URL", shown(&details.url));
+    if !details.url.is_empty() {
+        rows.push(field_row("URL", details.url.clone()));
+    }
     field(rows, "Method", details.method.clone());
     let status = match details.status {
         Some(0) => "0 (no response)".to_owned(),
@@ -245,6 +265,7 @@ fn timing(details: &Details, rows: &mut Vec<Row>) {
     rows.push(Row::Section {
         section: Section::Timing,
         count: None,
+        body: None,
     });
     // Unknown (non-finite) phases neither draw nor move the bar.
     let known = |ms: f64| if ms.is_finite() { ms.max(0.) } else { 0. };
@@ -310,12 +331,10 @@ fn section(rows: &mut Vec<Row>, section: Section, pairs: &[Pair]) {
     rows.push(Row::Section {
         section,
         count: Some(pairs.len()),
+        body: None,
     });
     for pair in pairs {
-        rows.push(Row::Field {
-            name: bounded(&pair.name, 200).into(),
-            value: bounded(&shown(&pair.value), VALUE).into(),
-        });
+        rows.push(field_row(&pair.name, pair.value.clone()));
     }
 }
 
@@ -326,6 +345,7 @@ fn cookies(rows: &mut Vec<Row>, section: Section, cookies: &[Cookie]) {
     rows.push(Row::Section {
         section,
         count: Some(cookies.len()),
+        body: None,
     });
     for cookie in cookies {
         let mut value = shown(&cookie.value);
@@ -333,9 +353,11 @@ fn cookies(rows: &mut Vec<Row>, section: Section, cookies: &[Cookie]) {
             value.push_str("; ");
             value.push_str(attribute);
         }
+        // The row shows the attributes; Copy value copies the cookie value.
         rows.push(Row::Field {
             name: bounded(&cookie.name, 200).into(),
             value: bounded(&value, VALUE).into(),
+            full: Some(cookie.value.clone()),
         });
     }
 }
@@ -536,6 +558,7 @@ fn body(
             rows.push(Row::Section {
                 section,
                 count: None,
+                body: None,
             });
             rows.push(Row::Note(
                 format!(
@@ -547,15 +570,14 @@ fn body(
         }
         return Ok(());
     }
+    let section_row = rows.len();
     rows.push(Row::Section {
         section,
         count: None,
+        body: None,
     });
     for pair in &body.params {
-        rows.push(Row::Field {
-            name: bounded(&pair.name, 200).into(),
-            value: bounded(&shown(&pair.value), VALUE).into(),
-        });
+        rows.push(field_row(&pair.name, pair.value.clone()));
     }
     let Some(text) = body.text.as_ref().filter(|text| !text.is_empty()) else {
         return Ok(());
@@ -596,6 +618,10 @@ fn body(
             }
             let shown = pretty.as_deref().unwrap_or(&text);
             text_rows(shown, rows);
+            // Copy gives the decoded body as in the file, not the indentation.
+            if let Some(Row::Section { body: slot, .. }) = rows.get_mut(section_row) {
+                *slot = Some(Arc::from(text.as_str()));
+            }
             if !decoded.complete {
                 rows.push(Row::Note(
                     format!(
@@ -632,6 +658,112 @@ pub(crate) fn text_rows(text: &str, rows: &mut Vec<Row>) {
             }
         }
     }
+}
+
+/// What a copy command takes from a detail row (#2888).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyKind {
+    /// The value in full: a field's whole value, a body's decoded text, a
+    /// timing's duration, a note's text; a section title copies the section.
+    Value,
+    Name,
+    /// `name: value`.
+    Pair,
+    /// Every row of the row's section.
+    Section,
+}
+
+/// A piece of copied text; `File` parts are read from the capture.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Part {
+    Literal(String),
+    File(Text),
+}
+
+fn value_part(row: &Row) -> Option<Part> {
+    Some(match row {
+        Row::Field { value, full, .. } => match full {
+            Some(Text::Inline(text)) => Part::Literal(text.clone()),
+            Some(long @ Text::Long { .. }) => Part::File(long.clone()),
+            None => Part::Literal(value.to_string()),
+        },
+        Row::Timing { ms, .. } => Part::Literal(model::millis(*ms)),
+        Row::Note(text) => Part::Literal(text.to_string()),
+        Row::Section { .. } | Row::Text(_) => return None,
+    })
+}
+
+/// The section title row that `index` belongs to.
+pub(crate) fn section_of(rows: &[Row], index: usize) -> Option<usize> {
+    (0..=index.min(rows.len().saturating_sub(1)))
+        .rev()
+        .find(|&i| matches!(rows[i], Row::Section { .. }))
+}
+
+/// The parts `kind` copies from row `index`; `None` when it copies nothing.
+pub(crate) fn clip(rows: &[Row], index: usize, kind: CopyKind) -> Option<Vec<Part>> {
+    let row = rows.get(index)?;
+    let section = || -> Option<Vec<Part>> {
+        let start = section_of(rows, index)?;
+        let Row::Section { body, .. } = &rows[start] else {
+            return None;
+        };
+        if let Some(body) = body {
+            return Some(vec![Part::Literal(body.to_string())]);
+        }
+        let mut parts = Vec::new();
+        for row in rows[start + 1..]
+            .iter()
+            .take_while(|row| !matches!(row, Row::Section { .. }))
+        {
+            let name = match row {
+                Row::Field { name, .. } | Row::Timing { name, .. } => name.to_string(),
+                _ => continue,
+            };
+            if !parts.is_empty() {
+                parts.push(Part::Literal("\n".into()));
+            }
+            parts.push(Part::Literal(format!("{name}: ")));
+            parts.extend(value_part(row));
+        }
+        (!parts.is_empty()).then_some(parts)
+    };
+    match (row, kind) {
+        (Row::Section { .. } | Row::Text(_), CopyKind::Name | CopyKind::Pair) => None,
+        (Row::Section { .. } | Row::Text(_), _) | (_, CopyKind::Section) => section(),
+        (Row::Field { name, .. } | Row::Timing { name, .. }, CopyKind::Name) => {
+            Some(vec![Part::Literal(name.to_string())])
+        }
+        (Row::Field { name, .. } | Row::Timing { name, .. }, CopyKind::Pair) => {
+            Some(vec![Part::Literal(format!("{name}: ")), value_part(row)?])
+        }
+        (_, CopyKind::Name | CopyKind::Pair) => None,
+        (_, CopyKind::Value) => Some(vec![value_part(row)?]),
+    }
+}
+
+/// Largest value a copy reads from the capture.
+pub(crate) const COPY_BYTES: usize = 64 << 20;
+
+/// Joins `parts`, reading `File` parts from `path` (the indexed `revision`).
+pub(crate) fn resolve(
+    path: &Path,
+    parts: Vec<Part>,
+    revision: Option<Revision>,
+    cancel: &AtomicBool,
+) -> Result<String, DetailError> {
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            Part::Literal(text) => out.push_str(&text),
+            Part::File(Text::Inline(text)) => out.push_str(&text),
+            Part::File(long) => {
+                let bytes = har::body_bytes(path, &long, false, COPY_BYTES, revision, cancel)?;
+                out.push_str(&String::from_utf8_lossy(&bytes.bytes));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -734,11 +866,13 @@ mod tests {
                 Row::Section {
                     section: Section::General,
                     count: None,
+                    body: None,
                 },
                 Row::Note("a".into()),
                 Row::Section {
                     section: Section::Timing,
                     count: None,
+                    body: None,
                 },
                 Row::Note("b".into()),
             ],
@@ -865,5 +999,54 @@ mod tests {
             build(path, &details, None, None, &AtomicBool::new(true)),
             Err(DetailError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn fix2888_copies_take_whole_values_bodies_and_sections() {
+        let section = |section, body: Option<&str>| Row::Section {
+            section,
+            count: None,
+            body: body.map(Arc::from),
+        };
+        let rows = vec![
+            section(Section::RequestHeaders, None),
+            field_row("a", Text::Inline("1".into())),
+            field_row("b", Text::Inline("v".repeat(VALUE + 10))),
+            section(Section::ResponseBody, Some("{\"ok\":true}")),
+            Row::Text("{".into()),
+        ];
+        let literal = |parts: Option<Vec<Part>>| {
+            parts.map(|parts| {
+                parts
+                    .into_iter()
+                    .map(|part| match part {
+                        Part::Literal(text) => text,
+                        Part::File(text) => text.shown().to_owned(),
+                    })
+                    .collect::<String>()
+            })
+        };
+        assert_eq!(
+            literal(clip(&rows, 2, CopyKind::Value)),
+            Some("v".repeat(VALUE + 10))
+        );
+        assert_eq!(
+            literal(clip(&rows, 1, CopyKind::Pair)).as_deref(),
+            Some("a: 1")
+        );
+        assert_eq!(
+            literal(clip(&rows, 1, CopyKind::Section)),
+            Some(format!("a: 1\nb: {}", "v".repeat(VALUE + 10)))
+        );
+        // A body line copies the decoded body as written, not one display line.
+        assert_eq!(
+            literal(clip(&rows, 4, CopyKind::Value)).as_deref(),
+            Some("{\"ok\":true}")
+        );
+        assert_eq!(
+            literal(clip(&rows, 3, CopyKind::Value)).as_deref(),
+            Some("{\"ok\":true}")
+        );
+        assert_eq!(clip(&rows, 4, CopyKind::Name), None);
     }
 }

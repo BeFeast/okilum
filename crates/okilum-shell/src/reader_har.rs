@@ -21,7 +21,21 @@ pub(crate) mod model;
 #[cfg(test)]
 mod tests;
 
-use details::{DetailRows, Row, Section};
+use details::{CopyKind, DetailRows, Row, Section};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+
+actions!(reader_har, [CopyHarDetail]);
+
+/// Cmd/Ctrl+C copies the selected detail row's value (#2888).
+pub(crate) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        "secondary-c",
+        CopyHarDetail,
+        Some(DETAIL_CONTEXT),
+    )]);
+}
+
+const DETAIL_CONTEXT: &str = "HarDetails";
 use model::{Column, Entries, Query, Rows, Stats};
 
 const ROW_HEIGHT: f32 = 26.;
@@ -79,6 +93,8 @@ pub(crate) struct HarView {
     detail_cancel: Arc<AtomicBool>,
     _detail_task: Option<Task<()>>,
     collapsed: std::collections::HashSet<Section>,
+    /// The detail row Cmd/Ctrl+C and the context menu copy from (#2888).
+    detail_row: Option<usize>,
     detail_visible: Vec<usize>,
     detail_list: ListState,
     scroll: UniformListScrollHandle,
@@ -172,6 +188,7 @@ impl HarView {
             detail_cancel: Arc::new(AtomicBool::new(false)),
             _detail_task: None,
             collapsed: Default::default(),
+            detail_row: None,
             detail_visible: Vec::new(),
             detail_list: ListState::new(0, ListAlignment::Top, px(400.)),
             scroll: UniformListScrollHandle::new(),
@@ -277,6 +294,7 @@ impl HarView {
         self.cancel_projection();
         self.selected = None;
         self.detail = None;
+        self.detail_row = None;
         self.detail_cancel.store(true, Ordering::Relaxed);
         self.detail_generation = self.detail_generation.wrapping_add(1);
         self.reset_detail_rows();
@@ -383,6 +401,7 @@ impl HarView {
         self.detail_generation = self.detail_generation.wrapping_add(1);
         let generation = self.detail_generation;
         self.detail = Some(Detail::Loading);
+        self.detail_row = None;
         self.reset_detail_rows();
         let (path, cancel, start, revision) = (
             self.path.clone(),
@@ -422,6 +441,7 @@ impl HarView {
 
     fn close_details(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
+        self.detail_row = None;
         self.detail = None;
         self.detail_cancel.store(true, Ordering::Relaxed);
         self.detail_generation = self.detail_generation.wrapping_add(1);
@@ -963,21 +983,70 @@ impl HarView {
             .into_any_element()
     }
 
+    /// A detail row that can be selected and copied: click selects it,
+    /// Cmd/Ctrl+C copies its value, right-click offers every copy (#2888).
     fn render_detail_row(&self, visible: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(Detail::Ready(rows)) = &self.detail else {
             return div().into_any_element();
         };
-        let Some(row) = self
+        let Some((index, row)) = self
             .detail_visible
             .get(visible)
-            .and_then(|&index| rows.rows.get(index))
+            .and_then(|&index| Some((index, rows.rows.get(index)?)))
         else {
             return div().into_any_element();
         };
+        let selected = self.detail_row == Some(index);
+        let palette = brand::palette(cx);
+        let items = copy_items(&rows.rows, index);
+        let view = cx.entity().downgrade();
+        div()
+            .id(("har-detail-row", index))
+            .debug_selector(move || format!("har-detail-row-{index}"))
+            .w_full()
+            .when(selected, |row| row.bg(palette.selected))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    if this.detail_row != Some(index) {
+                        this.detail_row = Some(index);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    if this.detail_row != Some(index) {
+                        this.detail_row = Some(index);
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(self.render_detail_content(row, cx))
+            .context_menu(move |mut menu: PopupMenu, _, _| {
+                for (position, (label, kind)) in items.iter().enumerate() {
+                    if position > 0 && *kind == CopyKind::Section {
+                        menu = menu.separator();
+                    }
+                    let (view, kind) = (view.clone(), *kind);
+                    menu = menu.item(PopupMenuItem::new(label.clone()).on_click(
+                        move |_, window, cx| {
+                            let _ = view
+                                .update(cx, |this, cx| this.copy_detail(index, kind, window, cx));
+                        },
+                    ));
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
+    fn render_detail_content(&self, row: &Row, cx: &mut Context<Self>) -> AnyElement {
         let palette = brand::palette(cx);
         let mono = cx.theme().mono_font_family.clone();
         match row {
-            Row::Section { section, count } => {
+            Row::Section { section, count, .. } => {
                 let section = *section;
                 let collapsed = self.collapsed.contains(&section);
                 h_flex()
@@ -1005,7 +1074,7 @@ impl HarView {
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
                     .into_any_element()
             }
-            Row::Field { name, value } => h_flex()
+            Row::Field { name, value, .. } => h_flex()
                 .w_full()
                 .px_4()
                 .py(px(2.))
@@ -1148,7 +1217,13 @@ impl HarView {
                 .id("har-detail")
                 .debug_selector(|| "har-detail".into())
                 .track_focus(&self.detail_focus)
+                .key_context(DETAIL_CONTEXT)
                 .on_action(cx.listener(|this, _: &Dismiss, _, cx| this.close_details(cx)))
+                .on_action(cx.listener(|this, _: &CopyHarDetail, window, cx| {
+                    if let Some(index) = this.detail_row {
+                        this.copy_detail(index, CopyKind::Value, window, cx);
+                    }
+                }))
                 .size_full()
                 .min_h_0()
                 .child(bar)
@@ -1169,6 +1244,90 @@ impl HarView {
             })
             .into_any_element()
     }
+}
+
+impl HarView {
+    /// Copies `kind` of detail row `index`. Values longer than the row shows
+    /// are copied in full; parts kept in the capture are read on a worker.
+    fn copy_detail(
+        &mut self,
+        index: usize,
+        kind: CopyKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Detail::Ready(rows)) = &self.detail else {
+            return;
+        };
+        let Some(parts) = details::clip(&rows.rows, index, kind) else {
+            return;
+        };
+        if parts
+            .iter()
+            .all(|part| matches!(part, details::Part::Literal(_)))
+        {
+            let text = details::resolve(&self.path, parts, None, &AtomicBool::new(false))
+                .unwrap_or_default();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            reader_toast::transient("Copied", window, cx);
+            return;
+        }
+        let (path, revision, cancel) = (self.path.clone(), self.revision, self.cancel.clone());
+        let work = cx
+            .background_executor()
+            .spawn(async move { details::resolve(&path, parts, revision, &cancel) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    reader_toast::transient("Copied", window, cx);
+                }
+                Err(har::DetailError::Changed) => this.reindex(cx),
+                Err(har::DetailError::Cancelled) => {}
+                Err(error) => {
+                    reader_toast::error(format!("Nothing was copied: {error}"), window, cx)
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// The copy commands a detail row offers, in menu order.
+fn copy_items(rows: &[Row], index: usize) -> Vec<(SharedString, CopyKind)> {
+    let section = details::section_of(rows, index).and_then(|start| match &rows[start] {
+        Row::Section { section, body, .. } => Some((*section, body.is_some())),
+        _ => None,
+    });
+    let all = |items: &mut Vec<(SharedString, CopyKind)>| {
+        if let Some((section, body)) = section {
+            items.push((
+                if body {
+                    "Copy body".into()
+                } else {
+                    format!("Copy all {}", section.title().to_lowercase()).into()
+                },
+                CopyKind::Section,
+            ));
+        }
+    };
+    let mut items = Vec::new();
+    match rows.get(index) {
+        Some(Row::Field { .. } | Row::Timing { .. }) => {
+            items.push(("Copy value".into(), CopyKind::Value));
+            items.push(("Copy name".into(), CopyKind::Name));
+            items.push(("Copy name: value".into(), CopyKind::Pair));
+            all(&mut items);
+        }
+        Some(Row::Note(_)) => {
+            items.push(("Copy text".into(), CopyKind::Value));
+            all(&mut items);
+        }
+        Some(Row::Section { .. } | Row::Text(_)) => all(&mut items),
+        None => {}
+    }
+    items
 }
 
 impl Render for HarView {
