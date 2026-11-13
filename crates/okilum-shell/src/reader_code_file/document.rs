@@ -3,6 +3,9 @@
 //! of glyphs on the UI thread. Copy node and Find still cover the whole file.
 use std::{ops::Range, sync::Arc};
 
+mod data_tree;
+#[cfg(test)]
+mod data_tree_tests;
 mod json_tree;
 
 // Reserved, per-fixture counters prove the real parser ordering. Other tests
@@ -21,8 +24,15 @@ pub(crate) struct Document {
     pub pages: Vec<Range<usize>>,
     tree: Option<tree_sitter::Tree>,
     tree_offset: usize,
-    pub json_tree: bool,
+    /// Rows are semantic (key, count, short value) over the whole file.
+    pub semantic: bool,
+    /// A strict parser rejected the file (JSON; YAML through `serde_yaml`).
     pub invalid: Option<JsonError>,
+    /// TOML and XML have no strict parser: a grammar error is reported as a
+    /// syntax problem and never takes Tree away.
+    pub syntax: Option<JsonError>,
+    /// Display name of the data format ("JSON", "YAML", "TOML", "XML").
+    pub format: Option<&'static str>,
     #[cfg(test)]
     pub parses: bool,
     #[cfg(test)]
@@ -45,6 +55,8 @@ pub(crate) struct JsonError {
 pub(crate) enum ContainerKind {
     Object,
     Array,
+    /// An XML element counted by its child elements.
+    Element,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScalarKind {
@@ -183,6 +195,7 @@ impl Document {
                 parser.set_language(&language).ok()?;
                 parser.parse(parsed, None)
             });
+        let data = data_tree::Format::of(language);
         let invalid = if json {
             serde_json::from_str::<serde::de::IgnoredAny>(parsed)
                 .err()
@@ -215,15 +228,31 @@ impl Document {
                         offset,
                     })
                 })
+        } else if data == Some(data_tree::Format::Yaml) {
+            data_tree::yaml_error(&text)
         } else {
             None
+        };
+        let syntax = match (data, &tree) {
+            (Some(data_tree::Format::Toml | data_tree::Format::Xml), Some(tree)) => {
+                data_tree::first_syntax_problem(tree, &text, tree_offset)
+            }
+            _ => None,
         };
         let parses = tree
             .as_ref()
             .is_some_and(|tree| !tree.root_node().has_error());
-        let json_tree = json && invalid.is_none() && parses;
-        let structure = if json_tree {
+        let semantic = if json {
+            invalid.is_none() && parses
+        } else {
+            // The tolerant parse feeds Tree for TOML and XML even with a syntax
+            // problem; YAML needs the serde_yaml verdict.
+            data.is_some() && invalid.is_none() && tree.is_some()
+        };
+        let structure = if semantic && json {
             json_tree::index(tree.as_ref().unwrap(), tree_offset, text.len())
+        } else if let (true, Some(format)) = (semantic, data) {
+            data_tree::index(tree.as_ref().unwrap(), format, &text, text.len())
         } else if !json && pages.len() > 1 {
             tree.as_ref().map(structure).unwrap_or_default()
         } else {
@@ -260,8 +289,18 @@ impl Document {
             pages,
             tree,
             tree_offset,
-            json_tree,
+            semantic,
             invalid,
+            syntax,
+            format: if json {
+                Some("JSON")
+            } else {
+                data.map(|format| match format {
+                    data_tree::Format::Yaml => "YAML",
+                    data_tree::Format::Toml => "TOML",
+                    data_tree::Format::Xml => "XML",
+                })
+            },
             #[cfg(test)]
             parses,
             #[cfg(test)]
@@ -309,55 +348,39 @@ impl Document {
 
     pub fn key_text(&self, index: usize) -> Option<&str> {
         match &self.structure.get(index)?.label {
-            json_tree::Label::Json { key: Some(key), .. } => {
-                Some(&self.text[key.start + 1..key.end - 1])
-            }
+            json_tree::Label::Data { key: Some(key), .. } => self.text.get(key.clone()),
             _ => None,
         }
     }
     pub fn array_ordinal(&self, index: usize) -> Option<usize> {
         match &self.structure.get(index)?.label {
-            json_tree::Label::Json { ordinal, .. } => *ordinal,
+            json_tree::Label::Data { ordinal, .. } => *ordinal,
             _ => None,
         }
     }
     pub fn container(&self, index: usize) -> Option<(ContainerKind, usize)> {
         match &self.structure.get(index)?.label {
-            json_tree::Label::Json {
-                container: Some((kind, count)),
-                ..
-            } => Some((
-                if *kind == "Object" {
-                    ContainerKind::Object
-                } else {
-                    ContainerKind::Array
-                },
-                *count,
-            )),
+            json_tree::Label::Data { container, .. } => *container,
             _ => None,
         }
     }
     pub fn scalar(&self, index: usize) -> Option<(ScalarKind, String)> {
-        let json_tree::Label::Json {
+        let json_tree::Label::Data {
             value,
             container: None,
+            scalar: Some(kind),
+            aside: None,
             ..
         } = &self.structure.get(index)?.label
         else {
             return None;
         };
         let value = &self.text[value.clone()];
-        let kind = match value.as_bytes().first()? {
-            b'"' => ScalarKind::String,
-            b't' | b'f' => ScalarKind::Boolean,
-            b'n' => ScalarKind::Null,
-            _ => ScalarKind::Number,
-        };
         let mut short: String = value.chars().take(96).collect();
         if short.len() < value.len() {
             short.push('…');
         }
-        Some((kind, short))
+        Some((*kind, short))
     }
     pub fn parent(&self, index: usize) -> Option<usize> {
         self.structure.get(index)?.parent
@@ -419,9 +442,12 @@ mod tests {
     fn json2794_whole_file_tree_has_root_keys_and_scalar_array_items() {
         crate::source_presentation::code_languages::install();
         let values = "\"public OpenAPI fixture value\",".repeat(125_000);
-        let source = format!("{{\"components\":{{\"schemas\":[{}]}},\"paths\":{{\"deep\":[1,true,null,\"NEEDLE\"]}}}}", values.trim_end_matches(','));
+        let source = format!(
+            "{{\"components\":{{\"schemas\":[{}]}},\"paths\":{{\"deep\":[1,true,null,\"NEEDLE\"]}}}}",
+            values.trim_end_matches(',')
+        );
         let doc = Document::new(source.clone(), "json");
-        assert!(doc.json_tree && doc.pages.len() > 100);
+        assert!(doc.semantic && doc.pages.len() > 100);
         assert_eq!(doc.row_label(0), "2 keys");
         let children: Vec<_> = doc
             .structure
@@ -447,7 +473,7 @@ mod tests {
             1,
             "Pretty is independent of long-line pages"
         );
-        assert!(pretty.json_tree);
+        assert!(pretty.semantic);
         assert_eq!(pretty.structure.len(), doc.structure.len());
     }
 
@@ -456,7 +482,7 @@ mod tests {
         crate::source_presentation::code_languages::install();
         let text = "\u{feff}{\"z\":1.50,\"z\":2e3}";
         let doc = Document::new(text.into(), "json");
-        assert!(doc.json_tree);
+        assert!(doc.semantic);
         assert_eq!(&doc.text[doc.structure[0].range.clone()], text);
         assert_eq!(&doc.text[doc.structure[2].range.clone()], "\"z\":2e3");
         assert_eq!(
@@ -464,11 +490,11 @@ mod tests {
             "\"z\":2e3"
         );
         let invalid = Document::new(format!("{{\"x\":\"{}\",}}", "x".repeat(100_000)), "json");
-        assert!(!invalid.json_tree && invalid.structure.is_empty());
+        assert!(!invalid.semantic && invalid.structure.is_empty());
         assert!(invalid.pages.len() > 1);
         // Index construction must remain iterative for deeply nested raw JSON.
         let deep = Document::new(format!("{}0{}", "[".repeat(512), "]".repeat(512)), "json");
-        if deep.json_tree {
+        if deep.semantic {
             assert_eq!(deep.structure.len(), 513);
         }
     }

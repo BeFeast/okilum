@@ -204,10 +204,11 @@ fn code2810_non_json_paged_tree_keeps_the_expanded_root() {
     crate::source_presentation::code_languages::install();
     let source = format!("<root><child>{}</child><other/></root>", "x".repeat(70_000));
     let doc = Document::for_file(source, "xml", false);
-    assert!(!doc.json_tree && doc.pages.len() > 1 && doc.structure.len() > 1);
+    // #2813: paged XML uses the semantic rows too; the root element stays open.
+    assert!(doc.semantic && doc.pages.len() > 1 && doc.structure.len() > 1);
     let mut tree = structure::Structure::default();
     tree.reset(&doc);
-    assert!(!tree.folded(0));
+    assert!(!tree.folded(1));
     assert!(tree.visible.len() > 1);
 }
 
@@ -258,10 +259,12 @@ fn code2810_scrollbar_uses_visible_dedicated_roles_and_track(cx: &mut TestAppCon
                     paints.contains(&(role, color)),
                     "the real track/ticks/current paint requests must exist"
                 );
-                assert!(paints
-                    .iter()
-                    .filter(|(r, _)| *r == role)
-                    .all(|(_, actual)| *actual == color));
+                assert!(
+                    paints
+                        .iter()
+                        .filter(|(r, _)| *r == role)
+                        .all(|(_, actual)| *actual == color)
+                );
             }
         });
     });
