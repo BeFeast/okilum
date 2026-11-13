@@ -575,7 +575,9 @@ fn power_cut_writer() {
     let phase = std::env::var(POWER_CUT_PHASE).expect(POWER_CUT_PHASE);
     let helper = fixture(&root);
     // Flush the fixture itself: a cut must not take the manifest with it.
-    fs::File::open(root.join("current").join("sq.version"))
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("current").join("sq.version"))
         .unwrap()
         .sync_all()
         .unwrap();
