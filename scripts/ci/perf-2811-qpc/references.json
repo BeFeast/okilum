@@ -1,11 +1,11 @@
 {
-  "status": "BASES_PINNED",
+  "status": "READY_FOR_CAPTURE_REVIEW",
   "main": {
     "base_source": "718d23d8b799bd50569ba0b8ff40e784afb4ed0c",
-    "diagnostic_commit": null
+    "diagnostic_commit": "51d6bf640ab7af2a41e2c0fac6194c9f6f62c2f2"
   },
   "toolbar": {
     "base_source": "680c230dbcca8ada498cd612ba326f94119540ae",
-    "diagnostic_commit": null
+    "diagnostic_commit": "a5a95e8b4f617cd025a7be8e9c410318a2497c7b"
   }
 }
