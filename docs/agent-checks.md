@@ -519,3 +519,21 @@ foreign-cache extraction failure; the patched runtime must launch, re-exec and
 restart both copies through both extraction entry forms, clean up only its own
 cache and preserve the other user's tree. This runs before Rust compilation and
 does not install an app or certify the official beta GUI flow.
+
+
+Canonical26633 on d88 retained two real shared timing failures: first text for
+3.5MB code exceeded1000ms while ordinary fixtures competed, and cached editor
+frames took381.629ms/300ms even after ordinary partitions. The first-text case
+now has its own serial, counted process after ordinary/AppImage/Log work, just
+before the existing isolated frame process. Both original assertions and source
+sizes remain unchanged, and every workspace case still runs exactly once.
+Native-frame evidence now filters existing spans by the measured document and
+records Linux thread schedstat outside the timed interval; no CPU-time waiver
+replaces the wall assertion. Efficacy requires fresh source-pinned hardware proof.
+
+The same Linux run compiled network-save controls in2.08s but exhausted their
+120s runtime group while sharing the accumulated ambient writer registry. That
+standalone group now inherits its own private CI account with after-reap cleanup,
+using the same tested supervisor as issue2486/Live Preview. All nine cases,
+publication fences and original120s deadline remain. Regression controls exercise
+the real shell entrypoint and require the private-account option for this group.

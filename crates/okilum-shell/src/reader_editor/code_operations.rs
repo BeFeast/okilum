@@ -1118,6 +1118,12 @@ mod tests {
         // This case runs alone; retain the evidence even when its limit fails.
         #[cfg(target_os = "linux")]
         gpui_component::input::attribution::init(true);
+        #[cfg(target_os = "linux")]
+        let schedule_before = std::fs::read_to_string("/proc/thread-self/schedstat").ok();
+        #[cfg(target_os = "linux")]
+        let measured_document = f
+            .input
+            .read_with(visual, |input, _| input.source_stamp().document);
         let mut frame_times = Vec::with_capacity(10);
         let started = Instant::now();
         for _ in 0..10 {
@@ -1131,17 +1137,21 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             use gpui_component::input::attribution;
+            let schedule_after = std::fs::read_to_string("/proc/thread-self/schedstat").ok();
             attribution::init(false);
             let evidence = attribution::dump();
             let mut totals = std::collections::BTreeMap::<String, (u64, u64)>::new();
             for event in evidence["events"].as_array().unwrap() {
+                if event["identity"]["document"].as_u64() != Some(measured_document) {
+                    continue;
+                }
                 let total = totals
                     .entry(event["name"].as_str().unwrap().into())
                     .or_default();
                 total.0 += 1;
                 total.1 += event["end_ns"].as_u64().unwrap() - event["start_ns"].as_u64().unwrap();
             }
-            diagnostic_error!("CACHED_NATIVE_FRAMES elapsed={elapsed:?} frames={frame_times:?} native_count_ns={totals:?} overflow={}", evidence["overflow"]);
+            diagnostic_error!("CACHED_NATIVE_FRAMES elapsed={elapsed:?} frames={frame_times:?} measured_document_count_ns={totals:?} schedule_before={schedule_before:?} schedule_after={schedule_after:?} cache_hits_before={} overflow={}", before.source_shape_cache_hits, evidence["overflow"]);
         }
         let after = f
             .input
