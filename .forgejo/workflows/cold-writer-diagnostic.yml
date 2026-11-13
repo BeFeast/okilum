@@ -10,6 +10,11 @@ on:
         description: 'Optional exact candidate SHA for a second cold measurement on the SAME runner'
         required: false
         type: string
+      runtime:
+        description: 'false, true (Linux runtime groups), or shared (complete shared gate) after admission; no paired candidate'
+        required: false
+        default: 'false'
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -32,9 +37,12 @@ jobs:
         env:
           SOURCE: ${{ inputs.source }}
           CANDIDATE: ${{ inputs.candidate }}
+          RUNTIME: ${{ inputs.runtime }}
         run: |
           [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
           [[ -z "$CANDIDATE" || "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          case "${RUNTIME:-false}" in false|true|shared) ;; *) exit 1;; esac
+          [[ "${RUNTIME:-false}" == false || -z "$CANDIDATE" ]]
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
@@ -64,7 +72,7 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/cargo" --version
-      - name: Prepare exact source and Python dependencies
+      - name: Prepare exact source and vendor
         env:
           SOURCE: ${{ inputs.source }}
           CANDIDATE: ${{ inputs.candidate }}
@@ -75,10 +83,12 @@ jobs:
             test ! -d target
             scripts/vendor-setup.sh
             scripts/vendor-setup.sh --verify
-            bash scripts/ci/setup-python-tests.sh
           )
           prepare source "$SOURCE"
           if [[ -n "$CANDIDATE" ]]; then prepare candidate "$CANDIDATE"; fi
+      - name: Prepare pinned baseline Python dependencies
+        working-directory: source
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Observe original prelude and cold writer within 900 seconds
         id: baseline
         continue-on-error: true
@@ -91,6 +101,10 @@ jobs:
           # any host cache/server or adding a compiled-target restore.
           unset RUSTC_WRAPPER
           python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
+      - name: Prepare pinned candidate Python dependencies
+        if: inputs.candidate != ''
+        working-directory: candidate
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Observe candidate cold writer on the same runner within 900 seconds
         id: candidate
         if: inputs.candidate != ''
@@ -102,13 +116,28 @@ jobs:
           unset RUSTC_WRAPPER
           test ! -d target
           python3 ../diagnostic-tools/scripts/ci/cold-writer-diagnostic.py --source "$SOURCE"
+      - name: Observe runtime fixtures and the full workspace within original budgets
+        id: runtime
+        if: (inputs.runtime == 'true' || inputs.runtime == 'shared') && steps.baseline.outcome == 'success'
+        working-directory: source
+        env:
+          MODE: ${{ inputs.runtime }}
+        run: |
+          if [[ "$MODE" == shared ]]; then
+            bash ../diagnostic-tools/scripts/ci/runtime-fixture-diagnostic.sh shared
+          else
+            bash ../diagnostic-tools/scripts/ci/runtime-fixture-diagnostic.sh
+          fi
       - name: Preserve both measurement outcomes
         if: always()
         env:
           BASELINE: ${{ steps.baseline.outcome }}
           CANDIDATE: ${{ steps.candidate.outcome }}
           CANDIDATE_SOURCE: ${{ inputs.candidate }}
+          RUNTIME_REQUESTED: ${{ inputs.runtime }}
+          RUNTIME: ${{ steps.runtime.outcome }}
         run: |
           printf 'COLD_WRITER_PAIR baseline=%s candidate=%s\n' "$BASELINE" "$CANDIDATE"
           test "$BASELINE" = success
           if [[ -n "$CANDIDATE_SOURCE" ]]; then test "$CANDIDATE" = success; fi
+          if [[ "$RUNTIME_REQUESTED" == true || "$RUNTIME_REQUESTED" == shared ]]; then test "$RUNTIME" = success; fi

@@ -20,6 +20,52 @@ spec.loader.exec_module(probe)
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux proc/cgroup probe')
 class ColdWriterControls(unittest.TestCase):
+    def test_shared_runtime_probe_executes_full_entrypoint_and_keeps_its_verdict(self):
+        for status in (0, 7):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / 'scripts/ci'
+                scripts.mkdir(parents=True)
+                (scripts / 'check-shared.sh').write_text(
+                    '[[ "$OKILUM_WORKSPACE_ORDINARY_SHARDS" == 4 ]] || exit 99\n'
+                    f'echo COMPLETE_SHARED_ENTRYPOINT\nexit {status}\n')
+                result = subprocess.run(['bash', str(HERE / 'runtime-fixture-diagnostic.sh'), 'shared'],
+                    cwd=root, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertIn('COMPLETE_SHARED_ENTRYPOINT', result.stdout)
+
+    def test_runtime_probe_requires_real_target_receipts_and_retains_failures(self):
+        for passed, cargo_status in [(1, 0), (0, 0), (1, 7)]:
+            with self.subTest(passed=passed, status=cargo_status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / 'scripts/ci'
+                scripts.mkdir(parents=True)
+                for name in ('test-group.sh', 'test-group.py'):
+                    shutil.copy2(HERE / name, scripts / name)
+                (scripts / 'workspace-rust-tests.py').write_text(
+                    'import os\nassert os.environ["OKILUM_WORKSPACE_ORDINARY_SHARDS"] == "4"\n'
+                    'print("FULL_WORKSPACE_FIRED")\n')
+                binary = root / 'bin'
+                binary.mkdir()
+                git = binary / 'git'
+                git.write_text('#!/bin/sh\necho ' + 'a' * 40 + '\n')
+                git.chmod(0o755)
+                cargo = binary / 'cargo'
+                cargo.write_text('''#!/bin/sh
+case " $* " in *" --bin okilum "*) target=okilum;; *) target=okilum_core;; esac
+echo "Running unittests src/lib.rs (target/debug/deps/$target-abc)"
+''' + f'echo "test result: ok. {passed} passed; 0 failed; 0 ignored;"\nexit {cargo_status}\n')
+                cargo.chmod(0o755)
+                result = subprocess.run(['bash', str(HERE / 'runtime-fixture-diagnostic.sh')],
+                    cwd=root, capture_output=True, text=True, timeout=10,
+                    env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH']))
+                self.assertEqual(result.returncode, int(not passed or bool(cargo_status)), result.stderr)
+                self.assertIn('FULL_WORKSPACE_FIRED', result.stdout)
+                for name in ('priority-source-workers', 'cancellation-source-workers',
+                             'reader-editor-live-preview'):
+                    self.assertIn(f'TEST_GROUP_START group={name} limit=120s', result.stdout)
+                self.assertIn('TEST_GROUP_START group=workspace-full limit=1320s', result.stdout)
+
     def test_large_process_sample_survives_job_log_line_limits(self):
         sample = {'processes': [{'command': ['rustc', 'x' * 90000]}]}
         output = io.StringIO()

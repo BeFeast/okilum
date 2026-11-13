@@ -2,6 +2,8 @@
 """Run the complete workspace census with resource-sensitive cases isolated."""
 import re
 import hashlib
+import os
+from pathlib import Path
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -10,13 +12,20 @@ COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell
            "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
 LOG = "reader_log"
 REVEAL = "platform::reveal::tests::"
+NATIVE_FRAME = "reader_editor::code_operations::tests::edit2803_unwrapped_popup_frames_reuse_shapes_and_invalidate_on_edit"
+FIRST_CONTENT = "reader_code_file::review_tests::code2809_first_text_precedes_full_parse_and_format_on_three_point_five_mb"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY = re.compile(r"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 
 
-def run(name, arguments, expected):
+def run(name, arguments, expected, *, command=None, limit=1320):
     print(f"WORKSPACE_CENSUS_START part={name} expected={expected}", flush=True)
-    process = subprocess.Popen(COMMAND + arguments, stdout=subprocess.PIPE,
+    # Unrelated fixture shards must not serialize against, or repeatedly scan,
+    # the same ever-growing account-wide authority registry. All descendants
+    # within one shard still inherit the SAME account and real writer fences.
+    supervisor = [sys.executable, str(Path(__file__).with_name('test-group.py')),
+                  '--isolated-writer-account', f'workspace-{name}', str(limit)]
+    process = subprocess.Popen(supervisor + (command or COMMAND) + arguments, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     observed = 0
     completed = 0
@@ -44,48 +53,103 @@ def run(name, arguments, expected):
     return status == 0 and observed == expected and completed > 0
 
 
-def main():
-    # Keep the same four packages in EVERY invocation: Cargo feature unification,
-    # test/doc targets, working directories and runtime environment stay intact.
-    inventory = subprocess.run(COMMAND + ["--list"], capture_output=True, text=True)
+def main(*, shared=False):
+    shard_count = os.environ.get('OKILUM_WORKSPACE_ORDINARY_SHARDS', '2')
+    if shard_count not in ('2', '4'):
+        print('ordinary workspace shards must be 2 (hosted) or 4 (heavy)', file=sys.stderr)
+        return 2
+    shard_count = int(shard_count)
+    # Keep identical package selection in the census and EVERY shard. Shared
+    # retains --workspace and its existing platform/Log exclusions; its caller
+    # runs the complete Log selection separately afterwards.
+    command = (["cargo", "test", "--workspace", "--locked", "--no-fail-fast", "--"]
+               if shared else COMMAND)
+    skips = ["--skip", "platform::", "--skip", LOG] if shared else []
+    # Keep Cargo's target headers and libtest's names in one ordered stream.
+    # AppImage fixtures fork/exec while holding installation locks, so a
+    # sibling test in the same process can inherit those FDs before exec.
+    inventory = subprocess.run(command + ["--list", *skips], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
     if inventory.returncode:
         print(inventory.stdout, end="")
-        print(inventory.stderr, end="", file=sys.stderr)
         return 1
-    names = [line[:-6] for raw in inventory.stdout.splitlines()
-             if (line := ANSI.sub("", raw).strip()).endswith(": test")]
+    names = []
+    serial_names = set()
+    appimage = False
+    for raw in inventory.stdout.splitlines():
+        line = ANSI.sub("", raw).strip()
+        if line.startswith(("Running unittests ", "Running tests/", "Doc-tests ")):
+            appimage = bool(re.search(r'/okilum_appimage-[0-9a-f]+\)', line))
+        elif line.endswith(": test"):
+            name = line[:-6]
+            names.append(name)
+            if appimage:
+                serial_names.add(name)
     assert names, "workspace test inventory must not be empty"
     assert not any(LOG in name and REVEAL in name for name in names), "resource groups must be disjoint"
     logs = sum(LOG in name for name in names)
     reveals = sum(REVEAL in name for name in names)
-    ordinary = len(names) - logs - reveals
-    assert ordinary > 0 and logs > 0 and reveals > 0, "every measured group must fire"
-    shards = [[], []]
+    frames = names.count(NATIVE_FRAME)
+    first_content = names.count(FIRST_CONTENT)
+    # A duplicate full name in another target belongs to this same exact
+    # partition too; every occurrence still runs once with the same packages.
+    serial = sum(name in serial_names for name in names)
+    assert not any(LOG in name or REVEAL in name for name in serial_names)
+    ordinary = len(names) - logs - reveals - serial - frames - first_content
+    assert ordinary > 0, "ordinary inventory must fire"
+    if shared:
+        assert logs == reveals == 0, "shared excludes platform and separately runs Log"
+        assert serial_names, "shared AppImage serial inventory must fire"
+    else:
+        assert logs > 0 and reveals > 0, "every measured group must fire"
+    shards = [[] for _ in range(shard_count)]
     for name in names:
-        if LOG not in name and REVEAL not in name:
+        if LOG not in name and REVEAL not in name and name not in serial_names and name not in (NATIVE_FRAME, FIRST_CONTENT):
             # Identical names in different targets must stay in one shard;
             # libtest exact matching runs every occurrence there, once only.
-            shards[hashlib.sha256(name.encode()).digest()[0] % 2].append(name)
-    assert all(shards), "both ordinary shards must fire"
+            shards[hashlib.sha256(name.encode()).digest()[0] % shard_count].append(name)
+    assert all(shards), "every ordinary shard must fire"
     parts = [
-        (f"ordinary-{index}", ["--nocapture", "--test-threads=2", "--exact", *sorted(set(shard))], len(shard))
+        (f"ordinary-{index}", ["--nocapture", "--test-threads=2", "--exact", *sorted(set(shard)), *skips], len(shard))
         for index, shard in enumerate(shards)
-    ] + [
-        ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
-        ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
     ]
-    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals}",
+    if serial_names:
+        parts.append(("appimage", ["--nocapture", "--test-threads=1", "--exact",
+                                  *sorted(serial_names), *skips], serial))
+    if not shared:
+        parts += [
+            ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
+            ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
+        ]
+    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial} native_frames={frames} first_content={first_content}",
           flush=True)
-    # Separate processes retain separate Log pools. Split ordinary cases with
-    # the same total of four threads, and overlap serial Log I/O after inventory
-    # compilation. Exact filters prevent substring overlap between the shards.
+    # Separate processes retain separate Log pools. Hosted keeps four ordinary
+    # threads; the existing heavy resource class can run eight. Overlap serial
+    # Log I/O after inventory compilation. Exact filters prevent duplicate runs.
     # Reveal stays alone so its real D-Bus deadlines do not compete with either.
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(lambda part: run(*part), parts[:3]))
-    results.append(run(*parts[3]))
+    concurrent = parts if shared else parts[:-1]
+    execute = (lambda part: run(*part, command=command, limit=3600)) if shared else (lambda part: run(*part))
+    with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
+        results = list(pool.map(execute, concurrent))
+    if first_content:
+        # Keep the actual first-text/parser-ordering control outside unrelated
+        # concurrent fixture work. Its original 1000 ms assertion stays intact.
+        results.append(run('first-content', ['--nocapture', '--test-threads=1', '--exact',
+                                             FIRST_CONTENT, *skips], first_content, command=command,
+                           limit=3600 if shared else 1320))
+    if frames:
+        # Keep the actual 300 ms frame assertion, without concurrent fixture
+        # work in the same census consuming its CPU scheduling interval.
+        results.append(run('native-frame', ['--nocapture', '--test-threads=1', '--exact',
+                                            NATIVE_FRAME, *skips], frames, command=command,
+                           limit=3600 if shared else 1320))
+    if not shared:
+        results.append(run(*parts[-1]))
     passed = all(results)
     return 0 if passed else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if sys.argv[1:] not in ([], ['--shared']):
+        raise SystemExit('usage: workspace-rust-tests.py [--shared]')
+    sys.exit(main(shared=bool(sys.argv[1:])))
