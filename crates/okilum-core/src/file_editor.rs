@@ -359,7 +359,9 @@ fn check_writable_in_place(path: &Path) -> Result<()> {
 }
 #[cfg(windows)]
 fn check_writable_in_place(path: &Path) -> Result<()> {
-    if fs::metadata(path)?.permissions().readonly() {
+    // The same filesystem access check Save's replacement relies on, not the
+    // read-only attribute alone: an ACL may deny replacing a readable note.
+    if !crate::windows_files::can_replace(path)? {
         return Err(NotWritable(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).into());
     }
     Ok(())
@@ -690,6 +692,12 @@ impl FileEditor {
     }
     /// Retain the native immutable Rope revision without copying/scanning text.
     pub fn queue_snapshot(&mut self, text: Text) -> DraftWrite {
+        // An editor without ownership has no edit of its own: capturing the
+        // text it already holds stays clean instead of becoming an unowned
+        // pending revision. A different text is refused when it is persisted.
+        if self.lock.is_none() && !self.draft.pending_input && self.draft.text == text {
+            return self.pending_write();
+        }
         self.draft.text = text;
         self.draft.pending_input = true;
         self.advance_generation();

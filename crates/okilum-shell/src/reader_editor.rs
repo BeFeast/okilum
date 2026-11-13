@@ -747,6 +747,9 @@ impl Reader {
     /// and explicit lifecycle transitions still synchronously protect the latest
     /// native snapshot before relinquishing ownership.
     fn save_source_in_background(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
         let Some(editing) = self.editing.as_mut() else {
             return;
         };
@@ -1169,9 +1172,13 @@ impl Reader {
             // An automatic editor (#2817) takes ownership on its first edit.
             // If another window took the note meanwhile, this one returns to
             // Read with that window's notice; nothing was written.
+            // Any input event other than a reset (typing, IME, paste, Undo)
+            // is the person's edit, even when its text equals the store's.
             if !editing.store.owns_lock()
-                && !editing.store.snapshot().same(&value)
-                && editing.store.snapshot() != value
+                && (mutation.reason
+                    != gpui_component::input::projection::SourceMutationReason::Reset
+                    || (!editing.store.snapshot().same(&value)
+                        && editing.store.snapshot() != value))
             {
                 if let Err(error) = editing.store.acquire_lock() {
                     diagnostic_error!("Cannot edit: {error:#}");
@@ -1661,6 +1668,12 @@ impl Reader {
             editing.refresh_deferred = true;
             return;
         }
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
         let snapshot = editing.input.read(cx).source_snapshot();
         if editing.draft_stamp != snapshot.stamp {
             editing.draft_stamp = snapshot.stamp;
@@ -1789,6 +1802,12 @@ impl Reader {
             editing.refresh_deferred = true;
             return;
         }
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
         // Sample native state before looking at disk: a queued mutation event
         // cannot make an actually dirty buffer look clean.
         let text = editing.input.read(cx).value().to_string();
@@ -1916,6 +1935,9 @@ impl Reader {
     /// (#1986): that file is its base now. False when the editor can no
     /// longer reach the file (its folder was recreated) and must reopen it.
     pub(super) fn source_restored(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.own_modified_buffer(cx) {
+            return true;
+        }
         let Some(editing) = &mut self.editing else {
             return true;
         };
@@ -1965,6 +1987,10 @@ impl Reader {
     /// still retains the durable recovery draft, but must not retry a canonical
     /// save (or overwrite a returned file) during the authorized navigation.
     pub(super) fn release_deleted_editor(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.own_modified_buffer(cx) {
+            self.editing = None;
+            return true;
+        }
         if let Some(editing) = &mut self.editing {
             if let Err(error) = editing
                 .store
@@ -2024,6 +2050,11 @@ impl Reader {
             return (false, false);
         }
         let rules_scope = self.editing_in_rules_scope(cx);
+        // A refused automatic editor has nothing of its own to protect: its
+        // refused keystrokes were never the note's (#2817).
+        if !self.own_modified_buffer(cx) {
+            return (true, true);
+        }
         let Some(editing) = &mut self.editing else {
             return (true, true);
         };
@@ -2516,6 +2547,32 @@ impl Reader {
         }
     }
 
+    /// An automatic editor (#2817) owns nothing until its buffer differs from
+    /// what it opened or last captured. Every path that captures the input
+    /// into the store, saves or protects it calls this first, so a modified
+    /// buffer is never captured unowned, whichever runs first (blur, watcher
+    /// refresh, save, navigation) relative to the input's own event. False:
+    /// ownership was refused; the editor returns to Read with the reason and
+    /// the caller must not capture.
+    pub(super) fn own_modified_buffer(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = self.editing.as_mut() else {
+            return true;
+        };
+        if editing.store.owns_lock() || editing.input.read(cx).source_stamp() == editing.draft_stamp
+        {
+            return true;
+        }
+        match editing.store.acquire_lock() {
+            Ok(()) => true,
+            Err(error) => {
+                diagnostic_error!("Cannot edit: {error:#}");
+                let input = editing.input.entity_id();
+                self.abandon_unowned_editor(input, &error, cx);
+                false
+            }
+        }
+    }
+
     /// The first edit of an automatic editor could not take the note:
     /// discard that keystroke's buffer (nothing was written or owned) and
     /// show the note in Read with the reason.
@@ -2527,6 +2584,9 @@ impl Reader {
     ) {
         let notice = location_notice(error)
             .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(error)));
+        // Shown at once, also if navigation retires the editor first.
+        self.link_notice = Some(notice.clone().into());
+        cx.notify();
         let handle = self.reader_window;
         cx.spawn(async move |this, cx| {
             let _ = handle.update(cx, |_, window, cx| {
@@ -2538,12 +2598,19 @@ impl Reader {
                     {
                         return;
                     }
+                    // Read opens where the editor was, as an explicit Read does
+                    // (#1296); the refused keystroke never reaches the note.
+                    let place = this
+                        .editing
+                        .as_ref()
+                        .and_then(|editing| editing.input.read(cx).top_visible_line())
+                        .and_then(|line| u32::try_from(line + 1).ok());
                     this.editing = None;
                     this.ui_state.auto_edit = false;
                     this.outline_list
                         .reset_with_uniform_height(this.outline.len(), px(OUTLINE_ROW_HEIGHT));
                     let rel = this.current_rel.clone();
-                    this.prepare_document_at_place(&rel, None, window, cx);
+                    this.prepare_document_at_place(&rel, place, window, cx);
                     this.link_notice = Some(notice.into());
                     this.focus_handle.focus(window, cx);
                     cx.notify();
@@ -2812,6 +2879,9 @@ impl Reader {
     }
 
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.own_modified_buffer(cx) {
+            return;
+        }
         let Some(editing) = &mut self.editing else {
             return;
         };

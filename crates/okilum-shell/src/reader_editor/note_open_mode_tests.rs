@@ -377,3 +377,276 @@ fn read_only_note_opens_in_read_quietly(cx: &mut TestAppContext) {
     open(&reader, visual, "third.md");
     assert_open(&reader, visual, "third.md", true);
 }
+
+/// What runs in the same UI turn as the first keystroke, before the input's
+/// own mutation event reaches the Reader.
+#[derive(Clone, Copy, Debug)]
+enum Before {
+    Blur,
+    WatcherRefresh,
+}
+
+/// Insert `text` at the start and run `before` in the same update, so the
+/// capture path runs before the SourceMutation subscriber (#2817 review).
+fn type_then(reader: &Entity<Reader>, visual: &mut VisualTestContext, text: &str, before: Before) {
+    reader.update_in(visual, |r, window, cx| {
+        let input = r.editing.as_ref().unwrap().input.clone();
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..0), text, window, cx)
+        });
+        match before {
+            Before::Blur => {
+                r.tree_focus.focus(window, cx);
+                r.save_source_in_background(window, cx);
+            }
+            Before::WatcherRefresh => r.refresh_source_in_background(window, cx),
+        }
+    });
+    visual.run_until_parked();
+}
+
+fn settle(visual: &mut VisualTestContext) {
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    visual.run_until_parked();
+}
+
+fn assert_refused(
+    reader: &Entity<Reader>,
+    visual: &mut VisualTestContext,
+    path: &Path,
+    typed: &str,
+) {
+    reader.read_with(visual, |r, cx| {
+        assert_eq!(r.current_rel, "first.md");
+        assert!(
+            r.editing.is_none(),
+            "the refused editor returns to Read: {:?}",
+            r.editing
+                .as_ref()
+                .map(|e| (e.store.owns_lock(), e.input.read(cx).value().to_string()))
+        );
+        let notice = r.link_notice.as_ref().expect("the reason is shown");
+        assert!(notice.to_string().contains("being edited"), "{notice}");
+        assert!(
+            !r.note_source.contains(typed),
+            "the refused keystroke is not shown"
+        );
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "# First\n\nOne.\n");
+}
+
+#[gpui::test]
+fn first_edit_captured_by_blur_or_refresh_first_takes_ownership(cx: &mut TestAppContext) {
+    for before in [Before::Blur, Before::WatcherRefresh] {
+        let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+        let path = temp.path().join("vault/first.md");
+        type_then(&reader, visual, "mine ", before);
+        reader.read_with(visual, |r, _| {
+            let editing = r.editing.as_ref().expect("{before:?}: still editing");
+            assert!(
+                editing.store.owns_lock(),
+                "{before:?}: captured only once owned"
+            );
+            assert!(
+                !editing.save_failed,
+                "{before:?}: recovery accepted the edit"
+            );
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.save_source_in_background(window, cx)
+        });
+        settle(visual);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "mine # First\n\nOne.\n",
+            "{before:?}: the edit is saved"
+        );
+    }
+}
+
+#[gpui::test]
+fn first_edit_captured_by_blur_or_refresh_first_is_refused_when_taken(cx: &mut TestAppContext) {
+    for before in [Before::Blur, Before::WatcherRefresh] {
+        let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+        let path = temp.path().join("vault/first.md");
+        let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
+        type_then(&reader, visual, "mine ", before);
+        assert_refused(&reader, visual, &path, "mine");
+        drop(other);
+    }
+}
+
+fn ime_commit(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
+    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    reader.update_in(visual, |_, window, cx| {
+        input.focus_handle(cx).focus(window, cx)
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |_, window, cx| {
+        input.update(cx, |i, cx| {
+            i.replace_and_mark_text_in_range(Some(0..0), "か", Some(1..1), window, cx)
+        });
+    });
+    visual.run_until_parked();
+    reader.update_in(visual, |_, window, cx| {
+        input.update(cx, |i, cx| {
+            let marked = i.marked_text_range(window, cx);
+            if marked.is_some() {
+                i.replace_text_in_range(marked, "漢", window, cx)
+            }
+        });
+    });
+    visual.run_until_parked();
+}
+
+/// The test clipboard, read the way the note editor's exact provider reads
+/// the system clipboard (the platform clipboard is not reachable in tests).
+struct Clipboard(&'static str);
+impl gpui_component::input::clipboard::ExactClipboardProvider for Clipboard {
+    fn read_text_now(
+        &self,
+        _: &App,
+    ) -> Option<Result<Option<String>, gpui_component::input::clipboard::ClipboardReadError>> {
+        Some(Ok(Some(self.0.into())))
+    }
+    fn read_text(
+        &self,
+        _: gpui_component::input::clipboard::ClipboardReadRequest,
+        _: &App,
+    ) -> Task<Result<Option<String>, gpui_component::input::clipboard::ClipboardReadError>> {
+        Task::ready(Ok(Some(self.0.into())))
+    }
+}
+
+fn paste(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
+    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    input.update_in(visual, |input, window, cx| {
+        input.set_exact_clipboard_provider(Some(Arc::new(Clipboard("pasted "))), cx);
+        input.set_selected_range(0..0, cx);
+        input.focus_handle(cx).focus(window, cx);
+        window.activate_window();
+    });
+    visual.dispatch_action(gpui_component::input::Paste);
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn ime_commit_or_paste_as_first_input_takes_ownership(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    ime_commit(&reader, visual);
+    reader.read_with(visual, |r, _| {
+        assert!(
+            r.editing.as_ref().unwrap().store.owns_lock(),
+            "IME composition owns"
+        );
+    });
+    reader.update_in(visual, |r, window, cx| {
+        r.save_source_in_background(window, cx)
+    });
+    settle(visual);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "漢# First\n\nOne.\n"
+    );
+
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    paste(&reader, visual);
+    reader.read_with(visual, |r, cx| {
+        let editing = r.editing.as_ref().unwrap();
+        assert!(
+            editing.input.read(cx).value().contains("pasted"),
+            "positive control: the paste reached the editor: {:?}",
+            editing.input.read(cx).value()
+        );
+        assert!(editing.store.owns_lock(), "paste owns");
+    });
+    reader.update_in(visual, |r, window, cx| {
+        r.save_source_in_background(window, cx)
+    });
+    settle(visual);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "pasted # First\n\nOne.\n"
+    );
+}
+
+#[gpui::test]
+fn ime_commit_or_paste_as_first_input_is_refused_when_taken(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
+    ime_commit(&reader, visual);
+    assert_refused(&reader, visual, &path, "か");
+    drop(other);
+
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
+    paste(&reader, visual);
+    assert_refused(&reader, visual, &path, "pasted");
+    drop(other);
+}
+
+#[gpui::test]
+fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    visual.simulate_resize(size(px(1000.), px(600.)));
+    let long: String = (1..=200).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    std::fs::write(
+        temp.path().join("vault/long.md"),
+        format!("# Long\n\n{long}"),
+    )
+    .unwrap();
+    let path = temp.path().join("vault/long.md");
+    open(&reader, visual, "long.md");
+    reader.update_in(visual, |r, _, cx| {
+        let input = r.editing.as_ref().expect("Edit by default").input.clone();
+        // Caret and view far down: typing keeps the caret in view.
+        let at = input.read(cx).value().find("Paragraph 150.").unwrap();
+        input.update(cx, |input, cx| {
+            input.set_selected_range(at..at, cx);
+            input.scroll_line_to_top(300, cx);
+        });
+    });
+    visual.run_until_parked();
+    let top = reader.read_with(visual, |r, cx| {
+        r.editing
+            .as_ref()
+            .unwrap()
+            .input
+            .read(cx)
+            .top_visible_line()
+            .unwrap()
+    });
+    assert!(
+        top > 200,
+        "positive control: the editor scrolled to line {top}"
+    );
+    let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
+    visual.simulate_input("x");
+    visual.run_until_parked();
+    reader.read_with(visual, |r, cx| {
+        assert!(r.editing.is_none());
+        let block = r
+            .navigation
+            .pending_landing
+            .unwrap_or_else(|| r.content.read(cx).list_state().logical_scroll_top())
+            .item_ix;
+        assert!(
+            block > 80,
+            "Read opens near the editor's place, block {block}"
+        );
+        assert!(r
+            .link_notice
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("being edited"));
+    });
+    assert!(!std::fs::read_to_string(&path).unwrap().contains('x'));
+    drop(other);
+}
