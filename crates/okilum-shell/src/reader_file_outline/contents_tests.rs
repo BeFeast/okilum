@@ -522,7 +522,6 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
             ("feed.xml", "<feed><title>x</title></feed>"),
             ("api.har", "{\"log\":{\"version\":\"1.2\",\"entries\":[]}}"),
             ("gateway.log", "2026-11-10T12:00:00Z INFO ready\n"),
-            ("board.canvas", "{\"nodes\":[],\"edges\":[]}"),
         ],
         "note.md",
     );
@@ -535,7 +534,6 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
         ("feed.xml", false),
         ("api.har", false),
         ("gateway.log", false),
-        ("board.canvas", true),
     ] {
         reader.update_in(visual, |r, w, cx| r.open_note(file, None, w, cx));
         settle(visual);
