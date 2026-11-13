@@ -476,9 +476,7 @@ impl Reader {
                 chrome.actions.push(fold);
             }
         }
-        if Path::new(self.selected_file()).extension().is_none()
-            || crate::reader_code_file::language(self.selected_file()).is_none_or(|l| l == "text")
-        {
+        if !super::file_language_is_fixed(self.selected_file()) {
             let mut language = ViewerAction::new(
                 "file-edit-language",
                 Icon::default().path("icons/code-xml.svg"),
@@ -662,15 +660,13 @@ fn language_menu(menu: PopupMenu, owner: WeakEntity<Reader>, cx: &App) -> PopupM
     let Some(scope) = owner.upgrade().and_then(|r| r.read(cx).code_scope(cx)) else {
         return menu;
     };
-    model::LANGUAGES
-        .iter()
-        .copied()
-        .chain(["jsx", "scss"])
+    super::picker_languages()
+        .into_iter()
         .fold(menu, |menu, name| {
             let owner = owner.clone();
             let scope = scope.clone();
             menu.item(
-                PopupMenuItem::new(name)
+                PopupMenuItem::new(okilum_core::code_language::display_name(name))
                     .checked(scope.language == name)
                     .on_click(move |_, _, cx| {
                         let _ = owner.update(cx, |r, cx| r.select_code_language(&scope, name, cx));
@@ -691,7 +687,7 @@ fn language_control(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement
         .small()
         .outline()
         .h(px(28.))
-        .label(language.to_uppercase())
+        .label(okilum_core::code_language::display_name(&language).to_owned())
         .dropdown_caret(true)
         .disabled(disabled_reason(reader, cx).is_some())
         .debug_selector(|| "file-language".into())
@@ -779,12 +775,13 @@ fn format_control(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
                 }
                 menu = menu.item(item);
             }
-            if language_bounds.get().is_none() {
-                let language = reader
-                    .read(cx)
-                    .code_scope_for_display(cx, true)
-                    .map(|s| s.language.to_uppercase())
-                    .unwrap_or_else(|| "Text".into());
+            // The file type fixes XML, JSON, Rust … (#2909): the narrow
+            // fallback exists only for files whose standalone picker dropped.
+            let scope = reader.read(cx).code_scope_for_display(cx, true);
+            if language_bounds.get().is_none() && scope.as_ref().is_some_and(|s| !s.fixed) {
+                let language = scope
+                    .map(|s| okilum_core::code_language::display_name(&s.language).to_owned())
+                    .unwrap_or_else(|| "Plain text".into());
                 let owner = owner.clone();
                 menu = menu.separator().submenu(
                     format!("Language: {language}"),

@@ -132,6 +132,8 @@ struct Target {
 struct Scope {
     range: Range<usize>,
     language: String,
+    /// The file type or the fence names the language: no picker (#2909).
+    fixed: bool,
     stamp: SourceStamp,
     line_ending: Option<model::LineEnding>,
 }
@@ -254,6 +256,41 @@ fn file_language(rel: &str) -> String {
     .into()
 }
 
+/// Whether the file type alone fixes a file's language (#2909): every
+/// recognised extension or file name, data formats without a grammar (CSV,
+/// TSV, INI …) included. Only plain `.txt`, unknown extensions and unnamed
+/// extensionless files offer a language picker.
+pub(super) fn file_language_is_fixed(rel: &str) -> bool {
+    match crate::reader_code_file::language(rel) {
+        None => false,
+        Some("text") => !Path::new(rel)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("txt")),
+        Some(_) => true,
+    }
+}
+
+/// Languages a picker offers, by human name: Plain text first, then the
+/// rest alphabetically. Injection-only grammars are not choices.
+pub(super) fn picker_languages() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = model::LANGUAGES
+        .iter()
+        .copied()
+        .chain(["jsx", "scss"])
+        .filter(|l| !matches!(*l, "text" | "jsdoc" | "markdown_inline"))
+        .collect();
+    names.sort_by_cached_key(|l| okilum_core::code_language::display_name(l).to_lowercase());
+    names.insert(0, "text");
+    names
+}
+
+/// A fence that names a grammar the operations know fixes its language; an
+/// unnamed or unknown fence keeps the picker.
+fn fence_language_is_fixed(language: Option<&str>) -> bool {
+    language.is_some_and(|l| l != "text" && picker_languages().contains(&l))
+}
+
 impl Reader {
     pub(crate) fn run_format_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.code_operation(Action::Format, window, cx);
@@ -349,7 +386,7 @@ impl Reader {
         }
         let input = editing.input.read(cx);
         let stamp = input.source_stamp();
-        let (range, language, line_ending) = if editing.markdown {
+        let (range, language, line_ending, fixed) = if editing.markdown {
             let selection = input.selected_range();
             let inventory = editing
                 .operations
@@ -366,6 +403,7 @@ impl Reader {
                 block.body.clone(),
                 block.language.clone().unwrap_or_else(|| "text".into()),
                 Some(inventory.line_ending),
+                fence_language_is_fixed(block.language.as_deref()),
             )
         } else {
             (
@@ -376,6 +414,7 @@ impl Reader {
                     ..input.text().len(),
                 file_language(self.selected_file()),
                 None,
+                file_language_is_fixed(self.selected_file()),
             )
         };
         let language = editing
@@ -389,6 +428,7 @@ impl Reader {
             line_ending,
             range,
             language,
+            fixed,
             stamp,
         })
     }
@@ -764,7 +804,18 @@ impl Reader {
         };
         let controls = code_operation_controls(
             [
-                self.code_language_selector(target.language.clone(), disabled, cx),
+                if target.fixed {
+                    // Named by the fence: a label, not a choice (#2909).
+                    div()
+                        .text_sm()
+                        .debug_selector(|| "source-code-language-label".into())
+                        .child(
+                            okilum_core::code_language::display_name(&target.language).to_owned(),
+                        )
+                        .into_any_element()
+                } else {
+                    self.code_language_selector(target.language.clone(), disabled, cx)
+                },
                 code_operation_button(
                     "source-code-format",
                     "Format",
@@ -822,7 +873,7 @@ impl Reader {
             .disabled(disabled)
             .small()
             .ghost()
-            .label(language.clone())
+            .label(okilum_core::code_language::display_name(&language).to_owned())
             .debug_selector(|| "source-code-language".into())
             .dropdown_menu(move |menu, _, cx| {
                 // Snapshot the current scope when the popup opens, not on the
@@ -833,21 +884,20 @@ impl Reader {
                 else {
                     return menu;
                 };
-                model::LANGUAGES
-                    .iter()
-                    .copied()
-                    .chain(["jsx", "scss"])
-                    .fold(menu, |menu, name| {
-                        let owner = owner.clone();
-                        let target = menu_target.clone();
-                        menu.item(PopupMenuItem::new(name).checked(name == language).on_click(
-                            move |_, _, cx| {
+                picker_languages().into_iter().fold(menu, |menu, name| {
+                    let owner = owner.clone();
+                    let target = menu_target.clone();
+                    let label = okilum_core::code_language::display_name(name);
+                    menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(name == language)
+                            .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     this.select_code_language(&target, name, cx);
                                 });
-                            },
-                        ))
-                    })
+                            }),
+                    )
+                })
             })
             .into_any_element()
     }
@@ -1479,7 +1529,7 @@ mod tests {
             "Before\n```json\n{\"a\":1}\n```\nBetween\n```python\nprint({})\n```\nAfter\n";
         let (f, visual) = open(cx, original);
         visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(visual.debug_bounds("source-code-language").is_some());
+        assert!(visual.debug_bounds("source-code-language-label").is_some());
         let old = f
             .reader
             .read_with(visual, |reader, cx| reader.code_scope(cx).unwrap());
@@ -1488,13 +1538,13 @@ mod tests {
             .update(visual, |state, cx| state.set_selected_range(at..at, cx));
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(visual.debug_bounds("source-code-language").is_none());
+        assert!(visual.debug_bounds("source-code-language-label").is_none());
         let at = original.find("print").unwrap();
         f.input
             .update(visual, |state, cx| state.set_selected_range(at..at, cx));
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(visual.debug_bounds("source-code-language").is_some());
+        assert!(visual.debug_bounds("source-code-language-label").is_some());
         f.reader.update(visual, |reader, cx| {
             assert_eq!(reader.code_target(cx).unwrap().language, "python");
             reader.select_code_language(&old, "jsonc", cx);
@@ -1668,6 +1718,82 @@ mod tests {
                 .unwrap()
                 .contains("jsonc"));
         });
+    }
+
+    #[gpui::test]
+    fn code2909_named_fence_has_a_label_and_only_an_unnamed_fence_a_picker(
+        cx: &mut TestAppContext,
+    ) {
+        let original = "```json\n{\"a\":1}\n```\nBetween\n```\nplain\n```\n";
+        let (f, visual) = open(cx, original);
+        for (needle, picker) in [("\"a\"", false), ("plain", true)] {
+            let at = original.find(needle).unwrap();
+            f.input
+                .update(visual, |state, cx| state.set_selected_range(at..at, cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(
+                visual.debug_bounds("source-code-language").is_some(),
+                picker,
+                "{needle}: a picker only where the fence names no language"
+            );
+            assert_eq!(
+                visual.debug_bounds("source-code-language-label").is_some(),
+                !picker,
+                "{needle}: a named fence shows its language as a label"
+            );
+        }
+    }
+
+    #[test]
+    fn code2909_file_type_fixes_the_language_except_plain_and_unknown_files() {
+        for rel in [
+            "pom.xml",
+            "schema.XSD",
+            "data.json",
+            "capture.har",
+            "src/main.rs",
+            "app.tsx",
+            "table.csv",
+            "table.tsv",
+            "config.yaml",
+            "Cargo.toml",
+            "settings.ini",
+            "Makefile",
+            "CMakeLists.txt",
+            "Dockerfile",
+        ] {
+            assert!(file_language_is_fixed(rel), "{rel} is fixed by its type");
+        }
+        for rel in ["notes.txt", "NOTES.TXT", "README", "LICENSE", "trace.log"] {
+            assert!(!file_language_is_fixed(rel), "{rel} keeps a picker");
+        }
+    }
+
+    #[test]
+    fn code2909_picker_offers_sorted_human_names_not_grammar_ids() {
+        let names: Vec<&str> = picker_languages()
+            .into_iter()
+            .map(okilum_core::code_language::display_name)
+            .collect();
+        assert_eq!(names[0], "Plain text");
+        let rest = &names[1..];
+        let mut sorted = rest.to_vec();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(rest, sorted.as_slice(), "alphabetical by human name");
+        for human in ["C++", "C#", "Shell (bash)", "JavaScript", "XML", "Rust"] {
+            assert!(names.contains(&human), "{human} offered");
+        }
+        for raw in [
+            "cpp",
+            "csharp",
+            "bash",
+            "javascript",
+            "jsdoc",
+            "markdown_inline",
+        ] {
+            assert!(!names.contains(&raw), "raw id {raw} not shown");
+        }
     }
 
     #[test]

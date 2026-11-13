@@ -157,7 +157,7 @@ fn file2811_note_host_has_a_positive_control_and_file_keeps_one_header(cx: &mut 
     measured(visual, "file-format");
     assert!(
         visual.debug_bounds("file-language").is_none(),
-        "known extension keeps Language in the Format menu"
+        "known extension has no standalone Language picker"
     );
     measured(visual, "viewer-find-field");
     measured(visual, "reader-read");
@@ -456,8 +456,8 @@ fn file2811_format_menu_has_live_commands_language_and_busy_explanations(cx: &mu
             ("Format code".into(), false),
             ("Validate code".into(), false),
             ("Repair code…".into(), false),
-            ("Language: JSON".into(), false)
-        ]
+        ],
+        "JSON is fixed by its extension: no Language submenu (#2909)"
     );
     visual.simulate_keystrokes("down down enter");
     frame(visual);
@@ -694,7 +694,10 @@ fn file2811_narrow_header_protects_find_read_save_format_and_more(cx: &mut TestA
             crate::reader_viewer_chrome::tests::measured_bounds(visual, "file-language").is_none()
         );
         let (_, items) = open_menu(visual);
-        assert!(items.iter().any(|i| i.0 == "Language: JSON"));
+        assert!(
+            !items.iter().any(|i| i.0.starts_with("Language:")),
+            "narrow JSON still has no Language picker (#2909)"
+        );
         visual.simulate_keystrokes("escape");
         frame(visual);
     }
@@ -1149,9 +1152,37 @@ fn file2811_ambiguous_language_has_a_button_then_a_narrow_menu(cx: &mut TestAppC
     assert!(crate::reader_viewer_chrome::tests::measured_bounds(visual, "file-language").is_none());
     let (_, items) = open_menu(visual);
     assert!(
-        items.iter().any(|i| i.0 == "Language: TEXT"),
+        items.iter().any(|i| i.0 == "Language: Plain text"),
         "narrow Language remains reachable"
     );
+}
+
+#[gpui::test]
+fn file2909_known_file_types_have_no_language_picker(cx: &mut TestAppContext) {
+    for (name, source) in [
+        ("pom.xml", "<project/>"),
+        ("data.json", "{\"a\":1}"),
+        ("main.rs", "fn main() {}\n"),
+        ("table.csv", "a,b\n1,2\n"),
+    ] {
+        let (_reader, _file, _input, visual, _temp) = open(cx, name, source);
+        for width in [1440., 700.] {
+            visual.simulate_resize(size(px(width), px(900.)));
+            frame(visual);
+            assert!(
+                crate::reader_viewer_chrome::tests::measured_bounds(visual, "file-language")
+                    .is_none(),
+                "{name} at {width}: no standalone Language button"
+            );
+            let (_, items) = open_menu(visual);
+            assert!(
+                !items.iter().any(|i| i.0.starts_with("Language:")),
+                "{name} at {width}: no Language submenu in Format: {items:?}"
+            );
+            visual.simulate_keystrokes("escape");
+            frame(visual);
+        }
+    }
 }
 
 #[gpui::test]

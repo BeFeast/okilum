@@ -25,6 +25,56 @@ pub fn canonical(language: &str) -> String {
     }
 }
 
+/// The human name of a canonical language id for menus and labels (#2909):
+/// `cpp` → `C++`, `bash` → `Shell (bash)`. An unknown id is shown as written.
+pub fn display_name(language: &str) -> &str {
+    match language {
+        "astro" => "Astro",
+        "bash" => "Shell (bash)",
+        "c" => "C",
+        "cmake" => "CMake",
+        "cpp" => "C++",
+        "csharp" => "C#",
+        "css" => "CSS",
+        "diff" => "Diff",
+        "ejs" => "EJS",
+        "elixir" => "Elixir",
+        "erb" => "ERB",
+        "go" => "Go",
+        "graphql" => "GraphQL",
+        "html" => "HTML",
+        "java" => "Java",
+        "javascript" => "JavaScript",
+        "jsdoc" => "JSDoc",
+        "json" => "JSON",
+        "jsonc" => "JSON with comments",
+        "jsx" => "JavaScript (JSX)",
+        "kotlin" => "Kotlin",
+        "lua" => "Lua",
+        "make" => "Makefile",
+        "markdown" => "Markdown",
+        "markdown_inline" => "Markdown (inline)",
+        "php" => "PHP",
+        "proto" => "Protocol Buffers",
+        "python" => "Python",
+        "ruby" => "Ruby",
+        "rust" => "Rust",
+        "scala" => "Scala",
+        "scss" => "SCSS",
+        "sql" => "SQL",
+        "svelte" => "Svelte",
+        "swift" => "Swift",
+        "text" | "plaintext" => "Plain text",
+        "toml" => "TOML",
+        "tsx" => "TypeScript (TSX)",
+        "typescript" => "TypeScript",
+        "xml" => "XML",
+        "yaml" => "YAML",
+        "zig" => "Zig",
+        other => other,
+    }
+}
+
 /// Canonical language name → the file extension an editor recognises it by.
 /// Keyed by [`canonical`] names, so every alias in [`ALIASES`] shares it.
 const EXTENSIONS: &[(&str, &str)] = &[
@@ -128,6 +178,21 @@ mod tests {
                 file_extension(Some(canonical_name)),
                 "{alias}"
             );
+        }
+    }
+
+    #[test]
+    fn display_names_are_human_and_unknown_ids_stay_as_written() {
+        for (language, expected) in [
+            ("cpp", "C++"),
+            ("csharp", "C#"),
+            ("bash", "Shell (bash)"),
+            ("javascript", "JavaScript"),
+            ("xml", "XML"),
+            ("text", "Plain text"),
+            ("custom-language", "custom-language"),
+        ] {
+            assert_eq!(display_name(language), expected);
         }
     }
 
