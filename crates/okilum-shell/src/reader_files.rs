@@ -571,17 +571,23 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Build the nested editor from this small dispatch frame; the read
+        // viewers' builder temporaries live in their own frame (#2825).
         if self.editing.is_some() {
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .when(preview.code.is_some(), |view| {
-                    view.key_context(reader_code_file::KEY_CONTEXT)
-                })
-                .child(self.render_file_header_viewport(window, cx))
-                .child(self.render_source(window, cx))
-                .into_any_element();
+            let header = self.render_file_header_viewport(window, cx);
+            let source = self.render_source(window, cx);
+            return file_edit_column(preview.code.is_some(), header, source);
         }
+        self.render_file_viewer(preview, window, cx)
+    }
+
+    #[inline(never)]
+    fn render_file_viewer(
+        &self,
+        preview: &FilePreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(virtual_log) = &preview.virtual_log {
             return v_flex()
                 .size_full()
@@ -815,6 +821,17 @@ impl Reader {
             )
             .into_any_element()
     }
+}
+
+#[inline(never)]
+fn file_edit_column(code: bool, header: AnyElement, source: AnyElement) -> AnyElement {
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .when(code, |view| view.key_context(reader_code_file::KEY_CONTEXT))
+        .child(header)
+        .child(source)
+        .into_any_element()
 }
 
 /// HEIC uses Apple's image decoder off the UI thread; the temporary PNG is

@@ -717,6 +717,10 @@ impl Reader {
         self.refresh_code_host(cx);
     }
 
+    /// Every Reader edit draw calls this, usually only to return `None` for a
+    /// file editor. Keep that check in a small frame: unoptimized Button
+    /// builder temporaries otherwise reserve hundreds of KiB on the native
+    /// main stack for the whole nested Reader render (#2825).
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self
             .editing
@@ -726,15 +730,95 @@ impl Reader {
             return None;
         }
         let target = self.code_scope_for_display(cx, true)?;
-        let editing = self.editing.as_ref()?;
+        self.editing.as_ref()?;
+        Some(self.code_operations_panel(target, cx))
+    }
+
+    #[inline(never)]
+    fn code_operations_panel(&self, target: Scope, cx: &mut Context<Self>) -> AnyElement {
+        let editing = self.editing.as_ref().unwrap();
         let state = &editing.operations;
-        let owner = cx.entity().downgrade();
-        let language = target.language.clone();
         let disabled = state.busy
             || editing.conflict_detected
             || editing.save_failed
             || !editing.input.read(cx).is_editable();
-        let selector = Button::new("source-code-language")
+        let status = state
+            .status
+            .as_ref()
+            .filter(|(stamp, range, language, _)| {
+                *stamp == target.stamp && *range == target.range && *language == target.language
+            })
+            .map(|(_, _, _, text)| text.clone())
+            .unwrap_or_else(|| "Validation not checked for this revision".into());
+        let status = if state.busy {
+            state.notice.clone().unwrap_or_else(|| {
+                state
+                    .running
+                    .as_ref()
+                    .map(|run| run.action.busy_text())
+                    .unwrap_or("Working…")
+                    .into()
+            })
+        } else {
+            state.notice.clone().unwrap_or(status)
+        };
+        let controls = code_operation_controls(
+            [
+                self.code_language_selector(target.language.clone(), disabled, cx),
+                code_operation_button(
+                    "source-code-format",
+                    "Format",
+                    false,
+                    disabled,
+                    cx.listener(|this, _, window, cx| {
+                        this.code_operation(Action::Format, window, cx)
+                    }),
+                ),
+                code_operation_button(
+                    "source-code-validate",
+                    "Validate",
+                    true,
+                    disabled,
+                    cx.listener(|this, _, window, cx| {
+                        this.code_operation(Action::Validate, window, cx)
+                    }),
+                ),
+                code_operation_button(
+                    "source-code-repair",
+                    "Repair…",
+                    true,
+                    disabled,
+                    cx.listener(|this, _, window, cx| {
+                        this.code_operation(Action::Repair, window, cx)
+                    }),
+                ),
+            ],
+            state.busy.then(|| {
+                code_operation_button(
+                    "source-code-operation-cancel",
+                    "Cancel",
+                    true,
+                    false,
+                    cx.listener(|this, _, _, cx| this.cancel_code_operation(cx)),
+                )
+            }),
+        );
+        let preview = state
+            .preview
+            .as_ref()
+            .map(|preview| self.code_repair_preview(preview, cx));
+        code_operations_column(controls, status, preview)
+    }
+
+    #[inline(never)]
+    fn code_language_selector(
+        &self,
+        language: String,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        Button::new("source-code-language")
             .disabled(disabled)
             .small()
             .ghost()
@@ -764,132 +848,59 @@ impl Reader {
                             },
                         ))
                     })
-            });
-        let status = state
-            .status
-            .as_ref()
-            .filter(|(stamp, range, language, _)| {
-                *stamp == target.stamp && *range == target.range && *language == target.language
             })
-            .map(|(_, _, _, text)| text.clone())
-            .unwrap_or_else(|| "Validation not checked for this revision".into());
-        let status = if state.busy {
-            state.notice.clone().unwrap_or_else(|| {
-                state
-                    .running
-                    .as_ref()
-                    .map(|run| run.action.busy_text())
-                    .unwrap_or("Working…")
-                    .into()
-            })
-        } else {
-            state.notice.clone().unwrap_or(status)
-        };
-        let controls = h_flex()
+            .into_any_element()
+    }
+
+    #[inline(never)]
+    fn code_repair_preview(&self, preview: &Preview, cx: &mut Context<Self>) -> [AnyElement; 3] {
+        let columns = h_flex()
             .gap_2()
-            .flex_wrap()
-            .child(selector)
             .child(
-                Button::new("source-code-format")
-                    .small()
-                    .label("Format")
-                    .disabled(disabled)
-                    .debug_selector(|| "source-code-format".into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.code_operation(Action::Format, window, cx)
-                    })),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child("Original (unchanged)")
+                    .child(Editor::new(&preview.before).readonly(true).h(px(160.))),
             )
             .child(
-                Button::new("source-code-validate")
-                    .small()
-                    .ghost()
-                    .label("Validate")
-                    .disabled(disabled)
-                    .debug_selector(|| "source-code-validate".into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.code_operation(Action::Validate, window, cx)
-                    })),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child("Proposed repair")
+                    .child(Editor::new(&preview.after).readonly(true).h(px(160.))),
             )
-            .child(
-                Button::new("source-code-repair")
-                    .small()
-                    .ghost()
-                    .label("Repair…")
-                    .disabled(disabled)
-                    .debug_selector(|| "source-code-repair".into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.code_operation(Action::Repair, window, cx)
-                    })),
-            )
-            .when(state.busy, |controls| {
-                controls.child(
-                    Button::new("source-code-operation-cancel")
-                        .small()
-                        .ghost()
-                        .label("Cancel")
-                        .debug_selector(|| "source-code-operation-cancel".into())
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel_code_operation(cx))),
-                )
-            });
-        let mut view = v_flex().px_4().py_2().gap_1().child(controls).child(
+            .into_any_element();
+        let apply = code_operation_button(
+            "source-code-repair-apply",
+            "Apply repair",
+            false,
+            false,
+            cx.listener(|this, _, window, cx| this.apply_code_repair(window, cx)),
+        );
+        let cancel = code_operation_button(
+            "source-code-repair-cancel",
+            "Cancel",
+            true,
+            false,
+            cx.listener(|this, _, _, cx| {
+                if let Some(editing) = this.editing.as_mut() {
+                    editing.operations.preview = None;
+                    editing.operations.status = None;
+                    editing.operations.notice = Some("Repair cancelled.".into());
+                    editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
+                }
+                cx.notify();
+            }),
+        );
+        [
             div()
                 .text_sm()
-                .debug_selector(|| "source-code-validation".into())
-                .child(status),
-        );
-        if let Some(preview) = &state.preview {
-            let columns = h_flex()
-                .gap_2()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child("Original (unchanged)")
-                        .child(Editor::new(&preview.before).readonly(true).h(px(160.))),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child("Proposed repair")
-                        .child(Editor::new(&preview.after).readonly(true).h(px(160.))),
-                );
-            view = view
-                .child(div().text_sm().child(preview.explanation.clone()))
-                .child(columns)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("source-code-repair-apply")
-                                .small()
-                                .label("Apply repair")
-                                .debug_selector(|| "source-code-repair-apply".into())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.apply_code_repair(window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("source-code-repair-cancel")
-                                .small()
-                                .ghost()
-                                .label("Cancel")
-                                .debug_selector(|| "source-code-repair-cancel".into())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(editing) = this.editing.as_mut() {
-                                        editing.operations.preview = None;
-                                        editing.operations.status = None;
-                                        editing.operations.notice =
-                                            Some("Repair cancelled.".into());
-                                        editing.operations.notice_stamp =
-                                            Some(editing.input.read(cx).source_stamp());
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
-                );
-        }
-        Some(view.into_any_element())
+                .child(preview.explanation.clone())
+                .into_any_element(),
+            columns,
+            repair_actions(apply, cancel),
+        ]
     }
 
     fn select_code_language(&mut self, target: &Scope, name: &str, cx: &mut Context<Self>) {
@@ -1674,3 +1685,63 @@ mod tests {
 
 #[cfg(test)]
 mod large_tests;
+
+// Each Button chain gets its own short-lived frame; none of them stays
+// reserved while the rest of a nested Reader draw runs (#2825).
+#[inline(never)]
+fn code_operation_button(
+    id: &'static str,
+    label: &'static str,
+    ghost: bool,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    Button::new(id)
+        .small()
+        .when(ghost, |button| button.ghost())
+        .label(label)
+        .disabled(disabled)
+        .debug_selector(move || id.into())
+        .on_click(on_click)
+        .into_any_element()
+}
+
+#[inline(never)]
+fn code_operation_controls(buttons: [AnyElement; 4], cancel: Option<AnyElement>) -> AnyElement {
+    h_flex()
+        .gap_2()
+        .flex_wrap()
+        .children(buttons)
+        .children(cancel)
+        .into_any_element()
+}
+
+#[inline(never)]
+fn code_operations_column(
+    controls: AnyElement,
+    status: String,
+    preview: Option<[AnyElement; 3]>,
+) -> AnyElement {
+    v_flex()
+        .px_4()
+        .py_2()
+        .gap_1()
+        .child(controls)
+        .child(
+            div()
+                .text_sm()
+                .debug_selector(|| "source-code-validation".into())
+                .child(status),
+        )
+        .children(preview.into_iter().flatten())
+        .into_any_element()
+}
+
+#[inline(never)]
+fn repair_actions(apply: AnyElement, cancel: AnyElement) -> AnyElement {
+    h_flex()
+        .gap_2()
+        .child(apply)
+        .child(cancel)
+        .into_any_element()
+}
