@@ -61,6 +61,8 @@ def positive(binary, filter_, expected=None):
 
 
 CONTROLS = [
+    ('restore-overrides-choice', 'file2811_pending_read_restore_yields_to_a_new_view_choice'),
+    ('cancel-status', 'file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo'),
     ('geometry-partition', 'edit2803_native_geometry_accepts_same_font_run_batches'),
     ('missing-file-icons', 'brand::tests::every_local_functional_icon_is_embedded'),
     ('conflict-toast', 'file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast'),
@@ -96,6 +98,9 @@ CONTROLS = [
 ]
 
 try:
+    edit('reader_code_file/view.rs',
+         '        self.restored_presentation = None;\n        self.provisional_interacted.set(true);',
+         '        if !crate::file2811_control("restore-overrides-choice") {self.restored_presentation = None;}\n        self.provisional_interacted.set(true);')
     edit('platform/shaped_line_cache.rs',
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {',
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {\n        if crate::file2811_control("geometry-partition") { return native_ascii::exact_geometry(a, b); }')
@@ -109,6 +114,8 @@ fn file2811_control(name: &str) -> bool {
 }
 fn main() {''')
     base = 'reader_editor/code_operations/file_chrome.rs'
+    edit(base, '                            e.operations.status = None;\n                            e.operations.preview = None;',
+         '                            if !crate::file2811_control("cancel-status") {e.operations.status = None;}\n                            e.operations.preview = None;')
     edit('reader_editor/code_operations.rs', '.is_some_and(|editing| !editing.markdown)',
          '.is_some_and(|editing| !editing.markdown) && !crate::file2811_control("legacy-host")')
     edit(base, 'struct Part {', 'struct Part {\n    _hold: Option<Entity<FileChrome>>,')
@@ -181,6 +188,10 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
             assert 'test result: FAILED' in result.stdout and 'panicked at' in result.stdout and test in result.stdout, control
             if control == 'geometry-partition':
                 assert 'same-font native batching preserves exact geometry' in result.stdout, result.stdout
+            elif control == 'restore-overrides-choice':
+                assert 'pending Read restoration never overrides a newer header view choice' in result.stdout, result.stdout
+            elif control == 'cancel-status':
+                assert 'Cancel restores the live invalid JSON bottom line' in result.stdout, result.stdout
             print('FILE2811_COMPILED_NEGATIVE_FIRED', control, flush=True)
 finally:
     for path, data in original.items():

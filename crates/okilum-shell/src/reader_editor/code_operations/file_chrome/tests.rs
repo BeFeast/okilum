@@ -499,6 +499,8 @@ fn file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo(cx: &mut TestAppC
     let (reader, _file, input, visual, temp) = open(cx, "broken.json", original);
     let path = temp.path().join("vault/broken.json");
     let body = measured(visual, "file-edit-body");
+    let invalid = drawn(&input);
+    assert!(invalid.1.starts_with("Not valid JSON. Line 1, column"));
     let original_stamp = input.read_with(visual, |s, _| s.source_stamp());
     reader.update_in(visual, |r, w, cx| r.code_operation(Action::Repair, w, cx));
     frame(visual);
@@ -516,6 +518,12 @@ fn file2811_repair_sheet_keeps_top_cancel_bytes_apply_and_undo(cx: &mut TestAppC
         input.read_with(visual, |s, _| s.source_stamp()),
         original_stamp
     );
+    assert_eq!(
+        drawn(&input).1,
+        invalid.1,
+        "Cancel restores the live invalid JSON bottom line"
+    );
+    assert_eq!(drawn(&input).2, invalid.2);
     reader.update_in(visual, |r, w, cx| r.code_operation(Action::Repair, w, cx));
     frame(visual);
     click(visual, "file-repair-apply");

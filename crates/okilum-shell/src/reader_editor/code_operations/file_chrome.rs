@@ -1165,6 +1165,7 @@ fn sheet(reader: &Reader, window: &Window, cx: &App) -> AnyElement {
                 .on_click(move |_, w, cx| {
                     let _ = cancel.update(cx, |r, cx| {
                         if let Some(e) = &mut r.editing {
+                            e.operations.status = None;
                             e.operations.preview = None;
                             e.operations.notice = None;
                         }
