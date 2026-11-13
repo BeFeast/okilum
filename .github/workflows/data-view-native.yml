@@ -160,7 +160,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/
@@ -184,6 +184,8 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
         with:
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: windows-atlas-upload-v1
           cache-on-failure: true
       - name: Prepare checksum-pinned DirectX backend
@@ -284,7 +286,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.release_cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && steps.release_cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/

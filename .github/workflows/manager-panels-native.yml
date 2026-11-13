@@ -68,10 +68,10 @@ jobs:
           path: qa/manager-panels-2693-2694/
           if-no-files-found: warn
           retention-days: 7
-      # macOS target caches are 1-3 GB: only main saves them, so branch runs cannot
-      # evict main's (and the beta shipping) caches from the 10 GB repo quota.
+      # Cargo caches are 1-4 GB: only main saves them, so branch runs cannot
+      # evict main's caches from the 10 GB repo quota (#2880, #2881).
       - name: Save Cargo cache
-        if: ${{ success() && steps.cargo-cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+        if: ${{ success() && steps.cargo-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: |

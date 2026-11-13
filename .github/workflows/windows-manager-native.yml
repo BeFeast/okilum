@@ -47,6 +47,8 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
         with:
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: windows-manager-native-v1
       - uses: actions/download-artifact@v4
         with:

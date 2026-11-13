@@ -97,7 +97,7 @@ jobs:
             python3 scripts/ci/keymap-check.py
           fi
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/

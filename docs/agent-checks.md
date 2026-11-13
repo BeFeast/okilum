@@ -22,6 +22,11 @@
   gate) runs once a day before Stable is built, and gates Stable only.
 - A compile or test run may still be started in the background for
   information; nothing waits for it.
+- **Caches** (#2880, #2881): only runs on `main` save Cargo caches; branch
+  runs restore main's and save nothing, so they cannot evict main's caches
+  from the 10 GB repository quota. A daily scheduled `agent-checks` run on
+  `main` (22:30 UTC) runs `pre-merge`, `linux` and `windows-recovery` only to
+  warm those caches; it gates nothing.
 
 ## The full set
 
