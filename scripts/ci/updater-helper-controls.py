@@ -49,9 +49,6 @@ CONTROLS = [
     ('locator-without-recovery', 'locator.rs',
      [(b'        recover_helper(&config.UpdateExePath);', b'')],
      RECOVERY, 'killed_process_does_not_lose_recovery_files_and_next_locator_restores_helper'),
-    ('attributes-not-copied', 'helper_replace.rs',
-     [(b'FILE_FLAGS_AND_ATTRIBUTES(attributes)', b'FILE_ATTRIBUTE_NORMAL')],
-     ZIP, 'windows::replacement_preserves_explicit_execute_ace_and_nondefault_attributes'),
     ('delete-then-rename', 'helper_replace.rs',
      [(b'                operations.replace(&p)\n',
        b'                { fs::remove_file(&p.destination)?; operations.restore(&p.stage, &p.destination) }\n')],
@@ -82,7 +79,8 @@ CONTROLS = [
 def run(*args):
     result = subprocess.run(COMMAND + list(args), cwd=ROOT, text=True, encoding='utf-8',
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    print(result.stdout, flush=True)
+    # Cap each line: a single huge assertion line can swallow the rest of the CI log.
+    print('\n'.join(line[:2000] for line in result.stdout.splitlines()), flush=True)
     return result
 
 

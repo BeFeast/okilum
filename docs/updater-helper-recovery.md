@@ -32,9 +32,10 @@ Invariant: a file only ever acquires the destination, stage or backup name
 through an atomic rename of a complete file. The stage is the verified, flushed
 extraction (no-clobber `MoveFileExW`, write-through); the backup is the original
 renamed by `ReplaceFileW`, which always receives the backup name (never NULL)
-with flags 0, so ACL and merge errors fail. ReplaceFileW keeps the destination's
-DACL, owner and streams; its attributes are copied to the stage first. With no
-destination (first install) the stage is renamed into place.
+with flags 0, so ACL and merge errors fail. ReplaceFileW gives the new helper
+the destination's DACL, owner, attributes and streams; the native metadata
+control showed that copying attributes to the stage beforehand is unnecessary.
+With no destination (first install) the stage is renamed into place.
 
 Recovery runs at the start of every publication, after any failed publication,
 and in the locator before it checks that `Update.exe` exists:

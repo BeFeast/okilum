@@ -64,7 +64,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,281 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Invariant: a file only ever acquires the destination, `.vpk-stage` or
@@ -95,8 +95,7 @@
 +    use windows::{
 +        core::PCWSTR,
 +        Win32::Storage::FileSystem::{
-+            GetFileAttributesW, MoveFileExW, ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
-+            FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES, MOVEFILE_WRITE_THROUGH, REPLACE_FILE_FLAGS,
++            MoveFileExW, ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL, MOVEFILE_WRITE_THROUGH, REPLACE_FILE_FLAGS,
 +        },
 +    };
 +    const REMOVE_REPLACED: i32 = 1175;
@@ -260,14 +259,8 @@
 +        let _ = temporary.keep();
 +        let transaction = || -> io::Result<()> {
 +            if p.destination.try_exists()? {
-+                // ReplaceFileW keeps the DACL, owner and streams of the replaced
-+                // file but not its attributes; copy those to the stage first.
-+                let attributes = unsafe { GetFileAttributesW(PCWSTR(wide(&p.destination)?.as_ptr())) };
-+                if attributes == INVALID_FILE_ATTRIBUTES {
-+                    return Err(io::Error::last_os_error());
-+                }
-+                unsafe { SetFileAttributesW(PCWSTR(wide(&p.stage)?.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attributes)) }
-+                    .map_err(io::Error::from)?;
++                // ReplaceFileW gives the replacement the replaced file's DACL,
++                // owner, attributes and streams (native control: zip_compat).
 +                operations.replace(&p)
 +            } else {
 +                operations.restore(&p.stage, &p.destination)

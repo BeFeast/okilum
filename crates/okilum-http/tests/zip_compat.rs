@@ -31,7 +31,10 @@ fn assert_preserved_on_failure(bytes: &[u8]) {
     fs::write(&path, original).unwrap();
     let bundle = load_bundle_from_memory(bytes).unwrap();
     assert!(bundle.extract_zip_idx_to_path(0, &path).is_err());
-    assert_eq!(fs::read(&path).unwrap(), original);
+    assert!(
+        fs::read(&path).unwrap() == original,
+        "installed helper changed by a failed extraction"
+    );
     assert_eq!(
         fs::read_dir(dir.path()).unwrap().count(),
         1,
