@@ -1054,7 +1054,6 @@ impl Copied {
         match self.cut_at {
             None => "Copied".into(),
             Some(0) => "Copied without the binary request body".into(),
-            Some(1) => "Copied without the values containing ! (unsafe in cmd; use bash or PowerShell for them)".into(),
             Some(limit) => format!(
                 "Copied the first {}; the value is longer",
                 model::bytes(limit as i64)

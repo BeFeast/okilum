@@ -94,13 +94,16 @@ read after the request's bytes are verified, and a copy cut at its 64 MB cap
 says so.
 
 The header Copy menu and a request's context menu offer Copy URL, Copy as cURL
-(bash), Copy as cURL (cmd), Copy as PowerShell (`Invoke-WebRequest`), Copy
-response body and Save response body as…. Each command quotes values for its
-one shell: bash single quotes; cmd `^"…^"` with MSVCRT quoting and `^`-escaped
-metacharacters; PowerShell single-quoted strings with every quote character
-doubled. The URL is passed with `--url`, header names must be HTTP tokens,
-CR/LF in header values become spaces, pseudo-headers and Content-Length are
-left to curl, and a binary request body is left out (the toast says so).
+(bash), Copy as PowerShell (`Invoke-WebRequest`), Copy response body and Save
+response body as…. Each command quotes values for its one shell: bash single
+quotes; PowerShell single-quoted strings with every quote character doubled.
+There is no cmd.exe variant: cmd expands `%…%` (and `!…!` with delayed
+expansion) in ways no quoting makes safe for every caller; on Windows use
+PowerShell or bash. The URL is passed with `--url`, header names must be HTTP
+tokens, CR/LF in header values become spaces, pseudo-headers and
+Content-Length are left to curl, and a binary request body is left out (the
+toast says so). Save as refuses the HAR file itself (same file identity,
+including links).
 Save as streams the whole decoded body (base64 included) from the capture into
 a temporary file next to the chosen name, which replaces it only when complete.
 

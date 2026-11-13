@@ -1053,11 +1053,19 @@ fn part2_header_copy_menu_copies_url_curl_and_response(cx: &mut TestAppContext) 
     invoke(&reader, visual, "har-copy-powershell");
     let powershell = clipboard_text(visual).unwrap();
     assert!(powershell.starts_with("Invoke-WebRequest -UseBasicParsing -Uri 'https://api.example.test/v1/login' -Method 'POST'"));
-    set_sentinel(visual);
-    invoke(&reader, visual, "har-copy-curl-cmd");
-    assert!(clipboard_text(visual)
-        .unwrap()
-        .starts_with("curl --url ^\"https://api.example.test/v1/login^\""));
+    // No cmd.exe variant anywhere: header Copy menu and the row menu.
+    let ids: Vec<&str> = reader.read_with(visual, |reader, cx| {
+        reader
+            .viewer_chrome(cx)
+            .copy_actions
+            .iter()
+            .map(|a| a.id)
+            .collect()
+    });
+    assert!(!ids.iter().any(|id| id.contains("cmd")), "{ids:?}");
+    assert!(RequestCopy::all()
+        .iter()
+        .all(|what| !what.label().contains("cmd")));
     // A binary response is not pasted as text.
     har.update(visual, |har, cx| har.select(3, cx));
     draw(visual);

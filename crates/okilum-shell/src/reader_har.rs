@@ -1806,15 +1806,11 @@ fn request_text(
                     }
                 }
             }
-            let command = curl::command(&request, shell);
             let mut copied = details::Copied {
-                text: command.text,
+                text: curl::command(&request, shell),
                 cut_at: None,
             };
-            if command.left_out {
-                // Marks the cmd label: values with `!` were left out.
-                copied.cut_at = Some(1);
-            } else if request.body_omitted {
+            if request.body_omitted {
                 copied.cut_at = Some(0);
             }
             Ok(copied)
@@ -1887,16 +1883,25 @@ fn same_file(a: &Path, b: &Path) -> bool {
             _ => false,
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        match (a.canonicalize(), b.canonicalize()) {
-            (Ok(a), Ok(b)) => {
-                a == b
-                    || a.to_string_lossy()
-                        .eq_ignore_ascii_case(&b.to_string_lossy())
-            }
-            _ => false,
-        }
+        // Volume serial + 128-bit file ID of the opened files: hard links,
+        // links and other spellings of the name all match.
+        let identity = |path: &Path| {
+            std::fs::File::open(path).ok().and_then(|file| {
+                okilum_write_authority::filesystem_identity::file_identity(&file).ok()
+            })
+        };
+        let same_id = matches!((identity(a), identity(b)), (Some(x), Some(y)) if x == y);
+        let same_path = matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(x), Ok(y)) if x == y || x.to_string_lossy().eq_ignore_ascii_case(&y.to_string_lossy())
+        );
+        same_id || same_path
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
     }
 }
 
