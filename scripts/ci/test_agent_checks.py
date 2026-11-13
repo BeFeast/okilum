@@ -531,7 +531,7 @@ class HelperFlowTests(unittest.TestCase):
                 calls = log.read_text().splitlines()
                 self.assertCountEqual(accounts.read_text().splitlines(),
                                       ['reader-editor-live-preview', 'issue2486',
-                                       'file-editor-network-save-tests'])
+                                       'file-editor-network-save-tests', 'issue1588'])
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
                 for selection in ('direct::existing::tests::', 'reader_settings_sync::',
                                   'reader_feedback::ui_tests::feedback2749_',
