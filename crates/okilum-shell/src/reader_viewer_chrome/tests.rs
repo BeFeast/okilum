@@ -152,15 +152,17 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
         }
         // Keyboard selection exercises the actual dropdown click handler.
         // In logs the unselected raw-line command is disabled and skipped.
-        let preceding = reader.read_with(visual, |reader, cx| {
-            reader
-                .viewer_chrome(cx)
-                .copy_actions
-                .iter()
-                .filter(|action| action.enabled)
-                .count()
+        // The first Down selects index 0 even when that item is disabled (a
+        // table's Copy cells without a selection); later presses skip
+        // disabled items. Count the presses that reach Copy file content.
+        let presses = reader.read_with(visual, |reader, cx| {
+            let actions = reader.viewer_chrome(cx).copy_actions;
+            match actions.split_first() {
+                None => 1,
+                Some((_, rest)) => 2 + rest.iter().filter(|action| action.enabled).count(),
+            }
         });
-        visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(preceding + 1)));
+        visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(presses)));
         visual.run_until_parked();
         assert_eq!(
             clipboard(visual).as_deref(),
