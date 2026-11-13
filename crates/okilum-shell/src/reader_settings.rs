@@ -2643,7 +2643,7 @@ mod tests {
                     assert_eq!(
                         labels,
                         if titles && !folder {
-                            vec!["Alpha metadata", "Zebra heading", "data.csv"]
+                            vec!["Alpha metadata", "data.csv", "Zebra heading"]
                         } else {
                             vec!["a", "data.csv", "z"]
                         },
