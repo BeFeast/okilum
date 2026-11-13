@@ -42,9 +42,9 @@ pub struct Changes {
     pub directories: BTreeSet<String>,
     /// Dropped events require a complete metadata scan.
     pub rescan: bool,
-    /// The vault's language policy (`@Schema/language.yaml` or
-    /// `_Schema/language.yaml`) was written, created or removed. Never
-    /// note/index input; agent-file language checks re-read the policy.
+    /// The vault's language policy ([`crate::agent_language::POLICY_PATH`])
+    /// was written, created or removed. Never note/index input; agent-file
+    /// language checks re-read the policy.
     pub language_policy: bool,
 }
 
@@ -443,14 +443,9 @@ impl VaultWatcher {
     }
 }
 
-/// Vault-relative locations of the language policy read by agent-file checks.
-pub const LANGUAGE_POLICY_PATHS: [&str; 2] = ["@Schema/language.yaml", "_Schema/language.yaml"];
-
-/// Exact policy files only, so an ordinary YAML write never wakes the check.
+/// The exact policy file only, so an ordinary YAML write never wakes the check.
 fn is_language_policy(relative: &Path) -> bool {
-    LANGUAGE_POLICY_PATHS
-        .iter()
-        .any(|policy| relative == Path::new(policy))
+    relative == Path::new(crate::agent_language::POLICY_PATH)
 }
 
 /// Only service-set changes, never ordinary ops notes/runbooks. Directory
@@ -560,9 +555,11 @@ mod service_metadata_tests {
     fn language_policy_write_is_delivered_without_becoming_a_note() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("@Schema")).unwrap();
         std::fs::create_dir_all(root.join("_Schema")).unwrap();
+        std::fs::write(root.join("@Schema/language.yaml"), "backlog: []\n").unwrap();
+        std::fs::write(root.join("@Schema/other.yaml"), "x: 0\n").unwrap();
         std::fs::write(root.join("_Schema/language.yaml"), "backlog: []\n").unwrap();
-        std::fs::write(root.join("_Schema/other.yaml"), "x: 0\n").unwrap();
         let mut watcher = VaultWatcher::new(&root).unwrap();
         let baseline_deadline = Instant::now() + Duration::from_secs(8);
         while watcher.wait(Duration::from_secs(2)).is_some() {
@@ -572,10 +569,19 @@ mod service_metadata_tests {
             );
         }
         // Control: another YAML file in the same folder stays silent.
-        std::fs::write(root.join("_Schema/other.yaml"), "x: 1\n").unwrap();
+        std::fs::write(root.join("@Schema/other.yaml"), "x: 1\n").unwrap();
         assert!(watcher.wait(Duration::from_secs(2)).is_none());
+        // #2847: an `_Schema` copy is an ordinary file, not the policy.
+        std::fs::write(root.join("_Schema/language.yaml"), "backlog: [x]\n").unwrap();
+        let ordinary = watcher.wait(Duration::from_secs(5));
+        assert!(
+            ordinary
+                .as_ref()
+                .is_none_or(|changes| !changes.language_policy),
+            "{ordinary:?}"
+        );
         std::fs::write(
-            root.join("_Schema/language.yaml"),
+            root.join("@Schema/language.yaml"),
             "backlog:\n  - pattern: 'x'\n    good: y\n",
         )
         .unwrap();
@@ -586,9 +592,10 @@ mod service_metadata_tests {
         assert!(changes.notes_empty() && changes.metadata.is_empty());
         assert!(!changes.is_empty());
         assert!(is_language_policy(Path::new("@Schema/language.yaml")));
-        assert!(!is_language_policy(Path::new("_Schema")));
-        assert!(!is_language_policy(Path::new("Area/_Schema/language.yaml")));
-        assert!(!is_language_policy(Path::new("_Schema/other.yaml")));
+        assert!(!is_language_policy(Path::new("@Schema")));
+        assert!(!is_language_policy(Path::new("_Schema/language.yaml")));
+        assert!(!is_language_policy(Path::new("Area/@Schema/language.yaml")));
+        assert!(!is_language_policy(Path::new("@Schema/other.yaml")));
     }
 
     #[test]

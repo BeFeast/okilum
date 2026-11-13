@@ -7448,7 +7448,8 @@ mod agent_publication_tests {
 /// Decoration collection holding the language marks of one source editor.
 struct AgentLanguageMarks {
     input: EntityId,
-    capture: Option<usize>,
+    /// [`reader_agent_language::Controller::publication`] these marks show.
+    capture: Option<u64>,
     collection: gpui_component::input::TextDecorationCollection,
 }
 
@@ -7594,12 +7595,12 @@ impl Reader {
     fn sync_agent_language_marks(&mut self, cx: &mut Context<Self>) {
         let input = self.source_input();
         let published = self.agent_language.as_ref().and_then(|c| c.published());
-        let key = input.as_ref().zip(published).map(|(input, published)| {
-            (
-                input.entity_id(),
-                Arc::as_ptr(&published.snapshot.source) as *const u8 as usize,
-            )
-        });
+        // Key on the publication, never the source: a policy-only refresh
+        // publishes new matches for the same captured source `Arc` (#1593).
+        let key = input
+            .as_ref()
+            .zip(self.agent_language.as_ref().and_then(|c| c.publication()))
+            .map(|(input, publication)| (input.entity_id(), publication));
         let Some(input) = input else {
             self.agent_language_marks = None;
             return;
