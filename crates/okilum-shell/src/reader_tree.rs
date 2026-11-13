@@ -1831,8 +1831,8 @@ mod tests {
             entry("A/B/C", Directory),
             entry("A/B/C/deep.md", Markdown),
             entry("A/B/b.md", Markdown),
-            entry("A/_sys", Directory),
-            entry("A/_sys/x.md", Markdown),
+            entry("A/@sys", Directory),
+            entry("A/@sys/x.md", Markdown),
             entry("AB", Directory),
             entry("AB/other.md", Markdown),
             entry("Z", Directory),
@@ -1854,7 +1854,7 @@ mod tests {
         assert_eq!(
             paths(&t),
             ["A", "A/B", "A/B/C", "A/B/C/deep.md", "A/B/b.md", "AB", "Z"],
-            "`AB` shares the prefix but is not inside `A`; `_sys` stays hidden"
+            "`AB` shares the prefix but is not inside `A`; `@sys` stays hidden"
         );
         t.cursor = Some("A/B/C/deep.md".into());
         t.set_subtree("A", false);
