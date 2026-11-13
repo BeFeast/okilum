@@ -1,0 +1,52 @@
+{
+  "producer_run": 43351244577,
+  "producer_controller": "6d073b12ef12b43dc67d35af3794b5a83e886d55",
+  "setup_attempt": 2,
+  "capture_attempt": 1,
+  "failed_setup": {
+    "windows_job": 131656710185,
+    "mac_job": 131657698243,
+    "measured_launches": 0,
+    "etl_files": 0,
+    "mac_cpu_receipts": 0
+  },
+  "observer_patch_sha256": "3d3042532e940e8bb5326f8f3d7cb46728fd1088b6985ccd62cacf6f5cf0709a",
+  "artifacts": {
+    "Windows": {
+      "main": {
+        "id": 14004604064,
+        "name": "qpc-binary-main",
+        "archive_sha256": "eab8884416ee93ec24753b079acad901749f2e2e2c79e88012caec067e12cdd5",
+        "binary_sha256": "ab7f9d11d218dfd80fa6577cd48e292ae018b25f948c3b37d7aef301f0564f93",
+        "base_source": "718d23d8b799bd50569ba0b8ff40e784afb4ed0c",
+        "diagnostic_commit": "51d6bf640ab7af2a41e2c0fac6194c9f6f62c2f2"
+      },
+      "toolbar": {
+        "id": 14006200518,
+        "name": "qpc-binary-toolbar",
+        "archive_sha256": "6ef0205f8032843d004f17d301544a251c5921897abc31c6f9640d4905aa569d",
+        "binary_sha256": "4a265e7a58a20b79cab2281d626b1e509d7c78e26fa2ccfb4634bf32d6d0b2ce",
+        "base_source": "680c230dbcca8ada498cd612ba326f94119540ae",
+        "diagnostic_commit": "a5a95e8b4f617cd025a7be8e9c410318a2497c7b"
+      }
+    },
+    "macOS": {
+      "main": {
+        "id": 14005935476,
+        "name": "qpc-binary-mac-main",
+        "archive_sha256": "3c632dc2b54bdf5238e16d7dad10ed129607bbf5fd4c4ff3ec91a0cf1530c2e4",
+        "binary_sha256": "c7ad23f92bf3a860593dc7f281f5cea3735f590213eabf9c23f9dc17aba22d82",
+        "base_source": "718d23d8b799bd50569ba0b8ff40e784afb4ed0c",
+        "diagnostic_commit": "51d6bf640ab7af2a41e2c0fac6194c9f6f62c2f2"
+      },
+      "toolbar": {
+        "id": 14005424157,
+        "name": "qpc-binary-mac-toolbar",
+        "archive_sha256": "997851f55b9dc9e0478d1106add7997e13012b2bb7f723baf56ec76530b9b5cf",
+        "binary_sha256": "44e7f275ffd1ec904c9d4ec0d2df99b7e04d8e6f3cd96fcb6d0afce13fa4848d",
+        "base_source": "680c230dbcca8ada498cd612ba326f94119540ae",
+        "diagnostic_commit": "a5a95e8b4f617cd025a7be8e9c410318a2497c7b"
+      }
+    }
+  }
+}

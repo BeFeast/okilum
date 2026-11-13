@@ -63,6 +63,31 @@ def receipt():
 
 
 class ParserControls(unittest.TestCase):
+    def test_nonzero_inherited_nice_is_preserved_and_failure_receipt_survives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inherited = {'nice': 7, 'inherited_stack_limit': [8388608, -1]}
+            def fail_after_saved_defaults(inputs, out, result):
+                saved = json.loads((out / 'preflight.json').read_text())
+                self.assertEqual(saved['nice'], 7)
+                self.assertEqual(saved['inherited_stack_limit'], inherited['inherited_stack_limit'])
+                raise AssertionError('deliberate preflight failure after durable host defaults')
+            with patch('runner.sys.platform', 'darwin'), patch('runner.git', return_value=b'controller'), \
+                    patch('runner.inherited_process_state', return_value=inherited), \
+                    patch('runner._preflight_binaries', side_effect=fail_after_saved_defaults):
+                with self.assertRaisesRegex(AssertionError, 'deliberate preflight failure'):
+                    preflight(root / 'inputs', root / 'failure')
+            saved = json.loads((root / 'failure/preflight.json').read_text())
+            self.assertEqual(saved['nice'], 7)
+            self.assertIn('deliberate preflight failure', saved['preflight_error'])
+            with patch('runner.sys.platform', 'darwin'), patch('runner.git', return_value=b'controller'), \
+                    patch('runner.inherited_process_state', return_value=inherited), \
+                    patch('runner._preflight_binaries'):
+                preflight(root / 'inputs', root / 'success')
+            saved = json.loads((root / 'success/preflight.json').read_text())
+            self.assertEqual(saved['nice'], 7)
+            self.assertIsNotNone(saved['completed_unix_ns'])
+
     def test_macho_default_stack_and_override_control(self):
         raw = bytearray(56)
         struct.pack_into('<8I', raw, 0, 0xfeedfacf, 0x0100000c, 0, 2, 1, 24, 0, 0)
@@ -142,7 +167,7 @@ class ParserControls(unittest.TestCase):
                 self.assertEqual(probes.call_count, 2)
             pinned = json.loads((out / 'preflight.json').read_text())
 
-            def native(binary, env, log_path):
+            def native(binary, env, log_path, evidence=None):
                 self.assertEqual(sorted(k for k in env if k.startswith('OKILUM_')),
                                  ['OKILUM_CODE_TOOLBAR_NATIVE_FIXTURE', 'OKILUM_DIAG_COLLECT_ALL'])
                 value = receipt()

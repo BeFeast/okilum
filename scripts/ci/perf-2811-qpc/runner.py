@@ -62,10 +62,24 @@ def validate_receipt(receipt, source, exit_code, log):
     return frames
 
 
-def launch(binary, env, log_path):
+def inherited_process_state():
+    import resource
+    return {'nice': os.getpriority(os.PRIO_PROCESS, 0),
+            'inherited_stack_limit': list(resource.getrlimit(resource.RLIMIT_STACK))}
+
+
+def launch(binary, env, log_path, evidence=None):
+    evidence = evidence if evidence is not None else {}
+    evidence['explicit_priority_settings'] = False
     if sys.platform == 'darwin':
+        evidence['parent_before'] = inherited_process_state()
         with log_path.open('wb') as log:
             process = subprocess.Popen([str(binary)], env=env, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                evidence['child_initial_nice'] = os.getpriority(os.PRIO_PROCESS, process.pid)
+            except OSError as error:
+                evidence['child_initial_nice'] = None
+                evidence['child_priority_probe_error'] = repr(error)
             timed_out = False
             try:
                 code = process.wait(timeout=180)
@@ -73,6 +87,7 @@ def launch(binary, env, log_path):
                 timed_out = True
                 process.kill()
                 code = process.wait(timeout=10)
+        evidence['parent_after'] = inherited_process_state()
         return process.pid, None, code, timed_out
     import _winapi
     import msvcrt
@@ -100,13 +115,26 @@ def launch(binary, env, log_path):
 def preflight(inputs, out):
     inputs, out = inputs.resolve(), out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    result = {'completed_unix_ns': None, 'controller': git('rev-parse', 'HEAD').decode().strip(),
+    result = {'completed_unix_ns': None, 'controller': None,
               'build_info_processes': 2, 'binaries': {}}
-    if sys.platform == 'darwin':
-        import resource
-        result['inherited_stack_limit'] = list(resource.getrlimit(resource.RLIMIT_STACK))
-        result['nice'] = os.getpriority(os.PRIO_PROCESS, 0)
-        assert result['nice'] == 0, 'diagnostic keeps normal inherited process priority'
+    path = out / 'preflight.json'
+    path.write_text(json.dumps(result, indent=2))
+    try:
+        result['controller'] = git('rev-parse', 'HEAD').decode().strip()
+        if sys.platform == 'darwin':
+            result.update(inherited_process_state())
+        # Persist actual host defaults BEFORE any binary/preflight assertion.
+        path.write_text(json.dumps(result, indent=2))
+        _preflight_binaries(inputs, out, result)
+        result['completed_unix_ns'] = time.time_ns()
+    except Exception as error:
+        result['preflight_error'] = repr(error)
+        raise
+    finally:
+        path.write_text(json.dumps(result, indent=2))
+
+
+def _preflight_binaries(inputs, out, result):
     for kind in SOURCES:
         manifest = json.loads((inputs / kind / 'build-manifest.json').read_text())
         assert manifest['kind'] == kind and manifest['base_source'] == SOURCES[kind]
@@ -135,8 +163,6 @@ def preflight(inputs, out):
                  'scripts/patches/gpui-pre-windows/0001-directx-atlas-upload.diff']:
         assert result['binaries']['main']['manifest']['input_sha256'][path] == \
                result['binaries']['toolbar']['manifest']['input_sha256'][path], path
-    result['completed_unix_ns'] = time.time_ns()
-    (out / 'preflight.json').write_text(json.dumps(result, indent=2))
 
 
 def postflight(inputs, out):
@@ -144,7 +170,7 @@ def postflight(inputs, out):
     if sys.platform == 'darwin':
         import resource
         assert list(resource.getrlimit(resource.RLIMIT_STACK)) == pinned['inherited_stack_limit']
-        assert os.getpriority(os.PRIO_PROCESS, 0) == pinned['nice'] == 0
+        assert os.getpriority(os.PRIO_PROCESS, 0) == pinned['nice']
     for kind, value in pinned['binaries'].items():
         binary = native_binary(inputs / kind)
         assert hashlib.sha256(binary.read_bytes()).hexdigest() == value['manifest']['binary_sha256']
@@ -172,14 +198,19 @@ def run_case(pinned, kind, out, text):
               'diagnostic_commit': manifest['diagnostic_commit'],
               'binary_sha256': manifest['binary_sha256'], 'fixture_sha256': FIXTURE_SHA,
               'creation_flags': 0, 'start_unix_ns': time.time_ns(), 'complete': False}
-    pid, tid, code, timeout = launch(binary, env, out / 'native.log')
+    priority = {}
+    pid, tid, code, timeout = launch(binary, env, out / 'native.log', evidence=priority)
     result.update(pid=pid, primary_tid=tid, exit_code=code, timed_out=timeout, end_unix_ns=time.time_ns())
+    result['priority'] = priority
     try:
         assert not timeout, 'native diagnostic timed out'
         log = (out / 'native.log').read_text(encoding='utf-8', errors='replace')
         receipt = json.loads((root / 'toolbar-diagnostic-receipt.json').read_text())
         frames = validate_receipt(receipt, manifest['diagnostic_commit'], code, log)
         if value['binary_metadata']['format'] == 'Mach-O arm64':
+            expected_state = {'nice': pinned['nice'], 'inherited_stack_limit': pinned['inherited_stack_limit']}
+            assert priority['parent_before'] == priority['parent_after'] == expected_state
+            assert priority['explicit_priority_settings'] is False
             clocks = [f['subtree_work']['diagnostic_macos_cpu']['clock'] for f in frames]
             assert all(c['pid'] == pid and c['main_thread'] is True and c['native_tid'] > 0 for c in clocks)
             assert len({c['native_tid'] for c in clocks}) == 1
@@ -207,6 +238,7 @@ def main(inputs, out):
     inputs, out = inputs.resolve(), out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     pinned = json.loads((out / 'preflight.json').read_text())
+    assert pinned['completed_unix_ns'] is not None and 'preflight_error' not in pinned
     assert pinned['controller'] == git('rev-parse', 'HEAD').decode().strip()
     (out / 'plan.json').write_text(json.dumps(PLAN))
     (out / 'host.json').write_text(json.dumps({'platform': platform.platform(), 'cpus': os.cpu_count(),

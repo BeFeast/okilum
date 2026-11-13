@@ -1,0 +1,89 @@
+name: toolbar-2811-capture-only
+on:
+  push:
+    branches: ['diagnostic-toolbar-2811/capture-only-*']
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/ci/perf-2811-qpc -p 'test_*.py' -v
+  collect:
+    needs: controls
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: Windows
+            main_id: '14004604064'
+            toolbar_id: '14006200518'
+          - os: macos-15
+            platform: macOS
+            main_id: '14005935476'
+            toolbar_id: '14005424157'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ matrix.main_id }}
+          merge-multiple: true
+          run-id: 43351244577
+          github-token: ${{ github.token }}
+          path: inputs/main
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ matrix.toolbar_id }}
+          merge-multiple: true
+          run-id: 43351244577
+          github-token: ${{ github.token }}
+          path: inputs/toolbar
+      - name: Verify frozen producer binaries without rebuilding
+        shell: bash
+        run: python3 scripts/ci/perf-2811-qpc/capture_guard.py --inputs inputs --out diagnostics --platform '${{ matrix.platform }}'
+      - name: First Windows fixed capture, setup attempt two
+        id: windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/perf-2811-qpc/capture.ps1
+      - name: Export the same retained Windows ETLs
+        if: ${{ always() && runner.os == 'Windows' && steps.windows.outcome != 'skipped' }}
+        shell: pwsh
+        run: |
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/kernel.raw.etl diagnostics/kernel.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw kernel export failed: retain ETL, never recapture' }
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/markers.raw.etl diagnostics/markers.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw marker export failed: retain ETL, never recapture' }
+          python scripts/ci/perf-2811-qpc/analyze.py diagnostics
+          if ($LASTEXITCODE) { throw 'Evidence rejected: analyze retained ETLs offline' }
+      - name: First Mac fixed census, setup attempt two
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics --mode preflight
+          if python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics; then
+            census_exit=0
+          else
+            census_exit=$?
+          fi
+          python3 scripts/ci/perf-2811-qpc/runner.py --inputs inputs --out diagnostics --mode postflight
+          python3 scripts/ci/perf-2811-qpc/mac_cpu.py diagnostics
+          exit "$census_exit"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-collection-${{ matrix.platform }}
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 7

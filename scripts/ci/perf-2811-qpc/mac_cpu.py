@@ -51,6 +51,12 @@ def analyze(root):
     report = {'evidence': 'THREAD_CPU_QUERY_DELTAS_ONLY', 'production_gate_changed': False,
               'pthread_stack_bytes': stacks.pop(), 'cases': details,
               'limitation': 'CPU alone cannot distinguish Ready from Waiting; no scheduler-state attribution or wall-gate waiver'}
+    report['inherited_parent_nice'] = json.loads((root / 'preflight.json').read_text())['nice']
+    report['child_initial_nice_by_source'] = {kind: [c['priority'].get('child_initial_nice')
+        for c in cases if c['kind'] == kind] for kind in ['main', 'toolbar']}
+    report['child_priority_comparable'] = (
+        None not in report['child_initial_nice_by_source']['main'] + report['child_initial_nice_by_source']['toolbar']
+        and set(report['child_initial_nice_by_source']['main']) == set(report['child_initial_nice_by_source']['toolbar']))
     (root / 'mac-thread-cpu.json').write_text(json.dumps(report, indent=2))
 
 

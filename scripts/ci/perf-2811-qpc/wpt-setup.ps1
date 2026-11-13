@@ -31,7 +31,7 @@ if (-not $version) { throw 'xperf file version is unavailable' }
 $helpText = & $xperf.Source -help start 2>&1 | Out-String
 $helpExit = $LASTEXITCODE
 $helpText | Set-Content "$OutputDirectory/xperf-start-help.txt"
-if ($helpExit -or $helpText -notmatch 'clocktype' -or $helpText -notmatch 'stackwalk') {
+if ($helpExit -or $helpText -notmatch 'clocktype' -or $helpText -notmatch 'PerfCounter' -or $helpText -notmatch 'stackwalk') {
     throw 'xperf start options could not be verified before capture'
 }
 @{ provisioning = $provisioning; xperf_path = $xperf.Source; xperf_file_version = $version;
