@@ -108,12 +108,19 @@ jobs:
         run: |
           python scripts/ci/windows-terminal-console.py
           exit $LASTEXITCODE
-  # Pre-merge gate: no compilation, no Rust tests (Oleg 13.11 ~14:20).
+  # Pre-merge gate (Oleg 13.11 ~14:20, ~15:10): formatting, Python and script
+  # checks plus workspace clippy, which compiles the Linux workspace. No Rust
+  # test suites and no Windows/macOS job; the full set runs daily before Stable.
   pre-merge:
     if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -122,16 +129,47 @@ jobs:
       - name: Record exact source and runner
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
-          printf 'source=%s\n' "$OKILUM_SOURCE_COMMIT"
+          printf 'source=%s\ncpus=%s\n' "$OKILUM_SOURCE_COMMIT" "$(nproc)"
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # Clippy's check artifacts fit the stock image (86G free measured);
+          # the SDK reclaim the full build needs took up to 279 s here.
+          df -h /
       - name: Install system libraries
         timeout-minutes: 10
-        run: sudo bash scripts/ci/hosted-ubuntu-apt.sh python3-venv ffmpeg squashfs-tools zstd
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev squashfs-tools
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo clippy --version
+          cargo fmt --version
+      # Its own namespace keyed without the workflow file, so gate edits keep
+      # the warm cache. Generated vendor trees are cached for their mtimes and
+      # always verified after restore.
+      - name: Restore Rust downloads and target cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: agent-premerge-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**') }}-${{ github.sha }}
+          restore-keys: |
+            agent-premerge-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**') }}-
+            agent-premerge-v1-${{ runner.os }}-
       - name: Prepare and verify pinned vendor and comrak
         run: |
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
           python3 scripts/ci/check-vendor-generation.py
+      - name: Fetch locked public dependencies
+        run: cargo fetch --locked
       - name: Check formatting
         run: cargo fmt --check
       - name: Prepare isolated Python test dependencies
@@ -151,6 +189,21 @@ jobs:
         run: |
           python3 docs/help/sync/check.py
           python3 scripts/rebrand/check_brand.py
+      - name: Lint every workspace target offline
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Save Rust downloads and target cache
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.cache.outputs.cache-primary-key }}
   linux:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     # Public repositories receive the standard 4-vCPU hosted Linux runner.

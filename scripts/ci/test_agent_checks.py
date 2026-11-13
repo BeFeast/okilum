@@ -307,7 +307,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(helper.verdict(failed, SHA, fast=True), 1)
         self.assertEqual(helper.verdict(self.pre_merge_receipt(), "b" * 40, fast=True), 75)
 
-    def test_pre_merge_job_compiles_nothing(self):
+    def test_pre_merge_job_lints_but_runs_no_rust_tests(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
         on = workflow.get("on", workflow.get(True))
         self.assertIn("agent-checks-fast/**", on["push"]["branches"])
@@ -319,11 +319,15 @@ class VerdictTests(unittest.TestCase):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
-        for step in steps:
-            run = step.get("run", "")
-            for compiling in ("cargo build", "cargo test", "cargo clippy", "cargo check", "cargo run",
-                              "at-vault-regression-control"):
-                self.assertNotIn(compiling, run, step.get("name"))
+        runs = [step.get("run", "") for step in steps]
+        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", runs)
+        for run in runs:
+            for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
+                          "at-vault-regression-control", "linux-rust-tests"):
+                self.assertNotIn(heavy, run)
+        # The pre-merge cache must survive edits to this workflow.
+        cache = next(s for s in steps if s.get("id") == "cache")
+        self.assertNotIn("agent-checks.yml", cache["with"]["key"])
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):

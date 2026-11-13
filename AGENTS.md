@@ -47,9 +47,9 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 
 ## Tests and measurements
 
-- Before merge (Oleg 13.11 ~14:20): only checks that compile nothing,
-  `H=github scripts/agent/gh-check.sh --fast` on the exact HEAD; no build, no
-  Rust tests, no three-OS run. The full set (`gh-check.sh` without `--fast`
+- Before merge (Oleg 13.11 ~14:20, ~15:10): `H=github scripts/agent/gh-check.sh
+  --fast` on the exact HEAD: formatting, script checks and workspace clippy on
+  Linux; no Rust test suites, no Windows/macOS run. The full set (`gh-check.sh` without `--fast`
   and the Forgejo full gate) runs once a day before Stable and gates Stable
   only; see `docs/agent-checks.md`. Use local build slots only for
   GitHub outages or checks requiring local hardware. Never run Cargo on maestro

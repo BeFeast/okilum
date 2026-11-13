@@ -1,8 +1,9 @@
 # Agent build/test checks on GitHub
 
-## When which check runs (Oleg 13.11 ~14:20)
+## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 
-- **Before merge:** only checks that compile nothing, a couple of minutes:
+- **Before merge:** formatting, script checks and a Linux workspace compile,
+  about 10–15 minutes:
 
   ```bash
   H=github scripts/agent/gh-check.sh --fast
@@ -11,8 +12,9 @@
   It pushes to `agent-checks-fast/<branch>`, where only the `pre-merge` job
   runs: pinned vendor/comrak verification, `cargo fmt --check`, the helper,
   CI, releases, updater, Syncthing and Sprint Python suites, Sync Help and
-  brand. No clippy, no build, no Rust tests, no Windows or macOS job. A
-  pre-merge verdict never counts as a full one.
+  brand, and `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  with its own warm cache. No Rust test suites, no desktop build, no Windows
+  or macOS job. A pre-merge verdict never counts as a full one.
 - **Beta** is built hourly from the newest main as it is; no check gates it.
   If main does not build, that hour's beta is skipped and the offending PR is
   reverted or fixed within the hour.
