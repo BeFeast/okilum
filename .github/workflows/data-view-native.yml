@@ -154,6 +154,14 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/table-toolbar.py
+      - name: Exercise structured tree compiled negative controls
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          python3 scripts/ci/structured-tree.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -164,6 +172,7 @@ jobs:
             ${{ runner.temp }}/reader-viewer-native-app.log
             target/file-edit-toolbar-controls/
             target/table-toolbar-controls/
+            target/structured-tree-controls/
             ${{ runner.temp }}/code-toolbar-native-app.log
             ${{ runner.temp }}/code-toolbar-native-receipt.json
           if-no-files-found: ignore
