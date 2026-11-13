@@ -40,9 +40,9 @@ fn issue1593_marks_hover_and_policy_refresh_without_a_source_edit(cx: &mut TestA
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("vault");
     std::fs::create_dir_all(root.join("project")).unwrap();
-    std::fs::create_dir_all(root.join("_Schema")).unwrap();
+    std::fs::create_dir_all(root.join("@Schema")).unwrap();
     std::fs::write(root.join("project/AGENTS.md"), SOURCE).unwrap();
-    std::fs::write(root.join("_Schema/language.yaml"), POLICY).unwrap();
+    std::fs::write(root.join("@Schema/language.yaml"), POLICY).unwrap();
     cx.update(|cx| {
         crate::test_init(cx);
         bind_keys(cx);
@@ -106,7 +106,7 @@ fn issue1593_marks_hover_and_policy_refresh_without_a_source_edit(cx: &mut TestA
     // Policy-only change: the source stays byte-identical. The watcher's
     // delivery of this write is covered in okilum-core watch tests.
     std::fs::write(
-        root.join("_Schema/language.yaml"),
+        root.join("@Schema/language.yaml"),
         "backlog:\n  - pattern: 'воркер'\n    good: worker-new\n  - pattern: 'мерж\\w*'\n    good: merge\n",
     )
     .unwrap();

@@ -2,7 +2,7 @@
 //! No source writes, background requests or implicit vault traversal.
 use okilum_core::agent_language::{self, Report, Status};
 
-pub const POLICY_PATH: &str = "@Schema/language.yaml";
+pub use okilum_core::agent_language::POLICY_PATH;
 
 /// The parent reader owns loading the bounded policy snapshot and presenting
 /// `status_text` plus range/hover decorations. Call on current source or policy
@@ -92,6 +92,13 @@ pub struct Published {
     pub report: Report,
 }
 
+/// Process-unique identity of each applied publication. A policy-only refresh
+/// re-checks the same captured source `Arc`, so the source cannot identify it.
+fn next_publication() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 struct Job {
     snapshot: Snapshot,
     cancelled: Arc<AtomicBool>,
@@ -123,6 +130,7 @@ pub struct Controller {
     notify: Arc<dyn Fn() + Send + Sync>,
     current: Option<Job>,
     published: Option<Published>,
+    publication: u64,
 }
 impl Controller {
     pub fn new(notify: impl Fn() + Send + Sync + 'static) -> std::io::Result<Self> {
@@ -188,6 +196,7 @@ impl Controller {
             notify,
             current: None,
             published: None,
+            publication: 0,
         })
     }
 
@@ -259,11 +268,18 @@ impl Controller {
             return false;
         }
         self.published = Some(completion.value);
+        self.publication = next_publication();
         true
     }
 
     pub fn published(&self) -> Option<&Published> {
         self.published.as_ref()
+    }
+
+    /// Identity of the current publication, distinct for every `apply_ready`
+    /// that replaced it (also when only the policy changed).
+    pub fn publication(&self) -> Option<u64> {
+        self.published.as_ref().map(|_| self.publication)
     }
 }
 impl Drop for Controller {
@@ -339,6 +355,35 @@ mod tests {
     fn received<T>(rx: &std::sync::mpsc::Receiver<T>) -> T {
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .expect("worker positive control")
+    }
+
+    #[test]
+    fn policy_only_refresh_of_the_same_source_is_a_new_publication() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut controller = Controller::new(move || {
+            tx.send(()).unwrap();
+        })
+        .unwrap();
+        assert_eq!(controller.publication(), None);
+        let first = capture("r1", "воркер мержит");
+        controller.observe(first.clone());
+        received(&rx);
+        assert!(controller.apply_ready());
+        let before = controller.publication().expect("published");
+        // The reader re-observes with the very same source Arc (#1593).
+        let mut refreshed = first.clone();
+        refreshed.schema_revision = "policy-2".into();
+        refreshed.policy = Ok(
+            "backlog:\n  - pattern: 'воркер'\n    good: w\n  - pattern: 'мерж\\w*'\n    good: m\n"
+                .into(),
+        );
+        assert!(Arc::ptr_eq(&first.source, &refreshed.source));
+        assert!(controller.observe(refreshed));
+        assert_eq!(controller.publication(), None, "retired until republished");
+        received(&rx);
+        assert!(controller.apply_ready());
+        assert_eq!(controller.published().unwrap().report.diagnostics.len(), 2);
+        assert_ne!(controller.publication(), Some(before));
     }
 
     #[test]
