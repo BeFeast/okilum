@@ -1,0 +1,66 @@
+gpui_macos: don't query the tab group of a window that doesn't use tabbing
+
+`Window::new` calls `PlatformWindow::tab_bar_visible`, which sends
+`-[NSWindow tabGroup]`. On first use AppKit creates the window's tab group and
+`NSWindowStackController`. For a window opened without a tabbing identifier,
+GPUI has already disabled automatic window tabbing, so the window cannot show
+a native tab bar. Return false for it without touching the tab group.
+
+Measured on a cold first window (hosted macos-15, debug, Time Profiler): the
+`tabGroup` call took ~590 ms wall, 506 ms of it blocked off-CPU.
+
+diff --git a/src/window.rs b/src/window.rs
+index 88a694c..02689bc 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -631,6 +631,9 @@ struct MacWindowState {
+     select_next_tab_callback: Option<Box<dyn FnMut()>>,
+     select_previous_tab_callback: Option<Box<dyn FnMut()>>,
+     toggle_tab_bar_callback: Option<Box<dyn FnMut()>>,
++    // False when this window has no tabbing identifier: automatic window
++    // tabbing is then disabled, so it cannot show a native tab bar.
++    uses_tabbing: bool,
+     activated_least_once: bool,
+     closed: Arc<AtomicBool>,
+     accesskit_adapter: Option<accesskit_macos::SubclassingAdapter>,
+@@ -1063,6 +1066,7 @@ impl MacWindow {
+                 select_next_tab_callback: None,
+                 select_previous_tab_callback: None,
+                 toggle_tab_bar_callback: None,
++                uses_tabbing: allows_automatic_window_tabbing,
+                 activated_least_once: false,
+                 closed: Arc::new(AtomicBool::new(false)),
+                 accesskit_adapter: None,
+@@ -1408,7 +1412,11 @@ impl PlatformWindow for MacWindow {
+     }
+ 
+     fn set_tabbing_identifier(&self, tabbing_identifier: Option<String>) {
+-        let native_window = self.0.lock().native_window;
++        let native_window = {
++            let mut state = self.0.lock();
++            state.uses_tabbing = tabbing_identifier.is_some();
++            state.native_window
++        };
+         unsafe {
+             let allows_automatic_window_tabbing = tabbing_identifier.is_some();
+             if allows_automatic_window_tabbing {
+@@ -1875,8 +1883,18 @@ impl PlatformWindow for MacWindow {
+     }
+ 
+     fn tab_bar_visible(&self) -> bool {
++        let state = self.0.lock();
++        // `-[NSWindow tabGroup]` creates the window's tab group and stack
++        // controller on first use. On a cold first window that took ~0.6 s
++        // (mostly blocked off-CPU), although a window without tabbing cannot
++        // show a tab bar.
++        if !state.uses_tabbing {
++            return false;
++        }
++        let native_window = state.native_window;
++        drop(state);
+         unsafe {
+-            let tab_group: id = msg_send![self.0.lock().native_window, tabGroup];
++            let tab_group: id = msg_send![native_window, tabGroup];
+             if tab_group.is_null() {
+                 false
+             } else {

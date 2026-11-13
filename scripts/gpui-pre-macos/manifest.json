@@ -1,0 +1,17 @@
+{
+  "package": "gpui-pre-macos",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre-macos/gpui-pre-macos-0.3.3.crate",
+  "archive_sha256": "54678bfe6be71aa8e3fd31c3ae51af5d81e367344762540fd7cfdb778621abb1",
+  "patches": [
+    {
+      "path": "../patches/gpui-pre-macos/0001-skip-tab-group-without-tabbing.diff",
+      "sha256": "3d47a61a6d85da1aca17668796089d5485f5d4e48d4f663f11110967a5d2c7b2"
+    }
+  ],
+  "tree_sha256": "56890324e0326c5751b78c908bae6cdef992e9e73b64726ce075a2a7f40408b3",
+  "generated_path": "vendor/gpui-pre-macos-0.3.3",
+  "changed_files": [
+    "src/window.rs"
+  ]
+}

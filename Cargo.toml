@@ -13,6 +13,9 @@ comrak = { path = "vendor/comrak-0.47.0" }
 velopack = { path = "vendor/velopack-1.2.161" }
 # Oleg 2026-11-12: DirectX atlas-upload exception; GPUI core stays pristine.
 gpui-pre-windows = { path = "vendor/gpui-pre-windows-0.3.3" }
+# Oleg 2026-11-13 (#2825): no tab-group query without tabbing.
+# scripts/gpui-pre-apple-setup.py verifies the pinned source and patches.
+gpui-pre-macos = { path = "vendor/gpui-pre-macos-0.3.3" }
 
 [workspace.dependencies]
 okilum-core = { path = "crates/okilum-core", default-features = false }
