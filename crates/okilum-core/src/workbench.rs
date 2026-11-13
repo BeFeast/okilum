@@ -794,7 +794,7 @@ mod tests {
 mod at_tests {
     use super::*;
     #[test]
-    fn at_noise_metadata_and_legacy_daily_notes() {
+    fn at_noise_metadata_and_ordinary_underscore_notes() {
         assert_eq!(
             short_project_name("Dev/Projects/Synthetic", "@INDEX"),
             "Synthetic"
@@ -810,7 +810,7 @@ mod at_tests {
         assert!(!noise("@Private/ordinary.md"));
         let mut index = Index::default();
         index.replace(
-            "Dev/Projects/Synthetic/@index.md",
+            "Dev/Projects/Synthetic/_index.md",
             "---\nstatus: active\n---\n",
             10,
         );

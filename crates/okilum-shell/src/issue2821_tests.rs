@@ -255,6 +255,8 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
         view.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
         view.panels.open(reader_layout::Panel::Notes);
         view.sync_tree();
+        Arc::make_mut(&mut view.backlink_titles)
+            .insert("Legacy/_index.md".into(), "Ordinary note".into());
         cx.notify();
     });
     visual.run_until_parked();
@@ -269,6 +271,7 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
         assert_eq!(view.current_rel, "@Index.md");
         assert_eq!(view.vault_index_path().as_deref(), Some("@Index.md"));
         assert_eq!(view.backlink_title("Area/@index.md").0, "Area");
+        assert_eq!(view.backlink_title("Legacy/_index.md").0, "Ordinary note");
     });
     reader.update_in(visual, |view, window, cx| {
         view.sync_tree();

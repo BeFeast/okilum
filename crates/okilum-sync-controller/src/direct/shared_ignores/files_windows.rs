@@ -72,6 +72,10 @@ impl Files {
             None => None,
         };
         self.verify()?;
+        if bytes.is_none() {
+            require_current_template_location(self.root.path())?;
+        }
+        self.verify()?;
         Ok(bytes)
     }
 

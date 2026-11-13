@@ -2479,7 +2479,7 @@ mod tests {
             for (path, body) in [
                 ("a.md", source),
                 ("z.md", "---\ntitle: Alpha metadata\n---\nBody\n"),
-                ("_index.md", "# Index title\n"),
+                ("@index.md", "# Index title\n"),
                 ("data.csv", "x,y\n1,2\n"),
             ] {
                 std::fs::write(root.join(path), body).unwrap();
@@ -2565,8 +2565,8 @@ mod tests {
                     );
                     // #2278 gives the root index its own header, independent of
                     // filename/title sorting and hidden-file settings.
-                    assert_eq!(reader.vault_index_path().as_deref(), Some("_index.md"));
-                    assert!(!reader.tree.rows.iter().any(|row| row.path == "_index.md"));
+                    assert_eq!(reader.vault_index_path().as_deref(), Some("@index.md"));
+                    assert!(!reader.tree.rows.iter().any(|row| row.path == "@index.md"));
                     let labels = reader
                         .tree
                         .rows

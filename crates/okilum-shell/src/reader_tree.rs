@@ -1375,9 +1375,10 @@ mod tests {
                 "Area/@index.md",
                 "Area/sub",
                 "Area/Alpha.md",
+                "Area/_draft.md",
                 "Twice"
             ],
-            "index first and listed without Show hidden; `_draft` and the ambiguous pair stay hidden"
+            "index first without Show hidden; `_draft` is ordinary and only the ambiguous @ pair stays hidden"
         );
         let index = &t.rows[1];
         assert!(index.index && !index.hidden && index.label == "Zeta");

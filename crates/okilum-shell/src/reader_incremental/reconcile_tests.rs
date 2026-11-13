@@ -27,7 +27,7 @@ fn mounted<'a>(
     )
     .unwrap();
     std::fs::write(
-        root.join("Demo/_index.md"),
+        root.join("Demo/@index.md"),
         "---\ntype: Project\nstatus: active\n---\n# Demo\n",
     )
     .unwrap();
@@ -63,7 +63,7 @@ fn present(reader: &Reader, consumer: Consumer) -> bool {
             .projects
             .rows()
             .iter()
-            .any(|p| p.path == "Demo/_index.md"),
+            .any(|p| p.path == "Demo/@index.md"),
         Consumer::Now => reader.workbench.rows().any(|row| row.path == "Work.md"),
     }
 }
@@ -82,7 +82,7 @@ async fn exercise(cx: &mut TestAppContext, consumer: Consumer) {
         })
         .await;
     let path = match consumer {
-        Consumer::Projects => "Demo/_index.md",
+        Consumer::Projects => "Demo/@index.md",
         _ => "Work.md",
     };
     let source = std::fs::read(temp.path().join("vault").join(path)).unwrap();

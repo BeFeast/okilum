@@ -3574,7 +3574,7 @@ impl Reader {
 
     /// #381: the display title of a linking note (first H1, then frontmatter
     /// title, then file name) and, as secondary text, its folder path. Index
-    /// notes (`_index`, `index`, `README`) take their folder's name.
+    /// notes (`@index`, `index`, `README`) take their folder's name.
     fn backlink_title(&self, path: &str) -> (String, Option<String>) {
         let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
         let stem = file
@@ -3582,10 +3582,7 @@ impl Reader {
             .filter(|(_, extension)| extension.eq_ignore_ascii_case("md"))
             .map_or(file, |(stem, _)| stem);
         let location = (!folder.is_empty()).then(|| folder.replace('/', " / "));
-        let is_index = matches!(
-            stem.to_lowercase().as_str(),
-            "_index" | "@index" | "index" | "readme"
-        );
+        let is_index = matches!(stem.to_lowercase().as_str(), "@index" | "index" | "readme");
         if is_index && !folder.is_empty() {
             let name = folder.rsplit('/').next().unwrap_or(folder).to_owned();
             return (name, location);
