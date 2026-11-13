@@ -407,24 +407,22 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         "positive control: actual file Contents rendered"
     );
     assert!(visual.debug_bounds("file-linked-from-heading").is_some());
-    outline.read_with(visual, |view, _| {
-        assert!(view.data.entries.iter().any(|entry| entry.line > 0));
-        assert_eq!(view.current, None, "Pretty starts above the first key");
-    });
+    // #2814: a JSON file reads its rows from the viewer's tree, in every view.
+    let rows = |visual: &mut VisualTestContext| {
+        outline.read_with(visual, |view, _| {
+            assert!(view.snapshot.active, "JSON in Read uses the viewer's tree");
+            view.snapshot.rows.len()
+        })
+    };
+    let pretty_rows = rows(visual);
+    assert_eq!(pretty_rows, 3, "first, child, second");
     let raw = reader_viewer_chrome::tests::measured_bounds(visual, "code-view-raw")
         .expect("actual JSON mode control");
     visual.simulate_click(raw.center(), Modifiers::default());
     visual.run_until_parked();
     visual.executor().advance_clock(Duration::from_millis(130));
     visual.run_until_parked();
-    outline.read_with(visual, |view, _| {
-        assert!(!view.data.entries.is_empty());
-        assert!(
-            view.data.entries.iter().all(|entry| entry.line == 0),
-            "outline follows the displayed raw text"
-        );
-        assert_eq!(view.current, Some(2), "Raw uses its single displayed line");
-    });
+    assert_eq!(rows(visual), pretty_rows, "Raw keeps the same rows");
     reader.update_in(visual, |reader, window, cx| {
         reader.open_note("plain.txt", None, window, cx)
     });
@@ -436,13 +434,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         "positive control: file panel remains rendered"
     );
     assert!(visual.debug_bounds("file-contents-heading").is_none());
-    outline.read_with(visual, |view, _| {
-        assert!(!view.has_entries());
-        assert_eq!(
-            view.current, None,
-            "navigation clears the prior current entry"
-        );
-    });
+    outline.read_with(visual, |view, _| assert!(!view.has_entries()));
     reader.update_in(visual, |reader, window, cx| {
         reader.open_note("big.json", None, window, cx)
     });
@@ -454,11 +446,23 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         "positive control: the paged JSON opened"
     );
     assert!(visual.debug_bounds("file-linked-from-heading").is_some());
-    assert!(
-        visual.debug_bounds("file-contents-heading").is_none(),
-        "Contents must not describe a 32 KiB fragment"
-    );
-    outline.read_with(visual, |view, _| assert!(!view.has_entries()));
+    // #2814: a long-line file gets Contents from the whole-file tree, never
+    // from a 32 KiB fragment.
+    assert!(visual.debug_bounds("file-contents-heading").is_some());
+    outline.read_with(visual, |view, _| {
+        let doc = view.snapshot.doc.clone().unwrap();
+        assert!(doc.pages.len() > 1, "positive: paged");
+        let keys: Vec<_> = view
+            .snapshot
+            .rows
+            .iter()
+            .map(|row| match *row {
+                tree::Row::Node { index, .. } => tree::row_key(&doc, index),
+                tree::Row::Group { .. } => String::new(),
+            })
+            .collect();
+        assert_eq!(keys, ["head", "tail"]);
+    });
 }
 
 #[test]

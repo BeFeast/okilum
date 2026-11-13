@@ -37,6 +37,9 @@ pub(crate) struct Document {
     pub parses: bool,
     #[cfg(test)]
     pub node_lookups: std::sync::atomic::AtomicUsize,
+    /// Child-walk steps, so tests can prove a row label costs O(1).
+    #[cfg(test)]
+    pub child_steps: std::sync::atomic::AtomicUsize,
     pub foldable: bool,
     pub structure: Vec<StructureRow>,
 }
@@ -305,6 +308,8 @@ impl Document {
             parses,
             #[cfg(test)]
             node_lookups: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            child_steps: std::sync::atomic::AtomicUsize::new(0),
             foldable,
             structure,
         }
@@ -382,6 +387,46 @@ impl Document {
         }
         Some((*kind, short))
     }
+    /// The same node in `other` (another parse of the same file), found by
+    /// its key path: key text with its occurrence among equal keys, or array
+    /// position. `None` when the path no longer exists.
+    pub fn node_in(&self, index: usize, other: &Document) -> Option<usize> {
+        enum Step<'a> {
+            Key(&'a str, usize),
+            Ordinal(usize),
+        }
+        if !other.semantic || index >= self.structure.len() {
+            return None;
+        }
+        let mut steps = Vec::new();
+        let mut at = index;
+        while let Some(parent) = self.parent(at) {
+            steps.push(match (self.key_text(at), self.array_ordinal(at)) {
+                (Some(key), _) => Step::Key(
+                    key,
+                    self.children(parent)
+                        .take_while(|&child| child != at)
+                        .filter(|&child| self.key_text(child) == Some(key))
+                        .count(),
+                ),
+                (None, Some(n)) => Step::Ordinal(n),
+                _ => return None,
+            });
+            at = parent;
+        }
+        let mut node = 0;
+        for step in steps.into_iter().rev() {
+            node = match step {
+                Step::Key(key, occurrence) => other
+                    .children(node)
+                    .filter(|&child| other.key_text(child) == Some(key))
+                    .nth(occurrence)?,
+                Step::Ordinal(n) => other.children(node).nth(n)?,
+            };
+        }
+        Some(node)
+    }
+
     pub fn parent(&self, index: usize) -> Option<usize> {
         self.structure.get(index)?.parent
     }
@@ -394,6 +439,9 @@ impl Document {
             }
             let index = next;
             next = self.structure[index].subtree_end;
+            #[cfg(test)]
+            self.child_steps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Some(index)
         })
     }

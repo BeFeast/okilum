@@ -6815,14 +6815,16 @@ impl Reader {
             .min()
             .unwrap_or(1);
         // Only the rows in view are built, so the panel costs the same for 32 and 436
-        // headings (#1004). The list needs a height of its own: every row's, up to 60 %.
+        // headings (#1004). The list needs a height of its own: every row's, and
+        // it may use what «Linked from» does not need (#2814), not only 60 %.
         let rows_height = self.visible_outline().len() as f32 * OUTLINE_ROW_HEIGHT;
+        let full = rows_height + 2. * OUTLINE_PADDING_Y;
         v_flex()
             .id("reader-outline")
             .debug_selector(|| "reader-outline-list".into())
-            .flex_none()
-            .h(px(rows_height + 2. * OUTLINE_PADDING_Y))
-            .max_h(relative(0.6))
+            .flex_shrink(1.)
+            .h(px(full))
+            .min_h(px(full.min(6. * OUTLINE_ROW_HEIGHT)))
             .py(px(OUTLINE_PADDING_Y))
             .child(
                 list(
@@ -9896,10 +9898,17 @@ mod document_link_landing_tests {
             !first.contains(&(HEADINGS - 1)),
             "the last row is not built"
         );
+        // #2814: with «Linked from» empty the list is no longer cut at 60 %;
+        // it takes the height «Linked from» does not need and stays in view.
         let list = visual.debug_bounds("reader-outline-list").unwrap();
         assert!(
-            list.size.height <= px(768. * 0.6 + 1.),
-            "the list keeps the 60 % cap: {list:?}"
+            list.size.height > px(768. * 0.6 + 1.),
+            "the list uses the free height: {list:?}"
+        );
+        let linked = visual.debug_bounds("right-linked-from-heading").unwrap();
+        assert!(
+            linked.bottom() <= px(768.),
+            "«Linked from» stays in view: {linked:?}"
         );
         let row = visual.debug_bounds("reader-outline-row-0").unwrap();
         assert_eq!(row.size.height, px(OUTLINE_ROW_HEIGHT));

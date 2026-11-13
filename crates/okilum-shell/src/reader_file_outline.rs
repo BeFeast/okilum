@@ -1,9 +1,49 @@
 //! File structure in the existing right panel; no Reader/sidebar state or hooks.
 use super::super::*;
 use gpui_component::input::{EditorState, InputEvent};
-use std::{collections::BTreeSet, sync::Arc};
+use reader_code_file::contents::ContentsSource;
+use reader_code_file::document::Document;
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 #[path = "reader_file_outline/parse.rs"]
 mod parse;
+#[path = "reader_file_outline/tree.rs"]
+pub(crate) mod tree;
+
+/// «Reading structure…» appears only when reading takes longer than this.
+const READING_DELAY: Duration = Duration::from_millis(300);
+
+/// Contents from the viewer's whole-file tree (#2814): JSON in Read.
+#[derive(Default)]
+struct Snapshot {
+    active: bool,
+    file: String,
+    /// The document the shown rows index; replaced only together with them.
+    doc: Option<Arc<Document>>,
+    /// A newer document whose rows are still being computed.
+    pending: Option<Arc<Document>>,
+    state: SnapshotState,
+    rows: Arc<Vec<tree::Row>>,
+    generation: u64,
+    task: Option<Task<()>>,
+    reading: Option<Task<()>>,
+    /// Open rows per file, by key path: survive rebuilds, view switches and
+    /// closing the panel.
+    expansions: HashMap<String, tree::Expansion>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum SnapshotState {
+    #[default]
+    Absent,
+    Loading {
+        shown: bool,
+    },
+    Invalid(&'static str),
+    Ready,
+}
 
 pub(crate) struct View {
     code: Option<Entity<reader_code_file::CodePreview>>,
@@ -19,6 +59,7 @@ pub(crate) struct View {
     current: Option<usize>,
     sample_pending: bool,
     list: ListState,
+    snapshot: Snapshot,
 }
 
 impl View {
@@ -37,6 +78,7 @@ impl View {
             current: None,
             sample_pending: false,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
+            snapshot: Snapshot::default(),
         }
     }
 
@@ -47,6 +89,16 @@ impl View {
             .file_preview
             .as_ref()
             .and_then(|file| file.code.clone());
+        // Read mode of a JSON file: rows come from the viewer's own tree.
+        if let Some(code) = code.clone().filter(|_| reader.source_input().is_none()) {
+            let source = code.read(cx).contents_source();
+            if !matches!(source, ContentsSource::Absent) || Self::snapshot_file(reader) {
+                let file = reader.selected_file().to_owned();
+                view.update(cx, |this, cx| this.bind_snapshot(code, file, source, cx));
+                return;
+            }
+        }
+        view.update(cx, |this, cx| this.leave_snapshot(cx));
         let language = reader
             .file_preview
             .as_ref()
@@ -66,8 +118,10 @@ impl View {
                         let preview_input = code.read(cx).input();
                         let input = code.read(cx).outline_input();
                         // A visible writable editor owns its own text and observer.
+                        // Re-attach only when the input itself changes; its text
+                        // changes arrive through the subscription below.
                         if this.input.is_none() || this.input == preview_input {
-                            this.attach(input, true, cx);
+                            this.attach(input, false, cx);
                         }
                     })
                 });
@@ -96,6 +150,8 @@ impl View {
     }
 
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
+        // Open rows are kept per file; only the binding is released.
+        self.leave_snapshot(cx);
         if self.code.is_none() && self.input.is_none() {
             return;
         }
@@ -201,7 +257,197 @@ impl View {
     }
 
     pub(super) fn has_entries(&self) -> bool {
+        if self.snapshot.active {
+            return match self.snapshot.state {
+                SnapshotState::Absent => false,
+                SnapshotState::Loading { shown } => shown,
+                SnapshotState::Invalid(_) | SnapshotState::Ready => true,
+            };
+        }
         !self.visible.is_empty()
+    }
+
+    fn snapshot_file(reader: &Reader) -> bool {
+        let rel = reader.selected_file().to_ascii_lowercase();
+        rel.ends_with(".json")
+    }
+
+    fn bind_snapshot(
+        &mut self,
+        code: Entity<reader_code_file::CodePreview>,
+        file: String,
+        source: ContentsSource,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.snapshot.active || self.code.as_ref() != Some(&code) {
+            // Leave the private-parser path and watch the viewer cheaply: a
+            // notify only compares the snapshot it already has.
+            self.input_observers.clear();
+            self.input = None;
+            self.task = None;
+            self.language = None;
+            self.code = Some(code.clone());
+            self.code_observer = Some(cx.observe(&code, |this, code, cx| {
+                let source = code.read(cx).contents_source();
+                let file = this.snapshot.file.clone();
+                this.apply_source(file, source, cx);
+            }));
+            self.snapshot.active = true;
+        }
+        self.apply_source(file, source, cx);
+    }
+
+    fn leave_snapshot(&mut self, cx: &mut Context<Self>) {
+        if !self.snapshot.active {
+            return;
+        }
+        let expansions = std::mem::take(&mut self.snapshot.expansions);
+        self.snapshot = Snapshot {
+            expansions,
+            ..Default::default()
+        };
+        self.code = None;
+        self.code_observer = None;
+        self.list.reset(0);
+        cx.notify();
+    }
+
+    fn apply_source(&mut self, file: String, source: ContentsSource, cx: &mut Context<Self>) {
+        let other_file = self.snapshot.file != file;
+        if other_file {
+            // A new file starts from nothing: no rows, no pending rebuild and
+            // no «Reading structure…» timer of the previous file.
+            self.snapshot.file = file;
+            self.snapshot.doc = None;
+            self.snapshot.pending = None;
+            self.snapshot.rows = Arc::default();
+            self.snapshot.task = None;
+            self.snapshot.reading = None;
+            self.snapshot.state = SnapshotState::Absent;
+            self.list.reset(0);
+        }
+        let before = self.snapshot.state;
+        match source {
+            ContentsSource::Ready(doc) => {
+                self.snapshot.reading = None;
+                self.snapshot.state = SnapshotState::Ready;
+                let newest = self
+                    .snapshot
+                    .pending
+                    .as_ref()
+                    .or(self.snapshot.doc.as_ref());
+                if newest.is_none_or(|old| !Arc::ptr_eq(old, &doc)) {
+                    // The shown rows keep their document until the new rows land.
+                    self.snapshot.pending = Some(doc);
+                    self.rebuild_rows(cx);
+                }
+            }
+            ContentsSource::Loading => {
+                // Keep the last rows of this file while a newer parse is pending.
+                if !matches!(self.snapshot.state, SnapshotState::Loading { .. })
+                    && self.snapshot.rows.is_empty()
+                {
+                    self.snapshot.state = SnapshotState::Loading { shown: false };
+                    self.snapshot.reading = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(READING_DELAY).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let SnapshotState::Loading { shown } = &mut this.snapshot.state {
+                                *shown = true;
+                                cx.notify();
+                            }
+                        });
+                    }));
+                }
+            }
+            ContentsSource::Invalid(reason) => {
+                self.snapshot.reading = None;
+                self.snapshot.state = SnapshotState::Invalid(reason);
+                self.snapshot.doc = None;
+                self.snapshot.pending = None;
+                self.snapshot.task = None;
+                self.snapshot.rows = Arc::default();
+                self.list.reset(0);
+            }
+            ContentsSource::Absent => {
+                self.snapshot.reading = None;
+                self.snapshot.state = SnapshotState::Absent;
+                self.snapshot.doc = None;
+                self.snapshot.pending = None;
+                self.snapshot.task = None;
+                self.snapshot.rows = Arc::default();
+                self.list.reset(0);
+            }
+        }
+        if other_file || before != self.snapshot.state {
+            cx.notify();
+        }
+    }
+
+    fn expansion(&mut self) -> &mut tree::Expansion {
+        let file = self.snapshot.file.clone();
+        self.snapshot.expansions.entry(file).or_default()
+    }
+
+    /// Visible rows on a worker; the list keeps showing the previous rows
+    /// until the new ones arrive.
+    fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self
+            .snapshot
+            .pending
+            .clone()
+            .or_else(|| self.snapshot.doc.clone())
+        else {
+            return;
+        };
+        let used = doc.clone();
+        let expansion = self.expansion().clone();
+        self.snapshot.generation += 1;
+        let generation = self.snapshot.generation;
+        self.snapshot.task = Some(cx.spawn(async move |this, cx| {
+            let rows = cx
+                .background_executor()
+                .spawn(async move { tree::visible_rows(&doc, &expansion) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.snapshot.generation != generation {
+                    return;
+                }
+                let top = this.list.logical_scroll_top();
+                // Rows and the document they index change together.
+                if this
+                    .snapshot
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| Arc::ptr_eq(pending, &used))
+                {
+                    this.snapshot.pending = None;
+                }
+                this.snapshot.doc = Some(used);
+                this.snapshot.rows = Arc::new(rows);
+                this.list
+                    .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
+                this.list.scroll_to(ListOffset {
+                    item_ix: top.item_ix.min(this.snapshot.rows.len().saturating_sub(1)),
+                    offset_in_item: top.offset_in_item,
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The chevron or a group row: Contents only, never the viewer's folds.
+    fn toggle_snapshot_row(&mut self, row: &tree::Row, cx: &mut Context<Self>) {
+        self.expansion().toggle(row);
+        self.rebuild_rows(cx);
+    }
+
+    fn jump_snapshot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // The row's index belongs to the document of the shown rows.
+        if let (Some(code), Some(rows)) = (self.code.clone(), self.snapshot.doc.clone()) {
+            code.update(cx, |code, cx| {
+                code.reveal_contents_node(&rows, index, window, cx)
+            });
+        }
     }
 
     fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -224,16 +470,162 @@ impl View {
     }
 }
 
-impl Render for View {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl View {
+    #[inline(never)]
+    fn render_snapshot(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = brand::palette(cx);
+        let line = |text: &'static str| {
+            div()
+                .debug_selector(|| "file-outline-state".into())
+                .flex_none()
+                .px_4()
+                .py_1()
+                .text_color(p.text_muted)
+                .child(text)
+                .into_any_element()
+        };
+        match self.snapshot.state {
+            SnapshotState::Loading { .. } => return line("Reading structure…"),
+            SnapshotState::Invalid(reason) => return line(reason),
+            SnapshotState::Absent => return div().into_any_element(),
+            SnapshotState::Ready => {}
+        }
+        let rows = self.snapshot.rows.len() as f32 * OUTLINE_ROW_HEIGHT;
         v_flex()
             .id("file-outline")
             .debug_selector(|| "file-outline-list".into())
-            .flex_none()
-            .h(px(
-                self.visible.len() as f32 * OUTLINE_ROW_HEIGHT + 2. * OUTLINE_PADDING_Y
+            // The list takes the height «Linked from» does not need (#2814),
+            // never more than its rows, never less than a few of them.
+            .flex_shrink(1.)
+            .h(px(rows + 2. * OUTLINE_PADDING_Y))
+            .min_h(px(
+                (rows + 2. * OUTLINE_PADDING_Y).min(6. * OUTLINE_ROW_HEIGHT)
             ))
-            .max_h(relative(0.6))
+            .py(px(OUTLINE_PADDING_Y))
+            .child(
+                list(
+                    self.list.clone(),
+                    cx.processor(|this, ix: usize, _, cx| this.snapshot_row(ix, cx)),
+                )
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    fn snapshot_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let (Some(row), Some(doc)) = (
+            self.snapshot.rows.get(ix).cloned(),
+            self.snapshot.doc.clone(),
+        ) else {
+            return div().into_any_element();
+        };
+        let p = brand::palette(cx);
+        let hover = brand::reader_palette(cx).hover;
+        let (key, value, tooltip, open, branch) = match row {
+            tree::Row::Node { index, .. } => {
+                let branch = tree::child_count(&doc, index) > 0;
+                let open = branch && self.expansion().row_open(&row);
+                (
+                    tree::row_key(&doc, index),
+                    tree::row_value(&doc, index),
+                    tree::row_tooltip(&doc, index),
+                    open,
+                    branch,
+                )
+            }
+            tree::Row::Group { .. } => {
+                let (key, value) = tree::group_label(&doc, &row);
+                let open = self.expansion().row_open(&row);
+                (key.clone(), value, key, open, true)
+            }
+        };
+        let indent = 14. + (row.depth().saturating_sub(1)).min(12) as f32 * 12.;
+        let chevron_row = row.clone();
+        h_flex()
+            .id(("file-outline-row", ix))
+            .debug_selector(move || format!("file-outline-row-{ix}"))
+            .flex_none()
+            .h(px(OUTLINE_ROW_HEIGHT))
+            .items_center()
+            .gap_2()
+            .pl(px(indent))
+            .pr_3()
+            .border_l_2()
+            .border_color(gpui::transparent_black())
+            .text_color(p.text_muted)
+            .overflow_hidden()
+            .cursor_pointer()
+            .hover(move |row| row.bg(hover))
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            })
+            .child(
+                div()
+                    .id(("file-outline-toggle", ix))
+                    .w(px(16.))
+                    .flex_none()
+                    .when(branch, |toggle| {
+                        toggle
+                            .debug_selector(move || format!("file-outline-toggle-{ix}"))
+                            .child(
+                                Icon::new(if open {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall(),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_snapshot_row(&chevron_row, cx);
+                            }))
+                    }),
+            )
+            // The key keeps its room; the right part yields first.
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(relative(0.7))
+                    .min_w_0()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(p.text)
+                    .debug_selector(move || format!("file-outline-text-{ix}"))
+                    .child(key),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_right()
+                    .debug_selector(move || format!("file-outline-value-{ix}"))
+                    .child(value),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| match &row {
+                tree::Row::Node { index, .. } => this.jump_snapshot(*index, window, cx),
+                // A group row opens or closes on a click anywhere.
+                tree::Row::Group { .. } => this.toggle_snapshot_row(&row, cx),
+            }))
+            .into_any_element()
+    }
+}
+
+impl Render for View {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.snapshot.active {
+            return self.render_snapshot(cx);
+        }
+        let rows = self.visible.len() as f32 * OUTLINE_ROW_HEIGHT;
+        v_flex()
+            .id("file-outline")
+            .debug_selector(|| "file-outline-list".into())
+            .flex_shrink(1.)
+            .h(px(rows + 2. * OUTLINE_PADDING_Y))
+            .min_h(px(
+                (rows + 2. * OUTLINE_PADDING_Y).min(6. * OUTLINE_ROW_HEIGHT)
+            ))
             .py(px(OUTLINE_PADDING_Y))
             .child(
                 list(
@@ -306,9 +698,13 @@ impl Render for View {
                 )
                 .size_full(),
             )
+            .into_any_element()
     }
 }
 
+#[cfg(test)]
+#[path = "reader_file_outline/contents_tests.rs"]
+mod contents_tests;
 #[cfg(test)]
 #[path = "reader_file_outline/tests.rs"]
 mod tests;

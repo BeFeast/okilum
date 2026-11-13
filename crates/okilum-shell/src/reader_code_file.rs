@@ -5,6 +5,7 @@ use super::*;
 use gpui_component::input::{Editor, EditorState, InputEvent, InputState, WrappingIndent};
 use std::time::Instant;
 
+pub(crate) mod contents;
 pub(crate) mod document;
 mod find;
 #[cfg(test)]
