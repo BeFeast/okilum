@@ -280,6 +280,7 @@ impl CodePreview {
         self.view
     }
 
+    #[cfg(test)]
     pub(crate) fn table_view(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
     }
