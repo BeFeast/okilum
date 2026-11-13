@@ -17,6 +17,8 @@ struct RulesUi {
     root: PathBuf,
     project: Entity<project::ProjectView>,
     refresh: okilum_t3::rules_refresh::RulesRefresh,
+    /// Latest saved in-scope source; an offer exists only while connected.
+    saved: okilum_t3::rules_refresh::RulesRevision,
     busy: bool,
     status: Option<String>,
 }
@@ -130,6 +132,19 @@ impl Reader {
             .into_any_element()
     }
 
+    /// Whether a save of this absolute path belongs to the open project's
+    /// rules scope. Pure path check on the UI thread; no I/O.
+    pub(super) fn in_rules_scope(&self, source: &Path, cx: &App) -> bool {
+        !self.single_file
+            && reader_features::enabled(reader_features::Feature::Agents, cx)
+            && self.project.as_ref().is_some_and(|project| {
+                project
+                    .read(cx)
+                    .rules_source(&self.vault_root, source, "scope")
+                    .is_some()
+            })
+    }
+
     /// Parent save completion hook: pass the successfully saved absolute path
     /// and revision receipt. Never call for buffer changes, conflicts, external
     /// refreshes, unchanged saves or failed saves. No network/I/O occurs here.
@@ -145,31 +160,41 @@ impl Reader {
         let Some(project) = self.project.clone() else {
             return;
         };
-        let Some(offer) = project
+        let Some(saved) = project
             .read(cx)
-            .saved_rules_offer(&self.vault_root, source, revision)
+            .rules_source(&self.vault_root, source, revision)
         else {
             return;
         };
+        // Connected: record the offer now. Offline: keep the saved source so
+        // the notice explains why nothing can be sent yet.
+        let offer = project.read(cx).rules_offer_for(&saved).ok();
         if let Some(ui) = &mut self.agents_offer.rules {
             if ui.root == self.vault_root && ui.project == project {
-                match ui.refresh.saved(offer) {
-                    Ok(true) => ui.status = None,
-                    _ => return,
+                if ui.saved == saved {
+                    return;
+                }
+                ui.saved = saved;
+                ui.status = None;
+                if let Some(offer) = offer {
+                    let _ = ui.refresh.saved(offer);
                 }
                 cx.notify();
                 return;
             }
         }
         let mut refresh = okilum_t3::rules_refresh::RulesRefresh::default();
-        if refresh.saved(offer).is_err() {
-            return;
+        if let Some(offer) = offer {
+            if refresh.saved(offer).is_err() {
+                return;
+            }
         }
         self.agents_offer.rules = Some(RulesUi {
             lease: Arc::new(()),
             root: self.vault_root.clone(),
             project,
             refresh,
+            saved,
             busy: false,
             status: None,
         });
@@ -198,35 +223,57 @@ impl Reader {
             .rules
             .as_ref()
             .expect("visible rules offer");
+        let readiness = ui.project.read(cx).rules_offer_for(&ui.saved);
         let acknowledged = ui
             .refresh
             .acknowledged()
-            .is_some_and(|r| Some(&r.offer) == ui.refresh.offer());
+            .is_some_and(|r| r.offer.source == ui.saved);
+        let pending = ui.refresh.pending().is_some();
         let label = ui.status.clone().unwrap_or_else(|| {
-            if ui.refresh.pending().is_some_and(|receipt| Some(&receipt.offer) != ui.refresh.offer()) {
-                "An earlier rules request is unconfirmed. Retry it before sending the latest saved rules.".into()
-            } else {
-                "AGENTS.md saved. Ask Manager to read the updated rules?".into()
-            }
+            rules_notice(
+                &ui.saved.path,
+                readiness.as_ref().err().copied(),
+                ui.refresh
+                    .pending()
+                    .is_some_and(|receipt| receipt.offer.source != ui.saved),
+            )
         });
+        let action = match readiness {
+            _ if pending => Some(("Retry", "rules-refresh-send")),
+            Ok(_) => Some(("Tell Manager", "rules-refresh-send")),
+            Err(project::RulesUnready::Offline) => Some(("Connect", "rules-refresh-connect")),
+            Err(project::RulesUnready::NoManager) => None,
+        };
         h_flex()
             .id("rules-refresh-offer")
+            .debug_selector(|| "rules-refresh-offer".into())
             .w_full()
+            .px_2()
             .gap_1()
             .items_center()
-            .child(div().flex_1().min_w_0().child(label))
             .child(
-                Button::new("rules-refresh-send")
-                    .ghost()
-                    .small()
-                    .label(if ui.refresh.pending().is_some() {
-                        "Retry"
-                    } else {
-                        "Tell Manager"
-                    })
-                    .disabled(ui.busy || acknowledged)
-                    .on_click(cx.listener(|this, _, window, cx| this.send_rules_offer(window, cx))),
+                div()
+                    .id("rules-refresh-label")
+                    .debug_selector(|| "rules-refresh-label".into())
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.))
+                    .whitespace_normal()
+                    .child(label),
             )
+            .when_some(action, |view, (label, id)| {
+                view.child(
+                    Button::new(id)
+                        .debug_selector(move || id.into())
+                        .ghost()
+                        .small()
+                        .label(label)
+                        .disabled(ui.busy || (acknowledged && !pending))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.send_rules_offer(window, cx)),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -244,13 +291,24 @@ impl Reader {
         }
         // Resolve the original ambiguous operation first, even if another
         // source revision was saved meanwhile. Never retry with new contents.
-        let clicked = ui
-            .refresh
-            .pending()
-            .map(|r| r.offer.clone())
-            .or_else(|| ui.refresh.offer().cloned());
-        let Some(clicked) = clicked else {
-            return;
+        let clicked = match ui.refresh.pending() {
+            Some(receipt) => receipt.offer.clone(),
+            None => match ui.project.read(cx).rules_offer_for(&ui.saved) {
+                Ok(offer) => {
+                    // A save made while offline becomes an offer once the
+                    // Manager identity is confirmed.
+                    let _ = ui.refresh.saved(offer.clone());
+                    offer
+                }
+                Err(project::RulesUnready::Offline) => {
+                    ui.status = None;
+                    let project = ui.project.clone();
+                    project.update(cx, |project, cx| project.connect_for_rules(window, cx));
+                    cx.notify();
+                    return;
+                }
+                Err(project::RulesUnready::NoManager) => return,
+            },
         };
         let job = match ui
             .project
@@ -359,6 +417,30 @@ impl Reader {
         })
         .detach();
         cx.notify();
+    }
+}
+
+/// Plain copy for the saved-rules notice. It never claims the Manager was told.
+pub(super) fn rules_notice(
+    path: &str,
+    unready: Option<project::RulesUnready>,
+    older_pending: bool,
+) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if older_pending {
+        return "An earlier rules request is unconfirmed. Retry it before sending the latest saved rules.".into();
+    }
+    let start = format!("{name} saved. The running Manager reads its rules only when it starts.");
+    match unready {
+        None => format!("{start} Ask it to re-read them?"),
+        Some(project::RulesUnready::Offline) => {
+            format!(
+                "{start} It is not connected, so it was not told. Connect to ask it to re-read."
+            )
+        }
+        Some(project::RulesUnready::NoManager) => {
+            format!("{start} This project has no Manager set up, so nobody was told.")
+        }
     }
 }
 

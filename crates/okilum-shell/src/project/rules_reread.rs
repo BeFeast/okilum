@@ -36,22 +36,134 @@ pub(crate) struct RulesDelivery {
 
 pub(crate) type RulesJob = Box<dyn FnOnce() -> RulesDelivery + Send>;
 
+/// Rules stack layers of the bound project, refreshed on the background
+/// executor. It decides which saved files are in the project's rules scope.
+#[derive(Default)]
+pub(crate) struct RulesScope {
+    refresh: okilum_core::agent_rules::Refresh,
+    bound: Option<(PathBuf, PathBuf)>,
+    layers: std::collections::BTreeSet<PathBuf>,
+}
+
+/// Why a saved rules source cannot be offered to the Manager right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RulesUnready {
+    /// No Manager is configured for this project.
+    NoManager,
+    /// A Manager is configured but its connection is not confirmed.
+    Offline,
+}
+
+/// Provider instruction files an agent may load from an ancestor folder.
+const ANCESTOR_RULE_FILES: [&str; 5] = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "CONTEXT.md",
+    "ANTIGRAVITY.md",
+];
+const ROOT_CONTRACTS: [&str; 2] = ["_AgentContract.md", "@AgentContract.md"];
+
+/// Pure scope rule: the Rules stack layers (ancestors, root contract and
+/// their imports), plus any agent file inside the project folder.
+pub(crate) fn in_rules_scope(
+    vault: &Path,
+    area: &Path,
+    layers: &std::collections::BTreeSet<PathBuf>,
+    source: &Path,
+) -> bool {
+    let Ok(relative) = source.strip_prefix(vault) else {
+        return false;
+    };
+    if !area.starts_with(vault)
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if layers.contains(relative) {
+        return true;
+    }
+    if relative.parent() == Some(Path::new("")) && ROOT_CONTRACTS.contains(&name) {
+        return true;
+    }
+    if source.starts_with(area) {
+        return okilum_core::quick_open::is_agent_file(name);
+    }
+    ANCESTOR_RULE_FILES.contains(&name)
+        && source
+            .parent()
+            .is_some_and(|folder| area.starts_with(folder))
+}
+
 impl ProjectView {
-    /// Capture only the configured Manager whose area contains this saved file.
-    /// No lookup, connection, discovery or send is triggered by a source save.
-    pub(crate) fn saved_rules_offer(
+    /// Keep the scope bound to the active project; no reads while inactive.
+    pub(crate) fn sync_rules_scope(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let scope = self
+            .resource_vault
+            .clone()
+            .zip(self.area.clone())
+            .filter(|_| enabled);
+        if scope == self.rules_scope.bound {
+            return;
+        }
+        self.rules_scope.layers.clear();
+        self.rules_scope.bound = scope.clone();
+        match scope {
+            Some((vault, area)) => {
+                self.rules_scope.refresh.bind(vault, area);
+                self.start_rules_scope(cx);
+            }
+            None => self.rules_scope.refresh.deactivate(),
+        }
+    }
+
+    /// Forward the watcher's coalesced batches: imports can name any file.
+    pub(crate) fn rules_scope_changed(&mut self, cx: &mut Context<Self>) {
+        self.rules_scope.refresh.request();
+        self.start_rules_scope(cx);
+    }
+
+    fn start_rules_scope(&mut self, cx: &mut Context<Self>) {
+        let Some(ticket) = self.rules_scope.refresh.begin() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let job = ticket.clone();
+            let layers = cx
+                .background_executor()
+                .spawn(async move {
+                    okilum_core::agent_rules::discover(&job.vault, &job.project)
+                        .layers
+                        .into_iter()
+                        .map(|layer| layer.path)
+                        .collect::<std::collections::BTreeSet<PathBuf>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.rules_scope.refresh.finish(&ticket) {
+                    this.rules_scope.layers = layers;
+                }
+                this.start_rules_scope(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The saved file's portable identity when it belongs to this project's
+    /// rules. No lookup, connection, discovery or send is triggered here.
+    pub(crate) fn rules_source(
         &self,
         vault: &Path,
         source: &Path,
         revision: &str,
-    ) -> Option<RulesOffer> {
+    ) -> Option<RulesRevision> {
         let area = self.area.as_ref()?;
-        if !source.starts_with(area) || !source.starts_with(vault) {
-            return None;
-        }
-        let binding = self.binding.as_ref()?;
-        let target = self.rules_target()?;
-        if binding.manager.thread_id.as_deref() != Some(target.thread_id.as_str()) {
+        if !in_rules_scope(vault, area, &self.rules_scope.layers, source) {
             return None;
         }
         let path = source
@@ -59,22 +171,36 @@ impl ProjectView {
             .ok()?
             .to_str()?
             .replace('\\', "/");
-        if path
-            .split('/')
-            .any(|part| part == ".." || part == "." || part.is_empty())
-        {
-            return None;
+        Some(RulesRevision {
+            path,
+            revision: revision.into(),
+        })
+    }
+
+    /// Offer for the configured Manager whose identity is confirmed now.
+    pub(crate) fn rules_offer_for(
+        &self,
+        source: &RulesRevision,
+    ) -> Result<RulesOffer, RulesUnready> {
+        let binding = self.binding.as_ref().ok_or(RulesUnready::NoManager)?;
+        if binding.manager.thread_id.is_none() {
+            return Err(RulesUnready::NoManager);
         }
+        let target = self.rules_target().ok_or(RulesUnready::Offline)?;
         let offer = RulesOffer {
             target,
-            source: RulesRevision {
-                path,
-                revision: revision.into(),
-            },
+            source: source.clone(),
         };
         let mut check = RulesRefresh::default();
-        check.saved(offer.clone()).ok()?;
-        Some(offer)
+        check
+            .saved(offer.clone())
+            .map_err(|_| RulesUnready::Offline)?;
+        Ok(offer)
+    }
+
+    /// Reconnect through the saved T3 connection, as the Manager panel does.
+    pub(crate) fn connect_for_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect(window, cx);
     }
 
     fn rules_target(&self) -> Option<RulesTarget> {
@@ -295,3 +421,7 @@ impl ProjectView {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "rules_reread_tests.rs"]
+mod tests;
