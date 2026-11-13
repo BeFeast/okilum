@@ -25,18 +25,22 @@ pub(crate) fn entry() -> bool {
             for name in ["data.xml", "big.json", "big.xml", "big.txt"] {
                 let started = Instant::now();
                 let mut preview = None;
+                eprintln!("DIAG_2825_OPEN_BEGIN file={name}");
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
+                    eprintln!("DIAG_2825_BUILD_BEGIN file={name} ms={}", started.elapsed().as_millis());
                     let view = cx.new(|cx| CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
                     preview = Some(view.clone());
                     cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
                 })).unwrap();
                 let preview = preview.unwrap();
+                eprintln!("DIAG_2825_OPEN_END file={name} open_window_ms={}", started.elapsed().as_millis());
                 let mut previous = started;
                 let mut maximum = Duration::ZERO;
                 let mut ticks = 0;
                 loop {
                     cx.background_executor().timer(Duration::from_millis(100)).await;
                     let now = Instant::now();
+                    eprintln!("DIAG_2825_TICK file={name} tick={ticks} gap_ms={} since_open_ms={}", now.duration_since(previous).as_millis(), started.elapsed().as_millis());
                     maximum = maximum.max(now.duration_since(previous));
                     previous = now;
                     ticks += 1;
