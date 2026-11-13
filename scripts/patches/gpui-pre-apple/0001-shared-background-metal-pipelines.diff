@@ -11,10 +11,11 @@ started by `prepare_pipelines` (or by the first renderer), and share them
 between renderers. A renderer resolves them the first time a draw encodes a
 batch; if the build is still running it waits on a condvar, so no frame is
 drawn without them. A failed build still panics on that first draw with the
-original message. Another device gets its own build.
+original message. Another device gets its own build. The background build
+runs inside its own autorelease pool, popped on failure too.
 
 diff --git a/src/metal_renderer.rs b/src/metal_renderer.rs
-index 112717b..14e6654 100644
+index 112717b..bcda3df 100644
 --- a/src/metal_renderer.rs
 +++ b/src/metal_renderer.rs
 @@ -23,9 +23,17 @@ use metal::{
@@ -247,7 +248,7 @@ index 112717b..14e6654 100644
          command_encoder.set_vertex_buffer(
              SurfaceInputIndex::Vertices as u64,
              Some(&self.unit_vertices),
-@@ -1266,6 +1196,138 @@ fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
+@@ -1266,6 +1196,143 @@ fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
      RgbaImage::from_raw(width, height, pixels).context("failed to create RgbaImage from pixel data")
  }
  
@@ -313,9 +314,14 @@ index 112717b..14e6654 100644
 +        let shared = shared.clone();
 +        move || {
 +            // A failed build still fails the first draw, as it did in `new`.
-+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-+                Arc::new(build_pipelines(&device))
-+            }))
++            // This thread has no autorelease pool of its own: drain the
++            // strings and descriptors the bindings autorelease. The pool sits
++            // outside `catch_unwind`, so it is popped on failure too.
++            let result = objc::rc::autoreleasepool(|| {
++                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                    Arc::new(build_pipelines(&device))
++                }))
++            })
 +            .map_err(|panic| {
 +                panic
 +                    .downcast_ref::<&str>()

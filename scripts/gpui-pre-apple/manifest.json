@@ -6,10 +6,10 @@
   "patches": [
     {
       "path": "../patches/gpui-pre-apple/0001-shared-background-metal-pipelines.diff",
-      "sha256": "678f36e06682e8bc552d9c2df61a208056d0ae133894b28922558bc93a95ce35"
+      "sha256": "d8c791b32158f1d958c9d9ca8a88a9db59e880b62b20568256ba7dfc20d0de0a"
     }
   ],
-  "tree_sha256": "d13ef2dc075f944557713cc1876b2df3076ba113f0be840eff89650185d0b7e1",
+  "tree_sha256": "a3a9cc815241c332884f52528511315eda634c848b6caee72c087588b5a89f05",
   "generated_path": "vendor/gpui-pre-apple-0.3.3",
   "changed_files": [
     "src/metal_renderer.rs"

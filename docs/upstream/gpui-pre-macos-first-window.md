@@ -19,16 +19,20 @@ in 3 of 5 observed runs (1311, 1993, 2462, 2485, 2549 ms).
 ## Patches
 
 1. `scripts/patches/gpui-pre-macos/0001-skip-tab-group-without-tabbing.diff`:
-   `MacWindow::tab_bar_visible` returns `false` without sending `tabGroup` when the
-   window has no tabbing identifier. GPUI already disables automatic window
-   tabbing for such windows, so they cannot show a tab bar.
+   `MacWindow::tab_bar_visible` answers `false` without sending `tabGroup` until
+   tabbing may be active in the process: a window got a tabbing identifier, or
+   the native Merge All Windows, Move Tab to New Window or Show Tab Bar action
+   ran. That flag never resets, so explicit tabbing and a window whose
+   identifier is later cleared still query AppKit as before. A unit test covers
+   the flag (`cargo test -p gpui-pre-macos --lib tab_group` on macOS).
 2. `scripts/patches/gpui-pre-apple/0001-shared-background-metal-pipelines.diff`
    and `scripts/patches/gpui-pre-macos/0002-prepare-metal-pipelines-at-startup.diff`:
    the shader library and eight pipeline states are built once per process for
    the first device on a background thread, started from `MacPlatform::new`, and
    shared by every renderer. The first draw that encodes a batch waits for them if
    the build is still running, so no frame is drawn without them; a failed build
-   still panics there with the original message.
+   still panics there with the original message. The background build runs in
+   its own autorelease pool (popped on failure too).
 
 `scripts/gpui-pre-apple-setup.py` extracts the exact crates.io archives, applies
 the patches in order and verifies archive, patch and tree digests and the list of
