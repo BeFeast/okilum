@@ -2,7 +2,10 @@
 # 05.11 beta on every main push), plus manual dispatch. No certification gate;
 # hosted shipping only, corporate M4 CI stays disabled. Oleg's own Mac gets
 # hourly local Sprint builds. 05:00 UTC = 07:00 Israel in winter, 08:00 in
-# summer: the build is published before the 09:00 Stable promotion either way.
+# summer. A typical build publishes before the 09:00 Stable promotion, but that
+# is not guaranteed (summer leaves 60 min; the hosted bridge allows 115 min plus
+# queueing). If today's Mac beta is not published by 09:00, Stable promotes the
+# previous published Mac beta, which stays eligible.
 name: macos-release
 
 on:
@@ -33,7 +36,8 @@ on:
 
 # The daily run only selects: hourly_beta.select dispatches a run pinned to the
 # newest main (hourly_source) unless that commit already is the Mac beta, and
-# that dispatch builds. Manual, pinned and preview dispatches keep their own
+# that dispatch builds. If main moved before the pinned run starts, it hands
+# over to the newest main instead of ending without a beta. Manual, pinned and preview dispatches keep their own
 # groups and always finish.
 concurrency:
   group: macos-beta-${{ github.event_name == 'schedule' && 'daily' || inputs.hourly_source || github.run_id }}

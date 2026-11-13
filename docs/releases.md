@@ -47,8 +47,13 @@ only selects: `hourly_beta.select` dispatches a run pinned to the newest main
 (`hourly_source`) unless that commit already is the Mac beta, and the pinned
 dispatch builds, signs, notarizes and publishes as a manual run always did. Its
 `shipping-status` job reports `macos-release / <job> (workflow_dispatch)` on the
-source, so the 09:00 Stable promotion finds that build. Oleg's own Mac gets
-hourly local Sprint builds.
+source, so the 09:00 Stable promotion finds that build. If main moves between
+the daily selection and the pinned run, that run dispatches the newest main
+instead of building nothing (no push run builds Mac). Publication before 09:00
+is typical but not guaranteed (summer leaves 60 min; the hosted bridge allows
+115 min plus queueing): if today's Mac beta is not published yet, the 09:00
+promotion takes the previous published Mac beta. Oleg's own Mac gets hourly
+local Sprint builds.
 
 For Linux and Windows there is no cron and no
 certification gate: merges are gated by the worker's exact-HEAD gh-check, and
