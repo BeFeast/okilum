@@ -764,21 +764,12 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
     let clicked = where_you_are(&view, visual, near_end);
     assert!(
         matches!(clicked, tree::Row::Node { index, .. } if index == near_end),
-        "positive: the click opened the groups and marks the node near the end"
+        "positive: the click opened the groups and marks the node near the end, \
+         though the jump's scroll lands a frame later (clamped at the end)"
     );
-    // The position scrubber's page jump is not a caret move: the top of the
-    // view leads and nothing opens.
-    let code = code(&reader, visual);
-    let pages = code.update_in(visual, |p, w, cx| p.show_page_for_tests(0, w, cx));
-    assert!(pages > 1, "positive: the fixture is paged ({pages})");
-    paint(visual);
-    let tree::Row::Group { first, .. } = marked(&view, visual) else {
-        panic!("page 0's top node sits in the closed first group")
-    };
-    assert_eq!(first, 0);
     // The viewer now holds a newer parse than the shown rows (same text, a
     // separate document): exactly the state while new rows are built.
-    let raw = code
+    let raw = code(&reader, visual)
         .read_with(visual, |p, _| p.document_raw_for_contents())
         .expect("the viewer's document");
     let shown_doc = doc(&text);
@@ -990,4 +981,33 @@ fn contents2814_find_hits_and_tree_selection_become_where_you_are(cx: &mut TestA
         assert_eq!(p.tree_selection_for_tests(), Some(c12))
     });
     assert_eq!(marked_key(&view, visual), "c12");
+}
+
+#[gpui::test]
+fn contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move(
+    cx: &mut TestAppContext,
+) {
+    // One line over 64 KB: Raw shows it in pages.
+    let keys: Vec<String> = (0..20_000).map(|i| format!("\"k{i:05}\":{i}")).collect();
+    let text = format!("{{{}}}", keys.join(","));
+    let (reader, visual, _root) = reader_with(cx, &[("line.json", text.as_str())], "line.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Raw, w, cx));
+    settle(visual);
+    paint(visual);
+    // A click on a row whose node is on the last page places the caret there.
+    let near_end = key_index(&view, visual, "k19990");
+    assert!(
+        matches!(where_you_are(&view, visual, near_end), tree::Row::Node { index, .. } if index == near_end),
+        "a caret placed on another page is a caret move"
+    );
+    // The position scrubber loads page 1 with the caret at its start.
+    let pages = code.update_in(visual, |p, w, cx| p.show_page_for_tests(1, w, cx));
+    assert!(pages > 2, "positive: the fixture is paged ({pages})");
+    paint(visual);
+    let tree::Row::Group { first, .. } = marked(&view, visual) else {
+        panic!("page 1's first node sits in the closed first group: nothing opened")
+    };
+    assert_eq!(first, 0);
 }

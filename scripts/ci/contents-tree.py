@@ -69,6 +69,8 @@ CONTROLS = [
  ('scroll-wins', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
  ('tree-selection-ignored', 'contents2814_find_hits_and_tree_selection_become_where_you_are'),
  ('no-jump-settle', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
+ ('page-jump-is-caret', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
+ ('page-caret-ignored', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -97,6 +99,7 @@ try:
     edit(view, '.saturating_duration_since(at) >= JUMP_SETTLE', '.saturating_duration_since(at) >= jump_settle()')
     edit(view, '                tree::open_path(&doc, node, self.expansion());', '                if !crate::contents2814_control("no-path-open") {\n                    tree::open_path(&doc, node, self.expansion());\n                }')
     edit(view, 'Some(before) if before.caret != now.caret && now.caret_node.is_some() => {', 'Some(before) if before.caret != now.caret && now.caret_node.is_some() && (before.top == now.top || !crate::contents2814_control("scroll-wins")) => {')
+    edit(view, '|| (before.page != now.page && now.caret == Some(0))', '|| (before.page != now.page && (crate::contents2814_control("page-caret-ignored") || now.caret == Some(0) && !crate::contents2814_control("page-jump-is-caret")))')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
