@@ -68,6 +68,7 @@ CONTROLS = [
  ('no-path-open', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
  ('scroll-wins', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
  ('tree-selection-ignored', 'contents2814_find_hits_and_tree_selection_become_where_you_are'),
+ ('no-jump-settle', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -91,7 +92,9 @@ try:
     edit(view, '        if !Arc::ptr_eq(&raw, &doc) {\n            return self.snapshot.current;\n        }\n', '        if !Arc::ptr_eq(&raw, &doc) {\n            if crate::contents2814_control("remap-every-sample") {\n                let node = code.read(cx).contents_whereabouts(cx).and_then(|w| w.top_node)?;\n                raw.node_in(node, &doc)?;\n            }\n            return self.snapshot.current;\n        }\n')
     edit(view, '        let groups = self.snapshot.groups.get(&parent)?;', '        if crate::contents2814_control("groups-unmarked") {\n            return None;\n        }\n        let groups = self.snapshot.groups.get(&parent)?;')
     edit(view, '                self.snapshot.follow_caret = true;\n', '                self.snapshot.follow_caret = !crate::contents2814_control("caret-never-leads");\n')
-    edit(view, '            Some(before) if before.top != now.top => {\n                self.snapshot.follow_caret = false;\n                self.snapshot.reveal = None;', '            Some(before) if before.top != now.top => {\n                self.snapshot.follow_caret = false;\n                self.snapshot.reveal = if crate::contents2814_control("scroll-opens") { now.top_node.map(|node| (node, false)) } else { None };')
+    edit(view, '            {\n                self.snapshot.follow_caret = false;\n                self.snapshot.reveal = None;\n            }\n            _ => {}', '            {\n                self.snapshot.follow_caret = false;\n                self.snapshot.reveal = if crate::contents2814_control("scroll-opens") { now.top_node.map(|node| (node, false)) } else { None };\n            }\n            _ => {}')
+    edit(view, 'const JUMP_SETTLE: Duration = Duration::from_millis(200);', 'const JUMP_SETTLE: Duration = Duration::from_millis(200);\nfn jump_settle() -> Duration { if crate::contents2814_control("no-jump-settle") { Duration::ZERO } else { JUMP_SETTLE } }')
+    edit(view, '.saturating_duration_since(at) >= JUMP_SETTLE', '.saturating_duration_since(at) >= jump_settle()')
     edit(view, '                tree::open_path(&doc, node, self.expansion());', '                if !crate::contents2814_control("no-path-open") {\n                    tree::open_path(&doc, node, self.expansion());\n                }')
     edit(view, 'Some(before) if before.caret != now.caret && now.caret_node.is_some() => {', 'Some(before) if before.caret != now.caret && now.caret_node.is_some() && (before.top == now.top || !crate::contents2814_control("scroll-wins")) => {')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')

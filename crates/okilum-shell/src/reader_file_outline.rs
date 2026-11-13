@@ -14,6 +14,10 @@ pub(crate) mod tree;
 
 /// «Reading structure…» appears only when reading takes longer than this.
 const READING_DELAY: Duration = Duration::from_millis(300);
+/// A jump moves the caret at once and lands its scroll a frame or two later
+/// (deferred, clamped at the end of the text): a top change this soon after a
+/// caret move belongs to that move, not to the user scrolling.
+const JUMP_SETTLE: Duration = Duration::from_millis(200);
 
 /// Contents from the viewer's whole-file tree (#2814): JSON in Read.
 /// Listed group rows by parent: `(first_index, last_index, row)` sorted by
@@ -43,6 +47,8 @@ struct Snapshot {
     /// A node a caret move named: its path opens once and its row scrolls
     /// into view when listed. `true` once the path was opened.
     reveal: Option<(usize, bool)>,
+    /// When the caret last moved, on the executor clock.
+    caret_moved: Option<std::time::Instant>,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -358,6 +364,7 @@ impl View {
             self.snapshot.seen = None;
             self.snapshot.follow_caret = false;
             self.snapshot.reveal = None;
+            self.snapshot.caret_moved = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
             self.snapshot.state = SnapshotState::Absent;
@@ -451,8 +458,14 @@ impl View {
             Some(before) if before.caret != now.caret && now.caret_node.is_some() => {
                 self.snapshot.follow_caret = true;
                 self.snapshot.reveal = now.caret_node.map(|node| (node, false));
+                self.snapshot.caret_moved = Some(cx.background_executor().now());
             }
-            Some(before) if before.top != now.top => {
+            Some(before)
+                if before.top != now.top
+                    && self.snapshot.caret_moved.is_none_or(|at| {
+                        cx.background_executor().now().saturating_duration_since(at) >= JUMP_SETTLE
+                    }) =>
+            {
                 self.snapshot.follow_caret = false;
                 self.snapshot.reveal = None;
             }
