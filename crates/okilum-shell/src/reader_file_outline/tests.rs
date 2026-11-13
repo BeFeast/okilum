@@ -406,7 +406,8 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         visual.debug_bounds("file-contents-heading").is_some(),
         "positive control: actual file Contents rendered"
     );
-    assert!(visual.debug_bounds("file-linked-from-heading").is_some());
+    // #2885: data files have no «Linked from» section.
+    assert!(visual.debug_bounds("file-linked-from-heading").is_none());
     // #2814: a JSON file reads its rows from the viewer's tree, in every view.
     let rows = |visual: &mut VisualTestContext| {
         outline.read_with(visual, |view, _| {
@@ -429,11 +430,13 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
     visual.run_until_parked();
     visual.executor().advance_clock(Duration::from_millis(130));
     visual.run_until_parked();
+    // #2885: plain text keeps the Contents heading with its empty line and
+    // drops the always-empty «Linked from».
     assert!(
-        visual.debug_bounds("file-linked-from-heading").is_some(),
+        visual.debug_bounds("file-contents-heading").is_some(),
         "positive control: file panel remains rendered"
     );
-    assert!(visual.debug_bounds("file-contents-heading").is_none());
+    assert!(visual.debug_bounds("file-linked-from-heading").is_none());
     outline.read_with(visual, |view, _| assert!(!view.has_entries()));
     reader.update_in(visual, |reader, window, cx| {
         reader.open_note("big.json", None, window, cx)
@@ -445,7 +448,7 @@ fn file_panel_tracks_pretty_raw_and_hides_contents_without_hiding_backlinks(
         reader_viewer_chrome::tests::measured_bounds(visual, "code-view-raw").is_some(),
         "positive control: the paged JSON opened"
     );
-    assert!(visual.debug_bounds("file-linked-from-heading").is_some());
+    assert!(visual.debug_bounds("file-linked-from-heading").is_none());
     // #2814: a long-line file gets Contents from the whole-file tree, never
     // from a 32 KiB fragment.
     assert!(visual.debug_bounds("file-contents-heading").is_some());

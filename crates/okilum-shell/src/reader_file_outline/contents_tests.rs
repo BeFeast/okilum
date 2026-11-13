@@ -311,11 +311,14 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
                 assert!(visual.debug_bounds("file-outline-state").is_some());
             }
             None => {
+                // No rows (Table view, or no structure): only the heading and
+                // its empty line remain; data files have no «Linked from» (#2885).
+                view.read_with(visual, |v, _| assert!(!v.has_entries(), "{file}"));
+                assert!(visual.debug_bounds("file-outline-list").is_none(), "{file}");
                 assert!(
-                    visual.debug_bounds("file-contents-heading").is_none(),
-                    "{file}: no section (Table view, or no structure)"
+                    visual.debug_bounds("file-linked-from-heading").is_none(),
+                    "{file}"
                 );
-                assert!(visual.debug_bounds("file-linked-from-heading").is_some());
             }
         }
     }
@@ -507,4 +510,46 @@ fn contents2814_a_click_on_old_rows_reaches_the_same_node_in_a_newer_document(
     let mapped = first.node_in(twice, &second).unwrap();
     assert_eq!(second.scalar(mapped).unwrap().1, "2");
     assert_eq!(doc("{\"gone\":1}").node_in(1, &doc("{\"other\":1}")), None);
+}
+
+#[gpui::test]
+fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[
+            ("note.md", "# Note\n\nText.\n"),
+            ("data.json", "{\"a\":1}"),
+            ("feed.xml", "<feed><title>x</title></feed>"),
+            ("api.har", "{\"log\":{\"version\":\"1.2\",\"entries\":[]}}"),
+            ("gateway.log", "2026-11-10T12:00:00Z INFO ready\n"),
+            ("board.canvas", "{\"nodes\":[],\"edges\":[]}"),
+        ],
+        "note.md",
+    );
+    assert!(
+        visual.debug_bounds("right-linked-from-heading").is_some(),
+        "a Markdown note keeps «Linked from»"
+    );
+    for (file, keeps) in [
+        ("data.json", false),
+        ("feed.xml", false),
+        ("api.har", false),
+        ("gateway.log", false),
+        ("board.canvas", true),
+    ] {
+        reader.update_in(visual, |r, w, cx| r.open_note(file, None, w, cx));
+        settle(visual);
+        reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), file));
+        assert_eq!(
+            visual.debug_bounds("file-linked-from-heading").is_some(),
+            keeps,
+            "{file}: «Linked from» only where it can have backlinks"
+        );
+        if !keeps {
+            assert!(
+                visual.debug_bounds("file-contents-heading").is_some(),
+                "{file}: Contents takes the panel"
+            );
+        }
+    }
 }
