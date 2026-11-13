@@ -341,7 +341,11 @@ fn toml2813_headers_compare_by_parsed_key_path() {
     let text = "[[bin]]\nname = \"a\"\n[\"bin\".meta]\nk = 1\n[[ 'bin' ]]\nname = \"b\"\n[ bin . other ]\nj = 2\n";
     let d = doc("toml", text);
     assert!(d.syntax.is_none(), "{:?}", d.syntax);
-    assert_eq!(labels(&d, 0), ["bin 2 items"], "quoted and spaced headers are the same path");
+    assert_eq!(
+        labels(&d, 0),
+        ["bin 2 items"],
+        "quoted and spaced headers are the same path"
+    );
     let bin = find_key(&d, "bin");
     let items: Vec<_> = d.children(bin).collect();
     assert_eq!(labels(&d, items[0]), ["name \"a\"", "meta 1 key"]);
@@ -352,6 +356,10 @@ fn toml2813_headers_compare_by_parsed_key_path() {
 fn yaml2813_properties_without_content_are_empty_values() {
     let d = doc("yaml", "x: &ref # empty\ny: !!str # empty\nz: 1\n");
     assert!(d.invalid.is_none(), "{:?}", d.invalid);
-    assert_eq!(labels(&d, 0), ["x ", "y ", "z 1"], "never the anchor or tag text");
+    assert_eq!(
+        labels(&d, 0),
+        ["x ", "y ", "z 1"],
+        "never the anchor or tag text"
+    );
     assert_eq!(d.scalar(find_key(&d, "x")).unwrap().0, ScalarKind::Null);
 }
