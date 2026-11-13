@@ -91,7 +91,9 @@ original combined titlebar and document controls:
 - **File Edit header (#2811).** Edit keeps this header and its shared Find.
   Raw stays active; other views and folds are disabled with live Read hints.
   One toolkit Format split button owns Format / Validate / Repair, with Language
-  in its menu for known extensions. Unknown/absent extensions can show Language
+  in its menu for known extensions. The split reads as one control (#2884):
+  both halves share the header button height and top, one outline with rounded
+  outer corners, a straight seam with a 1 px divider, hover/press per half. Unknown/absent extensions can show Language
   separately. Read, dirty Save, Format, the field and Document actions stay at
   700 px; the view switch becomes one menu. Live sibling overlays own changing
   button/badge state without rebuilding cached slots on typing. One bottom line

@@ -583,6 +583,76 @@ fn file2811_repair_from_read_enters_edit_and_stale_sheet_closes(cx: &mut TestApp
     );
 }
 
+/// #2884: the Format split is one control. Its action half and its menu half
+/// share top, height and the header button height, meet at a 1 px seam and
+/// fill the split's bounds exactly, so nothing steps or sticks out. The menu
+/// half is measured on its own (`file-format-split-menu`), and the peer header
+/// button is the control: it proves the measured height is the toolbar's.
+#[gpui::test]
+fn file2884_format_split_halves_form_one_control(cx: &mut TestAppContext) {
+    let (_reader, _file, _input, visual, _temp) = open(cx, "test1.json", "{\"a\":1}");
+    for mode in [
+        gpui_component::ThemeMode::Light,
+        gpui_component::ThemeMode::Dark,
+    ] {
+        visual.update(|_, cx| {
+            gpui_component::Theme::change(mode, None, cx);
+            brand::apply_theme(cx);
+        });
+        frame(visual);
+        let header = measured(visual, "document-header-viewport");
+        let split = measured(visual, "file-format-split");
+        let action = measured(visual, "file-format");
+        let menu = measured(visual, "file-format-split-menu");
+        let peer = measured(visual, "reader-read");
+        let context = format!("{mode:?}: action {action:?}, menu {menu:?}, split {split:?}");
+        assert_eq!(action.top(), menu.top(), "halves share a top: {context}");
+        assert_eq!(
+            action.size.height, menu.size.height,
+            "halves share a height: {context}"
+        );
+        assert_eq!(
+            action.size.height, peer.size.height,
+            "the split is as tall as the other header buttons: {context}, peer {peer:?}"
+        );
+        assert_eq!(
+            (action.top(), action.bottom()),
+            (split.top(), split.bottom()),
+            "no half sticks out of the split: {context}"
+        );
+        let seam = menu.left() - action.right();
+        assert!(
+            seam >= px(0.) && seam <= px(1.),
+            "halves are adjacent, a 1 px seam at most: {context}"
+        );
+        assert_eq!(
+            action.left(),
+            split.left(),
+            "outline starts at the split: {context}"
+        );
+        assert_eq!(
+            menu.right(),
+            split.right(),
+            "outline ends at the split: {context}"
+        );
+        assert!(
+            split.top() >= header.top()
+                && split.bottom() <= header.bottom()
+                && split.left() >= header.left()
+                && split.right() <= header.right(),
+            "the split sits inside the header: {context}, header {header:?}"
+        );
+    }
+    // The measured menu half is the real trigger: clicking its centre opens
+    // the Format menu.
+    FORMAT_POPUP.with(|m| *m.borrow_mut() = None);
+    click(visual, "file-format-split-menu");
+    assert!(
+        FORMAT_POPUP.with(|m| m.borrow().is_some()),
+        "the measured menu half opens the Format menu"
+    );
+}
+
 #[gpui::test]
 fn file2811_narrow_header_protects_find_read_save_format_and_more(cx: &mut TestAppContext) {
     let (_reader, _file, input, visual, _temp) = open(cx, "broken.json", "{ a: 1 }");
