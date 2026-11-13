@@ -129,7 +129,6 @@ fn catalog() -> Vec<Entry> {
         entry::<UndoTrash>(Os::CURRENT.undo_move_to_trash(), Notes),
         entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
-        entry::<project_terminal::OpenInTerminal>(reader_files::TERMINAL_LABEL, Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         menu_entry::<CanvasFit>("Fit Canvas to content", View),
         menu_entry::<CanvasZoomIn>("Zoom Canvas in", View),

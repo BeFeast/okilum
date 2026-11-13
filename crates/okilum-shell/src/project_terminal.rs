@@ -10,10 +10,10 @@ mod tests;
 
 #[cfg(test)]
 #[derive(Default)]
-pub(crate) struct Launches(pub(crate) Vec<PathBuf>);
+struct Launches(Vec<PathBuf>);
 #[cfg(test)]
 impl gpui::Global for Launches {}
-gpui::actions!(project_terminal, [OpenTerminal, OpenInTerminal]);
+gpui::actions!(project_terminal, [OpenTerminal]);
 
 pub(crate) fn bind_keys(cx: &mut App) {
     // Input/editor-specific bindings retain their meaning, including Ctrl+J.
@@ -21,8 +21,6 @@ pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-j", OpenTerminal, context),
         KeyBinding::new("ctrl-`", OpenTerminal, context),
-        // Next to Reveal (alt-cmd-r) and Copy vault path (alt-cmd-c).
-        KeyBinding::new("alt-cmd-t", OpenInTerminal, Some("Reader")),
     ]);
 }
 fn setting_path(project: &Path) -> anyhow::Result<PathBuf> {
@@ -123,34 +121,18 @@ fn initial_for_project(
     .map_err(anyhow::Error::msg)
 }
 fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     let initial = initial_for_project(project, &reader_history::state_directory()?)?;
     let os = std::env::consts::OS;
     let terminal = std::env::var("TERMINAL").ok();
     let launcher =
         command::launcher(os, terminal.as_deref(), available).map_err(anyhow::Error::msg)?;
-    run(command::plan(os, &initial, &launcher), None)
-}
-
-/// Starts the planned terminal and waits for its launcher, keeping at most
-/// 8 KiB of its diagnostics. An AppImage's own variables are not inherited.
-fn run(plan: command::Plan, directory: Option<&Path>) -> anyhow::Result<()> {
-    use anyhow::Context as _;
-    let mut process = std::process::Command::new(&plan.program);
-    process
+    let plan = command::plan(os, &initial, &launcher);
+    let mut child = std::process::Command::new(&plan.program)
         .args(&plan.args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    if let Some(directory) = directory {
-        process.current_dir(directory);
-    }
-    for (name, value) in command::appimage_env(|name| std::env::var(name).ok()) {
-        match value {
-            Some(value) => process.env(name, value),
-            None => process.env_remove(name),
-        };
-    }
-    let mut child = process
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .with_context(|| format!("Cannot start system terminal {}", plan.program))?;
     // Drain stderr without retaining unbounded terminal diagnostics.
@@ -176,73 +158,6 @@ fn run(plan: command::Plan, directory: Option<&Path>) -> anyhow::Result<()> {
     );
     Ok(())
 }
-
-/// macOS application «Open in terminal» uses. Okilum has no terminal-app
-/// preference yet; Terminal.app is the system's own.
-const MAC_TERMINAL_APP: &str = "Terminal";
-
-/// The folder a terminal opens in for a vault item: a folder itself, or the
-/// folder that contains a file.
-pub(crate) fn folder_for(path: &Path) -> PathBuf {
-    if path.is_dir() {
-        path.to_owned()
-    } else {
-        path.parent()
-            .map(Path::to_owned)
-            .unwrap_or_else(|| path.to_owned())
-    }
-}
-
-fn launch_folder(directory: &Path) -> anyhow::Result<()> {
-    use anyhow::Context as _;
-    let os = std::env::consts::OS;
-    let terminal = std::env::var("TERMINAL").ok();
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
-    let launcher = command::folder_launcher(os, terminal.as_deref(), desktop.as_deref(), available)
-        .map_err(anyhow::Error::msg)?;
-    let text = directory
-        .to_str()
-        .context("The folder path is not valid Unicode")?;
-    run(
-        command::folder_plan(os, text, &launcher, MAC_TERMINAL_APP),
-        Some(directory),
-    )
-}
-
-/// «Open in terminal» (#2837): the system terminal in `path`'s folder, on a
-/// dedicated thread; a launch failure is reported in the originating window.
-pub(crate) fn open_folder(path: &Path, window: &mut Window, cx: &mut App) {
-    let directory = okilum_core::vault::plain_path(&folder_for(path));
-    #[cfg(test)]
-    if cx.has_global::<Launches>() {
-        cx.global_mut::<Launches>().0.push(directory);
-        return;
-    }
-    report(move || launch_folder(&directory), window, cx);
-}
-
-fn report(
-    launch: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    // A terminal can remain alive for hours. Neither the UI thread nor GPUI's
-    // shared background worker pool waits for that process. Reap on a dedicated
-    // thread and deliver any launch/exit failure back to the originating window.
-    let (send, receive) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = send.send_blocking(launch());
-    });
-    let window = window.window_handle();
-    cx.spawn(async move |cx| {
-        if let Ok(Err(error)) = receive.recv().await {
-            let _ = window.update(cx, |_, window, cx| {
-                window.push_notification(format!("Terminal could not open: {error:#}"), cx)
-            });
-        }
-    })
-    .detach();
-}
 pub(crate) fn open_project(area: PathBuf, window: &mut Window, cx: &mut App) {
     match okilum_t3::projects::Project::read(&area) {
         Ok(project) => open(&project, window, cx),
@@ -255,8 +170,23 @@ pub(crate) fn open(project: &okilum_t3::projects::Project, window: &mut Window, 
         cx.global_mut::<Launches>().0.push(project.folder.clone());
         return;
     }
+    // A terminal can remain alive for hours. Neither the UI thread nor GPUI's
+    // shared background worker pool waits for that process. Reap on a dedicated
+    // thread and deliver any launch/exit failure back to the originating window.
     let project = project.clone();
-    report(move || launch(&project), window, cx);
+    let (send, receive) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = send.send_blocking(launch(&project));
+    });
+    let window = window.window_handle();
+    cx.spawn(async move |cx| {
+        if let Ok(Err(error)) = receive.recv().await {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(format!("Terminal could not open: {error:#}"), cx)
+            });
+        }
+    })
+    .detach();
 }
 impl Reader {
     pub(super) fn open_project_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -55,8 +55,7 @@ original combined titlebar and document controls:
   (64 MiB maximum, including a file growing during the read), or the unsaved
   editor buffer. The toast names its size; no formatted preview is copied.
   Open with holds the default app, installed editors under Open in, the
-  platform file manager, Open in terminal (the file's folder, #2837), and
-  Quick Look on macOS only.
+  platform file manager, and Quick Look on macOS only.
   Labels are opt-in from about 1,400 px of document width. The pure overflow
   policy reads the viewer's `overflow_order` table plus its action descriptors,
   and drops labels, Reveal in sidebar, width and Maximize, viewer actions,
@@ -826,17 +825,8 @@ on the containing folder. Shortcut hints use ⌘/⌥/⇧ glyphs only on macOS an
 spell out Ctrl/Alt/Shift elsewhere; both come from `platform::labels` (#612).
 
 Document More contains Reveal in sidebar (the document breadcrumb crosshair action),
-Edit/Preview, Rename/move, Note history, Reveal, Open in terminal,
+Edit/Preview, Rename/move, Note history, Reveal,
 Copy path, Open in new window, Move to Trash and Close note.
-
-Open in terminal (#2837) follows Reveal in sidebar row menus, breadcrumb and
-title menus, the file header's Open with and note Document actions, and is in
-the palette and shortcut catalog (Option+Command+T / Alt+Super+T). It opens
-the system terminal in the item's folder; a file opens its containing folder.
-Entries inside a ZIP are not files on disk and have no file menu, so the
-action is absent there; the archive file itself opens its own folder.
-Launcher selection, argument safety and AppImage environment are described
-in docs/project-terminal.md.
 The app More menu contains New note, Open file/folder, recovery, appearance,
 hidden files, About and Quit. Editing actions are absent in Windows diagnostic.
 

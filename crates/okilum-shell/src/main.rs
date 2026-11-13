@@ -8175,11 +8175,6 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &CopyFileWikilink, window, cx| {
                 this.file_action(reader_files::FileAction::Wiki, window, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &project_terminal::OpenInTerminal, window, cx| {
-                    this.file_action(reader_files::FileAction::Terminal, window, cx)
-                }),
-            )
             .on_action(cx.listener(|this, _: &OpenFileDefault, window, cx| {
                 this.file_action(reader_files::FileAction::Open, window, cx)
             }))
