@@ -1,0 +1,114 @@
+diff --git a/crates/component/src/button/button.rs b/crates/component/src/button/button.rs
+index 05f0f4cf..34b2bf03 100644
+--- a/crates/component/src/button/button.rs
++++ b/crates/component/src/button/button.rs
+@@ -809,6 +809,27 @@ enum ButtonStyleState {
+ }
+ 
+ impl ButtonVariant {
++    /// The seam drawn between the two halves of a split button, as the
++    /// surface it sits on and the line color, or `None` when the halves need
++    /// no extra seam: bordered variants already draw it with the action
++    /// half's right edge, and transparent ones have no surface to divide.
++    pub(super) fn split_seam(
++        &self,
++        outline: bool,
++        disabled: bool,
++        cx: &mut App,
++    ) -> Option<(Background, Hsla)> {
++        if outline || self.is_default() || self.is_ghost() || self.no_padding() {
++            return None;
++        }
++        let style = if disabled {
++            self.disabled(false, cx)
++        } else {
++            self.normal(false, cx)
++        };
++        Some((style.bg, style.fg.opacity(0.35)))
++    }
++
+     fn outline_background(&self, state: ButtonStyleState, cx: &mut App) -> Background {
+         match (self, state) {
+             (Self::Default, ButtonStyleState::Normal) => cx.theme().input_background().into(),
+diff --git a/crates/component/src/button/dropdown_button.rs b/crates/component/src/button/dropdown_button.rs
+index 482d0848..198a9a76 100644
+--- a/crates/component/src/button/dropdown_button.rs
++++ b/crates/component/src/button/dropdown_button.rs
+@@ -1,7 +1,7 @@
+ use gpui::Corners;
+ use gpui::{
+     Anchor, App, Context, Edges, ElementId, InteractiveElement as _, IntoElement, ParentElement,
+-    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder,
++    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+ };
+ 
+ use crate::{
+@@ -146,7 +146,7 @@ impl Selectable for DropdownButton {
+ }
+ 
+ impl RenderOnce for DropdownButton {
+-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
++    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+         debug_assert!(
+             self.button.is_some() || self.menu.is_some(),
+             "a DropdownButton needs a `button`, a `dropdown_menu`, or both"
+@@ -161,11 +161,24 @@ impl RenderOnce for DropdownButton {
+         let is_ghost = variant.is_ghost();
+         let menu_open = window.use_keyed_state(self.id.clone(), cx, |_, _| false);
+         let is_menu_open = *menu_open.read(cx);
++        // Both halves are one control, so they share one height: the split's
++        // own when set, else the action half's. Without it each half keeps
++        // its own size-derived height and the pair steps at the seam.
++        let height = self.style.size.height.or_else(|| {
++            self.button
++                .as_mut()
++                .and_then(|button| button.style().size.height)
++        });
++        let seam = (self.button.is_some() && self.menu.is_some())
++            .then(|| variant.split_seam(self.outline, self.disabled, cx))
++            .flatten();
++        let menu_selector = format!("{}-menu", self.id);
+ 
+         div()
+             .id(self.id)
+             .when(is_ghost, |this| this.group(HALVES_GROUP))
+             .h_flex()
++            .items_stretch()
+             .refine_style(&self.style)
+             .when_some(self.button, |this, button| {
+                 let disabled = self.disabled || button.is_disabled();
+@@ -183,12 +196,22 @@ impl RenderOnce for DropdownButton {
+                         .when(self.outline, |this| this.outline())
+                         .with_size(size)
+                         .with_variant(variant)
++                        .when_some(height, |this, height| this.h(height))
+                         .when(is_ghost, |this| {
+                             this.hover_group(HALVES_GROUP)
+                                 .hover_group_held(is_menu_open)
+                         }),
+                 )
+             })
++            .when_some(seam, |this, (surface, line)| {
++                this.child(
++                    div()
++                        .flex_none()
++                        .w(px(1.))
++                        .bg(surface)
++                        .child(div().size_full().bg(line)),
++                )
++            })
+             .when_some(self.menu, |this, menu| {
+                 this.child(
+                     Button::new("popup")
+@@ -210,6 +233,11 @@ impl RenderOnce for DropdownButton {
+                         .when(self.outline, |this| this.outline())
+                         .with_size(size)
+                         .with_variant(variant)
++                        .when_some(height, |this, height| this.h(height))
++                        // Takes any width the split is given beyond its halves,
++                        // so the outline ends where the control's bounds do.
++                        .flex_grow(1.)
++                        .debug_selector(|| menu_selector)
+                         .when(is_ghost, |this| this.hover_group(HALVES_GROUP))
+                         .dropdown_menu_with_anchor(self.anchor, menu)
+                         .on_open_change(move |open, _, cx| {
