@@ -221,16 +221,14 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         };
         view.update(cx, |view, _| view.visible = true);
         let weak = view.downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |view, cx| {
-                if matches!(view.state, SendState::Sending) {
-                    return false;
-                }
-                view.checkpoint(cx);
-                view.visible = false;
-                true
-            })
-            .unwrap_or(true)
+        window.on_window_should_close(cx, move |window, cx| {
+            crate::reader_diagnostics::window_close_requested(
+                window,
+                cx,
+                "native platform request",
+            );
+            weak.update(cx, |view, cx| view.prepare_close(cx))
+                .unwrap_or(true)
         });
         Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
         opened = Some(view.clone());
@@ -292,20 +290,30 @@ impl Render for FeedbackWindow {
             .text_color(p.text)
             .key_context("OkilumFeedbackWindow")
             .track_focus(&self.focus)
-            .capture_action(move |_: &CloseFeedback, window, cx| {
-                let sending = view.update(cx, |view, cx| {
-                    if matches!(view.state, SendState::Sending) {
-                        return true;
+            .capture_action({
+                let view = view.clone();
+                move |_: &CloseFeedback, window, cx| {
+                    if view.update(cx, |view, cx| view.prepare_close(cx)) {
+                        window.remove_window();
                     }
-                    view.checkpoint(cx);
-                    view.visible = false;
-                    false
-                });
-                if !sending {
-                    window.remove_window();
                 }
             })
-            .child(TitleBar::new().child("Send feedback"))
+            .child(
+                // GNOME draws our own close button; it keeps the draft like
+                // the platform close (#2805), never by bare removal.
+                TitleBar::new()
+                    .on_close_window(move |_, window, cx| {
+                        crate::reader_diagnostics::window_close_requested(
+                            window,
+                            cx,
+                            "title bar close button",
+                        );
+                        if view.update(cx, |view, cx| view.prepare_close(cx)) {
+                            window.remove_window();
+                        }
+                    })
+                    .child("Send feedback"),
+            )
             .child(div().flex_1().min_h_0().p_5().child(self.view.clone()))
     }
 }
@@ -1276,6 +1284,19 @@ impl FeedbackView {
         false
     }
 }
+impl FeedbackView {
+    /// Every close of the Feedback window keeps the draft; a send in flight
+    /// keeps the window open. `true` means close now.
+    fn prepare_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if matches!(self.state, SendState::Sending) {
+            return false;
+        }
+        self.checkpoint(cx);
+        self.visible = false;
+        true
+    }
+}
+
 impl Render for FeedbackView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy();
