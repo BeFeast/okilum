@@ -56,8 +56,9 @@ CONTROLS = [
  ('swap-doc-early', 'contents2814_rows_and_their_document_change_together'),
  ('timer-survives-switch', 'contents2814_reading_timer_restarts_for_each_file'),
  ('click-by-index', 'contents2814_a_click_on_old_rows_reaches_the_same_node_in_a_newer_document'),
+ ('linked-from-everywhere', 'linked2885_data_files_hide_linked_from_and_notes_keep_it'),
 ]
-TESTS = ['contents2814_']
+TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
 fn contents2814_control(name: &str) -> bool {
     std::env::var("OKILUM_CONTENTS2814_CONTROL").is_ok_and(|v| v == name)
@@ -79,6 +80,7 @@ try:
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
     edit(view, '            self.snapshot.reading = None;\n            self.snapshot.state = SnapshotState::Absent;\n            self.list.reset(0);', '            if !crate::contents2814_control("timer-survives-switch") {\n                self.snapshot.reading = None;\n                self.snapshot.state = SnapshotState::Absent;\n            }\n            self.list.reset(0);')
+    edit('reader_right_panel.rs', '    reader.file_preview.as_ref().is_some_and(|preview| {', '    !crate::contents2814_control("linked-from-everywhere") && reader.file_preview.as_ref().is_some_and(|preview| {')
     code = 'reader_code_file/contents.rs'
     edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
     edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
