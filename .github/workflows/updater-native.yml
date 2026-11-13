@@ -137,7 +137,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - uses: actions/cache/save@v4
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         with:
           path: |
             ~/.cargo/registry/

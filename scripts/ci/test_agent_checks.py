@@ -311,10 +311,16 @@ class VerdictTests(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
         on = workflow.get("on", workflow.get(True))
         self.assertIn("agent-checks-fast/**", on["push"]["branches"])
-        self.assertNotIn("schedule", on, "no hourly run: the full set runs daily before Stable")
+        # No hourly run (#2863). One daily run on main only warms the caches that
+        # branch runs restore; branches no longer save their own (#2881).
+        crons = [entry["cron"].split() for entry in on.get("schedule", [])]
+        self.assertLessEqual(len(crons), 1)
+        for minute, hour, day, month, weekday in crons:
+            self.assertTrue(minute.isdigit() and hour.isdigit(), "at most one run a day")
         fast = "startsWith(github.ref, 'refs/heads/agent-checks-fast/')"
         jobs = workflow["jobs"]
-        self.assertEqual(jobs["pre-merge"]["if"], "${{ " + fast + " }}")
+        self.assertEqual(jobs["pre-merge"]["if"],
+                         "${{ " + fast + " || github.event_name == 'schedule' }}")
         for name in ("linux", "windows-recovery"):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
         steps = jobs["pre-merge"]["steps"]
@@ -328,6 +334,21 @@ class VerdictTests(unittest.TestCase):
         # The pre-merge cache must survive edits to this workflow.
         cache = next(s for s in steps if s.get("id") == "cache")
         self.assertNotIn("agent-checks.yml", cache["with"]["key"])
+
+    def test_only_main_saves_cargo_caches(self):
+        # 10 GB repository quota (#2880, #2881): branch saves evicted main's caches.
+        main = "github.ref == 'refs/heads/main'"
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            workflow = yaml.safe_load(path.read_text())
+            for name, job in workflow["jobs"].items():
+                guard = str(job.get("if", ""))
+                for step in job.get("steps", []):
+                    uses = step.get("uses", "")
+                    where = f"{path.name}:{name}"
+                    if uses.startswith(("actions/cache/save@", "actions/cache@")):
+                        self.assertIn(main, str(step.get("if", "")) + guard, where)
+                    elif uses.startswith("Swatinem/rust-cache@"):
+                        self.assertIn(main, str(step["with"].get("save-if", "")), where)
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):

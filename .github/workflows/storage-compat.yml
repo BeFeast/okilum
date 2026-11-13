@@ -54,8 +54,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: storage-compat-zip-v1
-          # macOS target caches: only main saves (repo cache quota; see forgejo-macos-shipping.yml).
-          save-if: ${{ (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Verify exact source and vendor
         shell: bash
@@ -86,6 +86,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: inbox
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: storage-compat-inbox-v1
       - name: Verify exact source and legacy fixture checksums
         run: |

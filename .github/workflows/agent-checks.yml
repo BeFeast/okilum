@@ -5,6 +5,11 @@ on:
     # agent-checks-fast/** is the pre-merge gate (Oleg 13.11 ~14:20): checks
     # that compile nothing. The full set runs once a day before Stable.
     branches: ['agent-checks/**', 'agent-checks-benchmark/**', 'agent-checks-fast/**']
+  # Branch runs no longer save Cargo caches (#2881): this daily run on main runs
+  # the full Linux/Windows set and the pre-merge job, and saves the caches that
+  # every agent-checks branch restores.
+  schedule:
+    - cron: '30 22 * * *'
   workflow_dispatch:
     inputs:
       macos_sync_check:
@@ -42,8 +47,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
-          # macOS target caches: only main saves (repo cache quota; see forgejo-macos-shipping.yml).
-          save-if: ${{ (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Prepare and verify Mac Sync vendor
         env:
@@ -78,6 +83,8 @@ jobs:
       - name: Restore Windows core cache
         uses: Swatinem/rust-cache@v2
         with:
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: agent-windows-recovery-v1
           cache-on-failure: true
       - name: Prepare and verify Windows vendor
@@ -114,7 +121,7 @@ jobs:
   # checks plus workspace clippy, which compiles the Linux workspace. No Rust
   # test suites and no Windows/macOS job; the full set runs daily before Stable.
   pre-merge:
-    if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
+    if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') || github.event_name == 'schedule' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -196,7 +203,7 @@ jobs:
           CARGO_NET_OFFLINE: 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Save Rust downloads and target cache
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ (!cancelled() && steps.cache.outputs.cache-hit != 'true') && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -384,7 +391,7 @@ jobs:
           git fetch --no-tags https://github.com/BeFeast/okilum.git "$PUBLICATION_BASELINE"
           python3 scripts/perf/editor/publication-controls.py "$PUBLICATION_BASELINE"
       - name: Save Rust downloads and target cache
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ (!cancelled() && steps.cache.outputs.cache-hit != 'true') && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: |
