@@ -452,6 +452,187 @@ mod tests {
         );
     }
 
+    // Native backends may split adjacent glyphs of one font into several
+    // nonempty batches. Rendering and caret APIs consume their ordered glyphs
+    // and per-glyph font identity, not those batch boundaries. Empty batches
+    // retain the original strict contract: the painter observes their position.
+    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {
+        if a.runs
+            .iter()
+            .chain(&b.runs)
+            .any(|run| run.glyphs.is_empty())
+        {
+            return native_ascii::exact_geometry(a, b);
+        }
+        a.font_size == b.font_size
+            && a.width == b.width
+            && a.ascent == b.ascent
+            && a.descent == b.descent
+            && a.len == b.len
+            && a.runs
+                .iter()
+                .flat_map(|run| {
+                    run.glyphs.iter().map(move |glyph| {
+                        (
+                            run.font_id,
+                            glyph.id,
+                            glyph.index,
+                            glyph.position,
+                            glyph.is_emoji,
+                        )
+                    })
+                })
+                .eq(b.runs.iter().flat_map(|run| {
+                    run.glyphs.iter().map(move |glyph| {
+                        (
+                            run.font_id,
+                            glyph.id,
+                            glyph.index,
+                            glyph.position,
+                            glyph.is_emoji,
+                        )
+                    })
+                }))
+    }
+
+    fn native_geometry_batches() -> (LineLayout, LineLayout) {
+        let glyphs = (0..14)
+            .map(|i| ShapedGlyph {
+                id: gpui::GlyphId(100 + i as u32),
+                index: i,
+                position: gpui::point(px(i as f32 * 10.), px(2.)),
+                is_emoji: false,
+            })
+            .collect();
+        let one = LineLayout {
+            font_size: px(16.),
+            width: px(140.),
+            ascent: px(12.),
+            descent: px(4.),
+            len: 14,
+            runs: vec![ShapedRun {
+                font_id: FontId(3),
+                glyphs,
+            }],
+        };
+        let mut seven = copy_layout(&one);
+        seven.runs = one.runs[0]
+            .glyphs
+            .chunks(2)
+            .map(|glyphs| ShapedRun {
+                font_id: FontId(3),
+                glyphs: glyphs.to_vec(),
+            })
+            .collect();
+        (one, seven)
+    }
+
+    #[test]
+    fn edit2803_native_geometry_accepts_same_font_run_batches() {
+        let (one, seven) = native_geometry_batches();
+        assert_eq!((one.runs.len(), seven.runs.len()), (1, 7));
+        assert!(
+            !native_ascii::exact_geometry(&one, &seven),
+            "negative control: the old predicate rejects equivalent native batching"
+        );
+        assert!(
+            same_native_geometry(&one, &seven),
+            "same-font native batching preserves exact geometry"
+        );
+        assert!(same_native_geometry(&seven, &one));
+        for index in 0..=one.len {
+            assert_eq!(one.x_for_index(index), seven.x_for_index(index));
+            assert_eq!(one.font_id_for_index(index), seven.font_id_for_index(index));
+            let (a, b) = one.split_at(index);
+            let (c, d) = seven.split_at(index);
+            assert!(same_native_geometry(&a, &c));
+            assert!(same_native_geometry(&b, &d));
+        }
+        for x in -1..=141 {
+            assert_eq!(
+                one.index_for_x(px(x as f32)),
+                seven.index_for_x(px(x as f32))
+            );
+            assert_eq!(
+                one.closest_index_for_x(px(x as f32)),
+                seven.closest_index_for_x(px(x as f32))
+            );
+        }
+    }
+
+    #[test]
+    fn edit2803_native_geometry_rejects_corrupted_fields() {
+        fn next(value: Pixels) -> Pixels {
+            px(f32::from_bits(f32::from(value).to_bits() + 1))
+        }
+        let (one, seven) = native_geometry_batches();
+        type Change = fn(&mut LineLayout);
+        let changes: [(&str, Change); 14] = [
+            ("font_size", |line| line.font_size = next(line.font_size)),
+            ("width", |line| line.width = next(line.width)),
+            ("ascent", |line| line.ascent = next(line.ascent)),
+            ("descent", |line| line.descent = next(line.descent)),
+            ("len", |line| line.len += 1),
+            ("per-glyph font", |line| line.runs[3].font_id = FontId(77)),
+            ("glyph id", |line| {
+                line.runs[3].glyphs[0].id = gpui::GlyphId(999)
+            }),
+            ("source index", |line| line.runs[3].glyphs[0].index += 1),
+            ("x", |line| {
+                line.runs[3].glyphs[0].position.x = next(line.runs[3].glyphs[0].position.x)
+            }),
+            ("y", |line| {
+                line.runs[3].glyphs[0].position.y = next(line.runs[3].glyphs[0].position.y)
+            }),
+            ("is_emoji", |line| line.runs[3].glyphs[0].is_emoji = true),
+            ("order", |line| line.runs[3].glyphs.swap(0, 1)),
+            ("dropped glyph", |line| {
+                line.runs[3].glyphs.pop();
+            }),
+            ("duplicated glyph", |line| {
+                let glyph = line.runs[3].glyphs[0].clone();
+                line.runs[3].glyphs.insert(1, glyph);
+            }),
+        ];
+        for (field, change) in changes {
+            let mut changed = copy_layout(&seven);
+            change(&mut changed);
+            assert!(
+                !same_native_geometry(&one, &changed),
+                "changed {field} must fail"
+            );
+            assert!(
+                !same_native_geometry(&changed, &one),
+                "changed {field} must fail in reverse"
+            );
+        }
+    }
+
+    #[test]
+    fn edit2803_native_geometry_retains_strict_empty_run_contract() {
+        let (one, seven) = native_geometry_batches();
+        for at in [0, 3, seven.runs.len()] {
+            let mut empty = copy_layout(&seven);
+            empty.runs.insert(
+                at,
+                ShapedRun {
+                    font_id: FontId(3),
+                    glyphs: Vec::new(),
+                },
+            );
+            assert!(
+                !same_native_geometry(&one, &empty),
+                "empty run at {at} retains strict batching"
+            );
+            assert!(!same_native_geometry(&empty, &one));
+            assert!(native_ascii::exact_geometry(&empty, &copy_layout(&empty)));
+            assert!(
+                same_native_geometry(&empty, &copy_layout(&empty)),
+                "the empty-run path uses the original predicate, not an unconditional refusal"
+            );
+        }
+    }
+
     fn font(family: &str, weight: FontWeight, style: FontStyle) -> Font {
         Font {
             family: family.to_string().into(),
@@ -692,12 +873,15 @@ mod tests {
                 let actual = cache.layout_line(&text, px(16.), &runs(&text));
                 let direct = shaper.layout_line(&text, px(16.), &runs(&text));
                 assert!(
-                    native_ascii::exact_geometry(&actual, &direct),
+                    same_native_geometry(&actual, &direct),
                     "all native coordinates, widths, glyphs and indices must match exactly"
                 );
                 if cfg!(target_os = "linux") && bounded_context {
-                    assert_eq!(cache.full_large_shapes.load(Ordering::Relaxed), full_shapes,
-                        "positive control: bounded edits must not fall back to whole-line native shaping");
+                    assert_eq!(
+                        cache.full_large_shapes.load(Ordering::Relaxed),
+                        full_shapes,
+                        "positive control: bounded edits must not fall back to whole-line native shaping"
+                    );
                 } else if !bounded_context {
                     assert!(
                         cache.full_large_shapes.load(Ordering::Relaxed) > full_shapes,
@@ -735,11 +919,19 @@ mod tests {
                     !native_ascii::exact_geometry(&wrong, &direct),
                     "shifted far-end glyph must fail"
                 );
+                assert!(
+                    !same_native_geometry(&wrong, &direct),
+                    "shifted far-end glyph must fail independently of native batching"
+                );
                 let mut dropped = copy_layout(&actual);
                 dropped.runs[0].glyphs.pop();
                 assert!(
                     !native_ascii::exact_geometry(&dropped, &direct),
                     "a lost glyph must fail"
+                );
+                assert!(
+                    !same_native_geometry(&dropped, &direct),
+                    "a lost glyph must fail independently of native batching"
                 );
             }
         }

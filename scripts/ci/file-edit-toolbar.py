@@ -52,13 +52,16 @@ def run(label, args, control=None):
     return result
 
 
-def positive(binary, filter_):
+def positive(binary, filter_, expected=None):
     result = run('positive-' + filter_.replace(':', '_'),
                  [binary, filter_, '--nocapture', '--test-threads=1'])
     assert result.returncode == 0 and re.search(r'test result: ok\. [1-9]\d* passed', result.stdout), filter_
+    if expected is not None:
+        assert re.search(rf'test result: ok\. {expected} passed; 0 failed;', result.stdout), filter_
 
 
 CONTROLS = [
+    ('geometry-partition', 'edit2803_native_geometry_accepts_same_font_run_batches'),
     ('missing-file-icons', 'brand::tests::every_local_functional_icon_is_embedded'),
     ('conflict-toast', 'file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast'),
     ('legacy-host', 'file2811_note_host_has_a_positive_control_and_file_keeps_one_header'),
@@ -93,6 +96,9 @@ CONTROLS = [
 ]
 
 try:
+    edit('platform/shaped_line_cache.rs',
+         '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {',
+         '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {\n        if crate::file2811_control("geometry-partition") { return native_ascii::exact_geometry(a, b); }')
     edit('brand.rs', '        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {',
          '        if crate::file2811_control("missing-file-icons") && matches!(path, "icons/indent.svg" | "icons/wrench.svg") { return Ok(None); }\n        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {')
     edit('reader_toast.rs', '.filter(|notice| !self.file_conflict_in_status(notice))',
@@ -166,12 +172,15 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
         artifacts = [json.loads(s) for s in build.stdout.splitlines() if s.startswith('{')]
         binary = next(x['executable'] for x in artifacts if x.get('reason') == 'compiler-artifact'
                       and x.get('executable') and x.get('profile', {}).get('test') and x['target']['name'] == 'okilum')
+        positive(binary, 'platform::shaped_line_cache::tests::edit2803_native_geometry_', expected=3)
         positive(binary, 'brand::tests::every_local_functional_icon_is_embedded')
         positive(binary, 'file2811_')
         for control, test in CONTROLS:
             result = run('negative-' + control, [binary, test, '--nocapture', '--test-threads=1'], control)
             assert result.returncode != 0 and 'running 1 test' in result.stdout, (control, 'did not execute exactly one failing control')
             assert 'test result: FAILED' in result.stdout and 'panicked at' in result.stdout and test in result.stdout, control
+            if control == 'geometry-partition':
+                assert 'same-font native batching preserves exact geometry' in result.stdout, result.stdout
             print('FILE2811_COMPILED_NEGATIVE_FIRED', control, flush=True)
 finally:
     for path, data in original.items():
@@ -180,4 +189,8 @@ assert all(p.read_bytes() == data for p, data in original.items())
 if '--check-mutations' not in sys.argv:
     restored = run('restored-production', BASE + ['file2811_', '--', '--nocapture', '--test-threads=1'])
     assert restored.returncode == 0 and re.search(r'test result: ok\. [1-9]\d* passed', restored.stdout)
+    restored_geometry = run('restored-native-geometry', BASE + [
+        'platform::shaped_line_cache::tests::edit2803_native_geometry_', '--', '--nocapture', '--test-threads=1'])
+    assert restored_geometry.returncode == 0 and re.search(
+        r'test result: ok\. 3 passed; 0 failed;', restored_geometry.stdout)
     print('FILE2811_RESTORED_PRODUCTION_PASS', flush=True)
