@@ -1,6 +1,6 @@
 # Proposal: scheduler-aware native draw gate on main
 
-Status: design-only proposal for independent main review. Production measurement, thresholds, clocks, priority and stack reserve remain unchanged. The manager accepted the Windows census classification for toolbar PR 2839 and will merge it after its two remaining Find fixes and green exact-head agent checks, with the hosted wall gate red for the recorded scheduler reason. This proposal is separate from that decision.
+Status: design-only proposal for independent main review. Production measurement, thresholds, clocks, priority and stack reserve remain unchanged. The manager's individual hosted-wall decisions for toolbar PRs 2839 and 2852 do not adopt this policy. No classifier implementation is authorized before this document is approved; the eventual implementation and its controls require a separate review.
 
 The five main Running failures are tracked in [the native Running budget investigation](https://git.oklabs.uk/BeFeast/okilum/issues/2845).
 
@@ -45,15 +45,48 @@ On Windows capture kernel CSwitch and ReadyThread events over the complete nativ
 - Waiting: the observed interval before that ReadyThread transition.
 - Unknown off-CPU: an off-CPU interval lacking sufficient transition evidence. Never relabel it Ready.
 
-For each frame publish the raw wall duration and all four components. Use the conservative Running upper bound from the observed clock bracket. The proposed application-work guard is:
+For each frame publish the raw wall duration and all four components. Ready is a scheduler state, not proof of an external cause: the application's own workers can starve a runnable UI thread. A frame with 8 ms Running and 40 ms Ready caused by those workers must fail, rather than passing an 8 ms CPU guard.
 
-`scheduled_running_upper_ms + waiting_ms + unknown_off_cpu_ms <= 16 ms`
+### Attribute Ready before considering an exclusion
 
-Also publish the standalone scheduled Running value and its <=16 ms verdict. Exclude only positively classified Ready time. Blocking caused by application code, synchronous I/O, a contended lock, or GPU synchronization must remain counted and must not become invisible because CPU time is low. Do not subtract unrelated process/thread CPU time or a nearby scheduling pause.
+Partition each UI Ready interval at the relevant CPU switch and ownership boundaries in the same trace. Reconstruct the running occupant on every logical CPU on which the UI thread was eligible to run, using switched-in TIDs and their PID/lifetime ownership. Record the UI thread's processor group, affinity/CPU-set eligibility and relevant changes; reject an unsupported configuration or incomplete eligibility evidence. Do not change those settings to make the measurement pass.
 
-The number 16 ms is unchanged, but this is a deliberate metric change from raw elapsed time to application time excluding proven Ready. It requires separate review and authorization; it is not a threshold waiver inside PR 2839. Keep the raw wall result visible, even when the proposed work guard passes. Leave the existing 100 ms opening budget and the glyph-rasterization guard unchanged.
+The application-owned process set includes the measured Okilum process, its workers and application-launched helpers/descendants, with launch and lifetime evidence. A different PID alone does not make an application helper external. Missing ownership or process-family evidence cannot authorize an exclusion.
 
-For a separately reviewed Mac implementation, count Running + Interrupted + Blocked + unknown against the same budget, and exclude only positively established runnable/descheduled Preempted/Runnable intervals. Require equivalent raw-loss and clock-validation controls before adopting it. Scheduled Running includes time during which an interrupt or DPC may occupy the scheduled CPU unless those events are captured and accounted separately. Initially count it conservatively rather than claiming exact user-code execution time. Do not substitute GetThreadTimes: the observed 15.625 ms quantization is too coarse for the frame budget. Do not convert QueryThreadCycleTime cycles directly to milliseconds under variable CPU frequency.
+A time slice is a candidate external Ready exclusion only when **every eligible CPU** is proven occupied throughout that slice by a live thread belonging to another, non-application process. The audit must retain each CPU, switched-in TID, owning PID, lifetime and QPC interval. It must not infer attribution from a sampled stack, aggregate process CPU usage or a nearby event. Charge the entire slice if any eligible CPU is occupied by an application-owned thread; never average that time across CPUs or subtract only an allegedly external fraction. Charge idle, unknown or unsupported occupancy too. Missing trace coverage still rejects evidence rather than becoming an external pause. Interrupt/DPC time is not proven external-process occupancy and remains counted unless separately supported and reviewed; this proposal adds no such exclusion.
+
+This is a conservative eligibility rule for a bounded exclusion, not a claim that Ready plus a PID proves the ultimate cause of a scheduling delay. Existing captures without complete competitor occupancy and application-process-family evidence do not qualify automatically.
+
+Use mutually exclusive frame components and conservative bracket bounds. The proposed counted-work upper bound is:
+
+`Running + Waiting + Unknown + application-owned/non-excludable Ready + boundary uncertainty <= 16 ms`
+
+Equivalently, subtract only the proven external Ready **lower bound** from the conservative outer wall bracket, counting every remaining tick once. Partition one consistent inner bracket and charge its entire outer-minus-inner uncertainty; do not mix component upper bounds and then add the same uncertainty again. Include all unknown state and ownership time in the counted upper bound. Use the external Ready **upper bound** for exclusion caps. Also publish the standalone scheduled Running bound and its <=16 ms verdict. Blocking caused by application code, synchronous I/O, a contended lock or GPU synchronization stays counted, even when CPU time is low.
+
+### Bound the exclusion and retain non-passing outcomes
+
+Proposed initial limits are deliberately conservative and require approval with the document:
+
+| Limit | Proposed value | Accounting scope |
+|---|---:|---|
+| External Ready excluded from one frame | <=16 ms | Entire eligible duration, not a truncated allowance |
+| Total external Ready excluded in a fixed run | <=32 ms | All measured launches for one source on one OS |
+| Frames using an exclusion | <=2% of expected frames, rounded down | At most 1/96 or 9/480 frames |
+
+Only a frame whose raw wall exceeds 16 ms and would otherwise pass the counted-work bound is a candidate to use an exclusion. A frame already within the raw wall budget uses none. Publish all Ready observations regardless. Sum the entire candidate durations, not merely the amount needed to reach 16 ms, and do not trim them to fit a cap. The fixed run plan and expected frame count are declared before launch; do not reset totals per launch, pool main and candidate, pool OSes, omit a failing launch, or change the denominator after observing results. Compare caps in integer clock units/conservative bounds; equality is allowed and any excess is not.
+
+Verdict order:
+
+1. Invalid/missing evidence is `NO_EVIDENCE`, never PASS.
+2. A counted-work upper bound above 16 ms or a failure of an unchanged functional, glyph or opening guard is `FAIL`, even if external saturation is also present. In particular, retain main's five Running failures.
+3. If work would fit only by using eligible external Ready but any exclusion cap is exceeded, return **`RUNNER_SATURATED_INCONCLUSIVE` ("runner saturated — inconclusive, rerun")**, never PASS or a green required check. Preserve the raw wall failure, work bounds, all cap counters and the original artifact.
+4. PASS requires complete evidence, all unchanged guards, counted work within budget and all three exclusion limits satisfied. Report any bounded exclusion explicitly alongside the still-visible raw wall verdict.
+
+For example, 96 frames of 8 ms Running + 500 ms external Ready are saturated/inconclusive, not PASS; 8 ms Running + 40 ms application-worker Ready is FAIL. The historical 31–42 ms Ready observations above exceed the proposed per-frame cap if they were eventually proven external. They would remain non-passing under this policy, rather than being used to tune the cap upwards. The proposed saturation policy allows at most one separately recorded fixed rerun after approval of the CI policy; retain the original non-passing outcome and the second attempt separately. A second saturation result remains non-passing. Never retry an application FAIL through this rule, combine attempts or select a best attempt. This document authorizes no execution or automatic retry before approval.
+
+The numbers 16 ms and 100 ms are unchanged. This is a deliberate, separately reviewed metric change for frames, not a threshold waiver inside a toolbar PR. Keep the **100 ms opening budget on raw wall with no Ready exclusion**, and keep the glyph-rasterization guard, stack reserve and production configuration unchanged.
+
+For a separately reviewed Mac implementation, count Running + Interrupted + Blocked + unknown against the same budget. A Preempted/Runnable state alone cannot qualify: require equivalent competing-thread PID/process-family and eligible-CPU occupancy evidence, plus the same three caps and non-passing outcomes. Without that evidence, keep the wall gate. Require equivalent raw-loss and clock-validation controls before adoption. Scheduled Running may include interrupt/DPC occupancy; count it conservatively rather than claiming exact user-code execution time. Do not substitute GetThreadTimes: the observed 15.625 ms quantization is too coarse for the frame budget. Do not convert QueryThreadCycleTime cycles directly to milliseconds under variable CPU frequency.
 
 ## Fail-closed evidence requirements
 
@@ -61,6 +94,7 @@ The analyzer must reject missing or incomplete evidence rather than returning PA
 
 - Verify raw trace EventsLost and relevant buffer/lost-event counters, including exporter metadata. Retain the raw ETL and exported XML, their hashes, the analyzer version, and its output.
 - Require matching PID/TID lifetime, monotonic ordered bounds, complete trace coverage before and after every frame, valid switch pairing, and a working ReadyThread observer. Handle TID reuse across launches.
+- Require complete per-CPU running-occupant coverage throughout each candidate Ready exclusion, including the live PID owners of switched-in threads, the application-owned process set and the UI thread's CPU eligibility. Ambiguous ownership is counted and cannot be inferred external. Missing coverage fails closed. Preserve proof for every excluded slice, not only the UI thread's own switches.
 - Require all expected 96 frames per launch, actual viewport movement and row construction, expected query results for marked frames, and the correct release/native configuration without GPUI test support.
 - Validate the clock correlation and bound instrumentation error. An excessive bracket margin, impossible overlap, missing transitions required for attribution, or unexplained time becomes NO_EVIDENCE. Unknown time is counted, never excluded.
 - Preserve a nonzero observer positive control. A trace that never records the measured path cannot pass through zeros.
@@ -75,11 +109,18 @@ Use actual native measured code paths, supplemented by analyzer fixtures:
 2. A compiled UI-thread busy-loop exceeding 16 ms fails scheduled Running and the application-work guard.
 3. A compiled UI-thread Sleep exceeding 16 ms fails the application-work guard despite low CPU time.
 4. A compiled contended-mutex wait exceeding 16 ms fails the same guard; use synchronization that proves the waiter was blocked.
-5. A known Ready-only scheduler fixture is excluded only over its exact proven interval. Never require an uncontrolled hosted scheduler pause to serve as a deterministic positive control.
+5. A known external Ready scheduler fixture is excluded only over its exact interval with complete competitor PID/lifetime and eligible-CPU occupancy evidence, and only within all three caps. A Ready-only fixture without that evidence remains counted. Never require an uncontrolled hosted scheduler pause to serve as a deterministic positive control.
 6. Remove ReadyThread or a necessary switch event, inject EventsLost, truncate coverage, change PID/TID ownership, or corrupt clock bounds: evidence fails closed. A Waiting interval without its transition remains unknown/countable.
 7. Revert the Running/Waiting accounting independently and demonstrate that the corresponding busy-loop/Sleep/mutex control fails for the expected reason. Reject arbitrary unrelated failures.
+8. A compiled worker-oversubscription fixture creates application-owned CPU workers under the unchanged priority/affinity policy. Its trace must prove UI Ready overlapping those workers' CPU occupancy; require the measured path to fire, not a zero-duration success. An 8 ms Running + 40 ms own-worker Ready analyzer fixture must produce FAIL (48 ms counted). Include application-helper children with different PIDs, mixed own/external CPU occupants and PID reuse. A negative control that excludes all Ready, or treats a child as external solely because its PID differs, must make this control fail for that specific misclassification. Keep deterministic analyzer fixtures alongside the native observer proof; a native run without the required contention evidence cannot pass the control.
+9. Exercise each exclusion limit independently at equality and one clock tick above it. Isolate the per-frame cap with one frame; isolate the 32 ms run total across a declared 480-frame plan while staying within the per-frame and frame-share limits; isolate the share cap with two small exclusions in 96 frames while staying below both duration caps. Excess returns `RUNNER_SATURATED_INCONCLUSIVE`, never PASS. Test the 96 x (8 ms Running + 500 ms external Ready) case and prove that removing any limit makes its independently isolated negative fail.
+10. An inconclusive earlier launch cannot be dropped, reset at the next launch, pooled with a baseline or turned into PASS by keeping only a later clean attempt. A simultaneous >16 ms Running/Waiting failure remains FAIL, not saturation/inconclusive. Raw opening >100 ms still fails with external Ready, because opening has no exclusion.
 
 The independent synthetic analyzer controls already saved beside this proposal are useful evidence for parser behavior, but they are not compiled/native timing controls and do not replace them.
+
+## Linux policy
+
+Linux keeps the existing raw Instant wall gate: <=16 ms per measured frame and <=100 ms to open, with unchanged glyph/functional guards and stack reserve. This proposal adds no Linux Ready, CPU-time or scheduling exclusion. Optional scheduler diagnostics may explain a failure but cannot turn it into PASS. Any Linux replacement would need its own reviewed evidence contract, attribution controls, saturation limits and explicit approval.
 
 ## Mac scope
 
