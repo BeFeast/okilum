@@ -551,3 +551,38 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
         }
     }
 }
+
+#[gpui::test]
+fn linked2885_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[
+            ("note.md", "# Note\n\nSee [[data.json]] for the numbers.\n"),
+            ("data.json", "{\"a\":1}"),
+            ("other.json", "{\"b\":2}"),
+        ],
+        "data.json",
+    );
+    reader.read_with(visual, |r, _| {
+        assert!(
+            r.backlinks.iter().any(|b| b.path == "note.md"),
+            "positive: the vault resolves the note's link to the JSON file"
+        )
+    });
+    assert!(visual.debug_bounds("file-contents-heading").is_some());
+    assert!(
+        visual.debug_bounds("file-linked-from-heading").is_some(),
+        "a linked JSON file shows «Linked from»"
+    );
+    assert!(
+        visual.debug_bounds("backlinks-list").is_some(),
+        "with its note"
+    );
+    reader.update_in(visual, |r, w, cx| r.open_note("other.json", None, w, cx));
+    settle(visual);
+    assert!(visual.debug_bounds("file-contents-heading").is_some());
+    assert!(
+        visual.debug_bounds("file-linked-from-heading").is_none(),
+        "an unlinked JSON shows only Contents"
+    );
+}

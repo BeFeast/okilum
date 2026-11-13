@@ -30,10 +30,11 @@ pub(super) fn render_file(
             .child(Icon::default().path(icon).xsmall().text_color(faint))
             .child(label)
     };
-    // Data and service files (code viewer formats, HAR, logs, plain text)
-    // never get backlinks here, so an always-empty «Linked from» only takes
-    // space (#2885); Contents uses it instead. Notes and documents keep it.
-    let service = service_file(reader);
+    // Data and service files (code viewer formats, HAR, logs, plain text):
+    // an empty «Linked from» only takes space (#2885), so it appears only
+    // when a note actually links the file; Contents uses the room otherwise.
+    // Notes and documents always keep it.
+    let service = service_file(reader) && reader.backlinks.is_empty();
     let contents = outline.read(cx).has_entries();
     let separator = || {
         div()
@@ -78,7 +79,7 @@ pub(super) fn render_file(
 }
 
 /// Files the code viewer, the HAR viewer, the log viewer or the plain-text
-/// viewer shows: data and service files without backlinks.
+/// viewer shows: data and service files.
 pub(super) fn service_file(reader: &Reader) -> bool {
     reader.file_preview.as_ref().is_some_and(|preview| {
         preview.code.is_some()
