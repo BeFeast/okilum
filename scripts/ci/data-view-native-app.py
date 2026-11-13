@@ -47,9 +47,12 @@ def main():
         before = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in fixtures}
         log_path = Path(os.environ['RUNNER_TEMP']) / 'data-view-native-app.log'
         with log_path.open('w') as log:
-            process = subprocess.Popen([binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
+            wrap = []
+            if os.environ.get('DIAG_2825_XCTRACE'):
+                wrap = ['xcrun', 'xctrace', 'record', '--template', 'Time Profiler', '--output', os.environ['DIAG_2825_XCTRACE'], '--launch', '--']
+            process = subprocess.Popen(wrap + [binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
             sampler = None
-            if sys.platform == 'darwin' and os.environ.get('DIAG_2825_SAMPLE'):
+            if False:
                 # Diagnostic only: 1 ms main-thread call tree across data.xml open.
                 sampler = subprocess.Popen(['sudo', '-n', '/usr/bin/sample', str(process.pid), '7', '1', '-mayDie', '-fullPaths', '-file', os.environ['DIAG_2825_SAMPLE']], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             try:
