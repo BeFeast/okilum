@@ -10,28 +10,28 @@
 //! - NUL cannot be passed in any argument and is dropped.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shell {
+pub(crate) enum Dialect {
     Bash,
     Cmd,
     PowerShell,
 }
 
-impl Shell {
-    pub(crate) const ALL: [Shell; 3] = [Shell::Bash, Shell::Cmd, Shell::PowerShell];
+impl Dialect {
+    pub(crate) const ALL: [Dialect; 3] = [Dialect::Bash, Dialect::Cmd, Dialect::PowerShell];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Shell::Bash => "Copy as cURL (bash)",
-            Shell::Cmd => "Copy as cURL (cmd)",
-            Shell::PowerShell => "Copy as PowerShell",
+            Dialect::Bash => "Copy as cURL (bash)",
+            Dialect::Cmd => "Copy as cURL (cmd)",
+            Dialect::PowerShell => "Copy as PowerShell",
         }
     }
 
     pub(crate) fn id(self) -> &'static str {
         match self {
-            Shell::Bash => "har-copy-curl-bash",
-            Shell::Cmd => "har-copy-curl-cmd",
-            Shell::PowerShell => "har-copy-powershell",
+            Dialect::Bash => "har-copy-curl-bash",
+            Dialect::Cmd => "har-copy-curl-cmd",
+            Dialect::PowerShell => "har-copy-powershell",
         }
     }
 }
@@ -77,11 +77,11 @@ fn method(request: &Request) -> Option<&str> {
     (token(method) && !method.eq_ignore_ascii_case(implied)).then_some(method)
 }
 
-pub(crate) fn command(request: &Request, shell: Shell) -> String {
+pub(crate) fn command(request: &Request, shell: Dialect) -> String {
     match shell {
-        Shell::Bash => posix_like(request, bash, " \\\n  "),
-        Shell::Cmd => posix_like(request, cmd, " ^\n  "),
-        Shell::PowerShell => powershell(request),
+        Dialect::Bash => posix_like(request, bash, " \\\n  "),
+        Dialect::Cmd => posix_like(request, cmd, " ^\n  "),
+        Dialect::PowerShell => powershell(request),
     }
 }
 
@@ -260,7 +260,7 @@ mod tests {
             );
         }
         // The whole command parses into exactly the intended argv.
-        let command = command(&request(HOSTILE[1]), Shell::Bash);
+        let command = command(&request(HOSTILE[1]), Dialect::Bash);
         let script = format!(
             "set -- {}; printf '%s\\0' \"$@\"",
             &command["curl ".len()..]
@@ -294,14 +294,14 @@ mod tests {
 
     #[test]
     fn unsafe_headers_and_options_never_reach_curl() {
-        for shell in Shell::ALL {
+        for shell in Dialect::ALL {
             let text = command(&request("-o /tmp/x"), shell);
             assert!(!text.contains("authority"), "{shell:?}: pseudo-header");
             assert!(!text.contains("passwd"), "{shell:?}: @file header");
             assert!(!text.contains("Content-Length"), "{shell:?}");
             assert!(!text.contains("\nEvil"), "{shell:?}: header injection");
         }
-        let bash = command(&request("-o /tmp/x"), Shell::Bash);
+        let bash = command(&request("-o /tmp/x"), Dialect::Bash);
         assert!(bash.starts_with("curl --url 'https://e.test/?q=-o /tmp/x'"));
     }
 
@@ -335,7 +335,7 @@ mod tests {
     fn powershell_strings_are_literal() {
         assert_eq!(powershell_quote("it's $x `n"), "'it''s $x `n'");
         assert_eq!(powershell_quote("‘a’"), "'‘‘a’’'");
-        let text = command(&request("it's"), Shell::PowerShell);
+        let text = command(&request("it's"), Dialect::PowerShell);
         assert!(text.starts_with(
             "Invoke-WebRequest -UseBasicParsing -Uri 'https://e.test/?q=it''s' -Method 'PUT'"
         ));
@@ -362,11 +362,11 @@ mod tests {
             url: "https://e.test/".into(),
             ..Default::default()
         };
-        assert_eq!(command(&get, Shell::Bash), "curl --url 'https://e.test/'");
+        assert_eq!(command(&get, Dialect::Bash), "curl --url 'https://e.test/'");
         get.method = "POST".into();
         get.body = Some("x".into());
         assert_eq!(
-            command(&get, Shell::Bash),
+            command(&get, Dialect::Bash),
             "curl --url 'https://e.test/' \\\n  --data-raw 'x'"
         );
     }

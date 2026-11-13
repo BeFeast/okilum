@@ -883,14 +883,14 @@ fn filter_actions(viewer: &Entity<HarView>, cx: &App) -> Vec<ViewerAction> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestCopy {
     Url,
-    Curl(curl::Shell),
+    Curl(curl::Dialect),
     Response,
 }
 
 impl RequestCopy {
     fn all() -> Vec<RequestCopy> {
         let mut all = vec![RequestCopy::Url];
-        all.extend(curl::Shell::ALL.map(RequestCopy::Curl));
+        all.extend(curl::Dialect::ALL.map(RequestCopy::Curl));
         all.push(RequestCopy::Response);
         all
     }

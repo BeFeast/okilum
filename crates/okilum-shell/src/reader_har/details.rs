@@ -83,8 +83,6 @@ pub(crate) enum Row {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DetailRows {
     pub rows: Vec<Row>,
-    /// The parsed request, for Copy as cURL.
-    pub details: Arc<Details>,
     /// Body sections that can be saved: (section row, source).
     pub sources: Vec<(usize, BodySource)>,
 }
@@ -315,11 +313,7 @@ pub(crate) fn build(
             ));
         }
     }
-    Ok(DetailRows {
-        rows,
-        details: Arc::new(details.clone()),
-        sources,
-    })
+    Ok(DetailRows { rows, sources })
 }
 
 fn field(rows: &mut Vec<Row>, name: &str, value: impl Into<String>) {
