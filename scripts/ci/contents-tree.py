@@ -60,7 +60,7 @@ CONTROLS = [
  ('hide-linked-backlinks', 'linked2885_a_linked_data_file_keeps_linked_from'),
  ('json-only-contents', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('no-current-mark', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
- ('indent-current', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('indent-current', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
  ('remap-every-sample', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
  ('groups-unmarked', 'contents2814_where_you_are_inside_a_closed_group_marks_the_group'),
  ('caret-never-leads', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
