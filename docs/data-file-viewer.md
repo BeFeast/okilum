@@ -29,7 +29,7 @@ Open in DuckDB starts an installed DuckDB CLI using its documented
 `-cmd "CREATE VIEW ..." -ui` interface, exposing the full canonical file as
 `okilum_data` in an independent in-memory database. CLI arguments bypass the
 shell; SQL literals and file glob characters are escaped. The CLI process is
-reaped independently of the Reader. Missing/failed CLI launches display an
+reaped independently of the Reader. Missing/failed CLI launches display a
 toast with a Get DuckDB action. Installation and extension downloads belong to the
 external CLI. Okilum adds no dependency, database engine, Parquet/.duckdb
 viewer, SQL input or bundled asset; the dependency set and packaged assets are unchanged.

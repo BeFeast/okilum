@@ -155,11 +155,15 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
         // The first Down selects index 0 even when that item is disabled (a
         // table's Copy cells without a selection); later presses skip
         // disabled items. Count the presses that reach Copy file content.
+        // The log submenu opens with its own selection and keeps the original
+        // count of enabled items.
         let presses = reader.read_with(visual, |reader, cx| {
             let actions = reader.viewer_chrome(cx).copy_actions;
+            let enabled = |items: &[ViewerAction]| items.iter().filter(|a| a.enabled).count();
             match actions.split_first() {
+                _ if name == "gateway.log" => 1 + enabled(&actions),
                 None => 1,
-                Some((_, rest)) => 2 + rest.iter().filter(|action| action.enabled).count(),
+                Some((_, rest)) => 2 + enabled(rest),
             }
         });
         visual.simulate_keystrokes(&format!("{}enter", "down ".repeat(presses)));
