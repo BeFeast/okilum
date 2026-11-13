@@ -20,7 +20,10 @@ const READING_DELAY: Duration = Duration::from_millis(300);
 struct Snapshot {
     active: bool,
     file: String,
+    /// The document the shown rows index; replaced only together with them.
     doc: Option<Arc<Document>>,
+    /// A newer document whose rows are still being computed.
+    pending: Option<Arc<Document>>,
     state: SnapshotState,
     rows: Arc<Vec<tree::Row>>,
     generation: u64,
@@ -312,10 +315,15 @@ impl View {
     fn apply_source(&mut self, file: String, source: ContentsSource, cx: &mut Context<Self>) {
         let other_file = self.snapshot.file != file;
         if other_file {
+            // A new file starts from nothing: no rows, no pending rebuild and
+            // no «Reading structure…» timer of the previous file.
             self.snapshot.file = file;
             self.snapshot.doc = None;
+            self.snapshot.pending = None;
             self.snapshot.rows = Arc::default();
             self.snapshot.task = None;
+            self.snapshot.reading = None;
+            self.snapshot.state = SnapshotState::Absent;
             self.list.reset(0);
         }
         let before = self.snapshot.state;
@@ -323,13 +331,14 @@ impl View {
             ContentsSource::Ready(doc) => {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Ready;
-                if self
+                let newest = self
                     .snapshot
-                    .doc
+                    .pending
                     .as_ref()
-                    .is_none_or(|old| !Arc::ptr_eq(old, &doc))
-                {
-                    self.snapshot.doc = Some(doc);
+                    .or(self.snapshot.doc.as_ref());
+                if newest.is_none_or(|old| !Arc::ptr_eq(old, &doc)) {
+                    // The shown rows keep their document until the new rows land.
+                    self.snapshot.pending = Some(doc);
                     self.rebuild_rows(cx);
                 }
             }
@@ -354,6 +363,8 @@ impl View {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Invalid(reason);
                 self.snapshot.doc = None;
+                self.snapshot.pending = None;
+                self.snapshot.task = None;
                 self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
@@ -361,6 +372,8 @@ impl View {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Absent;
                 self.snapshot.doc = None;
+                self.snapshot.pending = None;
+                self.snapshot.task = None;
                 self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
@@ -378,9 +391,15 @@ impl View {
     /// Visible rows on a worker; the list keeps showing the previous rows
     /// until the new ones arrive.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
-        let Some(doc) = self.snapshot.doc.clone() else {
+        let Some(doc) = self
+            .snapshot
+            .pending
+            .clone()
+            .or_else(|| self.snapshot.doc.clone())
+        else {
             return;
         };
+        let used = doc.clone();
         let expansion = self.expansion().clone();
         self.snapshot.generation += 1;
         let generation = self.snapshot.generation;
@@ -394,6 +413,16 @@ impl View {
                     return;
                 }
                 let top = this.list.logical_scroll_top();
+                // Rows and the document they index change together.
+                if this
+                    .snapshot
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| Arc::ptr_eq(pending, &used))
+                {
+                    this.snapshot.pending = None;
+                }
+                this.snapshot.doc = Some(used);
                 this.snapshot.rows = Arc::new(rows);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
@@ -407,24 +436,8 @@ impl View {
     }
 
     /// The chevron or a group row: Contents only, never the viewer's folds.
-    fn toggle_snapshot_row(&mut self, row: tree::Row, cx: &mut Context<Self>) {
-        let Some(doc) = self.snapshot.doc.clone() else {
-            return;
-        };
-        let (key, default) = match row {
-            tree::Row::Node { index, .. } => {
-                (tree::path_key(&doc, index), tree::default_open(&doc, index))
-            }
-            tree::Row::Group {
-                parent,
-                first,
-                last,
-                ..
-            } => (tree::group_key(&doc, parent, first, last), false),
-        };
-        let expansion = self.expansion();
-        let open = expansion.is_open(&key, default);
-        expansion.set(key, !open, default);
+    fn toggle_snapshot_row(&mut self, row: &tree::Row, cx: &mut Context<Self>) {
+        self.expansion().toggle(row);
         self.rebuild_rows(cx);
     }
 
@@ -497,8 +510,10 @@ impl View {
     }
 
     fn snapshot_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let (Some(&row), Some(doc)) = (self.snapshot.rows.get(ix), self.snapshot.doc.clone())
-        else {
+        let (Some(row), Some(doc)) = (
+            self.snapshot.rows.get(ix).cloned(),
+            self.snapshot.doc.clone(),
+        ) else {
             return div().into_any_element();
         };
         let p = brand::palette(cx);
@@ -506,11 +521,7 @@ impl View {
         let (key, value, tooltip, open, branch) = match row {
             tree::Row::Node { index, .. } => {
                 let branch = tree::child_count(&doc, index) > 0;
-                let open = branch
-                    && self.expansion().is_open(
-                        &tree::path_key(&doc, index),
-                        tree::default_open(&doc, index),
-                    );
+                let open = branch && self.expansion().row_open(&row);
                 (
                     tree::row_key(&doc, index),
                     tree::row_value(&doc, index),
@@ -519,20 +530,14 @@ impl View {
                     branch,
                 )
             }
-            tree::Row::Group {
-                parent,
-                first,
-                last,
-                ..
-            } => {
-                let (key, value) = tree::group_label(&doc, parent, first, last);
-                let open = self
-                    .expansion()
-                    .is_open(&tree::group_key(&doc, parent, first, last), false);
+            tree::Row::Group { .. } => {
+                let (key, value) = tree::group_label(&doc, &row);
+                let open = self.expansion().row_open(&row);
                 (key.clone(), value, key, open, true)
             }
         };
         let indent = 14. + (row.depth().saturating_sub(1)).min(12) as f32 * 12.;
+        let chevron_row = row.clone();
         h_flex()
             .id(("file-outline-row", ix))
             .debug_selector(move || format!("file-outline-row-{ix}"))
@@ -569,7 +574,7 @@ impl View {
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                this.toggle_snapshot_row(row, cx);
+                                this.toggle_snapshot_row(&chevron_row, cx);
                             }))
                     }),
             )
@@ -595,10 +600,10 @@ impl View {
                     .debug_selector(move || format!("file-outline-value-{ix}"))
                     .child(value),
             )
-            .on_click(cx.listener(move |this, _, window, cx| match row {
-                tree::Row::Node { index, .. } => this.jump_snapshot(index, window, cx),
+            .on_click(cx.listener(move |this, _, window, cx| match &row {
+                tree::Row::Node { index, .. } => this.jump_snapshot(*index, window, cx),
                 // A group row opens or closes on a click anywhere.
-                tree::Row::Group { .. } => this.toggle_snapshot_row(row, cx),
+                tree::Row::Group { .. } => this.toggle_snapshot_row(&row, cx),
             }))
             .into_any_element()
     }

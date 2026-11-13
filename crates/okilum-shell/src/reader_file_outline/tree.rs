@@ -1,8 +1,9 @@
 //! Contents rows from the viewer's whole-file tree (#2814): no second parse.
 //! Expansion is keyed by key path, so it survives rebuilds and view switches.
-//! The visible list is computed on a worker with an explicit stack.
+//! The visible list is computed on a worker with an explicit stack; each row
+//! carries what rendering needs, so drawing a row is O(1).
 use crate::reader_code_file::document::{ContainerKind, Document, ScalarKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Nodes open on arrival down to this depth (top-level rows have depth 1).
@@ -12,19 +13,32 @@ const OPEN_CHILDREN: usize = 20;
 /// Children per group row, and groups per second-level group.
 pub(super) const GROUP: usize = 100;
 const SECOND_GROUP: usize = 10_000;
+/// Separates path segments, a duplicate key's occurrence, and group ranges.
+const SEGMENT: char = '\u{1f}';
+const OCCURRENCE: char = '\u{1d}';
+const RANGE: char = '\u{1e}';
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     Node {
         index: usize,
         depth: usize,
+        /// Path identity; a repeated key gets its occurrence number.
+        key: Arc<str>,
+        /// Open unless the user closed it. Children listed through a group
+        /// start closed, so one click adds at most 100 rows.
+        default_open: bool,
     },
-    /// Children `first..=last` (ordinals) of `parent`.
+    /// Children `first..=last` (ordinals) of `parent`; `first_index` and
+    /// `last_index` are their document rows, for the label.
     Group {
         parent: usize,
         first: usize,
         last: usize,
+        first_index: usize,
+        last_index: usize,
         depth: usize,
+        key: Arc<str>,
     },
 }
 
@@ -33,6 +47,20 @@ impl Row {
         match self {
             Self::Node { depth, .. } | Self::Group { depth, .. } => *depth,
         }
+    }
+    pub(super) fn key(&self) -> &str {
+        match self {
+            Self::Node { key, .. } | Self::Group { key, .. } => key,
+        }
+    }
+    pub(super) fn default_open(&self) -> bool {
+        matches!(
+            self,
+            Self::Node {
+                default_open: true,
+                ..
+            }
+        )
     }
 }
 
@@ -62,29 +90,15 @@ impl Expansion {
             }
         }
     }
-}
-
-/// `key` or `#ordinal` segments from the top, joined by U+001F.
-pub(crate) fn path_key(doc: &Document, index: usize) -> String {
-    let mut segments = Vec::new();
-    let mut at = Some(index);
-    while let Some(i) = at {
-        if doc.parent(i).is_none() {
-            break;
-        }
-        segments.push(match (doc.key_text(i), doc.array_ordinal(i)) {
-            (Some(key), _) => format!("k{key}"),
-            (None, Some(n)) => format!("#{n}"),
-            _ => format!("@{i}"),
-        });
-        at = doc.parent(i);
+    /// Flip a row's open state against its own default.
+    pub(super) fn toggle(&mut self, row: &Row) {
+        let default = row.default_open();
+        let open = self.is_open(row.key(), default);
+        self.set(row.key().to_owned(), !open, default);
     }
-    segments.reverse();
-    segments.join("\u{1f}")
-}
-
-pub(super) fn group_key(doc: &Document, parent: usize, first: usize, last: usize) -> String {
-    format!("{}\u{1e}{first}-{last}", path_key(doc, parent))
+    pub(super) fn row_open(&self, row: &Row) -> bool {
+        self.is_open(row.key(), row.default_open())
+    }
 }
 
 pub(super) fn child_count(doc: &Document, index: usize) -> usize {
@@ -92,27 +106,58 @@ pub(super) fn child_count(doc: &Document, index: usize) -> usize {
 }
 
 /// Open by default: shallow nodes with a handful of children.
-pub(super) fn default_open(doc: &Document, index: usize) -> bool {
+fn default_open(doc: &Document, index: usize) -> bool {
     let children = child_count(doc, index);
-    children > 0 && children <= OPEN_CHILDREN && depth(doc, index) <= OPEN_DEPTH
-}
-
-/// Depth below the hidden document root (top-level rows are 1).
-pub(super) fn depth(doc: &Document, index: usize) -> usize {
-    doc.structure[index].depth
+    children > 0 && children <= OPEN_CHILDREN && doc.structure[index].depth <= OPEN_DEPTH
 }
 
 enum Work {
-    Node(usize, usize),
-    Children(usize, usize),
+    Node {
+        index: usize,
+        depth: usize,
+        key: Arc<str>,
+        grouped: bool,
+    },
     Range {
         parent: usize,
-        children: Arc<Vec<usize>>,
+        parent_key: Arc<str>,
+        children: Arc<Vec<(usize, Arc<str>)>>,
         from: usize,
         to: usize,
         depth: usize,
+        grouped: bool,
     },
-    GroupRow(usize, usize, usize, usize),
+    Group(Row),
+}
+
+/// Children of `parent` with their path keys. A key that repeats in the same
+/// object gets its occurrence number, so each node has its own identity.
+fn keyed_children(doc: &Document, parent: usize, parent_key: &str) -> Vec<(usize, Arc<str>)> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    doc.children(parent)
+        .map(|child| {
+            let segment = match (doc.key_text(child), doc.array_ordinal(child)) {
+                (Some(key), _) => {
+                    let n = seen.entry(key).or_insert(0);
+                    let segment = if *n == 0 {
+                        format!("k{key}")
+                    } else {
+                        format!("k{key}{OCCURRENCE}{n}")
+                    };
+                    *n += 1;
+                    segment
+                }
+                (None, Some(n)) => format!("#{n}"),
+                _ => format!("@{child}"),
+            };
+            let key: Arc<str> = if parent_key.is_empty() {
+                segment.into()
+            } else {
+                format!("{parent_key}{SEGMENT}{segment}").into()
+            };
+            (child, key)
+        })
+        .collect()
 }
 
 /// Rows a user sees, top-down. Only open nodes contribute their children;
@@ -123,32 +168,54 @@ pub(super) fn visible_rows(doc: &Document, expansion: &Expansion) -> Vec<Row> {
     if !doc.semantic || doc.structure.is_empty() {
         return rows;
     }
-    let mut stack = vec![Work::Children(0, 1)];
+    let root_key: Arc<str> = "".into();
+    let children = Arc::new(keyed_children(doc, 0, &root_key));
+    let mut stack = vec![Work::Range {
+        parent: 0,
+        parent_key: root_key,
+        to: children.len(),
+        children,
+        from: 0,
+        depth: 1,
+        grouped: false,
+    }];
     while let Some(work) = stack.pop() {
         match work {
-            Work::Node(index, depth) => {
-                rows.push(Row::Node { index, depth });
-                if expansion.is_open(&path_key(doc, index), default_open(doc, index)) {
-                    stack.push(Work::Children(index, depth + 1));
-                }
-            }
-            Work::Children(parent, depth) => {
-                let children: Arc<Vec<usize>> = Arc::new(doc.children(parent).collect());
-                let len = children.len();
-                stack.push(Work::Range {
-                    parent,
-                    children,
-                    from: 0,
-                    to: len,
+            Work::Node {
+                index,
+                depth,
+                key,
+                grouped,
+            } => {
+                let row = Row::Node {
+                    index,
                     depth,
-                });
+                    key: key.clone(),
+                    default_open: !grouped && default_open(doc, index),
+                };
+                let open = child_count(doc, index) > 0 && expansion.row_open(&row);
+                rows.push(row);
+                if open {
+                    let children = Arc::new(keyed_children(doc, index, &key));
+                    stack.push(Work::Range {
+                        parent: index,
+                        parent_key: key,
+                        to: children.len(),
+                        children,
+                        from: 0,
+                        depth: depth + 1,
+                        grouped: false,
+                    });
+                }
             }
             Work::Range {
                 parent,
+                parent_key,
                 children,
                 from,
                 to,
                 depth,
+                grouped,
             } => {
                 let count = to - from;
                 let size = if count > SECOND_GROUP {
@@ -159,8 +226,13 @@ pub(super) fn visible_rows(doc: &Document, expansion: &Expansion) -> Vec<Row> {
                     0
                 };
                 if size == 0 {
-                    for &child in children[from..to].iter().rev() {
-                        stack.push(Work::Node(child, depth));
+                    for (child, key) in children[from..to].iter().rev() {
+                        stack.push(Work::Node {
+                            index: *child,
+                            depth,
+                            key: key.clone(),
+                            grouped,
+                        });
                     }
                     continue;
                 }
@@ -168,25 +240,30 @@ pub(super) fn visible_rows(doc: &Document, expansion: &Expansion) -> Vec<Row> {
                 let starts: Vec<usize> = (from..to).step_by(size).collect();
                 for &start in starts.iter().rev() {
                     let end = (start + size).min(to);
-                    let open = expansion.is_open(&group_key(doc, parent, start, end - 1), false);
-                    if open {
+                    let row = Row::Group {
+                        parent,
+                        first: start,
+                        last: end - 1,
+                        first_index: children[start].0,
+                        last_index: children[end - 1].0,
+                        depth,
+                        key: format!("{parent_key}{RANGE}{start}-{}", end - 1).into(),
+                    };
+                    if expansion.row_open(&row) {
                         stack.push(Work::Range {
                             parent,
+                            parent_key: parent_key.clone(),
                             children: children.clone(),
                             from: start,
                             to: end,
                             depth: depth + 1,
+                            grouped: true,
                         });
                     }
-                    stack.push(Work::GroupRow(parent, start, end - 1, depth));
+                    stack.push(Work::Group(row));
                 }
             }
-            Work::GroupRow(parent, first, last, depth) => rows.push(Row::Group {
-                parent,
-                first,
-                last,
-                depth,
-            }),
+            Work::Group(row) => rows.push(row),
         }
     }
     rows
@@ -247,20 +324,25 @@ pub(super) fn grouped(n: usize) -> String {
 }
 
 /// «/v1/account … /v1/charges» with «1–100» on the right, or «0 … 99».
-pub(super) fn group_label(
-    doc: &Document,
-    parent: usize,
-    first: usize,
-    last: usize,
-) -> (String, String) {
-    let mut children = doc.children(parent).skip(first);
-    let head = children.next();
-    let tail = doc.children(parent).nth(last);
-    let keyed = head.is_some_and(|i| doc.key_text(i).is_some());
-    if keyed {
-        let name = |i: Option<usize>| i.map(|i| row_key(doc, i)).unwrap_or_default();
+/// O(1): the boundary rows were found on the worker.
+pub(super) fn group_label(doc: &Document, row: &Row) -> (String, String) {
+    let Row::Group {
+        first,
+        last,
+        first_index,
+        last_index,
+        ..
+    } = *row
+    else {
+        return (String::new(), String::new());
+    };
+    if doc.key_text(first_index).is_some() {
         (
-            format!("{} … {}", name(head), name(tail)),
+            format!(
+                "{} … {}",
+                row_key(doc, first_index),
+                row_key(doc, last_index)
+            ),
             format!("{}–{}", grouped(first + 1), grouped(last + 1)),
         )
     } else {

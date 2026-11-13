@@ -37,6 +37,9 @@ pub(crate) struct Document {
     pub parses: bool,
     #[cfg(test)]
     pub node_lookups: std::sync::atomic::AtomicUsize,
+    /// Child-walk steps, so tests can prove a row label costs O(1).
+    #[cfg(test)]
+    pub child_steps: std::sync::atomic::AtomicUsize,
     pub foldable: bool,
     pub structure: Vec<StructureRow>,
 }
@@ -305,6 +308,8 @@ impl Document {
             parses,
             #[cfg(test)]
             node_lookups: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            child_steps: std::sync::atomic::AtomicUsize::new(0),
             foldable,
             structure,
         }
@@ -394,6 +399,9 @@ impl Document {
             }
             let index = next;
             next = self.structure[index].subtree_end;
+            #[cfg(test)]
+            self.child_steps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Some(index)
         })
     }

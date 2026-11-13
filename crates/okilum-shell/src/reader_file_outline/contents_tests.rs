@@ -11,20 +11,15 @@ fn doc(text: &str) -> Arc<Document> {
 
 fn labels(doc: &Document, rows: &[tree::Row]) -> Vec<String> {
     rows.iter()
-        .map(|row| match *row {
-            tree::Row::Node { index, depth } => format!(
+        .map(|row| match row {
+            tree::Row::Node { index, depth, .. } => format!(
                 "{}{} {}",
                 "  ".repeat(depth - 1),
-                tree::row_key(doc, index),
-                tree::row_value(doc, index)
+                tree::row_key(doc, *index),
+                tree::row_value(doc, *index)
             ),
-            tree::Row::Group {
-                parent,
-                first,
-                last,
-                depth,
-            } => {
-                let (key, value) = tree::group_label(doc, parent, first, last);
+            tree::Row::Group { depth, .. } => {
+                let (key, value) = tree::group_label(doc, row);
                 format!("{}[{key}] {value}", "  ".repeat(depth - 1))
             }
         })
@@ -32,12 +27,20 @@ fn labels(doc: &Document, rows: &[tree::Row]) -> Vec<String> {
 }
 
 fn find_row(doc: &Document, rows: &[tree::Row], key: &str) -> tree::Row {
-    *rows
-        .iter()
+    rows.iter()
         .find(
             |row| matches!(row, tree::Row::Node { index, .. } if tree::row_key(doc, *index) == key),
         )
+        .cloned()
         .unwrap_or_else(|| panic!("row {key}"))
+}
+
+/// Open a node by its visible row, as the chevron does.
+fn open(doc: &Document, expansion: &mut tree::Expansion, key: &str) {
+    let row = find_row(doc, &tree::visible_rows(doc, expansion), key);
+    if !expansion.row_open(&row) {
+        expansion.toggle(&row);
+    }
 }
 
 #[test]
@@ -76,10 +79,7 @@ fn contents2814_groups_of_100_and_10000_with_a_bounded_click() {
         let items: Vec<String> = (0..count).map(|i| i.to_string()).collect();
         let d = doc(&format!("{{\"a\":[{}]}}", items.join(",")));
         let mut expansion = tree::Expansion::default();
-        let a = (0..d.structure.len())
-            .find(|&i| d.key_text(i) == Some("a"))
-            .unwrap();
-        expansion.set(tree::path_key(&d, a), true, tree::default_open(&d, a));
+        open(&d, &mut expansion, "a");
         let rows = tree::visible_rows(&d, &expansion);
         assert_eq!(
             rows.len(),
@@ -93,16 +93,7 @@ fn contents2814_groups_of_100_and_10000_with_a_bounded_click() {
             assert_eq!(shown[13], "  [1,200 … 1,203] ");
         }
         // Opening any group adds at most 100 rows.
-        let tree::Row::Group {
-            parent,
-            first,
-            last,
-            ..
-        } = rows[1]
-        else {
-            panic!("group row");
-        };
-        expansion.set(tree::group_key(&d, parent, first, last), true, false);
+        expansion.toggle(&rows[1]);
         let opened = tree::visible_rows(&d, &expansion);
         assert!(
             opened.len() - rows.len() <= tree::GROUP,
@@ -112,28 +103,70 @@ fn contents2814_groups_of_100_and_10000_with_a_bounded_click() {
     let keys: Vec<String> = (0..150).map(|i| format!("\"/v1/k{i:03}\":{i}")).collect();
     let d = doc(&format!("{{\"paths\":{{{}}}}}", keys.join(",")));
     let mut expansion = tree::Expansion::default();
-    let paths = (0..d.structure.len())
-        .find(|&i| d.key_text(i) == Some("paths"))
-        .unwrap();
-    expansion.set(tree::path_key(&d, paths), true, false);
+    open(&d, &mut expansion, "paths");
     let shown = labels(&d, &tree::visible_rows(&d, &expansion));
     assert_eq!(shown[1], "  [/v1/k000 … /v1/k099] 1–100");
     assert_eq!(shown[2], "  [/v1/k100 … /v1/k149] 101–150");
 }
 
 #[test]
+fn contents2814_group_labels_cost_no_child_walk() {
+    let items: Vec<String> = (0..200_000).map(|i| i.to_string()).collect();
+    let d = doc(&format!("{{\"a\":[{}]}}", items.join(",")));
+    let mut expansion = tree::Expansion::default();
+    open(&d, &mut expansion, "a");
+    let rows = tree::visible_rows(&d, &expansion);
+    assert_eq!(rows.len(), 1 + 20, "positive: 20 groups of 10,000");
+    d.child_steps.store(0, std::sync::atomic::Ordering::Relaxed);
+    let shown = labels(&d, &rows);
+    assert_eq!(shown[20], "  [190,000 … 199,999] ");
+    assert_eq!(
+        d.child_steps.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "drawing group rows walks no children"
+    );
+}
+
+#[test]
+fn contents2814_children_of_an_opened_group_start_closed() {
+    let objects: Vec<String> = (0..150)
+        .map(|i| {
+            let fields: Vec<String> = (0..20).map(|f| format!("\"f{f}\":{i}")).collect();
+            format!("{{{}}}", fields.join(","))
+        })
+        .collect();
+    let d = doc(&format!("{{\"a\":[{}]}}", objects.join(",")));
+    let mut expansion = tree::Expansion::default();
+    open(&d, &mut expansion, "a");
+    let rows = tree::visible_rows(&d, &expansion);
+    expansion.toggle(&rows[1]);
+    let opened = tree::visible_rows(&d, &expansion);
+    assert_eq!(
+        opened.len() - rows.len(),
+        100,
+        "one click adds exactly the group's 100 rows"
+    );
+}
+
+#[test]
+fn contents2814_repeated_keys_open_and_close_independently() {
+    let d = doc("{\"x\":{\"a\":1},\"x\":{\"b\":2}}");
+    let mut expansion = tree::Expansion::default();
+    let rows = tree::visible_rows(&d, &expansion);
+    assert_eq!(labels(&d, &rows), ["x 1 key", "  a 1", "x 1 key", "  b 2"]);
+    expansion.toggle(&rows[0]);
+    assert_eq!(
+        labels(&d, &tree::visible_rows(&d, &expansion)),
+        ["x 1 key", "x 1 key", "  b 2"],
+        "closing the first x leaves the second one open"
+    );
+}
+
+#[test]
 fn contents2814_expansion_is_keyed_by_path_and_survives_a_rebuild() {
     let before = doc("{\"a\":{\"b\":{\"c\":{\"d\":1}}},\"z\":1}");
     let mut expansion = tree::Expansion::default();
-    let c = find_row(&before, &tree::visible_rows(&before, &expansion), "c");
-    let tree::Row::Node { index, .. } = c else {
-        panic!()
-    };
-    expansion.set(
-        tree::path_key(&before, index),
-        true,
-        tree::default_open(&before, index),
-    );
+    open(&before, &mut expansion, "c");
     assert!(labels(&before, &tree::visible_rows(&before, &expansion))
         .iter()
         .any(|row| row.trim() == "d 1"));
@@ -289,6 +322,54 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn contents2814_rows_and_their_document_change_together(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (view, visual) = cx.add_window_view(|_, _| View::new());
+    let first = doc("{\"a\":1,\"b\":2}");
+    view.update(visual, |v, cx| {
+        v.snapshot.active = true;
+        v.apply_source("a.json".into(), ContentsSource::Ready(first), cx);
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| assert_eq!(shown(v), ["a 1", "b 2"]));
+    // A rebuilt document whose rows have not been computed yet.
+    let second = doc("{\"new\":{\"x\":1},\"a\":1,\"b\":2}");
+    view.update(visual, |v, cx| {
+        v.apply_source("a.json".into(), ContentsSource::Ready(second), cx);
+        assert_eq!(shown(v), ["a 1", "b 2"], "old rows keep their own document");
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        assert_eq!(shown(v), ["new 1 key", "  x 1", "a 1", "b 2"])
+    });
+}
+
+#[gpui::test]
+fn contents2814_reading_timer_restarts_for_each_file(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (view, visual) = cx.add_window_view(|_, _| View::new());
+    view.update(visual, |v, cx| {
+        v.snapshot.active = true;
+        v.apply_source("a.json".into(), ContentsSource::Loading, cx);
+    });
+    visual.executor().advance_clock(Duration::from_millis(200));
+    visual.run_until_parked();
+    view.update(visual, |v, cx| {
+        v.apply_source("b.json".into(), ContentsSource::Loading, cx)
+    });
+    visual.executor().advance_clock(Duration::from_millis(150));
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        assert!(!v.has_entries(), "b.json has waited only 150 ms")
+    });
+    visual.executor().advance_clock(Duration::from_millis(200));
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        assert!(v.has_entries(), "b.json after its own 300 ms")
+    });
+}
+
+#[gpui::test]
 fn contents2814_reading_line_waits_300_ms(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let (view, visual) = cx.add_window_view(|_, _| View::new());
@@ -358,7 +439,7 @@ fn contents2814_open_rows_survive_view_switch_and_panel_close(cx: &mut TestAppCo
     let row = view.read_with(visual, |v, _| {
         find_row(v.snapshot.doc.as_ref().unwrap(), &v.snapshot.rows, "c")
     });
-    view.update(visual, |v, cx| v.toggle_snapshot_row(row, cx));
+    view.update(visual, |v, cx| v.toggle_snapshot_row(&row, cx));
     settle(visual);
     let has_d = |visual: &mut VisualTestContext| {
         view.read_with(visual, |v, _| shown(v).iter().any(|r| r.trim() == "d 1"))

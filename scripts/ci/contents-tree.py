@@ -50,6 +50,11 @@ CONTROLS = [
  ('click-switches-view', 'contents2814_click_goes_to_the_node_in_every_view_without_switching'),
  ('forget-on-close', 'contents2814_open_rows_survive_view_switch_and_panel_close'),
  ('table-contents', 'contents2814_json_rows_states_and_absent_table'),
+ ('labels-walk-children', 'contents2814_group_labels_cost_no_child_walk'),
+ ('group-children-open', 'contents2814_children_of_an_opened_group_start_closed'),
+ ('shared-duplicate-key', 'contents2814_repeated_keys_open_and_close_independently'),
+ ('swap-doc-early', 'contents2814_rows_and_their_document_change_together'),
+ ('timer-survives-switch', 'contents2814_reading_timer_restarts_for_each_file'),
 ]
 TESTS = ['contents2814_']
 CONTROL_FN = """#[cfg(test)]
@@ -60,14 +65,19 @@ fn main() {"""
 try:
     edit('main.rs', 'fn main() {', CONTROL_FN)
     tree = 'reader_file_outline/tree.rs'
-    edit(tree, 'children > 0 && children <= OPEN_CHILDREN && depth(doc, index) <= OPEN_DEPTH',
-         'children > 0 && (crate::contents2814_control("open-all-depths") || children <= OPEN_CHILDREN && depth(doc, index) <= OPEN_DEPTH)')
+    edit(tree, 'children > 0 && children <= OPEN_CHILDREN && doc.structure[index].depth <= OPEN_DEPTH',
+         'children > 0 && (crate::contents2814_control("open-all-depths") || children <= OPEN_CHILDREN && doc.structure[index].depth <= OPEN_DEPTH)')
     edit(tree, '(None, Some(n)) => n.to_string(),', '(None, Some(n)) => if crate::contents2814_control("bracket-ordinals") { format!("[{n}]") } else { n.to_string() },')
     edit(tree, '} else if count > GROUP {', '} else if count > GROUP && !crate::contents2814_control("no-groups") {')
-    edit(tree, '    segments.reverse();\n    segments.join("\\u{1f}")', '    segments.reverse();\n    if crate::contents2814_control("index-keyed") {\n        return index.to_string();\n    }\n    segments.join("\\u{1f}")')
+    edit(tree, '            let segment = match (doc.key_text(child), doc.array_ordinal(child)) {\n', '            let segment = match (doc.key_text(child), doc.array_ordinal(child)) {\n                _ if crate::contents2814_control("index-keyed") => format!("@{child}"),\n')
+    edit(tree, '                    let segment = if *n == 0 {', '                    let segment = if *n == 0 || crate::contents2814_control("shared-duplicate-key") {')
+    edit(tree, 'default_open: !grouped && default_open(doc, index),', 'default_open: (!grouped || crate::contents2814_control("group-children-open")) && default_open(doc, index),')
+    edit(tree, '    if doc.key_text(first_index).is_some() {', '    let first_index = if crate::contents2814_control("labels-walk-children") { doc.children(doc.parent(first_index).unwrap()).nth(first).unwrap() } else { first_index };\n    if doc.key_text(first_index).is_some() {')
     view = 'reader_file_outline.rs'
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
+    edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
+    edit(view, '            self.snapshot.reading = None;\n            self.snapshot.state = SnapshotState::Absent;\n            self.list.reset(0);', '            if !crate::contents2814_control("timer-survives-switch") {\n                self.snapshot.reading = None;\n                self.snapshot.state = SnapshotState::Absent;\n            }\n            self.list.reset(0);')
     code = 'reader_code_file/contents.rs'
     edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
     edit(code, 'if !self.contents_format() || self.view == View::Table {', 'if !self.contents_format() || (self.view == View::Table && !crate::contents2814_control("table-contents")) {')
