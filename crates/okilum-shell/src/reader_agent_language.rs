@@ -73,7 +73,7 @@ pub fn hover_at(report: &Report, offset: usize) -> Option<(std::ops::Range<usize
 
 /// Published ranges apply only to the exact captured text.
 pub fn same_text(source: &str, text: &gpui_component::input::Rope) -> bool {
-    text.len() == source.len() && text.to_string() == source
+    text.len() == source.len() && text == source
 }
 
 use std::sync::{

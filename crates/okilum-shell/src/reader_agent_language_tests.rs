@@ -2,7 +2,6 @@
 //! policy-only change refreshing them without a source edit.
 use super::*;
 use ::core::prelude::v1::test;
-use gpui_component::input::HoverProvider as _;
 
 const SOURCE: &str = "# Rules\n\nВоркер мержит.\n\n`воркер`\n";
 const POLICY: &str = "backlog:\n  - pattern: 'воркер'\n    good: worker\n";
