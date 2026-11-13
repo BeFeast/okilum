@@ -29,6 +29,45 @@ pub fn status_text(report: &Report) -> String {
     }
 }
 
+/// Byte ranges to mark in the editor, in source order.
+pub fn mark_ranges(report: &Report) -> Vec<std::ops::Range<usize>> {
+    report.diagnostics.iter().map(|d| d.range.clone()).collect()
+}
+
+/// Wavy underline in the warning color, the same mark as a missing link.
+pub fn mark_style(color: gpui::Hsla) -> gpui::HighlightStyle {
+    gpui::HighlightStyle {
+        underline: Some(gpui::UnderlineStyle {
+            thickness: gpui::px(1.),
+            color: Some(color),
+            wavy: true,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Hover text for the term under `offset`, with the matched byte range.
+pub fn hover_at(report: &Report, offset: usize) -> Option<(std::ops::Range<usize>, String)> {
+    report
+        .diagnostics
+        .iter()
+        .find(|d| d.range.start <= offset && offset < d.range.end)
+        .map(|d| {
+            (
+                d.range.clone(),
+                format!(
+                    "Transliterated term. Latin form: {}\n\nRule from the vault's language policy.",
+                    d.replacement
+                ),
+            )
+        })
+}
+
+/// Published ranges apply only to the exact captured text.
+pub fn same_text(source: &str, text: &gpui_component::input::Rope) -> bool {
+    text.len() == source.len() && text.to_string() == source
+}
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
@@ -251,6 +290,40 @@ mod tests {
         let report = diagnostics(true, "AGENTS.md", "", Err("missing"));
         assert!(status_text(&report).contains("unknown"));
         assert!(status_text(&report).contains("missing"));
+    }
+
+    #[test]
+    fn marks_and_hover_cover_transliterations_but_not_code_or_urls() {
+        let policy = "backlog:\n  - pattern: 'воркер'\n    good: worker\n  - pattern: 'мерж\\w*'\n    good: merge\n";
+        let source =
+            "Воркер мержит.\n\n`воркер`\n\n```\nворкер\n```\n\nhttps://example.test/воркер\n";
+        let report = diagnostics(true, "Dev/AGENTS.md", source, Ok(policy));
+        let ranges = mark_ranges(&report);
+        assert_eq!(ranges.len(), 2, "{report:?}");
+        assert_eq!(&source[ranges[0].clone()], "Воркер");
+        assert_eq!(&source[ranges[1].clone()], "мержит");
+        let (range, text) = hover_at(&report, ranges[0].start + 2).unwrap();
+        assert_eq!(range, ranges[0]);
+        assert!(text.contains("Latin form: worker"));
+        assert!(hover_at(&report, ranges[1].start)
+            .unwrap()
+            .1
+            .contains("merge"));
+        assert!(
+            hover_at(&report, ranges[0].end).is_none(),
+            "end is exclusive"
+        );
+        let style = mark_style(gpui::Hsla::default());
+        assert!(style.underline.unwrap().wavy);
+        let contract = diagnostics(true, "_AgentContract.md", "воркер", Ok(policy));
+        assert_eq!(
+            mark_ranges(&contract).len(),
+            1,
+            "root contract is an agent file"
+        );
+        let rope = gpui_component::input::Rope::from(source);
+        assert!(same_text(source, &rope));
+        assert!(!same_text("other", &rope));
     }
 
     fn capture(revision: &str, source: &str) -> Snapshot {
