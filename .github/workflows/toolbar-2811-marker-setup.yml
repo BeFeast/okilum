@@ -1,0 +1,29 @@
+name: toolbar-2811-marker-setup-proof
+on:
+  push:
+    branches: ['diagnostic-toolbar-2811/marker-setup-*']
+permissions:
+  contents: read
+jobs:
+  setup-proof:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline controls, no native app or benchmark
+        run: python -m unittest discover -s scripts/ci/perf-2811-qpc -p 'test_*.py' -v
+      - name: Inspect actual WPT used by the failed collection
+        shell: pwsh
+        run: ./scripts/ci/perf-2811-qpc/wpt-setup.ps1 -OutputDirectory setup-tool
+      - name: Synthetic marker roundtrip only, zero Okilum launches
+        shell: pwsh
+        run: python scripts/ci/perf-2811-qpc/marker_setup_probe.py --out setup-proof
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-marker-setup-proof
+          path: |
+            setup-tool/
+            setup-proof/
+          if-no-files-found: error
+          retention-days: 7
