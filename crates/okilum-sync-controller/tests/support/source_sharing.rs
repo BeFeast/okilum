@@ -1493,9 +1493,9 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
     })?;
     // Legacy template is portable source. A device's private additions are not
     // silently promoted into the fleet policy when that template is adopted.
-    fs::create_dir(pair.source.vault.join("_Schema"))?;
+    fs::create_dir(pair.source.vault.join("@Schema"))?;
     fs::write(
-        pair.source.vault.join("_Schema/stignore.template"),
+        pair.source.vault.join("@Schema/stignore.template"),
         b"// shared template\n.git\n/.obsidian\n",
     )?;
     let generated = fs::read_to_string(pair.source.vault.join(".stignore"))?;

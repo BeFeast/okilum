@@ -15,10 +15,10 @@ pub struct Row {
     pub expanded: bool,
     /// Inside an Archive folder: rendered muted (docs/design/reader.md, #369).
     pub archived: bool,
-    /// A `@`/`_`/`.` item shown only because hidden files are on or because it
+    /// A `@`/`.` item shown only because hidden files are on or because it
     /// leads to the current note (#395): rendered muted with a marker.
     pub hidden: bool,
-    /// The folder's index note (`@index.md` or `_index.md`, #1512): listed first in its
+    /// The folder's index note (`@index.md`, #1512): listed first in its
     /// folder, muted, with its own icon, and shown without Show hidden
     /// files. Otherwise an ordinary note row.
     pub index: bool,
@@ -34,7 +34,7 @@ pub(crate) fn sticky_ancestors(rows: &[Option<Row>], first: usize) -> Vec<Row> {
     crate::reader_tree_breadcrumbs::Ancestors::new(rows.to_vec()).at(first)
 }
 
-/// Ordinary `@`/`_`/`.` paths are hidden in the browser until Show hidden files
+/// Ordinary `@`/`.` paths are hidden in the browser until Show hidden files
 /// or navigation reveals them. They remain in inventory for links and search;
 /// service directories are excluded by the scanner.
 pub fn hidden(path: &str) -> bool {
@@ -57,7 +57,7 @@ pub struct Tree {
     pub cursor: Option<String>,
     selected: BTreeSet<String>,
     selection_anchor: Option<String>,
-    /// Show `@`/`_`/`.` items (per-vault preference, #395).
+    /// Show `@`/`.` items (per-vault preference, #395).
     show_hidden: bool,
     agent_shims: BTreeSet<String>,
     /// A hidden path revealed for navigation; its branch is shown until the
@@ -396,7 +396,7 @@ impl Tree {
                     rows.push(Row {
                         hidden: (self.agent_file(&path)
                             || self.agent_folder(&path)
-                            || self.hidden_item(&path))
+                            || hidden(&path))
                             && !self.shown_index(&path),
                         index,
                         agent_rules: (kind == EntryKind::Directory)
@@ -484,15 +484,6 @@ impl Tree {
             })
     }
 
-    /// Underscores are a vault-note/folder convention, not a data-file flag.
-    fn hidden_item(&self, path: &str) -> bool {
-        if self.kinds.get(path) != Some(&EntryKind::Attachment) {
-            return hidden(path);
-        }
-        let name = path.rsplit('/').next().unwrap_or(path);
-        name.starts_with('.') || parent(path).is_some_and(hidden)
-    }
-
     fn agent_file(&self, path: &str) -> bool {
         self.kinds.get(path) != Some(&EntryKind::Directory)
             && okilum_core::quick_open::is_agent_file(path)
@@ -513,7 +504,7 @@ impl Tree {
             && self.index_of(parent(path).unwrap_or("")) == FolderIndex::One(path.to_owned())
     }
 
-    /// An index note is listed whenever its folder is (#1512): its own `_`
+    /// An index note is listed whenever its folder is (#1512): its own `@`
     /// does not hide it, a hidden folder above it still does.
     fn shown_index(&self, path: &str) -> bool {
         parent(path).is_none_or(|folder| !hidden(folder)) && self.is_index_note(path)
@@ -527,8 +518,7 @@ impl Tree {
     /// Inbox use this so they list what the tree lists (#635); a navigation
     /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
-        !self.show_hidden
-            && (self.agent_file(path) || self.agent_folder(path) || self.hidden_item(path))
+        !self.show_hidden && (self.agent_file(path) || self.agent_folder(path) || hidden(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -793,7 +783,7 @@ fn tree_label(
 }
 
 /// A vault-relative tree path: non-empty, `/`-separated, no empty or dot segments.
-/// A folder's index note (#1099): `_index.md` directly inside `folder`
+/// A folder's index note (#1099): `@index.md` directly inside `folder`
 /// (`""` is the vault root), any letter case.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FolderIndex {
@@ -1038,12 +1028,12 @@ mod tests {
             Path::new("/no-filesystem-reads"),
             &[
                 entry("Area", EntryKind::Directory),
-                entry("Area/_index.md", EntryKind::Markdown),
+                entry("Area/@index.md", EntryKind::Markdown),
                 entry("Area/actual.md", EntryKind::Markdown),
             ],
         );
         tree.set_titles(Arc::new(HashMap::from([
-            ("Area/_index.md".into(), "Zeta index title".into()),
+            ("Area/@index.md".into(), "Zeta index title".into()),
             ("Area/actual.md".into(), "Alpha title".into()),
         ])));
         for titles in [false, true] {
@@ -1055,12 +1045,12 @@ mod tests {
                 if titles { "Alpha title" } else { "actual" }
             );
             assert_eq!(
-                tree.rows[1].path, "Area/_index.md",
+                tree.rows[1].path, "Area/@index.md",
                 "the index remains first"
             );
             assert_eq!(
                 tree.rows[1].label,
-                if titles { "Zeta index title" } else { "_index" }
+                if titles { "Zeta index title" } else { "@index" }
             );
         }
         tree.set_note_titles(false);
@@ -1326,18 +1316,18 @@ mod tests {
             entry("Dev", Directory),
             entry("Dev/Areas", Directory),
             entry("Dev/Areas/apertune", Directory),
-            entry("Dev/Areas/apertune/_index.md", Markdown),
-            entry("Dev/Areas/apertune/specs/_index.md", Markdown),
+            entry("Dev/Areas/apertune/@index.md", Markdown),
+            entry("Dev/Areas/apertune/specs/@index.md", Markdown),
             entry("Dev/Areas/other", Directory),
             entry("Dev/Areas/other/index.md", Markdown),
             entry("Dev/Areas/twice", Directory),
-            entry("Dev/Areas/twice/_index.md", Markdown),
-            entry("Dev/Areas/twice/_Index.md", Markdown),
-            entry("_Index.md", Markdown),
+            entry("Dev/Areas/twice/@index.md", Markdown),
+            entry("Dev/Areas/twice/@Index.md", Markdown),
+            entry("@Index.md", Markdown),
         ];
         assert_eq!(
             folder_index("Dev/Areas/apertune", &entries),
-            FolderIndex::One("Dev/Areas/apertune/_index.md".into())
+            FolderIndex::One("Dev/Areas/apertune/@index.md".into())
         );
         // Positive control: a nested index or another name is not this folder's.
         assert_eq!(folder_index("Dev/Areas", &entries), FolderIndex::None);
@@ -1348,7 +1338,7 @@ mod tests {
         );
         assert_eq!(
             folder_index("", &entries),
-            FolderIndex::One("_Index.md".into())
+            FolderIndex::One("@Index.md".into())
         );
     }
 
@@ -1360,20 +1350,20 @@ mod tests {
             entry("Area/Alpha.md", Markdown),
             entry("Area/sub", Directory),
             entry("Area/sub/deep.md", Markdown),
-            entry("Area/_index.md", Markdown),
+            entry("Area/@index.md", Markdown),
             entry("Area/_draft.md", Markdown),
             entry("Twice", Directory),
-            entry("Twice/_index.md", Markdown),
-            entry("Twice/_Index.md", Markdown),
-            entry("_System", Directory),
-            entry("_System/_index.md", Markdown),
+            entry("Twice/@index.md", Markdown),
+            entry("Twice/@Index.md", Markdown),
+            entry("@System", Directory),
+            entry("@System/@index.md", Markdown),
         ];
         let mut t = Tree::default();
         t.refresh(Path::new("/v"), &entries);
         // The title would sort it after «Alpha»; the index still leads.
         t.set_note_titles(true);
         t.set_titles(Arc::new(HashMap::from([(
-            "Area/_index.md".into(),
+            "Area/@index.md".into(),
             "Zeta".into(),
         )])));
         t.set_expanded("Area", true);
@@ -1382,7 +1372,7 @@ mod tests {
             paths(&t),
             [
                 "Area",
-                "Area/_index.md",
+                "Area/@index.md",
                 "Area/sub",
                 "Area/Alpha.md",
                 "Twice"
@@ -1392,25 +1382,25 @@ mod tests {
         let index = &t.rows[1];
         assert!(index.index && !index.hidden && index.label == "Zeta");
         assert!(t.rows.iter().filter(|r| r.index).count() == 1);
-        assert!(t.is_index_note("Area/_index.md"));
-        assert!(!t.is_index_note("Twice/_index.md"), "two spellings: none");
+        assert!(t.is_index_note("Area/@index.md"));
+        assert!(!t.is_index_note("Twice/@index.md"), "two spellings: none");
         // Recent and Pinned keep following Show hidden files for it.
-        assert!(t.hidden_by_preference("Area/_index.md"));
+        assert!(t.hidden_by_preference("Area/@index.md"));
         assert_eq!(
             t.index_of("Area"),
-            FolderIndex::One("Area/_index.md".into())
+            FolderIndex::One("Area/@index.md".into())
         );
         assert_eq!(t.index_of("Area/sub"), FolderIndex::None);
         // Revealing the index does not count as a hidden-branch reveal.
-        assert_eq!(t.reveal("Area/_index.md"), Some(1));
+        assert_eq!(t.reveal("Area/@index.md"), Some(1));
         assert!(t.revealed_hidden.is_none());
         // With Show hidden on, the index of a hidden folder is still flagged.
         t.set_show_hidden(true);
-        t.set_expanded("_System", true);
+        t.set_expanded("@System", true);
         let system = t
             .rows
             .iter()
-            .find(|r| r.path == "_System/_index.md")
+            .find(|r| r.path == "@System/@index.md")
             .unwrap();
         assert!(system.index && system.hidden);
         t.set_show_hidden(false);
@@ -1524,7 +1514,7 @@ mod tests {
             tree.refresh(root.path(), &vault.entries);
             let ancestor = folder.split('/').next().unwrap();
             tree.set_subtree(ancestor, true);
-            let special = hidden(folder);
+            let special = folder.starts_with(['@', '.']);
             for path in [
                 ancestor.to_owned(),
                 folder.into(),
@@ -1583,8 +1573,8 @@ mod tests {
     fn system_folders_hidden_and_archive_marked() {
         use EntryKind::*;
         let entries = vec![
-            entry("_Assets", Directory),
-            entry("_Assets/logo.png", Attachment),
+            entry("@Assets", Directory),
+            entry("@Assets/logo.png", Attachment),
             entry("Work", Directory),
             entry("Work/4 Archive", Directory),
             entry("Work/4 Archive/old.md", Markdown),
@@ -1619,31 +1609,32 @@ mod tests {
             entry("test1.json", Attachment),
             entry("some2.txt", Attachment),
             entry("_private.md", Markdown),
-            entry("_System", Directory),
-            entry("_System/_nested.json", Attachment),
+            entry("@System", Directory),
+            entry("@System/_nested.json", Attachment),
             entry(".private.json", Attachment),
         ];
         let mut tree = Tree::default();
         tree.refresh(Path::new("/synthetic"), &entries);
-        for name in ["__test2.json", "_some1.txt", "test1.json", "some2.txt"] {
+        for name in [
+            "__test2.json",
+            "_some1.txt",
+            "test1.json",
+            "some2.txt",
+            "_private.md",
+        ] {
             let row = tree.rows.iter().find(|row| row.path == name).expect(name);
             assert!(!row.hidden, "{name}");
             assert!(!tree.hidden_by_preference(name));
             assert!(tree.reveal(name).is_some());
         }
-        for name in [
-            "_private.md",
-            "_System",
-            "_System/_nested.json",
-            ".private.json",
-        ] {
+        for name in ["@System", "@System/_nested.json", ".private.json"] {
             assert!(tree.hidden_by_preference(name), "{name}");
         }
         tree.set_show_hidden(true);
         assert!(tree
             .rows
             .iter()
-            .any(|row| row.path == "_private.md" && row.hidden));
+            .any(|row| row.path == "_private.md" && !row.hidden));
         assert!(tree
             .rows
             .iter()
@@ -1656,9 +1647,9 @@ mod tests {
         let entries = vec![
             entry("Life", Directory),
             entry("Life/plan.md", Markdown),
-            entry("_AgentContract.md", Markdown),
-            entry("_System", Directory),
-            entry("_System/tool.md", Markdown),
+            entry("@AgentContract.md", Markdown),
+            entry("@System", Directory),
+            entry("@System/tool.md", Markdown),
         ];
         let mut t = Tree::default();
         t.refresh(Path::new("/v"), &entries);
@@ -1670,26 +1661,26 @@ mod tests {
         );
         // Navigating to a hidden root note shows it (marked) and selects it,
         // never the neighbouring folder.
-        assert_eq!(t.reveal("_AgentContract.md"), Some(1));
-        assert_eq!(t.cursor.as_deref(), Some("_AgentContract.md"));
+        assert_eq!(t.reveal("@AgentContract.md"), Some(1));
+        assert_eq!(t.cursor.as_deref(), Some("@AgentContract.md"));
         assert!(t.rows[1].hidden);
         // A hidden folder's branch opens for a nested hidden note.
-        assert!(t.reveal("_System/tool.md").is_some());
-        assert!(paths(&t).contains(&"_System".to_string()));
+        assert!(t.reveal("@System/tool.md").is_some());
+        assert!(paths(&t).contains(&"@System".to_string()));
         assert!(
-            !paths(&t).contains(&"_AgentContract.md".to_string()),
+            !paths(&t).contains(&"@AgentContract.md".to_string()),
             "earlier reveal gone"
         );
         // Moving to a visible note hides the branch again.
         assert!(t.reveal("Life/plan.md").is_some());
-        assert!(!paths(&t).iter().any(|p| p.starts_with('_')));
+        assert!(!paths(&t).iter().any(|p| p.starts_with('@')));
         // An unknown note selects nothing.
         assert!(t.reveal("missing.md").is_none());
         assert_eq!(t.cursor, None);
         // Show hidden files lists them all.
         t.set_show_hidden(true);
-        assert!(paths(&t).contains(&"_AgentContract.md".to_string()));
-        assert!(paths(&t).contains(&"_System".to_string()));
+        assert!(paths(&t).contains(&"@AgentContract.md".to_string()));
+        assert!(paths(&t).contains(&"@System".to_string()));
     }
 
     #[test]
@@ -1699,18 +1690,18 @@ mod tests {
             entry("Life", Directory),
             entry("Life/plan.md", Markdown),
             entry(".dot.md", Markdown),
-            entry("_System", Directory),
-            entry("_System/tool.md", Markdown),
-            entry("_Assets", Directory),
-            entry("_Assets/Templates", Directory),
-            entry("_Assets/Templates/Daily.md", Markdown),
+            entry("@System", Directory),
+            entry("@System/tool.md", Markdown),
+            entry("@Assets", Directory),
+            entry("@Assets/Templates", Directory),
+            entry("@Assets/Templates/Daily.md", Markdown),
         ];
         let mut t = Tree::default();
         t.refresh(Path::new("/vault"), &entries);
-        for path in ["Life", "_System", "_Assets"] {
+        for path in ["Life", "@System", "@Assets"] {
             t.toggle(path);
         }
-        t.toggle("_Assets/Templates");
+        t.toggle("@Assets/Templates");
         let rows = paths(&t);
         for e in &entries {
             assert_eq!(
@@ -1721,11 +1712,11 @@ mod tests {
             );
         }
         assert!(t.hidden_by_preference(".dot.md"));
-        assert!(t.hidden_by_preference("_System/tool.md"));
-        assert!(t.hidden_by_preference("_Assets/Templates/Daily.md"));
+        assert!(t.hidden_by_preference("@System/tool.md"));
+        assert!(t.hidden_by_preference("@Assets/Templates/Daily.md"));
         // A navigation reveal is tree-only and does not unhide sections.
-        t.reveal("_System/tool.md");
-        assert!(t.hidden_by_preference("_System/tool.md"));
+        t.reveal("@System/tool.md");
+        assert!(t.hidden_by_preference("@System/tool.md"));
         t.set_show_hidden(true);
         assert!(!entries.iter().any(|e| t.hidden_by_preference(&e.path)));
     }

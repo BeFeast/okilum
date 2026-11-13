@@ -17,20 +17,9 @@ use time::OffsetDateTime;
 
 pub const DEFAULT_FOLDER: &str = "@Schema/Templates";
 
-/// Shared default for the catalog, initial tree and Settings text.
-pub fn default_folder(root: &Path) -> &'static str {
-    default_folder_from(|folder| root.join(folder).is_dir())
-}
-
-/// Inventory-only clients use the same rule without filesystem access.
-pub fn default_folder_from(has_folder: impl Fn(&str) -> bool) -> &'static str {
-    if has_folder(DEFAULT_FOLDER) {
-        DEFAULT_FOLDER
-    } else if has_folder("_Assets/Templates") {
-        "_Assets/Templates"
-    } else {
-        DEFAULT_FOLDER
-    }
+/// Shared default for the catalog and Settings text; no legacy path inference.
+pub fn default_folder(_root: &Path) -> &'static str {
+    DEFAULT_FOLDER
 }
 /// A new note without a chosen template is just its title: front matter the
 /// person did not write makes a first note look like a config file (#1352).
@@ -428,21 +417,39 @@ mod tests {
         .unwrap();
         assert!(Catalog::load(root).is_err());
         std::fs::remove_file(root.join(".obsidian/templates.json")).unwrap();
-        // Select the existing legacy default under the additive precedence rule.
+        // The current default refuses a symlink ancestor.
         std::fs::create_dir(root.join("Templates")).unwrap();
-        std::os::unix::fs::symlink(dir.path(), root.join("_Assets")).unwrap();
+        std::os::unix::fs::symlink(dir.path(), root.join("@Schema")).unwrap();
         assert!(Catalog::load(root).is_err());
     }
     #[test]
-    fn both_default_template_branches_refuse_symlink_ancestors() {
+    fn default_and_explicit_template_branches_refuse_symlink_ancestors() {
         for branch in ["@Schema", "_Assets"] {
             let root = tempfile::tempdir().unwrap();
             std::fs::create_dir(root.path().join("Templates")).unwrap();
             std::os::unix::fs::symlink(root.path(), root.path().join(branch)).unwrap();
             assert!(
-                Catalog::load(root.path()).is_err(),
+                Catalog::load_with_folder(root.path(), Some(&format!("{branch}/Templates")))
+                    .is_err(),
                 "selected {branch} template ancestor must be a real directory"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod underscore_tests {
+    use super::*;
+
+    #[test]
+    fn issue2847_underscore_templates_require_explicit_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("_Assets/Templates")).unwrap();
+        std::fs::write(root.path().join("_Assets/Templates/Old.md"), "# Old\n").unwrap();
+        let default = Catalog::load(root.path()).unwrap();
+        assert_eq!(default.folder, Path::new("@Schema/Templates"));
+        assert!(default.files.is_empty());
+        let explicit = Catalog::load_with_folder(root.path(), Some("_Assets/Templates")).unwrap();
+        assert_eq!(explicit.files, ["Old.md"]);
     }
 }

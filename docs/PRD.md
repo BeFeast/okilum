@@ -1,5 +1,17 @@
 # Okilum — Product Requirements
 
+**Vault special paths (#2847 / #2844, Oleg 2026-11-12):**
+[Special-path conventions](vault-at-conventions.md) reserve `@` for vault roles
+and `.` for application state; `_` paths are ordinary visible content. Only
+`@index.md` is a folder/project index; Projects create writes that spelling.
+Templates default to `@Schema/Templates`; attachments use configured Obsidian
+settings, `@Assets/Images` / `@Assets/Files`, or existing root `attachments`.
+Agent contract, language and shared-ignore templates use the @ forms only.
+Special template branches follow Show hidden files. No automatic rename occurs:
+vaults using `_index.md` / `_Assets` lose folder indexes, default templates and
+project discovery until their owner renames to @. The first beta's release notes
+and tester message must include this warning.
+
 **Code operations (#2771, Oleg 2026-11-09):**
 [Format, validation and explicit Repair](code-format-repair.md) separates
 language-selected source formatting from validation and revision-bound syntax

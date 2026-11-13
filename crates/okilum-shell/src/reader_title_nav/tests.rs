@@ -110,7 +110,7 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
         ("Dev/Areas/App/plan.md", "# Plan\n"),
         ("Dev/Areas/App/design/rules.md", "# Rules\n"),
         ("Other/far.md", "# Far\n"),
-        ("_Assets/hidden.md", "# Hidden\n"),
+        ("@Private/hidden.md", "# Hidden\n"),
     ] {
         std::fs::create_dir_all(vault.join(path).parent().unwrap()).unwrap();
         std::fs::write(vault.join(path), body).unwrap();
@@ -121,13 +121,13 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
         view.sidebar.recent = vec![
             ("Dev/Areas/App/design/rules.md".into(), now - 60),
             ("Other/far.md".into(), now - 120),
-            ("_Assets/hidden.md".into(), now - 150),
+            ("@Private/hidden.md".into(), now - 150),
             ("Dev/Areas/App/plan.md".into(), now - 3_600),
         ];
         view.sidebar.pinned = vec![
             "Other/far.md".into(),
             "Dev/Areas/App".into(),
-            "_Assets/hidden.md".into(),
+            "@Private/hidden.md".into(),
         ];
         cx.notify();
     });
@@ -279,7 +279,7 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
         // Show hidden files brings hidden notes back, as in the tree.
         view.set_nav_scope(Scope::Vault, cx);
         view.toggle_hidden_files(cx);
-        assert!(paths(view, Menu::Recent).contains(&"_Assets/hidden.md".to_owned()));
+        assert!(paths(view, Menu::Recent).contains(&"@Private/hidden.md".to_owned()));
     });
 }
 
@@ -556,4 +556,58 @@ fn recent_gallery_arrows_wrap_without_starting_the_ctrl_tab_switcher(cx: &mut Te
     visual.simulate_keystrokes("ctrl-escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("recent-switcher").is_none());
+}
+
+#[gpui::test]
+fn issue2847_underscore_notes_remain_in_recent_pinned_and_inbox(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let vault = fixture.path().join("vault");
+    let paths = [
+        "note.md",
+        "_Private/x.md",
+        "Legacy/_index.md",
+        "_Assets/Templates/Old.md",
+        "_AgentContract.md",
+        "@Private/y.md",
+    ];
+    for path in paths {
+        std::fs::create_dir_all(vault.join(path).parent().unwrap()).unwrap();
+        std::fs::write(vault.join(path), "# Ordinary fixture\n").unwrap();
+    }
+    let (reader, visual) = open_reader(cx, fixture.path(), &vault);
+    let now = reader_sidebar::now();
+    reader.update(visual, |view, _| {
+        assert!(!view.sidebar.show_hidden);
+        view.sidebar.recent = paths.iter().map(|p| ((*p).into(), now)).collect();
+        view.sidebar.pinned = paths.iter().map(|p| (*p).into()).collect();
+        let inbox = reader_sidebar::compute_inbox(
+            &view.vault,
+            &mut std::collections::BTreeMap::new(),
+            true,
+            now,
+            |_| Some(now),
+        );
+        for path in paths {
+            let visible = !path.starts_with('@');
+            for menu in [Menu::Recent, Menu::Pinned] {
+                assert_eq!(
+                    view.nav_entries(menu, now)
+                        .iter()
+                        .any(|row| row.path == path),
+                    visible,
+                    "navigation {path}"
+                );
+            }
+            assert_eq!(
+                inbox
+                    .iter()
+                    .any(|item| item.path == path && !view.tree.hidden_by_preference(path)),
+                visible,
+                "inbox {path}"
+            );
+        }
+        assert_eq!(view.tree.index_of("Legacy"), reader_tree::FolderIndex::None);
+        assert!(view.tree.folders().contains(&"_Assets/Templates".into()));
+        assert!(!view.tree.folders().contains(&"@Private".into()));
+    });
 }

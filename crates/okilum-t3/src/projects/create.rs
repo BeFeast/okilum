@@ -3,7 +3,7 @@
 //!
 //! The dialog's state is a [`Draft`]: name, kind, icon and, for a code or
 //! hybrid project, where its code is. [`create`] writes `.okilum/project.toml`
-//! (and `_index.md` when the folder has none), the manifest the Projects
+//! (and `@index.md` when the folder has none), the manifest the Projects
 //! list reads. Creating the T3 project is a separate, optional step
 //! ([`create_in_t3`]); when it succeeds, [`link_t3`] adds the T3 binding to
 //! the manifest. A failed T3 step leaves the written manifest alone.
@@ -17,7 +17,7 @@ use std::path::Path;
 /// The manifest, relative to the project folder.
 pub const MANIFEST: &str = ".okilum/project.toml";
 /// The folder's entry note.
-pub const INDEX: &str = "_index.md";
+pub const INDEX: &str = "@index.md";
 /// The kinds in the dialog's order.
 pub const KINDS: [Kind; 3] = [Kind::Code, Kind::Knowledge, Kind::Hybrid];
 
@@ -243,7 +243,7 @@ pub fn manifest(draft: &Draft, relative: &str) -> String {
 pub struct Created {
     /// The project as the Projects list reads it.
     pub project: Project,
-    /// `_index.md` was missing and is now there.
+    /// `@index.md` was missing and is now there.
     pub wrote_index: bool,
 }
 
@@ -265,7 +265,7 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Turn `folder` (inside `vault`) into a project: `.okilum/project.toml`, and
-/// `_index.md` with the name as its H1 when the folder has none. A folder
+/// `@index.md` with the name as its H1 when the folder has none. A folder
 /// that already is a project is refused and nothing is written.
 pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
     let _admission = okilum_write_authority::operation(vault)?;
@@ -323,16 +323,16 @@ pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
     })?;
     // From here a failure takes the manifest back, so the folder is not left
     // half made and refused as «already a project» on the next try.
-    finish(vault, folder, draft, &relative).inspect_err(|_| {
+    finish(folder, draft, &relative).inspect_err(|_| {
         let _ = std::fs::remove_file(&manifest_path);
         rollback_ops();
     })
 }
 
-/// The rest of [`create`] once the manifest is written: `_index.md` when the
+/// The rest of [`create`] once the manifest is written: `@index.md` when the
 /// folder has none, then the project as the Projects list reads it.
-fn finish(vault: &Path, folder: &Path, draft: &Draft, relative: &str) -> Result<Created> {
-    // Check both families and all case spellings before creating anything.
+fn finish(folder: &Path, draft: &Draft, relative: &str) -> Result<Created> {
+    // Check every case spelling of @index before creating anything.
     // Directory enumeration errors must not turn into permission to add an index.
     let mut existing = false;
     for entry in std::fs::read_dir(folder)? {
@@ -341,12 +341,7 @@ fn finish(vault: &Path, folder: &Path, draft: &Draft, relative: &str) -> Result<
             existing = true;
         }
     }
-    let name = if okilum_core::vault_conventions::uses_at(vault)? {
-        "@index.md"
-    } else {
-        INDEX
-    };
-    let index = folder.join(name);
+    let index = folder.join(INDEX);
     let wrote_index = if existing {
         false
     } else {
@@ -589,7 +584,7 @@ mod tests;
 mod at_index_tests {
     use super::*;
     #[test]
-    fn create_obeys_vault_convention_and_never_adds_a_second_index() {
+    fn create_always_uses_at_index_and_leaves_underscore_notes_alone() {
         for signal in [None, Some("@Index.md"), Some("@Assets"), Some("@Schema")] {
             let root = tempfile::tempdir().unwrap();
             if let Some(signal) = signal {
@@ -609,7 +604,8 @@ mod at_index_tests {
                 }
                 let draft = Draft::for_folder(folder.path());
                 let made = create(root.path(), folder.path(), &draft).unwrap();
-                assert_eq!(made.wrote_index, existing.is_none());
+                let at_exists = existing.is_some_and(|name| name.starts_with('@'));
+                assert_eq!(made.wrote_index, !at_exists);
                 let indexes: Vec<_> = std::fs::read_dir(folder.path())
                     .unwrap()
                     .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -621,15 +617,9 @@ mod at_index_tests {
                         std::fs::read(folder.path().join(existing)).unwrap(),
                         b"keep exact bytes"
                     );
-                } else {
-                    assert_eq!(
-                        indexes[0],
-                        if signal.is_some() {
-                            "@index.md"
-                        } else {
-                            "_index.md"
-                        }
-                    );
+                }
+                if !at_exists {
+                    assert_eq!(indexes[0], "@index.md");
                 }
             }
         }

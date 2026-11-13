@@ -452,9 +452,9 @@ mod tests {
         let source = create_note(root, &rel, state.path()).unwrap();
         // No front matter nobody wrote (#1352); a Note.md template still applies.
         assert_eq!(source, "# Привет 🧠\n");
-        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
+        std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
         std::fs::write(
-            root.join("_Assets/Templates/Note.md"),
+            root.join("@Schema/Templates/Note.md"),
             "\u{feff}# {{title}}\r\n{{date:DD.MM.YYYY}} {{time:HH:mm}} {{unknown}}\r\n",
         )
         .unwrap();
@@ -469,8 +469,8 @@ mod tests {
         );
         assert!(create_note(root, &rel, state.path()).is_err());
         assert_eq!(std::fs::read_to_string(root.join(&rel)).unwrap(), source);
-        assert!(create_note(root, Path::new("_Assets/Templates/new.md"), state.path()).is_err());
-        std::fs::write(root.join("_Assets/Templates/Note.md"), [0xff]).unwrap();
+        assert!(create_note(root, Path::new("@Schema/Templates/new.md"), state.path()).is_err());
+        std::fs::write(root.join("@Schema/Templates/Note.md"), [0xff]).unwrap();
         assert!(create_note(root, Path::new("invalid.md"), state.path()).is_err());
         assert!(!root.join("invalid.md").exists());
         for name in [
@@ -500,13 +500,13 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
         assert!(create_note(root, Path::new("link/new/note.md"), state.path()).is_err());
         assert!(!outside.path().join("new").exists());
-        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
-        std::fs::write(root.join("_Assets/Templates/Note.md"), "template").unwrap();
+        std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
+        std::fs::write(root.join("@Schema/Templates/Note.md"), "template").unwrap();
         let catalog = crate::note_templates::Catalog::load(root).unwrap();
-        std::fs::remove_file(root.join("_Assets/Templates/Note.md")).unwrap();
+        std::fs::remove_file(root.join("@Schema/Templates/Note.md")).unwrap();
         std::os::unix::fs::symlink(
             outside.path().join("absent.md"),
-            root.join("_Assets/Templates/Note.md"),
+            root.join("@Schema/Templates/Note.md"),
         )
         .unwrap();
         assert!(create_from_template(
@@ -518,7 +518,7 @@ mod tests {
             Some("Note.md")
         )
         .is_err());
-        std::fs::remove_file(root.join("_Assets/Templates/Note.md")).unwrap();
+        std::fs::remove_file(root.join("@Schema/Templates/Note.md")).unwrap();
         std::fs::write(root.join("note.md"), "base").unwrap();
         let mut editor =
             crate::file_editor::FileEditor::open(&root.join("note.md"), state.path()).unwrap();
