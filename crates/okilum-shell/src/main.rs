@@ -124,6 +124,7 @@ mod reader_owned_windows;
 mod reader_panel_resize;
 mod reader_panes;
 mod reader_pdf;
+mod reader_pin_row;
 mod reader_plain_text;
 mod reader_project_create;
 mod reader_project_navigation;
@@ -4340,6 +4341,7 @@ impl Reader {
         let current = self.selected_file().to_owned();
         let current_menu = current.clone();
         let file_root = self.vault_root.clone();
+        let title_reader = cx.entity().downgrade();
         let root = self.selected_title();
         let parent_menu = folders.clone();
         let deleted = self
@@ -4448,6 +4450,7 @@ impl Reader {
                         gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
                     })
                     .context_menu(move |menu, window, cx| {
+                        let pin = reader_pin_row::pin_menu_item(&title_reader, &current_menu, cx);
                         reader_files::menu(
                             menu,
                             file_root.clone(),
@@ -4455,6 +4458,7 @@ impl Reader {
                             window,
                             cx,
                         )
+                        .when_some(pin, |menu, pin| menu.separator().item(pin))
                     }),
             )
             .children(state)
@@ -13355,6 +13359,11 @@ fn reader_item_menu(
             #[cfg(any(unix, windows))]
             let menu = {
                 let reader = reader.downgrade();
+                // Pinned files stay in the row above the document (#2789).
+                let menu = match reader_pin_row::pin_menu_item(&reader, &relative, cx) {
+                    Some(pin) => menu.item(pin),
+                    None => menu,
+                };
                 menu.separator().item(
                     gpui_component::menu::PopupMenuItem::new(
                         crate::platform::labels::Os::CURRENT.move_to_trash(),

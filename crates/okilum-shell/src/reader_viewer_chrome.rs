@@ -1555,6 +1555,11 @@ fn window_slot(
                         .menu("Zoom out", Box::new(reader_text_zoom::ZoomOut))
                         .menu("Actual size", Box::new(reader_text_zoom::Reset));
                 }
+                // Keeps this file in the pinned row; last before Trash, as in
+                // the note menu (#2789).
+                if let Some(pin) = reader_pin_row::pin_menu_item(&weak, &rel, cx) {
+                    m = m.item(pin);
+                }
                 let target = weak.clone();
                 let rel = rel.clone();
                 m.separator()

@@ -30,6 +30,17 @@ impl Reader {
                 .child("Loading project…")
                 .into_any_element();
         }
+        // Pinned files stay above whatever the Reader shows (#2789).
+        let pins = self.render_pin_row(cx);
+        let surface = self.render_reader_surface(window, cx);
+        match pins {
+            Some(pins) => pinned_surface(pins, surface),
+            None => surface,
+        }
+    }
+
+    #[inline(never)]
+    fn render_reader_surface(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Nested file/note draws start from this small frame; the surrounding
         // builders get their own frames before or after it (#2825).
         if self.file_preview.is_some() {
@@ -360,6 +371,7 @@ impl Reader {
             ),
         ));
         let width_label = (width_applies && !show_width).then(|| note_width_label(cx));
+        let pin_reader = cx.entity().downgrade();
         row.child(document_more_button(
             move |mut menu: gpui_component::menu::PopupMenu,
                   window: &mut Window,
@@ -476,6 +488,10 @@ impl Reader {
                 menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
                 if !is_file {
                     menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
+                }
+                // Keeps this file in the pinned row; last before Trash (#2789).
+                if let Some(pin) = reader_pin_row::pin_menu_item(&pin_reader, &rel, cx) {
+                    menu = menu.item(pin);
                 }
                 #[cfg(any(unix, windows))]
                 {
@@ -1258,6 +1274,16 @@ fn file_surface(main: AnyElement, status: Option<AnyElement>) -> AnyElement {
         .min_h_0()
         .child(div().flex_1().min_h_0().child(main))
         .children(status)
+        .into_any_element()
+}
+
+#[inline(never)]
+fn pinned_surface(pins: AnyElement, surface: AnyElement) -> AnyElement {
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .child(pins)
+        .child(div().flex_1().min_h_0().child(surface))
         .into_any_element()
 }
 

@@ -222,11 +222,13 @@ impl Reader {
                 .filter(|(path, _)| shown(path))
                 .map(|(path, at)| entry(path, Some(reader_sidebar::age_label(*at, now))))
                 .collect(),
+            // A pin gone from the inventory stays listed only in the pinned
+            // row, which says it is missing (#2789).
             Menu::Pinned => self
                 .sidebar
                 .pinned
                 .iter()
-                .filter(|path| shown(path))
+                .filter(|path| shown(path) && !self.pin_missing(path))
                 .map(|path| entry(path, None))
                 .collect(),
         }
