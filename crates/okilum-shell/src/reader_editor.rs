@@ -1172,13 +1172,11 @@ impl Reader {
             // An automatic editor (#2817) takes ownership on its first edit.
             // If another window took the note meanwhile, this one returns to
             // Read with that window's notice; nothing was written.
-            // Any input event other than a reset (typing, IME, paste, Undo)
-            // is the person's edit, even when its text equals the store's.
+            // Any input that changes the text (typing, IME, paste, Undo) is
+            // the person's edit; one that leaves it equal owns nothing.
             if !editing.store.owns_lock()
-                && (mutation.reason
-                    != gpui_component::input::projection::SourceMutationReason::Reset
-                    || (!editing.store.snapshot().same(&value)
-                        && editing.store.snapshot() != value))
+                && !editing.store.snapshot().same(&value)
+                && editing.store.snapshot() != value
             {
                 if let Err(error) = editing.store.acquire_lock() {
                     diagnostic_error!("Cannot edit: {error:#}");
@@ -2558,8 +2556,18 @@ impl Reader {
         let Some(editing) = self.editing.as_mut() else {
             return true;
         };
-        if editing.store.owns_lock() || editing.input.read(cx).source_stamp() == editing.draft_stamp
-        {
+        if editing.store.owns_lock() {
+            return true;
+        }
+        let snapshot = editing.input.read(cx).source_snapshot();
+        if snapshot.stamp == editing.draft_stamp {
+            return true;
+        }
+        // Equal text (an Undo back, a same-character replacement) is no edit:
+        // capturing it keeps the store clean without taking the note.
+        let value =
+            DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
+        if editing.store.snapshot() == value {
             return true;
         }
         match editing.store.acquire_lock() {

@@ -695,7 +695,15 @@ impl FileEditor {
         // An editor without ownership has no edit of its own: capturing the
         // text it already holds stays clean instead of becoming an unowned
         // pending revision. A different text is refused when it is persisted.
-        if self.lock.is_none() && !self.draft.pending_input && self.draft.text == text {
+        if self.lock.is_none()
+            && !self.draft.pending_input
+            && self.draft.text == text
+            && self.draft.base == text
+        {
+            // Rebind both snapshots to the new native revision, so equal
+            // bytes stay clean in the constant-time hint too.
+            self.draft.base = text.clone();
+            self.draft.text = text;
             return self.pending_write();
         }
         self.draft.text = text;
@@ -3310,6 +3318,60 @@ mod deferred_open_tests {
         drop(explicit);
         assert!(FileEditor::open_deferred(&path, &state).is_err());
         assert_eq!(FileEditor::open(&path, &state).unwrap().text(), "unsaved");
+    }
+
+    /// Through the real open path: a folder whose DACL denies adding files
+    /// (no read-only attribute anywhere) refuses an automatic Edit.
+    #[cfg(windows)]
+    #[test]
+    fn windows_deferred_open_refuses_a_folder_whose_acl_denies_replacement() {
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::{
+                Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            },
+        };
+        fn set_dacl(path: &Path, sddl: &str) {
+            let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+            let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut raw = std::ptr::null_mut();
+            unsafe {
+                assert_ne!(
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        text.as_ptr(),
+                        1,
+                        &mut raw,
+                        std::ptr::null_mut()
+                    ),
+                    0
+                );
+                let ok = SetFileSecurityW(
+                    name.as_ptr(),
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    raw,
+                );
+                LocalFree(raw as _);
+                assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+            }
+        }
+        use std::os::windows::ffi::OsStrExt;
+        let (_temp, path, state) = note();
+        let folder = path.parent().unwrap().to_owned();
+        assert!(
+            FileEditor::open_deferred(&path, &state).is_ok(),
+            "positive control"
+        );
+        // The owner may read, traverse and restore the DACL, not add files.
+        set_dacl(&folder, "D:P(A;OICI;FRFXWD;;;OW)(A;OICI;FA;;;SY)");
+        let result = FileEditor::open_deferred(&path, &state);
+        set_dacl(&folder, "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)");
+        assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+        let error = result
+            .err()
+            .expect("an ACL-denied folder is not editable in place");
+        assert!(error.downcast_ref::<NotWritable>().is_some(), "{error:#}");
+        assert!(FileEditor::open_deferred(&path, &state).is_ok(), "restored");
     }
 
     #[cfg(unix)]

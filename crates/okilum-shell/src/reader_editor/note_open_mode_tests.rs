@@ -650,3 +650,78 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
     assert!(!std::fs::read_to_string(&path).unwrap().contains('x'));
     drop(other);
 }
+
+fn assert_untouched(reader: &Entity<Reader>, visual: &mut VisualTestContext, why: &str) {
+    reader.read_with(visual, |r, _| {
+        let editing = r.editing.as_ref().expect("still in Edit");
+        assert!(!editing.store.owns_lock(), "{why}: no ownership");
+        assert!(!editing.store.dirty(), "{why}: not dirty");
+        assert!(
+            !editing.store.has_pending_revision(),
+            "{why}: no pending revision"
+        );
+        assert!(
+            editing.recovery_pending.is_none(),
+            "{why}: no recovery scheduled"
+        );
+        assert!(
+            editing.autosaving.is_none() && !editing.save_pending,
+            "{why}: no autosave scheduled"
+        );
+    });
+}
+
+#[gpui::test]
+fn watcher_adoption_of_equal_text_keeps_an_untouched_editor_clean(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    assert_untouched(&reader, visual, "positive control after open");
+    // The watcher's clean adoption replaces the native buffer with the same
+    // bytes in a new revision.
+    reader.update_in(visual, |r, window, cx| {
+        let text = std::fs::read_to_string(&path).unwrap();
+        r.editing
+            .as_mut()
+            .unwrap()
+            .replace_clean_source(text, window, cx);
+    });
+    visual.run_until_parked();
+    assert_untouched(&reader, visual, "after an equal-text watcher adoption");
+    reader.update_in(visual, |r, window, cx| {
+        r.save_source_in_background(window, cx)
+    });
+    settle(visual);
+    assert_untouched(&reader, visual, "after blur");
+}
+
+#[gpui::test]
+fn equal_text_input_takes_nothing(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
+    let path = temp.path().join("vault/first.md");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    // Input events that leave the text equal: a character replaced by
+    // itself, and an empty insertion (as an Undo with nothing to undo).
+    for (range, text) in [(2..3, "F"), (0..0, "")] {
+        reader.update_in(visual, |r, window, cx| {
+            input.update(cx, |i, cx| {
+                i.replace_text_in_range(Some(range), text, window, cx)
+            });
+            r.save_source_in_background(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "# First\n\nOne.\n",
+                "positive control: the input event left the text equal"
+            );
+        });
+        assert_untouched(&reader, visual, "equal-text input");
+    }
+    assert!(okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).is_ok());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
+}
