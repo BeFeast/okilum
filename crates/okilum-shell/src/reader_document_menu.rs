@@ -55,20 +55,26 @@ impl Reader {
 
     /// Header, sync-conflict banner and encoding notice, in display order.
     #[inline(never)]
-    fn note_surface_header(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut items = vec![div()
+    fn note_surface_header(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> [Option<AnyElement>; 3] {
+        let header = div()
             .debug_selector(|| "document-header-viewport".into())
             .flex_none()
             .overflow_hidden()
             .h(px(48.))
             .child(self.render_document_header(window, cx))
-            .into_any_element()];
+            .into_any_element();
         #[cfg(target_os = "linux")]
-        items.extend(self.render_sync_conflict_banner(cx));
-        if self.note_encoding_damaged {
-            items.push(self.note_encoding_notice(cx));
-        }
-        items
+        let banner = self.render_sync_conflict_banner(cx);
+        #[cfg(not(target_os = "linux"))]
+        let banner = None;
+        let notice = self
+            .note_encoding_damaged
+            .then(|| self.note_encoding_notice(cx));
+        [Some(header), banner, notice]
     }
 
     #[inline(never)]
@@ -1275,12 +1281,12 @@ fn file_surface(main: AnyElement, status: Option<AnyElement>) -> AnyElement {
 }
 
 #[inline(never)]
-fn note_surface(header: Vec<AnyElement>, main: AnyElement) -> AnyElement {
+fn note_surface(header: [Option<AnyElement>; 3], main: AnyElement) -> AnyElement {
     v_flex()
         .size_full()
         .min_h_0()
         .relative()
-        .children(header)
+        .children(header.into_iter().flatten())
         .child(div().flex_1().min_h_0().child(main))
         .into_any_element()
 }
