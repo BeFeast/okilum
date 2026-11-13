@@ -185,10 +185,7 @@ impl TablePreview {
         let loaded = table.rows.len().saturating_sub(usize::from(self.header));
         let count = loaded.min(if self.all { usize::MAX } else { INITIAL_ROWS });
         let partial = table.limited || loaded > count;
-        let size = self
-            .file_bytes
-            .map(|n| format!("{:.1} MB", n as f64 / 1_000_000.))
-            .unwrap_or_default();
+        let size = self.file_bytes.map(file_size).unwrap_or_default();
         let mut text = if partial {
             format!(
                 "First {} rows of a {size} file · {} columns",
@@ -219,7 +216,7 @@ impl TablePreview {
             text.push_str(" · No loaded rows match this filter.");
         }
         for notice in &notices {
-            text.push(' ');
+            text.push_str(" · ");
             text.push_str(notice);
         }
         status.text = text.into();
@@ -272,6 +269,23 @@ impl TablePreview {
         .flex_none()
         .into_any_element()
     }
+}
+
+/// Decimal units as in the mockup («9.6 MB») and the ZIP viewer («6.9 KB»).
+fn file_size(bytes: u64) -> String {
+    match bytes {
+        0..1_000 => format!("{bytes} bytes"),
+        1_000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1_000.),
+        _ => format!("{:.1} MB", bytes as f64 / 1_000_000.),
+    }
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn table2812_status_size_uses_readable_units() {
+    assert_eq!(file_size(512), "512 bytes");
+    assert_eq!(file_size(6_900), "6.9 KB");
+    assert_eq!(file_size(9_600_000), "9.6 MB");
 }
 
 fn grouped(value: usize) -> String {

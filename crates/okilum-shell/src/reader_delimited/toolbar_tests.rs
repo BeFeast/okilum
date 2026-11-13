@@ -204,7 +204,7 @@ fn table2812_sort_header_toggle_status_and_copy_toast(cx: &mut TestAppContext) {
         assert!(s.text.contains("First 1,000 rows"));
         assert!(s
             .text
-            .contains("MB file · 2 columns · sorted by amount, smallest first"));
+            .contains(" KB file · 2 columns · sorted by amount, smallest first"));
         assert_eq!(s.actions.len(), 1);
         assert!(
             p.chrome(t.clone(), true, cx)
@@ -323,6 +323,10 @@ assert_eq!(p.chrome(c.clone(),cx).views.iter().find(|view|view.active).unwrap().
 });
     assert!(measured_bounds(v, "delimited-viewport").is_none());
     assert!(measured_bounds(v, "code-status-line").is_some());
+    assert!(
+        measured_bounds(v, "table-unavailable").is_some(),
+        "the unreadable table shows its badge by the name"
+    );
 }
 
 #[gpui::test]
@@ -604,6 +608,10 @@ fn table2812_raw_cap_does_not_eagerly_read_a_large_csv(cx: &mut TestAppContext) 
     settle(v);
     let c = code(&r, v);
     c.read_with(v,|p,_| {assert!(p.input().is_none());assert!(!p.editable());assert_eq!(p.availability(View::Table),Availability::Available);assert!(matches!(p.availability(View::Raw),Availability::Disabled(reason) if reason.contains("64 MB")));});
+    assert!(
+        measured_bounds(v, "code-readonly").is_some(),
+        "the file's read-only lock stays by the name while Table is active"
+    );
 }
 
 #[gpui::test]
