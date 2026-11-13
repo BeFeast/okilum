@@ -13,6 +13,7 @@ COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell
 LOG = "reader_log"
 REVEAL = "platform::reveal::tests::"
 NATIVE_FRAME = "reader_editor::code_operations::tests::edit2803_unwrapped_popup_frames_reuse_shapes_and_invalidate_on_edit"
+FIRST_CONTENT = "reader_code_file::review_tests::code2809_first_text_precedes_full_parse_and_format_on_three_point_five_mb"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY = re.compile(r"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 
@@ -89,11 +90,12 @@ def main(*, shared=False):
     logs = sum(LOG in name for name in names)
     reveals = sum(REVEAL in name for name in names)
     frames = names.count(NATIVE_FRAME)
+    first_content = names.count(FIRST_CONTENT)
     # A duplicate full name in another target belongs to this same exact
     # partition too; every occurrence still runs once with the same packages.
     serial = sum(name in serial_names for name in names)
     assert not any(LOG in name or REVEAL in name for name in serial_names)
-    ordinary = len(names) - logs - reveals - serial - frames
+    ordinary = len(names) - logs - reveals - serial - frames - first_content
     assert ordinary > 0, "ordinary inventory must fire"
     if shared:
         assert logs == reveals == 0, "shared excludes platform and separately runs Log"
@@ -102,7 +104,7 @@ def main(*, shared=False):
         assert logs > 0 and reveals > 0, "every measured group must fire"
     shards = [[] for _ in range(shard_count)]
     for name in names:
-        if LOG not in name and REVEAL not in name and name not in serial_names and name != NATIVE_FRAME:
+        if LOG not in name and REVEAL not in name and name not in serial_names and name not in (NATIVE_FRAME, FIRST_CONTENT):
             # Identical names in different targets must stay in one shard;
             # libtest exact matching runs every occurrence there, once only.
             shards[hashlib.sha256(name.encode()).digest()[0] % shard_count].append(name)
@@ -119,7 +121,7 @@ def main(*, shared=False):
             ("logs", [LOG, "--nocapture", "--test-threads=1"], logs),
             ("reveal", [REVEAL, "--nocapture", "--test-threads=1"], reveals),
         ]
-    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial} native_frames={frames}",
+    print(f"WORKSPACE_CENSUS total={len(names)} ordinary={ordinary} logs={logs} reveal={reveals} serial={serial} native_frames={frames} first_content={first_content}",
           flush=True)
     # Separate processes retain separate Log pools. Hosted keeps four ordinary
     # threads; the existing heavy resource class can run eight. Overlap serial
@@ -129,6 +131,12 @@ def main(*, shared=False):
     execute = (lambda part: run(*part, command=command, limit=3600)) if shared else (lambda part: run(*part))
     with ThreadPoolExecutor(max_workers=len(concurrent)) as pool:
         results = list(pool.map(execute, concurrent))
+    if first_content:
+        # Keep the actual first-text/parser-ordering control outside unrelated
+        # concurrent fixture work. Its original 1000 ms assertion stays intact.
+        results.append(run('first-content', ['--nocapture', '--test-threads=1', '--exact',
+                                             FIRST_CONTENT, *skips], first_content, command=command,
+                           limit=3600 if shared else 1320))
     if frames:
         # Keep the actual 300 ms frame assertion, without concurrent fixture
         # work in the same census consuming its CPU scheduling interval.

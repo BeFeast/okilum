@@ -21,7 +21,7 @@ suite() {
     fi
     printf '\nLinux suite: %s\n' "$*"
     case "$group" in
-        reader-editor-live-preview|issue2486) account=(--isolated-writer-account) ;;
+        reader-editor-live-preview|issue2486|file-editor-network-save-tests) account=(--isolated-writer-account) ;;
     esac
     bash scripts/ci/test-group.sh "${account[@]}" "$group" "$limit" "$@" || failed=1
 }
