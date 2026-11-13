@@ -85,6 +85,16 @@ pub fn validate(text: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Legacy exclusions must never disappear when proposing a new fleet policy.
+/// Metadata inspection only; existing policies bypass template resolution.
+fn require_current_template_location(root: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(root.join("_Schema/stignore.template")) {
+        Ok(_) => anyhow::bail!("Move _Schema/stignore.template to @Schema/stignore.template before creating a shared ignore policy. Existing saved policies and local .stignore are unchanged."),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(()),
+        Err(error) => Err(error).context("Cannot check the legacy shared ignore template; review it before creating a shared policy"),
+    }
+}
+
 fn default_text(template: Option<&[u8]>) -> Result<String> {
     let local = std::str::from_utf8(template.unwrap_or_default())?;
     ensure!(
@@ -402,15 +412,15 @@ mod at_template_tests {
         assert!(files.template()?.is_none());
         std::fs::create_dir(root.path().join("_Schema"))?;
         std::fs::write(root.path().join("_Schema/stignore.template"), b"legacy\r\n")?;
-        assert!(
-            files.template()?.is_none(),
-            "underscore template is ordinary data"
-        );
+        let error = files.template().unwrap_err().to_string();
+        assert!(error.contains("Move _Schema/stignore.template to @Schema/stignore.template"));
+        assert!(files.policy()?.is_none());
+        assert!(files.local()?.is_none());
         std::fs::create_dir(root.path().join("@Schema"))?;
-        assert!(
-            files.template()?.is_none(),
-            "underscore template is ordinary data"
-        );
+        let error = files.template().unwrap_err().to_string();
+        assert!(error.contains("Move _Schema/stignore.template to @Schema/stignore.template"));
+        assert!(files.policy()?.is_none());
+        assert!(files.local()?.is_none());
         std::fs::write(root.path().join("@Schema/stignore.template"), b"current\n")?;
         assert_eq!(files.template()?.as_deref(), Some(b"current\n".as_slice()));
         std::fs::write(root.path().join("@Schema/stignore.template"), b"")?;
@@ -418,6 +428,22 @@ mod at_template_tests {
             files.template()?.as_deref(),
             Some(b"".as_slice()),
             "an intentionally empty @ template wins"
+        );
+        files.publish_policy(None, b"// saved policy\n/private\n")?;
+        files.publish_local(None, b"// exact local\r\n/local\r\n")?;
+        std::fs::remove_file(root.path().join("@Schema/stignore.template"))?;
+        assert!(files.template().is_err(), "new defaults require migration");
+        assert_eq!(
+            files.policy()?.as_deref(),
+            Some(b"// saved policy\n/private\n".as_slice())
+        );
+        assert_eq!(
+            files.local()?.as_deref(),
+            Some(b"// exact local\r\n/local\r\n".as_slice())
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("_Schema/stignore.template"))?,
+            b"legacy\r\n"
         );
         Ok(())
     }

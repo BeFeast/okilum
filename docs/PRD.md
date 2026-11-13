@@ -10,7 +10,10 @@ Agent contract, language and shared-ignore templates use the @ forms only.
 Special template branches follow Show hidden files. No automatic rename occurs:
 vaults using `_index.md` / `_Assets` lose folder indexes, default templates and
 project discovery until their owner renames to @. The first beta's release notes
-and tester message must include this warning.
+and tester message must include this warning. Creating a shared Sync policy
+from defaults is refused if only `_Schema/stignore.template` exists, with an
+instruction to move it to `@Schema/`; existing saved policies and local
+`.stignore` stay unchanged so exclusions cannot silently disappear.
 
 **Code operations (#2771, Oleg 2026-11-09):**
 [Format, validation and explicit Repair](code-format-repair.md) separates

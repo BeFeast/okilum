@@ -49,7 +49,11 @@ diagnostics, while remaining an ordinary default Quick open result. Both
 `@@AgentContract.md` and `@./@AgentContract.md` imports resolve. An explicit import
 may still name any ordinary file. Language policy uses `@Schema/language.yaml`;
 both guarded native shared-ignore readers use `@Schema/stignore.template`.
-Neither reader falls back to `_Schema`. An empty current template wins; read
+Neither reader falls back to `_Schema`. When the @ template is absent but
+`_Schema/stignore.template` exists, creating a shared policy from defaults is
+refused with a message to move that file to `@Schema/stignore.template`. This
+prevents silently dropping fleet exclusions. Existing saved shared policies and
+local `.stignore` bytes stay untouched. An empty current template wins; read
 errors remain errors.
 
 ## Release note and tester warning
@@ -62,7 +66,10 @@ line, and the tester announcement for its first beta must carry it too:
 > Underscore paths are now ordinary visible files and folders. Vaults still using
 > `_index.md` / `_Assets` lose folder indexes, default templates and project
 > discovery until their owner renames them to the @ conventions (`@index.md`,
-> `@Schema/Templates`, `@Assets`). Okilum does not rename or migrate vault files.
+> `@Schema/Templates`, `@Assets`). Shared Sync policy creation is blocked when
+> only `_Schema/stignore.template` exists: move it to `@Schema/` first. Existing
+> saved policies and local `.stignore` are unchanged. Okilum does not rename or
+> migrate vault files.
 
 ## Reproduction and evidence
 

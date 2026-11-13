@@ -1491,11 +1491,10 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
                 b"# Initial positive control\n",
             ))
     })?;
-    // Legacy template is portable source. A device's private additions are not
-    // silently promoted into the fleet policy when that template is adopted.
-    fs::create_dir(pair.source.vault.join("@Schema"))?;
+    // Never silently discard old fleet exclusions when proposing new defaults.
+    fs::create_dir(pair.source.vault.join("_Schema"))?;
     fs::write(
-        pair.source.vault.join("@Schema/stignore.template"),
+        pair.source.vault.join("_Schema/stignore.template"),
         b"// shared template\n.git\n/.obsidian\n",
     )?;
     let generated = fs::read_to_string(pair.source.vault.join(".stignore"))?;
@@ -1504,6 +1503,22 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
         generated.replace('\n', "\r\n")
     );
     fs::write(pair.source.vault.join(".stignore"), local.as_bytes())?;
+    let error = pair
+        .first
+        .preview_ignore_policy(&pair.source.vault)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Move _Schema/stignore.template to @Schema/stignore.template"));
+    assert!(!pair.source.vault.join(POLICY_PATH).exists());
+    assert_eq!(
+        fs::read(pair.source.vault.join(".stignore"))?,
+        local.as_bytes()
+    );
+    // Only the fixture owner moves it. No automatic migration or fallback.
+    fs::rename(
+        pair.source.vault.join("_Schema"),
+        pair.source.vault.join("@Schema"),
+    )?;
     let preview = pair.first.preview_ignore_policy(&pair.source.vault)?;
     assert!(preview.text.contains("// shared template"));
     assert!(!preview.text.contains("/source-only.md"));
@@ -1511,6 +1526,21 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
     let text = format!("{}\n/excluded.md\n", preview.text);
     pair.first.apply_ignore_policy(&preview, &text)?;
     assert!(fs::read(pair.source.vault.join(".stignore"))?.ends_with(local.as_bytes()));
+    fs::rename(
+        pair.source.vault.join("@Schema"),
+        pair.source.vault.join("_Schema"),
+    )?;
+    let saved_local = fs::read(pair.source.vault.join(".stignore"))?;
+    assert_eq!(
+        pair.first.preview_ignore_policy(&pair.source.vault)?.text,
+        text,
+        "an existing saved policy does not consult legacy templates"
+    );
+    assert_eq!(
+        fs::read(pair.source.vault.join(POLICY_PATH))?,
+        text.as_bytes()
+    );
+    assert_eq!(fs::read(pair.source.vault.join(".stignore"))?, saved_local);
     wait("shared file and automatic include reach receiver", || {
         pair.tick(&id)?;
         Ok(fs::read(pair.target.vault.join(POLICY_PATH))
