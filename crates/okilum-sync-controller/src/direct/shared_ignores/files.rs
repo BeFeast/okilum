@@ -68,25 +68,24 @@ impl Files {
     }
     pub fn template(&self) -> Result<Option<Vec<u8>>> {
         self.verify()?;
-        for schema in ["@Schema", "_Schema"] {
-            let directory = match rustix::fs::openat(
-                &self.root,
-                schema,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
-                Mode::empty(),
-            ) {
-                Ok(fd) => File::from(fd),
-                Err(rustix::io::Errno::NOENT) => continue,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(bytes) = read(&directory, "stignore.template")? {
-                self.verify()?;
-                return Ok(Some(bytes));
-            }
-        }
+        let directory = match rustix::fs::openat(
+            &self.root,
+            "@Schema",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(fd) => Some(File::from(fd)),
+            Err(rustix::io::Errno::NOENT) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let bytes = match directory {
+            Some(directory) => read(&directory, "stignore.template")?,
+            None => None,
+        };
         self.verify()?;
-        Ok(None)
+        Ok(bytes)
     }
+
     pub fn policy(&self) -> Result<Option<Vec<u8>>> {
         let bytes = match self.settings(false)? {
             Some(dir) => {

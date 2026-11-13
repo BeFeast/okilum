@@ -1,4 +1,4 @@
-//! Synthetic mixed/legacy compatibility; all source data is public and invented.
+//! Synthetic @ conventions and ordinary underscore paths; all source data is public and invented.
 #[path = "support/at_vault.rs"]
 mod fixture;
 use okilum_core::{quick_open, render, vault::EntryKind, Resolution, Vault};
@@ -169,7 +169,10 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
         .map(|project| project.path.as_str())
         .collect();
     assert!(paths.contains(&"Area/@index.md"));
-    assert!(paths.contains(&"Legacy/_index.md"));
+    assert!(
+        !paths.contains(&"Legacy/_index.md"),
+        "underscore is not a project index"
+    );
     assert!(paths.contains(&"Mixed/@index.md"));
     assert!(
         !paths.contains(&"Mixed/_index.md"),
@@ -191,7 +194,7 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
     std::fs::remove_dir_all(root.path().join("@Schema/Templates")).unwrap();
     assert_eq!(
         note_templates::Catalog::load(root.path()).unwrap().folder,
-        Path::new("_Assets/Templates")
+        Path::new("@Schema/Templates")
     );
     assert!(agent_imports::is_agent_document("@AgentContract.md"));
     assert!(!agent_imports::is_agent_document("Area/@AgentContract.md"));
@@ -389,4 +392,40 @@ fn windows_issue2821_only_new_bare_at_index_prefers_source_folder() {
     assert!(
         matches!(ambiguous.resolve_from("@index", "Area/Links.md"), Resolution::Ambiguous { candidates } if candidates.len() == 2)
     );
+}
+
+#[test]
+fn windows_issue2847_underscore_notes_remain_in_inventory_search_and_snapshots() {
+    use okilum_core::{agent_imports, vault::warm};
+    let root = tempfile::tempdir().unwrap();
+    fixture::populate(root.path());
+    let (vault, snapshot, _) =
+        warm::reconcile(root.path(), None, false, &mut |_, _| Ok(())).unwrap();
+    for path in [
+        "_Private/x.md",
+        "_Assets/Templates/Old.md",
+        "_Assets/Daily Notes/day.md",
+        "Legacy/_index.md",
+        "_AgentContract.md",
+        "_index.md",
+    ] {
+        assert!(
+            vault.notes.iter().any(|note| note.path == path),
+            "ordinary note inventory: {path}"
+        );
+        assert!(
+            snapshot.source_paths().any(|source| source == path),
+            "ordinary indexed source: {path}"
+        );
+        assert!(snapshot.source(path).is_some());
+        assert_eq!(
+            vault.resolve_from(path, "Area/Links.md"),
+            Resolution::Resolved { path: path.into() }
+        );
+    }
+    assert!(!agent_imports::is_agent_document("_AgentContract.md"));
+    assert!(vault
+        .entries
+        .iter()
+        .any(|entry| entry.path == "_export/data.json" && entry.kind == EntryKind::Attachment));
 }

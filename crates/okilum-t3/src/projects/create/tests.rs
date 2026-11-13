@@ -128,7 +128,7 @@ fn issue1859_new_project_toml_preserves_identity_icon_and_source() {
     assert_eq!(document["name"].as_str(), Some("HomeLab"));
     assert_eq!(document["schema_version"].as_integer(), Some(1));
     assert_eq!(document["kind"].as_str(), Some("knowledge"));
-    assert_eq!(document["index"].as_str(), Some("HomeLab/_index.md"));
+    assert_eq!(document["index"].as_str(), Some("HomeLab/@index.md"));
     assert_eq!(document["icon"]["name"].as_str(), Some("server"));
     draft.name = "App \"two\" — \u{0007}".into();
     draft.set_kind(Kind::Code);
@@ -158,7 +158,7 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
     let created = create(&vault.0, &folder, &draft).unwrap();
     assert!(created.wrote_index);
     assert_eq!(
-        std::fs::read_to_string(folder.join("_index.md")).unwrap(),
+        std::fs::read_to_string(folder.join("@index.md")).unwrap(),
         "# HomeLab\n"
     );
     let project = created.project;
@@ -191,14 +191,14 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
     // An existing index is kept byte for byte.
     let notes = vault.folder("Music/Areas/Studio");
     std::fs::write(
-        notes.join("_index.md"),
+        notes.join("@index.md"),
         "---\ntype: Note\n---\n\n# Studio notes\n",
     )
     .unwrap();
     let created = create(&vault.0, &notes, &Draft::for_folder(&notes)).unwrap();
     assert!(!created.wrote_index);
     assert_eq!(
-        std::fs::read_to_string(notes.join("_index.md")).unwrap(),
+        std::fs::read_to_string(notes.join("@index.md")).unwrap(),
         "---\ntype: Note\n---\n\n# Studio notes\n"
     );
     let document: toml::Value =
@@ -206,12 +206,12 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
     assert_eq!(document["domain"].as_str(), Some("Music"));
     assert_eq!(
         document["index"].as_str(),
-        Some("Music/Areas/Studio/_index.md")
+        Some("Music/Areas/Studio/@index.md")
     );
     assert!(!notes.join("ops/project.yaml").exists());
 }
 
-/// An `_index.md` that cannot be written takes the manifest (and the `.okilum/`
+/// An `@index.md` that cannot be written takes the manifest (and the `.okilum/`
 /// folder create made) back, so a retry is not refused as «already a project».
 #[cfg(unix)]
 #[test]
@@ -263,7 +263,7 @@ fn the_vault_root_becomes_a_local_project_but_missing_and_internal_folders_are_r
     assert_eq!(
         document["index"].as_str(),
         Some(INDEX),
-        "root index is relative, not /_index.md"
+        "root index is relative, not /@index.md"
     );
     assert!(document.get("t3").is_none());
     assert_eq!(

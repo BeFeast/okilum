@@ -558,6 +558,8 @@ mod tests {
         let root = temp.path().join("vault");
         std::fs::create_dir_all(root.join("Source/Child")).unwrap();
         std::fs::create_dir(root.join("Target")).unwrap();
+        std::fs::create_dir(root.join("_Target")).unwrap();
+        std::fs::create_dir(root.join("@Target")).unwrap();
         std::fs::write(root.join("Source/Note.md"), "# Note\r\n").unwrap();
         std::fs::write(root.join("Source/data.bin"), [0, 255, 7]).unwrap();
         std::fs::write(root.join("Start.md"), "[[Source/Note]]\n").unwrap();
@@ -620,6 +622,15 @@ mod tests {
                 b"# Note\r\n"
             );
             r.choose_move_folder("Source/Note.md".into(), window, cx);
+            let folders = &r.move_picker.active.as_ref().unwrap().0.read(cx).folders;
+            assert!(
+                folders.iter().any(|path| path == "_Target"),
+                "#2847 ordinary underscore destination"
+            );
+            assert!(
+                !folders.iter().any(|path| path == "@Target"),
+                "hidden positive control"
+            );
             assert!(
                 !window.has_active_dialog(cx),
                 "Move picker must not open a modal"
@@ -637,6 +648,15 @@ mod tests {
         assert!(!root.join("Target/Note.md").exists());
         reader.update_in(visual, |r, window, cx| {
             r.choose_move_folder("Source/Note.md".into(), window, cx);
+            let folders = &r.move_picker.active.as_ref().unwrap().0.read(cx).folders;
+            assert!(
+                folders.iter().any(|path| path == "_Target"),
+                "#2847 ordinary underscore destination"
+            );
+            assert!(
+                !folders.iter().any(|path| path == "@Target"),
+                "hidden positive control"
+            );
             assert!(
                 !window.has_active_dialog(cx),
                 "Move picker must not open a modal"

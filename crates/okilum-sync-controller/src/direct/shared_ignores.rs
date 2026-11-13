@@ -395,17 +395,22 @@ mod at_template_tests {
     use super::*;
 
     #[test]
-    fn windows_issue2821_at_schema_template_precedes_legacy_with_missing_file_fallback(
-    ) -> Result<()> {
+    fn windows_issue2847_only_at_schema_supplies_shared_ignore_template() -> Result<()> {
         let root = tempfile::tempdir()?;
         let held = existing::VaultRoot::open(root.path())?;
         let files = Files::open(root.path(), held.identity()?)?;
         assert!(files.template()?.is_none());
         std::fs::create_dir(root.path().join("_Schema"))?;
         std::fs::write(root.path().join("_Schema/stignore.template"), b"legacy\r\n")?;
-        assert_eq!(files.template()?.as_deref(), Some(b"legacy\r\n".as_slice()));
+        assert!(
+            files.template()?.is_none(),
+            "underscore template is ordinary data"
+        );
         std::fs::create_dir(root.path().join("@Schema"))?;
-        assert_eq!(files.template()?.as_deref(), Some(b"legacy\r\n".as_slice()));
+        assert!(
+            files.template()?.is_none(),
+            "underscore template is ordinary data"
+        );
         std::fs::write(root.path().join("@Schema/stignore.template"), b"current\n")?;
         assert_eq!(files.template()?.as_deref(), Some(b"current\n".as_slice()));
         std::fs::write(root.path().join("@Schema/stignore.template"), b"")?;

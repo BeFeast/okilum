@@ -7,8 +7,7 @@ use std::{
 /// Document behavior is independent of tree/search visibility. The root contract
 /// participates in Rules, while remaining an ordinary vault inventory entry.
 pub fn is_agent_document(path: &str) -> bool {
-    matches!(path, "_AgentContract.md" | "@AgentContract.md")
-        || crate::quick_open::is_agent_file(path)
+    path == "@AgentContract.md" || crate::quick_open::is_agent_file(path)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1250,7 +1249,7 @@ mod windows_policy_tests {
 mod document_classification_tests {
     #[test]
     fn root_contract_is_an_agent_document_without_changing_browser_visibility() {
-        assert!(super::is_agent_document("_AgentContract.md"));
+        assert!(!super::is_agent_document("_AgentContract.md"));
         assert!(!super::is_agent_document("project/_AgentContract.md"));
         assert!(super::is_agent_document("project/AGENTS.md"));
         assert!(!super::is_agent_document("project/not-AGENTS.md"));

@@ -183,14 +183,14 @@ fn is_markdown(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
-/// Folder notes (`_index`, `index`, `README`) are titled by their folder.
+/// Folder notes (`@index`, `index`, `README`) are titled by their folder.
 fn is_folder_note(path: &str) -> bool {
     let stem = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
     is_markdown(path)
-        && ["_index", "@index", "index", "readme"]
+        && ["@index", "index", "readme"]
             .iter()
             .any(|name| stem.eq_ignore_ascii_case(name))
 }
@@ -2190,7 +2190,8 @@ mod tests {
             ),
             ("metadata.md", "---\ntitle: Metadata\n---\nBody", "Metadata"),
             ("plain.md", "Body", "plain"),
-            ("Memory/_index.md", "# Ignored", "Memory"),
+            ("Memory/@index.md", "# Ignored", "Memory"),
+            ("Memory/_index.md", "# Ordinary note", "Ordinary note"),
             ("Memory/index.md", "# Ignored", "Memory"),
             ("Memory/README.md", "# Ignored", "Memory"),
             ("Memory/Scan.pdf", "%PDF", "Scan.pdf"),
@@ -2220,7 +2221,7 @@ mod tests {
         }
         // Root folder notes keep the vault name too, without reading their title.
         let root_index = SearchHit {
-            path: "_index.md".into(),
+            path: "@index.md".into(),
             title: "Ignored".into(),
             score: 0.,
             snippet_html: String::new(),
@@ -2233,9 +2234,9 @@ mod tests {
         // The shared title map wins over a disk read; folder notes keep their folder.
         let titles = HashMap::from([
             ("plain.md".to_string(), "Cached title".to_string()),
-            ("Memory/_index.md".to_string(), "Ignored".to_string()),
+            ("Memory/@index.md".to_string(), "Ignored".to_string()),
         ]);
-        for (path, expected) in [("plain.md", "Cached title"), ("Memory/_index.md", "Memory")] {
+        for (path, expected) in [("plain.md", "Cached title"), ("Memory/@index.md", "Memory")] {
             let hit = SearchHit {
                 path: path.into(),
                 title: Vault::title_of(path),
@@ -2254,7 +2255,7 @@ mod tests {
             ("plain.md", "Vault"),
             ("Projects/Roadmap.md", "Projects"),
             ("Projects/2026/Q4/Plan.md", "Projects / 2026 / Q4"),
-            ("Memory/_index.md", "Vault"),
+            ("Memory/@index.md", "Vault"),
             ("Projects/Memory/README.md", "Projects"),
             ("Projects/Scan.pdf", "Projects"),
         ] {
@@ -2267,7 +2268,7 @@ mod tests {
     #[test]
     fn result_folders_are_breadcrumbs_without_file_names() {
         assert_eq!(result_folder("note.md"), "");
-        assert_eq!(result_folder("Memory/_index.md"), "Memory");
+        assert_eq!(result_folder("Memory/@index.md"), "Memory");
         assert_eq!(result_folder("Areas/okilum/Plan.md"), "Areas › okilum");
     }
 
@@ -2712,7 +2713,7 @@ mod tests {
         let temp =
             std::env::temp_dir().join(format!("okilum-hidden-search-{}", uuid::Uuid::new_v4()));
         let root = temp.join("vault");
-        let path = "_Assets/Daily Notes/2026/10/04/2026-10-04-полный-ai-стэк.md";
+        let path = "@Daily/Daily Notes/2026/10/04/2026-10-04-полный-ai-стэк.md";
         std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
         std::fs::write(root.join("Target.md"), "# Target").unwrap();
         std::fs::write(
@@ -2753,7 +2754,7 @@ canaryhidden [[Target]]",
             (false, path, "2026-10-04-полный-ai", "canaryhidden"),
             (
                 true,
-                "_Incoming/Новая заметка.md",
+                "@Incoming/Новая заметка.md",
                 "Новая заметка",
                 "canaryarrival",
             ),
@@ -2763,7 +2764,7 @@ canaryhidden [[Target]]",
                 std::fs::create_dir_all(&staged).unwrap();
                 std::fs::write(staged.join("Новая заметка.md"), "canaryarrival [[Target]]")
                     .unwrap();
-                std::fs::rename(staged, root.join("_Incoming")).unwrap();
+                std::fs::rename(staged, root.join("@Incoming")).unwrap();
                 reader.update_in(visual, |v, window, cx| {
                     let changes = v
                         .watcher
@@ -2771,7 +2772,7 @@ canaryhidden [[Target]]",
                         .expect("live watcher")
                         .wait(Duration::from_secs(3))
                         .expect("directory arrival must trigger reconciliation");
-                    assert!(!changes.rescan && changes.directories.contains("_Incoming"));
+                    assert!(!changes.rescan && changes.directories.contains("@Incoming"));
                     v.apply_vault_changes(changes, window, cx);
                 });
                 visual.run_until_parked();
@@ -2798,7 +2799,7 @@ canaryhidden [[Target]]",
                 v.sync_tree();
                 assert!(!v.tree.show_hidden());
                 assert!(v.tree.rows.iter().any(|row| row.path == "Target.md"));
-                assert!(!v.tree.rows.iter().any(|row| row.path.starts_with('_')));
+                assert!(!v.tree.rows.iter().any(|row| row.path.starts_with('@')));
                 let inventory = v.vault.clone();
                 // Exercise the same action as Show hidden files, without reveal:
                 // revealing the current note would bypass the visibility filter.
@@ -2830,7 +2831,7 @@ canaryhidden [[Target]]",
                 ]
                 .contains(&row.path.as_str())));
                 v.toggle_hidden_files(cx);
-                assert!(!v.tree.rows.iter().any(|row| row.path.starts_with('_')));
+                assert!(!v.tree.rows.iter().any(|row| row.path.starts_with('@')));
                 assert!(
                     Arc::ptr_eq(&inventory, &v.vault),
                     "visibility must not replace inventory"
@@ -2966,7 +2967,7 @@ canaryhidden [[Target]]",
         )
         .unwrap();
         std::fs::write(
-            root.join("Memory/_index.md"),
+            root.join("Memory/@index.md"),
             format!(
                 "# Target\n\n{}\n\nUnique **canaryword** landing near [[start|the start]].",
                 "Filler paragraph.\n\n".repeat(50)
@@ -3017,7 +3018,7 @@ canaryhidden [[Target]]",
         // Name/path matching remains intact even though the displayed title differs.
         visual.simulate_keystrokes("ctrl-k");
         visual.run_until_parked();
-        visual.simulate_input("Memory/_index");
+        visual.simulate_input("Memory/@index");
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert_eq!(v.quick_open.rows.len(), 1);
@@ -3031,7 +3032,7 @@ canaryhidden [[Target]]",
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, "Memory/_index.md");
+            assert_eq!(v.current_rel, "Memory/@index.md");
         });
         for mouse in [false, true] {
             reader.update_in(visual, |v, window, cx| {
@@ -3058,7 +3059,7 @@ canaryhidden [[Target]]",
                 assert!(v.quick_open.full_text);
                 assert_eq!(v.quick_open.rows.len(), 1);
                 assert_eq!(v.quick_open.rows[0].title, "Memory");
-                assert_eq!(v.quick_open.rows[0].path, "Memory/_index.md");
+                assert_eq!(v.quick_open.rows[0].path, "Memory/@index.md");
                 assert!(v.quick_open.rows[0]
                     .snippet_html
                     .contains("<b>canaryword</b>"));
@@ -3105,7 +3106,7 @@ canaryhidden [[Target]]",
             visual.run_until_parked();
             reader.update(visual, |v, cx| {
                 assert!(!v.quick_open.open);
-                assert_eq!(v.current_rel, "Memory/_index.md");
+                assert_eq!(v.current_rel, "Memory/@index.md");
                 assert_eq!(v.content.read(cx).search_status().1, 1);
                 assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
             });
@@ -3810,7 +3811,7 @@ mod at_index_tests {
     use ::core::prelude::v1::test;
     #[test]
     fn at_indexes_take_folder_titles_in_all_cases() {
-        for path in ["Area/@index.md", "Area/@INDEX.md", "Area/_index.md"] {
+        for path in ["Area/@index.md", "Area/@INDEX.md", "Area/@Index.md"] {
             assert!(is_folder_note(path));
         }
     }

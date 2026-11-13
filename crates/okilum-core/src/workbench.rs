@@ -95,7 +95,7 @@ pub fn short_project_name(path: &str, suggested: &str) -> String {
     if dated
         || suggested.trim().is_empty()
         || suggested.to_ascii_lowercase().ends_with("project manager")
-        || matches!(suggested.to_ascii_lowercase().as_str(), "_index" | "@index")
+        || suggested.eq_ignore_ascii_case("@index")
     {
         short.to_owned()
     } else {
@@ -181,7 +181,7 @@ pub fn noise(path: &str) -> bool {
             p.starts_with('.')
                 || matches!(
                     p.to_lowercase().as_str(),
-                    "pokutan" | "transcripts" | "archive" | "архив" | "_schema" | "@schema"
+                    "pokutan" | "transcripts" | "archive" | "архив" | "@schema"
                 )
         })
         || crate::quick_open::is_agent_file(path)
@@ -190,7 +190,6 @@ pub fn noise(path: &str) -> bool {
         || path.ends_with("ops/board.md")
         || path.ends_with("ops/manager-state.md")
         || path.starts_with("@Assets/")
-        || path.starts_with("_Assets/") && !path.starts_with("_Assets/Daily Notes/")
 }
 
 fn scalar(map: &serde_yaml::Value, key: &str) -> String {
@@ -617,7 +616,7 @@ mod tests {
             ..Default::default()
         }]);
         index.replace(
-            "Dev/Areas/okilum/_index.md",
+            "Dev/Areas/okilum/@index.md",
             "---\ntitle: Long Index Heading\n---\n",
             now,
         );
@@ -686,7 +685,7 @@ mod tests {
             i.replace(p, "", t);
         }
         i.replace(
-            "Dev/Projects/Done/_index.md",
+            "Dev/Projects/Done/@index.md",
             "---\nstatus: shipped\n---\n",
             now,
         );
@@ -728,7 +727,7 @@ mod tests {
         assert_eq!(p.rows[0].count, 60);
         assert_eq!(i.view.domains["Dev"], 61);
         i.replace(
-            "Dev/Projects/App/_index.md",
+            "Dev/Projects/App/@index.md",
             "---\nlifecycle: retired\n---\n",
             now,
         );
@@ -811,7 +810,7 @@ mod at_tests {
         assert!(!noise("@Private/ordinary.md"));
         let mut index = Index::default();
         index.replace(
-            "Dev/Projects/Synthetic/_index.md",
+            "Dev/Projects/Synthetic/@index.md",
             "---\nstatus: active\n---\n",
             10,
         );
@@ -827,5 +826,30 @@ mod at_tests {
             index.view.active.is_empty(),
             "@ metadata must make this unit terminal"
         );
+    }
+}
+
+#[cfg(test)]
+mod underscore_tests {
+    use super::*;
+
+    #[test]
+    fn issue2847_underscore_schema_assets_and_index_titles_are_ordinary() {
+        for path in [
+            "_schema/policy.md",
+            "Notes/_Schema/plan.md",
+            "_Assets/Templates/Note.md",
+            "_Assets/Attachments/file.md",
+            "_Assets/Daily Notes/day.md",
+            "_Private/note.md",
+            "Legacy/_index.md",
+            "_AgentContract.md",
+        ] {
+            assert!(!noise(path), "ordinary workbench input: {path}");
+        }
+        for path in ["@Schema/policy.md", "@Assets/Templates/Note.md"] {
+            assert!(noise(path));
+        }
+        assert_eq!(short_project_name("Work/Project", "_index"), "_index");
     }
 }

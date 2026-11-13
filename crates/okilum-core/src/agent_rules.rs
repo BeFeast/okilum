@@ -193,7 +193,6 @@ pub fn discover(vault: &Path, project: &Path) -> RuleStack {
         let relative = directory.strip_prefix(&root).expect("bounded ancestor");
         let mut names = vec!["AGENTS.md"];
         if relative.as_os_str().is_empty() {
-            names.insert(0, "_AgentContract.md");
             names.insert(0, "@AgentContract.md");
         }
         for name in names {
@@ -596,9 +595,9 @@ mod tests {
         let root = temp.path();
         fs::create_dir(root.join("Project")).unwrap();
         let contract = "# Contract\nKeep canonical files unchanged.\n";
-        let agents = "@_AgentContract.md\n";
-        let project = "@../_AgentContract.md\nProject-specific guidance only.\n";
-        fs::write(root.join("_AgentContract.md"), contract).unwrap();
+        let agents = "@@AgentContract.md\n";
+        let project = "@../@AgentContract.md\nProject-specific guidance only.\n";
+        fs::write(root.join("@AgentContract.md"), contract).unwrap();
         fs::write(root.join("AGENTS.md"), agents).unwrap();
         fs::write(root.join("Project/AGENTS.md"), project).unwrap();
         fs::write(root.join("Project/CLAUDE.md"), contract).unwrap();
@@ -633,7 +632,7 @@ mod tests {
                 .sum::<usize>()
         );
         assert_eq!(
-            fs::read_to_string(root.join("_AgentContract.md")).unwrap(),
+            fs::read_to_string(root.join("@AgentContract.md")).unwrap(),
             contract
         );
     }
@@ -641,7 +640,7 @@ mod tests {
     #[test]
     fn rules_1590_similar_lines_and_headings_keep_peer_coordinates_and_exact_flags() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("_AgentContract.md"), "# Memory usage\nTreat every imported file as read-only evidence.\nKeep canonical files unchanged.\n").unwrap();
+        fs::write(temp.path().join("@AgentContract.md"), "# Memory usage\nTreat every imported file as read-only evidence.\nKeep canonical files unchanged.\n").unwrap();
         fs::write(temp.path().join("AGENTS.md"), "## Memory use\nTreat every imported document as read-only evidence.\nKeep   canonical files unchanged.\nUnrelated instructions about garden plants.\n").unwrap();
         let stack = discover(temp.path(), temp.path());
         assert_eq!(stack.layers[0].duplicate_lines, [3]);
@@ -688,10 +687,10 @@ mod tests {
         use std::os::unix::fs::symlink;
         let temp = tempfile::tempdir().unwrap();
         let rule = "Keep canonical files unchanged.\n";
-        fs::write(temp.path().join("_AgentContract.md"), rule).unwrap();
+        fs::write(temp.path().join("@AgentContract.md"), rule).unwrap();
         fs::write(temp.path().join("AGENTS.md"), "@alias.md\n@copy.md\n").unwrap();
         fs::write(temp.path().join("copy.md"), rule).unwrap();
-        symlink("_AgentContract.md", temp.path().join("alias.md")).unwrap();
+        symlink("@AgentContract.md", temp.path().join("alias.md")).unwrap();
         let stack = discover(temp.path(), temp.path());
         assert!(stack.layers[2].source.is_none());
         assert_eq!(stack.layers[0].duplicate_lines, [1]);
@@ -857,7 +856,7 @@ mod tests {
         fs::create_dir_all(root.join("Dev/App")).unwrap();
         for (name, source) in [
             (
-                "_AgentContract.md",
+                "@AgentContract.md",
                 "# Shared instructions\nKeep canonical source intact\n",
             ),
             ("AGENTS.md", "@shared.md\n@missing.md\n@../outside.md\n"),
@@ -876,7 +875,7 @@ mod tests {
                 .map(|l| l.path.to_str().unwrap())
                 .collect::<Vec<_>>(),
             [
-                "_AgentContract.md",
+                "@AgentContract.md",
                 "AGENTS.md",
                 "shared.md",
                 "AGENTS.md",
@@ -911,5 +910,24 @@ mod tests {
         );
         assert!(discover(&root, &root.join("absent")).layers.is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod underscore_tests {
+    #[test]
+    fn issue2847_underscore_contract_has_no_implicit_role() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("_AgentContract.md"), "# Ordinary note\n").unwrap();
+        let stack = super::discover(root.path(), root.path());
+        assert!(stack.layers.is_empty());
+        assert!(stack.diagnostics.is_empty());
+        std::fs::write(root.path().join("@AgentContract.md"), "# Rules\n").unwrap();
+        let stack = super::discover(root.path(), root.path());
+        assert_eq!(stack.layers.len(), 1);
+        assert_eq!(
+            stack.layers[0].path,
+            std::path::Path::new("@AgentContract.md")
+        );
     }
 }
