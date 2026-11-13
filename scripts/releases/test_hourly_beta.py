@@ -205,6 +205,22 @@ class Admission(unittest.TestCase):
         self.assertFalse(self.writes())
         self.assertFalse(self.status_reads())
 
+    def test_daily_mac_run_dispatches_newest_main_and_builds_nothing_itself(self):
+        # Oleg 13.11: macos-release runs once a day. The scheduled run only selects;
+        # a dispatch pinned to the newest main builds, so its shipping-status reports
+        # the (workflow_dispatch) contexts the 09:00 Stable promotion reads.
+        build, source, reason = self.select('macos', event='schedule')
+        self.assertFalse(build)
+        self.assertIn('Dispatched newest main', reason)
+        self.assertEqual(self.writes(), [('/actions/workflows/macos-release.yml/dispatches',
+                                          {'ref': 'main', 'inputs': {'hourly_source': SOURCE}})])
+        # Newest main already is the Mac beta: no dispatch, no build.
+        self.calls.clear()
+        self.descriptor.return_value = dict(source=SOURCE, platform='macos')
+        self.assertFalse(self.select('macos', event='schedule')[0])
+        self.assertFalse(self.writes())
+        self.assertFalse(self.status_reads())
+
     def test_older_pin_is_superseded_by_newest_main_on_every_platform(self):
         # #2589 (04.11): an old certified source shipped hours after main moved.
         newer = 'c' * 40
@@ -694,13 +710,19 @@ class WorkflowContract(unittest.TestCase):
     def test_beta_producers_run_on_main_push_and_a_running_beta_finishes(self):
         # Oleg 05.11: beta on every main push, no cron, no certification.
         # Manager 13.11: a newer push never cancels a running beta.
+        # Oleg 13.11: the hosted Mac beta runs once a day from the newest main instead.
         for platform, workflow in hourly.WORKFLOWS.items():
             data = self.load('.forgejo/workflows/' + workflow)
-            self.assertEqual(data['on']['push'], {'branches': ['main']})
-            self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
-            prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
-            self.assertEqual(data['concurrency']['group'], prefix + "-beta-${{ github.event_name == 'push' && 'main' "
-                             "|| inputs.hourly_source || github.run_id }}")
+            if platform == 'macos':
+                self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
+                self.assertEqual(data['on']['schedule'], [{'cron': '0 5 * * *'}])
+                self.assertEqual(data['concurrency']['group'], "macos-beta-${{ github.event_name == 'schedule' "
+                                 "&& 'daily' || inputs.hourly_source || github.run_id }}")
+            else:
+                self.assertEqual(data['on']['push'], {'branches': ['main']})
+                self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
+                self.assertEqual(data['concurrency']['group'], platform + "-beta-${{ github.event_name == 'push' "
+                                 "&& 'main' || inputs.hourly_source || github.run_id }}")
             self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
             report = data['jobs']['shipping-status']
             self.assertIn("github.event_name == 'workflow_dispatch'", report['if'])
@@ -748,7 +770,9 @@ class WorkflowContract(unittest.TestCase):
         mac = self.load('.forgejo/workflows/macos-release.yml')
         self.assertTrue(mac['jobs']['release']['if'].startswith('false'))
         hosted = mac['jobs']['hosted-artifact']
-        self.assertIn("github.event_name == 'push'", hosted['if'])
+        # The daily run only dispatches a pinned run; every Mac build is a dispatch.
+        self.assertIn("github.event_name == 'workflow_dispatch'", hosted['if'])
+        self.assertNotIn("'push'", hosted['if'])
         self.assertTrue(any(step.get('run') == 'python3 scripts/releases/publication.py dispatch macos'
                             for step in hosted['steps']))
 

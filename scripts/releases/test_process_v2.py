@@ -54,13 +54,20 @@ class ProcessV2(unittest.TestCase):
     def test_all_platform_beta_builds_run_on_main_push_and_manual_signing_is_isolated(self):
         # Oleg 05.11: beta on every main push, no cron. Manager 13.11: a newer
         # push never cancels a running build; manual dispatches always finish.
-        for file in ['linux-release', 'windows-diagnostic', 'macos-release']:
+        # Oleg 13.11: the hosted Mac beta runs once a day instead (below).
+        for file in ['linux-release', 'windows-diagnostic']:
             data = workflow(f'.forgejo/workflows/{file}.yml')
             self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
             self.assertEqual(data['on']['push'], {'branches': ['main']})
             self.assertIn(data['concurrency']['cancel-in-progress'], (False, 'false'))
             self.assertTrue(data['concurrency']['group'].endswith(
                 "-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}"))
+        mac = workflow('.forgejo/workflows/macos-release.yml')
+        self.assertEqual(set(mac['on']), {'schedule', 'workflow_dispatch'})
+        self.assertEqual(mac['on']['schedule'], [{'cron': '0 5 * * *'}])
+        self.assertIn(mac['concurrency']['cancel-in-progress'], (False, 'false'))
+        self.assertEqual(mac['concurrency']['group'], "macos-beta-${{ github.event_name == 'schedule'"
+                         " && 'daily' || inputs.hourly_source || github.run_id }}")
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' && vars.OKILUM_WINDOWS_SIGN_BACKEND", windows)
         self.assertIn('resign_build:', windows)
