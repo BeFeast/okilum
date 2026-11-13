@@ -218,7 +218,17 @@ impl CodePreview {
             }
         }
         let focused_find = self.find.focus_handle(cx).is_focused(window);
+        let focused_table = self.view == View::Table
+            && self
+                .table
+                .as_ref()
+                .is_some_and(|table| table.read(cx).contains_focus(window, cx));
         self.apply_view(view, window, cx);
+        if focused_table && self.view != View::Table {
+            // The grid and its Find input unmount; keep view keys and Reader
+            // shortcuts reachable instead of leaving focus on a detached handle.
+            self.focus.focus(window, cx);
+        }
         if focused_find && self.view == View::Table {
             self.focus.focus(window, cx);
         }

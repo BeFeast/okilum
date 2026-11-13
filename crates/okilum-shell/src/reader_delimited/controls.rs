@@ -14,7 +14,7 @@ impl TablePreview {
         let path = self.path.clone();
         #[cfg(test)]
         let program_override = self.duckdb_override.clone();
-        let (send, receive) = async_channel::bounded(1);
+        let (send, receive) = std::sync::mpsc::channel();
         // The external UI can outlive this view; reap it without occupying a
         // GPUI executor. Keep stdin open so the CLI cannot exit at pipe EOF.
         let started = std::thread::Builder::new().name("duckdb-ui".into()).spawn(move || {
@@ -34,25 +34,39 @@ impl TablePreview {
                 })()
                 .map_err(|e| format!("Cannot open in DuckDB: {e:#}")),
             };
-            let _ = send.send_blocking(result);
+            let _ = send.send(result);
         });
         if let Err(error) = started {
             self.external_pending = false;
             self.external_error = Some(format!("Cannot start DuckDB: {error}"));
             reader_toast::duckdb_error(self.external_error.clone().unwrap(), window, cx);
         } else {
-            // Wakes only when the reaper thread reports; nothing polls on the UI thread.
-            cx.spawn_in(window, async move |this, cx| {
-                if let Ok(result) = receive.recv().await {
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.external_pending = false;
-                        this.external_error = result.err();
-                        if let Some(error) = &this.external_error {
-                            reader_toast::duckdb_error(error.clone(), window, cx);
-                        }
-                        cx.notify();
-                    });
+            // A cheap try_recv every 200 ms, only while DuckDB runs. A
+            // cross-thread waker would also work in production, but GPUI's
+            // deterministic test scheduler rejects wakes from foreign threads.
+            cx.spawn_in(window, async move |this, cx| loop {
+                if this.upgrade().is_none() {
+                    break;
                 }
+                let result = match receive.try_recv() {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(200))
+                            .await;
+                        continue;
+                    }
+                };
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.external_pending = false;
+                    this.external_error = result.err();
+                    if let Some(error) = &this.external_error {
+                        reader_toast::duckdb_error(error.clone(), window, cx);
+                    }
+                    cx.notify();
+                });
+                break;
             })
             .detach();
         }
