@@ -226,11 +226,10 @@ impl ArchivePreview {
 
     fn focus_find(&self, window: &mut Window, cx: &mut App) {
         if self.entry_focus.contains_focused(window, cx) {
-            match &self.entry {
-                Some(EntryView::Code(code)) => code.update(cx, |code, cx| {
+            if let Some(EntryView::Code(code)) = &self.entry {
+                code.update(cx, |code, cx| {
                     code.open_paged_find(window, cx);
-                }),
-                _ => {}
+                });
             }
         } else {
             self.filter.update(cx, |input, cx| input.focus(window, cx));
