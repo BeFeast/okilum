@@ -474,6 +474,10 @@ impl Reader {
                         }
                         for (label, action) in [
                             (Os::CURRENT.reveal(), reader_files::FileAction::Reveal),
+                            (
+                                reader_files::TERMINAL_LABEL,
+                                reader_files::FileAction::Terminal,
+                            ),
                             ("Copy path", reader_files::FileAction::Absolute),
                             ("Copy Okilum link", reader_files::FileAction::OkilumLink),
                         ] {
