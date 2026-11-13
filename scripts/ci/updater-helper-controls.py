@@ -25,7 +25,7 @@ CONTROLS = [
      RECOVERY, 'planted_or_truncated_copies_are_never_promoted_or_deleted_while_helper_missing'),
     ('set-aside-while-missing', 'helper_replace.rs',
      [(b'if present(&p.stage)? || present(&p.backup)? {\n                return Err(other("update helper is missing and no copy',
-       b'retire(p, &p.stage, valid, "x")?; retire(p, &p.backup, valid, "x")?;\n'
+       b'retire(p, &p.stage, valid, "x", operations)?; retire(p, &p.backup, valid, "x", operations)?;\n'
        b'            if present(&p.stage)? || present(&p.backup)? {\n                return Err(other("update helper is missing and no copy')],
      RECOVERY, 'planted_or_truncated_copies_are_never_promoted_or_deleted_while_helper_missing'),
     ('delete-unverifiable-leftovers', 'helper_replace.rs',
