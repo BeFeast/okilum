@@ -13,7 +13,7 @@ import time
 
 ROOT=Path(__file__).resolve().parents[3]
 BASES={'main':'774cef4abf61d39147069918f8ba8a1000008187',
-       'toolbar':'863bfdd3a50f699087f5d81d154dd59d1cdcd202'}
+       'toolbar':'97358d464415f4ddf277b30747809e65a326d25e'}
 FIXTURE_SHA='3111144a60615a0a1870164cfc22dae16d60a5a7c0813c7e3e74d294ad47af88'
 
 

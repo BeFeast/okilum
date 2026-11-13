@@ -9,6 +9,8 @@ import subprocess
 
 MAIN = '774cef4abf61d39147069918f8ba8a1000008187'
 TOOLBAR = '863bfdd3a50f699087f5d81d154dd59d1cdcd202'
+# #2845 census: the second kind is current main, which contains the toolbar work.
+CURRENT = '97358d464415f4ddf277b30747809e65a326d25e'
 ROOT = Path(__file__).resolve().parents[3]
 SRC = 'crates/okilum-shell/src/'
 
@@ -24,7 +26,7 @@ def replace(text, old, new, count=1):
 
 def prepare(destination, kind, in_place=False):
     destination = destination.resolve()
-    base = MAIN if kind == 'main' else TOOLBAR
+    base = MAIN if kind == 'main' else CURRENT
     controller_sha = git('rev-parse','HEAD').decode().strip()
     observer = (ROOT/'scripts/ci/toolbar-review/observer.rs').read_text(encoding="utf-8")
     main_patch = (ROOT/'scripts/ci/toolbar-review-main-observers.diff').read_bytes()
@@ -80,7 +82,7 @@ def prepare(destination, kind, in_place=False):
         write(SRC+'reader_code_file/toolbar_native/trace.rs',
               git('show', TOOLBAR+':'+SRC+'reader_code_file/toolbar_native/trace.rs'))
 
-    harness = git('show', TOOLBAR+':'+SRC+'reader_code_file/toolbar_native.rs').decode()
+    harness = git('show', base+':'+SRC+'reader_code_file/toolbar_native.rs').decode()
     harness = replace(harness,
         '#[cfg(not(target_os = "windows"))]\nfn thread_cpu_ms() -> Option<f64> {\n    None\n}',
         observer)
