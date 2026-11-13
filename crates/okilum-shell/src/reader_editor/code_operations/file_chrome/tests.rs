@@ -107,7 +107,7 @@ fn settle_startup(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> (u
                 *since = std::time::Instant::now();
             }
             if since.elapsed() >= okilum_core::watch::QUIET_WINDOW {
-                eprintln!(
+                diagnostic_error!(
                     "FILE2811_STARTUP_SETTLED epoch={} workbench={} links={} current_rules=true current_links=true watcher=true incremental_idle=true",
                     current.0, current.1, current.2
                 );
