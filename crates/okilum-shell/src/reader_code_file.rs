@@ -963,6 +963,11 @@ mod tests {
             );
         });
         visual.simulate_input("Two");
+        // Table Find debounces typing (60 ms) before the worker projection.
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(70));
         visual.run_until_parked();
         let first = visual.debug_bounds("delimited-cell-1-0").unwrap();
         visual.simulate_click(first.center(), Modifiers::default());

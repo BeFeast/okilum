@@ -818,6 +818,9 @@ mod tests {
             input.update(cx, |input, cx| input.focus(window, cx));
         });
         visual.simulate_input("HUND");
+        // Find debounces typing (60 ms) before the worker projection.
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(70));
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
             assert_eq!(p.order, [3], "native filter subscription fired");
