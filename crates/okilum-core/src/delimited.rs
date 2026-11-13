@@ -63,13 +63,14 @@ pub fn project_rows(
     };
     let mut rows = Vec::new();
     let mut columns = std::collections::HashMap::new();
-    for row in start..table.rows.len().min(start.saturating_add(count)) {
+    let end = table.rows.len().min(start.saturating_add(count));
+    for (row, cells) in table.rows.iter().enumerate().take(end).skip(start) {
         if cancelled.load(Relaxed) {
             return None;
         }
         let mut hits = Vec::new();
         if !query.is_empty() {
-            for (column, value) in table.rows[row].iter().enumerate() {
+            for (column, value) in cells.iter().enumerate() {
                 if cancelled.load(Relaxed) {
                     return None;
                 }
