@@ -69,6 +69,8 @@ CONTROLS = [
  ('csv-edit-cap', 'five_mib_csv_still_opens_the_source_editor'),
  ('scan-survives-hide', 'find_scan_stops_when_table_is_hidden_or_closed'),
  ('scan-survives-close', 'find_scan_stops_when_table_is_hidden_or_closed'),
+ ('edit-keeps-scanning', 'edit_stops_table_find_and_read_runs_it_once'),
+ ('hidden-refilter', 'hidden_load_more_waits_and_runs_the_query_once_on_return'),
  ('hidden-table-badge', 'malformed_badge_reveals_filtered_row_and_failed_table_opens_raw'),
  ('window-sized-compact', 'narrow_header_and_measured_compact_pane_keep_controls_inside'),
 ]
@@ -85,6 +87,8 @@ fn main() {''')
     edit('reader_code_file/loading.rs', '        if reader_delimited::eligible(&self.rel)\n            && self.view == View::Raw\n            && self.table.is_some()', '        if !crate::table2812_control("raw-before-admission")\n            && reader_delimited::eligible(&self.rel)\n            && self.view == View::Raw\n            && self.table.is_some()')
     edit('reader_code_file.rs', '.is_some_and(|bytes| reader_delimited::eligible(&self.rel) || bytes <= EDIT_BYTES)', '.is_some_and(|bytes| (reader_delimited::eligible(&self.rel) && !crate::table2812_control("csv-edit-cap")) || bytes <= EDIT_BYTES)')
     edit('reader_delimited.rs', '        self.projection_cancel\n            .store(true, std::sync::atomic::Ordering::Relaxed);', '        if !crate::table2812_control("scan-survives-close") {\n            self.projection_cancel\n                .store(true, std::sync::atomic::Ordering::Relaxed);\n        }')
+    edit('reader_code_file/view.rs', '        if let Some(table) = &self.table {\n            table.update(cx, |table, _| table.suspend_work());\n        }', '        if let Some(table) = self.table.as_ref().filter(|_| !crate::table2812_control("edit-keeps-scanning")) {\n            table.update(cx, |table, _| table.suspend_work());\n        }')
+    edit('reader_delimited/find.rs', '        if self.suspended {\n            self.resume_pending = true;', '        if self.suspended && !crate::table2812_control("hidden-refilter") {\n            self.resume_pending = true;')
     find = 'reader_delimited/find.rs'
     edit(find, '.matches\n                    .into_iter()', '.matches\n                    .into_iter().take(if crate::table2812_control("first-cell-only") {1} else {usize::MAX})')
     edit(find, 'i64::from(direction)', 'i64::from(if crate::table2812_control("previous-is-next") {direction.abs()} else {direction})')
@@ -118,7 +122,7 @@ fn main() {''')
     rows = [json.loads(s) for s in result.stdout.splitlines() if s.startswith('{')]
     binary = next(x['executable'] for x in rows if x.get('reason')=='compiler-artifact' and x.get('executable') and x.get('profile',{}).get('test') and x['target']['name']=='okilum')
     result = run('positive', [binary, 'table2812_', '--nocapture', '--test-threads=1'])
-    assert result.returncode == 0 and re.search(r'test result: ok\. (1[5-9]|[2-9]\d) passed; 0 failed', result.stdout)
+    assert result.returncode == 0 and re.search(r'test result: ok\. (1[7-9]|[2-9]\d) passed; 0 failed', result.stdout)
     for control, suffix in CONTROLS:
         result = run(control, [binary,'table2812_'+suffix,'--nocapture','--test-threads=1'],control)
         assert result.returncode != 0 and 'running 1 test' in result.stdout and 'test result: FAILED' in result.stdout and 'panicked at' in result.stdout, control
@@ -127,5 +131,5 @@ finally:
     for p,data in original.items():p.write_bytes(data)
 assert all(p.read_bytes()==data for p,data in original.items())
 result = run('restored',BASE + ['table2812_', '--', '--nocapture', '--test-threads=1'])
-assert result.returncode == 0 and re.search(r'test result: ok\. (1[5-9]|[2-9]\d) passed; 0 failed', result.stdout)
+assert result.returncode == 0 and re.search(r'test result: ok\. (1[7-9]|[2-9]\d) passed; 0 failed', result.stdout)
 print('TABLE2812_RESTORED_SUITE_PASS',flush=True)

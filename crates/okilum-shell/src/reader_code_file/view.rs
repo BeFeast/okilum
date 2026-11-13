@@ -344,6 +344,10 @@ impl CodePreview {
     pub(crate) fn suspend_presentation(&mut self, cx: &mut Context<Self>) {
         self.read_active = false;
         self.cancel_search();
+        // The retained table keeps no worker scan behind the editor.
+        if let Some(table) = &self.table {
+            table.update(cx, |table, _| table.suspend_work());
+        }
         self.search_revision += 1;
         if self.searching {
             self.search_key = None;

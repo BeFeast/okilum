@@ -843,6 +843,11 @@ impl Reader {
             let resume_find = code.update(cx, |code, cx| {
                 let suspended = !code.read_active;
                 code.read_active = true;
+                if suspended && code.view == View::Table {
+                    if let Some(table) = &code.table {
+                        table.update(cx, |table, cx| table.resume_work(cx));
+                    }
+                }
                 if let Some(input) = code.input() {
                     code.apply_diagnostics(&input, cx);
                 }

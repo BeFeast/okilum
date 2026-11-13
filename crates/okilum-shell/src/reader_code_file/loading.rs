@@ -128,6 +128,10 @@ impl CodePreview {
                 }
                 this.admit_table_when_raw_unavailable(window, cx);
             }));
+        if self.view != View::Table || !self.read_active {
+            // Opened in Raw (remembered) or behind the editor: no scans yet.
+            table.update(cx, |table, _| table.suspend_work());
+        }
         self.table = Some(table);
     }
 

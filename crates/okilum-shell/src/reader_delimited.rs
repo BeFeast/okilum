@@ -128,7 +128,10 @@ pub(crate) struct TablePreview {
     projections: usize,
     projection_task: Option<Task<()>>,
     projection_cancel: Arc<std::sync::atomic::AtomicBool>,
-    /// A scan was stopped while Table was hidden and reruns on return.
+    /// Table is hidden (another view, or Edit): no projection runs.
+    suspended: bool,
+    /// A projection was requested or stopped while hidden; it runs exactly
+    /// once when the table is shown again.
     resume_pending: bool,
     pane_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
 }
@@ -188,6 +191,7 @@ impl TablePreview {
             projections: 0,
             projection_task: None,
             projection_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            suspended: false,
             resume_pending: false,
             pane_bounds: Default::default(),
         };

@@ -31,14 +31,18 @@ impl TablePreview {
         self.refilter(cx);
     }
 
-    /// Stop an in-flight scan while the table is hidden; `resume_work` reruns it.
+    /// Hide the table: stop an in-flight scan; later requests (a finished
+    /// Load more rows, a header toggle) wait until `resume_work`.
     pub(crate) fn suspend_work(&mut self) {
+        self.suspended = true;
         if self.projection_task.is_some() && self.updating {
             self.cancel_projection();
             self.resume_pending = true;
         }
     }
+    /// Show the table: the latest pending projection runs exactly once.
     pub(crate) fn resume_work(&mut self, cx: &mut Context<Self>) {
+        self.suspended = false;
         if std::mem::take(&mut self.resume_pending) {
             self.refilter(cx);
         }
@@ -70,6 +74,10 @@ impl TablePreview {
 
     pub(super) fn refilter(&mut self, cx: &mut Context<Self>) {
         self.cancel_projection();
+        if self.suspended {
+            self.resume_pending = true;
+            return;
+        }
         self.projection_all = self.all;
         let revision = self.revision;
         let Some(table) = self.table.clone() else {

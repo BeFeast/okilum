@@ -832,3 +832,92 @@ fn table2812_narrow_header_and_measured_compact_pane_keep_controls_inside(cx: &m
         );
     }
 }
+
+#[gpui::test]
+fn table2812_edit_stops_table_find_and_read_runs_it_once(cx: &mut TestAppContext) {
+    for (name, source) in [
+        ("edit.csv", "name,value\nneedle,1\nother,2\n".to_owned()),
+        (
+            "edit.json",
+            "[{\"name\":\"needle\",\"value\":1},{\"name\":\"other\",\"value\":2}]".to_owned(),
+        ),
+    ] {
+        let (r, v, _temp) = fixture_with_files(cx, name, &[(name, &source)]);
+        settle(v);
+        let c = code(&r, v);
+        let t = table(&c, v);
+        c.read_with(v, |p, _| assert_eq!(p.active_view(), View::Table, "{name}"));
+        let (flag, before) = t.update(v, |p, cx| {
+            let before = p.projections;
+            p.query = "needle".into();
+            p.refilter(cx);
+            (p.projection_cancel.clone(), before)
+        });
+        r.update_in(v, |r, w, cx| r.toggle_source(w, cx));
+        assert!(
+            flag.load(std::sync::atomic::Ordering::Relaxed),
+            "{name}: Edit stops the table scan"
+        );
+        settle(v);
+        assert!(
+            r.read_with(v, |r, _| r.editing.is_some()),
+            "{name}: editing"
+        );
+        t.read_with(v, |p, _| {
+            assert_eq!(
+                p.projections,
+                before + 1,
+                "{name}: no scan behind the editor"
+            )
+        });
+        r.update_in(v, |r, w, cx| r.toggle_source(w, cx));
+        settle(v);
+        let t = table(&code(&r, v), v);
+        t.read_with(v, |p, _| {
+            assert!(!p.updating, "{name}");
+            assert_eq!(p.order.len(), 1, "{name}: the latest query ran on return");
+            assert_eq!(p.projections, before + 2, "{name}: exactly once");
+        });
+    }
+}
+
+#[gpui::test]
+fn table2812_hidden_load_more_waits_and_runs_the_query_once_on_return(cx: &mut TestAppContext) {
+    let source = format!(
+        "name,n\n{}",
+        (0..1500)
+            .map(|i| format!("{}{i},{i}\n", if i % 2 == 0 { "needle" } else { "x" }))
+            .collect::<String>()
+    );
+    let (r, v, _temp) = fixture_with_files(cx, "more.csv", &[("more.csv", &source)]);
+    settle(v);
+    let c = code(&r, v);
+    let t = table(&c, v);
+    query(&t, "needle", v);
+    let before = t.read_with(v, |p, _| {
+        assert!(!p.all);
+        assert_eq!(
+            p.order.len(),
+            500,
+            "positive: the first 1,000 rows were searched"
+        );
+        p.projections
+    });
+    t.update(v, |p, cx| p.load(true, cx));
+    c.update_in(v, |p, w, cx| p.set_view(View::Raw, w, cx));
+    settle(v);
+    t.read_with(v, |p, _| {
+        assert!(p.all, "Load more rows finished while hidden");
+        assert_eq!(p.projections, before, "no scan runs while Table is hidden");
+    });
+    c.update_in(v, |p, w, cx| p.set_view(View::Table, w, cx));
+    settle(v);
+    t.read_with(v, |p, _| {
+        assert_eq!(
+            p.projections,
+            before + 1,
+            "the pending query runs exactly once"
+        );
+        assert_eq!(p.order.len(), 750, "over all loaded rows");
+    });
+}
