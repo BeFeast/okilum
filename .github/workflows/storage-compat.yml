@@ -1,0 +1,114 @@
+# Public package history and synthetic databases only; no release or installation authority.
+name: storage-compat
+on:
+  push:
+    paths:
+      - 'scripts/velopack/**'
+      - 'scripts/velopack-setup.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'crates/okilum-shell/src/updater/**'
+      - 'crates/okilum-core/src/archive.rs'
+      - 'crates/okilum-http/tests/*zip*'
+      - 'crates/okilum-http/tests/windows_historical_update.rs'
+      - 'scripts/ci/*compat*'
+      - 'scripts/ci/windows-historical-update.py'
+      - 'scripts/ci/fixtures/windows-historical-update.json'
+      - '.github/workflows/storage-compat.yml'
+  pull_request:
+    paths:
+      - 'scripts/velopack/**'
+      - 'scripts/velopack-setup.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'crates/okilum-shell/src/updater/**'
+      - 'crates/okilum-core/src/archive.rs'
+      - '.github/workflows/storage-compat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: storage-compat-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+jobs:
+  zip:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: storage-compat-zip-v1
+          cache-on-failure: true
+      - name: Verify exact source and vendor
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Verify split ZIP graph, unchanged updater and Reader controls
+        shell: bash
+        run: |
+          python3 scripts/ci/zip-compat-controls.py
+      - name: Apply checksum-verified historical Full and real Delta packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-historical-update.py
+          exit $LASTEXITCODE
+  inbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: inbox
+          shared-key: storage-compat-inbox-v1
+      - name: Verify exact source and legacy fixture checksums
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          cd inbox/crates/okilum-inboxd/tests/fixtures/legacy-inbox
+          sha256sum -c SHA256SUMS
+      - name: Lint and test the complete Inbox workspace including WAL recovery
+        working-directory: inbox
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
+      - name: Export the new-writer database for the old-stack downgrade probe
+        run: |
+          INBOX_DOWNGRADE_DB="$RUNNER_TEMP/inbox-downgrade.db" cargo test --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --test legacy_sqlite legacy_uncheckpointed_wal_is_recovered_before_open_and_replay -- --exact --nocapture
+      - uses: actions/checkout@v4
+        with:
+          ref: bed1dfd462766ddbed9895cc519b540535446043
+          path: old-stack
+          persist-credentials: false
+      - name: Reopen and write with the actual old Store and SQLite
+        run: |
+          mkdir -p old-stack/inbox/crates/okilum-inboxd/examples
+          cp inbox/crates/okilum-inboxd/tests/fixtures/legacy-inbox/downgrade.rs old-stack/inbox/crates/okilum-inboxd/examples/downgrade.rs
+          cd old-stack
+          cargo update --manifest-path inbox/Cargo.toml -p rusqlite --precise 0.37.0
+          cargo tree --manifest-path inbox/Cargo.toml -p rusqlite
+          INBOX_DOWNGRADE_DB="$RUNNER_TEMP/inbox-downgrade.db" cargo run --locked --manifest-path inbox/Cargo.toml -p okilum-inboxd --example downgrade
