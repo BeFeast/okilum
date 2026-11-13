@@ -66,7 +66,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,951 @@
+@@ -0,0 +1,959 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -484,22 +484,30 @@
 +        if entries.is_empty() {
 +            return remove_entry(p, &p.ledger);
 +        }
-+        let mut file = fs::OpenOptions::new()
-+            .read(true)
-+            .write(true)
-+            .create_new(true)
-+            .share_mode(FILE_SHARE_READ)
-+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-+            .open(&p.ledger_next)?;
 +        let mut text = format!("{LEDGER_MAGIC}\n");
 +        for entry in entries {
 +            text.push_str(&entry.text());
 +            text.push('\n');
 +        }
-+        file.write_all(text.as_bytes())?;
-+        file.sync_all()?;
-+        drop(file);
-+        replace_name(&p.ledger_next, &p.ledger)
++        let write = || -> io::Result<()> {
++            let mut file = fs::OpenOptions::new()
++                .read(true)
++                .write(true)
++                .create_new(true)
++                .share_mode(FILE_SHARE_READ)
++                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
++                .open(&p.ledger_next)?;
++            file.write_all(text.as_bytes())?;
++            file.sync_all()?;
++            drop(file);
++            replace_name(&p.ledger_next, &p.ledger)
++        };
++        let result = write();
++        if result.is_err() {
++            // A failed write (e.g. a full disk) leaves no partial ledger behind.
++            let _ = remove_entry(p, &p.ledger_next);
++        }
++        result
 +    }
 +    fn add_owned(p: &Paths, added: Vec<Owned>) -> io::Result<()> {
 +        let mut entries = read_ledger(p)?;
