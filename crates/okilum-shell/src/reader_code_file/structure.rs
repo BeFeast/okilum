@@ -133,6 +133,25 @@ impl Structure {
                 .scroll_to_item_strict(index, ScrollStrategy::Center);
         }
     }
+    /// Contents navigation: open the parents and the node itself, select it
+    /// and scroll to it. Unlike Find, these opened rows stay open.
+    pub fn reveal_node(&mut self, index: usize, doc: &Document) {
+        if index < Self::start(doc) || index >= doc.structure.len() {
+            return;
+        }
+        let mut at = Some(index);
+        while let Some(i) = at {
+            if i >= Self::start(doc) && self.folded(i) && doc.structure[i].subtree_end > i + 1 {
+                self.set_folded(i, false);
+                self.find_opened.remove(&i);
+            }
+            at = doc.parent(i);
+        }
+        self.selected = Some(index);
+        self.rebuild(doc);
+        self.scroll_selected();
+    }
+
     pub fn reveal(&mut self, range: &std::ops::Range<usize>, doc: &Document) {
         let Some(index) = doc.row_at(range) else {
             return;
