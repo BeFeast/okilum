@@ -13,6 +13,7 @@ import base64
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -69,6 +70,8 @@ def run(helper, mode, folder, markers, want):
 
 
 def main():
+    # Runner stdout is cp1252; the folder name is not.
+    sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
     system = Path(powershell('[Environment]::SystemDirectory'))
     real = system / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
     profile = Path(powershell('$PROFILE.CurrentUserAllHosts'))
