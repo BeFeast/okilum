@@ -386,10 +386,38 @@ mod tests {
     use gpui::{px, FontFeatures, FontStyle, FontWeight};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(target_os = "macos")]
+    static MAC_TEST_SHAPER: std::sync::OnceLock<Arc<dyn PlatformTextSystem>> =
+        std::sync::OnceLock::new();
+
+    // libtest runs even serial tests on worker threads. MacPlatform requires
+    // the process main thread, whereas its PlatformTextSystem is Send + Sync.
+    // Use the same Mach-O initializer section as ctor; no platform/window or
+    // thread-affine Rc escapes the initializer, only the native text Arc.
+    #[cfg(target_os = "macos")]
+    #[used]
+    #[unsafe(link_section = "__DATA,__mod_init_func,mod_init_funcs")]
+    static INITIALIZE_MAC_TEST_SHAPER: extern "C" fn() = {
+        extern "C" fn initialize() {
+            // SAFETY: pthread_main_np only reads the calling thread's identity.
+            if unsafe { libc::pthread_main_np() } == 1 {
+                let platform = gpui_platform::current_platform(true);
+                let _ = MAC_TEST_SHAPER.set(platform.text_system());
+            }
+        }
+        initialize
+    };
+
     /// The platform shaper the application uses (with the Windows repair).
     fn platform_shaper() -> Arc<dyn PlatformTextSystem> {
-        let platform = gpui_platform::current_platform(true);
-        let shaper = super::super::text_platform::shaper(platform.text_system());
+        #[cfg(target_os = "macos")]
+        let native = MAC_TEST_SHAPER
+            .get()
+            .expect("native Mac text system must be initialized on the process main thread")
+            .clone();
+        #[cfg(not(target_os = "macos"))]
+        let native = gpui_platform::current_platform(true).text_system();
+        let shaper = super::super::text_platform::shaper(native);
         // The bundled fonts the reader uses (brand::load_fonts); scripts they
         // lack fall back to the system fonts, as in the application.
         shaper
@@ -402,6 +430,20 @@ mod tests {
             ])
             .unwrap();
         shaper
+    }
+
+    #[test]
+    fn edit2803_native_shaper_fixture_uses_real_glyphs_and_main_thread_initialization() {
+        let shaper = platform_shaper();
+        #[cfg(target_os = "macos")]
+        assert!(Arc::ptr_eq(MAC_TEST_SHAPER.get().unwrap(), &shaper));
+        let mono = shaper.font_id(&gpui::font("Cascadia Code")).unwrap();
+        let a = shaper.glyph_for_char(mono, 'a').unwrap();
+        let b = shaper.glyph_for_char(mono, 'b').unwrap();
+        assert_ne!(
+            a, b,
+            "the fixture must use real font glyphs, not NoopTextSystem"
+        );
     }
 
     fn font(family: &str, weight: FontWeight, style: FontStyle) -> Font {
