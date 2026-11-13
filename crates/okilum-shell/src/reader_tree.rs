@@ -63,7 +63,6 @@ pub struct Tree {
     /// A hidden path revealed for navigation; its branch is shown until the
     /// reveal moves elsewhere.
     revealed_hidden: Option<String>,
-    templates_folder: String,
     titles: Arc<HashMap<String, String>>,
     /// File stems are the default; note titles are an explicit app preference.
     note_titles: bool,
@@ -231,12 +230,6 @@ impl Tree {
                 ..Self::default()
             };
             self.root = root.to_path_buf();
-            self.templates_folder = okilum_core::note_templates::default_folder_from(|folder| {
-                entries
-                    .iter()
-                    .any(|entry| entry.path == folder && entry.kind == EntryKind::Directory)
-            })
-            .into();
         }
         self.children.clear();
         self.kinds.clear();
@@ -403,7 +396,7 @@ impl Tree {
                     rows.push(Row {
                         hidden: (self.agent_file(&path)
                             || self.agent_folder(&path)
-                            || self.hidden_item(&path) && !self.template_branch(&path))
+                            || self.hidden_item(&path))
                             && !self.shown_index(&path),
                         index,
                         agent_rules: (kind == EntryKind::Directory)
@@ -479,8 +472,7 @@ impl Tree {
         }
     }
 
-    /// Agent configuration directories stay hidden even inside the configured
-    /// templates branch, whose ordinary dot/underscore notes remain visible.
+    /// Agent configuration directories follow the hidden-files preference.
     fn agent_folder(&self, path: &str) -> bool {
         std::iter::once(path)
             .chain(path.rmatch_indices('/').map(|(at, _)| &path[..at]))
@@ -506,14 +498,6 @@ impl Tree {
             && okilum_core::quick_open::is_agent_file(path)
     }
 
-    fn template_branch(&self, path: &str) -> bool {
-        !self.templates_folder.is_empty()
-            && self.kinds.get(&self.templates_folder) == Some(&EntryKind::Directory)
-            && (path == self.templates_folder
-                || self.templates_folder.starts_with(&format!("{path}/"))
-                || path.starts_with(&format!("{}/", self.templates_folder)))
-    }
-
     /// `folder`'s index note, read from the tree inventory (no I/O): the
     /// same rule as [`folder_index`] (#1099).
     pub(crate) fn index_of(&self, folder: &str) -> FolderIndex {
@@ -535,14 +519,6 @@ impl Tree {
         parent(path).is_none_or(|folder| !hidden(folder)) && self.is_index_note(path)
     }
 
-    #[cfg(any(unix, windows))]
-    pub fn set_templates_folder(&mut self, folder: String) {
-        if self.templates_folder != folder {
-            self.templates_folder = folder;
-            self.flatten();
-        }
-    }
-
     pub fn show_hidden(&self) -> bool {
         self.show_hidden
     }
@@ -552,9 +528,7 @@ impl Tree {
     /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
         !self.show_hidden
-            && (self.agent_file(path)
-                || self.agent_folder(path)
-                || self.hidden_item(path) && !self.template_branch(path))
+            && (self.agent_file(path) || self.agent_folder(path) || self.hidden_item(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -952,7 +926,6 @@ mod tests {
         }
         let mut tree = Tree::default();
         tree.refresh(Path::new("/vault"), &entries);
-        tree.set_templates_folder("Project".into());
         tree.set_subtree("Project", true);
         tree.set_agent_shims(BTreeSet::from(["Project/CLAUDE.md".into()]));
         assert_eq!(tree.rules_of("Project"), Some("Project/AGENTS.md".into()));
@@ -1524,38 +1497,56 @@ mod tests {
         assert_eq!(tree.rows.last().unwrap().label, "win-qa-b");
     }
     #[test]
-    fn templates_are_visible_without_revealing_other_hidden_branches() {
-        let entries: Vec<_> = [
-            "_Assets",
+    fn issue2844_templates_follow_hidden_preference_and_remain_available() {
+        use okilum_core::{note_templates::Catalog, vault::Vault};
+        for folder in [
+            "@Schema/Templates",
             "_Assets/Templates",
-            "_Assets/Private",
-            "_Assets/Templates/Note.md",
-            "_Assets/Private/secret.md",
-        ]
-        .iter()
-        .map(|path| VaultEntry {
-            path: (*path).into(),
-            kind: if path.ends_with(".md") {
-                EntryKind::Markdown
-            } else {
-                EntryKind::Directory
-            },
-        })
-        .collect();
-        let mut tree = Tree::default();
-        tree.refresh(Path::new("/vault"), &entries);
-        assert!(tree.rows.iter().any(|r| r.path == "_Assets" && !r.hidden));
-        tree.toggle("_Assets");
-        assert!(tree
-            .rows
-            .iter()
-            .any(|r| r.path == "_Assets/Templates" && !r.hidden));
-        assert!(!tree.rows.iter().any(|r| r.path == "_Assets/Private"));
-        tree.toggle("_Assets/Templates");
-        assert!(tree
-            .rows
-            .iter()
-            .any(|r| r.path == "_Assets/Templates/Note.md" && !r.hidden));
+            ".templates/Notes",
+            "Ordinary/Templates",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join(folder)).unwrap();
+            std::fs::write(root.path().join(folder).join("Note.md"), "# {{title}}\n").unwrap();
+            crate::reader_templates::save(root.path(), state.path(), &root.path().join(folder))
+                .unwrap();
+            let configured = crate::reader_templates::load(root.path(), state.path()).unwrap();
+            assert_eq!(configured, folder, "Settings retains the configured path");
+            let catalog = Catalog::load_with_folder(root.path(), Some(&configured)).unwrap();
+            assert_eq!(
+                catalog.files,
+                ["Note.md"],
+                "New note still has the template"
+            );
+            let vault = Vault::scan(root.path()).unwrap();
+            let mut tree = Tree::default();
+            tree.refresh(root.path(), &vault.entries);
+            let ancestor = folder.split('/').next().unwrap();
+            tree.set_subtree(ancestor, true);
+            let special = hidden(folder);
+            for path in [
+                ancestor.to_owned(),
+                folder.into(),
+                format!("{folder}/Note.md"),
+            ] {
+                assert_eq!(tree.hidden_by_preference(&path), special, "{path}");
+                assert_eq!(tree.rows.iter().any(|r| r.path == path), !special, "{path}");
+            }
+            tree.set_show_hidden(true);
+            tree.set_subtree(ancestor, true);
+            for path in [
+                ancestor.to_owned(),
+                folder.into(),
+                format!("{folder}/Note.md"),
+            ] {
+                let row = tree.rows.iter().find(|r| r.path == path).unwrap();
+                assert_eq!(row.hidden, special, "marker on {path}");
+                assert!(!tree.hidden_by_preference(&path));
+            }
+            tree.set_show_hidden(false);
+            assert_eq!(tree.rows.iter().any(|r| r.path == ancestor), !special);
+        }
     }
 
     #[test]
@@ -1731,7 +1722,7 @@ mod tests {
         }
         assert!(t.hidden_by_preference(".dot.md"));
         assert!(t.hidden_by_preference("_System/tool.md"));
-        assert!(!t.hidden_by_preference("_Assets/Templates/Daily.md"));
+        assert!(t.hidden_by_preference("_Assets/Templates/Daily.md"));
         // A navigation reveal is tree-only and does not unhide sections.
         t.reveal("_System/tool.md");
         assert!(t.hidden_by_preference("_System/tool.md"));

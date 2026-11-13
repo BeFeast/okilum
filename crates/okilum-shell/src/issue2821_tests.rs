@@ -39,6 +39,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
     }
     for path in [
         "@Assets",
+        "@Schema",
         "@Private",
         "_Private",
         "@AgentContract.md",
@@ -50,9 +51,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
         );
         assert!(tree.hidden_by_preference(path));
     }
-    // The configured templates branch is the documented exception.
-    assert!(tree.rows.iter().any(|row| row.path == "@Schema"));
-    assert!(!tree.hidden_by_preference("@Schema/Templates/Note.md"));
+    assert!(tree.hidden_by_preference("@Schema/Templates/Note.md"));
     assert!(tree
         .rows
         .iter()
@@ -68,6 +67,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
     tree.set_show_hidden(true);
     for path in [
         "@Assets",
+        "@Schema",
         "@Private",
         "_Private",
         "@AgentContract.md",
