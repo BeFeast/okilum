@@ -321,3 +321,37 @@ fn xml2813_root_chevron_and_left_cannot_close_the_root() {
         "positive: other rows still open and close"
     );
 }
+
+#[test]
+fn toml2813_nested_array_of_tables_stays_under_its_block() {
+    let text = "[[bin]]\nname = \"a\"\n[[bin.sub]]\nx = 1\n[[bin]]\nname = \"b\"\n";
+    let d = doc("toml", text);
+    assert_eq!(labels(&d, 0), ["bin 2 items"]);
+    let bin = find_key(&d, "bin");
+    let first = d.children(bin).next().unwrap();
+    assert_eq!(labels(&d, first), ["name \"a\"", "sub 1 item"]);
+    let sub = find_key(&d, "sub");
+    assert_eq!(d.container(sub), Some((ContainerKind::Array, 1)));
+    let at = text.find("x = 1").unwrap();
+    assert_eq!(d.row_at(&(at..at + 1)), Some(find_key(&d, "x")));
+}
+
+#[test]
+fn toml2813_headers_compare_by_parsed_key_path() {
+    let text = "[[bin]]\nname = \"a\"\n[\"bin\".meta]\nk = 1\n[[ 'bin' ]]\nname = \"b\"\n[ bin . other ]\nj = 2\n";
+    let d = doc("toml", text);
+    assert!(d.syntax.is_none(), "{:?}", d.syntax);
+    assert_eq!(labels(&d, 0), ["bin 2 items"], "quoted and spaced headers are the same path");
+    let bin = find_key(&d, "bin");
+    let items: Vec<_> = d.children(bin).collect();
+    assert_eq!(labels(&d, items[0]), ["name \"a\"", "meta 1 key"]);
+    assert_eq!(labels(&d, items[1]), ["name \"b\"", "other 1 key"]);
+}
+
+#[test]
+fn yaml2813_properties_without_content_are_empty_values() {
+    let d = doc("yaml", "x: &ref # empty\ny: !!str # empty\nz: 1\n");
+    assert!(d.invalid.is_none(), "{:?}", d.invalid);
+    assert_eq!(labels(&d, 0), ["x ", "y ", "z 1"], "never the anchor or tag text");
+    assert_eq!(d.scalar(find_key(&d, "x")).unwrap().0, ScalarKind::Null);
+}
