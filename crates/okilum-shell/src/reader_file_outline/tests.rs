@@ -541,7 +541,10 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
             .clone()
             .unwrap()
     });
-    for editable in [false, true] {
+    // #2814 9c: in Read, YAML Contents reads the viewer's tree (covered by
+    // `contents2814_yaml_toml_xml_rows_and_where_you_are`); the private
+    // outline remains the Source editor's, exercised here.
+    for editable in [true] {
         if editable {
             reader.update_in(visual, |reader, window, cx| {
                 reader.toggle_source(window, cx)

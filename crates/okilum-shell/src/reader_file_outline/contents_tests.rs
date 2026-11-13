@@ -601,3 +601,102 @@ fn linked2885_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
         "an unlinked JSON shows only Contents"
     );
 }
+
+#[gpui::test]
+fn contents2814_yaml_toml_xml_rows_states_and_where_you_are(cx: &mut TestAppContext) {
+    let compose = format!(
+        "version: \"3.9\"\nservices:\n  gateway:\n    image: okilum/gateway\n    ports:\n      - \"8080:80\"\n      - \"8443:443\"\n  accounts:\n    image: okilum/accounts\n{}volumes: {{}}\n",
+        "  # padding\n".repeat(200)
+    );
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[
+            ("docker-compose.yml", compose.as_str()),
+            ("Cargo.toml", "[package]\nname = \"a\"\n\n[[bin]]\nname = \"x\"\n\n[[bin]]\nname = \"y\"\n"),
+            ("feed.xml", "<feed>\n  <title>Release notes</title>\n  <entry id=\"r-0.9.4\"><title>x</title></entry>\n</feed>\n"),
+            ("broken.yaml", "a: [1, 2\nb: 3\n"),
+            ("broken.toml", "[a]\nb = 1\nc = \n[d]\ne = 2\n"),
+        ],
+        "docker-compose.yml",
+    );
+    let view = outline(&reader, visual);
+    view.read_with(visual, |v, _| {
+        let rows = shown(v);
+        assert_eq!(rows[0], "version \"3.9\"");
+        assert!(rows.contains(&"services 2 keys".to_owned()), "{rows:?}");
+        assert!(
+            rows.contains(&"      0 \"8080:80\"".to_owned())
+                || rows.iter().any(|r| r.trim() == "ports 2 items"),
+            "{rows:?}"
+        );
+    });
+    // Where you are: the viewer's top line is in «accounts»; the mark sits on it.
+    let code = code(&reader, visual);
+    let accounts = view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        (0..doc.structure.len())
+            .find(|&i| doc.key_text(i) == Some("accounts"))
+            .unwrap()
+    });
+    view.update_in(visual, |v, w, cx| v.jump_snapshot(accounts, w, cx));
+    settle(visual);
+    visual.update(|w, cx| w.draw(cx).clear(cx));
+    settle(visual);
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        let row = v.snapshot.current.expect("a marked row");
+        let tree::Row::Node { index, .. } = &v.snapshot.rows[row] else {
+            panic!("node row")
+        };
+        assert_eq!(
+            doc.key_text(*index),
+            Some("accounts"),
+            "the clicked node is where you are"
+        );
+    });
+    code.read_with(visual, |p, _| {
+        assert_eq!(p.active_view(), CodeView::Raw, "no view switch")
+    });
+    for (file, first) in [
+        ("Cargo.toml", "package 1 key"),
+        ("feed.xml", "feed 2 elements"),
+    ] {
+        reader.update_in(visual, |r, w, cx| r.open_note(file, None, w, cx));
+        settle(visual);
+        view.read_with(visual, |v, _| assert_eq!(shown(v)[0], first, "{file}"));
+    }
+    view.read_with(visual, |v, _| {
+        let rows = shown(v);
+        assert!(
+            rows.contains(&"  title Release notes".to_owned()),
+            "{rows:?}"
+        );
+        assert!(rows.contains(&"  entry r-0.9.4".to_owned()), "{rows:?}");
+    });
+    reader.update_in(visual, |r, w, cx| r.open_note("Cargo.toml", None, w, cx));
+    settle(visual);
+    view.read_with(visual, |v, _| {
+        assert!(shown(v).contains(&"bin 2 items".to_owned()))
+    });
+    reader.update_in(visual, |r, w, cx| r.open_note("broken.yaml", None, w, cx));
+    settle(visual);
+    view.read_with(visual, |v, _| {
+        assert_eq!(
+            v.snapshot.state,
+            SnapshotState::Invalid("No outline: the file is not valid YAML.")
+        )
+    });
+    reader.update_in(visual, |r, w, cx| r.open_note("broken.toml", None, w, cx));
+    settle(visual);
+    view.read_with(visual, |v, _| {
+        assert_eq!(
+            v.snapshot.state,
+            SnapshotState::Ready,
+            "TOML has no verdict"
+        );
+        assert!(
+            shown(v).iter().any(|r| r.starts_with("d ")),
+            "the tolerant rows stay"
+        );
+    });
+}

@@ -26,6 +26,10 @@ struct Snapshot {
     pending: Option<Arc<Document>>,
     state: SnapshotState,
     rows: Arc<Vec<tree::Row>>,
+    /// Row position of each listed node, computed with the rows.
+    positions: Arc<HashMap<usize, usize>>,
+    /// The marked row: the node where you are, or its nearest listed ancestor.
+    current: Option<usize>,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -226,7 +230,9 @@ impl View {
             move |_, _, _, cx| {
                 let Some(view) = outline(cx) else { return };
                 view.update(cx, |this, cx| {
-                    if this.input.is_none() || this.sample_pending {
+                    let tracks = this.input.is_some()
+                        || this.snapshot.active && this.snapshot.state == SnapshotState::Ready;
+                    if !tracks || this.sample_pending {
                         return;
                     }
                     this.sample_pending = true;
@@ -245,6 +251,14 @@ impl View {
     }
 
     fn sync_current(&mut self, cx: &mut Context<Self>) {
+        if self.snapshot.active {
+            let current = self.snapshot_current(cx);
+            if self.snapshot.current != current {
+                self.snapshot.current = current;
+                cx.notify();
+            }
+            return;
+        }
         let current = self
             .input
             .as_ref()
@@ -268,8 +282,12 @@ impl View {
     }
 
     fn snapshot_file(reader: &Reader) -> bool {
-        let rel = reader.selected_file().to_ascii_lowercase();
-        rel.ends_with(".json")
+        let rel = reader.selected_file();
+        rel.to_ascii_lowercase().ends_with(".json")
+            || matches!(
+                reader_code_file::language(rel),
+                Some("yaml" | "toml" | "xml")
+            )
     }
 
     fn bind_snapshot(
@@ -321,6 +339,8 @@ impl View {
             self.snapshot.doc = None;
             self.snapshot.pending = None;
             self.snapshot.rows = Arc::default();
+            self.snapshot.positions = Arc::default();
+            self.snapshot.current = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
             self.snapshot.state = SnapshotState::Absent;
@@ -383,6 +403,27 @@ impl View {
         }
     }
 
+    /// The listed row for the viewer's top node: the node itself, or the
+    /// nearest ancestor shown (a closed ancestor carries the mark).
+    fn snapshot_current(&self, cx: &App) -> Option<usize> {
+        let code = self.code.as_ref()?;
+        let doc = self.snapshot.doc.as_ref()?;
+        let raw = code.read(cx).document_raw_for_contents()?;
+        let mut node = code.read(cx).contents_top_node(cx)?;
+        // The viewer may hold a newer parse than the shown rows.
+        if !Arc::ptr_eq(&raw, doc) {
+            node = raw.node_in(node, doc)?;
+        }
+        let mut at = Some(node);
+        while let Some(index) = at {
+            if let Some(&row) = self.snapshot.positions.get(&index) {
+                return Some(row);
+            }
+            at = doc.parent(index);
+        }
+        None
+    }
+
     fn expansion(&mut self) -> &mut tree::Expansion {
         let file = self.snapshot.file.clone();
         self.snapshot.expansions.entry(file).or_default()
@@ -404,9 +445,20 @@ impl View {
         self.snapshot.generation += 1;
         let generation = self.snapshot.generation;
         self.snapshot.task = Some(cx.spawn(async move |this, cx| {
-            let rows = cx
+            let (rows, positions) = cx
                 .background_executor()
-                .spawn(async move { tree::visible_rows(&doc, &expansion) })
+                .spawn(async move {
+                    let rows = tree::visible_rows(&doc, &expansion);
+                    let positions: HashMap<usize, usize> = rows
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(at, row)| match row {
+                            tree::Row::Node { index, .. } => Some((*index, at)),
+                            tree::Row::Group { .. } => None,
+                        })
+                        .collect();
+                    (rows, positions)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.snapshot.generation != generation {
@@ -424,6 +476,8 @@ impl View {
                 }
                 this.snapshot.doc = Some(used);
                 this.snapshot.rows = Arc::new(rows);
+                this.snapshot.positions = Arc::new(positions);
+                this.sync_current(cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
                 this.list.scroll_to(ListOffset {
@@ -553,6 +607,12 @@ impl View {
             .border_l_2()
             .border_color(gpui::transparent_black())
             .text_color(p.text_muted)
+            // Where you are: the accent bar and the weight, never a grey alone.
+            .when(self.snapshot.current == Some(ix), |row| {
+                row.border_color(p.accent)
+                    .text_color(p.text)
+                    .font_weight(FontWeight::MEDIUM)
+            })
             .overflow_hidden()
             .cursor_pointer()
             .hover(move |row| row.bg(hover))

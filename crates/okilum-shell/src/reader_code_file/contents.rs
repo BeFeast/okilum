@@ -15,14 +15,22 @@ pub(crate) enum ContentsSource {
 }
 
 impl CodePreview {
+    /// The raw document Contents rows index, for «where you are».
+    pub(crate) fn document_raw_for_contents(&self) -> Option<Arc<Document>> {
+        self.raw_document.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn tree_selection_for_tests(&self) -> Option<usize> {
         self.structure.selected
     }
 
-    /// JSON only in this slice (9a); `.jsonc` keeps its private outline.
+    /// JSON, YAML, TOML and XML (#2814 9a, 9c). `.jsonc`, Rust and Python
+    /// keep their private outline.
     fn contents_format(&self) -> bool {
-        is_json(&self.rel) && !self.rel.to_ascii_lowercase().ends_with(".har")
+        let rel = self.rel.to_ascii_lowercase();
+        (is_json(&self.rel) && !rel.ends_with(".har"))
+            || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))
     }
 
     /// The raw document, never the Formatted one, so row indices and open rows
@@ -36,12 +44,39 @@ impl CodePreview {
                 ContentsSource::Loading
             }
             None => ContentsSource::Absent,
-            Some(doc) if doc.invalid.is_some() => {
-                ContentsSource::Invalid("No outline: the file is not valid JSON.")
-            }
+            // Only strict verdicts (JSON, YAML) blank the rows; TOML and XML
+            // with a syntax problem keep what the tolerant parse gives.
+            Some(doc) if doc.invalid.is_some() => ContentsSource::Invalid(match doc.format {
+                Some("YAML") => "No outline: the file is not valid YAML.",
+                _ => "No outline: the file is not valid JSON.",
+            }),
             Some(doc) if doc.semantic => ContentsSource::Ready(doc.clone()),
             Some(_) => ContentsSource::Absent,
         }
+    }
+
+    /// The node «where you are» (#2814): the Tree selection, or in Raw and
+    /// Formatted the innermost node at the top line of the view. A raw-document
+    /// index (Formatted has the same preorder); O(log n) per sample.
+    pub(crate) fn contents_top_node(&self, cx: &App) -> Option<usize> {
+        let raw = self.raw_document.as_ref()?;
+        let active = self.document.as_ref()?;
+        if active.structure.len() != raw.structure.len() {
+            return None;
+        }
+        let index = match self.view {
+            View::Tree => self.structure.selected?,
+            View::Raw | View::Formatted => {
+                let input = self.input()?;
+                let input = input.read(cx);
+                let line = input.top_visible_line()?;
+                let local = input.text().line_start_offset(line);
+                let at = active.pages.get(self.page)?.start + local;
+                active.row_at(&(at..at))?
+            }
+            View::Table => return None,
+        };
+        (index > 0).then_some(index)
     }
 
     /// Go to a raw-document node in the active view; never switch views.
