@@ -101,12 +101,17 @@ impl CodePreview {
                 Availability::Absent
             };
         }
-        if self.json.is_some() && raw.invalid.is_some() {
-            return Availability::Disabled("Not available: the file is not valid JSON".into());
+        // A strict verdict (JSON, or YAML through serde_yaml) disables the
+        // semantic views; TOML and XML syntax problems never do.
+        if raw.invalid.is_some() && (self.json.is_some() || view == View::Tree) {
+            return Availability::Disabled(format!(
+                "Not available: the file is not valid {}",
+                raw.format.unwrap_or("JSON")
+            ));
         }
         if view == View::Tree {
             return if !raw.structure.is_empty()
-                && (!raw.json_tree || raw.children(0).next().is_some())
+                && (!raw.semantic || raw.children(0).next().is_some())
             {
                 Availability::Available
             } else {
@@ -419,6 +424,7 @@ impl CodePreview {
         let invalid = doc
             .invalid
             .as_ref()
+            .or(doc.syntax.as_ref())
             .filter(|error| page.contains(&error.offset));
         input.update(cx, |input, cx| {
             let text = input.text().clone();
@@ -445,7 +451,7 @@ impl CodePreview {
         let Some(error) = self
             .raw_document
             .as_ref()
-            .and_then(|doc| doc.invalid.clone())
+            .and_then(|doc| doc.invalid.clone().or_else(|| doc.syntax.clone()))
         else {
             return;
         };

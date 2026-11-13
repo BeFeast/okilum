@@ -145,14 +145,21 @@ impl CodePreview {
             lock.tooltip = format!("Read-only: {reason}").into();
             chrome.state = Some(lock);
         }
-        if let Some(invalid) = self
-            .raw_document
-            .as_ref()
-            .and_then(|doc| doc.invalid.as_ref())
-        {
+        let problem = self.raw_document.as_ref().and_then(|doc| {
+            doc.invalid
+                .as_ref()
+                .map(|error| (true, error))
+                .or(doc.syntax.as_ref().map(|error| (false, error)))
+                .map(|(invalid, error)| (invalid, error, doc.format.unwrap_or("JSON")))
+        });
+        if let Some((invalid, error, format)) = problem {
             let target = entity.clone();
             let mut warning = ViewerAction::new(
-                "code-invalid",
+                if invalid {
+                    "code-invalid"
+                } else {
+                    "code-syntax"
+                },
                 Icon::new(IconName::TriangleAlert).text_color(brand::palette(cx).warning),
                 "Go to error",
                 Rc::new(move |window, cx| {
@@ -161,10 +168,17 @@ impl CodePreview {
             )
             .with_action(GoToError, cx);
             warning.tooltip = reader_shortcuts::hint(
-                &format!(
-                    "Not valid JSON: line {}, column {}: {}. Go to error",
-                    invalid.line, invalid.column, invalid.message
-                ),
+                &if invalid {
+                    format!(
+                        "Not valid {format}: line {}, column {}: {}. Go to error",
+                        error.line, error.column, error.message
+                    )
+                } else {
+                    format!(
+                        "Syntax problem. Line {}, column {}. Go to error",
+                        error.line, error.column
+                    )
+                },
                 &GoToError,
                 cx,
             );
@@ -243,15 +257,26 @@ impl CodePreview {
             return StatusLine::default();
         };
         let mut status = StatusLine::default();
-        if let Some(invalid) = &raw.invalid {
+        let problem = raw
+            .invalid
+            .as_ref()
+            .map(|error| (true, error))
+            .or(raw.syntax.as_ref().map(|error| (false, error)));
+        if let Some((invalid, error)) = problem {
             status.icon = Some(Icon::new(IconName::TriangleAlert));
             status.tone = Tone::Warning;
-            status.label = "Not valid JSON.".into();
-            status.text = format!(
-                "Line {}, column {}: {}",
-                invalid.line, invalid.column, invalid.message
-            )
-            .into();
+            if invalid {
+                status.label = format!("Not valid {}.", raw.format.unwrap_or("JSON")).into();
+                status.text = format!(
+                    "Line {}, column {}: {}",
+                    error.line, error.column, error.message
+                )
+                .into();
+            } else {
+                // TOML and XML have no strict parser in the app: no verdict.
+                status.label = "Syntax problem.".into();
+                status.text = format!("Line {}, column {}.", error.line, error.column).into();
+            }
             let target = entity.clone();
             let mut action = ViewerAction::new(
                 "code-go-to-error",
@@ -264,6 +289,10 @@ impl CodePreview {
             .with_action(GoToError, cx);
             action.labelled = true;
             status.actions.push(action);
+            if !(invalid && self.json.is_some()) {
+                // Repair exists for JSON only.
+                return status;
+            }
             let mut repair = ViewerAction::new(
                 "code-repair",
                 Icon::default().path("icons/wrench.svg"),
@@ -279,7 +308,9 @@ impl CodePreview {
                 repair.disabled_reason = self.readonly_reason().map(Into::into);
             }
             status.actions.push(repair);
-        } else if self.json.as_ref().is_some_and(|json| json.formatting) {
+            return status;
+        }
+        if self.json.as_ref().is_some_and(|json| json.formatting) {
             status.text = format!("Formatting {}…", view::size(raw.text.len())).into();
         } else if self.json.is_some() && raw.text.len() > PRETTY_BYTES && self.view == View::Raw {
             status.label = "Large file.".into();

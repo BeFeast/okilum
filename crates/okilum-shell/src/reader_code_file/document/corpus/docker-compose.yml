@@ -1,0 +1,46 @@
+# Synthetic but complete Compose file in the style of the mockup fixture.
+version: "3.9"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  gateway:
+    image: ghcr.io/example/gateway:1.4.2
+    ports:
+      - "8080:80"
+      - "8443:443"
+    environment:
+      LOG_LEVEL: info
+      UPSTREAM_ACCOUNTS: http://accounts:9000
+      UPSTREAM_BILLING: http://billing:9100
+      TLS_CERT: /run/secrets/tls.crt
+      TLS_KEY: /run/secrets/tls.key
+      RETRY: "3"
+    depends_on:
+      - accounts
+      - billing
+    restart: unless-stopped
+    logging: *default-logging
+  accounts:
+    image: ghcr.io/example/accounts:2.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+  billing:
+    image: ghcr.io/example/billing:0.9.4
+    deploy:
+      replicas: 2
+      resources:
+        limits: { cpus: "0.50", memory: 256M }
+    logging: *default-logging
+
+volumes:
+  tls: {}
+  logs:

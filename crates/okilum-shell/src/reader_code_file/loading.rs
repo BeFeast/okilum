@@ -199,7 +199,7 @@ impl CodePreview {
             let (raw, refusal) = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if json
-                    && raw.json_tree
+                    && raw.semantic
                     && raw
                         .text
                         .trim_start_matches('\u{feff}')

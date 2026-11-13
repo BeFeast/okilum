@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes</title>
+  <subtitle type="html">Changes in &lt;b&gt;every&lt;/b&gt; release</subtitle>
+  <link href="https://example.com/feed.xml" rel="self"/>
+  <link href="https://example.com/"/>
+  <updated>2026-11-10T12:00:00Z</updated>
+  <id>urn:uuid:60a76c80-d399-11d9-b93C-0003939e0af6</id>
+  <author>
+    <name>Release bot</name>
+  </author>
+  <entry>
+    <title>0.9.4</title>
+    <link href="https://example.com/r/0.9.4"/>
+    <id>r-0.9.4</id>
+    <updated>2026-11-10T12:00:00Z</updated>
+    <summary>Header toolbar for every viewer.</summary>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml"><p>One <em>row</em>.</p></div>
+    </content>
+  </entry>
+  <entry>
+    <title>0.9.3</title>
+    <link href="https://example.com/r/0.9.3"/>
+    <id>r-0.9.3</id>
+    <updated>2026-11-03T12:00:00Z</updated>
+    <summary><![CDATA[Fixes & <small> things]]></summary>
+  </entry>
+</feed>

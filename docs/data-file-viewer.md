@@ -49,6 +49,30 @@ the smallest containing object/array/property, XML element, TOML property/table 
 YAML property/item. A stale parse/search cannot replace a newer display revision.
 Open with default app uses the existing guarded file action.
 
+### YAML, TOML and XML (#2813)
+
+YAML, TOML and XML get the semantic Tree at any size, with the JSON row rules:
+a key or tag name and, on the right, a count or a short value. YAML lists keys
+and sequence items (a multi-document file lists its documents); TOML lists keys
+and tables in source order, and consecutive `[[name]]` blocks are one array row
+whose items are the blocks; XML lists elements, with the `id`, else the `name`
+attribute (namespaced `xml:id` counts), else the number of child elements, else
+the short text on the right. Attributes, comments and text are not rows, and the
+XML root element is always open. The view switch is Tree / Raw: Raw is the
+default, Tree for a long single-line file, and an explicit choice is remembered
+per format. Find in Tree works for a normal-size file. The rows are built from
+the whole-file parse on a worker with an explicit stack, never recursively.
+
+Only YAML has a validity verdict: `serde_yaml` (multi-document files and anchors
+pass). A rejected file shows the badge by the name, a disabled Tree with the
+reason and the bottom line «Not valid YAML.» with the position and Go to error.
+TOML and XML have no strict parser in the app, so they never get «not valid»:
+the tolerant parse feeds Tree, and a grammar error shows the badge and the
+bottom line «Syntax problem. Line L, column C.» with Go to error. A corpus of
+real valid files (Compose, GitHub workflows with anchors, multi-document
+Kubernetes manifests, Cargo and pyproject manifests, Atom, SVG, POM, XSD) must
+show neither.
+
 Files up to 64 MiB load on a worker with a bounded read even when the file grows.
 Parsing, JSON formatting and full-file search run on workers. All CodePreview formats
 above the 4 MiB UI editing cap stay read-only, including JSON and TXT. This is UI admission:
