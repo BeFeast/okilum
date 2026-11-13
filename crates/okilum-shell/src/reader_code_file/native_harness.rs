@@ -27,9 +27,13 @@ pub(crate) fn entry() -> bool {
                 let mut preview = None;
                 eprintln!("DIAG_2825_OPEN_BEGIN file={name}");
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
+                    eprintln!("DIAG_2825_BUILD_BEGIN file={name} ms={}", started.elapsed().as_millis());
                     let view = cx.new(|cx| CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
+                    eprintln!("DIAG_2825_PREVIEW_NEW file={name} ms={}", started.elapsed().as_millis());
                     preview = Some(view.clone());
-                    cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
+                    let root = cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx));
+                    eprintln!("DIAG_2825_BUILD_END file={name} ms={}", started.elapsed().as_millis());
+                    root
                 })).unwrap();
                 let preview = preview.unwrap();
                 eprintln!("DIAG_2825_OPEN_END file={name} open_window_ms={}", started.elapsed().as_millis());

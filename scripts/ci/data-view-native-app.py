@@ -51,7 +51,7 @@ def main():
             sampler = None
             if sys.platform == 'darwin' and os.environ.get('DIAG_2825_SAMPLE'):
                 # Diagnostic only: 1 ms main-thread call tree across data.xml open.
-                sampler = subprocess.Popen(['sample', str(process.pid), '7', '1', '-mayDie', '-fullPaths', '-file', os.environ['DIAG_2825_SAMPLE']], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                sampler = subprocess.Popen(['sudo', '-n', '/usr/bin/sample', str(process.pid), '7', '1', '-mayDie', '-fullPaths', '-file', os.environ['DIAG_2825_SAMPLE']], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             try:
                 for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
