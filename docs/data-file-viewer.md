@@ -177,6 +177,13 @@ identity across window-mode changes and SVG image-refresh regressions. SVG keeps
 its existing image viewer. Probe windows stay alive until every fixture finishes;
 closing the final native window is allowed to quit the app.
 
+The probe opens an empty first window before any fixture (#2825). On hosted
+macOS that first native window spent 1.83 s creating the platform window and
+GPU renderer before the viewer's own construction began (31 ms), so the
+data.xml gap measured process bootstrap rather than viewing. The bootstrap
+time is printed as `DATA_VIEW_2825_NATIVE_BOOTSTRAP` and required once; each
+fixture still opens its own window and keeps the unchanged 2 s bound.
+
 Toolbar controls/rows are erased into AnyElement at separate construction
 boundaries to bound unoptimized native Windows render frames. The real native
 probe records its PE stack reserve and trace phases; no stack reserve override

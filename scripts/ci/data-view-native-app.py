@@ -69,6 +69,11 @@ def main():
                 assert process.wait(timeout=20) == 0, log_path.read_text(encoding="utf-8")[-6000:]
                 assert (directory / 'complete').exists()
                 trace = log_path.read_text(encoding='utf-8')
+                # Bootstrap is reported, never folded into a fixture's gap.
+                bootstrap = [line for line in trace.splitlines() if line.startswith('DATA_VIEW_2825_NATIVE_BOOTSTRAP open_window_ms=')]
+                assert len(bootstrap) == 1, 'native bootstrap window must open exactly once before fixtures'
+                assert trace.index(bootstrap[0]) < trace.index('DATA_VIEW_2669_NATIVE_TRACE chrome.begin')
+                print(bootstrap[0], flush=True)
                 assert 'DATA_VIEW_2669_NATIVE_TRACE chrome.begin' in trace
                 assert 'DATA_VIEW_2669_NATIVE_TRACE chrome.end' in trace
                 assert 'DATA_VIEW_2669_NATIVE_TRACE toolbar.begin' not in trace

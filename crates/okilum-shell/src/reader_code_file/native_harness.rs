@@ -22,6 +22,18 @@ pub(crate) fn entry() -> bool {
             // Keep all probe windows alive until every fixture finishes, so a
             // native last-window close cannot terminate the multi-file probe.
             let mut windows = Vec::new();
+            // The process's first native window creates the platform window
+            // and GPU renderer before any viewer code runs: 1.83 s on hosted
+            // macOS (#2825). That is app bootstrap, not file viewing; open it
+            // first and report it separately. Every fixture below still opens
+            // its own window inside the unchanged 2 s event-loop bound.
+            let bootstrap = Instant::now();
+            windows.push(cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
+                cx.new(|cx| Root::new(cx.new(|_| Bootstrap), window, cx))
+            })).unwrap());
+            let bootstrap_ms = bootstrap.elapsed().as_millis();
+            cx.background_executor().timer(Duration::from_millis(100)).await;
+            diagnostic_println!("DATA_VIEW_2825_NATIVE_BOOTSTRAP open_window_ms={bootstrap_ms}");
             for name in ["data.xml", "big.json", "big.xml", "big.txt"] {
                 let started = Instant::now();
                 let mut preview = None;
@@ -108,4 +120,12 @@ pub(crate) fn entry() -> bool {
         }).detach();
     });
     true
+}
+
+/// Empty first window: platform and renderer bootstrap only.
+struct Bootstrap;
+impl Render for Bootstrap {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
+    }
 }
