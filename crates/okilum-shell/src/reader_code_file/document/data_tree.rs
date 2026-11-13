@@ -195,16 +195,19 @@ fn yaml_content(mut node: Node<'_>) -> Node<'_> {
     node
 }
 
+/// The content node of a YAML document, after directives.
+fn yaml_document_content(document: Node<'_>) -> Option<Node<'_>> {
+    named(document).find(|node| matches!(node.kind(), "block_node" | "flow_node"))
+}
+
 fn yaml_root(root: Node<'_>) -> (ContainerKind, Vec<Entry<'_>>) {
     let documents: Vec<_> = named(root)
         .filter(|node| node.kind() == "document")
         .collect();
-    let content = |document: Node<'_>| {
-        named(document).find(|node| matches!(node.kind(), "block_node" | "flow_node"))
-    };
+
     if let [document] = documents.as_slice() {
         // A single document: its top-level entries are the root's children.
-        return match content(*document) {
+        return match yaml_document_content(*document) {
             Some(node) => match yaml_expand(node).container {
                 Some((kind, entries)) => (kind, entries),
                 None => (
@@ -229,7 +232,7 @@ fn yaml_root(root: Node<'_>) -> (ContainerKind, Vec<Entry<'_>>) {
             line: line(document),
             key: None,
             ordinal: Some(i),
-            value: match content(document) {
+            value: match yaml_document_content(document) {
                 Some(node) => Value::Node(node),
                 None => Value::Empty(document.end_byte()),
             },
