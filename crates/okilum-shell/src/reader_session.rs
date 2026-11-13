@@ -60,6 +60,7 @@ fn merge(into: &mut okilum_core::Changes, changes: okilum_core::Changes) {
     into.removed.extend(changes.removed);
     into.directories.extend(changes.directories);
     into.rescan |= changes.rescan;
+    into.language_policy |= changes.language_policy;
 }
 
 impl Reader {

@@ -183,6 +183,8 @@ mod reader_agent_imports;
 #[cfg(test)]
 mod reader_agent_imports_tests;
 mod reader_agent_language;
+#[cfg(test)]
+mod reader_agent_language_tests;
 mod reader_agent_search;
 mod reader_agents_context;
 mod reader_agents_offer;
@@ -1997,6 +1999,9 @@ struct Reader {
     agent_document: Option<AgentDocument>,
     agent_language: Option<reader_agent_language::Controller>,
     _agent_language_events: Option<Task<()>>,
+    /// Inline marks of the published language matches on the open source
+    /// editor, keyed by that editor and the published capture.
+    agent_language_marks: Option<AgentLanguageMarks>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
     workbench: Arc<okilum_core::workbench::Index>,
@@ -2345,6 +2350,7 @@ impl Reader {
             agent_document: None,
             agent_language: None,
             _agent_language_events: None,
+            agent_language_marks: None,
             inbox: Vec::new(),
             projects: Arc::default(),
             workbench: Arc::default(),
@@ -2514,7 +2520,15 @@ impl Reader {
                         cx.notify();
                     }
                 }
-                if let Some(changes) = changes {
+                if let Some(mut changes) = changes {
+                    // The policy is no note: refresh the open agent file's
+                    // language check now and keep it out of index updates.
+                    if std::mem::take(&mut changes.language_policy) {
+                        this.agent_language_policy_changed(cx);
+                        if changes.is_empty() {
+                            return;
+                        }
+                    }
                     if this.loading.as_ref().is_some_and(|load| load.active) {
                         this.deferred_vault_changes
                             .metadata
@@ -7431,6 +7445,13 @@ mod agent_publication_tests {
     }
 }
 
+/// Decoration collection holding the language marks of one source editor.
+struct AgentLanguageMarks {
+    input: EntityId,
+    capture: Option<usize>,
+    collection: gpui_component::input::TextDecorationCollection,
+}
+
 /// One displayed agent source and the exact inventory publication used by its
 /// read-only context. The unique token prevents navigate-away/back ABA results.
 struct AgentDocument {
@@ -7468,6 +7489,7 @@ impl Reader {
             if let Some(controller) = &mut self.agent_language {
                 controller.retire();
             }
+            self.sync_agent_language_marks(cx);
             return;
         };
         if self.agent_document.as_ref().is_some_and(|current| {
@@ -7481,6 +7503,8 @@ impl Reader {
                     self.watcher_generation,
                 )
         }) {
+            // Edit mode may open on an already checked source: mark it too.
+            self.sync_agent_language_marks(cx);
             return;
         }
         // Retire immediately, before loading the next policy or preparing links.
@@ -7506,6 +7530,7 @@ impl Reader {
                                         .as_mut()
                                         .is_some_and(|c| c.apply_ready())
                                     {
+                                        this.sync_agent_language_marks(cx);
                                         cx.notify();
                                     }
                                 })
@@ -7561,6 +7586,78 @@ impl Reader {
             _preparation: None,
         });
         self.prepare_agent_document(cx);
+    }
+
+    /// Mirror the published matches into the source editor as wavy marks.
+    /// Marks follow text edits, so a capture older than the editor text keeps
+    /// the current marks until its replacement arrives; no source is changed.
+    fn sync_agent_language_marks(&mut self, cx: &mut Context<Self>) {
+        let input = self.source_input();
+        let published = self.agent_language.as_ref().and_then(|c| c.published());
+        let key = input.as_ref().zip(published).map(|(input, published)| {
+            (
+                input.entity_id(),
+                Arc::as_ptr(&published.snapshot.source) as *const u8 as usize,
+            )
+        });
+        let Some(input) = input else {
+            self.agent_language_marks = None;
+            return;
+        };
+        if let Some(marks) = &self.agent_language_marks {
+            if marks.input != input.entity_id() {
+                self.agent_language_marks = None;
+            } else if key.is_some() && marks.capture == key.map(|k| k.1) {
+                return;
+            }
+        }
+        let ranges = match published {
+            // A check of this agent file is still running: keep the marks,
+            // which follow edits, until its result replaces them.
+            None if self.agent_document.is_some() => return,
+            None => Vec::new(),
+            Some(published) => {
+                if !reader_agent_language::same_text(
+                    &published.snapshot.source,
+                    input.read(cx).text(),
+                ) {
+                    return;
+                }
+                reader_agent_language::mark_ranges(&published.report)
+            }
+        };
+        let style = reader_agent_language::mark_style(cx.theme().warning);
+        let decorations: Vec<_> = ranges
+            .into_iter()
+            .map(|range| gpui_component::input::TextDecoration::new(range, style))
+            .collect();
+        match &mut self.agent_language_marks {
+            Some(marks) => {
+                marks.collection.set(decorations, cx);
+                marks.capture = key.map(|k| k.1);
+            }
+            None => {
+                if decorations.is_empty() {
+                    return;
+                }
+                let collection = input.update(cx, |input, cx| {
+                    input.create_decorations_collection(decorations, cx)
+                });
+                self.agent_language_marks = Some(AgentLanguageMarks {
+                    input: input.entity_id(),
+                    capture: key.map(|k| k.1),
+                    collection,
+                });
+            }
+        }
+    }
+
+    /// The vault's language policy changed on disk: re-read it for the open
+    /// agent file, so its diagnostics refresh without a source edit.
+    fn agent_language_policy_changed(&mut self, cx: &mut Context<Self>) {
+        if self.agent_document.is_some() {
+            self.prepare_agent_document(cx);
+        }
     }
 
     fn prepare_agent_document(&mut self, cx: &mut Context<Self>) {
