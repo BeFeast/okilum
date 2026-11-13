@@ -993,3 +993,84 @@ fn review2878b_duplicates_past_the_item_limit_still_agree() {
     .unwrap();
     assert!(d.incomplete);
 }
+
+// --- #2836 part 2: Save as writes whole bodies. ---
+
+#[test]
+fn part2_write_body_streams_whole_bodies_and_verifies_the_entry() {
+    use base64::Engine as _;
+    let payload: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+    let text_body = format!("line1\\nline\\\"2\\u00e9{}", "t".repeat(400_000));
+    let har = format!(
+        r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"u"}},"response":{{"status":200,"content":{{"mimeType":"image/png","encoding":"base64","text":"{encoded}"}}}}}},{{"request":{{"method":"GET","url":"v"}},"response":{{"status":200,"content":{{"mimeType":"text/plain","text":"{text_body}"}}}}}}]}}}}"#
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "save.har", har.as_bytes());
+    let mut revision = None;
+    let mut entries = Vec::new();
+    index_file(&path, &AtomicBool::new(false), &mut |batch| {
+        revision = batch.revision;
+        entries.extend(batch.entries)
+    })
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let body = |index: usize| {
+        let e = &entries[index];
+        details(&path, e.span.clone(), revision, Some(e.hash), &cancel)
+            .unwrap()
+            .response_body
+            .unwrap()
+    };
+    // Binary (base64) beyond the 256 KB preview, written whole.
+    let image = body(0);
+    assert!(matches!(image.text, Some(Text::Long { .. })));
+    let mut out = Vec::new();
+    let e = &entries[0];
+    let written = write_body(
+        &path,
+        image.text.as_ref().unwrap(),
+        image.base64(),
+        Some((&e.span, revision, e.hash)),
+        &mut out,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!((written as usize, out == payload), (payload.len(), true));
+    // Text with escapes, written decoded and whole.
+    let text = body(1);
+    let mut out = Vec::new();
+    write_body(
+        &path,
+        text.text.as_ref().unwrap(),
+        false,
+        None,
+        &mut out,
+        &cancel,
+    )
+    .unwrap();
+    let expected = format!("line1\nline\"2\u{e9}{}", "t".repeat(400_000));
+    assert_eq!(String::from_utf8(out).unwrap(), expected);
+    // A changed request is refused before anything is written.
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, har.replacen("image/png", "image/pnh", 1)).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let mut out = Vec::new();
+    assert_eq!(
+        write_body(
+            &path,
+            image.text.as_ref().unwrap(),
+            true,
+            Some((&e.span, revision, e.hash)),
+            &mut out,
+            &cancel
+        ),
+        Err(DetailError::Changed)
+    );
+    assert!(out.is_empty());
+}

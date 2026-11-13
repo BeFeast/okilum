@@ -75,12 +75,135 @@ pub(crate) enum Row {
     },
     /// Body text, monospace, as written (never rendered as markup).
     Text(SharedString),
+    /// A small raster image body, decoded on the worker (never SVG).
+    Image(Preview),
     Note(SharedString),
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DetailRows {
     pub rows: Vec<Row>,
+    /// The parsed request, for Copy as cURL.
+    pub details: Arc<Details>,
+    /// Body sections that can be saved: (section row, source).
+    pub sources: Vec<(usize, BodySource)>,
+}
+
+/// A body that Save as… writes whole from the capture.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BodySource {
+    pub text: Text,
+    pub base64: bool,
+    /// A file name suggestion from the URL and MIME type.
+    pub name: String,
+}
+
+/// A decoded preview image; compared by identity.
+#[derive(Clone)]
+pub(crate) struct Preview {
+    pub image: Arc<gpui::RenderImage>,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PartialEq for Preview {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.image, &other.image)
+    }
+}
+
+impl std::fmt::Debug for Preview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Preview({}x{})", self.width, self.height)
+    }
+}
+
+/// Image bodies up to this decoded size are previewed.
+pub(crate) const IMAGE_BYTES: usize = 8 << 20;
+
+/// A thumbnail of a raster image body (PNG, JPEG, GIF, WebP, BMP), with
+/// decoder limits; anything else (SVG included) is not rendered.
+pub(crate) fn preview(bytes: &[u8]) -> Option<Preview> {
+    use image::ImageDecoder as _;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    if !matches!(
+        reader.format(),
+        Some(
+            image::ImageFormat::Png
+                | image::ImageFormat::Jpeg
+                | image::ImageFormat::Gif
+                | image::ImageFormat::WebP
+                | image::ImageFormat::Bmp
+        )
+    ) {
+        return None;
+    }
+    let mut reader = reader;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    let decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+    let mut thumbnail = decoded.thumbnail(480, 360).into_rgba8();
+    // GPUI RenderImage frames are BGRA.
+    for pixel in thumbnail.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Some(Preview {
+        image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(thumbnail)])),
+        width,
+        height,
+    })
+}
+
+/// A file name for a saved body: the URL's last path segment, else
+/// `response`, with an extension from the MIME type when it has none.
+pub(crate) fn file_name(url: &str, mime: &str) -> String {
+    let path = har::split_url(url).1;
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("");
+    let mut name: String = last
+        .chars()
+        .filter(|c| !c.is_control() && !r#"\/:*?"<>|"#.contains(*c))
+        .take(120)
+        .collect();
+    let name_trim = name.trim_matches(['.', ' ']).to_owned();
+    name = if name_trim.is_empty() {
+        "response".into()
+    } else {
+        name_trim
+    };
+    if !name.contains('.') {
+        let mime = mime
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let extension = match mime.as_str() {
+            m if m.contains("json") => "json",
+            "text/html" => "html",
+            "text/css" => "css",
+            m if m.contains("javascript") => "js",
+            m if m.contains("xml") => "xml",
+            "text/plain" => "txt",
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/svg+xml" => "svg",
+            "application/pdf" => "pdf",
+            _ => "bin",
+        };
+        name.push('.');
+        name.push_str(extension);
+    }
+    name
 }
 
 impl DetailRows {
@@ -169,7 +292,34 @@ pub(crate) fn build(
                 .into(),
         ));
     }
-    Ok(DetailRows { rows })
+    let mut sources = Vec::new();
+    for (section, body) in [
+        (Section::RequestBody, &details.request_body),
+        (Section::ResponseBody, &details.response_body),
+    ] {
+        let Some(body) = body else { continue };
+        let Some(text) = body.text.as_ref().filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        let row = rows
+            .iter()
+            .position(|row| matches!(row, Row::Section { section: s, .. } if *s == section));
+        if let Some(row) = row {
+            sources.push((
+                row,
+                BodySource {
+                    text: text.clone(),
+                    base64: body.base64(),
+                    name: file_name(details.url.shown(), &body.mime),
+                },
+            ));
+        }
+    }
+    Ok(DetailRows {
+        rows,
+        details: Arc::new(details.clone()),
+        sources,
+    })
 }
 
 fn field(rows: &mut Vec<Row>, name: &str, value: impl Into<String>) {
@@ -206,7 +356,7 @@ fn field_parts(rows: &mut Vec<Row>, name: &str, display: String, parts: Vec<Part
     });
 }
 
-fn text_part(text: &Text) -> Part {
+pub(crate) fn text_part(text: &Text) -> Part {
     match text {
         Text::Inline(text) => Part::Literal(text.clone()),
         long => Part::File(long.clone()),
@@ -694,6 +844,24 @@ fn body(
             rows.push(Row::Note(
                 format!("Binary content · {size} · {mime}").into(),
             ));
+            let raster = body.mime.to_ascii_lowercase().starts_with("image/")
+                && !body.mime.to_ascii_lowercase().contains("svg");
+            if raster {
+                let whole = if decoded.complete {
+                    Some(decoded.bytes)
+                } else {
+                    har::body_bytes(path, text, body.base64(), IMAGE_BYTES, revision, cancel)
+                        .ok()
+                        .filter(|bytes| bytes.complete)
+                        .map(|bytes| bytes.bytes)
+                };
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(DetailError::Cancelled);
+                }
+                if let Some(preview) = whole.as_deref().and_then(preview) {
+                    rows.push(Row::Image(preview));
+                }
+            }
         }
         Content::Text(text) => {
             let pretty = pretty(&text, &body.mime, decoded.complete, cancel);
@@ -773,7 +941,7 @@ fn value_parts(row: &Row) -> Option<Vec<Part>> {
             .unwrap_or_else(|| vec![Part::Literal(value.to_string())]),
         Row::Timing { ms, .. } => vec![Part::Literal(model::millis(*ms))],
         Row::Note(text) => vec![Part::Literal(text.to_string())],
-        Row::Section { .. } | Row::Text(_) => return None,
+        Row::Section { .. } | Row::Text(_) | Row::Image(_) => return None,
     })
 }
 
@@ -864,6 +1032,7 @@ impl Copied {
     pub(crate) fn label(&self) -> String {
         match self.cut_at {
             None => "Copied".into(),
+            Some(0) => "Copied without the binary request body".into(),
             Some(limit) => format!(
                 "Copied the first {}; the value is longer",
                 model::bytes(limit as i64)
@@ -1025,6 +1194,7 @@ mod tests {
                 },
                 Row::Note("b".into()),
             ],
+            ..Default::default()
         };
         assert_eq!(rows.visible(&|_| false), [0, 1, 2, 3]);
         assert_eq!(rows.visible(&|s| s == Section::General), [0, 2, 3]);
