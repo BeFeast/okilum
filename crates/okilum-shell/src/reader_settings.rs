@@ -3241,7 +3241,7 @@ mod tests {
         settings.read_with(visual, |settings, _| {
             assert!(
                 settings.template_missing,
-                "_Assets/Templates is not in the vault"
+                "@Schema/Templates is not in the vault"
             );
         });
         settings.update(visual, |settings, cx| {
