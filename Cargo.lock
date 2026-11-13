@@ -6221,6 +6221,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-macos-bundle-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui-pre",
+ "okilum-sync-controller",
+]
+
+[[package]]
 name = "okilum-network-access"
 version = "0.1.0"
 

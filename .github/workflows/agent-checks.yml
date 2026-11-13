@@ -42,6 +42,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
+          # macOS target caches: only main saves (repo cache quota; see forgejo-macos-shipping.yml).
+          save-if: ${{ (runner.os != 'macOS' || github.ref == 'refs/heads/main') }}
           cache-on-failure: true
       - name: Prepare and verify Mac Sync vendor
         env:

@@ -1,0 +1,17 @@
+[package]
+name = "okilum-macos-bundle-tools"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Build-time generators for macOS bundle resources (app icon rasters, LaunchAgent plist)."
+
+# Normal dependencies only, all already in okilum-shell's graph with the same
+# features. Built together with okilum-shell (`-p okilum-shell -p
+# okilum-macos-bundle-tools`) the feature set is unchanged, so nothing is
+# recompiled except these two small binaries; the former examples pulled the
+# shell's dev-dependencies and rebuilt GPUI/okilum-core with `test-support`.
+[dependencies]
+anyhow = { workspace = true }
+gpui = { workspace = true }
+okilum-sync-controller = { path = "../okilum-sync-controller" }
