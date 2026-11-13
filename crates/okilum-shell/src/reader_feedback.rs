@@ -221,16 +221,14 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         };
         view.update(cx, |view, _| view.visible = true);
         let weak = view.downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |view, cx| {
-                if matches!(view.state, SendState::Sending) {
-                    return false;
-                }
-                view.checkpoint(cx);
-                view.visible = false;
-                true
-            })
-            .unwrap_or(true)
+        window.on_window_should_close(cx, move |window, cx| {
+            crate::reader_diagnostics::window_close_requested(
+                window,
+                cx,
+                "native platform request",
+            );
+            weak.update(cx, |view, cx| view.prepare_close(cx))
+                .unwrap_or(true)
         });
         Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
         opened = Some(view.clone());
@@ -259,8 +257,21 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
     });
     match result {
         Ok(window) => {
-            reader_owned_windows::register(owner_window, window.into(), cx);
             let view = opened.unwrap();
+            let close_view = view.downgrade();
+            reader_owned_windows::register(
+                owner_window,
+                window.into(),
+                std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                    if close_view
+                        .update(cx, |view, cx| view.prepare_close(cx))
+                        .unwrap_or(true)
+                    {
+                        window.remove_window();
+                    }
+                }),
+                cx,
+            );
             cx.global_mut::<Drafts>().0.insert(
                 owner,
                 Draft {
@@ -292,20 +303,30 @@ impl Render for FeedbackWindow {
             .text_color(p.text)
             .key_context("OkilumFeedbackWindow")
             .track_focus(&self.focus)
-            .capture_action(move |_: &CloseFeedback, window, cx| {
-                let sending = view.update(cx, |view, cx| {
-                    if matches!(view.state, SendState::Sending) {
-                        return true;
+            .capture_action({
+                let view = view.clone();
+                move |_: &CloseFeedback, window, cx| {
+                    if view.update(cx, |view, cx| view.prepare_close(cx)) {
+                        window.remove_window();
                     }
-                    view.checkpoint(cx);
-                    view.visible = false;
-                    false
-                });
-                if !sending {
-                    window.remove_window();
                 }
             })
-            .child(TitleBar::new().child("Send feedback"))
+            .child(
+                // GNOME draws our own close button; it keeps the draft like
+                // the platform close (#2805), never by bare removal.
+                TitleBar::new()
+                    .on_close_window(move |_, window, cx| {
+                        crate::reader_diagnostics::window_close_requested(
+                            window,
+                            cx,
+                            "title bar close button",
+                        );
+                        if view.update(cx, |view, cx| view.prepare_close(cx)) {
+                            window.remove_window();
+                        }
+                    })
+                    .child("Send feedback"),
+            )
             .child(div().flex_1().min_h_0().p_5().child(self.view.clone()))
     }
 }
@@ -1276,6 +1297,23 @@ impl FeedbackView {
         false
     }
 }
+impl FeedbackView {
+    /// Every close of the Feedback window keeps the draft; a send in flight
+    /// keeps the window open. `true` means close now.
+    fn prepare_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if matches!(self.state, SendState::Sending) {
+            return false;
+        }
+        // An unsaved report keeps its window: checkpoint already shows why.
+        if !self.checkpoint(cx) {
+            cx.notify();
+            return false;
+        }
+        self.visible = false;
+        true
+    }
+}
+
 impl Render for FeedbackView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy();
@@ -1903,6 +1941,58 @@ mod recovery_mounted_tests {
         }
         draw(visual);
         click(visual, "feedback-apply-limits");
+    }
+
+    /// A report that cannot be checkpointed keeps its window on every close
+    /// route (#2805): GNOME's drawn close button and the owner's closure.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn issue2805_failed_checkpoint_keeps_feedback_open_on_every_close(cx: &mut TestAppContext) {
+        let (f, reader) = mount(cx);
+        let state = f.directory.path().join("state");
+        reader.update(|_, cx| reader_diagnostics::record_closes_with_drawn_controls(&state, cx));
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("A report that must not be lost");
+        let handle = feedback.update(|window, _| window.window_handle());
+        let set_reporter = |feedback: &mut VisualTestContext, name: String| {
+            feedback.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.reporter
+                        .update(cx, |input, cx| input.set_value(name, window, cx))
+                })
+            });
+        };
+        // Longer than the identity store accepts: checkpoint fails.
+        set_reporter(&mut feedback, "x".repeat(200));
+        click(&mut feedback, "window-control-close");
+        assert!(
+            feedback.read(|cx| cx.windows().contains(&handle)),
+            "close vetoed"
+        );
+        view.read_with(&feedback, |view, _| assert!(view.identity_error.is_some()));
+        reader.update(|window, _| window.remove_window());
+        feedback.run_until_parked();
+        assert!(
+            feedback.read(|cx| cx.windows().contains(&handle)),
+            "the owner's closure cannot drop an unsaved report"
+        );
+        set_reporter(&mut feedback, "Tester".into());
+        let close = feedback.debug_bounds("window-control-close").unwrap();
+        feedback.simulate_click(close.center(), Modifiers::default());
+        feedback.run_until_parked();
+        assert!(!feedback.read(|cx| cx.windows().contains(&handle)));
+        let origins: Vec<_> = reader_diagnostics::logged(&state, "window_close_requested")
+            .iter()
+            .map(|event| event["details"]["origin"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            origins,
+            [
+                "title bar close button",
+                "owner window closed",
+                "title bar close button"
+            ]
+        );
     }
 
     #[gpui::test]

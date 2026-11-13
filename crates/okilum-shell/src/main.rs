@@ -3574,7 +3574,7 @@ impl Reader {
 
     /// #381: the display title of a linking note (first H1, then frontmatter
     /// title, then file name) and, as secondary text, its folder path. Index
-    /// notes (`_index`, `index`, `README`) take their folder's name.
+    /// notes (`@index`, `index`, `README`) take their folder's name.
     fn backlink_title(&self, path: &str) -> (String, Option<String>) {
         let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
         let stem = file
@@ -3582,10 +3582,7 @@ impl Reader {
             .filter(|(_, extension)| extension.eq_ignore_ascii_case("md"))
             .map_or(file, |(stem, _)| stem);
         let location = (!folder.is_empty()).then(|| folder.replace('/', " / "));
-        let is_index = matches!(
-            stem.to_lowercase().as_str(),
-            "_index" | "@index" | "index" | "readme"
-        );
+        let is_index = matches!(stem.to_lowercase().as_str(), "@index" | "index" | "readme");
         if is_index && !folder.is_empty() {
             let name = folder.rsplit('/').next().unwrap_or(folder).to_owned();
             return (name, location);
@@ -7571,11 +7568,7 @@ impl Reader {
                     let store = okilum_core::agent_imports::RootedSource::new(&read_root);
                     let policy: Result<Arc<str>, Arc<str>> = match &store {
                         Ok(store) => store
-                            .canonicalize(
-                                &store
-                                    .root()
-                                    .join(reader_agent_language::policy_path(store.root())),
-                            )
+                            .canonicalize(&store.root().join(reader_agent_language::POLICY_PATH))
                             .and_then(|path| {
                                 store.read(&path, okilum_core::agent_language::MAX_SCHEMA_BYTES)
                             })
@@ -8369,8 +8362,21 @@ impl Render for Reader {
                             window.is_window_active(),
                         )
                     });
+                    // GNOME draws our own close button; it closes like the
+                    // platform request, never by bare removal (#2805).
+                    let close_target = cx.entity().downgrade();
                     view.child(
                         TitleBar::new()
+                            .on_close_window(move |_, window, cx| {
+                                if reader_open::request_reader_close(
+                                    &close_target,
+                                    "title bar close button",
+                                    window,
+                                    cx,
+                                ) {
+                                    window.remove_window();
+                                }
+                            })
                             .h(px(READER_HEADER_HEIGHT))
                             .when_some(tint, |bar, tint| bar.bg(tint))
                             // Traffic lights are hidden in full screen; drop
@@ -10464,7 +10470,7 @@ mod document_link_landing_tests {
         std::fs::write(root.join("Alpha.md"), note("Alpha\n\n[[Beta]]")).unwrap();
         std::fs::write(root.join("Beta.md"), note("Beta\n\n[[Alpha]]")).unwrap();
         std::fs::write(
-            root.join("_index.md"),
+            root.join("@index.md"),
             note("Gate home\n\n[[Alpha]] [[Beta]]"),
         )
         .unwrap();
@@ -11369,8 +11375,8 @@ mod document_link_landing_tests {
         });
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
-        let first = "Work/Projects/One/_index.md";
-        let done = "Home/Projects/Done/_index.md";
+        let first = "Work/Projects/One/@index.md";
+        let done = "Home/Projects/Done/@index.md";
         let source = "---\ntype: project\nstatus: active\n---\n# One\n- [ ] Next\n";
         for path in [first, done] {
             std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
@@ -11435,11 +11441,11 @@ mod document_link_landing_tests {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
-        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/@index.md"), "# Apertune\n").unwrap();
         std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
         std::fs::write(root.join("Areas/apertune/specs/Spec.md"), "# Spec\n").unwrap();
         std::fs::write(root.join("Areas/plain/Note.md"), "# Note\n").unwrap();
-        std::fs::write(root.join("Areas/other/_Index.md"), "# Other\n").unwrap();
+        std::fs::write(root.join("Areas/other/@Index.md"), "# Other\n").unwrap();
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -11557,7 +11563,7 @@ mod document_link_landing_tests {
         // keeps the selection, the highlight and keyboard focus.
         double_click(visual, "tree-row-Areas/apertune");
         assert!(row(visual, "Areas/apertune").unwrap().expanded);
-        let index = "Areas/apertune/_index.md";
+        let index = "Areas/apertune/@index.md";
         assert_eq!(
             state(visual),
             want(index, "Areas/apertune", "Areas/apertune")
@@ -11639,7 +11645,7 @@ mod document_link_landing_tests {
 
         // Clicking the index row itself selects and highlights that row, and
         // Reveal current keeps it.
-        click(visual, "tree-row-Areas/apertune/_index.md");
+        click(visual, "tree-row-Areas/apertune/@index.md");
         assert_eq!(state(visual), want(index, index, index));
         view.update_in(visual, |v, window, cx| v.focus_current_folder(window, cx));
         visual.run_until_parked();
@@ -11664,7 +11670,7 @@ mod document_link_landing_tests {
         );
         // An index opened any other way (here a link-style open after
         // another note) stands on its folder too.
-        click(visual, "tree-row-Areas/apertune/_index.md");
+        click(visual, "tree-row-Areas/apertune/@index.md");
         assert_eq!(state(visual).1, some(index));
         view.update_in(visual, |v, window, cx| {
             v.open_note("Start.md", None, window, cx)
@@ -11679,7 +11685,7 @@ mod document_link_landing_tests {
         );
 
         // Keyboard: ←/→ only collapse and expand; Open (⌘↓, Ctrl+↓ elsewhere)
-        // is the double click (here an index spelled `_Index.md`). Enter
+        // is the double click (here an index spelled `@Index.md`). Enter
         // stays Rename on a row (#1099).
         let open = if cfg!(target_os = "macos") {
             "cmd-down"
@@ -11715,7 +11721,7 @@ mod document_link_landing_tests {
         visual.simulate_keystrokes(open);
         visual.run_until_parked();
         assert!(row(visual, "Areas/other").unwrap().expanded);
-        let other = "Areas/other/_Index.md";
+        let other = "Areas/other/@Index.md";
         assert_eq!(state(visual), want(other, "Areas/other", "Areas/other"));
         // Open again collapses it; the index stays open.
         visual.simulate_keystrokes(open);
@@ -11752,7 +11758,7 @@ mod document_link_landing_tests {
         let root = temp.path().join("vault");
         std::fs::create_dir_all(root.join("Areas/apertune/specs")).unwrap();
         std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
-        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/@index.md"), "# Apertune\n").unwrap();
         std::fs::write(root.join("Areas/apertune/Alpha.md"), "# Alpha\n").unwrap();
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -11836,7 +11842,7 @@ mod document_link_landing_tests {
             visual.run_until_parked();
         };
         let folder = "Areas/apertune";
-        let index = "Areas/apertune/_index.md";
+        let index = "Areas/apertune/@index.md";
         let opened = || (index.to_owned(), Some(folder.to_owned()));
         double_click(visual, "tree-row-Areas");
         assert!(expanded(visual, "Areas"));

@@ -35,12 +35,27 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 - Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
+## Merging (manager, 13.11)
+
+- A lane merges only PRs it authored itself. Green agent checks are not a
+  merge permission.
+- Never merge a PR whose latest review verdict is «fix first», or one with no
+  review when a review was requested.
+- PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
+  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
+  manager only.
+
 ## Tests and measurements
 
-- Agent builds/tests default to `H=github scripts/agent/gh-check.sh` from a
-  committed worktree; see `docs/agent-checks.md`. Use local build slots only for
+- Before merge (Oleg 13.11 ~14:20): only checks that compile nothing,
+  `H=github scripts/agent/gh-check.sh --fast` on the exact HEAD; no build, no
+  Rust tests, no three-OS run. The full set (`gh-check.sh` without `--fast`
+  and the Forgejo full gate) runs once a day before Stable and gates Stable
+  only; see `docs/agent-checks.md`. Use local build slots only for
   GitHub outages or checks requiring local hardware. Never run Cargo on maestro
   except `cargo fmt`.
+- idunn is used interactively by Oleg: keep there only what needs idunn, and run
+  every build/test as `flock /home/god/work/okilum-idunn-build.lock nice -n 19 ionice -c3 …`.
 - A regression test must fail without the fix. Probes need controls that exercise
   the measured path, so an unfired test cannot look like success.
 - Compare timings on the same hardware in the same session.

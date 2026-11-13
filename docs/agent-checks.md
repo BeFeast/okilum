@@ -1,5 +1,28 @@
 # Agent build/test checks on GitHub
 
+## When which check runs (Oleg 13.11 ~14:20)
+
+- **Before merge:** only checks that compile nothing, a couple of minutes:
+
+  ```bash
+  H=github scripts/agent/gh-check.sh --fast
+  ```
+
+  It pushes to `agent-checks-fast/<branch>`, where only the `pre-merge` job
+  runs: pinned vendor/comrak verification, `cargo fmt --check`, the helper,
+  CI, releases, updater, Syncthing and Sprint Python suites, Sync Help and
+  brand. No clippy, no build, no Rust tests, no Windows or macOS job. A
+  pre-merge verdict never counts as a full one.
+- **Beta** is built hourly from the newest main as it is; no check gates it.
+  If main does not build, that hour's beta is skipped and the offending PR is
+  reverted or fixed within the hour.
+- **The full set** (`gh-check.sh` without `--fast`, plus the Forgejo full
+  gate) runs once a day before Stable is built, and gates Stable only.
+- A compile or test run may still be started in the background for
+  information; nothing waits for it.
+
+## The full set
+
 Start from main containing this workflow and helper; older worker branches must
 rebase onto that main once before using GitHub checks. Commit the worktree, then
 run from that worktree:
@@ -21,8 +44,8 @@ must contain only public code and synthetic fixtures, never private/corporate da
 Only `agent-checks.yml` listens to this namespace. It creates no GitHub PR, tags,
 release, signing or publication work. Forgejo remains primary; its existing main
 and release-tag mirror is unchanged. Push the implementation branch to Forgejo
-and open its PR there as usual. Before merge, require gh-check green on this
-exact HEAD, then merge the PR yourself. Any later commit needs a new check.
+and open its PR there as usual. Before merge, require `gh-check.sh --fast`
+green on this exact HEAD; who may merge which PR is in `AGENTS.md`.
 Forgejo CI does not run on PRs; main has no required status checks. Forgejo
 suites run nightly and on workflow_dispatch; pre-Stable certification remains
 source-pinned and on demand. Main pushes only mirror source and build the beta of

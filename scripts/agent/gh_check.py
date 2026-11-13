@@ -34,14 +34,45 @@ def gh_json(*args):
     return json.loads(output("gh", *args))
 
 
-def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=False):
+# The pre-merge gate (Oleg 13.11 ~14:20): checks that compile nothing. The
+# full set (this lane's ordinary verdict) runs once a day before Stable.
+FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formatting",
+                 "Verify agent helper controls", "Run CI, releases and updater Python suites",
+                 "Verify bundled Sync Help and brand"}
+
+
+def fast_verdict(info):
+    """A pre-merge run counts only as itself: no other job may have run."""
+    jobs = info.get("jobs", [])
+    names = {job.get("name") for job in jobs}
+    if (len(names) != len(jobs) or "pre-merge" not in names
+            or not names <= {"pre-merge", "linux", "windows-recovery", "macos-sync"}):
+        return 75
+    gate = next(job for job in jobs if job.get("name") == "pre-merge")
+    others = [job for job in jobs if job.get("name") != "pre-merge"]
+    if info.get("conclusion") == "success":
+        passed = {s["name"] for s in gate.get("steps", []) if s.get("conclusion") == "success"}
+        return 0 if (FAST_REQUIRED <= passed and gate.get("conclusion") == "success"
+                     and all(job.get("conclusion") == "skipped" for job in others)) else 75
+    if info.get("conclusion") != "failure":
+        return 75
+    failed = [s for s in gate.get("steps", []) if s.get("conclusion") == "failure"]
+    if not failed or any(s["name"] in INFRA_STEPS or "actions/checkout@" in s["name"] for s in failed):
+        return 75
+    return 1
+
+
+def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=False, fast=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
+    if fast:
+        return fast_verdict(info)
     jobs = info.get("jobs", [])
     names = {job.get("name") for job in jobs}
     if (len(names) != len(jobs) or not {"linux", "windows-recovery"} <= names
-            or not names <= {"linux", "windows-recovery", "macos-sync"}
+            or not names <= {"linux", "windows-recovery", "macos-sync", "pre-merge"}
+            or any(job.get("name") == "pre-merge" and job.get("conclusion") != "skipped" for job in jobs)
             or (macos_sync and "macos-sync" not in names)):
         return 75
     mac = next((job for job in jobs if job.get("name") == "macos-sync"), None)
@@ -128,6 +159,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=7200, help="total wait ceiling in seconds")
     parser.add_argument("--receipt", type=Path, help="also write the final GitHub JSON receipt to this path")
     parser.add_argument("--benchmark", action="store_true", help="repeat checks with warm target on the same runner VM")
+    parser.add_argument("--fast", action="store_true",
+                        help="pre-merge gate: formatting, Python and script checks; compiles nothing")
     parser.add_argument("--publication-baseline", help="public main SHA for same-host editor controls; requires --dispatch")
     args = parser.parse_args()
     if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):
@@ -136,6 +169,8 @@ def main():
         parser.error("--macos-sync requires --dispatch")
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
+    if args.fast and (args.benchmark or args.macos_sync or args.publication_baseline):
+        parser.error("--fast is the pre-merge gate; full-only controls need a full check")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     run("git", "rev-parse", "--show-toplevel", stdout=subprocess.DEVNULL)
@@ -146,7 +181,8 @@ def main():
     branch = output("git", "symbolic-ref", "--quiet", "--short", "HEAD")
     # A suffix /benchmark would conflict with the ordinary branch as a Git ref
     # file/directory. Keep benchmark refs in a sibling namespace instead.
-    branch = (f"agent-checks-benchmark/{sha}/" if args.benchmark else "agent-checks/") + branch
+    prefix = "agent-checks-fast/" if args.fast else "agent-checks/"
+    branch = (f"agent-checks-benchmark/{sha}/" if args.benchmark else prefix) + branch
     ref = "refs/heads/" + branch
     remote = "https://github.com/" + REPO + ".git"
     # Use the existing gh credential store without changing global git config or
@@ -207,7 +243,7 @@ def main():
     summarize(info)
     if attempt is not None and info["attempt"] <= attempt:
         return 75
-    result = verdict(info, sha, args.benchmark, bool(args.publication_baseline), args.macos_sync)
+    result = verdict(info, sha, args.benchmark, bool(args.publication_baseline), args.macos_sync, args.fast)
     if result:
         logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)

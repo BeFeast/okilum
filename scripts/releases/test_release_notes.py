@@ -259,6 +259,250 @@ class MergedRange(unittest.TestCase):
         self.assertIn('page=2', self.client.call.call_args.args[1])
 
 
+class RevertedRange(unittest.TestCase):
+    """Real Git histories shaped like PR 2858/2860 merged and reverted by PR 2870."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(); self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.git('init', '-b', 'main')
+        for key, value in [('gc.auto', '0'), ('maintenance.auto', 'false'), ('gc.autoDetach', 'false'),
+                           ('user.name', 'Offline test'), ('user.email', 'test@example.invalid')]:
+            self.git('config', key, value)
+        self.base = self.commit('Published beta')
+        self.prs = []
+        self.pr_commits = {}
+        self.client = Mock()
+        self.client.call.side_effect = self.forgejo
+
+    def forgejo(self, method, path):
+        if path.startswith('/pulls?'):
+            return list(self.prs)
+        number = int(path.split('/')[2])
+        return [{'sha': sha} for sha in self.pr_commits.get(number, [])] if 'page=1&' in path else []
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip()
+
+    def commit(self, message, path=None):
+        if path:
+            (self.root / path).write_text(message)
+            self.git('add', path)
+            self.git('commit', '-m', message)
+        else:
+            self.git('commit', '--allow-empty', '-m', message)
+        return self.git('rev-parse', 'HEAD')
+
+    def merge(self, number, title, body='', change=None, reverts=()):
+        """Merge a PR branch; `reverts` are merge commits reverted by Git on that branch."""
+        branch = f'pr-{number}'
+        self.git('checkout', '-q', '-b', branch, 'main')
+        if change:
+            self.commit(title, change)
+        for merge in reverts:
+            self.git('revert', '--no-edit', '-m', '1', merge)
+        if not change and not reverts:
+            self.commit(title)
+        self.git('checkout', '-q', 'main')
+        self.git('merge', '--no-ff', branch, '-m', f"Merge pull request '{title}' (#{number})")
+        sha = self.git('rev-parse', 'HEAD')
+        self.prs.append(pr(number, title, body=body, merged=True, merge_commit_sha=sha))
+        return sha
+
+    def select(self, previous, source):
+        execute = subprocess.run
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+            return notes.merged_items(self.client, previous, source)
+
+    def features(self):
+        terminal = self.merge(2858, 'Add Open in terminal for vault files and folders (#2837)', change='terminal')
+        mode = self.merge(2860, 'Settings: default open mode for notes, Read or Edit (#2817)',
+                          body='User-visible: default open mode for notes, Read or Edit (#2817)', change='mode')
+        return terminal, mode
+
+    def revert(self, reverts, body='User-visible: none (the features had not reached a published beta)'):
+        return self.merge(2870, 'Revert unreviewed merges of Open in terminal (2858) and default open mode (2860)',
+                          body=body, reverts=reverts)
+
+    def test_same_range_git_revert_drops_both_items_and_the_revert(self):
+        features = self.features()
+        self.merge(2864, 'Offer the Manager rules re-read after any agent file save in scope')
+        source = self.revert(features[::-1])
+        self.assertEqual(self.select(self.base, source),
+                         [{'pr': 2864, 'kind': 'fix',
+                           'text': 'Offer the Manager rules re-read after any agent file save in scope'}])
+        # Control: without the revert both false lines are the range's content.
+        self.assertEqual([item['pr'] for item in self.select(self.base, features[1])], [2860, 2858])
+
+    def test_same_range_body_marker_without_git_revert(self):
+        self.features()
+        source = self.revert((), body='Reverts: #2858, #2860\nUser-visible: none')
+        self.assertEqual(self.select(self.base, source), [])
+        # A marker inside a template comment is not authored.
+        self.prs[-1]['body'] = '<!--\nReverts: #2858\n-->'
+        self.assertEqual([item['pr'] for item in self.select(self.base, source)], [2870, 2860, 2858])
+
+    def test_next_range_after_revert_lists_only_the_reland(self):
+        features = self.features()
+        reverted = self.revert(features[::-1])
+        unrelated = self.merge(2857, 'fix: free underscore paths from special vault roles (#2847)')
+        reland = self.merge(2872, 'Add Open in terminal for vault files and folders (#2837)',
+                            body='User-visible: Open a vault file or folder in the system terminal', change='terminal')
+        self.assertEqual(self.select(reverted, reland), [
+            {'pr': 2872, 'kind': 'fix', 'text': 'Open a vault file or folder in the system terminal'},
+            {'pr': 2857, 'kind': 'fix', 'text': 'free underscore paths from special vault roles (#2847)'}])
+        self.assertEqual(self.select(reverted, unrelated)[0]['pr'], 2857)
+
+    def test_cross_range_revert_says_removed_again_for_each_reverted_pr(self):
+        features = self.features()
+        shipped = features[1]
+        self.merge(2864, 'fix: Keep rules re-read offer')
+        source = self.revert(features[::-1])
+        self.assertEqual(self.select(shipped, source), [
+            {'pr': 2858, 'kind': 'fix', 'text': 'Removed again: Add Open in terminal for vault files and folders (#2837)'},
+            {'pr': 2860, 'kind': 'fix', 'text': 'Removed again: default open mode for notes, Read or Edit (#2817)'},
+            {'pr': 2864, 'kind': 'fix', 'text': 'Keep rules re-read offer'}])
+
+    def test_cross_range_revert_with_own_summary_uses_it(self):
+        features = self.features()
+        source = self.revert(features[::-1], body='User-visible: Open in terminal and default open mode are withdrawn')
+        self.assertEqual(self.select(features[1], source), [
+            {'pr': 2870, 'kind': 'fix', 'text': 'Open in terminal and default open mode are withdrawn'}])
+
+    def test_cross_range_partial_revert_keeps_the_other_feature_shipped(self):
+        terminal, mode = self.features()
+        source = self.revert([terminal], body='Reverts: #2858')
+        self.assertEqual([item['text'] for item in self.select(mode, source)],
+                         ['Removed again: Add Open in terminal for vault files and folders (#2837)'])
+
+    def test_revert_of_revert_restores_only_through_reland_line(self):
+        terminal, _ = self.features()
+        reverted = self.revert([terminal])
+        reland = self.merge(2872, 'Revert "Revert unreviewed merges"', reverts=[reverted],
+                            body='User-visible: Open a vault file or folder in the system terminal')
+        expected = [{'pr': 2872, 'kind': 'fix', 'text': 'Open a vault file or folder in the system terminal'},
+                    {'pr': 2860, 'kind': 'fix', 'text': 'default open mode for notes, Read or Edit (#2817)'}]
+        self.assertEqual(self.select(self.base, reland), expected)
+        # Shipped before, withdrawn and re-landed inside one later build: nothing
+        # was removed, and the re-land line is the only claim.
+        self.assertEqual(self.select(self.git('rev-parse', 'HEAD~2'), reland), expected[:1])
+        # Without its own line, a re-land claims nothing.
+        self.prs[-1]['body'] = ''
+        self.assertEqual(self.select(self.base, reland), expected[1:])
+        # A later build after the withdrawal: re-landing a revert never says
+        # «removed again» about the revert itself.
+        self.prs[-1]['body'] = 'User-visible: ' + expected[0]['text']
+        self.assertEqual(self.select(reverted, reland), expected[:1])
+
+    def test_revert_pushed_without_pr_and_unrelated_prs_untouched(self):
+        terminal, mode = self.features()
+        self.git('revert', '--no-edit', '-m', '1', terminal)
+        source = self.merge(2864, 'feat: Rules re-read offer')
+        self.assertEqual(self.select(self.base, source), [
+            {'pr': 2864, 'kind': 'feature', 'text': 'Rules re-read offer'},
+            {'pr': 2860, 'kind': 'fix', 'text': 'default open mode for notes, Read or Edit (#2817)'}])
+        self.assertEqual([item['text'] for item in self.select(mode, source)],
+                         ['Removed again: Add Open in terminal for vault files and folders (#2837)', 'Rules re-read offer'])
+
+    def squash(self, number, title, files, body=''):
+        """Squash-merge a PR whose own commits stay off main."""
+        branch = f'pr-{number}'
+        self.git('checkout', '-q', '-b', branch, 'main')
+        own = [self.commit(f'{title} part {path}', path) for path in files]
+        self.git('checkout', '-q', 'main')
+        self.git('merge', '--squash', branch)
+        self.git('commit', '-m', f'{title} (#{number})')
+        sha = self.git('rev-parse', 'HEAD')
+        self.prs.append(pr(number, title, body=body, merged=True, merge_commit_sha=sha))
+        self.pr_commits[number] = own
+        return sha, own
+
+    def direct(self, number, *git_args, body=''):
+        """A PR merged as the single commit `git_args` creates on main (squash of one commit)."""
+        self.git(*git_args)
+        sha = self.git('rev-parse', 'HEAD')
+        self.prs.append(pr(number, self.git('log', '-1', '--format=%s'), body=body, merged=True, merge_commit_sha=sha))
+        return sha
+
+    def test_quoted_trailer_or_marker_never_hides_a_feature(self):
+        terminal, mode = self.features()
+        # A commit quoting git's trailer is not a revert unless git wrote it.
+        self.git('checkout', '-q', '-b', 'quote', 'main')
+        self.git('commit', '--allow-empty', '-m', f'Explain release notes\n\nThis reverts commit {terminal}.')
+        self.git('commit', '--allow-empty', '-m', f'Revert "docs"\n\n> This reverts commit {terminal}.')
+        self.git('checkout', '-q', 'main')
+        self.git('merge', '--no-ff', 'quote', '-m', 'Merge docs (#2880)')
+        self.prs.append(pr(2880, 'Document reverts', merged=True, merge_commit_sha=self.git('rev-parse', 'HEAD'),
+                           body='Example:\n```\nReverts: #2858\n```\n> Reverts: #2860\n    Reverts: #2858\n'
+                                'Use `Reverts: #2858` to\nUser-visible: Revert notes are documented'))
+        source = self.git('rev-parse', 'HEAD')
+        self.assertEqual([item['pr'] for item in self.select(self.base, source)], [2880, 2860, 2858])
+        self.assertEqual([item['pr'] for item in self.select(mode, source)], [2880])
+
+    def test_squash_revert_then_reland_resolves_one_identity(self):
+        terminal, mode = self.features()
+        squash_revert = self.direct(2870, 'revert', '--no-edit', '-m', '1', terminal)
+        reland = self.direct(2872, 'revert', '--no-edit', squash_revert,
+                             body='User-visible: Terminal is back')
+        back = [{'pr': 2872, 'kind': 'fix', 'text': 'Terminal is back'}]
+        self.assertEqual(self.select(mode, reland), back)
+        self.assertEqual(self.select(self.base, reland),
+                         back + [{'pr': 2860, 'kind': 'fix', 'text': 'default open mode for notes, Read or Edit (#2817)'}])
+        self.assertEqual(self.select(squash_revert, reland), back)
+
+    def test_revert_of_a_squashed_prs_own_commit(self):
+        squashed, own = self.squash(2858, 'Add Open in terminal', ['terminal-a', 'terminal-b'])
+        self.git('checkout', '-q', '-b', 'pr-2870b', 'main')
+        self.git('revert', '--no-edit', own[0])
+        self.git('checkout', '-q', 'main')
+        self.git('merge', '--no-ff', 'pr-2870b', '-m', 'Merge revert (#2870)')
+        source = self.git('rev-parse', 'HEAD')
+        self.prs.append(pr(2870, 'Revert part of terminal', merged=True, merge_commit_sha=source))
+        self.assertEqual(self.select(self.base, source), [])
+        self.assertEqual(self.select(squashed, source),
+                         [{'pr': 2858, 'kind': 'fix', 'text': 'Removed again: Add Open in terminal'}])
+
+    def test_user_visible_none_is_exact(self):
+        for text in ['none', 'None.', 'NONE ', 'none (not published).', 'none (the features had not reached a beta)']:
+            with self.subTest(text=text):
+                self.assertIsNone(notes.pr_item(pr(1, 'fix: X', body=f'User-visible: {text}')))
+        for text in ['None of the files disappear', 'none yet — Sync waits for the first save', 'Nonempty folders open']:
+            with self.subTest(text=text):
+                self.assertEqual(notes.pr_item(pr(1, 'fix: X', body=f'User-visible: {text}'))['text'], text)
+
+    def test_missing_history_raises_instead_of_suppressing(self):
+        terminal, mode = self.features()
+        source = self.revert((mode, terminal))
+        # Exit 128 (an unknown commit) is an error, never «not an ancestor».
+        execute = subprocess.run
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+            with self.assertRaisesRegex(ValueError, 'Cannot decide ancestry'):
+                notes.is_ancestor('f' * 40, source)
+            self.assertFalse(notes.is_ancestor(source, terminal))
+        shallow = Path(self.directory.name) / 'shallow'
+        subprocess.check_call(['git', 'clone', '-q', '--depth', '2', f'file://{self.root}', str(shallow)],
+                              stderr=subprocess.DEVNULL)
+        previous = self.git('rev-parse', 'HEAD~1')
+        with patch.object(notes.subprocess, 'run', side_effect=lambda *a, **k: execute(*a, cwd=shallow, **k)):
+            with self.assertRaisesRegex(ValueError, 'full history'):
+                notes.merged_items(self.client, previous, source)
+
+    def test_two_prs_reverting_the_same_shipped_pr_say_it_once(self):
+        terminal, mode = self.features()
+        self.merge(2870, 'Withdraw terminal', body='Reverts: #2858')
+        source = self.merge(2871, 'Withdraw terminal again', body='Reverts: #2858')
+        self.assertEqual(self.select(mode, source),
+                         [{'pr': 2858, 'kind': 'fix', 'text': 'Removed again: Add Open in terminal for vault files and folders (#2837)'}])
+
+    def test_user_visible_none_hides_the_pr(self):
+        self.assertIsNone(notes.pr_item(pr(2870, 'Revert things', body='User-visible: none (not published)')))
+        self.assertIsNone(notes.pr_item(pr(1, 'feat: X', body='User-visible: None')))
+        self.assertEqual(notes.pr_item(pr(2, 'fix: X', body='User-visible: Nonempty folders open'))['text'],
+                         'Nonempty folders open')
+        self.assertEqual(notes.pr_item(pr(3, 'fix: Shown', body='User-visible: none'), include_hidden=True)['text'],
+                         'Shown')
+
+
 class PublicationSidecar(unittest.TestCase):
     def test_capture_before_publish_and_only_add_sidecar_without_descriptor_changes(self):
         import io

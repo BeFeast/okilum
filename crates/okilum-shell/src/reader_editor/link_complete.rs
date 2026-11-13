@@ -1794,6 +1794,26 @@ mod tests {
     }
 
     #[test]
+    fn issue2847_underscore_paths_are_offered_with_hidden_files_off() {
+        let index = Index::new(
+            vault(&[
+                "_Private/Target.md",
+                "_Assets/Target template.md",
+                "@Private/Target.md",
+                ".hidden/Target.md",
+                "Here.md",
+            ]),
+            false,
+        );
+        let results = index.search("Target", "Here.md");
+        assert_eq!(titles(&results).len(), 2);
+        assert!(titles(&results).contains(&"_Private/Target.md"));
+        assert!(titles(&results).contains(&"_Assets/Target template.md"));
+        let shown = Index::new(index.vault.clone(), true);
+        assert_eq!(shown.search("Target", "Here.md").len(), 4);
+    }
+
+    #[test]
     fn notes_rank_by_how_their_name_matches() {
         let index = Index::new(
             vault(&[

@@ -490,8 +490,9 @@ the exact, case-sensitive filename classifier: `AGENTS.md`, `CLAUDE.md`,
 instruction files remain in inventory and can always be opened explicitly;
 Tree lists them with Show hidden files, or temporarily on explicit reveal.
 Ordinary `agent.md`, `agents.md`, `my-AGENTS.md` and backup suffixes do not match.
-Dot/underscore path visibility retains its existing rules and template/index
-exceptions; this is a shared visibility switch, not a filename rename or deletion.
+Only @ and dot path segments are hidden; underscore paths are ordinary (#2847).
+Templates follow the same rule, while @ index rows lead their visible folder.
+This shared visibility switch does not rename or delete files.
 Scanner-excluded generated service directories remain separate from browsable
 hidden files and are not added back by this switch.
 
@@ -557,11 +558,11 @@ instead. Folders the user already opened stay as they are.
 Markdown tree rows use the file stem by default (#1834). Settings → Appearance →
 File tree labels can select Title (first H1 → frontmatter title → file stem);
 the row label and its sort key change together, live in every Reader window.
-Non-Markdown files retain their full name. The folder's `_index.md` still leads
+Non-Markdown files retain their full name. The folder's `@index.md` leads
 its folder, but its label follows the same setting. Reveal and rename continue
 to use the path identity; note headings, Quick Open, search and Linked from keep
 their titles in either mode.
-There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `_` or `.` are
+There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `@` or `.` are
 not shown; their notes stay reachable through links and search. Archive folders
 (`Archive`, `4 Archive`, `Архив`) are muted and open only on request or to reveal
 the current note. Navigating to a hidden note shows its branch muted until the next note;
@@ -865,7 +866,7 @@ updater availability.
 Inbox shows “Not connected”; no connection controls are enabled in this slice.
 The deferred local Excalidraw editor needs no editor-URL setting.
 
-Files also selects a templates folder per vault (default `_Assets/Templates`).
+Files also selects a templates folder per vault (default `@Schema/Templates`; no `_Assets` fallback).
 “New note from template…” uses a standard popup menu, without a modal or raw
 folder path. Escape dismisses without creating anything; choosing a template
 starts the existing inline name field. The menu lists Markdown files directly in
@@ -1064,7 +1065,7 @@ source inputs and the folder tree retain their own navigation keys.
 ### Derived Projects (#370, option B approved 2026-10-07)
 
 Projects sits between Inbox and Folders. It contains every readable folder
-`_index.md` with a scalar `type: project` (case-insensitive), outside PARA archive
+`@index.md` (case-insensitive) with a scalar `type: project` (case-insensitive), outside PARA archive
 folders. It is independent of the folder tree's hidden-item setting. Rows open
 the canonical index note; no Markdown, folders or type values are rewritten.
 

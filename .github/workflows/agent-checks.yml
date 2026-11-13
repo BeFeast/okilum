@@ -2,7 +2,9 @@
 name: agent-checks
 on:
   push:
-    branches: ['agent-checks/**', 'agent-checks-benchmark/**']
+    # agent-checks-fast/** is the pre-merge gate (Oleg 13.11 ~14:20): checks
+    # that compile nothing. The full set runs once a day before Stable.
+    branches: ['agent-checks/**', 'agent-checks-benchmark/**', 'agent-checks-fast/**']
   workflow_dispatch:
     inputs:
       macos_sync_check:
@@ -56,6 +58,7 @@ jobs:
       - name: Run native Mac Sync controls
         run: python3 scripts/ci/macos-sync-source.py
   windows-recovery:
+    if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -105,7 +108,51 @@ jobs:
         run: |
           python scripts/ci/windows-terminal-console.py
           exit $LASTEXITCODE
+  # Pre-merge gate: no compilation, no Rust tests (Oleg 13.11 ~14:20).
+  pre-merge:
+    if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          printf 'source=%s\n' "$OKILUM_SOURCE_COMMIT"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: sudo bash scripts/ci/hosted-ubuntu-apt.sh python3-venv ffmpeg squashfs-tools zstd
+      - name: Prepare and verify pinned vendor and comrak
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          python3 scripts/ci/check-vendor-generation.py
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
+      - name: Verify agent helper controls
+        run: |
+          python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+          python3 -m unittest discover -s scripts/ci -p test_test_group.py
+      - name: Run CI, releases and updater Python suites
+        run: |
+          bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
+      - name: Verify bundled Sync Help and brand
+        run: |
+          python3 docs/help/sync/check.py
+          python3 scripts/rebrand/check_brand.py
   linux:
+    if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04
     timeout-minutes: 100

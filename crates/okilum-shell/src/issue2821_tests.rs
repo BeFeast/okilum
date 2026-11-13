@@ -23,11 +23,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
         reader_tree::folder_index("", &vault.entries),
         FolderIndex::One("@Index.md".into())
     );
-    for (folder, index) in [
-        ("Area", "Area/@index.md"),
-        ("Legacy", "Legacy/_index.md"),
-        ("Mixed", "Mixed/@index.md"),
-    ] {
+    for (folder, index) in [("Area", "Area/@index.md"), ("Mixed", "Mixed/@index.md")] {
         assert_eq!(tree.index_of(folder), FolderIndex::One(index.into()));
         let first = tree
             .rows
@@ -37,14 +33,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
         assert_eq!(first.path, index);
         assert!(first.index);
     }
-    for path in [
-        "@Assets",
-        "@Schema",
-        "@Private",
-        "_Private",
-        "@AgentContract.md",
-        "Mixed/_index.md",
-    ] {
+    for path in ["@Assets", "@Schema", "@Private", "@AgentContract.md"] {
         assert!(
             !tree.rows.iter().any(|row| row.path == path),
             "hidden with preference off: {path}"
@@ -52,11 +41,14 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
         assert!(tree.hidden_by_preference(path));
     }
     assert!(tree.hidden_by_preference("@Schema/Templates/Note.md"));
-    assert!(tree
-        .rows
-        .iter()
-        .any(|row| row.path == "Visible/@data.csv" && !row.hidden));
-    assert!(!tree.hidden_by_preference("Visible/@data.csv"));
+    assert_eq!(tree.index_of("Legacy"), FolderIndex::None);
+    for path in ["_Private", "_Assets", "Mixed/_index.md", "Legacy/_index.md"] {
+        let row = tree.rows.iter().find(|row| row.path == path).unwrap();
+        assert!(!row.hidden && !row.index, "ordinary underscore row: {path}");
+        assert!(!tree.hidden_by_preference(path));
+    }
+    assert!(!tree.rows.iter().any(|row| row.path == "Visible/@data.csv"));
+    assert!(tree.hidden_by_preference("Visible/@data.csv"));
     tree.reveal("@Private/y.md").unwrap();
     assert!(tree
         .rows
@@ -65,14 +57,7 @@ fn mixed_at_tree_visibility_indexes_reveal_and_attachment_names() {
     tree.reveal("Area/Links.md").unwrap();
     assert!(!tree.rows.iter().any(|row| row.path == "@Private"));
     tree.set_show_hidden(true);
-    for path in [
-        "@Assets",
-        "@Schema",
-        "@Private",
-        "_Private",
-        "@AgentContract.md",
-        "Mixed/_index.md",
-    ] {
+    for path in ["@Assets", "@Schema", "@Private", "@AgentContract.md"] {
         assert!(
             tree.rows.iter().any(|row| row.path == path && row.hidden),
             "muted hidden row: {path}"
@@ -138,7 +123,7 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
     std::fs::create_dir_all(root.path().join("_Assets/Attachments")).unwrap();
     assert_eq!(
         attachments::attachment_folder(root.path(), "a.md", AttachmentKind::File),
-        root.path().join("_Assets/Attachments")
+        root.path().join("attachments")
     );
     std::fs::create_dir(root.path().join("@Assets")).unwrap();
     let plan = files::plan(
@@ -198,7 +183,7 @@ fn template_and_language_resolution_preserve_precedence() {
     std::fs::create_dir_all(root.path().join("_Assets/Templates")).unwrap();
     assert_eq!(
         reader_templates::load(root.path(), state.path()).unwrap(),
-        "_Assets/Templates"
+        "@Schema/Templates"
     );
     std::fs::create_dir_all(root.path().join("@Schema/Templates")).unwrap();
     assert_eq!(
@@ -221,14 +206,16 @@ fn template_and_language_resolution_preserve_precedence() {
         reader_templates::load(root.path(), state.path()).unwrap(),
         "Chosen"
     );
-    assert_eq!(
-        reader_agent_language::policy_path(root.path()),
-        "_Schema/language.yaml"
-    );
+    std::fs::create_dir(root.path().join("_Schema")).unwrap();
+    std::fs::write(root.path().join("_Schema/language.yaml"), "gate: []").unwrap();
+    assert!(!root
+        .path()
+        .join(reader_agent_language::POLICY_PATH)
+        .exists());
     std::fs::write(root.path().join("@Schema/language.yaml"), "rules: []").unwrap();
     assert_eq!(
-        reader_agent_language::policy_path(root.path()),
-        "@Schema/language.yaml"
+        std::fs::read_to_string(root.path().join(reader_agent_language::POLICY_PATH)).unwrap(),
+        "rules: []"
     );
 }
 
@@ -268,6 +255,8 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
         view.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
         view.panels.open(reader_layout::Panel::Notes);
         view.sync_tree();
+        Arc::make_mut(&mut view.backlink_titles)
+            .insert("Legacy/_index.md".into(), "Ordinary note".into());
         cx.notify();
     });
     visual.run_until_parked();
@@ -282,6 +271,7 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
         assert_eq!(view.current_rel, "@Index.md");
         assert_eq!(view.vault_index_path().as_deref(), Some("@Index.md"));
         assert_eq!(view.backlink_title("Area/@index.md").0, "Area");
+        assert_eq!(view.backlink_title("Legacy/_index.md").0, "Ordinary note");
     });
     reader.update_in(visual, |view, window, cx| {
         view.sync_tree();
