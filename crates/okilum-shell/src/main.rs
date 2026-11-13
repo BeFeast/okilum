@@ -13286,3 +13286,6 @@ fn initialize_native_sync_qa() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod issue2821_tests;
+
+#[cfg(test)]
+mod note_open_mode_tests;
