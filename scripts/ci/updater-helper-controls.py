@@ -85,7 +85,7 @@ CONTROLS = [
        b'                { fs::remove_file(&p.destination)?; rename_new(&p.stage, &p.destination) }\n')],
      ZIP, 'windows::replacement_preserves_explicit_execute_ace_and_nondefault_attributes'),
     ('truncate-before-read', 'bundle.rs',
-     [(b'let mut outfile = tempfile::NamedTempFile::new_in(parent)?;',
+     [(b'let mut outfile = tempfile::Builder::new().prefix(".vpk-tmp-").tempfile_in(parent)?;',
        b'let mut outfile = misc::retry_io(|| File::create(path))?;'),
       (b'outfile.as_file().sync_all()?;\n        crate::helper_replace::publish(outfile, path)?;',
        b'outfile.sync_all()?;')],
