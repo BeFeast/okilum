@@ -14,10 +14,6 @@ pub(crate) mod tree;
 
 /// «Reading structure…» appears only when reading takes longer than this.
 const READING_DELAY: Duration = Duration::from_millis(300);
-/// A jump moves the caret at once and lands its scroll a frame or two later
-/// (deferred, clamped at the end of the text): a top change this soon after a
-/// caret move belongs to that move, not to the user scrolling.
-const JUMP_SETTLE: Duration = Duration::from_millis(200);
 
 /// Contents from the viewer's whole-file tree (#2814): JSON in Read.
 /// Listed group rows by parent: `(first_index, last_index, row)` sorted by
@@ -47,8 +43,6 @@ struct Snapshot {
     /// A node a caret move named: its path opens once and its row scrolls
     /// into view when listed. `true` once the path was opened.
     reveal: Option<(usize, bool)>,
-    /// When the caret last moved, on the executor clock.
-    caret_moved: Option<std::time::Instant>,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -364,7 +358,6 @@ impl View {
             self.snapshot.seen = None;
             self.snapshot.follow_caret = false;
             self.snapshot.reveal = None;
-            self.snapshot.caret_moved = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
             self.snapshot.state = SnapshotState::Absent;
@@ -446,26 +439,29 @@ impl View {
         match self.snapshot.seen.replace(now) {
             // A view switch is not a caret move, nor a new page whose caret
             // is still where loading the page put it (the position scrubber):
-            // the top of the view leads. A Find hit or a Contents click on
+            // the top of the view leads. A Find hit or a Contents jump on
             // another page places the caret inside it.
             Some(before)
-                if before.view != now.view || (before.page != now.page && now.caret == Some(0)) =>
+                if before.view != now.view
+                    || (before.page != now.page
+                        && now.caret == Some((now.page, 0))
+                        && before.jumps == now.jumps) =>
             {
                 self.snapshot.follow_caret = false;
                 self.snapshot.reveal = None;
             }
             // Selection wins over scroll when both changed in one sample.
-            Some(before) if before.caret != now.caret && now.caret_node.is_some() => {
+            Some(before)
+                if (before.caret != now.caret || before.jumps != now.jumps)
+                    && now.caret_node.is_some() =>
+            {
                 self.snapshot.follow_caret = true;
                 self.snapshot.reveal = now.caret_node.map(|node| (node, false));
-                self.snapshot.caret_moved = Some(cx.background_executor().now());
             }
-            Some(before)
-                if before.top != now.top
-                    && self.snapshot.caret_moved.is_none_or(|at| {
-                        cx.background_executor().now().saturating_duration_since(at) >= JUMP_SETTLE
-                    }) =>
-            {
+            // Scrolling is a top change between two settled samples. A jump,
+            // a caret-follow or an end-of-text clamp lands its scroll in the
+            // layout after the caret move: that change belongs to the move.
+            Some(before) if before.top != now.top && before.settled && now.settled => {
                 self.snapshot.follow_caret = false;
                 self.snapshot.reveal = None;
             }
@@ -485,11 +481,10 @@ impl View {
                 self.list.scroll_to_reveal_item(row);
                 return Some(row);
             } else if !opened {
-                // Rows with the path open arrive from the worker; the swap
+                // The worker opens the path and lists the rows; the swap
                 // syncs again and scrolls the row into view.
                 self.snapshot.reveal = Some((node, true));
-                tree::open_path(&doc, node, self.expansion());
-                self.rebuild_rows(cx);
+                self.rebuild_rows_revealing(Some(node), cx);
             }
         }
         let mut at = Some(node);
@@ -524,6 +519,13 @@ impl View {
     /// Visible rows on a worker; the list keeps showing the previous rows
     /// until the new ones arrive.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_rows_revealing(None, cx);
+    }
+
+    /// `reveal`: a node whose ancestors and groups the worker opens first, so
+    /// a path through a container of any size costs the UI thread nothing.
+    /// The opened state comes back with the rows.
+    fn rebuild_rows_revealing(&mut self, reveal: Option<usize>, cx: &mut Context<Self>) {
         let Some(doc) = self
             .snapshot
             .pending
@@ -533,13 +535,16 @@ impl View {
             return;
         };
         let used = doc.clone();
-        let expansion = self.expansion().clone();
+        let mut expansion = self.expansion().clone();
         self.snapshot.generation += 1;
         let generation = self.snapshot.generation;
         self.snapshot.task = Some(cx.spawn(async move |this, cx| {
-            let (rows, positions, groups) = cx
+            let (rows, positions, groups, expansion) = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(node) = reveal {
+                        tree::open_path(&doc, node, &mut expansion);
+                    }
                     let rows = tree::visible_rows(&doc, &expansion);
                     let mut positions = HashMap::new();
                     let mut groups = GroupRows::new();
@@ -565,7 +570,7 @@ impl View {
                     for list in groups.values_mut() {
                         list.sort_by_key(|&(first, _, _)| first);
                     }
-                    (rows, positions, groups)
+                    (rows, positions, groups, reveal.map(|_| expansion))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -583,6 +588,11 @@ impl View {
                     this.snapshot.pending = None;
                 }
                 this.snapshot.doc = Some(used);
+                // No toggle ran since (it would have bumped the generation):
+                // the opened path replaces the state it was computed from.
+                if let Some(expansion) = expansion {
+                    *this.expansion() = expansion;
+                }
                 this.snapshot.rows = Arc::new(rows);
                 this.snapshot.positions = Arc::new(positions);
                 this.snapshot.groups = Arc::new(groups);

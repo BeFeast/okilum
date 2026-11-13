@@ -854,9 +854,14 @@ fn listed(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> bool {
     })
 }
 
-/// `big` has 31 children, so it starts closed; `target` is its last key.
+/// Lines: 1-60 `a00`-`a59`, 61 `big` (31 children, so it starts closed),
+/// 62-91 `c00`-`c29`, 92 `target`, 94-153 `p00`-`p59`.
 fn caret_fixture() -> String {
-    let mut text = String::from("{\n  \"head\": 1,\n  \"big\": {\n");
+    let mut text = String::from("{\n");
+    for i in 0..60 {
+        text += &format!("  \"a{i:02}\": {i},\n");
+    }
+    text += "  \"big\": {\n";
     for i in 0..30 {
         text += &format!("    \"c{i:02}\": {i},\n");
     }
@@ -890,7 +895,7 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
         "positive: big starts closed"
     );
     // Scrolling: the closed ancestor carries the mark; nothing opens.
-    scrolled_to(&view, &code, visual, 33);
+    scrolled_to(&view, &code, visual, 92);
     assert_eq!(
         marked_key(&view, visual),
         "big",
@@ -907,13 +912,20 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
     assert_eq!(marked_key(&view, visual), "target");
     view.read_with(visual, |v, _| {
         let row = v.snapshot.current.unwrap();
+        let top = v.list.logical_scroll_top().item_ix;
+        let shown = (v.list.viewport_bounds().size.height / px(OUTLINE_ROW_HEIGHT)) as usize;
         assert!(
-            v.list.logical_scroll_top().item_ix <= row,
-            "the row is scrolled into view"
+            row > 40,
+            "positive: the row starts below a first screen of rows ({row})"
+        );
+        assert!(
+            top <= row && row < top + shown,
+            "the row is on screen: {top}..{} holds {row}",
+            top + shown
         );
     });
     // Scrolling again: the top node leads; opened rows stay open.
-    scrolled_to(&view, &code, visual, 40);
+    scrolled_to(&view, &code, visual, 99);
     assert_eq!(
         marked_key(&view, visual),
         "p05",
@@ -928,7 +940,7 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
     let input = code.read_with(visual, |p, _| p.input().unwrap());
     input.update(visual, |input, cx| {
         input.set_selected_range(c05..c05, cx);
-        input.scroll_line_to_top(60, cx);
+        input.scroll_line_to_top(120, cx);
     });
     paint(visual);
     assert_eq!(
@@ -1010,4 +1022,149 @@ fn contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_
         panic!("page 1's first node sits in the closed first group: nothing opened")
     };
     assert_eq!(first, 0);
+}
+
+/// Frames without moving the clock: a caret move's own scroll lands, and a
+/// scroll right after it happens inside any time window.
+fn paint_now(visual: &mut VisualTestContext) {
+    for _ in 0..3 {
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        visual.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn contents2814_scrolling_right_after_a_caret_move_follows_the_top(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("soon.json", text.as_str())], "soon.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint_now(visual);
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    let a10 = node_start(&view, visual, "a10");
+    input.update(visual, |input, cx| input.set_selected_range(a10..a10, cx));
+    paint_now(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "a10",
+        "positive: the caret leads"
+    );
+    // The user scrolls at once, with no time passing.
+    input.update(visual, |input, cx| input.scroll_line_to_top(130, cx));
+    paint_now(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p36",
+        "a scroll right after a caret move is scrolling"
+    );
+}
+
+#[gpui::test]
+fn contents2814_a_repeated_jump_after_scrolling_away_marks_the_node_again(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("again.json", text.as_str())], "again.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    // Near the end the jump's scroll is clamped: the top line is not p58's.
+    let p58 = key_index(&view, visual, "p58");
+    where_you_are(&view, visual, p58);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p58",
+        "positive: the jump marks p58"
+    );
+    scrolled_to(&view, &code, visual, 99);
+    assert_eq!(marked_key(&view, visual), "p05", "positive: scrolled away");
+    // The same jump again leaves the cursor where it already was.
+    where_you_are(&view, visual, p58);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p58",
+        "a repeated jump is a caret move"
+    );
+}
+
+#[gpui::test]
+fn contents2814_find_hits_at_the_same_local_offset_on_adjacent_pages(cx: &mut TestAppContext) {
+    // 16 bytes per member after `{`: node i starts at 1 + 16i, so nodes 2050
+    // and 4098 sit at the same offset within pages 1 and 2 (32 KiB pages).
+    let keys: Vec<String> = (0..20_000)
+        .map(|i| format!("\"k{i:06}\":{}", 10_000 + i))
+        .collect();
+    let text = format!("{{{}}}", keys.join(","));
+    let (reader, visual, _root) = reader_with(cx, &[("pages.json", text.as_str())], "pages.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Raw, w, cx));
+    settle(visual);
+    paint(visual);
+    let (first, second) = (
+        node_start(&view, visual, "k002050"),
+        node_start(&view, visual, "k004098"),
+    );
+    assert_eq!(
+        (first / 32_768, second / 32_768, first % 32_768),
+        (1, 2, second % 32_768),
+        "positive: the same local offset on adjacent pages"
+    );
+    let find = |visual: &mut VisualTestContext, query: &str| {
+        let query = query.to_owned();
+        let code = code.clone();
+        visual.update(move |w, cx| {
+            let target = code.read(cx).find_target(code.clone(), cx);
+            target.set_query(&query, w, cx);
+        });
+        settle(visual);
+        paint(visual);
+    };
+    find(visual, "k002050");
+    assert_eq!(
+        marked_key(&view, visual),
+        "k002050",
+        "positive: the first hit"
+    );
+    find(visual, "k004098");
+    assert_eq!(
+        marked_key(&view, visual),
+        "k004098",
+        "the hit on the next page is a caret move"
+    );
+}
+
+#[gpui::test]
+fn contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_walk(
+    cx: &mut TestAppContext,
+) {
+    let keys: Vec<String> = (0..50_000)
+        .map(|i| format!("    \"k{i:05}\": {i}"))
+        .collect();
+    let text = format!("{{\n  \"big\": {{\n{}\n  }}\n}}\n", keys.join(",\n"));
+    let (reader, visual, _root) = reader_with(cx, &[("huge.json", text.as_str())], "huge.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let start = node_start(&view, visual, "k49990");
+    let doc = view.read_with(visual, |v, _| v.snapshot.doc.clone().unwrap());
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| {
+        input.set_selected_range(start..start, cx)
+    });
+    // The sample after the caret move, before any worker runs.
+    let steps = view.update(visual, |v, cx| {
+        doc.child_steps
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        v.sync_current(cx);
+        doc.child_steps.load(std::sync::atomic::Ordering::Relaxed)
+    });
+    assert_eq!(
+        steps, 0,
+        "the UI thread walked {steps} children to open the path"
+    );
+    paint(visual);
+    assert!(
+        listed(&view, visual, "k49990"),
+        "the worker opened the path"
+    );
+    assert_eq!(marked_key(&view, visual), "k49990");
 }

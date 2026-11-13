@@ -2,16 +2,23 @@
 //! whole-file tree it already holds, and navigation in the active view.
 use super::*;
 
-/// One sample of «where you are» (#2814 9b). A changed `caret` is a caret
-/// move, a Find hit or a Tree selection; a changed `top` alone is scrolling.
+/// One sample of «where you are» (#2814 9b). A changed `caret` or `jumps` is
+/// a caret move, a Find hit, a Tree selection or a Contents jump; a changed
+/// `top` between two settled samples is scrolling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Whereabouts {
     pub view: View,
     pub page: usize,
-    pub caret: Option<usize>,
+    /// `(page, offset in the page)` in Raw and Formatted, `(0, row)` for the
+    /// Tree selection: the same local offset on another page is another caret.
+    pub caret: Option<(usize, usize)>,
+    pub jumps: u64,
     pub caret_node: Option<usize>,
     pub top: usize,
     pub top_node: Option<usize>,
+    /// The view's scroll has landed: no jump, caret-follow or end-of-text
+    /// clamp is waiting for the next layout.
+    pub settled: bool,
 }
 
 /// Contents for the current file, in the order the panel checks.
@@ -97,10 +104,13 @@ impl CodePreview {
                 Some(Whereabouts {
                     view: View::Tree,
                     page: 0,
-                    caret: self.structure.selected,
+                    caret: self.structure.selected.map(|row| (0, row)),
+                    jumps: self.contents_jumps,
                     caret_node: node(self.structure.selected),
                     top,
                     top_node: node(self.structure.visible.get(top).copied()),
+                    // The uniform list reports a requested item as its top at once.
+                    settled: true,
                 })
             }
             View::Raw | View::Formatted => {
@@ -121,10 +131,12 @@ impl CodePreview {
                 Some(Whereabouts {
                     view: self.view,
                     page: self.page,
-                    caret: Some(cursor),
+                    caret: Some((self.page, cursor)),
+                    jumps: self.contents_jumps,
                     caret_node: node(active.row_at(&(caret..caret))),
                     top: line,
                     top_node: node(active.row_at(&(top..top))),
+                    settled: input.scroll_settled(),
                 })
             }
             View::Table => None,
@@ -159,6 +171,7 @@ impl CodePreview {
         if index >= raw.structure.len() || active.structure.len() != raw.structure.len() {
             return;
         }
+        self.contents_jumps += 1;
         match self.view {
             View::Tree => {
                 self.structure.reveal_node(index, &active);
