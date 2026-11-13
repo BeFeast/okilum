@@ -631,6 +631,19 @@ pub struct BrainView {
 }
 
 impl BrainView {
+    /// The workspace window's close, from the platform or the title bar's
+    /// own close button (#2805): save open editors, then ask about this one.
+    pub(crate) fn request_window_close(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !crate::reader_editor::save_window(window.window_handle(), cx) {
+            return false;
+        }
+        self.editor_request_close(window, cx)
+    }
+
     pub fn new(endpoint: SocketAddr, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_guarded(endpoint, None, window, cx)
     }
@@ -644,10 +657,12 @@ impl BrainView {
             app_quit::register(cx.weak_entity(), window.window_handle(), cx);
             let weak = cx.weak_entity();
             window.on_window_should_close(cx, move |window, cx| {
-                if !crate::reader_editor::save_window(window.window_handle(), cx) {
-                    return false;
-                }
-                weak.update(cx, |this, cx| this.editor_request_close(window, cx))
+                crate::reader_diagnostics::window_close_requested(
+                    window,
+                    cx,
+                    "native platform request",
+                );
+                weak.update(cx, |this, cx| this.request_window_close(window, cx))
                     .unwrap_or(true)
             });
         }

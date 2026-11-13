@@ -120,6 +120,24 @@ impl OpenIntent {
     }
 }
 
+/// One close routine for every user close of a Reader window (#2805): the
+/// native platform request and, with Linux client-side decorations (GNOME
+/// Wayland), the title bar's own close button, which otherwise removes the
+/// window directly and skips the origin record, window geometry, the
+/// deleted-note choice and the final save. `true` means close now.
+pub(crate) fn request_reader_close(
+    reader: &gpui::WeakEntity<super::Reader>,
+    origin: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    super::reader_diagnostics::window_close_requested(window, cx, origin);
+    super::window_state::record_window(window, cx);
+    reader
+        .update(cx, |reader, cx| reader.prepare_window_close(window, cx))
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1376,14 +1394,7 @@ pub(crate) fn create_window(
         }
         let weak = reader.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
-            super::reader_diagnostics::window_close_requested(
-                window,
-                cx,
-                "native platform request",
-            );
-            super::window_state::record_window(window, cx);
-            weak.update(cx, |reader, cx| reader.prepare_window_close(window, cx))
-                .unwrap_or(true)
+            request_reader_close(&weak, "native platform request", window, cx)
         });
         let root = cx.new(|cx| Root::new(reader, window, cx));
         super::window_state::track_with_restore(&root, frame_key, !duplicate, window, cx);
