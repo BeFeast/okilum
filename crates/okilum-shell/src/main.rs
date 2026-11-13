@@ -2941,10 +2941,6 @@ impl Reader {
             }
         }
         if self.file_preview.is_some() && self.editing.is_none() {
-            if let Some(table) = self.file_preview.as_ref().and_then(|p| p.table.as_ref()) {
-                table.update(cx, |table, cx| table.focus_filter(window, cx));
-                return;
-            }
             if let Some(code) = self.file_preview.as_ref().and_then(|p| p.code.as_ref()) {
                 code.update(cx, |code, cx| {
                     code.open_paged_find(window, cx);

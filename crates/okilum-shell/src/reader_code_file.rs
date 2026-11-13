@@ -85,7 +85,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "xml" | "xsd" | "xsl" => "xml",
-        "txt" => "text",
+        "txt" | "csv" | "tsv" => "text",
         "sql" => "sql",
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
@@ -129,6 +129,10 @@ enum State {
 pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
+    path: PathBuf,
+    raw_requested: bool,
+    _table_subscription: Option<Subscription>,
+    table_failure: Option<String>,
     opened_at: Instant,
     state: State,
     source_bytes: Option<usize>,
@@ -271,6 +275,16 @@ impl CodePreview {
         self.source_bytes = Some(bytes);
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_view(&self) -> View {
+        self.view
+    }
+
+    #[cfg(test)]
+    pub(crate) fn table_view(&self) -> Option<Entity<reader_delimited::TablePreview>> {
+        self.table.clone()
+    }
+
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
         self.table.clone()
@@ -279,6 +293,9 @@ impl CodePreview {
     #[cfg(feature = "data-view-native-harness")]
     pub(crate) fn native_source_ready(&self) -> bool {
         self.document.is_some()
+            || self.view == View::Table
+                && self.source_bytes.is_some()
+                && self.table_failure.is_none()
     }
 
     pub(crate) fn preserve_zoom_anchor(
@@ -299,87 +316,6 @@ impl CodePreview {
         cx: &mut Context<Self>,
     ) -> Self {
         let started = Instant::now();
-        let json = is_json(&rel);
-        let table_path = path.clone();
-        let language = language(&rel).unwrap_or("text");
-        let task = cx.background_executor().spawn(async move {
-            let bytes = std::fs::metadata(&path)?.len();
-            if bytes > MAX_BYTES {
-                return anyhow::Ok(Loaded::TooLarge(bytes));
-            }
-            Ok(
-                match String::from_utf8({
-                    use std::io::Read as _;
-                    let mut bytes = Vec::new();
-                    std::fs::File::open(&path)?
-                        .take(MAX_BYTES + 1)
-                        .read_to_end(&mut bytes)?;
-                    if bytes.len() as u64 > MAX_BYTES {
-                        return Ok(Loaded::TooLarge(bytes.len() as u64));
-                    }
-                    bytes
-                }) {
-                    Ok(text) => Loaded::Text(text),
-                    Err(_) => Loaded::Unsupported,
-                },
-            )
-        });
-        crate::source_presentation::code_languages::install();
-        // Each selection owns its own entity; a late read cannot reach a newer one.
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.state = match result {
-                    Ok(Loaded::Text(text)) => {
-                        this.source_bytes = Some(text.len());
-                        let range = document::first_page(&text);
-                        this.paged = range.end < text.len();
-                        this.find.update(cx, |find, cx| {
-                            find.set_placeholder(
-                                if this.paged || text.len() > EDIT_BYTES {
-                                    "Find in whole file"
-                                } else {
-                                    "Find"
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                        let input = cx.new(|cx| editor(language, &text[range], window, cx));
-                        this.document_revision += 1;
-                        this.applied_page = Some((this.document_revision, 0));
-                        #[cfg(test)]
-                        {
-                            this.first_content_ms = Some(started.elapsed().as_millis());
-                        }
-                        timing(&input, started, cx);
-                        this.watch_provisional(&input, cx);
-                        this.editor_find = Some(cx.new(|cx| {
-                            reader_find_field::editor::EditorTarget::with_query(
-                                input.clone(),
-                                this.find.clone(),
-                                this.case_sensitive.clone(),
-                                cx,
-                            )
-                        }));
-                        // Text is available before any full-file parse/index or
-                        // formatted snapshot. Those run on subsequent workers.
-                        this.prepare_loaded(text, table_path.clone(), json, window, cx);
-                        State::Content(input)
-                    }
-                    Ok(Loaded::TooLarge(bytes)) => State::Message(format!(
-                        "Too large to preview. {}, the limit is 64 MB.",
-                        view::size(bytes as usize)
-                    )),
-                    Ok(Loaded::Unsupported) => {
-                        State::Message("This file cannot be previewed as text.".into())
-                    }
-                    Err(_) => State::Message("This file could not be read.".into()),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
         let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
         let find_subscription =
             cx.subscribe_in(&find, window, |this, _, event, window, cx| match event {
@@ -411,16 +347,35 @@ impl CodePreview {
             },
         )
         .detach();
-        Self {
+        let delimited = reader_delimited::eligible(&rel);
+        let initial = if delimited {
+            reader_ui_state::code_view(
+                if rel.to_ascii_lowercase().ends_with(".tsv") {
+                    "tsv"
+                } else {
+                    "csv"
+                },
+                cx,
+            )
+            .filter(|v| matches!(v, View::Raw | View::Table))
+            .unwrap_or(View::Table)
+        } else {
+            View::Raw
+        };
+        let mut preview = Self {
             root,
             rel,
+            path: path.clone(),
+            raw_requested: false,
+            _table_subscription: None,
+            table_failure: None,
             opened_at: started,
             state: State::Loading,
             source_bytes: None,
             storage_reason: None,
             json: None,
             table: None,
-            view: View::Raw,
+            view: initial,
             own_header: true,
             raw_document: None,
             scrubber,
@@ -468,7 +423,19 @@ impl CodePreview {
             search_installs: 0,
             focus: cx.focus_handle(),
             _find_subscription: find_subscription,
+        };
+        if delimited {
+            let table =
+                cx.new(|cx| reader_delimited::TablePreview::new(path, window, cx).without_header());
+            preview.attach_table(table, window, cx);
+            preview.automatic_view = false;
+            if initial == View::Raw {
+                preview.load_text(window, cx);
+            }
+        } else {
+            preview.load_text(window, cx);
         }
+        preview
     }
 
     fn show_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -551,8 +518,14 @@ impl CodePreview {
         }
     }
 
-    /// Tables retain their own filter until the table step (#2812).
+    /// Route Find to the active view’s shared field.
     pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.view == View::Table {
+            return self
+                .table
+                .as_ref()
+                .is_some_and(|table| table.update(cx, |table, cx| table.focus_filter(window, cx)));
+        }
         if !matches!(self.state, State::Content(_)) {
             return false;
         }
@@ -570,15 +543,21 @@ impl CodePreview {
 
     /// UI editing admission is independent of the 64 MiB source-tool budget.
     pub(crate) fn editable(&self) -> bool {
-        matches!(self.state, State::Content(_))
+        (matches!(self.state, State::Content(_))
+            || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
             && editable_format(&self.rel)
-            && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
+            // CSV/TSV edit through the existing source editor without the code
+            // viewer's 4 MiB UI cap, exactly as before they shared this owner.
+            && self
+                .source_bytes
+                .is_some_and(|bytes| reader_delimited::eligible(&self.rel) || bytes <= EDIT_BYTES)
     }
 
     /// The file is still being read; whether it is editable is not known yet.
     pub(crate) fn loading(&self) -> bool {
         matches!(self.state, State::Loading)
+            && (!reader_delimited::eligible(&self.rel) || self.source_bytes.is_none())
     }
 
     /// Shared immutable whole-file parse for Contents (#2795). Node indices,
@@ -672,7 +651,7 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
 }
 
 impl Render for CodePreview {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "data-view-native-harness")]
         native_trace("preview.render.begin");
         #[cfg(feature = "data-view-native-harness")]
@@ -681,12 +660,24 @@ impl Render for CodePreview {
         native_trace("chrome.begin");
         let header = self.own_header.then(|| {
             let chrome = self.compact_chrome(cx.entity(), cx);
-            reader_viewer_chrome::render_compact_header(
-                &chrome,
-                window.viewport_size().width.as_f32(),
-                window,
-                cx,
+            canvas(
+                move |bounds, window, cx| {
+                    let mut header = reader_viewer_chrome::render_compact_header(
+                        &chrome,
+                        bounds.size.width.as_f32(),
+                        window,
+                        cx,
+                    );
+                    header.layout_as_root(bounds.size.into(), window, cx);
+                    header.prepaint_at(bounds.origin, window, cx);
+                    header
+                },
+                |_, mut header, window, cx| header.paint(window, cx),
             )
+            .w_full()
+            .h(px(48.))
+            .flex_none()
+            .into_any_element()
         });
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.end");
@@ -852,6 +843,11 @@ impl Reader {
             let resume_find = code.update(cx, |code, cx| {
                 let suspended = !code.read_active;
                 code.read_active = true;
+                if suspended && code.view == View::Table {
+                    if let Some(table) = &code.table {
+                        table.update(cx, |table, cx| table.resume_work(cx));
+                    }
+                }
                 if let Some(input) = code.input() {
                     code.apply_diagnostics(&input, cx);
                 }
@@ -971,7 +967,7 @@ mod tests {
         visual.simulate_resize(size(px(800.), px(500.)));
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("table-duckdb").is_some(),
+            visual.debug_bounds("delimited-viewport").is_some(),
             "JSON array opens a table"
         );
         let preview = preview.unwrap();
@@ -982,6 +978,11 @@ mod tests {
             );
         });
         visual.simulate_input("Two");
+        // Table Find debounces typing (60 ms) before the worker projection.
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(70));
         visual.run_until_parked();
         let first = visual.debug_bounds("delimited-cell-1-0").unwrap();
         visual.simulate_click(first.center(), Modifiers::default());
@@ -1003,10 +1004,10 @@ mod tests {
             assert!(p.input().is_some_and(|input| !input.read(cx).is_editable()));
         });
         assert!(visual.debug_bounds("code-view-menu").is_some());
-        assert!(visual.debug_bounds("table-duckdb").is_none());
+        assert!(visual.debug_bounds("delimited-viewport").is_none());
         preview.update_in(visual, |p, window, cx| p.set_view(View::Table, window, cx));
         visual.run_until_parked();
-        assert!(visual.debug_bounds("table-duckdb").is_some());
+        assert!(visual.debug_bounds("delimited-viewport").is_some());
         assert_eq!(std::fs::read_to_string(path).unwrap(), source);
     }
     use ::core::prelude::v1::test;
@@ -1028,7 +1029,8 @@ mod tests {
             ("Dockerfile", Some("text")),
             (".env", Some("text")),
             ("notes/Plan.md", None),
-            ("data.csv", None),
+            ("data.csv", Some("text")),
+            ("data.tsv", Some("text")),
             ("notes.txt", Some("text")),
             ("server.log", None),
             ("photo.png", None),

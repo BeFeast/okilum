@@ -1,117 +1,72 @@
 use super::*;
 use std::process::{Command, Stdio};
 
-impl TablePreview {
-    #[inline(never)]
-    pub(super) fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let table = self.table.as_ref().unwrap();
-        let loaded = table.rows.len().saturating_sub(usize::from(self.header));
-        let scope = if table.limited || (!self.all && loaded > INITIAL_ROWS) {
-            " · partial file"
-        } else {
-            ""
-        };
-        let label = if self.updating {
-            "Updating rows…".into()
-        } else {
-            format!(
-                "{} / {} loaded rows · {} columns{scope}",
-                self.order.len(),
-                loaded.min(if self.all { usize::MAX } else { INITIAL_ROWS }),
-                table.columns
-            )
-        };
-        let filter = Input::new(self.filter.as_ref().unwrap())
-            .small()
-            .cleanable(true)
-            .into_any_element();
-        let external = Button::new("table-duckdb")
-            .debug_selector(|| "table-duckdb".into())
-            .small()
-            .ghost()
-            .label(if self.external_pending {
-                "DuckDB is open"
-            } else {
-                "Open in DuckDB"
-            })
-            .disabled(self.external_pending)
-            .on_click(cx.listener(|this, _, _, cx| this.open_duckdb(cx)))
-            .into_any_element();
-        let reset = Button::new("table-reset-sort")
-            .small()
-            .ghost()
-            .label("Source order")
-            .disabled(self.sort.is_none())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sort = None;
-                this.refilter(cx);
-            }))
-            .into_any_element();
-        let controls = h_flex()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .flex_wrap()
-            .child(div().w(px(240.)).child(filter))
-            .child(reset)
-            .child(external)
-            .into_any_element();
-        v_flex()
-            .flex_none()
-            .child(controls)
-            .child(
-                div()
-                    .px_4()
-                    .pb_2()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(label),
-            )
-            .children(self.external_error.as_ref().map(|error| {
-                let install = Button::new("table-get-duckdb")
-                    .small()
-                    .ghost()
-                    .label("Get DuckDB")
-                    .on_click(|_, _, cx| cx.open_url("https://duckdb.org/docs/installation/"))
-                    .into_any_element();
-                v_flex().px_4().pb_2().child(error.clone()).child(install)
-            }))
-            .into_any_element()
-    }
+/// Toast text when no DuckDB executable is found (frame 7, «DuckDB is not installed»).
+pub(super) const MISSING_DUCKDB: &str = "DuckDB was not found on this computer.";
 
-    fn open_duckdb(&mut self, cx: &mut Context<Self>) {
+impl TablePreview {
+    pub(super) fn open_duckdb(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.external_pending {
             return;
         }
         self.external_error = None;
         self.external_pending = true;
         let path = self.path.clone();
-        let (send, receive) = async_channel::bounded(1);
+        #[cfg(test)]
+        let program_override = self.duckdb_override.clone();
+        let (send, receive) = std::sync::mpsc::channel();
         // The external UI can outlive this view; reap it without occupying a
         // GPUI executor. Keep stdin open so the CLI cannot exit at pipe EOF.
         let started = std::thread::Builder::new().name("duckdb-ui".into()).spawn(move || {
-            let result = (|| -> anyhow::Result<()> {
-                let program = duckdb_program().ok_or_else(|| anyhow::anyhow!("Install the DuckDB CLI with UI support from duckdb.org/docs/installation, then retry."))?;
-                let args = duckdb_args(&path)?;
-                let mut child = Command::new(program).args(args).stdin(Stdio::piped())
-                    .stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-                let _input = child.stdin.take();
-                anyhow::ensure!(child.wait()?.success(), "DuckDB could not open this file. Check that your DuckDB CLI supports -ui and this file format.");
-                Ok(())
-            })();
-            let _ = send.send_blocking(result.map_err(|e| format!("Cannot open in DuckDB: {e:#}")));
+            #[cfg(not(test))]
+            let program = duckdb_program();
+            #[cfg(test)]
+            let program = program_override.unwrap_or_else(duckdb_program);
+            let result = match program {
+                None => Err(MISSING_DUCKDB.to_owned()),
+                Some(program) => (|| -> anyhow::Result<()> {
+                    let args = duckdb_args(&path)?;
+                    let mut child = Command::new(program).args(args).stdin(Stdio::piped())
+                        .stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+                    let _input = child.stdin.take();
+                    anyhow::ensure!(child.wait()?.success(), "DuckDB could not open this file. Check that your DuckDB CLI supports -ui and this file format.");
+                    Ok(())
+                })()
+                .map_err(|e| format!("Cannot open in DuckDB: {e:#}")),
+            };
+            let _ = send.send(result);
         });
         if let Err(error) = started {
             self.external_pending = false;
             self.external_error = Some(format!("Cannot start DuckDB: {error}"));
+            reader_toast::duckdb_error(self.external_error.clone().unwrap(), window, cx);
         } else {
-            cx.spawn(async move |this, cx| {
-                if let Ok(result) = receive.recv().await {
-                    let _ = this.update(cx, |this, cx| {
-                        this.external_pending = false;
-                        this.external_error = result.err();
-                        cx.notify();
-                    });
+            // A cheap try_recv every 200 ms, only while DuckDB runs. A
+            // cross-thread waker would also work in production, but GPUI's
+            // deterministic test scheduler rejects wakes from foreign threads.
+            cx.spawn_in(window, async move |this, cx| loop {
+                if this.upgrade().is_none() {
+                    break;
                 }
+                let result = match receive.try_recv() {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(200))
+                            .await;
+                        continue;
+                    }
+                };
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.external_pending = false;
+                    this.external_error = result.err();
+                    if let Some(error) = &this.external_error {
+                        reader_toast::duckdb_error(error.clone(), window, cx);
+                    }
+                    cx.notify();
+                });
+                break;
             })
             .detach();
         }
@@ -177,7 +132,7 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     #[test]
-    fn duckdb_uses_one_escaped_file_and_no_shell() {
+    pub(super) fn duckdb_uses_one_escaped_file_and_no_shell() {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("O'Brien [1]; $HOME.json");
         std::fs::write(&path, "[]").unwrap();

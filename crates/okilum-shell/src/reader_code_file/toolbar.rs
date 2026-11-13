@@ -28,7 +28,9 @@ impl CodePreview {
     }
     fn describe(&self, entity: Entity<Self>, cx: &App, live: bool) -> ViewerChrome {
         let mut chrome = ViewerChrome::default();
-        if !matches!(self.state, State::Content(_)) {
+        if !matches!(self.state, State::Content(_))
+            && !(reader_delimited::eligible(&self.rel) && self.table.is_some())
+        {
             return chrome;
         }
         for view in View::ALL {
@@ -74,7 +76,7 @@ impl CodePreview {
         if chrome.views.len() < 2 {
             chrome.views.clear();
         }
-        if self.view != View::Table {
+        if self.view != View::Table || self.table.is_some() {
             chrome.find = Some(if live {
                 self.find_target(entity.clone(), cx)
             } else {
@@ -172,6 +174,40 @@ impl CodePreview {
                 chrome.state = Some(warning);
             }
         }
+        if self.view == View::Table {
+            if let Some(table) = &self.table {
+                let mut table_chrome = table.read(cx).chrome(table.clone(), live, cx);
+                table_chrome.views = chrome.views;
+                // Badges render beside the state slot; never drop the file's
+                // own state (the read-only lock) when the table has no warning.
+                if let Some(own) = chrome.state {
+                    match table_chrome.state {
+                        Some(_) => table_chrome.badges.push(own),
+                        None => table_chrome.state = Some(own),
+                    }
+                }
+                table_chrome.badges.extend(chrome.badges);
+                return table_chrome;
+            }
+        }
+        if let Some(reason) = &self.table_failure {
+            let mut warning = ViewerAction::new(
+                "table-unavailable",
+                Icon::new(IconName::TriangleAlert).text_color(brand::palette(cx).warning),
+                "Table unavailable",
+                Rc::new(|_, _| {}),
+            );
+            warning.enabled = false;
+            warning.disabled_reason = Some(reason.clone().into());
+            warning.tooltip = reason.clone().into();
+            match chrome.state {
+                Some(_) => chrome.badges.push(warning),
+                None => chrome.state = Some(warning),
+            }
+        }
+        if reader_delimited::eligible(&self.rel) {
+            chrome.copy_actions.retain(|a| a.id != "code-copy-node");
+        }
         chrome
     }
 
@@ -189,11 +225,20 @@ impl CodePreview {
             return Some("XML files are view-only".into());
         }
         self.source_bytes
-            .filter(|bytes| *bytes > EDIT_BYTES)
+            .filter(|bytes| *bytes > EDIT_BYTES && !reader_delimited::eligible(&self.rel))
             .map(|bytes| format!("{} is over the 4 MB editing limit", view::size(bytes)))
     }
     pub(super) fn status(&self, entity: Entity<Self>, cx: &App) -> reader_status_line::StatusLine {
         use reader_status_line::{StatusLine, Tone};
+        if self.view == View::Raw {
+            if let Some(reason) = &self.table_failure {
+                return StatusLine {
+                    text: reason.clone().into(),
+                    tone: Tone::Warning,
+                    ..Default::default()
+                };
+            }
+        }
         let Some(raw) = &self.raw_document else {
             return StatusLine::default();
         };
@@ -302,8 +347,7 @@ impl CodePreview {
 
     #[inline(never)]
     pub(super) fn bottom_line(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Table retains its own rows/count line until #2812; never stack a
-        // second CodePreview status line under it. The name lock remains.
+        // The hosted table supplies the one shared bottom status line.
         if self.view == View::Table {
             return div().into_any_element();
         }

@@ -154,14 +154,6 @@ impl Reader {
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel))
             && self.code_file_editable(cx);
-        let table_path = self
-            .file_preview
-            .as_ref()
-            .filter(|p| p.table.is_some())
-            .map(|p| p.path.clone());
-        let table_no_header = table_path
-            .as_ref()
-            .is_some_and(|path| !reader_ui_state::delimited_header(path, cx));
         #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
         #[cfg(any(unix, windows))]
@@ -372,21 +364,6 @@ impl Reader {
             move |mut menu: gpui_component::menu::PopupMenu,
                   window: &mut Window,
                   cx: &mut Context<gpui_component::menu::PopupMenu>| {
-                if let Some(path) = table_path.clone() {
-                    menu = menu
-                        .item(
-                            PopupMenuItem::new("No header row")
-                                .checked(table_no_header)
-                                .on_click(move |_, _, cx| {
-                                    reader_ui_state::set_delimited_header(
-                                        path.clone(),
-                                        table_no_header,
-                                        cx,
-                                    )
-                                }),
-                        )
-                        .separator();
-                }
                 menu = menu
                     .menu_with_icon(
                         "Reveal in sidebar",

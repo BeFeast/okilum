@@ -13,6 +13,7 @@ pub(crate) struct PresentationState {
     match_index: usize,
     selection: std::ops::Range<usize>,
     scroll: Point<Pixels>,
+    table: Option<reader_delimited::Saved>,
 }
 
 impl CodePreview {
@@ -25,8 +26,16 @@ impl CodePreview {
             view: self.view,
             page: self.page,
             tree: self.structure.save(),
-            query: self.find.read(cx).value().to_string(),
-            case_sensitive: self.case_sensitive.get(),
+            query: if self.view == View::Table {
+                self.table
+                    .as_ref()
+                    .map(|table| table.read(cx).save_presentation().query)
+                    .unwrap_or_default()
+            } else {
+                self.find.read(cx).value().to_string()
+            },
+            case_sensitive: reader_ui_state::find_case_sensitive(cx),
+            table: self.table.as_ref().map(|t| t.read(cx).save_presentation()),
             match_index: self.match_index,
             selection: self
                 .input()
@@ -57,6 +66,32 @@ impl CodePreview {
         let Some(saved) = self.restored_presentation.clone() else {
             return;
         };
+        // A JSON array attaches its table after the worker parse: keep the
+        // saved table state until that table exists.
+        if let Some(mut table_saved) = self
+            .restored_presentation
+            .as_mut()
+            .filter(|_| self.table.is_some())
+            .and_then(|saved| saved.table.take())
+        {
+            if saved.view == View::Table {
+                table_saved.query = saved.query.clone();
+                table_saved.sensitive = saved.case_sensitive;
+            }
+            if let Some(table) = &self.table {
+                table.update(cx, |table, cx| {
+                    table.restore_presentation(table_saved, window, cx)
+                });
+            }
+        }
+        if reader_delimited::eligible(&self.rel)
+            && saved.view == View::Table
+            && self.availability(View::Table).available()
+        {
+            self.apply_view(View::Table, window, cx);
+            self.restored_presentation = None;
+            return;
+        }
         if self.document.is_none() {
             return;
         }

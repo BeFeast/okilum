@@ -37,8 +37,8 @@ mutations = {
     'reader_delimited.rs': (b'this.sort_column(column, cx);',
                            b'if !crate::data_view_native_control("sort") { this.sort_column(column, cx); }'),
     'reader_code_file.rs': (b'.folding(true)', b'.folding(!crate::data_view_native_control("fold"))'),
-    'reader_code_file/toolbar.rs': (b'if self.view != View::Table {',
-                                  b'if self.view != View::Table && !crate::data_view_native_control("find") {'),
+    'reader_code_file/toolbar.rs': (b'if self.view != View::Table || self.table.is_some() {',
+                                  b'if (self.view != View::Table || self.table.is_some()) && !crate::data_view_native_control("find") {'),
 }
 try:
     for name, (before, after) in mutations.items():
@@ -54,6 +54,7 @@ fn data_view_native_control(name: &str) -> bool {
     suite('data_table_2735_', 2)
     # Keep the existing selection/edit/recovery/image coverage unchanged.
     for regression in [
+        'table2812_',
         'file2811_',
         'edit2803_',
         'code2771_',

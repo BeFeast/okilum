@@ -1,15 +1,20 @@
 //! Read-only delimited tables; editing and recovery stay in FileEditor.
 use super::*;
 use gpui_base::ElementExt as _;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use okilum_core::delimited::{view_rows, ReadLimits, Table};
+use okilum_core::delimited::{ReadLimits, Table};
 use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation as _;
+mod chrome;
 mod controls;
+mod find;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+#[cfg(test)]
+mod toolbar_tests;
 
 const ROW_HEIGHT: f32 = 30.;
 const COLUMN_WIDTH: f32 = 200.;
@@ -29,7 +34,17 @@ const EXPANDED_LIMITS: ReadLimits = ReadLimits {
     columns: 256,
     field_bytes: 64 * 1024,
 };
-actions!(reader_delimited, [CopyCells]);
+actions!(
+    reader_delimited,
+    [
+        CopyCells,
+        ToggleHeaderRow,
+        ResetTableSort,
+        OpenTableDuckDb,
+        LoadMoreTableRows,
+        GoToTableError
+    ]
+);
 
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(
@@ -67,6 +82,17 @@ struct Cell {
     column: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Saved {
+    pub(crate) query: String,
+    pub(crate) sensitive: bool,
+    sort: Option<(usize, bool)>,
+    anchor: Option<Cell>,
+    end: Option<Cell>,
+    hit_index: usize,
+    horizontal: Point<Pixels>,
+}
+
 pub(crate) struct TablePreview {
     path: PathBuf,
     table: Option<Arc<Table>>,
@@ -89,9 +115,47 @@ pub(crate) struct TablePreview {
     visible_columns: Range<usize>,
     external_error: Option<String>,
     external_pending: bool,
+    #[cfg(test)]
+    duckdb_override: Option<Option<PathBuf>>,
+    own_header: bool,
+    file_bytes: Option<u64>,
+    case_sensitive: bool,
+    hits: Vec<Cell>,
+    reveal_source: Option<Cell>,
+    restored: Option<Saved>,
+    hit_index: usize,
+    #[cfg(test)]
+    projections: usize,
+    projection_task: Option<Task<()>>,
+    projection_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Table is hidden (another view, or Edit): no projection runs.
+    suspended: bool,
+    /// A projection was requested or stopped while hidden; it runs exactly
+    /// once when the table is shown again.
+    resume_pending: bool,
+    pane_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
 }
 impl TablePreview {
-    pub(crate) fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find in loaded rows"));
+        cx.subscribe_in(
+            &filter,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let query = input.read(cx).value().to_string();
+                    if this.query != query {
+                        this.query = query;
+                        this.schedule_filter(cx);
+                    }
+                }
+                InputEvent::PressEnter { shift, .. } => {
+                    this.step_hit(if *shift { -1 } else { 1 }, window, cx)
+                }
+                _ => {}
+            },
+        )
+        .detach();
         let mut preview = Self {
             path,
             table: None,
@@ -105,7 +169,7 @@ impl TablePreview {
             focus: cx.focus_handle(),
             order: Vec::new(),
             sort: None,
-            filter: None,
+            filter: Some(filter),
             query: String::new(),
             revision: 0,
             updating: false,
@@ -114,6 +178,22 @@ impl TablePreview {
             visible_columns: 0..0,
             external_error: None,
             external_pending: false,
+            #[cfg(test)]
+            duckdb_override: None,
+            own_header: true,
+            file_bytes: None,
+            case_sensitive: reader_ui_state::find_case_sensitive(cx),
+            hits: Vec::new(),
+            reveal_source: None,
+            restored: None,
+            hit_index: 0,
+            #[cfg(test)]
+            projections: 0,
+            projection_task: None,
+            projection_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            suspended: false,
+            resume_pending: false,
+            pane_bounds: Default::default(),
         };
         preview.load(false, cx);
         preview
@@ -127,7 +207,8 @@ impl TablePreview {
         let load_path = self.path.clone();
         let task = cx.background_executor().spawn(async move {
             std::fs::File::open(&load_path).and_then(|file| {
-                if load_path
+                let bytes = file.metadata()?.len();
+                let result = if load_path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("json"))
                 {
@@ -140,7 +221,8 @@ impl TablePreview {
                             .is_some_and(|e| e.eq_ignore_ascii_case("tsv")),
                         if all { EXPANDED_LIMITS } else { PREVIEW_LIMITS },
                     )
-                }
+                };
+                result.map(|table| (table, bytes))
             })
         });
         cx.spawn(async move |this, cx| {
@@ -148,7 +230,8 @@ impl TablePreview {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(table) => {
+                    Ok((table, bytes)) => {
+                        this.file_bytes = Some(bytes);
                         this.order.clear();
                         this.table = Some(Arc::new(table));
                         this.all = all;
@@ -178,6 +261,14 @@ impl TablePreview {
     pub(crate) fn ready(&self) -> bool {
         self.table.is_some()
     }
+    /// The grid or its Find input holds focus; both unmount when Table is left.
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+            || self
+                .filter
+                .as_ref()
+                .is_some_and(|input| input.focus_handle(cx).is_focused(window))
+    }
     pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) -> bool {
         let Some(input) = &self.filter else {
             return false;
@@ -189,36 +280,6 @@ impl TablePreview {
         self.path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-    }
-    fn refilter(&mut self, cx: &mut Context<Self>) {
-        self.revision += 1;
-        self.projection_all = self.all;
-        let revision = self.revision;
-        let Some(table) = self.table.clone() else {
-            return;
-        };
-        let (query, sort, start) = (self.query.clone(), self.sort, usize::from(self.header));
-        let count = if self.all { usize::MAX } else { INITIAL_ROWS };
-        self.updating = true;
-        self.anchor = None;
-        self.end = None;
-        let task = cx
-            .background_executor()
-            .spawn(async move { view_rows(&table, start, count, &query, sort) });
-        cx.spawn(async move |this, cx| {
-            let order = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.revision != revision {
-                    return;
-                }
-                this.order = order;
-                this.updating = false;
-                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
     }
     fn sort_column(&mut self, column: usize, cx: &mut Context<Self>) {
         self.sort = match self.sort {
@@ -307,18 +368,11 @@ impl TablePreview {
             .children(self.visible_columns.clone().map(|column| {
                 let cell = Cell { row, column };
                 let value = table.cell(source_row, column).to_owned();
-                let mut text = if header && !self.header {
+                let text = if header && !self.header {
                     format!("Column {}", column + 1)
                 } else {
                     visible(&value)
                 };
-                if header {
-                    text.push_str(match self.sort {
-                        Some((at, true)) if at == column => " ↓",
-                        Some((at, false)) if at == column => " ↑",
-                        _ => " ↕",
-                    });
-                }
                 div()
                     .id((
                         "delimited-cell",
@@ -335,7 +389,22 @@ impl TablePreview {
                     .text_align(alignment(&value))
                     .overflow_hidden()
                     .when(self.selected(cell), |v| v.bg(palette.selected))
-                    .child(div().truncate().child(text))
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(div().flex_1().min_w_0().truncate().child(text))
+                            .when(header, |row| {
+                                row.child(
+                                    Icon::new(match self.sort {
+                                        Some((at, true)) if at == column => IconName::ArrowDown,
+                                        Some((at, false)) if at == column => IconName::ArrowUp,
+                                        _ => IconName::ChevronsUpDown,
+                                    })
+                                    .small(),
+                                )
+                            }),
+                    )
                     .hoverable_tooltip(move |window, cx| cell_tooltip(value.clone(), window, cx))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -589,27 +658,37 @@ fn alignment(value: &str) -> TextAlign {
     }
     TextAlign::Left
 }
+/// Closing the file or switching away releases the entity: a worker scan that
+/// is still running sees the flag at its next row and drops its snapshot.
+impl Drop for TablePreview {
+    fn drop(&mut self) {
+        self.projection_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl Render for TablePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.filter.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter loaded rows…"));
-            cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.query = input.read(cx).value().to_string();
-                    this.refilter(cx);
-                }
-            })
-            .detach();
-            self.filter = Some(input);
-        }
         let header = self.json() || reader_ui_state::delimited_header(&self.path, cx);
         if self.header != header || self.projection_all != self.all {
             self.header = header;
             self.refilter(cx);
         }
+        let case = reader_ui_state::find_case_sensitive(cx);
+        if self.case_sensitive != case {
+            self.case_sensitive = case;
+            self.refilter(cx);
+        }
         let palette = brand::palette(cx);
+        let pane = self.pane_bounds.clone();
         let mut view = v_flex()
             .id("reader-delimited")
+            .relative()
+            .child(
+                canvas(move |bounds, _, _| pane.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
             .font_family(reader_fonts::note(cx))
             .key_context("ReaderDelimited")
             .track_focus(&self.focus)
@@ -618,33 +697,51 @@ impl Render for TablePreview {
             .w_full()
             .text_size(px(13.))
             .text_color(palette.text)
-            .on_action(cx.listener(|this, _: &CopyCells, _, cx| this.copy(cx)));
+            .on_action(
+                cx.listener(|this, _: &CopyCells, window, cx| this.copy_feedback(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ToggleHeaderRow, _, cx| this.toggle_header(cx)))
+            .on_action(cx.listener(|this, _: &ResetTableSort, _, cx| this.reset_sort(cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenTableDuckDb, window, cx| this.open_duckdb(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &LoadMoreTableRows, _, cx| this.load(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &GoToTableError, window, cx| this.go_to_bad_row(window, cx)),
+            );
+        if self.own_header {
+            view = view.child(self.compact_header(window, cx));
+        }
         let Some(table) = self.table.clone() else {
             return view
-                .child(div().px_4().child(self.error.unwrap_or("Opening table…")))
+                .child(div().flex_1().min_h_0())
+                .child(self.status_element(cx))
                 .into_any_element();
         };
         if !table.limited && (table.rows.is_empty() || (self.json() && table.rows.len() == 1)) {
             return view
-                .child(self.toolbar(cx))
                 .child(div().px_4().child(if self.json() {
                     "No data rows"
                 } else {
                     "Empty file"
                 }))
+                .child(self.status_element(cx))
                 .into_any_element();
         }
         let start = usize::from(header);
-        let available = table.rows.len().saturating_sub(start);
         let count = self.order.len();
         let first_column = ((-f32::from(self.horizontal.offset().x) / COLUMN_WIDTH).floor()
             as usize)
             .saturating_sub(1)
             .min(table.columns);
-        let column_count =
-            (f32::from(window.viewport_size().width) / COLUMN_WIDTH).ceil() as usize + 3;
+        // Virtualize against the measured pane; the window is only a fallback
+        // before the first paint.
+        let pane_width = match f32::from(self.pane_bounds.get().size.width) {
+            width if width > 0. => width,
+            _ => f32::from(window.viewport_size().width),
+        };
+        let column_count = (pane_width / COLUMN_WIDTH).ceil() as usize + 3;
         self.visible_columns = first_column..(first_column + column_count).min(table.columns);
-        view = view.child(self.toolbar(cx));
         let table = self.table.as_ref().unwrap();
         let width = px(GUTTER + COLUMN_WIDTH * table.columns as f32);
         let mut grid = v_flex().flex_none().h_full().min_h_0().w(width);
@@ -671,27 +768,6 @@ impl Render for TablePreview {
                 )
                 .vertical_scrollbar(&self.scroll),
         );
-        let mut notices = Vec::new();
-        if table.ragged {
-            notices.push("Some rows have a different number of columns.");
-        }
-        if table.malformed {
-            notices.push("Some rows have incomplete or unexpected quotes.");
-        }
-        if table.ambiguous {
-            notices.push("More than one separator fits this file.");
-        }
-        if self.all && table.limited {
-            notices.push(
-                "This file exceeds table preview limits. Open it externally to view the rest.",
-            );
-        }
-        if let Some(error) = self.error {
-            notices.push(error);
-        }
-        if table.rows.is_empty() && table.limited && !self.all {
-            notices.push("No complete records fit in the initial preview.");
-        }
         view = view.child(
             div()
                 .id("delimited-viewport")
@@ -716,49 +792,7 @@ impl Render for TablePreview {
                 .child(table_wheel(self.horizontal.clone(), self.scroll.clone()))
                 .horizontal_scrollbar(&self.horizontal),
         );
-        if count == 0 && !self.updating && available > 0 {
-            view = view.child(
-                div()
-                    .px_4()
-                    .py_2()
-                    .child("No loaded rows match this filter."),
-            );
-        }
-        if !notices.is_empty() {
-            view = view.child(
-                div()
-                    .id("delimited-notice")
-                    .debug_selector(|| "delimited-notice".into())
-                    .px_4()
-                    .py_1()
-                    .text_color(palette.text_muted)
-                    .child(notices.join(" ")),
-            );
-        }
-        if !self.all && (INITIAL_ROWS < available || table.limited) {
-            view = view.child(
-                h_flex()
-                    .px_4()
-                    .gap_3()
-                    .text_color(palette.text_muted)
-                    .child(format!("Showing the first {count} rows"))
-                    .child(
-                        Button::new("delimited-show-all")
-                            .debug_selector(|| "delimited-show-all".into())
-                            .ghost()
-                            .small()
-                            .label(if self.loading {
-                                "Opening…"
-                            } else {
-                                "Load more rows"
-                            })
-                            .disabled(self.loading)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.load(true, cx);
-                            })),
-                    ),
-            );
-        }
+        view = view.child(self.status_element(cx));
         view.into_any_element()
     }
 }
@@ -778,7 +812,7 @@ mod tests {
         cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let view = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             preview = Some(view.clone());
             Root::new(cx.new(|_| TableSurface(view)), window, cx)
         });
@@ -808,12 +842,16 @@ mod tests {
             input.update(cx, |input, cx| input.focus(window, cx));
         });
         visual.simulate_input("HUND");
+        // Find debounces typing (60 ms) before the worker projection.
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(70));
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
             assert_eq!(p.order, [3], "native filter subscription fired");
-            assert!(
-                p.anchor.is_none(),
-                "a reordered selection cannot copy stale rows"
+            assert_eq!(
+                p.anchor,
+                Some(Cell { row: 1, column: 0 }),
+                "Find selects the first actual matching cell"
             );
         });
         // Successive requests must discard any old worker result.
@@ -881,7 +919,7 @@ mod tests {
         cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             preview = Some(entity.clone());
             Root::new(cx.new(|_| TableSurface(entity)), window, cx)
         });
@@ -1187,7 +1225,7 @@ mod tests {
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let preview = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let preview = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             let surface = cx.new(|_| TableSurface(preview));
             Root::new(surface, window, cx)
         });
@@ -1295,7 +1333,7 @@ mod tests {
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let preview = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let preview = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             let surface = cx.new(|_| TableSurface(preview));
             Root::new(surface, window, cx)
         });
@@ -1383,7 +1421,7 @@ mod tests {
         });
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             preview = Some(entity.clone());
             let surface = cx.new(|_| TableSurface(entity));
             Root::new(surface, window, cx)
@@ -1407,7 +1445,7 @@ mod tests {
             assert_eq!(header.size.height, px(ROW_HEIGHT));
             assert_eq!(first.top(), header.bottom());
             assert!(visual.debug_bounds("delimited-row-9000").is_none());
-            assert!(visual.debug_bounds("delimited-show-all").is_some());
+            assert!(visual.debug_bounds("table-load-more").is_some());
             preview.update(visual, |p, cx| {
                 p.scroll.scroll_to_item_strict(999, ScrollStrategy::Top);
                 cx.notify();
@@ -1419,7 +1457,7 @@ mod tests {
             );
             assert!(visual.debug_bounds("delimited-row-1001").is_none());
             assert_eq!(visual.debug_bounds("delimited-row-0").unwrap(), header);
-            let show = visual.debug_bounds("delimited-show-all").unwrap();
+            let show = visual.debug_bounds("table-load-more").unwrap();
             visual.simulate_click(show.center(), Modifiers::default());
             visual.run_until_parked();
             preview.update(visual, |p, cx| {
@@ -1465,7 +1503,7 @@ mod tests {
         cx.update(crate::test_init);
         let mut preview = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             preview = Some(entity.clone());
             let surface = cx.new(|_| TableSurface(entity));
             Root::new(surface, window, cx)
@@ -1482,7 +1520,7 @@ mod tests {
             assert_eq!(table.columns, 2);
             assert_eq!(table.rows.len(), 1);
         });
-        let show = visual.debug_bounds("delimited-show-all").unwrap();
+        let show = visual.debug_bounds("table-load-more").unwrap();
         visual.simulate_click(show.center(), Modifiers::default());
         visual.run_until_parked();
         preview.read_with(visual, |p, _| {
@@ -1490,8 +1528,8 @@ mod tests {
             assert!(p.table.as_ref().unwrap().limited);
         });
         assert!(visual.debug_bounds("delimited-row-0").is_some());
-        assert!(visual.debug_bounds("delimited-notice").is_some());
-        assert!(visual.debug_bounds("delimited-show-all").is_none());
+        assert!(visual.debug_bounds("table-status-line").is_some());
+        assert!(visual.debug_bounds("table-load-more").is_none());
         assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
     }
 
@@ -1506,7 +1544,7 @@ mod tests {
             bind_keys(cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), window, cx));
             let surface = cx.new(|_| TableSurface(entity));
             Root::new(surface, window, cx)
         });

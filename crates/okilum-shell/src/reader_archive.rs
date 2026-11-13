@@ -40,7 +40,6 @@ enum EntryView {
     Loading,
     Text(Entity<reader_plain_text::PlainTextPreview>),
     Code(Entity<reader_code_file::CodePreview>),
-    Table(Entity<reader_delimited::TablePreview>),
     Pdf(Entity<reader_pdf::PdfViewer>),
     Image(PathBuf),
     Message(SharedString),
@@ -227,14 +226,10 @@ impl ArchivePreview {
 
     fn focus_find(&self, window: &mut Window, cx: &mut App) {
         if self.entry_focus.contains_focused(window, cx) {
-            match &self.entry {
-                Some(EntryView::Code(code)) => code.update(cx, |code, cx| {
+            if let Some(EntryView::Code(code)) = &self.entry {
+                code.update(cx, |code, cx| {
                     code.open_paged_find(window, cx);
-                }),
-                Some(EntryView::Table(table)) => {
-                    table.update(cx, |table, cx| table.focus_filter(window, cx));
-                }
-                _ => {}
+                });
             }
         } else {
             self.filter.update(cx, |input, cx| input.focus(window, cx));
@@ -551,7 +546,6 @@ impl ArchivePreview {
                 .into_any_element(),
             EntryView::Text(view) => view.clone().into_any_element(),
             EntryView::Code(view) => view.clone().into_any_element(),
-            EntryView::Table(view) => view.clone().into_any_element(),
             EntryView::Pdf(view) => view.clone().into_any_element(),
             EntryView::Image(path) => div()
                 .px_6()
@@ -663,8 +657,6 @@ fn viewer(path: PathBuf, name: &str, window: &mut Window, cx: &mut App) -> Entry
         EntryView::Image(path)
     } else if reader_pdf::is_pdf(name) {
         EntryView::Pdf(cx.new(|cx| reader_pdf::PdfViewer::new(path, window, cx)))
-    } else if reader_delimited::eligible(name) {
-        EntryView::Table(cx.new(|cx| reader_delimited::TablePreview::new(path, cx)))
     } else if reader_code_file::eligible(name) {
         EntryView::Code(cx.new(|cx| {
             reader_code_file::CodePreview::new(root, name.into(), path, window, cx).without_header()

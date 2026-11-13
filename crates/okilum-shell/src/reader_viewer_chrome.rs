@@ -122,7 +122,6 @@ impl HeaderKey {
                     [
                         preview.pdf.as_ref().map(Entity::entity_id),
                         preview.code.as_ref().map(Entity::entity_id),
-                        preview.table.as_ref().map(Entity::entity_id),
                         preview.archive.as_ref().map(Entity::entity_id),
                         preview.har.as_ref().map(Entity::entity_id),
                         preview.audio.as_ref().map(Entity::entity_id),
@@ -1323,9 +1322,10 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
 }
 
 pub(crate) fn copy_content_available(reader: &Reader) -> bool {
-    reader.file_preview.as_ref().is_some_and(|p| {
-        p.code.is_some() || p.table.is_some() || p.text.is_some() || p.log.is_some()
-    })
+    reader
+        .file_preview
+        .as_ref()
+        .is_some_and(|p| p.code.is_some() || p.text.is_some() || p.log.is_some())
 }
 
 fn copy_menu(mut menu: PopupMenu, reader: WeakEntity<Reader>, text: bool, cx: &App) -> PopupMenu {
@@ -1512,11 +1512,6 @@ fn window_slot(
         .filter(|a| !plan.shows(a.id))
         .cloned()
         .collect();
-    let table = reader
-        .file_preview
-        .as_ref()
-        .filter(|p| p.table.is_some())
-        .map(|p| p.path.clone());
     row.child(
         reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
             .debug_selector(|| "document-more".into())
@@ -1534,16 +1529,6 @@ fn window_slot(
                 }
                 for action in &overflow {
                     m = action.append_menu(m, w, cx);
-                }
-                if let Some(path) = table.clone() {
-                    let no_header = !reader_ui_state::delimited_header(&path, cx);
-                    m = m.item(
-                        PopupMenuItem::new("No header row")
-                            .checked(no_header)
-                            .on_click(move |_, _, cx| {
-                                reader_ui_state::set_delimited_header(path.clone(), no_header, cx)
-                            }),
-                    );
                 }
                 if hidden_copy {
                     let target = weak.clone();

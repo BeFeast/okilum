@@ -5,23 +5,7 @@ use std::{
 };
 mod json;
 
-/// Stable row identities in display order; filtering/sorting run on a worker.
-pub fn view_rows(
-    table: &Table,
-    start: usize,
-    count: usize,
-    filter: &str,
-    sort: Option<(usize, bool)>,
-) -> Vec<usize> {
-    let query = filter.to_lowercase();
-    let mut rows: Vec<_> = (start..table.rows.len().min(start.saturating_add(count)))
-        .filter(|&row| {
-            query.is_empty()
-                || table.rows[row]
-                    .iter()
-                    .any(|v| v.to_lowercase().contains(&query))
-        })
-        .collect();
+fn sort_rows(table: &Table, rows: &mut [usize], sort: Option<(usize, bool)>) {
     if let Some((column, descending)) = sort {
         let numeric = rows.iter().all(|&row| {
             table.cell(row, column).is_empty()
@@ -50,7 +34,73 @@ pub fn view_rows(
             }
         });
     }
-    rows
+}
+
+/// One worker projection supplies both row order and matching-cell navigation.
+/// Match row indices refer to `rows`, not to mutable on-screen coordinates.
+pub struct Projection {
+    pub rows: Vec<usize>,
+    pub matches: Vec<(usize, usize)>,
+}
+
+pub fn project_rows(
+    table: &Table,
+    start: usize,
+    count: usize,
+    filter: &str,
+    sort: Option<(usize, bool)>,
+    sensitive: bool,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Option<Projection> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if cancelled.load(Relaxed) {
+        return None;
+    }
+    let query = if sensitive {
+        filter.to_owned()
+    } else {
+        filter.to_lowercase()
+    };
+    let mut rows = Vec::new();
+    let mut columns = std::collections::HashMap::new();
+    let end = table.rows.len().min(start.saturating_add(count));
+    for (row, cells) in table.rows.iter().enumerate().take(end).skip(start) {
+        if cancelled.load(Relaxed) {
+            return None;
+        }
+        let mut hits = Vec::new();
+        if !query.is_empty() {
+            for (column, value) in cells.iter().enumerate() {
+                if cancelled.load(Relaxed) {
+                    return None;
+                }
+                if if sensitive {
+                    value.contains(&query)
+                } else {
+                    value.to_lowercase().contains(&query)
+                } {
+                    hits.push(column);
+                }
+            }
+        }
+        if query.is_empty() || !hits.is_empty() {
+            rows.push(row);
+            if !hits.is_empty() {
+                columns.insert(row, hits);
+            }
+        }
+    }
+    sort_rows(table, &mut rows, sort);
+    if cancelled.load(Relaxed) {
+        return None;
+    }
+    let mut matches = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(columns) = columns.remove(row) {
+            matches.extend(columns.into_iter().map(|column| (index, column)));
+        }
+    }
+    Some(Projection { rows, matches })
 }
 
 /// Resource bounds for an attachment projection, including pathological rows
@@ -81,6 +131,8 @@ pub struct Table {
     pub malformed: bool,
     pub ragged: bool,
     pub ambiguous: bool,
+    /// Source record index, when a malformed location is known exactly.
+    pub first_bad_row: Option<usize>,
     /// More source exists, or a record/cell/column budget stopped parsing.
     pub limited: bool,
 }
@@ -146,6 +198,9 @@ impl Table {
         let ragged = rows
             .first()
             .is_some_and(|first| rows.iter().any(|row| row.len() != first.len()));
+        let first_bad_row = rows
+            .first()
+            .and_then(|first| rows.iter().position(|row| row.len() != first.len()));
         Self {
             rows,
             columns,
@@ -153,6 +208,7 @@ impl Table {
             malformed,
             ragged,
             ambiguous,
+            first_bad_row,
             limited: !complete || stopped,
         }
     }
@@ -290,17 +346,50 @@ mod tests {
             "name,n\nשלום,10\nAlpha,2\nalpha,100\n\"line\nnext\",3\n",
             false,
         );
+        let view = |table: &Table, count, filter: &str, sort, sensitive| {
+            project_rows(
+                table,
+                1,
+                count,
+                filter,
+                sort,
+                sensitive,
+                &Default::default(),
+            )
+            .unwrap()
+        };
         assert_eq!(
-            view_rows(&table, 1, 100, "", Some((1, false))),
+            view(&table, 100, "", Some((1, false)), false).rows,
             [2, 4, 1, 3]
         );
-        assert_eq!(view_rows(&table, 1, 100, "ALPHA", Some((1, true))), [3, 2]);
-        assert_eq!(view_rows(&table, 1, 100, "", None), [1, 2, 3, 4]);
-        assert_eq!(view_rows(&table, 1, 2, "", Some((1, true))), [1, 2]);
-        assert!(view_rows(&table, 1, 100, "absent", None).is_empty());
+        let alpha = view(&table, 100, "ALPHA", Some((1, true)), false);
+        assert_eq!(alpha.rows, [3, 2]);
+        assert_eq!(
+            alpha.matches,
+            [(0, 0), (1, 0)],
+            "hits index the displayed order"
+        );
+        let exact = view(&table, 100, "Alpha", None, true);
+        assert_eq!(
+            (exact.rows, exact.matches),
+            (vec![2], vec![(0, 0)]),
+            "Match case"
+        );
+        assert_eq!(view(&table, 100, "", None, false).rows, [1, 2, 3, 4]);
+        assert!(view(&table, 100, "", None, false).matches.is_empty());
+        assert_eq!(view(&table, 2, "", Some((1, true)), false).rows, [1, 2]);
+        assert!(view(&table, 100, "absent", None, false).rows.is_empty());
+        let multi = Table::parse("a,b\nx1,x2\ny,x\n", false);
+        assert_eq!(
+            view(&multi, 100, "x", None, false).matches,
+            [(0, 0), (0, 1), (1, 1)],
+            "every matching cell, row-major"
+        );
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(project_rows(&table, 1, 100, "", None, false, &cancelled).is_none());
         assert_eq!(table.copy_rows(&[4, 1], 0..1), "\"line\nnext\"\nשלום");
         let large = Table::parse("n\n9007199254740993\n9007199254740992\n", false);
-        assert_eq!(view_rows(&large, 1, 10, "", Some((0, false))), [2, 1]);
+        assert_eq!(view(&large, 10, "", Some((0, false)), false).rows, [2, 1]);
     }
 
     struct CountingReader {
