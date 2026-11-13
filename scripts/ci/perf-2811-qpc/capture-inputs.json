@@ -10,7 +10,7 @@
     "etl_files": 0,
     "mac_cpu_receipts": 0
   },
-  "observer_patch_sha256": "3d3042532e940e8bb5326f8f3d7cb46728fd1088b6985ccd62cacf6f5cf0709a",
+  "observer_patch_sha256": "fce47c344a0b16e4142e144c405e31cfdccbb9324e11ad5d68c7ec8dd088b294",
   "artifacts": {
     "Windows": {
       "main": {
@@ -48,5 +48,6 @@
         "diagnostic_commit": "a5a95e8b4f617cd025a7be8e9c410318a2497c7b"
       }
     }
-  }
+  },
+  "observer_diff_note": "Exact producer bytes; index abbreviations are 8 chars on producer vs 9 on maestro. Source blobs unchanged."
 }
