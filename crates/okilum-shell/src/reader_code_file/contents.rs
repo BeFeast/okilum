@@ -67,6 +67,7 @@ impl CodePreview {
         let index = match self.view {
             View::Tree => self.structure.selected?,
             View::Raw | View::Formatted => {
+                use gpui_component::RopeExt as _;
                 let input = self.input()?;
                 let input = input.read(cx);
                 let line = input.top_visible_line()?;
