@@ -2,12 +2,33 @@
 name: storage-compat
 on:
   push:
-    branches: ['storage-compat/**']
+    paths:
+      - 'scripts/velopack/**'
+      - 'scripts/velopack-setup.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'crates/okilum-shell/src/updater/**'
+      - 'crates/okilum-core/src/archive.rs'
+      - 'crates/okilum-http/tests/*zip*'
+      - 'crates/okilum-http/tests/windows_historical_update.rs'
+      - 'scripts/ci/*compat*'
+      - 'scripts/ci/windows-historical-update.py'
+      - 'scripts/ci/fixtures/windows-historical-update.json'
+      - '.github/workflows/storage-compat.yml'
+  pull_request:
+    paths:
+      - 'scripts/velopack/**'
+      - 'scripts/velopack-setup.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'crates/okilum-shell/src/updater/**'
+      - 'crates/okilum-core/src/archive.rs'
+      - '.github/workflows/storage-compat.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: storage-compat-${{ github.ref }}
+  group: storage-compat-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 jobs:
   zip:

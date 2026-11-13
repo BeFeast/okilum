@@ -16,38 +16,153 @@
 +[dependencies.tempfile]
 --- a/src/bundle.rs
 +++ b/src/bundle.rs
-@@ -131,2 +131,4 @@
+@@ -24,0 +25,41 @@
++
++// ReplaceFileW merges the existing destination's DACL rather than adopting the
++// temporary file's inherited grants. Do not ignore ACL/metadata merge failures.
++#[cfg(windows)]
++fn publish_staged_file(staged: tempfile::NamedTempFile, path: &Path) -> Result<(), Error> {
++    use std::os::windows::ffi::OsStrExt;
++    use windows::core::PCWSTR;
++    use windows::Win32::Storage::FileSystem::{
++        GetFileAttributesW, ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
++        FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES, REPLACE_FILE_FLAGS,
++    };
++    let wide = |path: &Path| path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
++    let target = wide(path);
++    let temporary = wide(staged.path());
++    let attributes = unsafe { GetFileAttributesW(PCWSTR(target.as_ptr())) };
++    if attributes == INVALID_FILE_ATTRIBUTES {
++        let error = std::io::Error::last_os_error();
++        if error.kind() != std::io::ErrorKind::NotFound { return Err(error.into()); }
++        // A racing new destination must not lose its metadata either.
++        staged.persist_noclobber(path).map_err(|e| e.error)?;
++    } else {
++        unsafe { SetFileAttributesW(PCWSTR(temporary.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attributes)) }
++            .map_err(std::io::Error::from)?;
++        let result = unsafe {
++            ReplaceFileW(PCWSTR(target.as_ptr()), PCWSTR(temporary.as_ptr()), PCWSTR::null(),
++                REPLACE_FILE_FLAGS(0), None, None)
++        };
++        if let Err(error) = result {
++            // Permit RAII cleanup even when the destination carried READONLY.
++            let _ = unsafe { SetFileAttributesW(PCWSTR(temporary.as_ptr()), FILE_ATTRIBUTE_NORMAL) };
++            return Err(std::io::Error::from(error).into());
++        }
++    }
++    Ok(())
++}
++
++#[cfg(not(windows))]
++fn publish_staged_file(staged: tempfile::NamedTempFile, path: &Path) -> Result<(), Error> {
++    staged.persist(path).map_err(|e| e.error)?;
++    Ok(())
++}
+@@ -131,2 +172,4 @@
 -                let name = file.name();
 -                if predicate(name) {
 +                // ZIP 9 initializes decompressors on first read; ZIP 8 rejected
 +                // unsupported methods here. Keep the old helper-selection behavior.
 +                if zip::SUPPORTED_COMPRESSION_METHODS.contains(&file.compression())
 +                    && file.name().is_ok_and(|name| predicate(&name)) {
-@@ -158 +160,3 @@
+@@ -137,0 +181,26 @@
++    }
++
++    pub fn zip_idx_matches_path<T: AsRef<Path>>(&self, index: usize, path: T) -> Result<bool, Error> {
++        let mut actual = match File::open(path) {
++            Ok(file) => file,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
++            Err(error) => return Err(error.into()),
++        };
++        let mut archive = self.zip.borrow_mut();
++        let mut expected = archive.by_index(index)?;
++        let size = expected.size();
++        if actual.metadata()?.len() != size {
++            return Ok(false);
++        }
++        let mut expected_buffer = [0u8; 64000];
++        let mut actual_buffer = [0u8; 64000];
++        let mut count = 0u64;
++        loop {
++            let len = expected.read(&mut expected_buffer)?;
++            if len == 0 { break; }
++            if len as u64 > size.saturating_sub(count) { return Ok(false); }
++            actual.read_exact(&mut actual_buffer[..len])?;
++            if expected_buffer[..len] != actual_buffer[..len] { return Ok(false); }
++            count += len as u64;
++        }
++        Ok(count == size && actual.read(&mut actual_buffer[..1])? == 0)
+@@ -158 +227,3 @@
 -        let mut outfile = misc::retry_io(|| File::create(path))?;
 +        // Stage beside the destination so publication is one atomic replace,
 +        // including on Windows. A read/CRC/size/write failure drops only the stage.
 +        let mut outfile = tempfile::NamedTempFile::new_in(parent)?;
-@@ -167,0 +172,3 @@
+@@ -167,0 +239,3 @@
 +            if len as u64 > total_size.saturating_sub(bytes_written) {
 +                return Err(Error::InvalidPackage("ZIP entry exceeds declared size".into()));
 +            }
-@@ -174,0 +182,5 @@
+@@ -174,0 +249,5 @@
 +        if bytes_written != total_size {
 +            return Err(Error::InvalidPackage("ZIP entry size does not match metadata".into()));
 +        }
 +        outfile.as_file().sync_all()?;
-+        outfile.persist(path).map_err(|e| e.error)?;
-@@ -235,2 +247 @@
++        publish_staged_file(outfile, path)?;
+@@ -235,2 +314 @@
 -            let key = file.name();
 -            files.push(key.to_string());
 +            files.push(file.name()?.into_owned());
-@@ -281 +292 @@
+@@ -281 +359 @@
 -                Ok(f) => f.name().to_string(),
 +                Ok(f) => f.name()?.into_owned(),
+@@ -292,4 +370 @@
+-            match self.extract_zip_idx_to_path(i, &dest_path) {
+-                Ok(_) => info!("Successfully extracted stub executable: {:?}", dest_path),
+-                Err(e) => warn!("Failed to extract stub executable {:?}: {} (non-fatal)", dest_path, e),
+-            }
++            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- a/src/manager.rs
 +++ b/src/manager.rs
-@@ -465,11 +465,4 @@
+@@ -276 +276,4 @@
+-                return Some(local_path_to_asset(&manifest, &path));
++                let asset = local_path_to_asset(&manifest, &path);
++                #[cfg(windows)]
++                if !self.is_update_helper_prepared(&asset).unwrap_or(false) { return None; }
++                return Some(asset);
+@@ -279,0 +283,18 @@
++    }
++
++    /// Check the installed Windows helper against the complete package entry,
++    /// including CRC/size validation. A cached package alone never authorizes Ready.
++    #[cfg(windows)]
++    pub fn is_update_helper_prepared(&self, asset: &VelopackAsset) -> Result<bool, Error> {
++        let path = self.inner.locator.get_packages_dir().join(&asset.FileName);
++        let bundle = crate::bundle::load_bundle_from_file(path)?;
++        let index = bundle.find_zip_file(|name| name.ends_with("Squirrel.exe"))
++            .ok_or_else(|| Error::InvalidPackage("No supported Update.exe helper found".into()))?;
++        bundle.zip_idx_matches_path(index, self.inner.locator.get_update_path())
++    }
++
++    #[cfg(windows)]
++    fn prepare_update_helper(&self, package: &Path) -> Result<(), Error> {
++        let bundle = crate::bundle::load_bundle_from_file(package)?;
++        bundle.extract_zip_predicate_to_path(|name| name.ends_with("Squirrel.exe"), self.inner.locator.get_update_path())?;
++        Ok(())
+@@ -415,0 +437,3 @@
++            // Older SDKs could publish the package before helper preparation.
++            #[cfg(windows)]
++            self.prepare_update_helper(&final_target_file)?;
+@@ -457,0 +482,5 @@
++        // The final package is the admission boundary. Never publish it before
++        // successful helper preparation; failed attempts remain retryable partials.
++        #[cfg(windows)]
++        self.prepare_update_helper(&partial_file)?;
++
+@@ -460 +488,0 @@
+-
+@@ -462,15 +489,0 @@
+-
+-        // extract new Update.exe on Windows only
+-        #[cfg(target_os = "windows")]
 -        match crate::bundle::load_bundle_from_file(&final_target_file) {
 -            Ok(bundle) => {
 -                info!("Bundle loaded successfully.");
@@ -59,11 +174,8 @@
 -            Err(e) => {
 -                error!("Error loading bundle: {}", e);
 -            }
-+        {
-+            let bundle = crate::bundle::load_bundle_from_file(&final_target_file)?;
-+            let update_exe_path = self.inner.locator.get_update_path();
-+            bundle.extract_zip_predicate_to_path(|f| f.ends_with("Squirrel.exe"), update_exe_path)?;
-@@ -522 +515,10 @@
+-        }
+@@ -522 +535,10 @@
 -        let output = std::process::Command::new(self.inner.locator.get_update_path()).args(args).output()?;
 +        let mut patcher = std::process::Command::new(self.inner.locator.get_update_path());
 +        patcher.args(args);
