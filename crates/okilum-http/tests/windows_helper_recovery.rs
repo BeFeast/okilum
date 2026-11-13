@@ -45,7 +45,7 @@ fn hold(path: &Path) -> fs::File {
         .unwrap()
 }
 fn assert_clean(helper: &Path) {
-    for suffix in [".vpk-stage", ".vpk-backup"] {
+    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-lock"] {
         assert!(
             !sibling(helper, suffix).exists(),
             "transaction not cleaned: {suffix}"

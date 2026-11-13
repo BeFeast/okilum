@@ -64,7 +64,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,300 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Invariant: a file only ever acquires the destination, `.vpk-stage` or
@@ -124,6 +124,25 @@
 +        }
 +        fn has_artifacts(&self) -> io::Result<bool> {
 +            Ok(self.stage.try_exists()? || self.backup.try_exists()?)
++        }
++    }
++
++    /// Exclusive per-destination transaction lock. The lock file is opened with
++    /// share mode 0, so deleting it after release cannot remove a file another
++    /// process holds: that delete fails and is ignored. Nothing is left behind.
++    struct Transaction {
++        lock: Option<crate::lockfile::LockFile>,
++        path: PathBuf,
++    }
++    impl Transaction {
++        fn begin(p: &Paths) -> io::Result<Self> {
++            Ok(Self { lock: Some(crate::lockfile::LockFile::try_acquire_lock(p.lock.clone())?), path: p.lock.clone() })
++        }
++    }
++    impl Drop for Transaction {
++        fn drop(&mut self) {
++            drop(self.lock.take());
++            let _ = fs::remove_file(&self.path);
 +        }
 +    }
 +
@@ -238,7 +257,7 @@
 +        if !p.has_artifacts()? {
 +            return Ok(());
 +        }
-+        let _lock = crate::lockfile::LockFile::try_acquire_lock(p.lock.clone())?;
++        let _transaction = Transaction::begin(&p)?;
 +        recover_locked(&p, &Windows)?;
 +        Ok(())
 +    }
@@ -248,7 +267,7 @@
 +    fn publish_with(staged: tempfile::NamedTempFile, destination: &Path, operations: &impl Operations) -> Result<(), Error> {
 +        let p = Paths::new(destination);
 +        // A per-destination exclusive handle serializes publication and recovery.
-+        let _lock = crate::lockfile::LockFile::try_acquire_lock(p.lock.clone())?;
++        let _transaction = Transaction::begin(&p)?;
 +        recover_locked(&p, operations)?;
 +        // Close the staged write handle before ReplaceFileW opens it, then move
 +        // the complete, flushed file to the deterministic stage name. Until that

@@ -25,8 +25,10 @@ Okilum repeats that check before it reports Ready and again before restart.
 ## On-disk transaction
 
 Names beside the destination: `Update.exe.vpk-stage`, `Update.exe.vpk-backup`
-and the persistent lock file `Update.exe.vpk-lock` (an exclusive handle on it
-serializes publication and recovery across processes).
+and `Update.exe.vpk-lock`. An exclusive (share mode 0) handle on the lock file
+serializes publication and recovery across processes; the file is deleted after
+release, which cannot succeed while another process holds it, so extraction
+leaves no files behind.
 
 Invariant: a file only ever acquires the destination, stage or backup name
 through an atomic rename of a complete file. The stage is the verified, flushed
