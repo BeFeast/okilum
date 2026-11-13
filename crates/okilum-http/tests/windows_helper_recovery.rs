@@ -390,24 +390,40 @@ fn helper_lock_excludes_publication_from_another_process() {
         let root = PathBuf::from(root);
         let _lock = lock(&root.join("Update.exe")).unwrap();
         fs::write(root.join("locked"), b"").unwrap();
-        while !root.join("release").exists() {
+        // Bounded: a failed parent can never leave this holder running.
+        for _ in 0..3000 {
+            if root.join("release").exists() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         return;
     }
+    /// Releases and reaps the holder even when an assertion fails.
+    struct Holder(std::process::Child, PathBuf);
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            let _ = fs::write(self.1.join("release"), b"");
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
     let root = tempfile::tempdir().unwrap();
     let helper = fixture(root.path());
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "helper_lock_excludes_publication_from_another_process",
             "--exact",
             "--nocapture",
         ])
         .env(CHILD, root.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    let mut holder = Holder(child, root.path().to_owned());
     while !root.path().join("locked").exists() {
-        assert!(child.try_wait().unwrap().is_none(), "lock holder exited");
+        assert!(holder.0.try_wait().unwrap().is_none(), "lock holder exited");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let result = publish_fault(
@@ -424,7 +440,7 @@ fn helper_lock_excludes_publication_from_another_process() {
     );
     assert_eq!(fs::read(&helper).unwrap(), OLD);
     fs::write(root.path().join("release"), b"").unwrap();
-    assert!(child.wait().unwrap().success());
+    assert!(holder.0.wait().unwrap().success());
     publish_fault(
         staged(&helper),
         &helper,

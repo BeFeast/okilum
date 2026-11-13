@@ -104,8 +104,15 @@ CONTROLS = [
 
 
 def run(*args):
-    result = subprocess.run(COMMAND + list(args), cwd=ROOT, text=True, encoding='utf-8',
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        result = subprocess.run(COMMAND + list(args), cwd=ROOT, text=True, encoding='utf-8',
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+    except subprocess.TimeoutExpired as expired:
+        # A hung control is reported as not fired; it never eats the job.
+        output = expired.stdout or ''
+        if isinstance(output, bytes):
+            output = output.decode('utf-8', 'replace')
+        result = subprocess.CompletedProcess(expired.cmd, -1, output + '\nCONTROL_TIMEOUT\n')
     # Cap each line: a single huge assertion line can swallow the rest of the CI log.
     print('\n'.join(line[:2000] for line in result.stdout.splitlines()), flush=True)
     return result
