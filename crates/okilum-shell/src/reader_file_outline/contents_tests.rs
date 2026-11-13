@@ -854,11 +854,12 @@ fn listed(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> bool {
     })
 }
 
-/// Lines: 1-60 `a00`-`a59`, 61 `big` (31 children, so it starts closed),
-/// 62-91 `c00`-`c29`, 92 `target`, 94-153 `p00`-`p59`.
+/// Lines: 1-30 `a00`-`a29`, 31 `big` (31 children, so it starts closed),
+/// 32-61 `c00`-`c29`, 62 `target`, 64-123 `p00`-`p59`. 92 top-level keys:
+/// no groups at the top.
 fn caret_fixture() -> String {
     let mut text = String::from("{\n");
-    for i in 0..60 {
+    for i in 0..30 {
         text += &format!("  \"a{i:02}\": {i},\n");
     }
     text += "  \"big\": {\n";
@@ -895,7 +896,7 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
         "positive: big starts closed"
     );
     // Scrolling: the closed ancestor carries the mark; nothing opens.
-    scrolled_to(&view, &code, visual, 92);
+    scrolled_to(&view, &code, visual, 62);
     assert_eq!(
         marked_key(&view, visual),
         "big",
@@ -925,7 +926,7 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
         );
     });
     // Scrolling again: the top node leads; opened rows stay open.
-    scrolled_to(&view, &code, visual, 99);
+    scrolled_to(&view, &code, visual, 69);
     assert_eq!(
         marked_key(&view, visual),
         "p05",
@@ -940,7 +941,7 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
     let input = code.read_with(visual, |p, _| p.input().unwrap());
     input.update(visual, |input, cx| {
         input.set_selected_range(c05..c05, cx);
-        input.scroll_line_to_top(120, cx);
+        input.scroll_line_to_top(90, cx);
     });
     paint(visual);
     assert_eq!(
@@ -1050,7 +1051,7 @@ fn contents2814_scrolling_right_after_a_caret_move_follows_the_top(cx: &mut Test
         "positive: the caret leads"
     );
     // The user scrolls at once, with no time passing.
-    input.update(visual, |input, cx| input.scroll_line_to_top(130, cx));
+    input.update(visual, |input, cx| input.scroll_line_to_top(100, cx));
     paint_now(visual);
     assert_eq!(
         marked_key(&view, visual),
@@ -1074,7 +1075,7 @@ fn contents2814_a_repeated_jump_after_scrolling_away_marks_the_node_again(cx: &m
         "p58",
         "positive: the jump marks p58"
     );
-    scrolled_to(&view, &code, visual, 99);
+    scrolled_to(&view, &code, visual, 69);
     assert_eq!(marked_key(&view, visual), "p05", "positive: scrolled away");
     // The same jump again leaves the cursor where it already was.
     where_you_are(&view, visual, p58);
