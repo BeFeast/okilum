@@ -30,18 +30,6 @@ the file. Frontmatter and selections with boundaries inside fenced code are
 left unchanged, matching the other formatting commands' source guards.
 The `okilum::ToggleQuote` action uses the Editor context and can be rebound here.
 
-## Open in terminal
-
-**Open in terminal (#2837):** Option+Command+T on macOS, Alt+Super+T on Linux
-and Alt+Win+T on Windows (next to Reveal, Option+Command+R) opens the system
-terminal in the folder of the open file, or of the sidebar item under the tree
-cursor; a folder opens itself. The same item is in the sidebar row menu, the
-file header's Open with menu, note Document actions and the palette
-(type «terminal»); menus show the live key. The action is
-`project_terminal::OpenInTerminal` in the Reader context and can be rebound
-here. It is unrelated to Open terminal (Ctrl+J / Cmd+J), which opens the active
-project's terminal (docs/project-terminal.md).
-
 ## File and precedence
 
 `keymap.json` lives beside the other JSON preferences, under

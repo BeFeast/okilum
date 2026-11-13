@@ -93,8 +93,6 @@ pub(super) enum PaletteItem {
     CopyAsMarkdown,
     CopyWithFormatting,
     OpenTerminal,
-    /// «Open in terminal» for the open file's folder (#2837).
-    OpenInTerminal,
     TerminalSettings,
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
     Note(reader_title_nav::Entry),
@@ -782,7 +780,6 @@ impl Reader {
             PaletteItem::CopyWithFormatting => "copy-with-formatting".into(),
             PaletteItem::SwitchWindowMode => "switch-window-mode".into(),
             PaletteItem::OpenTerminal => "open-terminal".into(),
-            PaletteItem::OpenInTerminal => "open-in-terminal".into(),
             PaletteItem::TerminalSettings => "terminal-settings".into(),
             PaletteItem::AllProjects => String::new(),
             PaletteItem::File(row) => self
@@ -890,12 +887,6 @@ impl Reader {
                 .contains(&palette.query.trim().to_lowercase())
         {
             items.push((PaletteSection::Files, PaletteItem::SwitchWindowMode));
-        }
-        if !self.selected_file().is_empty()
-            && !palette.query.trim().is_empty()
-            && "open in terminal".contains(&palette.query.trim().to_lowercase())
-        {
-            items.push((PaletteSection::Files, PaletteItem::OpenInTerminal));
         }
         if self.project_navigation.active.is_some()
             && !palette.query.trim().is_empty()
@@ -1273,17 +1264,6 @@ impl Reader {
             PaletteItem::OpenTerminal => {
                 self.close_quick_open(window, cx);
                 self.open_project_terminal(window, cx);
-            }
-            PaletteItem::OpenInTerminal => {
-                self.close_quick_open(window, cx);
-                let rel = self.selected_file().to_owned();
-                reader_files::run(
-                    reader_files::FileAction::Terminal,
-                    &self.vault_root,
-                    &rel,
-                    window,
-                    cx,
-                );
             }
             PaletteItem::File(row) => self.open_quick_open_row(row, window, cx),
             PaletteItem::Note(entry) => {
@@ -1716,15 +1696,6 @@ impl Reader {
                         .child("Open terminal")
                         .child(reader_shortcuts::all_shortcuts(
                             &project_terminal::OpenTerminal,
-                            cx,
-                        ))
-                        .into_any_element(),
-                    PaletteItem::OpenInTerminal => section_row(*ix)
-                        .h(px(30.))
-                        .text_sm()
-                        .child(reader_files::TERMINAL_LABEL)
-                        .child(reader_shortcuts::all_shortcuts(
-                            &project_terminal::OpenInTerminal,
                             cx,
                         ))
                         .into_any_element(),
@@ -3201,7 +3172,6 @@ canaryhidden [[Target]]",
                     PaletteItem::CopyWithFormatting => "Copy as Rich Text".into(),
                     PaletteItem::SwitchWindowMode => v.window_mode_label().into(),
                     PaletteItem::OpenTerminal => "Open terminal".into(),
-                    PaletteItem::OpenInTerminal => reader_files::TERMINAL_LABEL.into(),
                     PaletteItem::TerminalSettings => "Terminal settings".into(),
                     PaletteItem::AllProjects => "All projects…".into(),
                     PaletteItem::File(ix) => v.quick_open.rows[*ix].path.clone(),

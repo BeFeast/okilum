@@ -14,8 +14,6 @@ mod link_complete;
 mod lists;
 mod live_preview;
 pub(crate) mod math_preview;
-#[cfg(test)]
-mod note_open_mode_tests;
 mod open_note_sync;
 mod paste_jobs;
 mod recovery;
@@ -812,10 +810,8 @@ impl Reader {
             if !self.leave_source(cx) {
                 return;
             }
-            // Explicit Read, not a navigation exit. It also overrides the
-            // Settings default for this window (#2817).
+            // Explicit Read, not a navigation exit.
             self.ui_state.source_mode = false;
-            self.ui_state.read_chosen = true;
             // Saved: keep its Undo history for a return to Edit (#1095).
             self.retained_edit =
                 input.map(|input| (file, input.update(cx, |input, _| input.take_edit_history())));
@@ -1526,7 +1522,6 @@ impl Reader {
         }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
-        self.ui_state.read_chosen = false;
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -2440,39 +2435,6 @@ impl Reader {
         }
     }
 
-    /// Settings → Editor → Open notes in → Edit (#2817). Only a Markdown note
-    /// opens its editor this way: text, CSV and code files keep their own
-    /// Read/Edit, and the window's chosen mode is left as it was, so a file
-    /// opened next still follows that choice. An explicit Read in this
-    /// window wins until Edit is chosen again. A note that cannot be edited
-    /// (read-only location, open in another window, damaged encoding) stays
-    /// in Read without a notice: the reader asked for nothing.
-    pub(super) fn open_note_by_default(
-        &mut self,
-        tree_had_focus: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if reader_ui_state::note_open_mode(cx) != reader_ui_state::NoteOpenMode::Edit
-            || self.ui_state.read_chosen
-            || self.ui_state.source_mode
-            || self.editing.is_some()
-            || self.file_preview.is_some()
-            || self.current_rel.is_empty()
-        {
-            return;
-        }
-        let notice = self.link_notice.clone();
-        self.toggle_source(window, cx);
-        self.ui_state.source_mode = false;
-        if self.editing.is_none() {
-            self.link_notice = notice;
-            cx.notify();
-        } else if tree_had_focus {
-            self.tree_focus.focus(window, cx);
-        }
-    }
-
     /// A vanished source must not trap this window. Keep the latest durable
     /// draft for Recover notes instead; conflicts and failed recovery writes
     /// still block navigation. Explicit Save continues to report failure.
@@ -2510,13 +2472,9 @@ impl Reader {
     pub(super) fn edit_created_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let preferred = self.ui_state.live_preview;
         let source_mode = self.ui_state.source_mode;
-        let read_chosen = self.ui_state.read_chosen;
-        if self.editing.is_none() {
-            self.toggle_source(window, cx);
-        }
+        self.toggle_source(window, cx);
         // Creating a note opens its body for typing, not a new window mode.
         self.ui_state.source_mode = source_mode;
-        self.ui_state.read_chosen = read_chosen;
         self.set_live_preview(true, window, cx);
         if let Some(editing) = &mut self.editing {
             editing.kept_preference = Some(preferred);
@@ -2745,7 +2703,6 @@ impl Reader {
                 self.editing = None;
                 self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
-                self.ui_state.read_chosen = true;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
             }

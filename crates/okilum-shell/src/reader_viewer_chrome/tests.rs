@@ -438,17 +438,13 @@ fn open_with_contains_platform_reveal_and_quick_look_only_on_macos() {
     assert_eq!(commands[0].0, "Open with default app");
     assert!(commands[0].2.partial_eq(&OpenFileDefault));
     assert_eq!(commands[1].0, platform::labels::Os::CURRENT.reveal());
-    // #2837: the item's folder in the system terminal, with its shortcut.
-    assert_eq!(commands[2].0, "Open in terminal");
-    assert!(matches!(commands[2].1, reader_files::FileAction::Terminal));
-    assert!(commands[2].2.partial_eq(&project_terminal::OpenInTerminal));
     assert_eq!(
         commands.iter().any(|(label, _, _)| *label == "Quick Look"),
         cfg!(target_os = "macos")
     );
     assert_eq!(
         commands.len(),
-        if cfg!(target_os = "macos") { 4 } else { 3 }
+        if cfg!(target_os = "macos") { 3 } else { 2 }
     );
 }
 

@@ -1370,11 +1370,6 @@ fn open_commands() -> Vec<(&'static str, reader_files::FileAction, Box<dyn Actio
             reader_files::FileAction::Reveal,
             Box::new(RevealFile),
         ),
-        (
-            reader_files::TERMINAL_LABEL,
-            reader_files::FileAction::Terminal,
-            Box::new(project_terminal::OpenInTerminal),
-        ),
     ];
     #[cfg(target_os = "macos")]
     let commands = {
