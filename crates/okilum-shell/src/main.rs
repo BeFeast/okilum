@@ -85,6 +85,7 @@ mod reader_file_copy;
 mod reader_files;
 mod reader_find_field;
 mod reader_fonts;
+mod reader_har;
 #[cfg(target_os = "linux")]
 mod reader_header_cache;
 mod reader_history;
