@@ -70,6 +70,7 @@ CONTROLS = [
  ('scan-survives-hide', 'find_scan_stops_when_table_is_hidden_or_closed'),
  ('scan-survives-close', 'find_scan_stops_when_table_is_hidden_or_closed'),
  ('edit-keeps-scanning', 'edit_stops_table_find_and_read_runs_it_once'),
+ ('drop-json-table-state', 'edit_stops_table_find_and_read_runs_it_once'),
  ('hidden-refilter', 'hidden_load_more_waits_and_runs_the_query_once_on_return'),
  ('hidden-table-badge', 'malformed_badge_reveals_filtered_row_and_failed_table_opens_raw'),
  ('window-sized-compact', 'narrow_header_and_measured_compact_pane_keep_controls_inside'),
@@ -89,6 +90,7 @@ fn main() {''')
     edit('reader_delimited.rs', '        self.projection_cancel\n            .store(true, std::sync::atomic::Ordering::Relaxed);', '        if !crate::table2812_control("scan-survives-close") {\n            self.projection_cancel\n                .store(true, std::sync::atomic::Ordering::Relaxed);\n        }')
     edit('reader_code_file/view.rs', '        if let Some(table) = &self.table {\n            table.update(cx, |table, _| table.suspend_work());\n        }', '        if let Some(table) = self.table.as_ref().filter(|_| !crate::table2812_control("edit-keeps-scanning")) {\n            table.update(cx, |table, _| table.suspend_work());\n        }')
     edit('reader_delimited/find.rs', '        if self.suspended {\n            self.resume_pending = true;', '        if self.suspended && !crate::table2812_control("hidden-refilter") {\n            self.resume_pending = true;')
+    edit('reader_code_file/presentation.rs', '.filter(|_| self.table.is_some())', '.filter(|_| self.table.is_some() || crate::table2812_control("drop-json-table-state"))')
     find = 'reader_delimited/find.rs'
     edit(find, '.matches\n                    .into_iter()', '.matches\n                    .into_iter().take(if crate::table2812_control("first-cell-only") {1} else {usize::MAX})')
     edit(find, 'i64::from(direction)', 'i64::from(if crate::table2812_control("previous-is-next") {direction.abs()} else {direction})')
