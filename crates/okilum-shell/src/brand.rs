@@ -48,7 +48,7 @@ pub const NOTE_WIDTH_NORMAL_ICON: &str = "icons/fold-horizontal.svg";
 pub const NOTE_WIDTH_FULL_ICON: &str = "icons/unfold-horizontal.svg";
 pub const CODE_VIEW_TABLE_ICON: &str = "icons/view-table.svg";
 pub const CODE_VIEW_TREE_ICON: &str = "icons/view-tree.svg";
-const IMAGES: [(&str, &[u8]); 48] = [
+const IMAGES: [(&str, &[u8]); 50] = [
     (
         CODE_VIEW_TABLE_ICON,
         include_bytes!("../assets/icons/view-table.svg"),
