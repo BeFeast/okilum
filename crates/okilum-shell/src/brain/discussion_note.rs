@@ -564,7 +564,7 @@ mod tests {
         for title in ["", " ", "two\nlines", &"λ".repeat(257)] {
             assert!(freeze_target(&target, None, title, "", None, OPERATION).is_err());
         }
-        for filename in ["_reserved.md", "../note.md", ".hidden.md"] {
+        for filename in ["@reserved.md", "../note.md", ".hidden.md"] {
             assert!(freeze_target(&target, None, "Title", "", Some(filename), OPERATION).is_err());
         }
     }

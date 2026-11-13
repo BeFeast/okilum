@@ -886,7 +886,7 @@ mod tests {
             let selection = install(v, window, cx);
             v.discussion_note
                 .filename
-                .update(cx, |input, cx| input.set_value("_reserved.md", window, cx));
+                .update(cx, |input, cx| input.set_value("@reserved.md", window, cx));
             v.save_discussion_note(window, cx);
             assert!(v.discussion_note.pending.is_none());
             assert!(v.discussion_note.error.is_some());

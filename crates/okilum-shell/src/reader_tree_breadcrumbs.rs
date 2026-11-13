@@ -922,7 +922,7 @@ mod tests {
         let (reader, visual, _temp) = fixture_with_branch(
             cx,
             "Health/Areas/Current",
-            &["AI/Notes", "Business", "Dev", "Finance", "_filtered"],
+            &["AI/Notes", "Business", "Dev", "Finance", "@filtered"],
         );
         let viewport = visual.debug_bounds("sidebar-tree-body").unwrap();
         assert!(visual.debug_bounds("tree-earlier-roots").is_none());
@@ -931,10 +931,10 @@ mod tests {
                 view.vault
                     .entries
                     .iter()
-                    .any(|entry| entry.path == "_filtered"),
+                    .any(|entry| entry.path == "@filtered"),
                 "positive control: hidden root exists in inventory"
             );
-            assert!(!view.tree.rows.iter().any(|row| row.path == "_filtered"));
+            assert!(!view.tree.rows.iter().any(|row| row.path == "@filtered"));
             view.tree.set_subtree("AI", true);
             let first = view
                 .sidebar_items_named("")
