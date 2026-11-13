@@ -25,7 +25,11 @@ before it reports Ready.
 ## Transaction and recovery: identity, not names
 
 Names beside the destination: `Update.exe.vpk-txn` (record), `.vpk-stage`,
-`.vpk-backup`, `.vpk-lock`, and `.vpk-quarantine-<id>` for anything set aside.
+`.vpk-backup`, `.vpk-lock`, `.vpk-quarantine-<id>` for anything unverifiable set
+aside, and `.vpk-obsolete-<id>` for a verified obsolete copy that could not be
+deleted yet (a still-running helper image), swept later. Temporary extraction
+and record files use the `.vpk-tmp-` prefix; under the lock, recovery deletes
+the ones no process holds open (an exclusive open succeeds only for orphans).
 
 1. An exclusive (share mode 0) handle on the lock file serializes publication,
    recovery and helper launch across processes. The lock file is deleted after

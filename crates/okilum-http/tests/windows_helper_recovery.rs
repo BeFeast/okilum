@@ -574,6 +574,11 @@ fn power_cut_writer() {
     let root = PathBuf::from(std::env::var_os(POWER_CUT_ROOT).expect(POWER_CUT_ROOT));
     let phase = std::env::var(POWER_CUT_PHASE).expect(POWER_CUT_PHASE);
     let helper = fixture(&root);
+    // Flush the fixture itself: a cut must not take the manifest with it.
+    fs::File::open(root.join("current").join("sq.version"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
     let mut file = fs::File::create(&helper).unwrap();
     file.write_all(&power_cut_bytes(1)).unwrap();
     file.sync_all().unwrap();
@@ -645,4 +650,41 @@ fn power_cut_verify() {
         0,
         "unexpected unverifiable copy"
     );
+    let temporaries = fs::read_dir(&root)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".vpk-tmp-")
+        })
+        .count();
+    assert_eq!(temporaries, 0, "orphaned temporary survived recovery");
+}
+
+#[test]
+fn orphaned_temporaries_are_removed_but_open_ones_are_kept() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    // An interrupted extraction left this behind; nothing holds it open.
+    fs::write(root.path().join(".vpk-tmp-orphan"), NEW).unwrap();
+    // Another process is still writing this one (tempfile shares everything).
+    let busy = root.path().join(".vpk-tmp-busy");
+    let writer = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .share_mode(7)
+        .open(&busy)
+        .unwrap();
+    publish_fault(staged(&helper), &helper, REAL).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert!(
+        !root.path().join(".vpk-tmp-orphan").exists(),
+        "orphaned temporary kept"
+    );
+    assert!(busy.exists(), "a temporary in use was removed");
+    drop(writer);
+    assert_clean(&helper);
 }

@@ -41,22 +41,23 @@
 +        Ok(count == size && actual.read(&mut actual_buffer[..1])? == 0)
 +    }
 +
-@@ -158 +184,3 @@
+@@ -158 +184,4 @@
 -        let mut outfile = misc::retry_io(|| File::create(path))?;
 +        // Stage beside the destination so publication is one atomic replace,
 +        // including on Windows. A read/CRC/size/write failure drops only the stage.
-+        let mut outfile = tempfile::NamedTempFile::new_in(parent)?;
-@@ -167,0 +196,3 @@
++        // Recognizable prefix: recovery removes orphans no process holds open.
++        let mut outfile = tempfile::Builder::new().prefix(".vpk-tmp-").tempfile_in(parent)?;
+@@ -167,0 +197,3 @@
 +            if len as u64 > total_size.saturating_sub(bytes_written) {
 +                return Err(Error::InvalidPackage("ZIP entry exceeds declared size".into()));
 +            }
-@@ -174,0 +206,5 @@
+@@ -174,0 +207,5 @@
 +        if bytes_written != total_size {
 +            return Err(Error::InvalidPackage("ZIP entry size does not match metadata".into()));
 +        }
 +        outfile.as_file().sync_all()?;
 +        crate::helper_replace::publish(outfile, path)?;
-@@ -292,4 +328 @@
+@@ -292,4 +329 @@
 -            match self.extract_zip_idx_to_path(i, &dest_path) {
 -                Ok(_) => info!("Successfully extracted stub executable: {:?}", dest_path),
 -                Err(e) => warn!("Failed to extract stub executable {:?}: {} (non-fatal)", dest_path, e),
@@ -64,7 +65,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,733 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -114,6 +115,8 @@
 +    };
 +
 +    const MAGIC: &str = "velopack-helper-transaction-v1";
++    /// Prefix of every temporary extraction/record file (see bundle.rs).
++    const TEMPORARY_PREFIX: &str = ".vpk-tmp-";
 +    const REMOVE_REPLACED: i32 = 1175;
 +    const MOVE_REPLACEMENT: i32 = 1176;
 +    const MOVE_REPLACEMENT_2: i32 = 1177;
@@ -410,7 +413,7 @@
 +    /// Flushed and atomically named before any transaction file exists.
 +    fn write_record(p: &Paths, record: &Record) -> io::Result<()> {
 +        let directory = p.record.parent().ok_or_else(|| other("helper has no parent directory"))?;
-+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
++        let mut temporary = tempfile::Builder::new().prefix(TEMPORARY_PREFIX).tempfile_in(directory)?;
 +        temporary.write_all(record.text().as_bytes())?;
 +        temporary.as_file().sync_all()?;
 +        set_attributes(temporary.as_file(), ATTRIBUTE_NORMAL)?;
@@ -496,6 +499,26 @@
 +        drop(file);
 +        operations.checkpoint(p, &format!("retired {label}"))
 +    }
++    /// Remove temporaries orphaned by an interrupted process. A temporary that
++    /// another process is still writing has an open handle, so an exclusive
++    /// (share mode 0) open fails and it is kept. Runs only under the lock.
++    fn sweep_temporaries(p: &Paths) {
++        let Some(directory) = p.destination.parent() else { return };
++        let Ok(entries) = fs::read_dir(directory) else { return };
++        for entry in entries.flatten() {
++            if !entry.file_name().to_string_lossy().starts_with(TEMPORARY_PREFIX) {
++                continue;
++            }
++            if let Ok(file) = fs::OpenOptions::new()
++                .access_mode(GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES)
++                .share_mode(0)
++                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
++                .open(entry.path())
++            {
++                let _ = delete_handle_ref(&file);
++            }
++        }
++    }
 +    /// Best-effort removal of obsolete copies left by earlier transactions.
 +    fn sweep_obsolete(p: &Paths) {
 +        let Some(directory) = p.destination.parent() else { return };
@@ -572,6 +595,7 @@
 +        retire(p, &p.stage, valid, "staged copy", operations)?;
 +        retire(p, &p.backup, valid, "backup", operations)?;
 +        sweep_obsolete(p);
++        sweep_temporaries(p);
 +        if let Some(file) = open_entry(&p.record, GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES)? {
 +            delete_handle(file)?;
 +        }
