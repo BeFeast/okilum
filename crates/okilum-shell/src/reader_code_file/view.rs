@@ -172,6 +172,9 @@ impl CodePreview {
     }
     /// Only the explicit segment/menu/ShowView commands remember a choice.
     pub(crate) fn set_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        // A newer explicit command owns presentation, even if it selects the
+        // already-visible Raw view while Read restoration is still formatting.
+        self.restored_presentation = None;
         self.provisional_interacted.set(true);
         if !self.read_active || !self.availability(view).available() {
             return;
@@ -245,6 +248,7 @@ impl CodePreview {
                         this.initial_view_timing();
                     }
                     this.finish_automatic_view();
+                    this.restore_loaded_presentation(window, cx);
                     cx.notify();
                 });
             })

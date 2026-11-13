@@ -451,7 +451,13 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
         .center();
     visual.simulate_click(park, Modifiers::default());
     settle(visual);
-    assert!(reader.read_with(visual, |r, _| r.editing.is_none()));
+    reader.read_with(visual, |r, _| {
+        assert!(
+            r.editing.is_none(),
+            "draft park did not exit Edit: notice={:?}, bounds={park:?}",
+            r.link_notice
+        );
+    });
     code.read_with(visual, |s, _| {
         assert!(s.read_active);
         assert_eq!(s.search_scans_started.load(Ordering::SeqCst), before.0 + 1);

@@ -251,6 +251,91 @@ fn code2809_async_format_keeps_focus_and_respects_a_new_view_choice(cx: &mut Tes
 }
 
 #[gpui::test]
+fn file2811_pending_read_restore_yields_to_a_new_view_choice(cx: &mut TestAppContext) {
+    let source = format!("{{\"payload\":\"{}\"}}", "x".repeat(120_000));
+    for choice in [None, Some(View::Raw), Some(View::Tree)] {
+        cx.executor().allow_parking();
+        let (reader, visual, _temp) = reader_viewer_chrome::tests::fixture_with_files(
+            cx,
+            "data.json",
+            &[("data.json", &source)],
+        );
+        settle(visual);
+        let previous = reader.read_with(visual, |reader, _| {
+            reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        });
+        previous.update_in(visual, |code, window, cx| {
+            code.set_view(View::Formatted, window, cx)
+        });
+        settle(visual);
+        assert_eq!(
+            previous.read_with(visual, |code, _| code.view),
+            View::Formatted
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx)
+        });
+        settle(visual);
+        assert!(reader.read_with(visual, |reader, _| reader.editing.is_some()));
+
+        let (release, gate) = futures::channel::oneshot::channel();
+        let restored = reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            assert!(reader.editing.is_none());
+            let code = reader.file_preview.as_ref().unwrap().code.clone().unwrap();
+            code.update(cx, |code, _| code.format_gate = Some(gate));
+            code
+        });
+        assert_ne!(previous.entity_id(), restored.entity_id());
+        settle(visual);
+        restored.read_with(visual, |code, _| {
+            assert!(
+                code.json.as_ref().unwrap().formatting,
+                "restore worker is delayed"
+            );
+            assert!(code.json.as_ref().unwrap().pretty.is_none());
+            assert!(code.restored_presentation.is_some());
+            assert_eq!(code.view, View::Raw);
+        });
+        if let Some(choice) = choice {
+            let action = restored.read_with(visual, |code, cx| {
+                code.chrome(restored.clone(), cx)
+                    .views
+                    .into_iter()
+                    .find(|view| view.action.id == choice.id())
+                    .expect("available header view choice")
+                    .action
+            });
+            visual.update(|window, cx| (action.invoke)(window, cx));
+            settle(visual);
+            restored.read_with(visual, |code, _| {
+                assert_eq!(
+                    code.view, choice,
+                    "new choice ran before the worker finished"
+                );
+                assert!(code.json.as_ref().unwrap().formatting);
+            });
+        }
+        release.send(()).unwrap();
+        settle(visual);
+        restored.read_with(visual, |code, _| {
+            let json = code.json.as_ref().unwrap();
+            assert!(!json.formatting);
+            assert!(
+                json.pretty.as_ref().unwrap().is_ok(),
+                "worker actually completed"
+            );
+            assert_eq!(
+                code.view,
+                choice.unwrap_or(View::Formatted),
+                "pending Read restoration never overrides a newer header view choice"
+            );
+            assert!(code.restored_presentation.is_none());
+        });
+    }
+}
+
+#[gpui::test]
 fn code2809_async_format_cannot_change_the_hidden_preview_after_real_edit_entry(
     cx: &mut TestAppContext,
 ) {

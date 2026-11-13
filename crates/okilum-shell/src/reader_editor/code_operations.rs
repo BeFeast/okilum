@@ -1,6 +1,7 @@
 //! Explicit source operations. The reader protocol and read-only preview never
 //! gain write authority; every accepted edit uses the normal source Undo/save.
 use super::*;
+pub(super) mod file_chrome;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use okilum_core::code_operations as model;
 use std::{
@@ -16,6 +17,7 @@ pub(super) struct State {
     generation: u64,
     busy: bool,
     running: Option<Running>,
+    last_action: Option<Action>,
     status: Option<(SourceStamp, Range<usize>, String, String)>,
     notice: Option<String>,
     notice_stamp: Option<SourceStamp>,
@@ -23,6 +25,8 @@ pub(super) struct State {
     inventory: Option<Inventory>,
     inventory_requested: Option<SourceStamp>,
     inventory_task: Option<Task<()>>,
+    #[cfg(test)]
+    worker_gate: Option<futures::channel::oneshot::Receiver<()>>,
 }
 
 struct Running {
@@ -65,6 +69,13 @@ struct Inventory {
 }
 
 impl State {
+    pub(super) fn clear_notice(&mut self) {
+        self.notice = None;
+        self.notice_stamp = None;
+    }
+    pub(super) fn preview_present(&self) -> bool {
+        self.preview.is_some()
+    }
     pub(super) fn park(&mut self) {
         // A completion may arrive while the editor is temporarily removed or
         // after it is reassembled. Retire that request in either case.
@@ -134,7 +145,7 @@ struct Preview {
     after: Entity<EditorState>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Validate,
     Format,
@@ -244,6 +255,12 @@ fn file_language(rel: &str) -> String {
 }
 
 impl Reader {
+    pub(crate) fn run_format_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.code_operation(Action::Format, window, cx);
+    }
+    pub(crate) fn run_validate_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.code_operation(Action::Validate, window, cx);
+    }
     pub(super) fn schedule_code_inventory(&mut self, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.as_mut().filter(|e| e.markdown) else {
             return;
@@ -352,7 +369,11 @@ impl Reader {
             )
         } else {
             (
-                0..input.text().len(),
+                // Keep BOM metadata outside the atomic body edit. The native
+                // user Undo path preserves a leading BOM; replacing it as
+                // source content would restore a second BOM on Undo.
+                usize::from(input.text().bytes().take(3).eq("\u{feff}".bytes())) * 3
+                    ..input.text().len(),
                 file_language(self.selected_file()),
                 None,
             )
@@ -395,6 +416,14 @@ impl Reader {
         })
     }
 
+    fn refresh_code_host(&self, cx: &mut Context<Self>) {
+        if let Some(file) = self.editing.as_ref().and_then(|e| e.file_chrome.clone()) {
+            file.update(cx, |_, cx| cx.notify());
+        } else {
+            cx.notify();
+        }
+    }
+
     fn cancel_code_operation(&mut self, cx: &mut Context<Self>) {
         if let Some(editing) = self.editing.as_mut() {
             if let Some(running) = &editing.operations.running {
@@ -403,7 +432,7 @@ impl Reader {
                 editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
             }
         }
-        cx.notify();
+        self.refresh_code_host(cx);
     }
 
     fn code_operation(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -423,19 +452,20 @@ impl Reader {
         {
             return;
         }
+        editing.operations.last_action = Some(action);
         if scope.range.len() > model::MAX_BYTES {
             editing.operations.status = None;
             editing.operations.preview = None;
             editing.operations.notice = Some(model::size_notice(action.name(), scope.range.len()));
             editing.operations.notice_stamp = Some(scope.stamp);
-            cx.notify();
+            self.refresh_code_host(cx);
             return;
         }
         let Some(permit) = Permit::acquire(cx) else {
             editing.operations.notice =
                 Some("Another code operation is finishing; try again.".into());
             editing.operations.notice_stamp = Some(scope.stamp);
-            cx.notify();
+            self.refresh_code_host(cx);
             return;
         };
         let control = model::Control::default();
@@ -467,7 +497,11 @@ impl Reader {
         let worker_control = control.clone();
         let target_root = binding_root.clone();
         let target_file = binding_file.clone();
+        #[cfg(test)]
+        let worker_gate = editing.operations.worker_gate.take();
         let task = cx.background_executor().spawn(async move {
+            #[cfg(test)]
+            if let Some(gate) = worker_gate { let _ = gate.await; }
             let worker_started = Instant::now();
             let result = (|| {
                 if worker_control.cancelled() {
@@ -574,15 +608,15 @@ impl Reader {
                 if !binding_ready || !composition_ready || input.read(cx).source_stamp() != snapshot_stamp
                     || editing.conflict_detected || editing.save_failed || !input.read(cx).is_editable() {
                     editing.operations.notice = Some("Source changed; run the operation again. No result applied.".into());
-                    cx.notify(); return;
+                    this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                 }
                 let Some((target, status, format, repair, proposed_validation)) = result else {
                     editing.operations.notice = Some(if input.read(cx).source_stamp() != snapshot_stamp { "Source changed; run the operation again. No result applied." } else { "Operation cancelled." }.into());
-                    cx.notify(); return;
+                    this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                 };
                 if cancelled {
                     editing.operations.notice = Some("Operation cancelled.".into());
-                    cx.notify(); return;
+                    this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                 }
                 let mut status_range = target.range.clone();
                 match format {
@@ -619,10 +653,11 @@ impl Reader {
                     }
                 }
                 this.editing.as_mut().unwrap().operations.notice_stamp = Some(input.read(cx).source_stamp());
-                cx.notify();
+                this.publish_file_operation_notice(window, cx);
+                this.refresh_code_host(cx);
             });
         }).detach();
-        cx.notify();
+        self.refresh_code_host(cx);
     }
 
     fn apply_code_repair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -649,7 +684,11 @@ impl Reader {
         {
             editing.operations.notice = Some("Repair preview is stale or source is in conflict. Nothing applied; review a fresh proposal.".into());
             editing.operations.notice_stamp = Some(editing.input.read(cx).source_stamp());
-            cx.notify();
+            if !editing.markdown {
+                editing.operations.preview = None;
+                self.publish_file_operation_notice(window, cx);
+            }
+            self.refresh_code_host(cx);
             return;
         }
         let preview = editing.operations.preview.take().unwrap();
@@ -674,10 +713,18 @@ impl Reader {
             Some("Repair applied as one Undo step. Save behavior is unchanged.".into());
         editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
         input.update(cx, |state, cx| state.focus(window, cx));
-        cx.notify();
+        self.publish_file_operation_notice(window, cx);
+        self.refresh_code_host(cx);
     }
 
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| !editing.markdown)
+        {
+            return None;
+        }
         let target = self.code_scope_for_display(cx, true)?;
         let editing = self.editing.as_ref()?;
         let state = &editing.operations;
@@ -870,7 +917,7 @@ impl Reader {
             inventory_task: editing.operations.inventory_task.take(),
             ..Default::default()
         };
-        cx.notify();
+        self.refresh_code_host(cx);
     }
 
     pub(super) fn code_operation_target_key(&self, cx: &App) -> Option<(usize, String)> {

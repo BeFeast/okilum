@@ -298,7 +298,12 @@ impl Reader {
         crate::updater::ready_notice(window, cx);
         self.sync_recovery_toast(window, cx);
         self.sync_deleted_notice(window, cx);
-        let notice = self.link_notice.clone();
+        // File conflicts already have actions in the bottom line. A second,
+        // persistent toast can cover Close, keeping draft in a narrow pane.
+        let notice = self
+            .link_notice
+            .clone()
+            .filter(|notice| !self.file_conflict_in_status(notice));
         let choices = self.link_choices.clone();
         if notice == self.displayed_notice && choices == self.displayed_choices {
             return;

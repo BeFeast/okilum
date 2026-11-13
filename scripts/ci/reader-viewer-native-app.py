@@ -17,6 +17,11 @@ def assert_restored_source_scope(output):
     assert restored == ['note.md'], f'unexpected restored-edit normalization: {restored!r}'
 
 
+def assert_file_edit_stages(output):
+    stages = re.findall(r'FILE_EDIT_NATIVE stage=(\d+) mounted=Reader', output)
+    assert stages == [str(i) for i in range(6)], f'file Edit native flow incomplete: {stages!r}'
+
+
 def pdf():
     objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
                b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -65,6 +70,7 @@ def main():
                 assert (directory / 'complete').exists(), 'Reader harness never completed'
                 output = log_path.read_text(encoding='utf-8')
                 assert_restored_source_scope(output)
+                assert_file_edit_stages(output)
                 for name in names:
                     assert f'file={name} mode=read mounted=Reader' in output, name
                 for name in ['data.json', 'array.json', 'data.csv', 'source.rs', 'note.md']:

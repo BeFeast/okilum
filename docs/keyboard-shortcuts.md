@@ -122,3 +122,20 @@ these commands from the active keymap.
 The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The
 platform acceptance uses this recorded default and the live keymap.
+
+## File code operations
+
+File Edit adds these defaults to the live shortcut catalog and Format split
+menu. They also work with focus in the header Find field. Markdown fenced-code
+controls keep their existing host and bindings.
+
+| Action | Linux / Windows | macOS |
+|---|---|---|
+| Format code | Shift+Alt+F | Shift+Option+F |
+| Validate code | Shift+Alt+V | Shift+Option+V |
+| Repair code… | Shift+Alt+R | Shift+Option+R |
+
+Repair from a code/data read view enters Edit before opening its lower preview.
+The OS may consume Alt+Shift for keyboard-layout switching before Okilum receives
+the chord; Settings can rebind each command. Actual layout behavior must be
+recorded during installed-beta platform verification, separately from GPUI tests.

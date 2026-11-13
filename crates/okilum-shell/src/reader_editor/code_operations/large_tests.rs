@@ -83,7 +83,7 @@ fn large2804_plain_json_format_growth_retires_small_read_preview(cx: &mut TestAp
             "small read preview positive control"
         );
     });
-    click(visual, "source-code-format");
+    click(visual, "file-format");
     f.reader.read_with(visual, |reader, cx| {
         assert!(value(&f, cx).len() > 4 * 1024 * 1024);
         assert!(
@@ -116,7 +116,7 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
         f.input.read_with(visual, |input, _| input.value().len()),
         source.len()
     );
-    click(visual, "source-code-validate");
+    file_validate(visual);
     f.reader.read_with(visual, |reader, _| {
         assert_eq!(
             reader
@@ -131,7 +131,7 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
             "Valid strict JSON"
         );
     });
-    click(visual, "source-code-format");
+    click(visual, "file-format");
     let formatted = f
         .input
         .read_with(visual, |input, _| input.value().to_string());
@@ -146,7 +146,7 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
     settle(visual);
     f.reader
         .read_with(visual, |_, cx| assert_eq!(value(&f, cx), source));
-    click(visual, "source-code-format");
+    click(visual, "file-format");
     f.reader
         .read_with(visual, |_, cx| assert_eq!(value(&f, cx), formatted));
     f.reader.update_in(visual, |reader, window, cx| {
@@ -193,7 +193,7 @@ fn large2804_plain_json_below_cap_reopens_and_undoes_format(cx: &mut TestAppCont
     );
     assert!(source.len() > 1024 * 1024 && source.len() < 4 * 1024 * 1024);
     let (f, visual) = open_file(cx, &source, "reopen.JSON");
-    click(visual, "source-code-format");
+    click(visual, "file-format");
     let formatted = f
         .input
         .read_with(visual, |input, _| input.value().to_string());
@@ -536,4 +536,17 @@ fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut Test
             .contains("stale"));
         reader.current_rel = "note.md".into();
     });
+}
+
+// File-only selector migration: the same real Validate command now lives in
+// the split menu. Fenced-note selectors and all data/revision assertions stay.
+fn file_validate(visual: &mut VisualTestContext) {
+    let bounds = crate::reader_viewer_chrome::tests::measured_bounds(visual, "file-format-split")
+        .expect("file Format split mounted");
+    visual.simulate_click(
+        point(bounds.right() - px(10.), bounds.center().y),
+        Modifiers::default(),
+    );
+    visual.simulate_keystrokes("down down enter");
+    settle(visual);
 }

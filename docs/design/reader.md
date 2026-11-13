@@ -74,9 +74,20 @@ original combined titlebar and document controls:
   with the same compact action builders; it has no second code toolbar.
   Read-only and invalid badges sit by the name; one bottom line owns diagnostics,
   large-file reasons and paged position/slider. Code/data read views use the
-  shared header Find; edit and table inner chrome remain for their own steps.
+  shared header Find; table inner chrome remains for its own step.
   Focus changes re-render the GPUI cached header; source edits,
   query typing and page changes do not invalidate its slot key.
+- **File Edit header (#2811).** Edit keeps this header and its shared Find.
+  Raw stays active; other views and folds are disabled with live Read hints.
+  One toolkit Format split button owns Format / Validate / Repair, with Language
+  in its menu for known extensions. Unknown/absent extensions can show Language
+  separately. Read, dirty Save, Format, the field and Document actions stay at
+  700 px; the view switch becomes one menu. Live sibling overlays own changing
+  button/badge state without rebuilding cached slots on typing. One bottom line
+  owns results/refusals/conflicts; successes and stale outcomes use toasts. A
+  lower Repair sheet preserves the editor viewport, with Cancel and one-Undo
+  Apply. A strict JSON worker after 120 ms drives badge, line and diagnostics.
+  Read restores the previous view/folds/part/query from a small handoff.
 - **One Find component (#2807).** Notes retain their floating bar, selectors,
   match count, case toggle, stepping and two-press Esc behavior. A file opts in
   with a target that owns its query, count/case/step capabilities and clear/focus

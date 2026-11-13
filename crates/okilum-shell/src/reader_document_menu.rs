@@ -105,6 +105,34 @@ impl Reader {
             .into_any_element()
     }
 
+    // Keep Button's large debug temporaries out of the document-header frame.
+    // The initial frame can use this note header while a file is opening.
+    #[inline(never)]
+    fn render_note_mode_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        icon: Icon,
+        labels: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        Button::new(id)
+            .ghost()
+            .small()
+            .icon(icon)
+            .h(px(28.))
+            .when(!labels, |b| b.w(px(28.)))
+            .when(labels, |button| button.label(label))
+            .accessibility_label(label)
+            .tooltip(reader_shortcuts::hint(label, &ToggleSource, cx))
+            .disabled(self.note_encoding_damaged && self.file_preview.is_none())
+            .debug_selector(move || id.into())
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_source(window, cx);
+            }))
+            .into_any_element()
+    }
+
     pub(super) fn render_document_header(
         &self,
         window: &Window,
@@ -272,22 +300,7 @@ impl Reader {
                     Icon::default().path("icons/pencil.svg"),
                 )
             };
-            row = row.child(
-                Button::new(id)
-                    .ghost()
-                    .small()
-                    .icon(icon)
-                    .h(px(28.))
-                    .when(!labels, |b| b.w(px(28.)))
-                    .when(labels, |button| button.label(label))
-                    .accessibility_label(label)
-                    .tooltip(reader_shortcuts::hint(label, &ToggleSource, cx))
-                    .disabled(self.note_encoding_damaged && self.file_preview.is_none())
-                    .debug_selector(move || id.into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_source(window, cx);
-                    })),
-            );
+            row = row.child(self.render_note_mode_button(id, label, icon, labels, cx));
             if editing {
                 if show_presentation && !is_file {
                     row = row.child(self.render_live_preview_control(labels, cx));
@@ -317,6 +330,7 @@ impl Reader {
                     reader_shortcuts::hint("Find in note", &FindInNote, cx),
                     cx,
                 )
+                .debug_selector(|| "note-find".into())
                 .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
             );
         }

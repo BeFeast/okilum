@@ -67,6 +67,10 @@ pub(crate) fn entry() -> bool {
                             )
                         })
                         .unwrap();
+                    // Commands can publish notifications through Root. Do
+                    // not lease Root itself across a Reader action: native
+                    // event listeners run with an App context too.
+                    let handle: AnyWindowHandle = handle.into();
                     let reader = reader.unwrap();
                     let start = Instant::now();
                     let mut previous = start;
@@ -164,6 +168,38 @@ pub(crate) fn entry() -> bool {
                             )
                         });
                         diagnostic_println!("READER_NATIVE file={name} mode=edit mounted=Reader");
+                        if name == "data.json" {
+                            let original =
+                                std::fs::read_to_string(directory.join("vault").join(name))
+                                    .unwrap();
+                            for stage in 0..6 {
+                                let started = Instant::now();
+                                loop {
+                                    let done = handle
+                                        .update(cx, |_, window, cx| {
+                                            reader.update(cx, |r, cx| {
+                                                r.file_editor_native_step(
+                                                    stage, &original, window, cx,
+                                                )
+                                            })
+                                        })
+                                        .unwrap();
+                                    if done {
+                                        break;
+                                    }
+                                    assert!(
+                                        started.elapsed() < Duration::from_secs(5),
+                                        "file Edit stage {stage} timed out"
+                                    );
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(20))
+                                        .await;
+                                }
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(20))
+                                    .await;
+                            }
+                        }
                     }
                     // Real renders of both neutral and warning component states,
                     // including all theme palettes, are covered by Reader tests.

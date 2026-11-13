@@ -1181,14 +1181,41 @@ mod tests {
                 r.toggle_live_preview(window, cx);
                 assert!(!r.source_live_preview());
                 r.open_find(window, cx);
+                let field = r
+                    .file_editor_find_target(cx)
+                    .expect("file Edit header Find");
+                assert!(field.input.focus_handle(cx).is_focused(window));
+                let source = r.editing.as_ref().unwrap().test_input().read(cx);
                 assert!(
+                    !source.search_session().open,
+                    "the old toolkit strip stays closed"
+                );
+            });
+            visual.simulate_input("changed");
+            visual.run_until_parked();
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(70));
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                assert_eq!(
+                    r.file_editor_find_target(cx).unwrap().count.as_deref(),
+                    Some("1 of 1")
+                );
+                let source = r.editing.as_ref().unwrap().test_input().read(cx);
+                assert!(
+                    source.search_session().external_presentation && !source.search_session().open
+                );
+                assert_eq!(
                     r.editing
                         .as_ref()
                         .unwrap()
                         .test_input()
                         .read(cx)
-                        .search_session()
-                        .open
+                        .value()
+                        .as_ref(),
+                    changed,
+                    "typing the Find query never edits the file buffer"
                 );
                 r.editing
                     .as_ref()
