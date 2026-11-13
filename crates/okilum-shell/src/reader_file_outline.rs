@@ -1,7 +1,7 @@
 //! File structure in the existing right panel; no Reader/sidebar state or hooks.
 use super::super::*;
 use gpui_component::input::{EditorState, InputEvent};
-use reader_code_file::contents::ContentsSource;
+use reader_code_file::contents::{ContentsSource, Whereabouts};
 use reader_code_file::document::Document;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -36,6 +36,13 @@ struct Snapshot {
     groups: Arc<GroupRows>,
     /// The marked row: the node where you are, or its nearest listed ancestor.
     current: Option<usize>,
+    /// The last sample of the viewer; a new file or view starts a new one.
+    seen: Option<Whereabouts>,
+    /// The caret (or Tree selection) leads until the view is scrolled.
+    follow_caret: bool,
+    /// A node a caret move named: its path opens once and its row scrolls
+    /// into view when listed. `true` once the path was opened.
+    reveal: Option<(usize, bool)>,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -348,6 +355,9 @@ impl View {
             self.snapshot.positions = Arc::default();
             self.snapshot.groups = Arc::default();
             self.snapshot.current = None;
+            self.snapshot.seen = None;
+            self.snapshot.follow_caret = false;
+            self.snapshot.reveal = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
             self.snapshot.state = SnapshotState::Absent;
@@ -410,20 +420,62 @@ impl View {
         }
     }
 
-    /// The listed row for the viewer's top node: the node itself, or the
-    /// nearest ancestor shown (a closed ancestor carries the mark), or the
-    /// closed group that holds it.
-    fn snapshot_current(&self, cx: &App) -> Option<usize> {
-        let code = self.code.as_ref()?;
-        let doc = self.snapshot.doc.as_ref()?;
+    /// The marked row (#2814 2s-1). After a caret move, a Find hit or a Tree
+    /// selection it is that node: its path opens and its row scrolls into
+    /// view. After plain scrolling it is the node at the top of the view, and
+    /// nothing opens. A node not listed marks its nearest listed ancestor or
+    /// the closed group that holds it.
+    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {
+        let code = self.code.clone()?;
+        let doc = self.snapshot.doc.clone()?;
         let raw = code.read(cx).document_raw_for_contents()?;
         // The viewer holds a newer parse whose rows are still being built:
         // the mark waits for them (the swap syncs it) instead of remapping
         // every viewport sample through both documents.
-        if !Arc::ptr_eq(&raw, doc) {
+        if !Arc::ptr_eq(&raw, &doc) {
             return self.snapshot.current;
         }
-        let mut at = Some(code.read(cx).contents_top_node(cx)?);
+        let now = code.read(cx).contents_whereabouts(cx)?;
+        match self.snapshot.seen.replace(now) {
+            // A new view or page (a switch, the position scrubber) is not a
+            // caret move: the top of the view leads.
+            Some(before) if before.view != now.view || before.page != now.page => {
+                self.snapshot.follow_caret = false;
+                self.snapshot.reveal = None;
+            }
+            // Selection wins over scroll when both changed in one sample.
+            Some(before) if before.caret != now.caret && now.caret_node.is_some() => {
+                self.snapshot.follow_caret = true;
+                self.snapshot.reveal = now.caret_node.map(|node| (node, false));
+            }
+            Some(before) if before.top != now.top => {
+                self.snapshot.follow_caret = false;
+                self.snapshot.reveal = None;
+            }
+            _ => {}
+        }
+        let node = self
+            .snapshot
+            .follow_caret
+            .then_some(now.caret_node)
+            .flatten()
+            .or(now.top_node)?;
+        if let Some((target, opened)) = self.snapshot.reveal {
+            if target != node {
+                self.snapshot.reveal = None;
+            } else if let Some(&row) = self.snapshot.positions.get(&node) {
+                self.snapshot.reveal = None;
+                self.list.scroll_to_reveal_item(row);
+                return Some(row);
+            } else if !opened {
+                // Rows with the path open arrive from the worker; the swap
+                // syncs again and scrolls the row into view.
+                self.snapshot.reveal = Some((node, true));
+                tree::open_path(&doc, node, self.expansion());
+                self.rebuild_rows(cx);
+            }
+        }
+        let mut at = Some(node);
         while let Some(index) = at {
             if let Some(&row) = self.snapshot.positions.get(&index) {
                 return Some(row);
@@ -517,13 +569,14 @@ impl View {
                 this.snapshot.rows = Arc::new(rows);
                 this.snapshot.positions = Arc::new(positions);
                 this.snapshot.groups = Arc::new(groups);
-                this.sync_current(cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
                 this.list.scroll_to(ListOffset {
                     item_ix: top.item_ix.min(this.snapshot.rows.len().saturating_sub(1)),
                     offset_in_item: top.offset_in_item,
                 });
+                // After the list keeps its place: a revealed row scrolls into view.
+                this.sync_current(cx);
                 cx.notify();
             });
         }));

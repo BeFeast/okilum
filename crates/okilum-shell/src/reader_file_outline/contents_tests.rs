@@ -723,10 +723,7 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
     let text: String = (0..250).map(|i| format!("k{i:03}: {i}\n")).collect();
     let (reader, visual, _root) = reader_with(cx, &[("keys.yaml", text.as_str())], "keys.yaml");
     let view = outline(&reader, visual);
-    let (k050, k150) = (
-        key_index(&view, visual, "k050"),
-        key_index(&view, visual, "k150"),
-    );
+    let k050 = key_index(&view, visual, "k050");
     view.read_with(visual, |v, _| {
         assert!(
             v.snapshot
@@ -736,11 +733,14 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
             "positive: 250 top-level keys list only groups"
         )
     });
-    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k050) else {
+    // Plain scrolling: the closed group holding the top node carries the
+    // mark and nothing opens (a caret move would open the path).
+    let code = code(&reader, visual);
+    let tree::Row::Group { first, last, .. } = scrolled_to(&view, &code, visual, 50) else {
         panic!("the closed group holding k050 carries the mark")
     };
     assert_eq!((first, last), (0, 99));
-    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k150) else {
+    let tree::Row::Group { first, last, .. } = scrolled_to(&view, &code, visual, 150) else {
         panic!("the closed group holding k150 carries the mark")
     };
     assert_eq!((first, last), (100, 199));
@@ -748,7 +748,7 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
     let group = view.read_with(visual, |v, _| v.snapshot.rows[0].clone());
     view.update(visual, |v, cx| v.toggle_snapshot_row(&group, cx));
     settle(visual);
-    let tree::Row::Node { index, .. } = where_you_are(&view, visual, k050) else {
+    let tree::Row::Node { index, .. } = scrolled_to(&view, &code, visual, 50) else {
         panic!("k050 is listed once its group is open")
     };
     assert_eq!(index, k050);
@@ -763,8 +763,8 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
     let near_end = key_index(&view, visual, "k19990");
     let marked = where_you_are(&view, visual, near_end);
     assert!(
-        matches!(marked, tree::Row::Group { .. }),
-        "positive: the mark sits on the group near the end"
+        matches!(marked, tree::Row::Node { index, .. } if index == near_end),
+        "positive: the click opened the groups and marks the node near the end"
     );
     // The viewer now holds a newer parse than the shown rows (same text, a
     // separate document): exactly the state while new rows are built.
@@ -797,4 +797,187 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
             "the mark waits for the new rows"
         )
     });
+}
+
+fn paint(visual: &mut VisualTestContext) {
+    visual.update(|w, cx| w.draw(cx).clear(cx));
+    settle(visual);
+}
+
+fn marked(view: &Entity<View>, visual: &VisualTestContext) -> tree::Row {
+    view.read_with(visual, |v, _| {
+        let row = v.snapshot.current.expect("a marked row");
+        v.snapshot.rows[row].clone()
+    })
+}
+
+fn marked_key(view: &Entity<View>, visual: &VisualTestContext) -> String {
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        let row = v.snapshot.current.expect("a marked row");
+        match &v.snapshot.rows[row] {
+            tree::Row::Node { index, .. } => doc.key_text(*index).unwrap_or("").to_owned(),
+            tree::Row::Group { .. } => "<group>".to_owned(),
+        }
+    })
+}
+
+/// Scroll the viewer's text so `line` is on top; the caret does not move.
+fn scrolled_to(
+    view: &Entity<View>,
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &mut VisualTestContext,
+    line: usize,
+) -> tree::Row {
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| input.scroll_line_to_top(line, cx));
+    paint(visual);
+    marked(view, visual)
+}
+
+fn caret_at(
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &mut VisualTestContext,
+    at: usize,
+) {
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
+    paint(visual);
+}
+
+fn listed(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> bool {
+    view.read_with(visual, |v, _| {
+        shown(v)
+            .iter()
+            .any(|row| row.trim().starts_with(&format!("{key} ")))
+    })
+}
+
+/// `big` has 31 children, so it starts closed; `target` is its last key.
+fn caret_fixture() -> String {
+    let mut text = String::from("{\n  \"head\": 1,\n  \"big\": {\n");
+    for i in 0..30 {
+        text += &format!("    \"c{i:02}\": {i},\n");
+    }
+    text += "    \"target\": 99\n  },\n";
+    for i in 0..60 {
+        text += &format!("  \"p{i:02}\": {i},\n");
+    }
+    text += "  \"tail\": 0\n}\n";
+    text
+}
+
+fn node_start(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> usize {
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        let index = (0..doc.structure.len())
+            .find(|&i| doc.key_text(i) == Some(key))
+            .unwrap();
+        doc.structure[index].range.start
+    })
+}
+
+#[gpui::test]
+fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("caret.json", text.as_str())], "caret.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    assert!(
+        !listed(&view, visual, "target"),
+        "positive: big starts closed"
+    );
+    // Scrolling: the closed ancestor carries the mark; nothing opens.
+    scrolled_to(&view, &code, visual, 33);
+    assert_eq!(
+        marked_key(&view, visual),
+        "big",
+        "scrolled into big: big carries the mark"
+    );
+    assert!(
+        !listed(&view, visual, "target"),
+        "scrolling never opens rows"
+    );
+    // A caret move: the path opens and the node itself is marked.
+    let target = node_start(&view, visual, "target");
+    caret_at(&code, visual, target);
+    assert!(listed(&view, visual, "target"), "the caret opened big");
+    assert_eq!(marked_key(&view, visual), "target");
+    view.read_with(visual, |v, _| {
+        let row = v.snapshot.current.unwrap();
+        assert!(
+            v.list.logical_scroll_top().item_ix <= row,
+            "the row is scrolled into view"
+        );
+    });
+    // Scrolling again: the top node leads; opened rows stay open.
+    scrolled_to(&view, &code, visual, 40);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p05",
+        "the top of the view after scrolling"
+    );
+    assert!(
+        listed(&view, visual, "target"),
+        "scrolling never closes rows either"
+    );
+    // Selection wins over scroll when both change in one step.
+    let c05 = node_start(&view, visual, "c05");
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| {
+        input.set_selected_range(c05..c05, cx);
+        input.scroll_line_to_top(60, cx);
+    });
+    paint(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "c05",
+        "selection wins over scroll"
+    );
+}
+
+#[gpui::test]
+fn contents2814_find_hits_and_tree_selection_become_where_you_are(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("find.json", text.as_str())], "find.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let find = |visual: &mut VisualTestContext, query: &str| {
+        let query = query.to_owned();
+        let code = code.clone();
+        visual.update(move |w, cx| {
+            let target = code.read(cx).find_target(code.clone(), cx);
+            target.set_query(&query, w, cx);
+        });
+        settle(visual);
+        paint(visual);
+    };
+    // Raw: the Find hit becomes the current row and its path opens.
+    find(visual, "target");
+    assert!(listed(&view, visual, "target"), "the Find hit opened big");
+    assert_eq!(marked_key(&view, visual), "target");
+    // Tree: close big in Contents, then a Find hit selects a Tree row.
+    let big = view.read_with(visual, |v, _| {
+        find_row(&v.snapshot.doc.clone().unwrap(), &v.snapshot.rows, "big")
+    });
+    view.update(visual, |v, cx| v.toggle_snapshot_row(&big, cx));
+    settle(visual);
+    assert!(!listed(&view, visual, "c07"), "positive: big closed again");
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Tree, w, cx));
+    settle(visual);
+    paint(visual);
+    find(visual, "c07");
+    assert!(listed(&view, visual, "c07"), "the Tree Find hit opened big");
+    assert_eq!(marked_key(&view, visual), "c07");
+    // A click in Contents selects the Tree row, and the mark follows it.
+    let c12 = key_index(&view, visual, "c12");
+    view.update_in(visual, |v, w, cx| v.jump_snapshot(c12, w, cx));
+    settle(visual);
+    paint(visual);
+    code.read_with(visual, |p, _| {
+        assert_eq!(p.tree_selection_for_tests(), Some(c12))
+    });
+    assert_eq!(marked_key(&view, visual), "c12");
 }
