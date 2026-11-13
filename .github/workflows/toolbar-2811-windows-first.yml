@@ -1,0 +1,66 @@
+name: toolbar-2811-windows-first-census
+on:
+  push:
+    branches: ['diagnostic-toolbar-2811/windows-first-*']
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  collect-windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Offline controls
+        run: python -m unittest discover -s scripts/ci/perf-2811-qpc -p 'test_*.py' -v
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '14004604064'
+          merge-multiple: true
+          run-id: 43351244577
+          github-token: ${{ github.token }}
+          path: inputs/main
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '14006200518'
+          merge-multiple: true
+          run-id: 43351244577
+          github-token: ${{ github.token }}
+          path: inputs/toolbar
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '14006973394'
+          merge-multiple: true
+          run-id: 43359355912
+          github-token: ${{ github.token }}
+          path: proven-setup
+      - name: Verify frozen binaries and exact retained setup proof, no rebuild
+        run: python scripts/ci/perf-2811-qpc/capture_guard.py --inputs inputs --out diagnostics --platform Windows --marker-proof proven-setup/setup-proof/proof.json
+      - name: First measured Windows census, setup attempt three
+        id: windows
+        shell: pwsh
+        run: ./scripts/ci/perf-2811-qpc/capture.ps1
+      - name: Export the same retained Windows ETLs
+        if: ${{ always() && steps.windows.outcome != 'skipped' }}
+        shell: pwsh
+        run: |
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/kernel.raw.etl diagnostics/kernel.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw kernel export failed: retain ETL, never recapture' }
+          python scripts/ci/perf-2811-qpc/export_raw.py diagnostics/markers.raw.etl diagnostics/markers.jsonl --cases diagnostics/cases.json
+          if ($LASTEXITCODE) { throw 'Raw marker export failed: retain ETL, never recapture' }
+          python scripts/ci/perf-2811-qpc/analyze.py diagnostics
+          if ($LASTEXITCODE) { throw 'Evidence rejected: analyze retained ETLs offline' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-collection-Windows
+          path: |
+            diagnostics/
+            proven-setup/
+          if-no-files-found: error
+          retention-days: 7

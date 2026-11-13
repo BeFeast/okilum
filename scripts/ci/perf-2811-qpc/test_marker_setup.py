@@ -1,4 +1,10 @@
 import copy
+import json
+from pathlib import Path
+import tempfile
+from unittest.mock import patch
+
+from capture_guard import setup_proof
 import unittest
 
 from marker_setup_probe import MARKER, MESSAGE, TOKEN, command, validate_events
@@ -30,3 +36,25 @@ class MarkerSetupControls(unittest.TestCase):
         for key, bad in [('raw_timestamp_mode', 0x10000000), ('clock_type', 2), ('frequency', 1)]:
             with self.subTest(key=key), self.assertRaises(AssertionError):
                 validate_events([event], emission, dict(meta, **{key: bad}))
+
+    def test_proof_requires_the_exact_previously_collected_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'proof.json'
+            path.write_text(json.dumps({'complete': True, 'benchmark_launches': 0, 'xperf_sha256': 'pinned'}))
+            with self.assertRaisesRegex(AssertionError, 'proof bytes differ'):
+                setup_proof(path)
+            import hashlib
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            with patch('capture_guard.PROOF_SHA256', digest):
+                self.assertEqual(setup_proof(path)['xperf_sha256'], 'pinned')
+                path.write_text(path.read_text() + ' ')
+                with self.assertRaisesRegex(AssertionError, 'proof bytes differ'):
+                    setup_proof(path)
+
+    def test_census_command_uses_the_proven_token_and_requires_proof(self):
+        script = (Path(__file__).parent / 'capture.ps1').read_text()
+        self.assertIn("-on '" + TOKEN + "' -ClockType PerfCounter", script)
+        self.assertNotIn("-on '{" + MARKER, script)
+        self.assertLess(script.index('Separate reviewed marker setup proof is required'),
+                        script.index('python scripts/ci/perf-2811-qpc/runner.py'))
+        self.assertIn('WPT differs from the proven setup binary', script)
