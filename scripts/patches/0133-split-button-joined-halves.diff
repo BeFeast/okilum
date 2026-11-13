@@ -31,19 +31,38 @@ index 05f0f4cf..34b2bf03 100644
          match (self, state) {
              (Self::Default, ButtonStyleState::Normal) => cx.theme().input_background().into(),
 diff --git a/crates/component/src/button/dropdown_button.rs b/crates/component/src/button/dropdown_button.rs
-index 482d0848..198a9a76 100644
+index 482d0848..06e98e74 100644
 --- a/crates/component/src/button/dropdown_button.rs
 +++ b/crates/component/src/button/dropdown_button.rs
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  use gpui::Corners;
  use gpui::{
-     Anchor, App, Context, Edges, ElementId, InteractiveElement as _, IntoElement, ParentElement,
+-    Anchor, App, Context, Edges, ElementId, InteractiveElement as _, IntoElement, ParentElement,
 -    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder,
-+    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
++    AbsoluteLength, Anchor, App, Context, DefiniteLength, Edges, ElementId,
++    InteractiveElement as _, IntoElement, Length, ParentElement, Pixels, RenderOnce,
++    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
  };
  
  use crate::{
-@@ -146,7 +146,7 @@ impl Selectable for DropdownButton {
+@@ -14,6 +15,16 @@ use super::{Button, ButtonVariant, ButtonVariants};
+ /// Group name shared by both halves, so hovering one can style the other.
+ const HALVES_GROUP: &str = "dropdown-button";
+ 
++/// Width of the divider between the halves of a solid split.
++const SEAM_WIDTH: f32 = 1.;
++
++fn absolute_pixels(length: Option<Length>) -> Option<Pixels> {
++    match length? {
++        Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px))) => Some(px),
++        _ => None,
++    }
++}
++
+ /// A split button: an action button with an attached menu trigger.
+ ///
+ /// The two halves stay visually joined. A `ghost` split is transparent at
+@@ -146,7 +157,7 @@ impl Selectable for DropdownButton {
  }
  
  impl RenderOnce for DropdownButton {
@@ -52,7 +71,7 @@ index 482d0848..198a9a76 100644
          debug_assert!(
              self.button.is_some() || self.menu.is_some(),
              "a DropdownButton needs a `button`, a `dropdown_menu`, or both"
-@@ -161,11 +161,24 @@ impl RenderOnce for DropdownButton {
+@@ -161,11 +172,38 @@ impl RenderOnce for DropdownButton {
          let is_ghost = variant.is_ghost();
          let menu_open = window.use_keyed_state(self.id.clone(), cx, |_, _| false);
          let is_menu_open = *menu_open.read(cx);
@@ -67,7 +86,21 @@ index 482d0848..198a9a76 100644
 +        let seam = (self.button.is_some() && self.menu.is_some())
 +            .then(|| variant.split_seam(self.outline, self.disabled, cx))
 +            .flatten();
-+        let menu_selector = format!("{}-menu", self.id);
++        // A split of fixed pixel width gives its menu half the remaining
++        // width, so the outline ends at the split's bounds. The menu half is
++        // wrapped by its popover host, which takes no style of its own, so
++        // the width is set on the half itself rather than left to flex-grow.
++        let action_width = self
++            .button
++            .as_mut()
++            .and_then(|button| absolute_pixels(button.style().size.width));
++        let menu_width = absolute_pixels(self.style.size.width)
++            .zip(action_width)
++            .map(|(split, action)| {
++                split - action - seam.map_or(px(0.), |_| px(SEAM_WIDTH))
++            })
++            .filter(|width| *width > px(0.));
++        let menu_id = self.id.clone();
  
          div()
              .id(self.id)
@@ -77,7 +110,7 @@ index 482d0848..198a9a76 100644
              .refine_style(&self.style)
              .when_some(self.button, |this, button| {
                  let disabled = self.disabled || button.is_disabled();
-@@ -183,12 +196,22 @@ impl RenderOnce for DropdownButton {
+@@ -183,12 +221,22 @@ impl RenderOnce for DropdownButton {
                          .when(self.outline, |this| this.outline())
                          .with_size(size)
                          .with_variant(variant)
@@ -92,7 +125,7 @@ index 482d0848..198a9a76 100644
 +                this.child(
 +                    div()
 +                        .flex_none()
-+                        .w(px(1.))
++                        .w(px(SEAM_WIDTH))
 +                        .bg(surface)
 +                        .child(div().size_full().bg(line)),
 +                )
@@ -100,15 +133,13 @@ index 482d0848..198a9a76 100644
              .when_some(self.menu, |this, menu| {
                  this.child(
                      Button::new("popup")
-@@ -210,6 +233,11 @@ impl RenderOnce for DropdownButton {
+@@ -210,6 +258,9 @@ impl RenderOnce for DropdownButton {
                          .when(self.outline, |this| this.outline())
                          .with_size(size)
                          .with_variant(variant)
 +                        .when_some(height, |this, height| this.h(height))
-+                        // Takes any width the split is given beyond its halves,
-+                        // so the outline ends where the control's bounds do.
-+                        .flex_grow(1.)
-+                        .debug_selector(|| menu_selector)
++                        .when_some(menu_width, |this, width| this.w(width))
++                        .debug_selector(move || format!("{menu_id}-menu"))
                          .when(is_ghost, |this| this.hover_group(HALVES_GROUP))
                          .dropdown_menu_with_anchor(self.anchor, menu)
                          .on_open_change(move |open, _, cx| {
