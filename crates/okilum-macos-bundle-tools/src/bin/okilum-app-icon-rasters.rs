@@ -11,7 +11,9 @@ fn main() -> Result<()> {
     );
     std::fs::create_dir_all(&output)?;
     let renderer = SvgRenderer::new(Arc::new(()));
-    let svg = renderer.parse_svg(include_bytes!("../assets/brand/app-icon-light.svg"))?;
+    let svg = renderer.parse_svg(include_bytes!(
+        "../../../okilum-shell/assets/brand/app-icon-light.svg"
+    ))?;
     for pixels in [16, 32, 64, 128, 256, 512, 1024] {
         let dimensions = size(DevicePixels(pixels), DevicePixels(pixels));
         // Full-color renderer, not GPUI's icon alpha-mask path.

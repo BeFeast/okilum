@@ -64,7 +64,25 @@ OKILUM_SIGNING_TEAM_ID="$TEAM_ID" OKILUM_BUNDLE_ID="$BUNDLE_ID" \
     cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 okilum_phase cargo-supervisor
 supervisor_build "$TEAM_ID" "$BUNDLE_ID" aarch64-apple-darwin
-okilum_phase stage-bundle-and-plist-example
+okilum_phase cargo-bundle-tools
+# Icon rasters and the LaunchAgent plist come from okilum-macos-bundle-tools: only
+# normal dependencies already in the app graph. Co-selecting okilum-shell keeps
+# Cargo's feature set identical to the app build, so it reuses every compiled
+# crate (the former examples pulled dev-dependencies and rebuilt GPUI and
+# okilum-core with test-support). The app binary must not change here.
+if [[ -f crates/okilum-macos-bundle-tools/Cargo.toml ]]; then
+    APP_BINARY="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/okilum"
+    APP_BINARY_SHA="$(shasum -a 256 "$APP_BINARY")"
+    OKILUM_SIGNING_TEAM_ID="$TEAM_ID" OKILUM_BUNDLE_ID="$BUNDLE_ID" \
+        cargo build --release --locked --target aarch64-apple-darwin \
+        -p okilum-shell -p okilum-macos-bundle-tools
+    [[ $(shasum -a 256 "$APP_BINARY") == "$APP_BINARY_SHA" ]] || {
+        echo "building the bundle tools changed the app binary" >&2
+        exit 1
+    }
+    export OKILUM_BUNDLE_TOOLS="$CARGO_TARGET_DIR/aarch64-apple-darwin/release"
+fi
+okilum_phase stage-bundle-and-plist
 
 APP="$OUTPUT/Okilum.app"
 rm -rf "$APP"
@@ -75,9 +93,14 @@ python3 scripts/updater/sparkle.py verify "$APP/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/okilum" "$APP/Contents/MacOS/okilum"
 supervisor_stage "$APP" "$CARGO_TARGET_DIR" aarch64-apple-darwin
 python3 scripts/brand-assets.py verify
-okilum_phase cargo-icon-example
-# The example binary runs outside the bundle; point it at the source framework.
-env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
+okilum_phase icon-rasters
+if [[ -n ${OKILUM_BUNDLE_TOOLS:-} ]]; then
+    "$OKILUM_BUNDLE_TOOLS/okilum-app-icon-rasters" "$OUTPUT/icon-rasters"
+else
+    # Product sources from before okilum-macos-bundle-tools. The example binary runs
+    # outside the bundle; point it at the source framework.
+    env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
+fi
 okilum_phase info-plist
 python3 scripts/macos-icon.py "$OUTPUT/icon-rasters" "$APP/Contents/Resources/Okilum.icns"
 cat >"$APP/Contents/Info.plist" <<PLIST
