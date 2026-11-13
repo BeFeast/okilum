@@ -5,46 +5,6 @@ use std::{
 };
 mod json;
 
-/// Stable row identities in display order; filtering/sorting run on a worker.
-pub fn view_rows(
-    table: &Table,
-    start: usize,
-    count: usize,
-    filter: &str,
-    sort: Option<(usize, bool)>,
-) -> Vec<usize> {
-    view_rows_case(table, start, count, filter, sort, false)
-}
-
-fn view_rows_case(
-    table: &Table,
-    start: usize,
-    count: usize,
-    filter: &str,
-    sort: Option<(usize, bool)>,
-    sensitive: bool,
-) -> Vec<usize> {
-    let query = if sensitive {
-        filter.to_owned()
-    } else {
-        filter.to_lowercase()
-    };
-    let mut rows: Vec<_> = (start..table.rows.len().min(start.saturating_add(count)))
-        .filter(|&row| {
-            query.is_empty()
-                || table.rows[row].iter().any(|v| {
-                    if sensitive {
-                        v.contains(&query)
-                    } else {
-                        v.to_lowercase().contains(&query)
-                    }
-                })
-        })
-        .collect();
-    sort_rows(table, &mut rows, sort);
-    rows
-}
-
 fn sort_rows(table: &Table, rows: &mut [usize], sort: Option<(usize, bool)>) {
     if let Some((column, descending)) = sort {
         let numeric = rows.iter().all(|&row| {
@@ -385,17 +345,50 @@ mod tests {
             "name,n\nשלום,10\nAlpha,2\nalpha,100\n\"line\nnext\",3\n",
             false,
         );
+        let view = |table: &Table, count, filter: &str, sort, sensitive| {
+            project_rows(
+                table,
+                1,
+                count,
+                filter,
+                sort,
+                sensitive,
+                &Default::default(),
+            )
+            .unwrap()
+        };
         assert_eq!(
-            view_rows(&table, 1, 100, "", Some((1, false))),
+            view(&table, 100, "", Some((1, false)), false).rows,
             [2, 4, 1, 3]
         );
-        assert_eq!(view_rows(&table, 1, 100, "ALPHA", Some((1, true))), [3, 2]);
-        assert_eq!(view_rows(&table, 1, 100, "", None), [1, 2, 3, 4]);
-        assert_eq!(view_rows(&table, 1, 2, "", Some((1, true))), [1, 2]);
-        assert!(view_rows(&table, 1, 100, "absent", None).is_empty());
+        let alpha = view(&table, 100, "ALPHA", Some((1, true)), false);
+        assert_eq!(alpha.rows, [3, 2]);
+        assert_eq!(
+            alpha.matches,
+            [(0, 0), (1, 0)],
+            "hits index the displayed order"
+        );
+        let exact = view(&table, 100, "Alpha", None, true);
+        assert_eq!(
+            (exact.rows, exact.matches),
+            (vec![2], vec![(0, 0)]),
+            "Match case"
+        );
+        assert_eq!(view(&table, 100, "", None, false).rows, [1, 2, 3, 4]);
+        assert!(view(&table, 100, "", None, false).matches.is_empty());
+        assert_eq!(view(&table, 2, "", Some((1, true)), false).rows, [1, 2]);
+        assert!(view(&table, 100, "absent", None, false).rows.is_empty());
+        let multi = Table::parse("a,b\nx1,x2\ny,x\n", false);
+        assert_eq!(
+            view(&multi, 100, "x", None, false).matches,
+            [(0, 0), (0, 1), (1, 1)],
+            "every matching cell, row-major"
+        );
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(project_rows(&table, 1, 100, "", None, false, &cancelled).is_none());
         assert_eq!(table.copy_rows(&[4, 1], 0..1), "\"line\nnext\"\nשלום");
         let large = Table::parse("n\n9007199254740993\n9007199254740992\n", false);
-        assert_eq!(view_rows(&large, 1, 10, "", Some((0, false))), [2, 1]);
+        assert_eq!(view(&large, 10, "", Some((0, false)), false).rows, [2, 1]);
     }
 
     struct CountingReader {
