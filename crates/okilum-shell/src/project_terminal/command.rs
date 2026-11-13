@@ -259,6 +259,160 @@ else {{
     }
 }
 
+/// Terminal emulators tried after the desktop's own choice, with the option
+/// that starts them in a folder. `None` takes the POSIX wrapper after `-e`.
+const KNOWN_FOLDER_TERMINALS: &[(&str, &[&str], Option<&str>)] = &[
+    ("ptyxis", &["--new-window"], Some("--working-directory=")),
+    ("kgx", &[], Some("--working-directory=")),
+    ("gnome-terminal", &[], Some("--working-directory=")),
+    ("konsole", &[], Some("--workdir=")),
+    ("xfce4-terminal", &[], Some("--working-directory=")),
+    ("tilix", &[], Some("--working-directory=")),
+    ("terminator", &[], Some("--working-directory=")),
+    ("alacritty", &[], Some("--working-directory=")),
+    ("kitty", &[], Some("--directory=")),
+    ("foot", &[], Some("--working-directory=")),
+    ("wezterm", &["start"], Some("--cwd=")),
+    ("xterm", &[], None),
+];
+
+/// The terminals a desktop ships, tried first among the known emulators.
+fn native_to(desktop: &str, program: &str) -> bool {
+    let desktop = desktop.to_ascii_uppercase();
+    let names: &[&str] = if desktop.contains("GNOME") || desktop.contains("UNITY") {
+        &["ptyxis", "kgx", "gnome-terminal"]
+    } else if desktop.contains("KDE") {
+        &["konsole"]
+    } else if desktop.contains("XFCE") {
+        &["xfce4-terminal"]
+    } else {
+        &[]
+    };
+    names.contains(&program)
+}
+
+/// The launcher for «Open in terminal» (#2837). Linux honours the desktop's
+/// default first (xdg-terminal-exec, TERMINAL, x-terminal-emulator), then the
+/// known emulators with the desktop's own first. macOS opens `mac_app` with
+/// `open -a`; Windows prefers Windows Terminal, then cmd.exe with PowerShell.
+pub fn folder_launcher(
+    os: &str,
+    terminal: Option<&str>,
+    desktop: Option<&str>,
+    available: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    match os {
+        "macos" => {
+            if available("/usr/bin/open") {
+                Ok("/usr/bin/open".into())
+            } else {
+                Err("Terminal could not open: /usr/bin/open is unavailable".into())
+            }
+        }
+        "windows" => launcher(os, terminal, available),
+        _ => launcher(os, terminal, &available).or_else(|error| {
+            let mut known: Vec<&str> = KNOWN_FOLDER_TERMINALS.iter().map(|k| k.0).collect();
+            known.sort_by_key(|name| !native_to(desktop.unwrap_or(""), name));
+            known
+                .into_iter()
+                .find(|name| available(name))
+                .map(str::to_owned)
+                .ok_or(error)
+        }),
+    }
+}
+
+/// Opens an interactive terminal in `directory`; no command runs in it. The
+/// directory is absolute (never an option) and always one argv element.
+pub fn folder_plan(os: &str, directory: &str, launcher: &str, mac_app: &str) -> Plan {
+    let initial = Initial {
+        argv: vec![],
+        directory: Some(directory.into()),
+    };
+    match os {
+        "macos" => Plan {
+            program: launcher.into(),
+            args: vec!["-a".into(), mac_app.into(), directory.into()],
+        },
+        // wt splits its command line at `;`; such a folder takes the encoded
+        // PowerShell route, which carries the folder as base64 data.
+        "windows" if launcher == "wt.exe" && !directory.contains(';') => Plan {
+            program: launcher.into(),
+            args: vec!["-d".into(), directory.into()],
+        },
+        "windows" => plan(os, &initial, launcher),
+        _ => match KNOWN_FOLDER_TERMINALS
+            .iter()
+            .find(|known| known.0 == launcher)
+        {
+            Some((_, flags, Some(option))) => {
+                let mut args: Vec<String> = flags.iter().map(|f| (*f).to_owned()).collect();
+                args.push(format!("{option}{directory}"));
+                Plan {
+                    program: launcher.into(),
+                    args,
+                }
+            }
+            _ => plan(os, &initial, launcher),
+        },
+    }
+}
+
+/// Variables an AppImage runtime adds for Okilum itself. A terminal started
+/// from it must see the user's session, not Okilum's bundled libraries.
+const APPIMAGE_ONLY: &[&str] = &[
+    "APPIMAGE",
+    "APPDIR",
+    "ARGV0",
+    "OWD",
+    "APPIMAGE_EXTRACT_AND_RUN",
+];
+const APPIMAGE_PATH_LISTS: &[&str] = &[
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "PATH",
+    "XDG_DATA_DIRS",
+    "GSETTINGS_SCHEMA_DIR",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GIO_MODULE_DIR",
+    "GTK_PATH",
+    "QT_PLUGIN_PATH",
+    "PYTHONPATH",
+    "PERLLIB",
+];
+
+/// Environment edits for a child of an AppImage launch: `Some` sets, `None`
+/// removes. Outside an AppImage (no APPDIR) nothing changes. List entries
+/// inside APPDIR are dropped; the user's own entries are kept in order.
+pub fn appimage_env(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, Option<String>)> {
+    let Some(appdir) = get("APPDIR").filter(|d| !d.is_empty()) else {
+        return vec![];
+    };
+    let appdir = appdir.trim_end_matches('/').to_owned();
+    let inside = |entry: &str| entry == appdir || entry.starts_with(&format!("{appdir}/"));
+    let mut edits: Vec<(&'static str, Option<String>)> =
+        APPIMAGE_ONLY.iter().map(|name| (*name, None)).collect();
+    for name in APPIMAGE_PATH_LISTS {
+        let Some(value) = get(name) else { continue };
+        let separator = if *name == "LD_PRELOAD" && !value.contains(':') {
+            ' '
+        } else {
+            ':'
+        };
+        let kept: Vec<&str> = value
+            .split(separator)
+            .filter(|entry| !entry.is_empty() && !inside(entry))
+            .collect();
+        if kept.len() != value.split(separator).filter(|e| !e.is_empty()).count() {
+            edits.push((
+                name,
+                (!kept.is_empty()).then(|| kept.join(&separator.to_string())),
+            ));
+        }
+    }
+    edits
+}
+
 #[cfg(test)]
 mod tests;
 

@@ -257,3 +257,235 @@ fn windows_crt_argv_encoding_preserves_quotes_spaces_and_trailing_backslashes() 
     let data = decode_windows(&plan("windows", &initial, "wt.exe"));
     assert_eq!(data["arguments"], r#""a\"b" "" "C:\a b\\""#);
 }
+
+/// #2837: names a shell, option parser or PowerShell would misread.
+const HOSTILE_FOLDERS: &[&str] = &[
+    "/v/-rf folder",
+    "/v/@Assets/Files",
+    "/v/space ' quote \" double $(exit 99) `x` & | > %PATH% !x!",
+    "/v/Папка ✓ 🦀",
+];
+
+#[test]
+fn folder_terminal_selection_honours_the_desktop_default_then_known_emulators() {
+    let choose = |os, terminal, desktop, installed: &[&str]| {
+        folder_launcher(os, terminal, desktop, |p| installed.contains(&p))
+    };
+    // The desktop's own choice comes before any emulator Okilum knows.
+    assert_eq!(
+        choose(
+            "linux",
+            Some("kitty"),
+            Some("ubuntu:GNOME"),
+            &[
+                "xdg-terminal-exec",
+                "kitty",
+                "x-terminal-emulator",
+                "ptyxis"
+            ]
+        )
+        .unwrap(),
+        "xdg-terminal-exec"
+    );
+    assert_eq!(
+        choose("linux", Some("kitty"), None, &["kitty", "ptyxis"]).unwrap(),
+        "kitty"
+    );
+    assert_eq!(
+        choose("linux", None, None, &["x-terminal-emulator", "ptyxis"]).unwrap(),
+        "x-terminal-emulator"
+    );
+    // Without one, the desktop's native terminal before other known ones.
+    let installed = ["xterm", "konsole", "gnome-terminal", "ptyxis"];
+    assert_eq!(
+        choose("linux", None, Some("ubuntu:GNOME"), &installed).unwrap(),
+        "ptyxis"
+    );
+    assert_eq!(
+        choose("linux", Some("missing"), Some("KDE"), &installed).unwrap(),
+        "konsole"
+    );
+    assert_eq!(
+        choose("linux", None, Some("Hyprland"), &["xterm", "foot"]).unwrap(),
+        "foot"
+    );
+    assert_eq!(
+        choose("macos", None, None, &["/usr/bin/open"]).unwrap(),
+        "/usr/bin/open"
+    );
+    assert_eq!(
+        choose("windows", None, None, &["wt.exe", "cmd.exe"]).unwrap(),
+        "wt.exe"
+    );
+    assert_eq!(
+        choose("windows", None, None, &["cmd.exe"]).unwrap(),
+        "cmd.exe"
+    );
+    for os in ["linux", "macos", "windows"] {
+        assert!(
+            choose(os, None, Some("GNOME"), &[]).is_err(),
+            "{os} reports a missing terminal"
+        );
+    }
+}
+
+#[test]
+fn folder_plans_pass_hostile_folders_as_one_argument_on_every_platform() {
+    for folder in HOSTILE_FOLDERS {
+        let folder = *folder;
+        // macOS: Terminal.app (or a configured app) opens the folder; no shell text.
+        let mac = folder_plan("macos", folder, "/usr/bin/open", "Terminal");
+        assert_eq!(mac.program, "/usr/bin/open");
+        assert_eq!(mac.args, ["-a", "Terminal", folder]);
+        assert_eq!(
+            folder_plan("macos", folder, "/usr/bin/open", "iTerm").args[1],
+            "iTerm"
+        );
+        // Linux known emulators: one `--option=folder` word, never `-e sh -c`.
+        for (terminal, expected) in [
+            (
+                "ptyxis",
+                vec![
+                    "--new-window".to_owned(),
+                    format!("--working-directory={folder}"),
+                ],
+            ),
+            ("kgx", vec![format!("--working-directory={folder}")]),
+            (
+                "gnome-terminal",
+                vec![format!("--working-directory={folder}")],
+            ),
+            ("konsole", vec![format!("--workdir={folder}")]),
+            ("kitty", vec![format!("--directory={folder}")]),
+            ("foot", vec![format!("--working-directory={folder}")]),
+            ("wezterm", vec!["start".into(), format!("--cwd={folder}")]),
+        ] {
+            let plan = folder_plan("linux", folder, terminal, "Terminal");
+            assert_eq!(plan.program, terminal);
+            assert_eq!(plan.args, expected, "{terminal}");
+        }
+        // The desktop default, TERMINAL and xterm: the fixed wrapper, folder as data.
+        let directory = Initial {
+            argv: vec![],
+            directory: Some(folder.into()),
+        };
+        for terminal in [
+            "xdg-terminal-exec",
+            "x-terminal-emulator",
+            "xterm",
+            "/opt/My Term",
+        ] {
+            let plan = folder_plan("linux", folder, terminal, "Terminal");
+            assert_eq!(plan.args.last().unwrap(), folder);
+            assert_eq!(plan, super::plan("linux", &directory, terminal));
+            assert!(
+                !plan.args[..plan.args.len() - 1]
+                    .iter()
+                    .any(|a| a.contains(folder)),
+                "the wrapper itself carries no data"
+            );
+        }
+        // Windows Terminal takes the folder after -d as one CRT argument.
+        let wt = folder_plan("windows", folder, "wt.exe", "Terminal");
+        assert_eq!(wt.args, ["-d", folder]);
+        // cmd.exe never sees the folder: it is base64 data for PowerShell.
+        let cmd = folder_plan("windows", folder, "cmd.exe", "Terminal");
+        assert_eq!(cmd.program, "cmd.exe");
+        assert!(!cmd.args.iter().any(|a| a.contains(folder)));
+        assert_eq!(decode_windows(&cmd)["directory"], folder);
+        assert_eq!(decode_windows(&cmd)["argv"], serde_json::json!([]));
+    }
+    // wt splits its command line at `;`, so such a folder is encoded data too.
+    let folder = r"C:\Users\me\a;b @x";
+    let wt = folder_plan("windows", folder, "wt.exe", "Terminal");
+    assert_eq!(wt.args[0], "new-tab");
+    assert!(!wt.args.iter().any(|a| a.contains(folder)));
+    assert_eq!(decode_windows(&wt)["directory"], folder);
+    // Positive control: an ordinary Windows folder takes the plain route.
+    assert_eq!(
+        folder_plan("windows", r"C:\Users\me\Notes", "wt.exe", "Terminal").args,
+        ["-d", r"C:\Users\me\Notes"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn folder_wrapper_enters_a_hostile_folder_literally() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    let shell = root.path().join("fake-shell");
+    std::fs::write(&shell, "#!/bin/sh\npwd -P\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for name in [
+        "-rf folder",
+        "@Assets",
+        "space ' \" $(exit 99) & ;",
+        "Папка ✓",
+    ] {
+        let folder = root.path().join(name);
+        std::fs::create_dir(&folder).unwrap();
+        let plan = folder_plan("linux", folder.to_str().unwrap(), "xdg-terminal-exec", "");
+        let output = std::process::Command::new(&plan.args[0])
+            .args(&plan.args[1..])
+            .env("SHELL", &shell)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{name}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            folder.canonicalize().unwrap().to_str().unwrap(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn appimage_children_lose_only_the_bundles_environment() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    };
+    // Outside an AppImage nothing changes, even with a library path set.
+    assert!(appimage_env(env(&[("LD_LIBRARY_PATH", "/opt/lib")])).is_empty());
+    let edits = appimage_env(env(&[
+        ("APPDIR", "/tmp/.mount_OkilumX/"),
+        ("APPIMAGE", "/home/me/Okilum.AppImage"),
+        ("LD_LIBRARY_PATH", "/tmp/.mount_OkilumX/usr/lib"),
+        ("PATH", "/tmp/.mount_OkilumX/usr/bin:/home/me/bin:/usr/bin"),
+        ("XDG_DATA_DIRS", "/tmp/.mount_OkilumXother/share:/usr/share"),
+    ]));
+    let edit = |name: &str| {
+        edits
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|e| e.1.clone())
+    };
+    for name in [
+        "APPIMAGE",
+        "APPDIR",
+        "ARGV0",
+        "OWD",
+        "APPIMAGE_EXTRACT_AND_RUN",
+    ] {
+        assert_eq!(edit(name), Some(None), "{name} is removed");
+    }
+    assert_eq!(
+        edit("LD_LIBRARY_PATH"),
+        Some(None),
+        "only bundle entries: removed"
+    );
+    assert_eq!(
+        edit("PATH"),
+        Some(Some("/home/me/bin:/usr/bin".into())),
+        "user entries kept in order"
+    );
+    assert_eq!(
+        edit("XDG_DATA_DIRS"),
+        None,
+        "a sibling prefix is not inside APPDIR; unchanged variables are left alone"
+    );
+}

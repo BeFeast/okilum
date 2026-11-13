@@ -53,3 +53,36 @@ sheet and palette routing through an application-scoped fake launcher.
 Native Mac key predicates and document editability have separate controls.
 A visible terminal and successful remote login on idunn/macOS remain beta
 acceptance checks; automated tests never open a real terminal.
+
+## Open in terminal for a file or folder (#2837)
+
+The file action **Open in terminal** opens an interactive terminal in a vault
+folder, or in a file's containing folder; no command runs in it and nothing
+connects to a remote host. It reuses this launcher's process handling and
+error toast, not the project command or T3 host. Surfaces and the shortcut are
+listed in docs/keyboard-shortcuts.md and docs/design/reader.md.
+
+Linux tries xdg-terminal-exec, TERMINAL and x-terminal-emulator as above (the
+fixed POSIX wrapper changes into the folder), then known emulators with the
+desktop's own first (GNOME: ptyxis, kgx, gnome-terminal; KDE: konsole; Xfce:
+xfce4-terminal), each given one `--working-directory=<folder>`-style word.
+The child also starts with that folder as its working directory. macOS runs
+`/usr/bin/open -a Terminal <folder>`; Okilum has no terminal-app preference
+yet, so Terminal.app is used. Windows runs `wt.exe -d <folder>`; a folder
+containing `;` (which wt treats as a command separator) and the cmd.exe
+fallback use the encoded PowerShell route above, where the folder is base64
+data for `Set-Location -LiteralPath`. Folders are absolute, so a name starting
+with `-` or `@` is never an option or a splat, and each folder is one argv
+element without shell interpolation. Windows paths drop the `\\?\` prefix.
+
+Launched from an AppImage, the terminal does not inherit the bundle's
+environment: APPIMAGE, APPDIR, ARGV0, OWD and APPIMAGE_EXTRACT_AND_RUN are
+removed, and entries inside APPDIR are dropped from LD_LIBRARY_PATH,
+LD_PRELOAD, PATH, XDG_DATA_DIRS and the GTK/GIO/Qt/Python module paths; the
+user's own entries are kept in order. This applies to Open terminal too.
+
+Unit controls build every platform's command with hostile folder names
+(spaces, quotes, `$()`, `&`, `;`, non-ASCII, leading `-`/`@`), execute the
+POSIX wrapper with a fake shell, and check the AppImage environment edits.
+A GPUI control reaches an application-scoped fake from the sidebar menu,
+shortcut and palette. A visible terminal on each OS remains beta acceptance.
