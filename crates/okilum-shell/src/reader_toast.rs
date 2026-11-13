@@ -86,6 +86,21 @@ pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, c
     );
 }
 
+pub(super) fn duckdb_error(message: String, window: &mut Window, cx: &mut App) {
+    let _ = push(
+        Notification::new().message(message).action(|_, _, _| {
+            Button::new("table-get-duckdb")
+                .small()
+                .label("Get DuckDB")
+                .debug_selector(|| "table-get-duckdb".into())
+                .on_click(|_, _, cx| cx.open_url("https://duckdb.org/docs/installation/"))
+        }),
+        Some(Duration::from_secs(8)),
+        window,
+        cx,
+    );
+}
+
 pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
     let _ = push(
         Notification::new()

@@ -2,83 +2,7 @@ use super::*;
 use std::process::{Command, Stdio};
 
 impl TablePreview {
-    #[inline(never)]
-    pub(super) fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let table = self.table.as_ref().unwrap();
-        let loaded = table.rows.len().saturating_sub(usize::from(self.header));
-        let scope = if table.limited || (!self.all && loaded > INITIAL_ROWS) {
-            " · partial file"
-        } else {
-            ""
-        };
-        let label = if self.updating {
-            "Updating rows…".into()
-        } else {
-            format!(
-                "{} / {} loaded rows · {} columns{scope}",
-                self.order.len(),
-                loaded.min(if self.all { usize::MAX } else { INITIAL_ROWS }),
-                table.columns
-            )
-        };
-        let filter = Input::new(self.filter.as_ref().unwrap())
-            .small()
-            .cleanable(true)
-            .into_any_element();
-        let external = Button::new("table-duckdb")
-            .debug_selector(|| "table-duckdb".into())
-            .small()
-            .ghost()
-            .label(if self.external_pending {
-                "DuckDB is open"
-            } else {
-                "Open in DuckDB"
-            })
-            .disabled(self.external_pending)
-            .on_click(cx.listener(|this, _, _, cx| this.open_duckdb(cx)))
-            .into_any_element();
-        let reset = Button::new("table-reset-sort")
-            .small()
-            .ghost()
-            .label("Source order")
-            .disabled(self.sort.is_none())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sort = None;
-                this.refilter(cx);
-            }))
-            .into_any_element();
-        let controls = h_flex()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .flex_wrap()
-            .child(div().w(px(240.)).child(filter))
-            .child(reset)
-            .child(external)
-            .into_any_element();
-        v_flex()
-            .flex_none()
-            .child(controls)
-            .child(
-                div()
-                    .px_4()
-                    .pb_2()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(label),
-            )
-            .children(self.external_error.as_ref().map(|error| {
-                let install = Button::new("table-get-duckdb")
-                    .small()
-                    .ghost()
-                    .label("Get DuckDB")
-                    .on_click(|_, _, cx| cx.open_url("https://duckdb.org/docs/installation/"))
-                    .into_any_element();
-                v_flex().px_4().pb_2().child(error.clone()).child(install)
-            }))
-            .into_any_element()
-    }
-
-    fn open_duckdb(&mut self, cx: &mut Context<Self>) {
+    fn open_duckdb(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.external_pending {
             return;
         }
@@ -103,12 +27,16 @@ impl TablePreview {
         if let Err(error) = started {
             self.external_pending = false;
             self.external_error = Some(format!("Cannot start DuckDB: {error}"));
+            reader_toast::duckdb_error(self.external_error.clone().unwrap(), window, cx);
         } else {
-            cx.spawn(async move |this, cx| {
+            cx.spawn_in(window, async move |this, cx| {
                 if let Ok(result) = receive.recv().await {
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update_in(cx, |this, window, cx| {
                         this.external_pending = false;
                         this.external_error = result.err();
+                        if let Some(error) = &this.external_error {
+                            reader_toast::duckdb_error(error.clone(), window, cx);
+                        }
                         cx.notify();
                     });
                 }

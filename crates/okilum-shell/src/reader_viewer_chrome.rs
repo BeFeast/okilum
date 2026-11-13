@@ -1500,11 +1500,6 @@ fn window_slot(
         .filter(|a| !plan.shows(a.id))
         .cloned()
         .collect();
-    let table = reader
-        .file_preview
-        .as_ref()
-        .filter(|p| p.table.is_some())
-        .map(|p| p.path.clone());
     row.child(
         reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
             .debug_selector(|| "document-more".into())
@@ -1522,16 +1517,6 @@ fn window_slot(
                 }
                 for action in &overflow {
                     m = action.append_menu(m, w, cx);
-                }
-                if let Some(path) = table.clone() {
-                    let no_header = !reader_ui_state::delimited_header(&path, cx);
-                    m = m.item(
-                        PopupMenuItem::new("No header row")
-                            .checked(no_header)
-                            .on_click(move |_, _, cx| {
-                                reader_ui_state::set_delimited_header(path.clone(), no_header, cx)
-                            }),
-                    );
                 }
                 if hidden_copy {
                     let target = weak.clone();
