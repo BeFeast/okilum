@@ -119,6 +119,14 @@ impl Layout {
     }
 }
 
+/// A string field that falls back to empty for any other JSON type.
+fn lenient_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -144,7 +152,9 @@ struct Saved {
     tree_auto_reveal: bool,
     /// How a note opens in a new window (#2817): "edit" opens notes in the
     /// editor; anything else, including the absent key of older state and
-    /// unknown values from a newer build, keeps Read.
+    /// unknown values from a newer build, keeps Read. A value of another
+    /// type falls back for this field only, never rejecting the whole state.
+    #[serde(deserialize_with = "lenient_string")]
     note_open_mode: String,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
@@ -1034,9 +1044,19 @@ pub(crate) struct Session {
     /// This window keeps its chosen editing mode across Markdown file choices.
     /// Session restoration still uses the existing saved source/LP fields.
     pub(super) source_mode: bool,
-    /// An explicit Read in this window overrides the Settings default that
-    /// opens notes in Edit (#2817) until Edit is chosen again.
-    pub(super) read_chosen: bool,
+    /// The note on which the person explicitly chose Read: the Settings
+    /// default that opens notes in Edit (#2817) does not reopen it until
+    /// another note is opened.
+    pub(super) read_chosen: Option<String>,
+    /// The open editor came from that Settings default, not from a choice:
+    /// it owns nothing until the first edit and is never saved as the
+    /// session's editing mode (#2817).
+    pub(super) auto_edit: bool,
+    /// `toggle_source` is opening an automatic editor.
+    pub(super) opening_by_default: bool,
+    /// The automatic editor was refused for a reason the person should see
+    /// (another window edits the note, or it has an unsaved draft).
+    pub(super) default_edit_notice: bool,
     /// The window's first note was published before its saved state was
     /// restored; the Settings default still applies to it (#2817).
     default_edit_pending: bool,
@@ -1379,7 +1399,11 @@ impl Reader {
             history,
             history_index: self.navigation.history_ix,
             position: position.into(),
-            source: self.editing.is_some() || self.ui_state.source.is_some(),
+            // An automatic Edit is the Settings default, not this session's
+            // choice: relaunch applies the setting again, never as a choice
+            // that would carry to text, data or code files (#2817).
+            source: (self.editing.is_some() && !self.ui_state.auto_edit)
+                || self.ui_state.source.is_some(),
             live_preview: if self.editing.is_some() {
                 self.source_live_preview()
             } else {
@@ -2721,6 +2745,29 @@ mod tests {
             flush(cx);
         });
         assert_eq!(read(&path).unwrap().note_open_mode, "future-mode");
+    }
+
+    #[gpui::test]
+    fn note_open_mode_of_another_type_falls_back_without_rejecting_state(cx: &mut TestAppContext) {
+        for value in ["null", "42", "true", "{\"mode\":\"edit\"}", "[\"edit\"]"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::write(
+                state.join("reader-ui.json"),
+                format!(
+                    "{{\"version\":{VERSION},\"tree_auto_reveal\":true,\"note_open_mode\":{value}}}"
+                ),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                cx.remove_global::<Store>();
+                install(&state, cx);
+                assert!(installed(cx), "{value}: the saved UI state still loads");
+                assert!(tree_auto_reveal(cx), "{value}: other settings are kept");
+                assert_eq!(note_open_mode(cx), NoteOpenMode::Read, "{value}");
+            });
+        }
     }
 
     #[gpui::test]

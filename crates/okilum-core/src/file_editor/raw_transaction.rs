@@ -99,7 +99,8 @@ impl FileEditor {
             directory,
             on_disk: None,
             journal: state.join(format!("{key}.json")),
-            lock: Arc::new(lock),
+            lock: Some(Arc::new(lock)),
+            lock_path: state.join(format!("{key}.lock")),
             writes: Arc::default(),
             generation: 0,
             base_generation: 0,
@@ -909,11 +910,14 @@ impl FileEditor {
     /// Explicit recovery discovery for an already-open editor. It shares its
     /// lock with pending worker copies; each inspection is revision-bound.
     pub fn inspect_uncertain_saves(&self) -> Result<Vec<InterruptedSave>> {
-        Self::inspect_link_recovery(
-            &self.draft.path,
-            self.journal.parent().unwrap(),
-            self.lock.clone(),
-        )
+        let lock = match &self.lock {
+            Some(lock) => lock.clone(),
+            None => Arc::new(EditorLock::acquire_or(
+                &self.lock_path,
+                "This note has an active editor; inspect recovery in that editor",
+            )?),
+        };
+        Self::inspect_link_recovery(&self.draft.path, self.journal.parent().unwrap(), lock)
     }
 
     /// Restart path that also works when an interrupted hard link prevents a
