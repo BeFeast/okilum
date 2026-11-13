@@ -5697,6 +5697,13 @@ impl Reader {
         if let Some(view) = reader_typed_view::render(self, window, cx) {
             return view;
         }
+        self.render_note_column(window, cx)
+    }
+
+    /// The rendered note's builder temporaries stay out of the dispatch frame
+    /// that every nested file/source draw passes through (#2825).
+    #[inline(never)]
+    fn render_note_column(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
         let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = px(reader_ui_state::font_size(cx));
@@ -7842,6 +7849,66 @@ impl Render for Reader {
                 project.manager_surface_visible(visible, cx)
             });
         }
+        let frame = RenderFrame {
+            sheet_layer: sheet_layer.map(IntoElement::into_any_element),
+            dialog_layer: dialog_layer.map(IntoElement::into_any_element),
+            notification_layer: notification_layer.map(IntoElement::into_any_element),
+            diagnostics,
+            document_ready,
+            inventory_ready,
+            note_count,
+            available,
+            overlay,
+            workspace_panels,
+            panel_widths,
+        };
+        // The nested document draw starts from this small frame. The window
+        // composition below has its own frame and receives the finished
+        // element, so its builder temporaries are not reserved underneath
+        // every nested file/source render on the native main stack (#2825).
+        let center = self.render_project_center(window, cx);
+        self.compose_reader_window(frame, center, window, cx)
+    }
+}
+
+/// Values computed before the document center is built, consumed by the
+/// window composition in the same draw.
+struct RenderFrame {
+    sheet_layer: Option<AnyElement>,
+    dialog_layer: Option<AnyElement>,
+    notification_layer: Option<AnyElement>,
+    diagnostics: Option<reader_diagnostics::Trace>,
+    document_ready: bool,
+    inventory_ready: bool,
+    note_count: usize,
+    available: f32,
+    overlay: bool,
+    workspace_panels: reader_layout::Panels,
+    panel_widths: reader_layout::Widths,
+}
+
+impl Reader {
+    #[inline(never)]
+    fn compose_reader_window(
+        &mut self,
+        frame: RenderFrame,
+        center: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let RenderFrame {
+            sheet_layer,
+            dialog_layer,
+            notification_layer,
+            diagnostics,
+            document_ready,
+            inventory_ready,
+            note_count,
+            available,
+            overlay,
+            workspace_panels,
+            panel_widths,
+        } = frame;
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
             .id("reader-document")
@@ -7866,7 +7933,7 @@ impl Render for Reader {
                         self.agent_document.is_some() && !self.project_navigation.board_visible,
                         |view| view.flex_1().min_h_0(),
                     )
-                    .child(self.render_project_center(window, cx)),
+                    .child(center),
             )
             .children(self.render_agent_document(cx))
             .when(
@@ -8631,6 +8698,7 @@ impl Render for Reader {
                 let view = project::performance::Trace::new(view.into_any_element(), 2);
                 view
             })
+            .into_any_element()
     }
 }
 
@@ -13286,3 +13354,6 @@ fn initialize_native_sync_qa() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod issue2821_tests;
+
+#[cfg(test)]
+mod issue2825_stack_tests;

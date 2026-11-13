@@ -215,6 +215,13 @@ pub(crate) fn hud(this: &Reader, cx: &mut Context<Reader>) -> Option<AnyElement>
     if !this.zoom_hud.visible || !applies(this) {
         return None;
     }
+    Some(hud_overlay(this, cx))
+}
+
+/// Built only while shown, in its own frame: the window composition calls
+/// `hud` on every Reader draw (#2825).
+#[inline(never)]
+fn hud_overlay(this: &Reader, cx: &mut Context<Reader>) -> AnyElement {
     let zoom = reader_ui_state::text_zoom(cx);
     let theme = cx.theme();
     let (surface, foreground, border) = (theme.popover, theme.popover_foreground, theme.border);
@@ -224,53 +231,25 @@ pub(crate) fn hud(this: &Reader, cx: &mut Context<Reader>) -> Option<AnyElement>
             .debug_selector(|| "note-zoom-hud-input".into())
             .child(Input::new(&exact.input).small())
             .into_any_element(),
-        None => Button::new("note-zoom-hud-value")
-            .ghost()
-            .tab_stop(false)
-            .label(format!("{:.0}%", zoom * 100.))
-            .tooltip("Set exact zoom")
-            // Fixed width: 90% → 110% must not move the + button.
-            .w(px(56.))
-            .h(px(28.))
-            .rounded(px(6.))
-            .debug_selector(|| "note-zoom-hud-value".into())
-            .on_click(cx.listener(|this, _, window, cx| open_exact(this, window, cx)))
-            .into_any_element(),
+        None => hud_value_button(zoom, cx),
     };
     // Buttons cancel focus on mouse down, so the editor keeps the caret.
-    let step_button = |id: &'static str, icon: IconName, tip: SharedString, direction: f32| {
-        reader_icon_button(id, icon, tip, cx)
-            .tab_stop(false)
-            .debug_selector(move || id.into())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                let zoom = step(reader_ui_state::text_zoom(cx), direction);
-                change(this, zoom, None, window, cx);
-            }))
-    };
-    let out = step_button(
+    let out = hud_step_button(
         "note-zoom-hud-out",
         IconName::Minus,
         reader_shortcuts::hint("Zoom out", &ZoomOut, cx),
         -1.,
+        cx,
     );
-    let into = step_button(
+    let into = hud_step_button(
         "note-zoom-hud-in",
         IconName::Plus,
         reader_shortcuts::hint("Zoom in", &ZoomIn, cx),
         1.,
+        cx,
     );
-    let reset = Button::new("note-zoom-hud-reset")
-        .ghost()
-        .tab_stop(false)
-        .label("Reset")
-        .tooltip(reader_shortcuts::hint("Actual size", &Reset, cx))
-        .disabled(zoom == 1.)
-        .h(px(28.))
-        .rounded(px(6.))
-        .debug_selector(|| "note-zoom-hud-reset".into())
-        .on_click(cx.listener(|this, _, window, cx| change(this, 1., None, window, cx)));
-    Some(
-        h_flex()
+    let reset = hud_reset_button(zoom, cx);
+    h_flex()
             .id("note-zoom-hud")
             .debug_selector(|| "note-zoom-hud".into())
             .absolute()
@@ -303,8 +282,56 @@ pub(crate) fn hud(this: &Reader, cx: &mut Context<Reader>) -> Option<AnyElement>
             .child(value)
             .child(into)
             .child(reset)
-            .into_any_element(),
-    )
+            .into_any_element()
+}
+
+#[inline(never)]
+fn hud_value_button(zoom: f32, cx: &mut Context<Reader>) -> AnyElement {
+    Button::new("note-zoom-hud-value")
+        .ghost()
+        .tab_stop(false)
+        .label(format!("{:.0}%", zoom * 100.))
+        .tooltip("Set exact zoom")
+        // Fixed width: 90% → 110% must not move the + button.
+        .w(px(56.))
+        .h(px(28.))
+        .rounded(px(6.))
+        .debug_selector(|| "note-zoom-hud-value".into())
+        .on_click(cx.listener(|this, _, window, cx| open_exact(this, window, cx)))
+        .into_any_element()
+}
+
+#[inline(never)]
+fn hud_step_button(
+    id: &'static str,
+    icon: IconName,
+    tip: SharedString,
+    direction: f32,
+    cx: &mut Context<Reader>,
+) -> AnyElement {
+    reader_icon_button(id, icon, tip, cx)
+        .tab_stop(false)
+        .debug_selector(move || id.into())
+        .on_click(cx.listener(move |this, _, window, cx| {
+            let zoom = step(reader_ui_state::text_zoom(cx), direction);
+            change(this, zoom, None, window, cx);
+        }))
+        .into_any_element()
+}
+
+#[inline(never)]
+fn hud_reset_button(zoom: f32, cx: &mut Context<Reader>) -> AnyElement {
+    Button::new("note-zoom-hud-reset")
+        .ghost()
+        .tab_stop(false)
+        .label("Reset")
+        .tooltip(reader_shortcuts::hint("Actual size", &Reset, cx))
+        .disabled(zoom == 1.)
+        .h(px(28.))
+        .rounded(px(6.))
+        .debug_selector(|| "note-zoom-hud-reset".into())
+        .on_click(cx.listener(|this, _, window, cx| change(this, 1., None, window, cx)))
+        .into_any_element()
 }
 
 fn modifier(modifiers: gpui::Modifiers, mac: bool) -> bool {
