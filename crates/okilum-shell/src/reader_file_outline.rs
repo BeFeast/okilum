@@ -28,6 +28,10 @@ struct Snapshot {
     rows: Arc<Vec<tree::Row>>,
     /// Row position of each listed node, computed with the rows.
     positions: Arc<HashMap<usize, usize>>,
+    /// Listed group rows by parent, computed with the rows: `(first_index,
+    /// last_index, row)` sorted by `first_index`, inner groups after the
+    /// outer group they share it with.
+    groups: Arc<HashMap<usize, Vec<(usize, usize, usize)>>>,
     /// The marked row: the node where you are, or its nearest listed ancestor.
     current: Option<usize>,
     generation: u64,
@@ -340,6 +344,7 @@ impl View {
             self.snapshot.pending = None;
             self.snapshot.rows = Arc::default();
             self.snapshot.positions = Arc::default();
+            self.snapshot.groups = Arc::default();
             self.snapshot.current = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
@@ -404,24 +409,40 @@ impl View {
     }
 
     /// The listed row for the viewer's top node: the node itself, or the
-    /// nearest ancestor shown (a closed ancestor carries the mark).
+    /// nearest ancestor shown (a closed ancestor carries the mark), or the
+    /// closed group that holds it.
     fn snapshot_current(&self, cx: &App) -> Option<usize> {
         let code = self.code.as_ref()?;
         let doc = self.snapshot.doc.as_ref()?;
         let raw = code.read(cx).document_raw_for_contents()?;
-        let mut node = code.read(cx).contents_top_node(cx)?;
-        // The viewer may hold a newer parse than the shown rows.
+        // The viewer holds a newer parse whose rows are still being built:
+        // the mark waits for them (the swap syncs it) instead of remapping
+        // every viewport sample through both documents.
         if !Arc::ptr_eq(&raw, doc) {
-            node = raw.node_in(node, doc)?;
+            return self.snapshot.current;
         }
-        let mut at = Some(node);
+        let mut at = Some(code.read(cx).contents_top_node(cx)?);
         while let Some(index) = at {
             if let Some(&row) = self.snapshot.positions.get(&index) {
                 return Some(row);
             }
-            at = doc.parent(index);
+            let parent = doc.parent(index);
+            if let Some(row) = parent.and_then(|parent| self.group_row(parent, index)) {
+                return Some(row);
+            }
+            at = parent;
         }
         None
+    }
+
+    /// The innermost listed group of `parent` holding the child `index`.
+    /// Listed groups of one parent tile its children, so the last group
+    /// starting at or before `index` is the only candidate.
+    fn group_row(&self, parent: usize, index: usize) -> Option<usize> {
+        let groups = self.snapshot.groups.get(&parent)?;
+        let at = groups.partition_point(|&(first, _, _)| first <= index);
+        let &(_, last, row) = groups.get(at.checked_sub(1)?)?;
+        (index <= last).then_some(row)
     }
 
     fn expansion(&mut self) -> &mut tree::Expansion {
@@ -445,19 +466,35 @@ impl View {
         self.snapshot.generation += 1;
         let generation = self.snapshot.generation;
         self.snapshot.task = Some(cx.spawn(async move |this, cx| {
-            let (rows, positions) = cx
+            let (rows, positions, groups) = cx
                 .background_executor()
                 .spawn(async move {
                     let rows = tree::visible_rows(&doc, &expansion);
-                    let positions: HashMap<usize, usize> = rows
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(at, row)| match row {
-                            tree::Row::Node { index, .. } => Some((*index, at)),
-                            tree::Row::Group { .. } => None,
-                        })
-                        .collect();
-                    (rows, positions)
+                    let mut positions = HashMap::new();
+                    let mut groups: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+                    for (at, row) in rows.iter().enumerate() {
+                        match row {
+                            tree::Row::Node { index, .. } => {
+                                positions.insert(*index, at);
+                            }
+                            tree::Row::Group {
+                                parent,
+                                first_index,
+                                last_index,
+                                ..
+                            } => groups.entry(*parent).or_default().push((
+                                *first_index,
+                                *last_index,
+                                at,
+                            )),
+                        }
+                    }
+                    // Rows list an outer group before its inner groups, so a
+                    // stable sort keeps the inner one last among equal starts.
+                    for list in groups.values_mut() {
+                        list.sort_by_key(|&(first, _, _)| first);
+                    }
+                    (rows, positions, groups)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -477,6 +514,7 @@ impl View {
                 this.snapshot.doc = Some(used);
                 this.snapshot.rows = Arc::new(rows);
                 this.snapshot.positions = Arc::new(positions);
+                this.snapshot.groups = Arc::new(groups);
                 this.sync_current(cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));

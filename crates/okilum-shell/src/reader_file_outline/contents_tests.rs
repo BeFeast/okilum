@@ -696,3 +696,105 @@ fn contents2814_yaml_toml_xml_rows_states_and_where_you_are(cx: &mut TestAppCont
         );
     });
 }
+
+/// The document index of top-level key `key`.
+fn key_index(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> usize {
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        (0..doc.structure.len())
+            .find(|&i| doc.key_text(i) == Some(key))
+            .unwrap()
+    })
+}
+
+fn where_you_are(view: &Entity<View>, visual: &mut VisualTestContext, index: usize) -> tree::Row {
+    view.update_in(visual, |v, w, cx| v.jump_snapshot(index, w, cx));
+    settle(visual);
+    visual.update(|w, cx| w.draw(cx).clear(cx));
+    settle(visual);
+    view.read_with(visual, |v, _| {
+        let row = v.snapshot.current.expect("a marked row");
+        v.snapshot.rows[row].clone()
+    })
+}
+
+#[gpui::test]
+fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut TestAppContext) {
+    let text: String = (0..250).map(|i| format!("k{i:03}: {i}\n")).collect();
+    let (reader, visual, _root) = reader_with(cx, &[("keys.yaml", text.as_str())], "keys.yaml");
+    let view = outline(&reader, visual);
+    let (k050, k150) = (
+        key_index(&view, visual, "k050"),
+        key_index(&view, visual, "k150"),
+    );
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.snapshot
+                .rows
+                .iter()
+                .all(|row| matches!(row, tree::Row::Group { depth: 0, .. })),
+            "positive: 250 top-level keys list only groups"
+        )
+    });
+    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k050) else {
+        panic!("the closed group holding k050 carries the mark")
+    };
+    assert_eq!((first, last), (0, 99));
+    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k150) else {
+        panic!("the closed group holding k150 carries the mark")
+    };
+    assert_eq!((first, last), (100, 199));
+    // Opened, the group lists the node itself, and the node takes the mark.
+    let group = view.read_with(visual, |v, _| v.snapshot.rows[0].clone());
+    view.update(visual, |v, cx| v.toggle_snapshot_row(&group, cx));
+    settle(visual);
+    let tree::Row::Node { index, .. } = where_you_are(&view, visual, k050) else {
+        panic!("k050 is listed once its group is open")
+    };
+    assert_eq!(index, k050);
+}
+
+#[gpui::test]
+fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut TestAppContext) {
+    let keys: Vec<String> = (0..20_000).map(|i| format!("\"k{i:05}\":{i}")).collect();
+    let text = format!("{{\n{}\n}}\n", keys.join(",\n"));
+    let (reader, visual, _root) = reader_with(cx, &[("big.json", text.as_str())], "big.json");
+    let view = outline(&reader, visual);
+    let near_end = key_index(&view, visual, "k19990");
+    let marked = where_you_are(&view, visual, near_end);
+    assert!(
+        matches!(marked, tree::Row::Group { .. }),
+        "positive: the mark sits on the group near the end"
+    );
+    // The viewer now holds a newer parse than the shown rows (same text, a
+    // separate document): exactly the state while new rows are built.
+    let raw = code(&reader, visual)
+        .read_with(visual, |p, _| p.document_raw_for_contents())
+        .expect("the viewer's document");
+    let shown_doc = doc(&text);
+    assert!(!Arc::ptr_eq(&raw, &shown_doc));
+    let before = view.update(visual, |v, cx| {
+        v.snapshot.doc = Some(shown_doc.clone());
+        let before = v.snapshot.current;
+        raw.child_steps
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        shown_doc
+            .child_steps
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..30 {
+            v.sync_current(cx);
+        }
+        before
+    });
+    let steps = raw.child_steps.load(std::sync::atomic::Ordering::Relaxed)
+        + shown_doc
+            .child_steps
+            .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(steps, 0, "30 viewport samples walked {steps} children");
+    view.read_with(visual, |v, _| {
+        assert_eq!(
+            v.snapshot.current, before,
+            "the mark waits for the new rows"
+        )
+    });
+}

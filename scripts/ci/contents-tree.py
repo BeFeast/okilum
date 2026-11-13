@@ -61,6 +61,8 @@ CONTROLS = [
  ('json-only-contents', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('no-current-mark', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('indent-current', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('remap-every-sample', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
+ ('groups-unmarked', 'contents2814_where_you_are_inside_a_closed_group_marks_the_group'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -81,6 +83,8 @@ try:
     edit(tree, '    if doc.key_text(first_index).is_some() {', '    let first_index = if crate::contents2814_control("labels-walk-children") { doc.children(doc.parent(first_index).unwrap()).nth(first).unwrap() } else { first_index };\n    if doc.key_text(first_index).is_some() {')
     view = 'reader_file_outline.rs'
     edit(view, '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n', '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n        if crate::contents2814_control("no-current-mark") {\n            return None;\n        }\n')
+    edit(view, '        if !Arc::ptr_eq(&raw, doc) {\n            return self.snapshot.current;\n        }\n        let mut at = Some(code.read(cx).contents_top_node(cx)?);', '        let mut node = code.read(cx).contents_top_node(cx)?;\n        if !Arc::ptr_eq(&raw, doc) {\n            if !crate::contents2814_control("remap-every-sample") {\n                return self.snapshot.current;\n            }\n            node = raw.node_in(node, doc)?;\n        }\n        let mut at = Some(node);')
+    edit(view, '        let groups = self.snapshot.groups.get(&parent)?;', '        if crate::contents2814_control("groups-unmarked") {\n            return None;\n        }\n        let groups = self.snapshot.groups.get(&parent)?;')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
