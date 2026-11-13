@@ -48,6 +48,7 @@ pub(crate) mod records;
 #[cfg(native_manager)]
 mod rotation;
 mod rules_reread;
+pub(crate) use rules_reread::RulesUnready;
 mod setup;
 #[cfg(native_manager)]
 mod threads;
@@ -103,6 +104,7 @@ pub(crate) struct ProjectView {
     _resource_observer: Option<Subscription>,
     _resource_open: Option<Subscription>,
     rules: Option<Entity<agent_rules::RulesView>>,
+    rules_scope: rules_reread::RulesScope,
     skills: okilum_core::agent_skills::Inventory<agent_skills::Publication>,
     skills_owner: Option<agent_skills::Owner>,
     skills_notice: Option<String>,
@@ -451,6 +453,7 @@ impl ProjectView {
             _resource_observer: None,
             _resource_open: None,
             rules: None,
+            rules_scope: Default::default(),
             skills: Default::default(),
             skills_owner: None,
             skills_notice: None,
@@ -742,6 +745,7 @@ impl ProjectView {
 
     fn sync_resource_lifecycle(&mut self, cx: &mut Context<Self>) {
         let enabled = self.active && reader_features::enabled(reader_features::Feature::Agents, cx);
+        self.sync_rules_scope(enabled, cx);
         let scope = self.resource_vault.clone().zip(self.area.clone());
         if enabled && self.section == ProjectSection::Rules {
             if let Some((vault, area)) = scope {
@@ -830,6 +834,7 @@ impl ProjectView {
         {
             return;
         }
+        self.rules_scope_changed(cx);
         if self.section == ProjectSection::Rules {
             if let Some(rules) = &self.rules {
                 rules.update(cx, |view, cx| view.external_changed(changes, cx));

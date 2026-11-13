@@ -68,8 +68,10 @@ impl RulesRefresh {
         {
             return Err("Rules refresh requires an exact target and saved revision");
         }
-        if offer.source.path.rsplit('/').next() != Some("AGENTS.md") {
-            return Err("Rules refresh source must be AGENTS.md");
+        // The caller decides project scope from the Rules stack; any of its
+        // Markdown layers (AGENTS.md, CLAUDE.md, SKILL.md, imports) qualifies.
+        if !offer.source.path.to_ascii_lowercase().ends_with(".md") {
+            return Err("Rules refresh source must be a Markdown agent file");
         }
         if self.offer.as_ref() == Some(&offer) {
             return Ok(false);
@@ -109,7 +111,7 @@ impl RulesRefresh {
             return Err("Rules refresh message was already acknowledged");
         }
         // Quote identities as data so newlines cannot impersonate instructions.
-        Ok(format!("Please re-read your project's AGENTS.md rules. Okilum saved source {:?} at revision {:?} in project {:?}. Re-read the current source and report the revision you actually read; this message receipt alone does not confirm rules were reloaded.",
+        Ok(format!("Please re-read your rules: AGENTS.md and the files it imports. Okilum saved source {:?} at revision {:?} in project {:?}. Re-read the current source and report the revision you actually read; this message receipt alone does not confirm rules were reloaded.",
             clicked.source.path, clicked.source.revision, clicked.target.project_id))
     }
 
@@ -247,6 +249,24 @@ mod tests {
         assert!(state.acknowledge(&receipt));
         assert!(state.message(&saved, &saved.target).is_err());
         assert!(!state.acknowledge(&receipt));
+    }
+    #[test]
+    fn any_markdown_agent_file_in_scope_can_be_offered() {
+        for path in [
+            "area/CLAUDE.md",
+            "_AgentContract.md",
+            "area/skills/x/SKILL.md",
+            "docs/style.md",
+        ] {
+            let mut saved = offer("rev");
+            saved.source.path = path.into();
+            let mut state = RulesRefresh::default();
+            assert!(state.saved(saved.clone()).unwrap(), "{path}");
+            assert!(state.message(&saved, &saved.target).unwrap().contains(path));
+        }
+        let mut binary = offer("rev");
+        binary.source.path = "area/rules.bin".into();
+        assert!(RulesRefresh::default().saved(binary).is_err());
     }
     #[test]
     fn old_acknowledgement_cannot_consume_new_revision_or_new_request() {

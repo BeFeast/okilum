@@ -313,9 +313,10 @@ fn file_access_notice(error: &anyhow::Error) -> &'static str {
 }
 
 /// A revision of the exact saved UTF-8 source, never a native editor generation.
-/// Only AGENTS.md has this receipt; callers publish it after confirmed success.
+/// Only files in the open project's rules scope get this receipt (decided by
+/// the caller from the Rules stack); callers publish it after confirmed success.
 fn saved_agents_revision(path: &Path, changed: bool, text: &str) -> Option<(PathBuf, String)> {
-    if !changed || !path.is_absolute() || path.file_name()?.to_str()? != "AGENTS.md" {
+    if !changed || !path.is_absolute() {
         return None;
     }
     use sha2::{Digest, Sha256};
@@ -327,12 +328,25 @@ fn saved_agents_revision(path: &Path, changed: bool, text: &str) -> Option<(Path
 
 /// FileEditor returns Saved for an already matching file too. Exclude that
 /// no-op before attempting the save; a failed/ambiguous read produces no offer.
-fn pending_agents_revision(store: &FileEditor, changed: bool) -> Option<(PathBuf, String)> {
-    if !changed || store.path().file_name()?.to_str()? != "AGENTS.md" {
+fn pending_agents_revision(
+    store: &FileEditor,
+    changed: bool,
+    in_scope: bool,
+) -> Option<(PathBuf, String)> {
+    if !changed || !in_scope {
         return None;
     }
     let current = store.current().ok()?;
     saved_agents_revision(store.path(), current != store.text(), store.text())
+}
+
+impl Reader {
+    /// Rules-scope decision for the open source, taken before a save borrows it.
+    fn editing_in_rules_scope(&self, cx: &App) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|editing| self.in_rules_scope(editing.store.path(), cx))
+    }
 }
 
 #[cfg(test)]
@@ -342,7 +356,7 @@ mod saved_agents_revision_tests {
     use std::path::Path;
 
     #[test]
-    fn receipt_is_exact_source_sha256_and_only_for_a_changed_absolute_agents_file() {
+    fn receipt_is_exact_source_sha256_and_only_for_a_changed_absolute_file() {
         let path = std::env::temp_dir().join("AGENTS.md");
         let (absolute_path, revision) = saved_agents_revision(&path, true, "abc").unwrap();
         assert_eq!(absolute_path, path);
@@ -352,7 +366,8 @@ mod saved_agents_revision_tests {
         );
         assert!(saved_agents_revision(&path, false, "abc").is_none());
         assert!(saved_agents_revision(Path::new("AGENTS.md"), true, "abc").is_none());
-        assert!(saved_agents_revision(&path.with_file_name("note.md"), true, "abc").is_none());
+        // Scope is the caller's Rules-stack decision, not a file-name list.
+        assert!(saved_agents_revision(&path.with_file_name("CLAUDE.md"), true, "abc").is_some());
     }
 }
 
@@ -1978,6 +1993,7 @@ impl Reader {
         if self.move_applying {
             return (false, false);
         }
+        let rules_scope = self.editing_in_rules_scope(cx);
         let Some(editing) = &mut self.editing else {
             return (true, true);
         };
@@ -2013,7 +2029,7 @@ impl Reader {
         };
         let protected = draft.is_ok();
         let rules_revision = protected
-            .then(|| pending_agents_revision(&editing.store, editing.store.dirty()))
+            .then(|| pending_agents_revision(&editing.store, editing.store.dirty(), rules_scope))
             .flatten();
         let retained = self.deleted_note.is_some();
         let result = draft.and_then(|_| {
@@ -2133,6 +2149,7 @@ impl Reader {
         {
             return;
         }
+        let rules_scope = self.editing_in_rules_scope(cx);
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -2182,7 +2199,7 @@ impl Reader {
         cx.notify();
         let worker = cx.background_executor().spawn(async move {
             let mut copy = copy;
-            let rules_revision = pending_agents_revision(&copy, copy.dirty());
+            let rules_revision = pending_agents_revision(&copy, copy.dirty(), rules_scope);
             let result = copy.save();
             // The UI editor takes the stamp, so its next refresh skips the read (#1363).
             let conflict = matches!(result, Ok(Save::Conflict))
@@ -2483,13 +2500,14 @@ impl Reader {
                 return;
             }
         }
+        let rules_scope = self.editing_in_rules_scope(cx);
         let Some(mut editing) = self.editing.take() else {
             return;
         };
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
         let rules_revision = (!reload)
-            .then(|| pending_agents_revision(&editing.store, true))
+            .then(|| pending_agents_revision(&editing.store, true, rules_scope))
             .flatten();
         let result = if reload {
             editing.store.reload().map(|_| Save::Saved)
