@@ -157,6 +157,21 @@ def cleanup(env):
     print('Ephemeral signing directory removed')
 
 
+NOTARY_REASONS = [('agreement', 'required Apple agreement missing or expired'),
+                  ('invalid credentials', 'invalid Apple ID or app-specific password'),
+                  ('username or password', 'invalid Apple ID or app-specific password'),
+                  ('locked', 'Apple account locked'),
+                  ('team', 'team not available for this Apple ID')]
+
+
+def notary_reason(stderr):
+    """Fixed, secret-free diagnosis of a notarytool failure: only the HTTP status
+    number and one of the known reason labels above, never the raw output."""
+    text = (stderr or b'').decode('utf-8', 'replace').lower()
+    status = re.search(r'http status code: ([0-9]{3})', text)
+    reason = next((label for key, label in NOTARY_REASONS if key in text), 'unrecognized reason')
+    return ('HTTP ' + status[1] + ' ' if status else 'exit ') + reason
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['setup', 'cleanup'])
@@ -173,5 +188,7 @@ if __name__ == '__main__':
             operation += ':' + Path(error.cmd[0]).name
             if error.cmd[0] == 'security':
                 operation += ':' + error.cmd[1]
+            if error.cmd[:2] == ['xcrun', 'notarytool']:
+                operation += ':' + notary_reason(error.stderr)
         print('Ephemeral signing ' + command + ' FAILED (' + operation + ')', file=sys.stderr)
         sys.exit(1)
