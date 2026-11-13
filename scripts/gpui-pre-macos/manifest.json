@@ -1,0 +1,22 @@
+{
+  "package": "gpui-pre-macos",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre-macos/gpui-pre-macos-0.3.3.crate",
+  "archive_sha256": "54678bfe6be71aa8e3fd31c3ae51af5d81e367344762540fd7cfdb778621abb1",
+  "patches": [
+    {
+      "path": "../patches/gpui-pre-macos/0001-skip-tab-group-without-tabbing.diff",
+      "sha256": "8f45835c127a6964fd45ee918e188af255b11128e521af902c728807ba98886b"
+    },
+    {
+      "path": "../patches/gpui-pre-macos/0002-prepare-metal-pipelines-at-startup.diff",
+      "sha256": "44de949c8d9636e040dc739a2a88c9d247430d4210e75d9046d3d47b3047f031"
+    }
+  ],
+  "tree_sha256": "82b8f3eff797e024071e8de44a2a5ddb44d66e957de3ec34fc41cb099d3c0d75",
+  "generated_path": "vendor/gpui-pre-macos-0.3.3",
+  "changed_files": [
+    "src/platform.rs",
+    "src/window.rs"
+  ]
+}

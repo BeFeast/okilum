@@ -1,0 +1,118 @@
+gpui_macos: don't query a tab group before any window can be tabbed
+
+`Window::new` calls `PlatformWindow::tab_bar_visible`, which sends
+`-[NSWindow tabGroup]`. On first use AppKit creates the window's tab group and
+`NSWindowStackController`. A window can only join a tab group after tabbing
+was enabled for some window (a tabbing identifier) or an explicit tabbing
+action ran (Merge All Windows, Move Tab to New Window, Show Tab Bar). Track
+that process-wide in a flag that never resets, set it in those paths and in
+the native overrides, and answer `false` without touching AppKit until then.
+After it is set, `tab_bar_visible` queries the tab group as before, so
+explicit tabbing and windows whose identifier is cleared stay correct.
+
+Measured on a cold first window (hosted macos-15, debug, Time Profiler): the
+`tabGroup` call took ~590 ms wall, 506 ms of it blocked off-CPU.
+
+diff --git a/src/window.rs b/src/window.rs
+index 88a694c..77c290f 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -586,6 +586,25 @@ unsafe fn apply_simple_fullscreen_plan(
+     }
+ }
+ 
++/// Whether any window of this process may have joined a native tab group.
++///
++/// `-[NSWindow tabGroup]` builds the window's tab group and stack controller on
++/// first use; on a cold first window that took ~0.6 s (mostly blocked
++/// off-CPU) inside `Window::new`. A window can only be in a tab group after
++/// tabbing was enabled for some window (a tabbing identifier) or an explicit
++/// tabbing action ran (merge, move to new window, toggle tab bar). Until then
++/// no window can show a tab bar, so there is nothing to ask AppKit. The flag
++/// never resets: a window keeps its group after its identifier is cleared.
++static TABBING_MAY_BE_ACTIVE: AtomicBool = AtomicBool::new(false);
++
++fn note_tabbing_may_be_active() {
++    TABBING_MAY_BE_ACTIVE.store(true, Ordering::Release);
++}
++
++fn tab_group_query_needed(tabbing_may_be_active: bool) -> bool {
++    tabbing_may_be_active
++}
++
+ struct MacWindowState {
+     handle: AnyWindowHandle,
+     foreground_executor: ForegroundExecutor,
+@@ -910,6 +929,7 @@ impl MacWindow {
+ 
+             let allows_automatic_window_tabbing = tabbing_identifier.is_some();
+             if allows_automatic_window_tabbing {
++                note_tabbing_may_be_active();
+                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: YES];
+             } else {
+                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: NO];
+@@ -1412,6 +1432,7 @@ impl PlatformWindow for MacWindow {
+         unsafe {
+             let allows_automatic_window_tabbing = tabbing_identifier.is_some();
+             if allows_automatic_window_tabbing {
++                note_tabbing_may_be_active();
+                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: YES];
+             } else {
+                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: NO];
+@@ -1875,6 +1896,9 @@ impl PlatformWindow for MacWindow {
+     }
+ 
+     fn tab_bar_visible(&self) -> bool {
++        if !tab_group_query_needed(TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire)) {
++            return false;
++        }
+         unsafe {
+             let tab_group: id = msg_send![self.0.lock().native_window, tabGroup];
+             if tab_group.is_null() {
+@@ -3514,6 +3538,7 @@ extern "C" fn add_titlebar_accessory_view_controller(this: &Object, _: Sel, view
+ }
+ 
+ extern "C" fn move_tab_to_new_window(this: &Object, _: Sel, _: id) {
++    note_tabbing_may_be_active();
+     unsafe {
+         let _: () = msg_send![super(this, class!(NSWindow)), moveTabToNewWindow:nil];
+ 
+@@ -3528,6 +3553,7 @@ extern "C" fn move_tab_to_new_window(this: &Object, _: Sel, _: id) {
+ }
+ 
+ extern "C" fn merge_all_windows(this: &Object, _: Sel, _: id) {
++    note_tabbing_may_be_active();
+     unsafe {
+         let _: () = msg_send![super(this, class!(NSWindow)), mergeAllWindows:nil];
+ 
+@@ -3562,6 +3588,7 @@ extern "C" fn select_previous_tab(this: &Object, _sel: Sel, _id: id) {
+ }
+ 
+ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
++    note_tabbing_may_be_active();
+     unsafe {
+         let _: () = msg_send![super(this, class!(NSWindow)), toggleTabBar:nil];
+ 
+@@ -3585,4 +3612,22 @@ mod tests {
+     fn display_id_for_screen_returns_none_for_null_screen() {
+         assert_eq!(display_id_for_screen(nil), None);
+     }
++
++    #[test]
++    fn tab_group_is_queried_once_tabbing_may_be_active_and_stays_queried() {
++        // Process-wide state: this is the only test that touches the flag.
++        assert!(!tab_group_query_needed(false));
++        assert!(tab_group_query_needed(true));
++        assert!(!tab_group_query_needed(
++            TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire)
++        ));
++        // An identifier, Merge All Windows, Move Tab to New Window and Show
++        // Tab Bar all mark it; clearing an identifier later never unmarks it.
++        note_tabbing_may_be_active();
++        assert!(tab_group_query_needed(
++            TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire)
++        ));
++        note_tabbing_may_be_active();
++        assert!(TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire));
++    }
+ }

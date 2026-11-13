@@ -1,0 +1,394 @@
+gpui_apple: build the Metal library and pipelines once, off the main thread
+
+The shader library and the eight render pipeline states depend only on the
+device, but every `MetalRenderer::new` built them synchronously, on the main
+thread, inside window creation. With `runtime_shaders` and an empty Metal
+cache, `newLibraryWithSource` alone took ~810 ms of a cold first window
+(hosted macos-15, debug, Time Profiler); the pipelines ~50 ms more.
+
+Build them once per process for the first device on a background thread,
+started by `prepare_pipelines` (or by the first renderer), and share them
+between renderers. A renderer resolves them the first time a draw encodes a
+batch; if the build is still running it waits on a condvar, so no frame is
+drawn without them. A failed build still panics on that first draw with the
+original message. Another device gets its own build. The background build
+runs inside its own autorelease pool, popped on failure too.
+
+diff --git a/src/metal_renderer.rs b/src/metal_renderer.rs
+index 112717b..bcda3df 100644
+--- a/src/metal_renderer.rs
++++ b/src/metal_renderer.rs
+@@ -23,9 +23,17 @@ use metal::{
+     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
+ };
+ use objc::{self, msg_send, sel, sel_impl};
+-use parking_lot::Mutex;
+-
+-use std::{cell::Cell, ffi::c_void, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
++use parking_lot::{Condvar, Mutex};
++
++use std::{
++    cell::Cell,
++    ffi::c_void,
++    mem,
++    mem::MaybeUninit,
++    ops::Range,
++    ptr, slice,
++    sync::{Arc, OnceLock},
++};
+ 
+ // Exported to metal
+ pub(crate) type PointF = gpui::Point<f32>;
+@@ -118,14 +126,8 @@ pub struct MetalRenderer {
+     /// For headless rendering, tracks whether output should be opaque
+     opaque: bool,
+     command_queue: CommandQueue,
+-    paths_rasterization_pipeline_state: metal::RenderPipelineState,
+-    path_sprites_pipeline_state: metal::RenderPipelineState,
+-    shadows_pipeline_state: metal::RenderPipelineState,
+-    quads_pipeline_state: metal::RenderPipelineState,
+-    underlines_pipeline_state: metal::RenderPipelineState,
+-    monochrome_sprites_pipeline_state: metal::RenderPipelineState,
+-    polychrome_sprites_pipeline_state: metal::RenderPipelineState,
+-    surfaces_pipeline_state: metal::RenderPipelineState,
++    shared_pipelines: Arc<SharedPipelines>,
++    pipelines: OnceLock<Arc<Pipelines>>,
+     unit_vertices: metal::Buffer,
+     #[allow(clippy::arc_with_non_send_sync)]
+     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+@@ -214,14 +216,8 @@ impl MetalRenderer {
+         opaque: bool,
+         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+     ) -> Self {
+-        #[cfg(feature = "runtime_shaders")]
+-        let library = device
+-            .new_library_with_source(&SHADERS_SOURCE_FILE, &metal::CompileOptions::new())
+-            .expect("error building metal library");
+-        #[cfg(not(feature = "runtime_shaders"))]
+-        let library = device
+-            .new_library_with_data(SHADERS_METALLIB)
+-            .expect("error building metal library");
++        // Built once per device on a background thread; see `SharedPipelines`.
++        let shared_pipelines = shared_pipelines(&device);
+ 
+         fn to_float2_bits(point: PointF) -> u64 {
+             let mut output = point.y.to_bits() as u64;
+@@ -258,72 +254,6 @@ impl MetalRenderer {
+             },
+         );
+ 
+-        let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
+-            &device,
+-            &library,
+-            "paths_rasterization",
+-            "path_rasterization_vertex",
+-            "path_rasterization_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-            PATH_SAMPLE_COUNT,
+-        );
+-        let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
+-            &device,
+-            &library,
+-            "path_sprites",
+-            "path_sprite_vertex",
+-            "path_sprite_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let shadows_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "shadows",
+-            "shadow_vertex",
+-            "shadow_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let quads_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "quads",
+-            "quad_vertex",
+-            "quad_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let underlines_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "underlines",
+-            "underline_vertex",
+-            "underline_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let monochrome_sprites_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "monochrome_sprites",
+-            "monochrome_sprite_vertex",
+-            "monochrome_sprite_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let polychrome_sprites_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "polychrome_sprites",
+-            "polychrome_sprite_vertex",
+-            "polychrome_sprite_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-        let surfaces_pipeline_state = build_pipeline_state(
+-            &device,
+-            &library,
+-            "surfaces",
+-            "surface_vertex",
+-            "surface_fragment",
+-            MTLPixelFormat::BGRA8Unorm,
+-        );
+-
+         let command_queue = device.new_command_queue();
+         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
+         let core_video_texture_cache =
+@@ -337,14 +267,8 @@ impl MetalRenderer {
+             is_unified_memory,
+             opaque,
+             command_queue,
+-            paths_rasterization_pipeline_state,
+-            path_sprites_pipeline_state,
+-            shadows_pipeline_state,
+-            quads_pipeline_state,
+-            underlines_pipeline_state,
+-            monochrome_sprites_pipeline_state,
+-            polychrome_sprites_pipeline_state,
+-            surfaces_pipeline_state,
++            shared_pipelines,
++            pipelines: OnceLock::new(),
+             unit_vertices,
+             instance_buffer_pool,
+             sprite_atlas,
+@@ -357,6 +281,12 @@ impl MetalRenderer {
+         }
+     }
+ 
++    /// Waits for the shared pipelines the first time a draw needs them, so a
++    /// frame is never encoded without them.
++    fn pipelines(&self) -> &Pipelines {
++        self.pipelines.get_or_init(|| self.shared_pipelines.wait())
++    }
++
+     pub fn layer(&self) -> Option<&metal::MetalLayerRef> {
+         self.layer.as_ref().map(|l| l.as_ref())
+     }
+@@ -784,7 +714,7 @@ impl MetalRenderer {
+         }
+ 
+         let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
+-        command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().paths_rasterization);
+         command_encoder.set_vertex_buffer(
+             PathRasterizationInputIndex::Vertices as u64,
+             Some(&vertex_instance_bindings.buffer),
+@@ -821,7 +751,7 @@ impl MetalRenderer {
+             return;
+         }
+ 
+-        command_encoder.set_render_pipeline_state(&self.shadows_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().shadows);
+         command_encoder.set_vertex_buffer(
+             ShadowInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -863,7 +793,7 @@ impl MetalRenderer {
+             return;
+         }
+ 
+-        command_encoder.set_render_pipeline_state(&self.quads_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().quads);
+         command_encoder.set_vertex_buffer(
+             QuadInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -909,7 +839,7 @@ impl MetalRenderer {
+             .as_ref()
+             .context("missing path intermediate texture")?;
+ 
+-        command_encoder.set_render_pipeline_state(&self.path_sprites_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().path_sprites);
+         command_encoder.set_vertex_buffer(
+             SpriteInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -976,7 +906,7 @@ impl MetalRenderer {
+             return;
+         }
+ 
+-        command_encoder.set_render_pipeline_state(&self.underlines_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().underlines);
+         command_encoder.set_vertex_buffer(
+             UnderlineInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -1024,7 +954,7 @@ impl MetalRenderer {
+             DevicePixels(texture.width() as i32),
+             DevicePixels(texture.height() as i32),
+         );
+-        command_encoder.set_render_pipeline_state(&self.monochrome_sprites_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().monochrome_sprites);
+         command_encoder.set_vertex_buffer(
+             SpriteInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -1078,7 +1008,7 @@ impl MetalRenderer {
+             DevicePixels(texture.width() as i32),
+             DevicePixels(texture.height() as i32),
+         );
+-        command_encoder.set_render_pipeline_state(&self.polychrome_sprites_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().polychrome_sprites);
+         command_encoder.set_vertex_buffer(
+             SpriteInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -1127,7 +1057,7 @@ impl MetalRenderer {
+             return;
+         }
+ 
+-        command_encoder.set_render_pipeline_state(&self.surfaces_pipeline_state);
++        command_encoder.set_render_pipeline_state(&self.pipelines().surfaces);
+         command_encoder.set_vertex_buffer(
+             SurfaceInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -1266,6 +1196,143 @@ fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
+     RgbaImage::from_raw(width, height, pixels).context("failed to create RgbaImage from pixel data")
+ }
+ 
++/// Starts building the shader library and render pipelines for the default
++/// device on a background thread. Call it when the platform starts, before the
++/// first window: compiling them can take most of a second on a cold launch
++/// (runtime shader source, empty Metal cache), and renderers created later
++/// reuse the result instead of building it on the main thread.
++pub fn prepare_pipelines() {
++    shared_pipelines(&MetalRenderer::create_device());
++}
++
++/// The library and pipelines depend only on the device, not on a window.
++struct Pipelines {
++    paths_rasterization: metal::RenderPipelineState,
++    path_sprites: metal::RenderPipelineState,
++    shadows: metal::RenderPipelineState,
++    quads: metal::RenderPipelineState,
++    underlines: metal::RenderPipelineState,
++    monochrome_sprites: metal::RenderPipelineState,
++    polychrome_sprites: metal::RenderPipelineState,
++    surfaces: metal::RenderPipelineState,
++}
++
++struct SharedPipelines {
++    registry_id: u64,
++    result: Mutex<Option<std::result::Result<Arc<Pipelines>, String>>>,
++    ready: Condvar,
++}
++
++impl SharedPipelines {
++    fn wait(&self) -> Arc<Pipelines> {
++        let mut result = self.result.lock();
++        while result.is_none() {
++            self.ready.wait(&mut result);
++        }
++        match result.as_ref().unwrap() {
++            Ok(pipelines) => pipelines.clone(),
++            Err(message) => panic!("{message}"),
++        }
++    }
++}
++
++/// One background build per process for the first device; another device
++/// (rare) gets its own build.
++fn shared_pipelines(device: &metal::Device) -> Arc<SharedPipelines> {
++    static FIRST: OnceLock<Arc<SharedPipelines>> = OnceLock::new();
++    let first = FIRST.get_or_init(|| start_pipelines(device.clone()));
++    if first.registry_id == device.registry_id() {
++        first.clone()
++    } else {
++        start_pipelines(device.clone())
++    }
++}
++
++fn start_pipelines(device: metal::Device) -> Arc<SharedPipelines> {
++    let shared = Arc::new(SharedPipelines {
++        registry_id: device.registry_id(),
++        result: Mutex::new(None),
++        ready: Condvar::new(),
++    });
++    let build = {
++        let shared = shared.clone();
++        move || {
++            // A failed build still fails the first draw, as it did in `new`.
++            // This thread has no autorelease pool of its own: drain the
++            // strings and descriptors the bindings autorelease. The pool sits
++            // outside `catch_unwind`, so it is popped on failure too.
++            let result = objc::rc::autoreleasepool(|| {
++                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                    Arc::new(build_pipelines(&device))
++                }))
++            })
++            .map_err(|panic| {
++                panic
++                    .downcast_ref::<&str>()
++                    .map(|message| message.to_string())
++                    .or_else(|| panic.downcast_ref::<String>().cloned())
++                    .unwrap_or_else(|| "error building metal pipelines".into())
++            });
++            *shared.result.lock() = Some(result);
++            shared.ready.notify_all();
++        }
++    };
++    let builder = std::thread::Builder::new().name("gpui-metal-pipelines".into());
++    if let Err(error) = builder.spawn(build.clone()) {
++        log::error!("building metal pipelines on the main thread: {error}");
++        build();
++    }
++    shared
++}
++
++fn build_pipelines(device: &metal::Device) -> Pipelines {
++    #[cfg(feature = "runtime_shaders")]
++    let library = device
++        .new_library_with_source(&SHADERS_SOURCE_FILE, &metal::CompileOptions::new())
++        .expect("error building metal library");
++    #[cfg(not(feature = "runtime_shaders"))]
++    let library = device
++        .new_library_with_data(SHADERS_METALLIB)
++        .expect("error building metal library");
++    let format = MTLPixelFormat::BGRA8Unorm;
++    let pipeline = |label, vertex, fragment| {
++        build_pipeline_state(device, &library, label, vertex, fragment, format)
++    };
++    Pipelines {
++        paths_rasterization: build_path_rasterization_pipeline_state(
++            device,
++            &library,
++            "paths_rasterization",
++            "path_rasterization_vertex",
++            "path_rasterization_fragment",
++            format,
++            PATH_SAMPLE_COUNT,
++        ),
++        path_sprites: build_path_sprite_pipeline_state(
++            device,
++            &library,
++            "path_sprites",
++            "path_sprite_vertex",
++            "path_sprite_fragment",
++            format,
++        ),
++        shadows: pipeline("shadows", "shadow_vertex", "shadow_fragment"),
++        quads: pipeline("quads", "quad_vertex", "quad_fragment"),
++        underlines: pipeline("underlines", "underline_vertex", "underline_fragment"),
++        monochrome_sprites: pipeline(
++            "monochrome_sprites",
++            "monochrome_sprite_vertex",
++            "monochrome_sprite_fragment",
++        ),
++        polychrome_sprites: pipeline(
++            "polychrome_sprites",
++            "polychrome_sprite_vertex",
++            "polychrome_sprite_fragment",
++        ),
++        surfaces: pipeline("surfaces", "surface_vertex", "surface_fragment"),
++    }
++}
++
+ fn build_pipeline_state(
+     device: &metal::DeviceRef,
+     library: &metal::LibraryRef,
