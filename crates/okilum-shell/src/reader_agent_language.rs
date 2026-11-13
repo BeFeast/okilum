@@ -331,7 +331,7 @@ mod tests {
         );
         let style = mark_style(gpui::Hsla::default());
         assert!(style.underline.unwrap().wavy);
-        let contract = diagnostics(true, "_AgentContract.md", "воркер", Ok(policy));
+        let contract = diagnostics(true, "@AgentContract.md", "воркер", Ok(policy));
         assert_eq!(
             mark_ranges(&contract).len(),
             1,

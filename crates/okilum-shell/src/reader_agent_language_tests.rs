@@ -37,6 +37,8 @@ fn settle(
 
 #[gpui::test]
 fn issue1593_marks_hover_and_policy_refresh_without_a_source_edit(cx: &mut TestAppContext) {
+    // The checker publishes from its own `agent-language` thread.
+    cx.executor().allow_parking();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("vault");
     std::fs::create_dir_all(root.join("project")).unwrap();
