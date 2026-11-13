@@ -1,9 +1,69 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -164 +164 @@
+-version = "8.6"
++version = "9.5"
+@@ -168 +168 @@
+-[dev-dependencies.tempfile]
++[dependencies.tempfile]
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -164 +164 @@
+-version = "8.6"
++version = "9.5"
+@@ -168 +168 @@
+-[dev-dependencies.tempfile]
++[dependencies.tempfile]
+--- a/src/bundle.rs
++++ b/src/bundle.rs
+@@ -131,2 +131,4 @@
+-                let name = file.name();
+-                if predicate(name) {
++                // ZIP 9 initializes decompressors on first read; ZIP 8 rejected
++                // unsupported methods here. Keep the old helper-selection behavior.
++                if zip::SUPPORTED_COMPRESSION_METHODS.contains(&file.compression())
++                    && file.name().is_ok_and(|name| predicate(&name)) {
+@@ -158 +160,3 @@
+-        let mut outfile = misc::retry_io(|| File::create(path))?;
++        // Stage beside the destination so publication is one atomic replace,
++        // including on Windows. A read/CRC/size/write failure drops only the stage.
++        let mut outfile = tempfile::NamedTempFile::new_in(parent)?;
+@@ -167,0 +172,3 @@
++            if len as u64 > total_size.saturating_sub(bytes_written) {
++                return Err(Error::InvalidPackage("ZIP entry exceeds declared size".into()));
++            }
+@@ -174,0 +182,5 @@
++        if bytes_written != total_size {
++            return Err(Error::InvalidPackage("ZIP entry size does not match metadata".into()));
++        }
++        outfile.as_file().sync_all()?;
++        outfile.persist(path).map_err(|e| e.error)?;
+@@ -235,2 +247 @@
+-            let key = file.name();
+-            files.push(key.to_string());
++            files.push(file.name()?.into_owned());
+@@ -281 +292 @@
+-                Ok(f) => f.name().to_string(),
++                Ok(f) => f.name()?.into_owned(),
 --- a/src/manager.rs
 +++ b/src/manager.rs
-@@ -519,7 +519,16 @@
-             let _ = progress.send(70);
-         }
- 
+@@ -465,11 +465,4 @@
+-        match crate::bundle::load_bundle_from_file(&final_target_file) {
+-            Ok(bundle) => {
+-                info!("Bundle loaded successfully.");
+-                let update_exe_path = self.inner.locator.get_update_path();
+-                if let Err(e) = bundle.extract_zip_predicate_to_path(|f| f.ends_with("Squirrel.exe"), update_exe_path) {
+-                    error!("Error extracting Update.exe from bundle: {}", e);
+-                }
+-            }
+-            Err(e) => {
+-                error!("Error loading bundle: {}", e);
+-            }
++        {
++            let bundle = crate::bundle::load_bundle_from_file(&final_target_file)?;
++            let update_exe_path = self.inner.locator.get_update_path();
++            bundle.extract_zip_predicate_to_path(|f| f.ends_with("Squirrel.exe"), update_exe_path)?;
+@@ -522 +515,10 @@
 -        let output = std::process::Command::new(self.inner.locator.get_update_path()).args(args).output()?;
 +        let mut patcher = std::process::Command::new(self.inner.locator.get_update_path());
 +        patcher.args(args);
@@ -15,29 +75,3 @@
 +            patcher.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 +        }
 +        let output = patcher.output()?;
-         if output.status.success() {
-             info!("Successfully applied delta updates.");
-         } else {
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -164 +164 @@
--version = "8.6"
-+version = "9.5"
---- a/Cargo.toml.orig
-+++ b/Cargo.toml.orig
-@@ -164 +164 @@
--version = "8.6"
-+version = "9.5"
---- a/src/bundle.rs
-+++ b/src/bundle.rs
-@@ -131,2 +131 @@
--                let name = file.name();
--                if predicate(name) {
-+                if file.name().is_ok_and(|name| predicate(&name)) {
-@@ -235,2 +234 @@
--            let key = file.name();
--            files.push(key.to_string());
-+            files.push(file.name()?.into_owned());
-@@ -281 +279 @@
--                Ok(f) => f.name().to_string(),
-+                Ok(f) => f.name()?.into_owned(),

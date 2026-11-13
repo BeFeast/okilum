@@ -146,7 +146,7 @@ fn describe<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, index: usize) 
         decode_cp437(raw)
     };
     // ZIP 8 treated upper Unix mode bits conservatively regardless of origin.
-    let raw_symlink = (file.external_attributes() >> 16) & 0o170000 == 0o120000;
+    let raw_symlink = (file.external_attributes() >> 16) & 0o120000 == 0o120000;
     let kind = if raw_symlink || file.is_symlink() {
         Kind::Symlink
     } else if file.is_dir() {
@@ -181,10 +181,24 @@ fn describe<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, index: usize) 
 
 /// CP437 maps ASCII unchanged; the upper half is fixed by the ZIP format.
 fn decode_cp437(raw: &[u8]) -> String {
-    const HIGH: &str = "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
-    let high: Vec<char> = HIGH.chars().collect();
+    const HIGH: [char; 128] = [
+        'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å', 'É', 'æ',
+        'Æ', 'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ', 'á', 'í', 'ó', 'ú',
+        'ñ', 'Ñ', 'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»', '░', '▒', '▓', '│', '┤', '╡',
+        '╢', '╖', '╕', '╣', '║', '╗', '╝', '╜', '╛', '┐', '└', '┴', '┬', '├', '─', '┼', '╞', '╟',
+        '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧', '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘',
+        '┌', '█', '▄', '▌', '▐', '▀', 'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ',
+        '∞', 'φ', 'ε', '∩', '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²',
+        '■', ' ',
+    ];
     raw.iter()
-        .map(|&byte| if byte < 128 { char::from(byte) } else { high[usize::from(byte - 128)] })
+        .map(|&byte| {
+            if byte < 128 {
+                char::from(byte)
+            } else {
+                HIGH[usize::from(byte - 128)]
+            }
+        })
         .collect()
 }
 
@@ -198,7 +212,11 @@ fn decoded_path(name: &str) -> Option<PathBuf> {
     for part in name.split(['/', '\\']) {
         match part {
             "" | "." => (),
-            ".." => { if !path.pop() { return None; } },
+            ".." => {
+                if !path.pop() {
+                    return None;
+                }
+            }
             part => path.push(part),
         }
     }
@@ -589,15 +607,19 @@ mod tests {
     #[test]
     fn utf8_flag_controls_ambiguous_names_and_extraction_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let archive = write(dir.path(), "ambiguous.zip", &stored_zip(&[
-            (b"\xc3\xa9.txt", false, false, b"CP437 bytes"),
-            (b"\xc3\xa9.txt", true, false, b"UTF-8 bytes"),
-            (b"ascii.txt", false, false, b"ASCII"),
-        ]));
+        let archive = write(
+            dir.path(),
+            "ambiguous.zip",
+            &stored_zip(&[
+                (b"\xc3\xa9.txt", false, false, b"CP437 bytes"),
+                (b"utf8/\xc3\xa9.txt", true, false, b"UTF-8 bytes"),
+                (b"ascii.txt", false, false, b"ASCII"),
+            ]),
+        );
         let listing = list(&archive, Limits::default()).unwrap();
         assert_eq!(listing.entries[0].name, "├⌐.txt");
         assert!(listing.entries[0].cp437_name);
-        assert_eq!(listing.entries[1].name, "é.txt");
+        assert_eq!(listing.entries[1].name, "utf8/é.txt");
         assert!(!listing.entries[1].cp437_name);
         assert!(!listing.entries[2].cp437_name);
         for entry in &listing.entries {
@@ -606,29 +628,46 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let result = extract(&archive, &[], out.path(), Limits::default()).unwrap();
         assert_eq!(result.files.len(), 3);
-        assert_eq!(std::fs::read(out.path().join("├⌐.txt")).unwrap(), b"CP437 bytes");
-        assert_eq!(std::fs::read(out.path().join("é.txt")).unwrap(), b"UTF-8 bytes");
+        assert_eq!(
+            std::fs::read(out.path().join("├⌐.txt")).unwrap(),
+            b"CP437 bytes"
+        );
+        assert_eq!(
+            std::fs::read(out.path().join("utf8/é.txt")).unwrap(),
+            b"UTF-8 bytes"
+        );
     }
 
     #[test]
     fn dos_origin_unix_symlink_attributes_are_still_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let mut bytes = with_unix_modes(stored_zip(&[
-            (b"link", true, false, b"../outside"),
-            (b"plain.txt", true, false, b"safe"),
-        ]), &[0o120777, 0o100644]);
-        let central = u32::from_le_bytes(bytes[bytes.len()-6..bytes.len()-2].try_into().unwrap()) as usize;
+        let mut bytes = with_unix_modes(
+            stored_zip(&[
+                (b"link", true, false, b"../outside"),
+                (b"plain.txt", true, false, b"safe"),
+            ]),
+            &[0o120777, 0o100644],
+        );
+        let central =
+            u32::from_le_bytes(bytes[bytes.len() - 6..bytes.len() - 2].try_into().unwrap())
+                as usize;
         bytes[central + 5] = 0; // DOS origin, retaining raw upper Unix bits.
         let archive = write(dir.path(), "dos-link.zip", &bytes);
         let listing = list(&archive, Limits::default()).unwrap();
         assert_eq!(listing.entries[0].kind, Kind::Symlink);
-        assert_eq!(refused(read_entry(&archive, 0, Limits::default()).unwrap_err()), Refused::Symlink("link".into()));
+        assert_eq!(
+            refused(read_entry(&archive, 0, Limits::default()).unwrap_err()),
+            Refused::Symlink("link".into())
+        );
         let out = tempfile::tempdir().unwrap();
         let result = extract(&archive, &[], out.path(), Limits::default()).unwrap();
         assert_eq!(result.files, [out.path().join("plain.txt")]);
         assert_eq!(result.skipped.len(), 1);
         assert!(!out.path().join("link").exists());
-        assert_eq!(std::fs::read(out.path().join("plain.txt")).unwrap(), b"safe");
+        assert_eq!(
+            std::fs::read(out.path().join("plain.txt")).unwrap(),
+            b"safe"
+        );
     }
 
     #[test]
