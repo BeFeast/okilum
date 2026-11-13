@@ -34,10 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         item_id: Uuid::from_u128(7),
         text: "Committed only in the legacy WAL 📝\r\n".into(),
     };
-    Store::open(&path)?.capture(owner, &pending, 789)?;
+    let mut writer = Store::open(&path)?;
+    writer.capture(owner, &pending, 789)?;
     assert_eq!(guard.query_row("SELECT count(*) FROM captures", [], |r| r.get::<_, i64>(0))?, 2);
+    assert!(std::fs::metadata(path.with_file_name("legacy-wal.db-wal"))?.len() > 32);
     std::fs::copy(&path, output.join("rusqlite-0.37-wal.db"))?;
     std::fs::copy(path.with_file_name("legacy-wal.db-wal"), output.join("rusqlite-0.37-wal.db-wal"))?;
+    drop(writer);
     println!("SQLite writer version: {}", rusqlite::version());
     Ok(())
 }
