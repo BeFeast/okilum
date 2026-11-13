@@ -555,6 +555,8 @@ impl Reader {
                 }
                 let log = preview.log.is_some();
                 self.file_preview = Some(preview);
+                // The notes linking here are this file's, never the last note's (#2885).
+                self.set_backlinks(self.vault.backlinks(rel), true);
                 self.find_open = false;
                 self.link_notice = None;
                 self.remember_source_mode();

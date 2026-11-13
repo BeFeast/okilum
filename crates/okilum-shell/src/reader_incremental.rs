@@ -239,7 +239,7 @@ impl Reader {
                             #[cfg(not(any(unix, windows)))]
                             let _ = candidates;
                             this.backlink_titles = titles;
-                            this.set_backlinks(this.vault.backlinks(&this.current_rel), false);
+                            this.set_backlinks(this.vault.backlinks(this.selected_file()), false);
                             if batch.topology_changed {
                                 this.sync_tree();
                             }

@@ -2784,7 +2784,7 @@ impl Reader {
                                 if let Some(vault) = reconciled {
                                     this.source_publication_epoch = this.source_publication_epoch.wrapping_add(1);
                                     this.vault = vault;
-                                    this.set_backlinks(this.vault.backlinks(&this.current_rel), false);
+                                    this.set_backlinks(this.vault.backlinks(this.selected_file()), false);
                                 }
                                 this.quick_open.inventory = Some(Arc::new(notes));
                                 this.refresh_quick_open(cx);
@@ -2852,7 +2852,7 @@ impl Reader {
                                 this.watcher = watcher;
                                 this.watcher_generation = this.watcher_generation.wrapping_add(1);
                                 this.index_dir = index;
-                                this.set_backlinks(this.vault.backlinks(&this.current_rel), false);
+                                this.set_backlinks(this.vault.backlinks(this.selected_file()), false);
                                 this.sync_tree();
                                 this.backlink_titles = Arc::new(titles);
                                 this.reconcile_inventory_document(&sources, window, cx);

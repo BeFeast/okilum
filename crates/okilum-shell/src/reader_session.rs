@@ -210,7 +210,7 @@ impl Reader {
             self.move_index = published.candidates;
             self.reminder_tick(cx);
         }
-        self.set_backlinks(self.vault.backlinks(&self.current_rel), false);
+        self.set_backlinks(self.vault.backlinks(self.selected_file()), false);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
         self.backlink_titles = published.titles.clone();
