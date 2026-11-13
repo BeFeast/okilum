@@ -316,23 +316,22 @@ pub fn cloud_document_path(path: &Path) -> PathBuf {
 /// iCloud placeholders must not be opened just to populate derived data.
 /// SF_DATALESS identifies evicted files that retain their ordinary filename.
 pub(crate) fn cloud_placeholder(path: &Path) -> bool {
-    if path
+    let legacy_stub = path
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("icloud"))
-    {
-        return true;
-    }
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("icloud"));
     #[cfg(target_os = "macos")]
     {
-        const SF_DATALESS: u32 = 0x4000_0000;
-        let _phase = crate::open_diagnostics::phase("macos_placeholder_stat");
-        if crate::open_diagnostics::fs(|| rustix::fs::stat(path))
-            .is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0)
-        {
-            return true;
+        legacy_stub || {
+            const SF_DATALESS: u32 = 0x4000_0000;
+            let _phase = crate::open_diagnostics::phase("macos_placeholder_stat");
+            crate::open_diagnostics::fs(|| rustix::fs::stat(path))
+                .is_ok_and(|stat| stat.st_flags & SF_DATALESS != 0)
         }
     }
-    false
+    #[cfg(not(target_os = "macos"))]
+    {
+        legacy_stub
+    }
 }
 
 #[derive(Debug)]

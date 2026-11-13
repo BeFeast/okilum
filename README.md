@@ -81,7 +81,7 @@ Okilum is under active development. Keep normal backups of your notes.
 
 See [platform prerequisites and build instructions](docs/building.md).
 With rustup and your platform libraries installed, Cargo automatically selects
-the version and components in `rust-toolchain.toml` (currently Rust 1.99.0):
+the version and components in `rust-toolchain.toml` (currently Rust 1.100.0):
 
 ```sh
 git clone https://github.com/BeFeast/okilum.git

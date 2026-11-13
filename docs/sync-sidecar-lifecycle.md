@@ -164,8 +164,9 @@ XML path escaping; macOS approval, missing helper and the macOS 13 boundary.
 `scripts/check-sync-sidecar-bindings.sh` cross-checks the actual transport source
 with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It uses a
 small generated probe and seeds dependency resolution from the repository lockfile;
-this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
-standard-library targets first, and invoke the script inside `okilum-build`.
+this avoids GPUI and unrelated native C dependencies. Install the two
+standard-library targets for the compiler pinned in `rust-toolchain.toml` first,
+and invoke the script inside `okilum-build`.
 Both target checks and the 54 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 The cross-check includes target-gated tests: Windows descriptor alias/missing-owner

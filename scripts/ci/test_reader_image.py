@@ -19,7 +19,7 @@ class ReaderImageTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.pin = self.root / "rust-toolchain.toml"
-        self.pin.write_text('[toolchain]\nchannel="1.99.0"\nprofile="minimal"\ncomponents=["clippy","rustfmt"]\n')
+        self.pin.write_text('[toolchain]\nchannel="1.100.0"\nprofile="minimal"\ncomponents=["clippy","rustfmt"]\n')
 
     def test_context_allowlist_excludes_secret_and_source(self):
         (self.root / ".env").write_text("secret=must-not-enter-image")
@@ -27,20 +27,20 @@ class ReaderImageTests(unittest.TestCase):
         context = self.root / "context"
         context.mkdir()
         version, base = image.prepare_context(self.root, RECIPE, context)
-        self.assertEqual(version, "1.99.0")
+        self.assertEqual(version, "1.100.0")
         self.assertIn("@sha256:", base)
         self.assertEqual({p.name for p in context.iterdir()},
                          {"Dockerfile", "packages.txt", "rust-toolchain.toml"})
         self.assertEqual((context / "rust-toolchain.toml").read_bytes(), self.pin.read_bytes())
 
     def test_version_comes_from_toolchain_not_recipe(self):
-        self.pin.write_text(self.pin.read_text().replace("1.99.0", "1.100.2"))
+        self.pin.write_text(self.pin.read_text().replace("1.100.0", "1.100.2"))
         self.assertEqual(image.inputs(self.root, RECIPE)[0], "1.100.2")
 
     def test_floating_missing_and_changed_components_are_rejected(self):
         original = self.pin.read_text()
-        for text in (original.replace("1.99.0", "stable"),
-                     original.replace("1.99.0", "1.99"),
+        for text in (original.replace("1.100.0", "stable"),
+                     original.replace("1.100.0", "1.100"),
                      original.replace('"clippy",', ''),
                      original + 'targets=["aarch64-unknown-linux-gnu"]\n'):
             with self.subTest(text=text):

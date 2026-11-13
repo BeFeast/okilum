@@ -17,13 +17,15 @@ cd okilum
 git rev-parse HEAD
 ```
 
-The verified Linux builds use Rust 1.96.1. The repository currently has no
-`rust-toolchain` file, so select the version explicitly; `Cargo.lock` pins package
-resolution. If rustup is missing, install it using the [official rustup instructions](https://rustup.rs/).
+The repository pins the latest stable Rust and required components in
+[`rust-toolchain.toml`](../rust-toolchain.toml). Run commands from this checkout
+so rustup selects that compiler on every development host and in CI;
+`Cargo.lock` pins package resolution. If rustup is missing, install it using the
+[official rustup instructions](https://rustup.rs/).
 
 ```sh
-rustup toolchain install 1.96.1 --profile minimal
-rustc +1.96.1 --version
+rustup show active-toolchain
+rustc --version
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
 ```
@@ -55,7 +57,7 @@ and FreeType are still platform libraries.
 
 ```sh
 CC=/usr/bin/cc CXX=/usr/bin/c++ \
-cargo +1.96.1 build --release --locked -p okilum-shell -p okilum-cored
+cargo build --release --locked -p okilum-shell -p okilum-cored
 ```
 
 The executables are `target/release/okilum` and `target/release/okilum-cored`.
@@ -70,7 +72,7 @@ Check the selected SDK and compiler:
 ```sh
 xcrun --sdk macosx --show-sdk-path
 xcrun --find clang
-rustup target add --toolchain 1.96.1 aarch64-apple-darwin
+rustup target add aarch64-apple-darwin
 ```
 
 Release signing/notarization runs on the project's configured Forgejo macOS
@@ -86,7 +88,7 @@ CC=/usr/bin/clang \
 CXX=/usr/bin/clang++ \
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
 CARGO_TARGET_DIR="$PWD/target-macos" \
-cargo +1.96.1 build --release --locked \
+cargo build --release --locked \
   --target aarch64-apple-darwin -p okilum-shell
 ```
 
