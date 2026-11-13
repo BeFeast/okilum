@@ -442,8 +442,11 @@ impl View {
     }
 
     fn jump_snapshot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(code) = self.code.clone() {
-            code.update(cx, |code, cx| code.reveal_contents_node(index, window, cx));
+        // The row's index belongs to the document of the shown rows.
+        if let (Some(code), Some(rows)) = (self.code.clone(), self.snapshot.doc.clone()) {
+            code.update(cx, |code, cx| {
+                code.reveal_contents_node(&rows, index, window, cx)
+            });
         }
     }
 

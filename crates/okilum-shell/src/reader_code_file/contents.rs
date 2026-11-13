@@ -47,14 +47,25 @@ impl CodePreview {
     /// Go to a raw-document node in the active view; never switch views.
     /// Tree opens its parents and the node itself; Formatted and Raw put the
     /// caret at the node start, unfold around it and scroll it to the top.
+    /// `rows` is the document the clicked row indexes. While a newer parse
+    /// is shown here, the node is found again by its key path.
     pub(crate) fn reveal_contents_node(
         &mut self,
+        rows: &Arc<Document>,
         index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let (Some(raw), Some(active)) = (self.raw_document.clone(), self.document.clone()) else {
             return;
+        };
+        let index = if Arc::ptr_eq(&raw, rows) {
+            index
+        } else {
+            match rows.node_in(index, &raw) {
+                Some(index) => index,
+                None => return,
+            }
         };
         // Formatted is the same JSON with another layout: the preorder index
         // names the same node in both snapshots.

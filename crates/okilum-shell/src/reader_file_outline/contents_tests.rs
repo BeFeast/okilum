@@ -464,3 +464,47 @@ fn contents2814_open_rows_survive_view_switch_and_panel_close(cx: &mut TestAppCo
         "closing and reopening the panel keeps open rows"
     );
 }
+
+#[gpui::test]
+fn contents2814_a_click_on_old_rows_reaches_the_same_node_in_a_newer_document(
+    cx: &mut TestAppContext,
+) {
+    // The viewer already holds the newer parse; the shown rows still index
+    // the older one (their rebuild has not landed yet).
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[("live.json", "{\"new\":{\"x\":1},\"a\":1,\"b\":2}")],
+        "live.json",
+    );
+    let code = code(&reader, visual);
+    let old = doc("{\"a\":1,\"b\":2}");
+    let b = (0..old.structure.len())
+        .find(|&i| old.key_text(i) == Some("b"))
+        .unwrap();
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Tree, w, cx));
+    settle(visual);
+    code.update_in(visual, |p, w, cx| p.reveal_contents_node(&old, b, w, cx));
+    code.read_with(visual, |p, _| {
+        let raw = p.document_snapshot().unwrap();
+        let selected = p.tree_selection_for_tests().unwrap();
+        assert_ne!(
+            selected, b,
+            "positive: the index differs in the newer document"
+        );
+        assert_eq!(
+            raw.key_text(selected),
+            Some("b"),
+            "the clicked node, not its old index"
+        );
+    });
+    // Repeated keys keep their occurrence; a vanished node is ignored.
+    let first = doc("{\"x\":1,\"x\":2}");
+    let second = doc("{\"y\":0,\"x\":1,\"x\":2}");
+    let twice = (0..first.structure.len())
+        .filter(|&i| first.key_text(i) == Some("x"))
+        .nth(1)
+        .unwrap();
+    let mapped = first.node_in(twice, &second).unwrap();
+    assert_eq!(second.scalar(mapped).unwrap().1, "2");
+    assert_eq!(doc("{\"gone\":1}").node_in(1, &doc("{\"other\":1}")), None);
+}
