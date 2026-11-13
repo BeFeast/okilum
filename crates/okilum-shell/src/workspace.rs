@@ -225,6 +225,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         window.on_window_should_close(cx, |window, cx| {
+            crate::reader_diagnostics::window_close_requested(
+                window,
+                cx,
+                "native platform request",
+            );
             crate::reader_editor::save_window(window.window_handle(), cx)
         });
         let error = loaded.as_ref().err().cloned();
@@ -1236,12 +1241,27 @@ impl Render for Workspace {
                     })),
             )
         });
+        // GNOME draws our own close button; it closes like the platform
+        // request (#2805), never by bare removal.
+        let close_brain = self.brain.as_ref().map(|brain| brain.downgrade());
+        let title_bar = gpui_component::TitleBar::new().on_close_window(move |_, window, cx| {
+            crate::reader_diagnostics::window_close_requested(window, cx, "title bar close button");
+            let close = match &close_brain {
+                Some(brain) => brain
+                    .update(cx, |brain, cx| brain.request_window_close(window, cx))
+                    .unwrap_or(true),
+                None => crate::reader_editor::save_window(window.window_handle(), cx),
+            };
+            if close {
+                window.remove_window();
+            }
+        });
         let mut detail = v_flex()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .h_full()
-            .child(gpui_component::TitleBar::new().h(px(56.)).child(toolbar));
+            .child(title_bar.h(px(56.)).child(toolbar));
         if self.showing_export {
             let dirty = self.brain.as_ref().is_some_and(|b| b.read(cx).dirty(cx));
             let mut export = v_flex().id("workspace-export-detail").flex_1().min_h_0().overflow_y_scroll().p_6().gap_4()
