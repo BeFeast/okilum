@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 # Main 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Changing the updater is a separate PR.
@@ -15,6 +16,7 @@ COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "--lib"]
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")
     for name, expected in [("manifest.json", MAIN_MANIFEST_SHA256), ("hidden-delta.diff", MAIN_PATCH_SHA256)]:
         assert hashlib.sha256((ROOT / "scripts/velopack" / name).read_bytes()).hexdigest() == expected, name
     spec = importlib.util.spec_from_file_location("velopack_setup", ROOT / "scripts/velopack-setup.py")
