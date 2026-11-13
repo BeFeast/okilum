@@ -344,19 +344,19 @@ impl View {
             }
             ContentsSource::Loading => {
                 // Keep the last rows of this file while a newer parse is pending.
-                if !matches!(self.snapshot.state, SnapshotState::Loading { .. }) {
-                    if self.snapshot.rows.is_empty() {
-                        self.snapshot.state = SnapshotState::Loading { shown: false };
-                        self.snapshot.reading = Some(cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(READING_DELAY).await;
-                            let _ = this.update(cx, |this, cx| {
-                                if let SnapshotState::Loading { shown } = &mut this.snapshot.state {
-                                    *shown = true;
-                                    cx.notify();
-                                }
-                            });
-                        }));
-                    }
+                if !matches!(self.snapshot.state, SnapshotState::Loading { .. })
+                    && self.snapshot.rows.is_empty()
+                {
+                    self.snapshot.state = SnapshotState::Loading { shown: false };
+                    self.snapshot.reading = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(READING_DELAY).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let SnapshotState::Loading { shown } = &mut this.snapshot.state {
+                                *shown = true;
+                                cx.notify();
+                            }
+                        });
+                    }));
                 }
             }
             ContentsSource::Invalid(reason) => {
