@@ -893,7 +893,7 @@ pub(crate) fn resolve(
         text: String::new(),
         cut_at: None,
     };
-    let mut cut = |limit: usize, copied: &mut Copied| {
+    let cut = |limit: usize, copied: &mut Copied| {
         copied.cut_at = Some(copied.cut_at.map_or(limit, |at| at.min(limit)));
     };
     for part in parts {
