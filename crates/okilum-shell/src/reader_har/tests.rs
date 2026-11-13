@@ -600,12 +600,14 @@ fn review2878_a_replaced_file_is_read_again_before_details(cx: &mut TestAppConte
     let replaced = text.replace("api.example.test", "zpi.example.test");
     assert_eq!(replaced.len(), text.len());
     let path = temp.path().join("vault/capture.har");
+    // Syncthing keeps the source mtime: same size, same time, other bytes.
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
     std::fs::write(&path, &replaced).unwrap();
     std::fs::File::options()
         .write(true)
         .open(&path)
         .unwrap()
-        .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .set_modified(modified)
         .unwrap();
     view.update(visual, |har, cx| har.select(1, cx));
     draw(visual);

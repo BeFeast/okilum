@@ -66,7 +66,10 @@ appear as they are read and the bottom line shows progress, then the totals:
 requests, bytes transferred (`_transferSize`, else headers + body size), the
 span from the first start to the last end, and errors (no response, status 0,
 4xx/5xx or a browser error). Details are parsed again from the selected
-request's range on a worker; strings above 64 KB stay on disk until a body is
+request's range on a worker, after checking the file's size and modification
+time and a hash of the request's own bytes against the index; a changed file
+is read again with a notice. Duplicate keys follow one rule everywhere: the
+last occurrence wins; strings above 64 KB stay on disk until a body is
 decoded. Filtering and sorting run on workers and newer queries supersede older
 ones. Selecting another request cancels the previous detail read, and switching
 files cancels the index and every pending read.

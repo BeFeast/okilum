@@ -374,7 +374,7 @@ impl HarView {
         if self.selected == Some(entry) {
             return;
         }
-        let Some(span) = self.entries.get(entry).map(|e| e.span.clone()) else {
+        let Some((span, hash)) = self.entries.get(entry).map(|e| (e.span.clone(), e.hash)) else {
             return;
         };
         self.selected = Some(entry);
@@ -393,7 +393,7 @@ impl HarView {
         #[cfg(test)]
         let finished = self.finished_reads.clone();
         let work = cx.background_executor().spawn(async move {
-            let result = har::details(&path, span, revision, &cancel)
+            let result = har::details(&path, span, revision, Some(hash), &cancel)
                 .and_then(|details| details::build(&path, &details, start, revision, &cancel));
             #[cfg(test)]
             if result.is_ok() {

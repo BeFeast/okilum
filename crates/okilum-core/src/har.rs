@@ -65,6 +65,9 @@ pub struct Entry {
     pub started_ms: Option<f64>,
     /// A browser's own failure text (`_error`, `response._error`).
     pub error: Box<str>,
+    /// Hash of the entry's bytes in the file, checked before details are
+    /// shown: a replaced file with the same size and time cannot pass.
+    pub hash: u64,
 }
 
 impl Entry {
@@ -378,10 +381,12 @@ impl Indexer<'_> {
                                 return s.skip_value();
                             }
                             let start = s.offset();
+                            s.begin_hash();
                             s.pos += 1;
                             let mut entry = Entry::default();
                             index_entry(s, &mut entry)?;
                             entry.span = start..s.offset();
+                            entry.hash = s.end_hash();
                             self.pending.push(entry);
                             self.outcome.entries += 1;
                             if self.pending.len() >= BATCH || self.flushed.elapsed() >= BATCH_TIME {
@@ -718,15 +723,41 @@ fn detail_error(stop: Stop, what: &str) -> DetailError {
 }
 
 /// Reads one entry's details from `span` (an [`Entry::span`]) of the file
-/// `revision` (from the index; `None` skips the check).
+/// `revision` whose entry bytes hash to `hash` ([`Entry::hash`]); `None`
+/// skips a check. Different bytes are [`DetailError::Changed`].
 pub fn details(
     path: &Path,
     span: Range<u64>,
     revision: Option<Revision>,
+    hash: Option<u64>,
     cancel: &AtomicBool,
 ) -> Result<Details, DetailError> {
+    if let Some(expected) = hash {
+        let mut reader = open_range(path, &span, revision)?;
+        if hash_bytes(&mut reader, cancel)? != expected {
+            return Err(DetailError::Changed);
+        }
+    }
     let reader = open_range(path, &span, revision)?;
     parse_details(reader, span.start, cancel)
+}
+
+/// The same streaming hash the index computes over an entry's bytes.
+fn hash_bytes(reader: &mut impl Read, cancel: &AtomicBool) -> Result<u64, DetailError> {
+    use std::hash::Hasher as _;
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut buf = vec![0; BUFFER];
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(DetailError::Cancelled);
+        }
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(hasher.finish()),
+            Ok(n) => hasher.write(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(DetailError::Failed(e.kind().to_string())),
+        }
+    }
 }
 
 /// Parses one entry from `reader`, positioned at file offset `base`.
@@ -1103,6 +1134,8 @@ struct Scanner<'c, R> {
     /// File offset of `buf[0]`.
     base: u64,
     cancel: &'c AtomicBool,
+    /// Hashing consumed bytes from this buffer position (one entry).
+    hash: Option<(std::hash::DefaultHasher, usize)>,
 }
 
 impl<'c, R: Read> Scanner<'c, R> {
@@ -1114,6 +1147,24 @@ impl<'c, R: Read> Scanner<'c, R> {
             len: 0,
             base,
             cancel,
+            hash: None,
+        }
+    }
+
+    /// Starts hashing the bytes from the current position.
+    fn begin_hash(&mut self) {
+        self.hash = Some((std::hash::DefaultHasher::new(), self.pos));
+    }
+
+    /// The hash of the bytes consumed since [`Self::begin_hash`].
+    fn end_hash(&mut self) -> u64 {
+        use std::hash::Hasher as _;
+        match self.hash.take() {
+            Some((mut hasher, from)) => {
+                hasher.write(&self.buf[from..self.pos]);
+                hasher.finish()
+            }
+            None => 0,
         }
     }
 
@@ -1135,6 +1186,11 @@ impl<'c, R: Read> Scanner<'c, R> {
         }
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Stop::Cancelled);
+        }
+        if let Some((hasher, from)) = &mut self.hash {
+            use std::hash::Hasher as _;
+            hasher.write(&self.buf[*from..self.len]);
+            *from = 0;
         }
         self.base += self.len as u64;
         self.pos = 0;
@@ -1528,14 +1584,25 @@ impl<'c, R: Read> Scanner<'c, R> {
         match self.peek()? {
             Some(b'{') if shape.object() => {
                 self.pos += 1;
-                let mut fields = Vec::new();
-                self.object(|s, key| match shape.field(key) {
-                    Some(child) if fields.len() < MAX_ITEMS => {
+                let mut fields: Vec<(String, Node)> = Vec::new();
+                self.object(|s, key| {
+                    let Some(child) = shape.field(key) else {
+                        return s.skip_value();
+                    };
+                    let key = String::from_utf8_lossy(key);
+                    // Duplicate keys: last wins all the way, as in the list; a
+                    // repeat replaces its field instead of taking a new one.
+                    if let Some(slot) = fields.iter().position(|(k, _)| *k == key) {
+                        fields[slot].1 = s.node(child, budget)?;
+                    } else if fields.len() < MAX_ITEMS {
                         let value = s.node(child, budget)?;
-                        fields.push((String::from_utf8_lossy(key).into_owned(), value));
-                        Ok(())
+                        fields.push((key.into_owned(), value));
+                    } else {
+                        // More distinct fields than details keep: say so.
+                        budget.exhausted = true;
+                        s.skip_value()?;
                     }
-                    _ => s.skip_value(),
+                    Ok(())
                 })?;
                 Ok(Node::Object(fields))
             }

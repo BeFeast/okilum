@@ -165,7 +165,7 @@ fn details_read_one_entry_from_its_range() {
     let path = write(&dir, "c.har", CHROME.as_bytes());
     let (entries, _) = index_text(CHROME.as_bytes());
     let cancel = AtomicBool::new(false);
-    let d = details(&path, entries[0].span.clone(), None, &cancel).unwrap();
+    let d = details(&path, entries[0].span.clone(), None, None, &cancel).unwrap();
     assert_eq!(d.method, "GET");
     assert_eq!(d.url.shown(), "https://example.test/app?x=1&y=two");
     assert_eq!(d.request_headers.len(), 3);
@@ -199,7 +199,7 @@ fn details_read_one_entry_from_its_range() {
     assert_eq!(bytes.bytes, b"<html><b>hello</b></html>\n");
     assert!(bytes.complete);
 
-    let d = details(&path, entries[1].span.clone(), None, &cancel).unwrap();
+    let d = details(&path, entries[1].span.clone(), None, None, &cancel).unwrap();
     let post = d.request_body.unwrap();
     assert_eq!(
         post.text.unwrap().shown(),
@@ -274,6 +274,7 @@ fn non_utf8_bytes_are_replaced_not_fatal() {
     let d = details(
         &path,
         entries[0].span.clone(),
+        None,
         None,
         &AtomicBool::new(false),
     )
@@ -379,6 +380,7 @@ fn deep_values_inside_an_entry_do_not_recurse_without_bound() {
         &path,
         entries[0].span.clone(),
         None,
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -399,7 +401,7 @@ fn long_values_stay_on_disk_as_ranges() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "l.har", har.as_bytes());
     let cancel = AtomicBool::new(false);
-    let d = details(&path, e.span.clone(), None, &cancel).unwrap();
+    let d = details(&path, e.span.clone(), None, None, &cancel).unwrap();
     // The whole URL is in the details even though the list keeps a prefix.
     assert_eq!(d.url, Text::Inline(url.clone()));
     let text = d.response_body.unwrap().text.unwrap();
@@ -527,6 +529,7 @@ fn a_100_mb_capture_indexes_with_bounded_memory_and_progressive_batches() {
         file.path(),
         last.span.clone(),
         None,
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -604,6 +607,7 @@ fn review2878_detail_parse_skips_unknown_fields_and_has_an_aggregate_budget() {
         &path,
         entries[0].span.clone(),
         None,
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -618,6 +622,7 @@ fn review2878_detail_parse_skips_unknown_fields_and_has_an_aggregate_budget() {
     let d = details(
         &path,
         entries[0].span.clone(),
+        None,
         None,
         &AtomicBool::new(false),
     )
@@ -642,6 +647,7 @@ fn review2878_inline_strings_share_a_byte_budget() {
     let d = details(
         &path,
         entries[0].span.clone(),
+        None,
         None,
         &AtomicBool::new(false),
     )
@@ -672,7 +678,7 @@ fn review2878_huge_numbers_are_unknown_not_panics() {
     assert_eq!(entries[0].transferred, Some(2 * 9_007_199_254_740_992));
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "n.har", har);
-    let d = details(&path, e.span.clone(), None, &AtomicBool::new(false)).unwrap();
+    let d = details(&path, e.span.clone(), None, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(d.timings, [("wait".to_owned(), 1.)]);
     assert_eq!((d.time, d.status), (None, None));
     assert_eq!(d.response_body.unwrap().size, None);
@@ -693,7 +699,7 @@ fn review2878_details_refuse_a_replaced_file_of_equal_length() {
     assert_eq!(outcome.revision, revision);
     let cancel = AtomicBool::new(false);
     // Control: the same revision reads.
-    assert!(details(&path, entries[0].span.clone(), revision, &cancel).is_ok());
+    assert!(details(&path, entries[0].span.clone(), revision, None, &cancel).is_ok());
     let replaced = CHROME.replace("app?x=1", "zzz?x=1");
     assert_eq!(replaced.len(), CHROME.len());
     std::fs::write(&path, &replaced).unwrap();
@@ -701,7 +707,7 @@ fn review2878_details_refuse_a_replaced_file_of_equal_length() {
     file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
         .unwrap();
     assert_eq!(
-        details(&path, entries[0].span.clone(), revision, &cancel),
+        details(&path, entries[0].span.clone(), revision, None, &cancel),
         Err(DetailError::Changed)
     );
     let body = Text::Long {
@@ -722,7 +728,7 @@ fn review2878_duplicate_keys_agree_between_list_and_details() {
     let e = &entries[0];
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "dup.har", har);
-    let d = details(&path, e.span.clone(), None, &AtomicBool::new(false)).unwrap();
+    let d = details(&path, e.span.clone(), None, None, &AtomicBool::new(false)).unwrap();
     assert_eq!((&*e.method, d.method.as_str()), ("PUT", "PUT"));
     assert_eq!(
         (&*e.url, d.url.shown()),
@@ -739,6 +745,7 @@ fn review2878_duplicate_keys_agree_between_list_and_details() {
     let d = details(
         &path,
         entries[0].span.clone(),
+        None,
         None,
         &AtomicBool::new(false),
     )
@@ -811,7 +818,7 @@ fn review2878_cancelled_detail_and_body_reads_stop() {
     let path = write(&dir, "c.har", har.as_bytes());
     let cancelled = AtomicBool::new(true);
     assert_eq!(
-        details(&path, entries[0].span.clone(), None, &cancelled),
+        details(&path, entries[0].span.clone(), None, None, &cancelled),
         Err(DetailError::Cancelled)
     );
     let text = Text::Long {
@@ -825,7 +832,7 @@ fn review2878_cancelled_detail_and_body_reads_stop() {
     );
     // Control: uncancelled, the same reads complete.
     let open = AtomicBool::new(false);
-    assert!(details(&path, entries[0].span.clone(), None, &open).is_ok());
+    assert!(details(&path, entries[0].span.clone(), None, None, &open).is_ok());
     let all = body_bytes(&path, &text, false, usize::MAX, None, &open).unwrap();
     assert_eq!(all.bytes.len(), body.len());
 }
@@ -879,4 +886,110 @@ fn review2878_detail_parse_stops_mid_read_when_cancelled() {
     let open = AtomicBool::new(false);
     let d = parse_details(entry.as_bytes(), 0, &open).unwrap();
     assert_eq!(d.method, "GET");
+}
+
+// --- Second review of PR 2878: each case fails on head a17c4319. ---
+
+/// Syncthing keeps the source mtime: same length, same mtime, different
+/// bytes must not show the new entry under the old row.
+#[test]
+fn review2878b_entry_hash_catches_a_replacement_with_the_same_size_and_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "same.har", CHROME.as_bytes());
+    let mut revision = None;
+    let mut entries = Vec::new();
+    index_file(&path, &AtomicBool::new(false), &mut |batch| {
+        revision = batch.revision;
+        entries.extend(batch.entries)
+    })
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let first = &entries[0];
+    // Control: the indexed bytes pass and hash the same at read time.
+    let d = details(
+        &path,
+        first.span.clone(),
+        revision,
+        Some(first.hash),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(d.method, "GET");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let replaced = CHROME.replacen(r#""method": "GET""#, r#""method": "PUT""#, 1);
+    assert_ne!(replaced, CHROME);
+    assert_eq!(replaced.len(), CHROME.len());
+    std::fs::write(&path, &replaced).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    assert_eq!(
+        Revision::of(&file).ok(),
+        revision,
+        "precondition: size and time unchanged"
+    );
+    assert_eq!(
+        details(
+            &path,
+            first.span.clone(),
+            revision,
+            Some(first.hash),
+            &cancel
+        ),
+        Err(DetailError::Changed)
+    );
+    // Other entries are untouched and still read.
+    let second = &entries[1];
+    assert!(details(
+        &path,
+        second.span.clone(),
+        revision,
+        Some(second.hash),
+        &cancel
+    )
+    .is_ok());
+}
+
+/// Duplicate keys past MAX_ITEMS: last wins all the way, as in the list.
+#[test]
+fn review2878b_duplicates_past_the_item_limit_still_agree() {
+    let mut har =
+        String::from(r#"{"log":{"entries":[{"request":{"method":"GET","url":"u"},"response":{"#);
+    for _ in 0..MAX_ITEMS {
+        har.push_str(r#""status":200,"#);
+    }
+    har.push_str(r#""status":404}}]}}"#);
+    let (entries, _) = index_text(har.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "dups.har", har.as_bytes());
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!((entries[0].status, d.status), (Some(404), Some(404)));
+    assert!(!d.incomplete, "duplicates take no extra fields");
+    // More distinct fields than details keep: marked incomplete, not silent.
+    let attributes: String = (0..=MAX_ITEMS).map(|i| format!(r#","a{i}":"v""#)).collect();
+    let har = format!(
+        r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"u","cookies":[{{"name":"c","value":"x"{attributes}}}]}}}}]}}}}"#
+    );
+    let (entries, _) = index_text(har.as_bytes());
+    let path = write(&dir, "wide.har", har.as_bytes());
+    let d = details(
+        &path,
+        entries[0].span.clone(),
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(d.incomplete);
 }
