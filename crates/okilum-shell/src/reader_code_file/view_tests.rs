@@ -220,11 +220,10 @@ fn code2809_large_line_and_size_status_precedence_and_edit_cap(cx: &mut TestAppC
         // A long string remains paged after formatting; position controls apply
         // to Formatted as well as Raw.
         assert!(p.document.as_ref().unwrap().pages.len() > 1);
-        assert!(
-            p.status(preview.clone(), cx)
-                .text
-                .contains("Formatted shows it in parts")
-        );
+        assert!(p
+            .status(preview.clone(), cx)
+            .text
+            .contains("Formatted shows it in parts"));
         assert_eq!(
             p.chrome(preview.clone(), cx).state.unwrap().id,
             "code-readonly"
@@ -500,11 +499,10 @@ fn code2809_readonly_status_is_last_and_invalid_wins_over_formatting(cx: &mut Te
         );
         assert_eq!(status.actions[0].label.as_ref(), "Open with default app");
         p.json.as_mut().unwrap().formatting = true;
-        assert!(
-            p.status(preview.clone(), cx)
-                .text
-                .starts_with("Formatting ")
-        );
+        assert!(p
+            .status(preview.clone(), cx)
+            .text
+            .starts_with("Formatting "));
         let raw = Arc::new(Document::for_file("{,}".into(), "json", true));
         p.raw_document = Some(raw);
         assert_eq!(
@@ -873,12 +871,10 @@ fn code2809_catalogued_copy_selection_and_error_actions_dispatch_from_custom_key
                 .contains("f7"),
             "badge hint follows the live Go to error binding"
         );
-        assert!(
-            chrome.copy_actions[0]
-                .tooltip
-                .to_ascii_lowercase()
-                .contains("f8")
-        );
+        assert!(chrome.copy_actions[0]
+            .tooltip
+            .to_ascii_lowercase()
+            .contains("f8"));
         code.focus.focus(window, cx);
     });
     visual.simulate_keystrokes("f7");
