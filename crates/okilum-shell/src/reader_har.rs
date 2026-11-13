@@ -817,13 +817,20 @@ impl HarView {
             .debug_selector(|| "har-list".into())
             .key_context("HarList")
             .track_focus(&self.list_focus)
+            // Esc is the Reader's Dismiss binding; open details take it first.
+            .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
+                if this.selected.is_some() {
+                    this.close_details(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 match event.keystroke.key.as_str() {
                     "up" => this.step(-1, cx),
                     "down" => this.step(1, cx),
                     "pageup" => this.step(-20, cx),
                     "pagedown" => this.step(20, cx),
-                    "escape" if this.selected.is_some() => this.close_details(cx),
                     _ => return,
                 }
                 cx.stop_propagation();
@@ -1059,12 +1066,7 @@ impl HarView {
                 .id("har-detail")
                 .debug_selector(|| "har-detail".into())
                 .track_focus(&self.detail_focus)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "escape" {
-                        this.close_details(cx);
-                        cx.stop_propagation();
-                    }
-                }))
+                .on_action(cx.listener(|this, _: &Dismiss, _, cx| this.close_details(cx)))
                 .size_full()
                 .min_h_0()
                 .child(bar)

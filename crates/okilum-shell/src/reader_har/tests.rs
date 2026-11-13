@@ -480,15 +480,45 @@ fn har2836_columns_follow_the_list_pane_not_the_window(cx: &mut TestAppContext) 
     assert!(wide.size.width >= px(STARTED_FROM), "{wide:?}");
     assert!(measured_bounds(visual, "har-sort-Started").is_some());
     assert!(measured_bounds(visual, "har-sort-Type").is_some());
-    // A window wider than the Started threshold whose list pane is narrower.
-    visual.simulate_resize(size(px(860.), px(900.)));
-    draw(visual);
-    let narrow = measured_bounds(visual, "har-list").unwrap();
+    // The columns follow the measured list pane, which is narrower than the
+    // window by the panels and margins; a window-width rule would differ.
+    let har = har(&reader, visual);
+    for window in [1440., 1100., 900., 700.] {
+        visual.simulate_resize(size(px(window), px(900.)));
+        draw(visual);
+        let list = measured_bounds(visual, "har-list")
+            .unwrap()
+            .size
+            .width
+            .as_f32();
+        let (measured, columns) = har.read_with(visual, |har, _| (har.list_width, har.columns()));
+        assert!(
+            (measured - list).abs() <= 2.5, // inside the 1 px border
+            "{window}: measured {measured}, pane {list}"
+        );
+        assert!(
+            list < window,
+            "control: the pane is narrower than the window"
+        );
+        assert_eq!(
+            columns.contains(&Column::Started),
+            list >= STARTED_FROM,
+            "{window}"
+        );
+        assert_eq!(
+            columns.contains(&Column::Type),
+            list >= TYPE_FROM,
+            "{window}"
+        );
+        assert_eq!(
+            measured_bounds(visual, "har-sort-Started").is_some(),
+            list >= STARTED_FROM
+        );
+    }
     assert!(
-        narrow.size.width < px(STARTED_FROM),
-        "precondition: {narrow:?}"
+        measured_bounds(visual, "har-sort-Type").is_some(),
+        "700 px keeps Type"
     );
-    assert!(measured_bounds(visual, "har-sort-Started").is_none());
     let _ = reader;
 }
 
