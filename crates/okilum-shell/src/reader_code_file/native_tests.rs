@@ -559,7 +559,7 @@ fn data_view_2669_native_standalone_xml_mounts_a_preview_without_markdown_and_ed
     });
     let reader = reader.unwrap();
     visual.run_until_parked();
-    reader.update_in(visual, |reader, window, cx| {
+    reader.update_in(visual, |reader, _window, cx| {
         assert!(reader.single_file);
         assert_eq!(reader.selected_file(), "data.xml");
         let input = reader
