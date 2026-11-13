@@ -218,6 +218,8 @@ exec cat
                 'from pathlib import Path\nimport json, sys\n'
                 'with Path(__file__).with_name("atlas-calls.jsonl").open("a") as log:\n'
                 '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+            # The pinned macOS first-window crates (#2825) are likewise independent.
+            (scripts / 'gpui-pre-apple-setup.py').write_text('pass\n')
             def patch(value):
                 (patches / '0001.diff').write_text('--- a/crates/base/src/text/selection_adapter.rs\n+++ b/crates/base/src/text/selection_adapter.rs\n@@ -1 +1 @@\n-pristine\n+' + value + '\n')
             patch('branch A')
