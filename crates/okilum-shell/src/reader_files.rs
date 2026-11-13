@@ -39,7 +39,7 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
                 None
             }
             FileAction::Terminal => {
-                super::project_terminal::open_folder(&path, window, cx);
+                super::project_terminal::open_folder(&path, root, window, cx);
                 None
             }
             FileAction::Open => {
