@@ -808,3 +808,55 @@ fn code2810_tree_prepares_numeric_glyph_phases_once_before_scrolling(cx: &mut Te
     settle(v);
     REQUESTS.with(|requests| assert_eq!(requests.borrow().len(), initial * 2));
 }
+
+#[gpui::test]
+fn data2813_tree_find_in_normal_size_yaml_and_xml_opens_parents_and_marks_the_row(
+    cx: &mut TestAppContext,
+) {
+    for (name, text, key) in [
+        (
+            "data.yaml",
+            "first:\n  deep:\n    leaf: target\nsecond: 1\n",
+            "leaf",
+        ),
+        (
+            "data.xml",
+            "<root>\n  <first>\n    <deep>\n      <leaf>target</leaf>\n    </deep>\n  </first>\n  <second/>\n</root>\n",
+            "leaf",
+        ),
+        (
+            "data.toml",
+            "[first]\nother = 1\n[first.deep]\nleaf = \"target\"\n",
+            "leaf",
+        ),
+    ] {
+        let (code, v, _temp) = fixture(cx, name, text);
+        code.update_in(v, |s, w, cx| {
+            assert!(
+                s.document.as_ref().unwrap().pages.len() == 1,
+                "{name}: normal size"
+            );
+            s.set_view(View::Tree, w, cx);
+            assert_eq!(s.view, View::Tree, "{name}");
+        });
+        settle(v);
+        code.update_in(v, |s, w, cx| s.open_find(w, cx));
+        find(&code, "target", v);
+        code.read_with(v, |s, _| {
+            let doc = s.document.as_ref().unwrap();
+            let leaf = (0..doc.structure.len())
+                .find(|i| doc.key_text(*i) == Some(key))
+                .unwrap();
+            assert_eq!(s.matches.len(), 1, "{name}: whole-file find over the tree");
+            assert_eq!(
+                s.structure.match_node,
+                Some(leaf),
+                "{name}: the row is marked"
+            );
+            assert!(
+                s.structure.visible.contains(&leaf),
+                "{name}: folded parents of the hit are opened"
+            );
+        });
+    }
+}

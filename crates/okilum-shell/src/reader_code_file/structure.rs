@@ -56,16 +56,21 @@ impl Structure {
         self.scroll_selected();
     }
     fn start(doc: &Document) -> usize {
-        usize::from(doc.json_tree && !doc.structure.is_empty())
+        usize::from(doc.semantic && !doc.structure.is_empty())
+    }
+    /// The XML root element is always open (#2813): it is the only top row.
+    fn pinned_open(doc: &Document) -> Option<usize> {
+        (doc.semantic && doc.format == Some("XML") && doc.structure.len() > 1).then_some(1)
     }
     pub fn reset(&mut self, doc: &Document) {
         self.collapsed = true;
         self.exceptions.clear();
-        if !doc.json_tree && !doc.structure.is_empty() {
+        self.exceptions.extend(Self::pinned_open(doc));
+        if !doc.semantic && !doc.structure.is_empty() {
             self.exceptions.insert(0);
         }
         self.find_opened.clear();
-        self.selected = if doc.json_tree {
+        self.selected = if doc.semantic {
             doc.children(0).next()
         } else {
             (!doc.structure.is_empty()).then_some(0)
@@ -96,9 +101,12 @@ impl Structure {
             self.exceptions.remove(&index);
         }
     }
-    fn all(&mut self, folded: bool, doc: &Document) {
+    pub(super) fn all(&mut self, folded: bool, doc: &Document) {
         self.collapsed = folded;
         self.exceptions.clear();
+        if folded {
+            self.exceptions.extend(Self::pinned_open(doc));
+        }
         self.find_opened.clear();
         self.rebuild(doc);
         if self.selected.is_some_and(|i| !self.visible.contains(&i)) {
@@ -106,6 +114,11 @@ impl Structure {
         }
     }
     pub(super) fn toggle(&mut self, index: usize, doc: &Document) {
+        // The pinned XML root never closes: chevron and Left are no-ops on it.
+        if Some(index) == Self::pinned_open(doc) && !self.folded(index) {
+            self.selected = Some(index);
+            return;
+        }
         self.set_folded(index, !self.folded(index));
         self.find_opened.remove(&index);
         self.selected = Some(index);
@@ -453,7 +466,7 @@ impl CodePreview {
             .pr(px(12.))
             .gap_1()
             .pl(px(
-                row.depth.saturating_sub(usize::from(doc.json_tree)).min(16) as f32 * 16.,
+                row.depth.saturating_sub(usize::from(doc.semantic)).min(16) as f32 * 16.,
             ))
             .border_l_2()
             .border_color(if current {

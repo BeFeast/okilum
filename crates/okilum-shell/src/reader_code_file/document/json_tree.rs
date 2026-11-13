@@ -1,14 +1,20 @@
 //! A semantic JSON index over the immutable whole-file parse, never a byte page.
 use super::*;
 
+/// A semantic row of JSON, YAML, TOML or XML. Ranges index the snapshot text;
+/// no node text is copied into the index.
 #[derive(Debug)]
 pub(super) enum Label {
     Source,
-    Json {
+    Data {
+        /// Key or tag-name text, without quotes.
         key: Option<Range<usize>>,
         value: Range<usize>,
-        container: Option<(&'static str, usize)>,
+        container: Option<(ContainerKind, usize)>,
         ordinal: Option<usize>,
+        scalar: Option<ScalarKind>,
+        /// Shown in place of the count (XML `id`, then `name`).
+        aside: Option<Range<usize>>,
     },
 }
 
@@ -28,10 +34,8 @@ fn preview(text: &str, range: &Range<usize>, limit: usize) -> String {
 impl Label {
     pub fn prefix(&self, text: &str) -> String {
         match self {
-            Self::Json { key: Some(key), .. } => {
-                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 48))
-            }
-            Self::Json {
+            Self::Data { key: Some(key), .. } => format!("{} ", preview(text, key, 48)),
+            Self::Data {
                 ordinal: Some(index),
                 ..
             } => format!("[{index}] "),
@@ -40,37 +44,36 @@ impl Label {
     }
 
     pub fn display(&self, text: &str, range: &Range<usize>) -> String {
-        let Self::Json {
-            value, container, ..
+        let Self::Data {
+            value,
+            container,
+            aside,
+            ..
         } = self
         else {
             return preview(text, range, 96);
         };
         let prefix = self.prefix(text);
-        let value = match container {
-            Some(("Object", count)) => {
-                if *count == 0 {
-                    "{ }".into()
-                } else {
-                    format!(
-                        "{} {}",
-                        number(*count),
-                        if *count == 1 { "key" } else { "keys" }
-                    )
-                }
+        let value = match (aside, container) {
+            (Some(aside), _) => preview(text, aside, 96),
+            (None, Some((kind, 0))) => match kind {
+                ContainerKind::Object => "{ }".into(),
+                ContainerKind::Array => "[ ]".into(),
+                ContainerKind::Element => "0 elements".into(),
+            },
+            (None, Some((kind, count))) => {
+                let (one, many) = match kind {
+                    ContainerKind::Object => ("key", "keys"),
+                    ContainerKind::Array => ("item", "items"),
+                    ContainerKind::Element => ("element", "elements"),
+                };
+                format!(
+                    "{} {}",
+                    number(*count),
+                    if *count == 1 { one } else { many }
+                )
             }
-            Some((_, count)) => {
-                if *count == 0 {
-                    "[ ]".into()
-                } else {
-                    format!(
-                        "{} {}",
-                        number(*count),
-                        if *count == 1 { "item" } else { "items" }
-                    )
-                }
-            }
-            None => preview(text, value, 96),
+            (None, None) => preview(text, value, 96),
         };
         format!("{prefix}{value}")
     }
@@ -84,14 +87,12 @@ impl Label {
             return label;
         }
         let prefix = match self {
-            Self::Json { key: Some(key), .. } => {
-                format!("{} ", preview(text, &(key.start + 1..key.end - 1), 48))
-            }
-            Self::Json {
+            Self::Data { key: Some(key), .. } => format!("{} ", preview(text, key, 48)),
+            Self::Data {
                 ordinal: Some(index),
                 ..
             } => format!("[{index}] "),
-            Self::Json {
+            Self::Data {
                 container: Some(_), ..
             } => format!("{label} · "),
             _ => String::new(),
@@ -141,23 +142,33 @@ pub(super) fn index(tree: &tree_sitter::Tree, offset: usize, bytes: usize) -> Ve
             };
             let owner = property.unwrap_or(value);
             let container = match value.kind() {
-                "object" => Some(("Object", value.named_child_count())),
-                "array" => Some(("Array", value.named_child_count())),
+                "object" => Some((ContainerKind::Object, value.named_child_count())),
+                "array" => Some((ContainerKind::Array, value.named_child_count())),
                 _ => None,
             };
+            let scalar = container.is_none().then(|| match value.kind() {
+                "string" => ScalarKind::String,
+                "true" | "false" => ScalarKind::Boolean,
+                "null" => ScalarKind::Null,
+                _ => ScalarKind::Number,
+            });
             rows.push(StructureRow {
                 range: if root { 0..bytes } else { range(owner) },
                 subtree_end: index + 1,
                 depth: parent.map_or(0, |p| rows[p].depth + 1),
                 line: owner.start_position().row + 1,
                 parent,
-                label: Label::Json {
+                label: Label::Data {
+                    // The key is a JSON string node; its text excludes the quotes.
                     key: property
                         .and_then(|pair| pair.child_by_field_name("key"))
-                        .map(range),
+                        .map(range)
+                        .map(|key| key.start + 1..key.end.saturating_sub(1).max(key.start + 1)),
                     value: range(value),
                     container,
                     ordinal,
+                    scalar,
+                    aside: None,
                 },
             });
             parents.push((depth, index, 0));
@@ -184,7 +195,7 @@ pub(super) fn index(tree: &tree_sitter::Tree, offset: usize, bytes: usize) -> Ve
     }
 }
 
-fn number(count: usize) -> String {
+pub(super) fn number(count: usize) -> String {
     let digits = count.to_string();
     digits
         .chars()

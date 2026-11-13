@@ -282,16 +282,41 @@ fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
         ("data.toml", "[a]\nb=1\n"),
         ("data.xml", "<root>\n <a>one</a>\n</root>"),
     ] {
+        // #2813: the three data formats get Tree / Raw at any size, Raw first.
+        let data = !matches!(name, "source.rs" | "text.txt");
         let (preview, visual, _temp) = fixture(cx, name, text);
         preview.update_in(visual, |p, window, cx| {
             assert_eq!(p.view, View::Raw);
-            assert_eq!(p.availability(View::Tree), Availability::Absent);
+            assert_eq!(
+                p.availability(View::Tree),
+                if data {
+                    Availability::Available
+                } else {
+                    Availability::Absent
+                },
+                "{name}"
+            );
             assert_eq!(p.availability(View::Formatted), Availability::Absent);
-            assert!(p.chrome(preview.clone(), cx).views.is_empty());
-            for view in [View::Table, View::Tree, View::Formatted] {
+            assert_eq!(
+                p.chrome(preview.clone(), cx)
+                    .views
+                    .iter()
+                    .map(|v| v.action.id)
+                    .collect::<Vec<_>>(),
+                if data {
+                    vec!["code-view-tree", "code-view-raw"]
+                } else {
+                    vec![]
+                },
+                "{name}"
+            );
+            for view in [View::Table, View::Formatted] {
                 p.set_view(view, window, cx);
                 assert_eq!(p.view, View::Raw);
             }
+            p.set_view(View::Tree, window, cx);
+            assert_eq!(p.view, if data { View::Tree } else { View::Raw }, "{name}");
+            p.set_view(View::Raw, window, cx);
             if name.ends_with("xml") {
                 assert!(!p.editable());
                 assert_eq!(
@@ -308,7 +333,9 @@ fn code2809_single_view_formats_have_no_switch_and_xml_keeps_readonly_reason(
                 );
             }
         });
-        assert!(visual.debug_bounds("code-view-menu").is_none());
+        if !data {
+            assert!(visual.debug_bounds("code-view-menu").is_none());
+        }
     }
 }
 
@@ -424,8 +451,9 @@ fn code2809_first_view_guards_precede_memory_and_guarded_choices_are_not_saved(
             );
         });
     }
-    cx.update(|cx| reader_ui_state::set_code_view("xml", View::Tree, cx));
-    let (preview, visual, _temp) = fixture(cx, "data.xml", "<root>one</root>");
+    // A rejected YAML has Tree disabled, so remembered Tree falls back.
+    cx.update(|cx| reader_ui_state::set_code_view("yaml", View::Tree, cx));
+    let (preview, visual, _temp) = fixture(cx, "data.yaml", "a: [1, 2\nb: 3\n");
     preview.read_with(visual, |p, _| {
         assert_eq!(p.view, View::Raw, "unavailable remembered view falls back")
     });
@@ -739,7 +767,10 @@ fn code2809_raw_only_long_line_names_only_available_whole_file_tools(cx: &mut Te
     let (preview, visual, _temp) = fixture(cx, "text.txt", &text);
     preview.read_with(visual, |p, cx| {
         assert_eq!(p.availability(View::Tree), Availability::Absent);
-        assert_eq!(p.status(preview.clone(), cx).text.as_ref(), "0.1 MB on a single line, so Raw shows it in parts. Find and Copy cover the whole file.");
+        assert_eq!(
+            p.status(preview.clone(), cx).text.as_ref(),
+            "0.1 MB on a single line, so Raw shows it in parts. Find and Copy cover the whole file."
+        );
     });
 }
 
