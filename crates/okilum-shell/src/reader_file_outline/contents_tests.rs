@@ -732,7 +732,7 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
             v.snapshot
                 .rows
                 .iter()
-                .all(|row| matches!(row, tree::Row::Group { depth: 0, .. })),
+                .all(|row| matches!(row, tree::Row::Group { parent: 0, .. })),
             "positive: 250 top-level keys list only groups"
         )
     });
