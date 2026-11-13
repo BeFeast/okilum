@@ -47,7 +47,7 @@ CONTROLS = [
  ('root-folds', 'xml2813_root_stays_open_and_fold_all_keeps_it_open'),
  ('no-toml-merge', 'toml2813_tables_keys_and_merged_array_of_tables'),
  ('first-document-only', 'yaml2813_keys_sequences_anchors_and_documents'),
- ('grammar-verdict', 'corpus2813_real_valid_files_get_no_badge'),
+ ('grammar-verdict', 'verdicts2813_yaml_strict_toml_and_xml_syntax_only'),
  ('syntax-is-invalid', 'verdicts2813_yaml_strict_toml_and_xml_syntax_only'),
  ('tree-json-only', 'data2813_tree_find_in_normal_size_yaml_and_xml_opens_parents_and_marks_the_row'),
 ]
