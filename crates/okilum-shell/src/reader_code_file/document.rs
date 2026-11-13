@@ -357,6 +357,15 @@ impl Document {
             _ => None,
         }
     }
+    /// The right-hand text that replaces a count (XML `id`, then `name`).
+    pub fn aside(&self, index: usize) -> Option<&str> {
+        match &self.structure.get(index)?.label {
+            json_tree::Label::Data {
+                aside: Some(aside), ..
+            } => self.text.get(aside.clone()),
+            _ => None,
+        }
+    }
     pub fn array_ordinal(&self, index: usize) -> Option<usize> {
         match &self.structure.get(index)?.label {
             json_tree::Label::Data { ordinal, .. } => *ordinal,

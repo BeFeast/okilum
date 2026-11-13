@@ -283,6 +283,10 @@ pub(super) fn row_key(doc: &Document, index: usize) -> String {
 
 /// The right part: a count or a short value (strings up to 16 characters).
 pub(super) fn row_value(doc: &Document, index: usize) -> String {
+    // An XML element's `id` or `name` names it better than its count (#2813).
+    if let Some(aside) = doc.aside(index) {
+        return short(aside, 24);
+    }
     if let Some((kind, count)) = doc.container(index) {
         let (one, many, empty) = match kind {
             ContainerKind::Object => ("key", "keys", "{ }"),
