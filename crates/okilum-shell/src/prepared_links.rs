@@ -553,6 +553,10 @@ impl Reader {
                     if tree_had_focus {
                         this.tree_focus.focus(window, cx);
                     }
+                } else if this.navigation.generation != navigation && this.editing.is_none() {
+                    // #2817: the Settings default opens a note in Edit.
+                    let tree_had_focus = this.tree_focus.contains_focused(window, cx);
+                    this.open_note_by_default(tree_had_focus, window, cx);
                 }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(

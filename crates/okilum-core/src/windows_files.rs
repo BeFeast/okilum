@@ -949,6 +949,42 @@ pub enum Replacement {
 mod tests;
 
 /// Native identity for a checked creation Undo target. Redirecting names fail closed.
+/// Whether the current user could replace `path` in place, decided by the
+/// filesystem's own access check (DACL, read-only attribute, location gate)
+/// without writing anything (#2817): the folder must grant adding the
+/// prepared file, and the note must grant write and delete, as
+/// `prepare_replace`/`ReplaceFile` need. Handles share everything and close
+/// at once. `Ok(false)` only for a refusal by permissions; another app
+/// holding the note without sharing is left to Save to report.
+pub fn can_replace(path: &Path) -> Result<bool> {
+    let parent = path.parent().context("Missing source folder")?;
+    // The vault location gate: network and non-NTFS/ReFS locations refuse.
+    Directory::open(parent)?;
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let probes = [
+        (parent, FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS),
+        (
+            path,
+            FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | DELETE,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        ),
+    ];
+    for (target, access, flags) in probes {
+        match OpenOptions::new()
+            .access_mode(access)
+            .share_mode(share)
+            .custom_flags(flags)
+            .open(target)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(false),
+            Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(true)
+}
+
 pub fn checked_identity(path: &Path) -> Result<Identity> {
     let parent = Directory::open(path.parent().context("Missing parent")?)?;
     let name = path.file_name().context("Missing filename")?;

@@ -673,3 +673,54 @@ fn windows_inventory_reads_root_alias_without_relaxing_mutation_admission() {
     );
     assert!(Directory::open(&alias).is_err());
 }
+
+/// #2817: a readable note whose DACL denies writing (read-only attribute
+/// unset) is not replaceable; the probe writes nothing.
+#[test]
+fn windows_can_replace_follows_the_dacl_not_only_the_attribute() {
+    use windows_sys::Win32::Security::{
+        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SetFileSecurityW,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let (temp, directory) = fixture();
+    directory.create(OsStr::new("note.md"), b"base").unwrap();
+    directory.create(OsStr::new("open.md"), b"open").unwrap();
+    let path = temp.path().join("note.md");
+    assert!(
+        can_replace(&temp.path().join("open.md")).unwrap(),
+        "positive control"
+    );
+    // Owner Rights and System may only read the note.
+    let text: Vec<_> = "D:P(A;;FR;;;OW)(A;;FR;;;SY)"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut raw = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text.as_ptr(),
+                1,
+                &mut raw,
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let descriptor = Descriptor(raw);
+    let name = wide(&path).unwrap();
+    assert_ne!(
+        unsafe {
+            SetFileSecurityW(
+                name.as_ptr(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor.0,
+            )
+        },
+        0
+    );
+    assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+    assert_eq!(fs::read(&path).unwrap(), b"base", "still readable");
+    assert!(!can_replace(&path).unwrap(), "the DACL refuses replacement");
+    assert_eq!(fs::read(&path).unwrap(), b"base");
+}
