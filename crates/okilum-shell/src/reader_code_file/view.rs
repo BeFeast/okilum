@@ -244,13 +244,27 @@ impl CodePreview {
         }
     }
 
+    /// The hosted table's in-flight Find scan stops while Table is hidden and
+    /// reruns when Table returns; the latest query is never lost.
+    fn set_active_view(&mut self, view: View, cx: &mut Context<Self>) {
+        let (from, to) = (self.view, view);
+        self.view = view;
+        if let Some(table) = &self.table {
+            if from == View::Table && to != View::Table {
+                table.update(cx, |table, _| table.suspend_work());
+            } else if from != View::Table && to == View::Table {
+                table.update(cx, |table, cx| table.resume_work(cx));
+            }
+        }
+    }
+
     /// Navigation and worker completion never persist a choice or move focus.
     pub(super) fn apply_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
         if !self.read_active || !self.availability(view).available() {
             return;
         }
         if reader_delimited::eligible(&self.rel) && view == View::Raw && !self.raw_requested {
-            self.view = View::Raw;
+            self.set_active_view(View::Raw, cx);
             self.load_text(window, cx);
             cx.notify();
             return;
@@ -307,7 +321,7 @@ impl CodePreview {
         if self.view == view {
             return;
         }
-        self.view = view;
+        self.set_active_view(view, cx);
         if let Some(doc) = self.snapshot_for(view) {
             let changed = self
                 .document

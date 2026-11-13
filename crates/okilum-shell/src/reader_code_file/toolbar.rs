@@ -225,7 +225,7 @@ impl CodePreview {
             return Some("XML files are view-only".into());
         }
         self.source_bytes
-            .filter(|bytes| *bytes > EDIT_BYTES)
+            .filter(|bytes| *bytes > EDIT_BYTES && !reader_delimited::eligible(&self.rel))
             .map(|bytes| format!("{} is over the 4 MB editing limit", view::size(bytes)))
     }
     pub(super) fn status(&self, entity: Entity<Self>, cx: &App) -> reader_status_line::StatusLine {

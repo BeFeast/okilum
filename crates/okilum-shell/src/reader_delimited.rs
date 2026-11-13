@@ -128,6 +128,8 @@ pub(crate) struct TablePreview {
     projections: usize,
     projection_task: Option<Task<()>>,
     projection_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// A scan was stopped while Table was hidden and reruns on return.
+    resume_pending: bool,
     pane_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
 }
 impl TablePreview {
@@ -186,6 +188,7 @@ impl TablePreview {
             projections: 0,
             projection_task: None,
             projection_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            resume_pending: false,
             pane_bounds: Default::default(),
         };
         preview.load(false, cx);
@@ -651,6 +654,15 @@ fn alignment(value: &str) -> TextAlign {
     }
     TextAlign::Left
 }
+/// Closing the file or switching away releases the entity: a worker scan that
+/// is still running sees the flag at its next row and drops its snapshot.
+impl Drop for TablePreview {
+    fn drop(&mut self) {
+        self.projection_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl Render for TablePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.json() || reader_ui_state::delimited_header(&self.path, cx);

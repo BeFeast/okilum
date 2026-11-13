@@ -31,6 +31,19 @@ impl TablePreview {
         self.refilter(cx);
     }
 
+    /// Stop an in-flight scan while the table is hidden; `resume_work` reruns it.
+    pub(crate) fn suspend_work(&mut self) {
+        if self.projection_task.is_some() && self.updating {
+            self.cancel_projection();
+            self.resume_pending = true;
+        }
+    }
+    pub(crate) fn resume_work(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.resume_pending) {
+            self.refilter(cx);
+        }
+    }
+
     pub(super) fn cancel_projection(&mut self) {
         self.projection_cancel.store(true, Ordering::Relaxed);
         self.projection_task = None;
