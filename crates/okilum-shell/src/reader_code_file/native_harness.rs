@@ -55,7 +55,18 @@ pub(crate) fn entry() -> bool {
                             assert_eq!(p.view, initial, "Fold must not switch views");
                             p.set_view(View::Tree, window, cx);
                             p.fold_all(true, cx);
-                            assert_eq!(p.structure.visible, if name == "big.json" { vec![1, 2] } else { vec![0] });
+                            let visible = &p.structure.visible;
+                            if name == "big.json" {
+                                assert_eq!(visible.as_slice(), [1, 2], "JSON Fold all keeps the top-level keys");
+                            } else {
+                                // #2813: the XML root element stays open, so Fold all shows
+                                // it and its folded child elements, nothing deeper.
+                                let doc = p.document.as_ref().unwrap();
+                                assert_eq!(visible.first(), Some(&1), "XML Fold all starts at the root element");
+                                assert!(visible.len() > 100_000, "the root's children stay listed ({} rows)", visible.len());
+                                let deeper = visible[1..].iter().filter(|&&i| doc.parent(i) != Some(1)).count();
+                                assert_eq!(deeper, 0, "XML Fold all shows only the root's direct children");
+                            }
                             p.fold_all(false, cx);
                         }
                         let doc = p.document.as_ref().unwrap();
