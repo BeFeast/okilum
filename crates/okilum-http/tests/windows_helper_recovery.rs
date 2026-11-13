@@ -437,3 +437,196 @@ fn helper_lock_excludes_publication_from_another_process() {
     assert_eq!(fs::read(&helper).unwrap(), NEW);
     assert_clean(&helper);
 }
+
+fn assert_no_transaction(helper: &Path) {
+    for suffix in [".vpk-stage", ".vpk-backup", ".vpk-txn"] {
+        assert!(
+            fs::symlink_metadata(sibling(helper, suffix)).is_err(),
+            "transaction left: {suffix}"
+        );
+    }
+}
+fn leftovers(helper: &Path, marker: &str) -> usize {
+    let prefix = format!("{}{marker}", helper.file_name().unwrap().to_string_lossy());
+    fs::read_dir(helper.parent().unwrap())
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        })
+        .count()
+}
+const REAL: Fault = Fault::Real {
+    hold_stage: false,
+    occupy_backup: false,
+};
+
+#[test]
+fn running_helper_is_replaced_or_kept_and_retry_converges() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("PING.EXE");
+    fs::copy(&system, &helper).unwrap();
+    let original = fs::read(&helper).unwrap();
+    let mut running = std::process::Command::new(&helper)
+        .args(["-n", "120", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        running.try_wait().unwrap().is_none(),
+        "helper is not running"
+    );
+    let result = publish_fault(staged(&helper), &helper, REAL);
+    println!(
+        "RUNNING_HELPER_PUBLISH {:?}",
+        result.as_ref().map_err(|e| e.to_string())
+    );
+    match &result {
+        Ok(()) => assert_eq!(fs::read(&helper).unwrap(), NEW),
+        Err(_) => assert_eq!(fs::read(&helper).unwrap(), original),
+    }
+    assert_no_transaction(&helper);
+    running.kill().unwrap();
+    running.wait().unwrap();
+    publish_fault(staged(&helper), &helper, REAL).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_clean(&helper);
+    assert_eq!(
+        leftovers(&helper, ".vpk-obsolete-"),
+        0,
+        "obsolete copy kept"
+    );
+}
+
+#[test]
+fn read_only_helper_fails_safely_or_keeps_its_attribute_and_retry_converges() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    let mut permissions = fs::metadata(&helper).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&helper, permissions).unwrap();
+    let result = publish_fault(staged(&helper), &helper, REAL);
+    println!(
+        "READ_ONLY_HELPER_PUBLISH {:?}",
+        result.as_ref().map_err(|e| e.to_string())
+    );
+    match &result {
+        Ok(()) => {
+            assert_eq!(fs::read(&helper).unwrap(), NEW);
+            assert!(fs::metadata(&helper).unwrap().permissions().readonly());
+        }
+        Err(_) => assert_eq!(fs::read(&helper).unwrap(), OLD),
+    }
+    assert_no_transaction(&helper);
+    let mut permissions = fs::metadata(&helper).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&helper, permissions).unwrap();
+    publish_fault(staged(&helper), &helper, REAL).unwrap();
+    assert_eq!(fs::read(&helper).unwrap(), NEW);
+    assert_clean(&helper);
+}
+
+const POWER_CUT_ROOT: &str = "OKILUM_POWER_CUT_ROOT";
+const POWER_CUT_PHASE: &str = "OKILUM_POWER_CUT_PHASE";
+/// Large, distinct helpers widen every on-disk window for a power cut.
+fn power_cut_bytes(seed: u8) -> Vec<u8> {
+    (0..8 * 1024 * 1024u32)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ (i >> 13) as u8)
+        .collect()
+}
+fn staged_bytes(path: &Path, bytes: &[u8]) -> tempfile::NamedTempFile {
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    file.write_all(bytes).unwrap();
+    file.as_file().sync_all().unwrap();
+    file
+}
+
+/// VM driver (never in CI): publish with the production state machine and
+/// either block at a named phase (marker `power-cut-ready`, flushed) or loop.
+#[test]
+#[ignore = "Windows QA VM power-cut writer, driven externally"]
+fn power_cut_writer() {
+    let root = PathBuf::from(std::env::var_os(POWER_CUT_ROOT).expect(POWER_CUT_ROOT));
+    let phase = std::env::var(POWER_CUT_PHASE).expect(POWER_CUT_PHASE);
+    let helper = fixture(&root);
+    let mut file = fs::File::create(&helper).unwrap();
+    file.write_all(&power_cut_bytes(1)).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    if phase == "loop" {
+        for round in 0u64.. {
+            let bytes = power_cut_bytes(if round % 2 == 0 { 2 } else { 1 });
+            publish_fault(staged_bytes(&helper, &bytes), &helper, REAL).unwrap();
+            fs::write(root.join("power-cut-progress"), round.to_string()).unwrap();
+        }
+    }
+    let phase: &'static str = Box::leak(phase.into_boxed_str());
+    let _ = publish_fault(
+        staged_bytes(&helper, &power_cut_bytes(2)),
+        &helper,
+        Fault::Pause(phase),
+    );
+    panic!("phase {phase} was never reached");
+}
+
+/// VM verifier after the hard reset: list what survived, run production
+/// discovery/recovery, and require exactly one helper that is one of the two.
+#[test]
+#[ignore = "Windows QA VM power-cut verifier, driven externally"]
+fn power_cut_verify() {
+    use sha2::{Digest, Sha256};
+    let root = PathBuf::from(std::env::var_os(POWER_CUT_ROOT).expect(POWER_CUT_ROOT));
+    let helper = root.join("Update.exe");
+    let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let old = digest(&power_cut_bytes(1));
+    let new = digest(&power_cut_bytes(2));
+    let mut names: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_type().unwrap().is_file())
+        .map(|e| {
+            let bytes = fs::read(e.path()).unwrap_or_default();
+            let hash = digest(&bytes);
+            let kind = if hash == old {
+                "old"
+            } else if hash == new {
+                "new"
+            } else {
+                "other"
+            };
+            format!("{}:{}:{kind}", e.file_name().to_string_lossy(), bytes.len())
+        })
+        .collect();
+    names.sort();
+    println!("POWER_CUT_SURVIVED {}", names.join(" "));
+    let located = locate(&root);
+    let installed = fs::read(&helper).map(|b| digest(&b));
+    println!(
+        "POWER_CUT_RECOVERED locate_ok={} helper={}",
+        located.is_ok(),
+        match &installed {
+            Ok(hash) if *hash == old => "old",
+            Ok(hash) if *hash == new => "new",
+            Ok(_) => "OTHER",
+            Err(_) => "MISSING",
+        }
+    );
+    located.unwrap();
+    let installed = installed.unwrap();
+    assert!(installed == old || installed == new, "helper is neither");
+    assert_clean(&helper);
+    assert_eq!(
+        quarantined(&helper).len(),
+        0,
+        "unexpected unverifiable copy"
+    );
+}

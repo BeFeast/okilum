@@ -64,7 +64,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,661 @@
+@@ -0,0 +1,710 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -162,6 +162,9 @@
 +        }
 +        fn quarantine(&self) -> PathBuf {
 +            sibling(&self.destination, &format!(".vpk-quarantine-{}", transaction_id()))
++        }
++        fn obsolete(&self) -> PathBuf {
++            sibling(&self.destination, &format!(".vpk-obsolete-{}", transaction_id()))
 +        }
 +    }
 +    fn sibling(destination: &Path, suffix: &str) -> PathBuf {
@@ -329,12 +332,14 @@
 +    }
 +    /// Delete exactly the opened entry (a link itself, never its target).
 +    fn delete_handle(file: fs::File) -> io::Result<()> {
-+        set_attributes(&file, ATTRIBUTE_NORMAL)?;
++        delete_handle_ref(&file)
++    }
++    /// Mark the opened entry for deletion; it disappears when the handle closes.
++    fn delete_handle_ref(file: &fs::File) -> io::Result<()> {
++        set_attributes(file, ATTRIBUTE_NORMAL)?;
 +        let delete: u8 = 1;
-+        unsafe { SetFileInformationByHandle(handle(&file), FileDispositionInfo, &delete as *const u8 as *const c_void, 1) }
-+            .map_err(os)?;
-+        drop(file);
-+        Ok(())
++        unsafe { SetFileInformationByHandle(handle(file), FileDispositionInfo, &delete as *const u8 as *const c_void, 1) }
++            .map_err(os)
 +    }
 +    /// Rename exactly the opened entry; never replaces an existing name.
 +    fn rename_handle(file: &fs::File, to: &Path) -> io::Result<()> {
@@ -424,6 +429,10 @@
 +        fn leave_interrupted(&self) -> bool {
 +            false
 +        }
++        /// Named transaction phase; production does nothing (test seam only).
++        fn checkpoint(&self, _paths: &Paths, _phase: &str) -> io::Result<()> {
++            Ok(())
++        }
 +    }
 +    struct Windows;
 +    impl Operations for Windows {
@@ -469,17 +478,36 @@
 +    }
 +    /// With the destination present: delete a leftover that matches the record,
 +    /// set anything unverifiable aside under a unique name (never deleted).
-+    fn retire(p: &Paths, path: &Path, record: Option<&Record>, label: &str) -> io::Result<()> {
++    fn retire(p: &Paths, path: &Path, record: Option<&Record>, label: &str, operations: &impl Operations) -> io::Result<()> {
 +        let Some(mut file) = open_entry(path, GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES)? else { return Ok(()) };
 +        let verified = match record {
 +            Some(record) if is_plain(&file)? => record.matches(identity(&mut file)?),
 +            _ => false,
 +        };
-+        if verified {
-+            return delete_handle(file);
++        if !verified {
++            warn!("Unverifiable update helper {label} set aside for inspection");
++            return rename_handle(&file, &p.quarantine());
 +        }
-+        warn!("Unverifiable update helper {label} set aside for inspection");
-+        rename_handle(&file, &p.quarantine())
++        if let Err(error) = delete_handle_ref(&file) {
++            // A still-running helper image cannot be deleted, only renamed.
++            warn!("Obsolete update helper {label} could not be deleted yet ({error}); set aside for later removal");
++            rename_handle(&file, &p.obsolete())?;
++        }
++        drop(file);
++        operations.checkpoint(p, &format!("retired {label}"))
++    }
++    /// Best-effort removal of obsolete copies left by earlier transactions.
++    fn sweep_obsolete(p: &Paths) {
++        let Some(directory) = p.destination.parent() else { return };
++        let prefix = format!("{}.vpk-obsolete-", p.destination.file_name().unwrap_or_default().to_string_lossy());
++        let Ok(entries) = fs::read_dir(directory) else { return };
++        for entry in entries.flatten() {
++            if entry.file_name().to_string_lossy().starts_with(&prefix) {
++                if let Ok(Some(file)) = open_entry(&entry.path(), GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES) {
++                    let _ = delete_handle_ref(&file);
++                }
++            }
++        }
 +    }
 +
 +    /// Bring the destination back to exactly one verified helper.
@@ -541,8 +569,9 @@
 +            }
 +        }
 +        // `held` denies writers and deleters of the admitted helper during cleanup.
-+        retire(p, &p.stage, valid, "staged copy")?;
-+        retire(p, &p.backup, valid, "backup")?;
++        retire(p, &p.stage, valid, "staged copy", operations)?;
++        retire(p, &p.backup, valid, "backup", operations)?;
++        sweep_obsolete(p);
 +        if let Some(file) = open_entry(&p.record, GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES)? {
 +            delete_handle(file)?;
 +        }
@@ -598,11 +627,13 @@
 +        // tempfile marks the file TEMPORARY; clear it through our own handle.
 +        set_attributes(staged.as_file(), ATTRIBUTE_NORMAL)?;
 +        write_record(&p, &record)?;
++        operations.checkpoint(&p, "record")?;
 +        // Close the write handle before ReplaceFileW opens the stage. Until this
 +        // rename succeeds, dropping the temporary removes it.
 +        let temporary = staged.into_temp_path();
 +        rename_new(&temporary, &p.stage)?;
 +        let _ = temporary.keep();
++        operations.checkpoint(&p, "staged")?;
 +        let transaction = || -> io::Result<()> {
 +            let mut stage = open_plain(&p.stage, GENERIC_READ | DELETE)?.ok_or_else(|| other("staged update helper vanished"))?;
 +            if identity(&mut stage)? != record.new {
@@ -615,7 +646,7 @@
 +                operations.promote(&stage, &p.stage, &p.destination)
 +            }
 +        };
-+        let failure = match transaction() {
++        let failure = match transaction().and_then(|()| operations.checkpoint(&p, "swapped")) {
 +            Ok(()) => None,
 +            Err(error) => {
 +                if operations.leave_interrupted() {
@@ -671,6 +702,9 @@
 +        /// The real ReplaceFileW, optionally with the stage held without
 +        /// FILE_SHARE_DELETE or the backup name occupied by a held file.
 +        Real { hold_stage: bool, occupy_backup: bool },
++        /// Real operations; at the named phase, write and flush a marker next to
++        /// the helper and block forever so a power cut can be applied there.
++        Pause(&'static str),
 +    }
 +    #[cfg(feature = "helper-replacement-tests")]
 +    impl Operations for Fault {
@@ -701,7 +735,22 @@
 +                    };
 +                    Windows.replace(p)
 +                }
++                Self::Pause(_) => Windows.replace(p),
 +            }
++        }
++        fn checkpoint(&self, p: &Paths, phase: &str) -> io::Result<()> {
++            if let Self::Pause(at) = self {
++                if *at == phase {
++                    let marker = p.destination.with_file_name("power-cut-ready");
++                    let mut file = fs::File::create(&marker)?;
++                    file.write_all(phase.as_bytes())?;
++                    file.sync_all()?;
++                    loop {
++                        std::thread::sleep(std::time::Duration::from_secs(3600));
++                    }
++                }
++            }
++            Ok(())
 +        }
 +        fn promote(&self, file: &fs::File, from: &Path, to: &Path) -> io::Result<()> {
 +            if matches!(self, Self::PromotionBlocked) {

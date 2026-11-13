@@ -387,6 +387,101 @@ mod windows {
         );
     }
 
+    /// A small NTFS volume mounted in a folder; detached and removed on drop.
+    struct Volume {
+        vhd: PathBuf,
+        mount: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+    impl Volume {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let vhd = dir.path().join("full.vhdx");
+            let mount = dir.path().join("mnt");
+            fs::create_dir(&mount).unwrap();
+            Self::diskpart(&format!(
+                "create vdisk file=\"{}\" maximum=16 type=fixed\nselect vdisk file=\"{}\"\nattach vdisk\ncreate partition primary\nformat fs=ntfs quick label=FULL\nassign mount=\"{}\"\n",
+                vhd.display(),
+                vhd.display(),
+                mount.display()
+            ));
+            Self {
+                vhd,
+                mount,
+                _dir: dir,
+            }
+        }
+        fn diskpart(script: &str) {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            fs::write(file.path(), script).unwrap();
+            let output = std::process::Command::new("diskpart")
+                .arg("/s")
+                .arg(file.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "diskpart failed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+    impl Drop for Volume {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("diskpart")
+                .arg("/s")
+                .arg({
+                    let file = std::env::temp_dir().join("okilum-detach-full.txt");
+                    let _ = fs::write(
+                        &file,
+                        format!(
+                            "select vdisk file=\"{}\"\ndetach vdisk\n",
+                            self.vhd.display()
+                        ),
+                    );
+                    file
+                })
+                .output();
+        }
+    }
+
+    #[test]
+    #[ignore = "mounts a VHD with diskpart (elevated); run by scripts/ci/updater-helper-controls.py"]
+    fn disk_full_extraction_fails_safely_and_retry_succeeds() {
+        let volume = Volume::new();
+        let target = volume.mount.join("Update.exe");
+        fs::write(&target, b"original helper").unwrap();
+        // Fill the volume completely, then try to install a 2 MiB helper.
+        let filler = volume.mount.join("filler.bin");
+        let mut file = fs::File::create(&filler).unwrap();
+        for chunk in [1 << 20, 64 << 10, 4 << 10, 512] {
+            let block = vec![0u8; chunk];
+            while file.write_all(&block).is_ok() {}
+        }
+        drop(file);
+        let replacement = vec![0x5a; 2 << 20];
+        let bytes = package(&[("lib/app/Squirrel.exe", &replacement)]);
+        let bundle = load_bundle_from_memory(&bytes).unwrap();
+        let error = bundle.extract_zip_idx_to_path(0, &target).unwrap_err();
+        println!("DISK_FULL_EXTRACTION {error}");
+        assert_eq!(fs::read(&target).unwrap(), b"original helper");
+        let mut names: Vec<String> = fs::read_dir(&volume.mount)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| !name.starts_with("System Volume Information") && !name.starts_with('$'))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["Update.exe", "filler.bin"],
+            "partial files left on a full disk"
+        );
+        // Space comes back: the same extraction succeeds.
+        fs::remove_file(&filler).unwrap();
+        bundle.extract_zip_idx_to_path(0, &target).unwrap();
+        assert!(fs::read(&target).unwrap() == replacement);
+    }
+
     struct Source {
         bytes: Vec<u8>,
         asset: VelopackAsset,

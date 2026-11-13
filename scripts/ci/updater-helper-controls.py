@@ -119,6 +119,10 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     suite(ZIP)
     suite(RECOVERY)
+    # Elevated runner only: a full NTFS volume (mounted VHD), then retry.
+    assert run('--test', ZIP, 'windows::disk_full_extraction_fails_safely_and_retry_succeeds',
+               '--', '--exact', '--ignored', '--nocapture').returncode == 0, 'disk full'
+    print('HELPER_DISK_FULL_RETRY_PASS', flush=True)
     originals = {path: path.read_bytes() for path in VENDOR.iterdir() if path.suffix == '.rs'}
     fired, missed = [], []
     try:
