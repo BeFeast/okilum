@@ -761,9 +761,9 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
     let (reader, visual, _root) = reader_with(cx, &[("big.json", text.as_str())], "big.json");
     let view = outline(&reader, visual);
     let near_end = key_index(&view, visual, "k19990");
-    let marked = where_you_are(&view, visual, near_end);
+    let clicked = where_you_are(&view, visual, near_end);
     assert!(
-        matches!(marked, tree::Row::Node { index, .. } if index == near_end),
+        matches!(clicked, tree::Row::Node { index, .. } if index == near_end),
         "positive: the click opened the groups and marks the node near the end"
     );
     // The position scrubber's page jump is not a caret move: the top of the
