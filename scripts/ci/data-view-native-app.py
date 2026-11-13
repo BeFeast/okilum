@@ -55,7 +55,10 @@ def main():
         before = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in fixtures}
         log_path = Path(os.environ['RUNNER_TEMP']) / 'data-view-native-app.log'
         with log_path.open('w') as log:
-            process = subprocess.Popen([binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
+            wrap = []
+            if os.environ.get('DIAG_2825_XCTRACE'):
+                wrap = ['xcrun', 'xctrace', 'record', '--template', 'Time Profiler', '--output', os.environ['DIAG_2825_XCTRACE'], '--launch', '--']
+            process = subprocess.Popen(wrap + [binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
             try:
                 for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
