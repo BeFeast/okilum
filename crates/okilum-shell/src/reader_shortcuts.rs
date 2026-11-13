@@ -755,11 +755,11 @@ mod tests {
             .bindings()
             .flat_map(|binding| {
                 binding.keystrokes().iter().filter_map(move |stroke| {
-                    let m = &stroke.modifiers;
-                    let letter = stroke.key.len() == 1
-                        && stroke.key.chars().all(|c| c.is_ascii_alphabetic());
+                    let m = stroke.modifiers();
+                    let letter = stroke.key().len() == 1
+                        && stroke.key().chars().all(|c| c.is_ascii_alphabetic());
                     (m.control && m.alt && letter)
-                        .then(|| format!("{} {}", binding.action().name(), stroke.unparse()))
+                        .then(|| format!("{} ctrl-alt-{}", binding.action().name(), stroke.key()))
                 })
             })
             .collect();
