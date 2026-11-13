@@ -248,14 +248,17 @@ impl State {
         }
     }
 
-    /// Drop entries whose files no longer exist in the inventory.
+    /// Drop recents and first sightings whose files no longer exist in the
+    /// inventory. Pins stay: a pin the user made is never dropped silently.
+    /// A pinned file moved or deleted outside Okilum shows as missing in the
+    /// pinned row until the user removes it (#2789); the Pinned menu leaves
+    /// it out, as before.
     pub fn prune(&mut self, vault: &Vault) {
         let entries: std::collections::HashSet<&str> =
             vault.entries.iter().map(|e| e.path.as_str()).collect();
         let known = |path: &str| entries.contains(path);
         if vault.inventory_complete {
             self.recent.retain(|(path, _)| known(path));
-            self.pinned.retain(|path| known(path));
             self.first_seen.retain(|path, _| known(path));
         }
     }
@@ -604,6 +607,26 @@ mod tests {
             assert!(written.get("folders_only_restore").is_none());
             assert_eq!(written["pinned"], serde_json::json!(["keep.md"]));
         }
+    }
+
+    /// #2789: pruning a complete inventory drops a vanished recent but keeps
+    /// the vanished pin, so the pinned row can show it as missing.
+    #[test]
+    fn prune_keeps_missing_pins_and_drops_missing_recents() {
+        let mut vault = Vault::from_note_paths(["kept.md".to_string()]);
+        vault.inventory_complete = true;
+        let mut state = State::default();
+        state.record_open("gone.md", 1);
+        state.record_open("kept.md", 2);
+        state.toggle_pin("gone.md");
+        state.toggle_pin("kept.md");
+        state.prune(&vault);
+        assert_eq!(
+            state.recent,
+            [("kept.md".to_owned(), 2)],
+            "control: prune ran"
+        );
+        assert_eq!(state.pinned, ["gone.md", "kept.md"]);
     }
 
     #[test]
