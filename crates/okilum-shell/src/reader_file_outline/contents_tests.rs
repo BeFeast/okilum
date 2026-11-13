@@ -1150,23 +1150,17 @@ fn contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_w
     let code = code(&reader, visual);
     paint(visual);
     let start = node_start(&view, visual, "k49990");
-    let doc = view.read_with(visual, |v, _| v.snapshot.doc.clone().unwrap());
+    view.update(visual, |v, _| v.snapshot.ui_child_steps = 0);
     let input = code.read_with(visual, |p, _| p.input().unwrap());
     input.update(visual, |input, cx| {
         input.set_selected_range(start..start, cx)
     });
-    // The sample after the caret move, before any worker runs.
-    let steps = view.update(visual, |v, cx| {
-        doc.child_steps
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-        v.sync_current(cx);
-        doc.child_steps.load(std::sync::atomic::Ordering::Relaxed)
-    });
+    paint(visual);
+    let steps = view.read_with(visual, |v, _| v.snapshot.ui_child_steps);
     assert_eq!(
         steps, 0,
-        "the UI thread walked {steps} children to open the path"
+        "«where you are» samples walked {steps} children on the UI thread"
     );
-    paint(visual);
     assert!(
         listed(&view, visual, "k49990"),
         "the worker opened the path"

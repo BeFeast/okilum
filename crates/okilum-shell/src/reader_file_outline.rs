@@ -43,6 +43,9 @@ struct Snapshot {
     /// A node a caret move named: its path opens once and its row scrolls
     /// into view when listed. `true` once the path was opened.
     reveal: Option<(usize, bool)>,
+    /// Children walked on the UI thread by «where you are» samples.
+    #[cfg(test)]
+    ui_child_steps: usize,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -265,7 +268,19 @@ impl View {
 
     fn sync_current(&mut self, cx: &mut Context<Self>) {
         if self.snapshot.active {
+            #[cfg(test)]
+            let doc = self.snapshot.doc.clone();
+            #[cfg(test)]
+            let before = doc
+                .as_ref()
+                .map(|doc| doc.child_steps.load(std::sync::atomic::Ordering::Relaxed));
             let current = self.snapshot_current(cx);
+            // The sample is synchronous: a worker cannot run inside it.
+            #[cfg(test)]
+            if let (Some(doc), Some(before)) = (doc, before) {
+                self.snapshot.ui_child_steps +=
+                    doc.child_steps.load(std::sync::atomic::Ordering::Relaxed) - before;
+            }
             if self.snapshot.current != current {
                 self.snapshot.current = current;
                 cx.notify();
