@@ -913,16 +913,20 @@ fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut T
     assert_eq!(marked_key(&view, visual), "target");
     view.read_with(visual, |v, _| {
         let row = v.snapshot.current.unwrap();
-        let top = v.list.logical_scroll_top().item_ix;
-        let shown = (v.list.viewport_bounds().size.height / px(OUTLINE_ROW_HEIGHT)) as usize;
+        // In pixels: the whole row lies inside the viewport.
+        let top = v.list.logical_scroll_top();
+        let height = v.list.viewport_bounds().size.height.as_f32();
+        let row_height = OUTLINE_ROW_HEIGHT;
+        let viewport_top = top.item_ix as f32 * row_height + top.offset_in_item.as_f32();
+        let (row_top, row_bottom) = (row as f32 * row_height, (row + 1) as f32 * row_height);
         assert!(
             row > 40,
             "positive: the row starts below a first screen of rows ({row})"
         );
         assert!(
-            top <= row && row < top + shown,
-            "the row is on screen: {top}..{} holds {row}",
-            top + shown
+            viewport_top <= row_top && row_bottom <= viewport_top + height + 0.5,
+            "the row is on screen: rows {row_top}..{row_bottom} in {viewport_top}..{}",
+            viewport_top + height
         );
     });
     // Scrolling again: the top node leads; opened rows stay open.
