@@ -107,9 +107,9 @@ fn windows_editor_creation_templates_and_revision_bound_rename() {
     let editor = FileEditor::open(&root.join(to), &state).unwrap();
     assert_eq!(editor.text(), "external");
     drop(editor);
-    note_files::create_folders(&root, Path::new("_Assets/Templates"), false).unwrap();
+    note_files::create_folders(&root, Path::new("@Schema/Templates"), false).unwrap();
     fs::write(
-        root.join("_Assets/Templates/Note.md"),
+        root.join("@Schema/Templates/Note.md"),
         "\u{feff}# {{title}}\r\n",
     )
     .unwrap();
@@ -122,9 +122,9 @@ fn windows_vault_paths_nested_creation_templates_and_identity() {
     let (_dir, root, state) = fixture();
     let parent = Path::new("Dev").join("Projects").join("okilum-qa");
     note_files::create_folders(&root, &parent, false).unwrap();
-    note_files::create_folders(&root, Path::new("_Assets/Templates"), false).unwrap();
+    note_files::create_folders(&root, Path::new("@Schema/Templates"), false).unwrap();
     fs::write(
-        root.join("_Assets/Templates/Daily Note.md"),
+        root.join("@Schema/Templates/Daily Note.md"),
         "\u{feff}# {{title}}\r\nTemplate body\r\n",
     )
     .unwrap();

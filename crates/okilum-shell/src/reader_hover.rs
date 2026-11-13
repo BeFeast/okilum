@@ -892,9 +892,9 @@ mod tests {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (reader, visual, root) = fixture(cx);
         let root = root.canonicalize().unwrap();
-        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
+        std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
         std::fs::write(
-            root.join("_Assets/Templates/Note.md"),
+            root.join("@Schema/Templates/Note.md"),
             "# {{title}}\nDefault body",
         )
         .unwrap();
