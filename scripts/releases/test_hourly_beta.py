@@ -701,7 +701,7 @@ class WorkflowContract(unittest.TestCase):
             prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
             # Linux push runs start at once in their own group (no queue behind the
             # previous merge); Mac and Windows still queue FIFO and coalesce.
-            group = ("${{ inputs.hourly_source || github.run_id }}" if platform == 'linux'
+            group = ("${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}" if platform == 'linux'
                      else "${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
             self.assertEqual(data['concurrency']['group'], prefix + '-beta-' + group)
             self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')

@@ -47,7 +47,8 @@ head, not an archive catalog).
 
 A running beta always finishes (manager 13.11: merges faster than a build kept
 cancelling the Linux beta, so none was published for hours). Linux push runs
-each have their own group (`linux-beta-<run id>`), so a merge starts its beta at
+each have their own group (`linux-beta-<commit sha>`; Forgejo has no run id yet
+when it evaluates the group), so a merge starts its beta at
 once instead of queueing behind the previous merge's whole run (14.11: queueing
 added up to 23 minutes); release-publish still serializes feed writes and files
 an older build that finishes after a newer one as archive-only. Mac and Windows

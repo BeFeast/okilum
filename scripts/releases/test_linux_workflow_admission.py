@@ -16,8 +16,13 @@ class LinuxAdmission(unittest.TestCase):
         # retries share a group per source; other dispatches are independent,
         # so Arch cannot occupy their admission.
         self.assertEqual(workflow['concurrency']['group'],
-                         "linux-beta-${{ inputs.hourly_source || github.run_id }}")
+                         "linux-beta-${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}")
         self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
+        # Forgejo evaluates concurrency before the run exists: github.run_id is
+        # empty there, so a push group keyed on it is one shared FIFO group.
+        group = workflow['concurrency']['group']
+        self.assertIn("github.event_name == 'push' && github.sha", group)
+        self.assertLess(group.index('github.sha'), group.index('github.run_id'))
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
         self.assertEqual(jobs['appimage-reuse']['needs'], 'select')
