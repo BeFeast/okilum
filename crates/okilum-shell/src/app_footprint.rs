@@ -1155,6 +1155,10 @@ mod tests {
         ("crates/okilum-shell/src/updater/appimage.rs", 1),
         // Moves notes to the system trash; not an app-owned location.
         ("crates/okilum-shell/src/reader_trash_fs.rs", 2),
+        // Reads the home folder only to suggest ~/Documents when a new untitled
+        // file is saved (the user picks the folder) and to shorten paths to «~»
+        // in Recent (#1528); drafts live under the state root.
+        ("crates/okilum-shell/src/reader_untitled.rs", 2),
         ("crates/okilum-shell/src/workspace.rs", 3),
     ];
 
