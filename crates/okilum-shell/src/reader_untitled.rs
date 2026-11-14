@@ -264,10 +264,14 @@ fn collect(session: &Path, now: u64) {
     }
 }
 
+/// A test hook given the draft folder about to be removed.
+#[cfg(test)]
+type RemovalHook = Option<Box<dyn Fn(&Path)>>;
+
 #[cfg(test)]
 thread_local! {
     /// Runs right before a draft folder is removed, with the claim still held.
-    static BEFORE_REMOVAL: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
+    static BEFORE_REMOVAL: std::cell::RefCell<RemovalHook> =
         const { std::cell::RefCell::new(None) };
 }
 
