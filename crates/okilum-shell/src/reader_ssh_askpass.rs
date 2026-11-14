@@ -204,13 +204,13 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
-    fn open(
+    fn open<'a>(
         prompt: &str,
         kind: Kind,
-        cx: &mut TestAppContext,
+        cx: &'a mut TestAppContext,
     ) -> (
         Entity<Prompt>,
-        &mut VisualTestContext,
+        &'a mut VisualTestContext,
         std::sync::mpsc::Receiver<Option<String>>,
     ) {
         let (request, reply) = Request::detached(prompt, kind);
