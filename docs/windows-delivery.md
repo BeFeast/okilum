@@ -13,9 +13,18 @@ workflow commit to a write-once GitHub ref and dispatches the hosted job on it w
 the product source, the Forgejo build number (`5000 +` run number) and the embedded
 Authenticode policy variables. It accepts exactly one run of that ref, proven by that
 attempt's jobs, and only an artifact uploaded by that attempt with a matching sha256
-digest. It then stages the result as the unchanged Forgejo artifacts. The R2 upload,
-the signing decision and publication stay on Forgejo; GitHub holds no Okilum secrets
-for this.
+digest. For a main beta it then hands release-publish a receipt (`windows-handoff`:
+GitHub run, attempt, artifact id, sha256 digest and the build identity) instead of
+copying ~450 MB through Forgejo; release-publish fetches those exact bytes from GitHub
+and re-verifies the run, the attempt's jobs, the artifact binding, the digest and the
+identity inside the bytes before anything is published. The signer payload and branch
+QA builds are still staged as Forgejo artifacts. The R2 upload, the signing decision
+and publication stay on Forgejo; GitHub holds no Okilum secrets for this.
+The beta restores two main-scoped caches that `windows-cache` seeds on each push to
+main (one entry each, superseded entries pruned): the checked xwin SDK, keyed by the
+cargo-xwin version and the Microsoft manifest hash, and the compiled registry
+dependencies (`Swatinem/rust-cache`, shared key `beta-windows-v1`), built with the
+beta's own `scripts/build-windows-ci.sh` and env. Beta runs never save a cache.
 The existing Windows workflow performs one cross-build per PR/main event;
 PR artifacts never publish. Main publishes Beta; [release promotion](releases.md)
 supports an independently accepted Windows Stable build without rebuilding it.

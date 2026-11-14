@@ -63,7 +63,7 @@ class ProcessV2(unittest.TestCase):
             self.assertIn(data['concurrency']['cancel-in-progress'], (False, 'false'))
             # Linux push runs never queue behind the previous merge (own group).
             self.assertTrue(data['concurrency']['group'].endswith(
-                "-beta-${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}" if file == 'linux-release' else
+                "-beta-${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}" if file in ('linux-release', 'windows-diagnostic') else
                 "-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}"))
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' && vars.OKILUM_WINDOWS_SIGN_BACKEND", windows)

@@ -154,6 +154,23 @@ def extract(data, directory):
         archive.extractall(directory)
 
 
+WINDOWS_RECEIPT = 'windows-handoff'
+WINDOWS_RECEIPT_FILE = 'windows-handoff.json'
+
+
+def windows_receipt(artifacts, run_id):
+    """The run's hosted-artifact receipt, or None for a run with Forgejo copies (signer).
+
+    Exactly one form must be present: a receipt next to Forgejo copies is ambiguous.
+    """
+    current = [a for a in artifacts if not a['expired'] and a['run_id'] == run_id]
+    receipts = [a for a in current if a['name'] == WINDOWS_RECEIPT]
+    copies = [a for a in current if a['name'] in ARTIFACTS['windows']]
+    if len(receipts) > 1 or (receipts and copies):
+        raise ValueError('Ambiguous Windows publication artifacts')
+    return receipts[0] if receipts else None
+
+
 def one(root, pattern):
     files = list(root.glob(pattern))
     if len(files) != 1:
@@ -194,12 +211,21 @@ def publish(client, platform, run_id):
     artifacts = client.call('GET', f'/actions/runs/{run_id}/artifacts')
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        for name, folder in ARTIFACTS[platform].items():
-            matching = [a for a in artifacts if a['name'] == name and not a['expired'] and a['run_id'] == run_id]
-            if len(matching) != 1:
-                raise ValueError(f'Missing or ambiguous artifact: {name}')
-            data = client.call('GET', f'/actions/artifacts/{matching[0]["id"]}/zip', raw=True)
-            extract(data, root / folder)
+        if platform == 'windows' and windows_receipt(artifacts, run_id):
+            # #2927: an unsigned main beta hands over a receipt for the hosted
+            # artifact; its exact bytes are fetched and re-verified from GitHub.
+            receipt = windows_receipt(artifacts, run_id)
+            extract(client.call('GET', f'/actions/artifacts/{receipt["id"]}/zip', raw=True), root / 'receipt')
+            import windows_handoff
+            windows_handoff.fetch_published(json.loads((root / 'receipt' / WINDOWS_RECEIPT_FILE).read_text()),
+                                            run_id, build, root)
+        else:
+            for name, folder in ARTIFACTS[platform].items():
+                matching = [a for a in artifacts if a['name'] == name and not a['expired'] and a['run_id'] == run_id]
+                if len(matching) != 1:
+                    raise ValueError(f'Missing or ambiguous artifact: {name}')
+                data = client.call('GET', f'/actions/artifacts/{matching[0]["id"]}/zip', raw=True)
+                extract(data, root / folder)
         source = built_source(root, platform, run)
         # An explicit older commit is archived for promotion and never moves the beta feed.
         # A scheduled tick also differs from its run's commit: it builds main's tip, which
