@@ -405,11 +405,7 @@ mod tests {
         let reader = reader.unwrap();
         visual.simulate_resize(size(px(1366.), px(768.)));
         visual.run_until_parked();
-        let shortcut = if cfg!(target_os = "macos") {
-            "cmd-alt-f"
-        } else {
-            "ctrl-alt-f"
-        };
+        let shortcut = crate::MAXIMIZE_NOTE_KEY;
         for source in [false, true] {
             reader.update_in(visual, |r, window, cx| {
                 assert_eq!(r.current_rel, "note.md", "loaded-document positive control");

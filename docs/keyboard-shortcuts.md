@@ -137,6 +137,10 @@ Reset table sort, Open in DuckDB, Load more rows and Go to table error. Copy
 selected table cells keeps Ctrl+C (Cmd+C on Mac) inside the grid. YAML, TOML and
 XML use the same Alt+1…4 / Control+1…4 view keys and Tree keys (#2813). No new
 default uses Ctrl+Alt+letter, which AltGr layouts produce for printable keys.
+On Windows no default uses it at all: the six older ones (Copy as Rich Text,
+note width, Projects, open code block externally, Paste as Titled Link,
+maximize note) add Shift there, for example Ctrl+Alt+Shift+F. macOS and Linux
+keep ⌥⌘ / Ctrl+Alt for them.
 
 The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The

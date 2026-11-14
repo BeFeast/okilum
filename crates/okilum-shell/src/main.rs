@@ -459,9 +459,27 @@ actions!(
 const FOCUS_MODE_KEY: &str = "f8";
 const TYPEWRITER_MODE_KEY: &str = "f9";
 
-/// ⌥⌘W / Ctrl+Alt+W: normal (reading width) or full note width. Free in
-/// every Reader context; W for width.
-const NOTE_WIDTH_KEY: &str = "secondary-alt-w";
+/// The six Ctrl+Alt+letter defaults that predate the toolbar series. On
+/// Windows Ctrl+Alt is AltGr on many layouts and would take printable keys,
+/// so there they add Shift (the Paste as Titled Link precedent); macOS
+/// (⌥⌘) and Linux (Ctrl+Alt) keep them (Oleg, 2026-11-14).
+const fn legacy_alt_key(elsewhere: &'static str, windows: &'static str) -> &'static str {
+    if cfg!(windows) {
+        windows
+    } else {
+        elsewhere
+    }
+}
+pub(crate) const COPY_WITH_FORMATTING_KEY: &str =
+    legacy_alt_key("secondary-alt-c", "ctrl-alt-shift-c");
+const TOGGLE_PROJECT_KEY: &str = legacy_alt_key("secondary-alt-p", "ctrl-alt-shift-p");
+const OPEN_BLOCK_EXTERNALLY_KEY: &str = legacy_alt_key("secondary-alt-e", "ctrl-alt-shift-e");
+const PASTE_AS_TITLED_LINK_KEY: &str = legacy_alt_key("secondary-alt-v", "ctrl-alt-shift-v");
+pub(crate) const MAXIMIZE_NOTE_KEY: &str = legacy_alt_key("secondary-alt-f", "ctrl-alt-shift-f");
+
+/// ⌥⌘W / Ctrl+Alt+W (Ctrl+Alt+Shift+W on Windows): normal (reading width) or
+/// full note width. Free in every Reader context; W for width.
+const NOTE_WIDTH_KEY: &str = legacy_alt_key("secondary-alt-w", "ctrl-alt-shift-w");
 
 /// One app-wide, remembered toggle; every window follows it.
 pub(crate) fn toggle_note_width(cx: &mut App) {
@@ -535,7 +553,7 @@ fn bind_keys(cx: &mut App) {
             Some("ReaderSource > Input"),
         ),
         KeyBinding::new(
-            "secondary-alt-c",
+            COPY_WITH_FORMATTING_KEY,
             reader_read_menu::CopyWithFormatting,
             Some("ReaderRead && !Input && !ReaderTree"),
         ),
@@ -594,7 +612,7 @@ fn bind_keys(cx: &mut App) {
         ),
     ]);
     cx.bind_keys([
-        KeyBinding::new("secondary-alt-p", ToggleProject, Some(READER_CONTEXT)),
+        KeyBinding::new(TOGGLE_PROJECT_KEY, ToggleProject, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
@@ -708,7 +726,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-l", ToggleTask, Some("Reader > Input")),
         // #1993: the caret's code block in an external editor.
         KeyBinding::new(
-            "secondary-alt-e",
+            OPEN_BLOCK_EXTERNALLY_KEY,
             reader_editor::OpenBlockExternally,
             Some("ReaderSource > Input"),
         ),
@@ -727,15 +745,8 @@ fn bind_keys(cx: &mut App) {
             note_paste::PasteAsPlainText,
             Some("ReaderSource > Input"),
         ),
-        // Shift provides an AltGr-safe alternative on Windows.
-        #[cfg(windows)]
         KeyBinding::new(
-            "ctrl-alt-shift-v",
-            note_paste::PasteAsTitledLink,
-            Some("ReaderSource > Input"),
-        ),
-        KeyBinding::new(
-            "secondary-alt-v",
+            PASTE_AS_TITLED_LINK_KEY,
             note_paste::PasteAsTitledLink,
             Some("ReaderSource > Input"),
         ),
@@ -793,8 +804,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-|", ToggleLeftMode, Some("Reader > Input")),
         KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
         KeyBinding::new("ctrl-alt-\\", ToggleBacklinks, ctx),
-        KeyBinding::new("secondary-alt-f", MaximizeNote, ctx),
-        KeyBinding::new("secondary-alt-f", MaximizeNote, Some("Reader > Input")),
+        KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, ctx),
+        KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, Some("Reader > Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-\\", ToggleNotes, ctx),
         #[cfg(target_os = "macos")]
