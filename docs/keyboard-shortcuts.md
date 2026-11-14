@@ -149,8 +149,12 @@ defaults use Ctrl+Shift there:
 | Open code block externally | ⌥⌘E | Ctrl+Alt+E | Ctrl+Shift+D |
 | Paste as Titled Link | ⌥⌘V | Ctrl+Alt+V | Ctrl+Shift+K |
 | Maximize note | ⌥⌘F | Ctrl+Alt+F | Ctrl+Shift+Enter |
-| Right panel (Contents / Linked from) | ⌥⌘\\ | Ctrl+Alt+\\ | Ctrl+Shift+B |
+| Right panel (Contents / Linked from) | ⌥⌘\\ | Ctrl+Alt+\\ | Ctrl+Shift+Y |
 | Paragraph | ⌥⌘0 | Ctrl+Alt+0 | Ctrl+Shift+T |
+
+The Windows column also avoids Ctrl+Shift+B and Ctrl+Shift+F, which
+Microsoft Pinyin takes for its emoji panel and its Simplified/Traditional
+switch.
 
 The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The

@@ -475,7 +475,9 @@ const TOGGLE_PROJECT_KEY: &str = windows_key("secondary-alt-p", "ctrl-shift-p");
 const OPEN_BLOCK_EXTERNALLY_KEY: &str = windows_key("secondary-alt-e", "ctrl-shift-d");
 const PASTE_AS_TITLED_LINK_KEY: &str = windows_key("secondary-alt-v", "ctrl-shift-k");
 pub(crate) const MAXIMIZE_NOTE_KEY: &str = windows_key("secondary-alt-f", "ctrl-shift-enter");
-pub(crate) const BACKLINKS_KEY: &str = windows_key("ctrl-alt-\\", "ctrl-shift-b");
+/// Not Ctrl+Shift+B on Windows: Microsoft Pinyin opens its emoji panel there.
+/// Y is free in every Okilum context and in the common Windows IMEs.
+pub(crate) const BACKLINKS_KEY: &str = windows_key("ctrl-alt-\\", "ctrl-shift-y");
 pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shift-t");
 pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
 pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shift-j");

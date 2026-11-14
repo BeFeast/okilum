@@ -746,6 +746,82 @@ mod tests {
         }
     }
 
+    /// The chord a default may not use, spelled out, or `None` when it is
+    /// allowed. On Windows (Oleg, 2026-11-14) Ctrl+Alt is AltGr, which types
+    /// characters with any key and with or without Shift, and Alt+Shift
+    /// switches the input language. Elsewhere only Ctrl+Alt+letter is refused
+    /// (#2813). `windows` is a parameter so both rules are tested on every OS.
+    fn altgr_conflict(windows: bool, m: &gpui::Modifiers, key: &str) -> Option<String> {
+        if windows {
+            let ctrl_alt = m.control && m.alt;
+            let alt_shift = m.alt && m.shift && !m.control && !m.platform;
+            return (ctrl_alt || alt_shift).then(|| {
+                let parts = [
+                    (m.control, "ctrl-"),
+                    (m.alt, "alt-"),
+                    (m.shift, "shift-"),
+                    (m.platform, "win-"),
+                ];
+                let held: String = parts
+                    .iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, s)| *s)
+                    .collect();
+                format!("{held}{key}")
+            });
+        }
+        let letter = key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic());
+        (m.control && m.alt && !m.shift && letter).then(|| format!("ctrl-alt-{key}"))
+    }
+
+    #[test]
+    fn altgr2813_windows_rule_refuses_every_altgr_and_language_switch_chord() {
+        let refused = |windows: bool, source: &str| {
+            let stroke = gpui::Keystroke::parse(source).unwrap();
+            altgr_conflict(windows, &stroke.modifiers, &stroke.key).is_some()
+        };
+        // Negative controls: an alphabetic-only Ctrl+Alt filter lets every
+        // chord after the first through on Windows.
+        for chord in [
+            "ctrl-alt-k",
+            "ctrl-alt-0",
+            "ctrl-alt-\\",
+            "ctrl-alt-shift-k",
+            "ctrl-alt-shift-0",
+            "alt-shift-f",
+            "alt-shift-1",
+        ] {
+            assert!(refused(true, chord), "Windows must refuse {chord}");
+        }
+        if !cfg!(target_os = "macos") {
+            // `secondary` is Ctrl off macOS: the old Paragraph default.
+            assert!(refused(true, "secondary-alt-0"));
+        }
+        // Positive controls: the Windows replacements and ordinary chords.
+        for chord in [
+            "ctrl-shift-y",
+            "ctrl-shift-t",
+            "ctrl-shift-enter",
+            "ctrl-shift-\\",
+            "ctrl-\\",
+            "alt-1",
+            "shift-f10",
+        ] {
+            assert!(!refused(true, chord), "Windows must allow {chord}");
+        }
+        // macOS and Linux keep their Ctrl+Alt digit/punctuation and Alt+Shift
+        // defaults; only a new Ctrl+Alt+letter is refused there.
+        assert!(refused(false, "ctrl-alt-k"));
+        for chord in [
+            "ctrl-alt-0",
+            "ctrl-alt-\\",
+            "ctrl-alt-shift-k",
+            "alt-shift-f",
+        ] {
+            assert!(!refused(false, chord), "macOS/Linux must allow {chord}");
+        }
+    }
+
     #[gpui::test]
     fn altgr2813_no_default_uses_ctrl_alt_letter(cx: &mut TestAppContext) {
         // AltGr arrives as Ctrl+Alt on Windows layouts that type characters
@@ -768,30 +844,8 @@ mod tests {
             .bindings()
             .flat_map(|binding| {
                 binding.keystrokes().iter().filter_map(move |stroke| {
-                    let m = stroke.modifiers();
-                    let name = binding.action().name();
-                    let key = stroke.key();
-                    if cfg!(windows) {
-                        let ctrl_alt = m.control && m.alt;
-                        let alt_shift = m.alt && m.shift && !m.control && !m.platform;
-                        return (ctrl_alt || alt_shift).then(|| {
-                            let parts = [
-                                (m.control, "ctrl-"),
-                                (m.alt, "alt-"),
-                                (m.shift, "shift-"),
-                                (m.platform, "win-"),
-                            ];
-                            let held: String = parts
-                                .iter()
-                                .filter(|(on, _)| *on)
-                                .map(|(_, s)| *s)
-                                .collect();
-                            format!("{name} {held}{key}")
-                        });
-                    }
-                    let letter = key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic());
-                    (m.control && m.alt && !m.shift && letter)
-                        .then(|| format!("{name} ctrl-alt-{key}"))
+                    altgr_conflict(cfg!(windows), stroke.modifiers(), stroke.key())
+                        .map(|chord| format!("{} {chord}", binding.action().name()))
                 })
             })
             .filter(|found| cfg!(windows) || !EXISTING.contains(&found.as_str()))
