@@ -71,14 +71,6 @@ pub(crate) struct ArchivePreview {
 }
 
 impl ArchivePreview {
-    /// Focus is on the entry list, the shown entry or the find field in the
-    /// last drawn frame (#2957).
-    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.list_focus.contains_focused(window, cx)
-            || self.entry_focus.contains_focused(window, cx)
-            || gpui::Focusable::focus_handle(self.filter.read(cx), cx).contains_focused(window, cx)
-    }
-
     pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find in entries"));
         let subscription = cx.subscribe_in(

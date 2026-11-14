@@ -368,6 +368,17 @@ impl Reader {
 /// Enter on a single-line input) propagates it up to these.
 const READER_CONTEXT: &str = "Reader";
 
+/// Something drawn inside the Reader in the last frame holds focus: its
+/// dispatch path runs through the Reader's context. Focus on a handle that
+/// was not drawn dispatches from the window root, outside the Reader, and
+/// so does a window with no focus.
+fn focus_drawn_in_reader(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(READER_CONTEXT))
+}
+
 actions!(
     okilum,
     [
@@ -2071,6 +2082,10 @@ struct Reader {
     // the previous frame's dock/overlay width for the new viewport.
     body_viewport_width: Pixels,
     resizing_panel: Option<reader_layout::Panel>,
+    /// Maximize or a panel hide left focus where it was; if that change stops
+    /// drawing the focused element, the focus-lost listener moves focus to
+    /// the document (#2957).
+    refocus_if_lost: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -2418,6 +2433,7 @@ impl Reader {
             body_bounds: Bounds::default(),
             body_viewport_width: window.viewport_size().width,
             resizing_panel: None,
+            refocus_if_lost: false,
             _subs: vec![find_sub],
             _content_sub: content_sub,
         };
@@ -2431,6 +2447,10 @@ impl Reader {
                     });
                 }),
             );
+        this._subs
+            .push(cx.on_focus_lost(window, |this, window, cx| {
+                this.refocus_lost_field(window, cx)
+            }));
         this.side_panels = reader_side_panel::SidePanel::pair(cx);
         // Nothing has focus on a fresh window, and gpui then dispatches keys
         // to the root node only, where the reader's context is not on the
@@ -3300,7 +3320,7 @@ impl Reader {
             }
         }
         self.panels.close(panel);
-        self.focus_document(window, cx);
+        self.focus_after_layout_change(window, cx);
         cx.notify();
     }
 
@@ -3337,8 +3357,43 @@ impl Reader {
         self.ui_state.interacted = true;
         self.panels.toggle_maximized();
         // Presentation only: keep the current editor, selection, draft and history.
-        self.focus_document(window, cx);
+        self.focus_after_layout_change(window, cx);
         cx.notify();
+    }
+
+    /// Maximize note and a panel hide (chord, toolbar, overlay backdrop or
+    /// menu) only change the layout, so they leave focus wherever it is drawn:
+    /// in the document or viewer, Find, a rename, Quick Open. The
+    /// document takes focus only when nothing drawn holds it: no focus, or a
+    /// handle the last frame did not draw (#2957), now; or, after the next
+    /// frame, an element this change stopped drawing (a rename when Maximize
+    /// hides the Notes panel), through `refocus_lost_field`. These actions
+    /// reach the Reader along the focused element's dispatch path or from a
+    /// click inside it, so drawn focus outside the Reader does not occur here.
+    fn focus_after_layout_change(&mut self, window: &mut Window, cx: &mut App) {
+        if focus_drawn_in_reader(window) {
+            self.refocus_if_lost = true;
+        } else {
+            self.refocus_if_lost = false;
+            self.focus_document(window, cx);
+        }
+    }
+
+    /// GPUI found the focused element missing from the frame just drawn.
+    /// After a layout change left focus in place, the document takes it, as
+    /// long as the Reader is still drawn (the element's nearest drawn ancestor
+    /// is the Reader or inside it).
+    fn refocus_lost_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.refocus_if_lost) {
+            return;
+        }
+        let reader_drawn = window.focus_lost_restore_target(cx).is_some_and(|target| {
+            target == self.focus_handle || self.focus_handle.contains(&target, window)
+        });
+        if reader_drawn {
+            self.focus_document(window, cx);
+            cx.notify();
+        }
     }
 
     /// Keyboard focus goes to the document as it is drawn (#2957): the editor
@@ -3355,10 +3410,7 @@ impl Reader {
         } else if let Some(editing) = &self.editing {
             editing.input().focus_handle(cx).focus(window, cx);
         } else if let Some(preview) = &self.file_preview {
-            let find = self
-                .viewer_find_target(cx)
-                .map(|target| gpui::Focusable::focus_handle(target.input.read(cx), cx));
-            preview.focus(&self.focus_handle, find, window, cx);
+            preview.focus(&self.focus_handle, window, cx);
         } else {
             self.content
                 .read(cx)
@@ -13611,3 +13663,6 @@ mod issue2825_stack_tests;
 
 #[cfg(test)]
 mod issue2957_tests;
+
+#[cfg(test)]
+mod issue2957_focus_kept_tests;

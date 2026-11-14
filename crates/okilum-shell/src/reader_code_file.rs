@@ -642,6 +642,7 @@ impl CodePreview {
 
     /// Focus is on this viewer or inside it (its read-only editor, tree or
     /// table) in the last drawn frame.
+    #[cfg(test)]
     pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus.contains_focused(window, cx)
     }

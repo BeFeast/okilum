@@ -1542,6 +1542,7 @@ impl HarView {
 impl HarView {
     /// Focus is on the request list, the details or the find field in the
     /// last drawn frame (#2957).
+    #[cfg(test)]
     pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.list_focus.contains_focused(window, cx)
             || self.detail_focus.contains_focused(window, cx)

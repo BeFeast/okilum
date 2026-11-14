@@ -257,54 +257,12 @@ impl FilePreview {
 }
 
 impl FilePreview {
-    /// Focus is on an element one of this preview's viewers owns: the code
-    /// viewer, a HAR or archive list, details or find field, a log, or a
-    /// virtual log's fields and log.
-    fn viewer_contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.code
-            .as_ref()
-            .is_some_and(|code| code.read(cx).contains_focus(window, cx))
-            || self
-                .har
-                .as_ref()
-                .is_some_and(|har| har.read(cx).contains_focus(window, cx))
-            || self
-                .archive
-                .as_ref()
-                .is_some_and(|archive| archive.read(cx).contains_focus(window, cx))
-            || self
-                .log
-                .as_ref()
-                .is_some_and(|log| log.read(cx).focus_handle().contains_focused(window, cx))
-            || self
-                .virtual_log
-                .as_ref()
-                .is_some_and(|panel| panel.read(cx).contains_focus(window, cx))
-    }
-
-    /// Keyboard focus for the shown viewer (#2957). Focus already inside the
-    /// drawn viewer (a code viewer's editor, tree or table, a HAR or archive
-    /// list or details, a log, a virtual log's fields, or the header's find
-    /// field `find`) stays there; otherwise a log takes it in its own view, as
-    /// on opening, and every other viewer leaves it to `reader`, the Reader's
-    /// own handle, which is always drawn and carries the Reader key contexts.
-    pub(crate) fn focus(
-        &self,
-        reader: &FocusHandle,
-        find: Option<FocusHandle>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        // Every drawn viewer lies inside the Reader's element; a handle that
-        // was not drawn in the last frame (say the request list behind a HAR
-        // Source view) is inside no element, so it never counts as kept.
-        let drawn = reader.contains_focused(window, cx);
-        if drawn
-            && (self.viewer_contains_focus(window, cx)
-                || find.is_some_and(|find| find.contains_focused(window, cx)))
-        {
-            return;
-        }
+    /// Moves keyboard focus to the shown viewer (#2957): a log takes it in its
+    /// own view, as on opening; every other viewer gives it to `reader`, the
+    /// Reader's own handle, which the viewer's element tracks and which
+    /// carries the Reader key contexts. Callers decide whether focus moves at
+    /// all; Maximize and a panel hide leave drawn focus alone.
+    pub(crate) fn focus(&self, reader: &FocusHandle, window: &mut Window, cx: &mut App) {
         if let Some(log) = self.log.as_ref().filter(|_| self.unavailable.is_none()) {
             let focus = log.read(cx).focus_handle().clone();
             if !focus.contains_focused(window, cx) {
