@@ -118,3 +118,81 @@ Okilum did not quit and keeps the old build until it is reopened. Logs: the last
 Needs Rust, git, curl, python3, gpg and gpgv, flock (util-linux), readelf
 (binutils) and the system libraries gpui builds against (Wayland, xkbcommon,
 fontconfig, freetype, xcb, Vulkan).
+
+## Linux: newest beta on every merge, `okilum-beta-deliver.py`
+
+Oleg 14.11: every merge to main reaches his Linux desktop within 30 minutes,
+with nobody in the loop, and Okilum is closed only after 60 s without input.
+Nothing is compiled on the desktop: the script installs the hosted Linux beta
+that CI publishes for every main push
+(`https://updates.befeast.com/okilum/linux/beta/latest.json`). A systemd user
+timer runs it 2.5 min after the previous run ends, in the graphical session.
+
+One run:
+
+1. **Feed:** reads the signed beta descriptor and checks it the way the in-app
+   AppImage updater does (`crates/okilum-appimage/src/lib.rs`): gpgv against
+   the pinned release key (fingerprint and key are copies of the crate's,
+   `scripts/ci/test_beta_deliver.py` keeps them equal), every descriptor field,
+   the payload signature, size and sha256, and the signed provenance (source,
+   build, version, sha256). Stops if the managed AppImage already holds that
+   build or a newer one (the `.appimage-build` record, or the same bytes).
+2. **Download** into `~/.cache/okilum-deliver/<build>` before anything else, so
+   a bad or slow payload never closes Okilum.
+3. **Idle:** if Okilum is open (an `okilum` process holding
+   `~/.local/state/okilum/reader-instance.lock`; `okilum sync serve` and the
+   Sprint build never match), waits for 60 s without input through Wayland
+   `ext-idle-notify-v1` (input idleness on notifier v2, so a playing video does
+   not count as activity). It waits up to 25 min, then the next timer run
+   tries again.
+4. **Quit:** SIGTERM, which Okilum handles like Quit (editors saved, window
+   state written). If it still runs 30 s later: SIGKILL. That loses nothing
+   that autosave (1–2 s after typing) and the recovery journal do not already
+   hold, because the user has been idle for at least 60 s (the reasoning of
+   #2925 for the Mac).
+5. **Install** with the updater's transaction: Okilum's install and update
+   locks (an update the app has staged or is applying is never overwritten), a
+   `.okilum-update-*` stage beside the AppImage with `previous.AppImage`,
+   `expected.json` and `apply.log`, the build record, then a rename. Old stages
+   are pruned like the updater does (the newest completed and the newest
+   interrupted one are kept).
+6. **Reopen** (only if it was open) in its own unit in `app-graphical.slice`
+   (`systemd-run --user`, as uwsm launchers do), with
+   `OKILUM_APPIMAGE_UPDATE_RECEIPT` set to the stage, so the new build itself
+   confirms that it started. If it exits before that, the previous AppImage
+   is put back and reopened; after two failures that build is skipped and the
+   next one is tried.
+
+Log, one line per action: `~/.local/state/okilum-deliver.log`, for example
+`installed build 7760 source 1a2b3c4d5 · beta published 10:27:31 · seen 10:29:02 · idle wait 61s · quit TERM · installed 10:30:05 · running 10:30:09 (start confirmed by the app, …)`.
+Each check also writes `~/.local/state/okilum-deliver/last-check.json` (feed
+build, installed build, time). `okilum-beta-deliver --check` prints the feed
+and installed build and changes nothing.
+
+Install (as the desktop user, no sudo; from a checkout or copies of the three
+files):
+
+```bash
+install -Dm755 scripts/dev/okilum-beta-deliver.py ~/.local/bin/okilum-beta-deliver
+install -Dm644 scripts/dev/systemd/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.service
+install -Dm644 scripts/dev/systemd/okilum-beta-deliver.timer ~/.config/systemd/user/okilum-beta-deliver.timer
+systemctl --user daemon-reload && systemctl --user enable --now okilum-beta-deliver.timer
+```
+
+Remove:
+
+```bash
+systemctl --user disable --now okilum-beta-deliver.timer; systemctl --user stop okilum-beta-deliver.service
+rm -f ~/.local/bin/okilum-beta-deliver ~/.config/systemd/user/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.timer
+systemctl --user daemon-reload; rm -rf ~/.cache/okilum-deliver ~/.local/state/okilum-deliver
+```
+
+Timing (measured 14.11 over builds 7745–7759): the hosted beta appears 18.6–45
+min after the merge, median about 25 min; 8 of 12 were published within 27
+min. Delivery adds at most 2.5 min (timer), the idle wait, and about 20 s to
+quit, install and reopen. So the 30-minute target holds only when CI publishes
+within about 27 min. The rest of the latency is the hosted Linux build, not
+this script.
+
+Needs python3 (stdlib only), gpgv, systemd-run and a Wayland compositor with
+`ext-idle-notify-v1` (Hyprland has it).
