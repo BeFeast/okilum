@@ -568,7 +568,8 @@ class SprintQuitTests(unittest.TestCase):
             macos.mkdir(parents=True)
             pids = []
             for name in ('okilum', 'okilum-sync-supervisor'):
-                shutil.copy2('/bin/sleep', macos / name)
+                # copy, not copy2: /bin/sleep carries SIP flags that chflags refuses.
+                shutil.copy('/bin/sleep', macos / name)
                 # Orphaned to launchd, which reaps it: no zombie left in ps.
                 started = subprocess.run(['/bin/bash', '-c', '"$0" 120 >/dev/null 2>&1 & echo $!', str(macos / name)],
                                          check=True, capture_output=True, text=True)
