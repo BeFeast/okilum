@@ -609,7 +609,9 @@ mod tests {
         let root = temp.path();
         fs::create_dir(root.join("Project")).unwrap();
         let contract = "# Contract\nKeep canonical files unchanged.\n";
-        let agents = "@@AgentContract.md\n";
+        // A file whose name starts with `@` is imported as `@./@name`; a bare
+        // `@@name` line is not an import (#2939) and would add no layer.
+        let agents = "@./@AgentContract.md\n";
         let project = "@../@AgentContract.md\nProject-specific guidance only.\n";
         fs::write(root.join("@AgentContract.md"), contract).unwrap();
         fs::write(root.join("AGENTS.md"), agents).unwrap();
@@ -617,6 +619,24 @@ mod tests {
         fs::write(root.join("Project/CLAUDE.md"), contract).unwrap();
         let stack = discover(root, &root.join("Project"));
         assert_eq!(stack.layers.len(), 6);
+        assert!(
+            stack
+                .diagnostics
+                .iter()
+                .all(|d| !d.contains("Not an import")),
+            "both references must be real imports: {:?}",
+            stack.diagnostics
+        );
+        for (index, from) in [(2, "AGENTS.md"), (4, "Project/AGENTS.md")] {
+            assert_eq!(stack.layers[index].path, Path::new("@AgentContract.md"));
+            assert_eq!(
+                stack.layers[index].provenance,
+                Provenance::Import {
+                    from: PathBuf::from(from),
+                    line: 1
+                }
+            );
+        }
         for index in [2, 4] {
             let repeated = &stack.layers[index];
             assert!(repeated.source.is_none());
