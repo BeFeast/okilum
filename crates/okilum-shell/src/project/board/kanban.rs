@@ -309,6 +309,7 @@ impl Board {
             }));
         let mut end = v_flex().w(px(36.)).flex_none().gap_2();
         end = end
+            .child(super::help::entry())
             .child(
                 Button::new("board-manage")
                     .debug_selector(|| "board-manage".into())

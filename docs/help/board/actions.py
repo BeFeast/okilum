@@ -1,0 +1,47 @@
+import os, subprocess, time, json, signal
+from pathlib import Path
+q=Path('/home/god/work/qa-evidence/issue-2357')
+time.sleep(2)
+r=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','warning','-y','-f','x11grab','-draw_mouse','1','-framerate','15','-video_size','1440x960','-i',os.environ['DISPLAY'],'-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p',str(q/'board-tutorial.mp4')])
+started=time.monotonic(); events=[]
+def step(text,*args,hold=3):
+    events.append({'start':round(time.monotonic()-started,2),'text':text})
+    if args: subprocess.run(['xdotool',*map(str,args)],check=True)
+    time.sleep(hold)
+    subprocess.run(['import','-window','root',str(q/f'take-{len(events):02}.png')],check=True)
+try:
+    step('Start in an ordinary vault. Board keeps project tasks beside your notes.',hold=3)
+    step('Open Settings.', 'key','ctrl+comma')
+    step('Choose Features.', 'mousemove',397,277,'click',1)
+    step('Enable Agents to reveal Projects, Board and Manager.', 'mousemove',1074,384,'click',1)
+    step('Close Settings. Local Boards do not require a T3 connection.', 'mousemove',1080,236,'click',1)
+    step('Open the app menu.', 'mousemove',1388,22,'click',1)
+    # Agents adds Projects between Inbox and Logs: New Folder moves down one row.
+    step('Choose New Folder.', 'mousemove',1230,351,'click',1)
+    step('Name the folder Garden plans.', 'type','--clearmodifiers','--delay',70,'Garden plans')
+    step('Create the folder.', 'key','Return')
+    step('Right-click the folder.', 'mousemove',103,138,'click',3)
+    step('Choose Make this a project.', 'mousemove',195,507,'click',1)
+    step('Keep local defaults, then Create project.', 'mousemove',885,444,'click',1)
+    step('Open the Projects picker.', 'mousemove',100,22,'click',1)
+    step('Select Garden plans.', 'mousemove',157,146,'click',1)
+    step('Choose Create board.', 'mousemove',441,550,'click',1)
+    step('Keep the title. Goal, Repository and Stage note are optional.',hold=3)
+    step('Save with Create board.', 'mousemove',150,512,'click',1)
+    step('Open Local cards.', 'mousemove',145,173,'click',1)
+    step('Choose Add card.', 'mousemove',439,170,'click',1)
+    step('Enter a title. Todo is the default state.', 'type','--clearmodifiers','--delay',70,'Choose herb seeds')
+    step('Choose Save card.', 'mousemove',56,387,'click',1)
+    card=q/'practice-vault/Garden plans/.okilum/board-local.toml'
+    (q/'recorded-before.toml').write_bytes(card.read_bytes())
+    step('Edit the saved card.', 'mousemove',783,203,'click',1)
+    step('Choose Doing.', 'mousemove',105,319,'click',1)
+    step('Choose Save card to persist the new state.', 'mousemove',58,387,'click',1)
+    (q/'recorded-after.toml').write_bytes(card.read_bytes())
+    step('Return to Manage board.', 'mousemove',774,102,'click',1)
+    step('Close Manage board. The card is now in In progress.', 'mousemove',768,100,'click',1,hold=5)
+    step('Switch to Board for the same saved tasks.', 'mousemove',170,86,'click',1,hold=5)
+    step('Return to List.', 'mousemove',114,86,'click',1,hold=3)
+finally:
+    r.send_signal(signal.SIGINT); r.wait(timeout=15)
+    (q/'events.json').write_text(json.dumps(events,indent=2))

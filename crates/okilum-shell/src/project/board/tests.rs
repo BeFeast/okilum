@@ -2,6 +2,41 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
+fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    for mode in [None, Some(list::Mode::List), Some(list::Mode::Board)] {
+        let area = tempfile::tempdir().unwrap();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let board = cx.new(|cx| {
+                let mut board = Board::with_reader(
+                    area.path().into(),
+                    |_| panic!("Reading Help must not access repository sources"),
+                    window,
+                    cx,
+                );
+                if let Some(mode) = mode {
+                    board.binding =
+                        Some(Binding::parse("version: 1\ntitle: Practice\nissues: []\n").unwrap());
+                    board.list.preferences.mode = mode;
+                }
+                board
+            });
+            Root::new(board, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("board-help-content").is_none());
+        let entry = visual
+            .debug_bounds("board-help")
+            .expect("contextual Help entry");
+        visual.simulate_click(entry.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("board-help-content").is_some());
+        assert_eq!(visual.opened_url(), None);
+        assert_eq!(std::fs::read_dir(area.path()).unwrap().count(), 0);
+    }
+}
+
+#[gpui::test]
 fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserved(
     cx: &mut TestAppContext,
 ) {

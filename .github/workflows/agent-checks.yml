@@ -197,6 +197,7 @@ jobs:
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
+          python3 docs/help/board/check.py
           python3 scripts/rebrand/check_brand.py
       - name: Lint every workspace target offline
         env:
@@ -317,6 +318,7 @@ jobs:
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
+          python3 docs/help/board/check.py
           python3 scripts/rebrand/check_brand.py
       - name: Lint every workspace target offline
         env:

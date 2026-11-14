@@ -192,6 +192,7 @@ mod reader_agents_offer;
 mod reader_document_decorations;
 mod reader_features;
 mod reader_file_access_notice;
+mod reader_help_assets;
 mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;

@@ -1,0 +1,114 @@
+[
+  {
+    "start": 0.0,
+    "text": "Start in an ordinary vault. Board keeps project tasks beside your notes."
+  },
+  {
+    "start": 3.34,
+    "text": "Open Settings."
+  },
+  {
+    "start": 6.71,
+    "text": "Choose Features."
+  },
+  {
+    "start": 10.14,
+    "text": "Enable Agents to reveal Projects, Board and Manager."
+  },
+  {
+    "start": 13.8,
+    "text": "Close Settings. Local Boards do not require a T3 connection."
+  },
+  {
+    "start": 17.21,
+    "text": "Open the app menu."
+  },
+  {
+    "start": 20.84,
+    "text": "Choose New Folder."
+  },
+  {
+    "start": 25.12,
+    "text": "Name the folder Garden plans."
+  },
+  {
+    "start": 29.22,
+    "text": "Create the folder."
+  },
+  {
+    "start": 32.66,
+    "text": "Right-click the folder."
+  },
+  {
+    "start": 36.43,
+    "text": "Choose Make this a project."
+  },
+  {
+    "start": 39.94,
+    "text": "Keep local defaults, then Create project."
+  },
+  {
+    "start": 43.35,
+    "text": "Open the Projects picker."
+  },
+  {
+    "start": 46.81,
+    "text": "Select Garden plans."
+  },
+  {
+    "start": 50.61,
+    "text": "Choose Create board."
+  },
+  {
+    "start": 54.58,
+    "text": "Keep the title. Goal, Repository and Stage note are optional."
+  },
+  {
+    "start": 57.92,
+    "text": "Save with Create board."
+  },
+  {
+    "start": 61.53,
+    "text": "Open Local cards."
+  },
+  {
+    "start": 64.97,
+    "text": "Choose Add card."
+  },
+  {
+    "start": 68.43,
+    "text": "Enter a title. Todo is the default state."
+  },
+  {
+    "start": 72.81,
+    "text": "Choose Save card."
+  },
+  {
+    "start": 76.21,
+    "text": "Edit the saved card."
+  },
+  {
+    "start": 79.69,
+    "text": "Choose Doing."
+  },
+  {
+    "start": 83.21,
+    "text": "Choose Save card to persist the new state."
+  },
+  {
+    "start": 86.69,
+    "text": "Return to Manage board."
+  },
+  {
+    "start": 90.14,
+    "text": "Close Manage board. The card is now in In progress."
+  },
+  {
+    "start": 95.79,
+    "text": "Switch to Board for the same saved tasks."
+  },
+  {
+    "start": 101.23,
+    "text": "Return to List."
+  }
+]

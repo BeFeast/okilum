@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board: create, save and find your work · Okilum Help</title>
+<meta name="description" content="Create a local project and Board, save a card and move it to Doing. A complete captioned walkthrough from Linux beta 7764.">
+<meta property="og:title" content="Keep project work in view · Okilum Board Help">
+<meta property="og:description" content="A real create-to-saved-change walkthrough and matching written steps.">
+<meta property="og:type" content="article"><meta property="og:image" content="https://okilum.app/help/board/assets/board-saved.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%232563eb'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+@font-face{font-family:Manrope;src:url("assets/Manrope.ttf") format("truetype");font-weight:200 800;font-display:swap}
+:root{color-scheme:light dark;font-family:Manrope,sans-serif;background:#fff;color:#182b4e;line-height:1.5;font-size:16px}
+*{box-sizing:border-box}body{margin:0}header,main,footer{max-width:1120px;margin:auto;padding:24px 32px}
+header{display:flex;justify-content:space-between;gap:24px;align-items:center}nav{display:flex;flex-wrap:wrap;gap:24px}
+a{color:#1d4ed8;text-underline-offset:4px}a:hover{opacity:.8}a:active{opacity:.6}a:focus-visible,video:focus-visible,summary:focus-visible{outline:3px solid #2563eb;outline-offset:4px}
+.brand{font-size:20px;font-weight:600;text-decoration:none}.skip{position:absolute;top:-80px;left:16px;background:#fff;padding:12px}.skip:focus{top:8px}
+h1,h2,h3{text-wrap:balance}p,li{text-wrap:pretty}h1{font-size:48px;line-height:1;max-width:680px;font-weight:600;margin:32px 0 24px}h2{font-size:24px;line-height:32px;margin:40px 0 16px;font-weight:600}h3{font-size:20px;line-height:28px}
+p{margin:16px 0}.lede{font-size:20px;line-height:28px;max-width:680px}.meta,time{font-size:14px;color:#526a93}video,img{width:100%;height:auto;display:block;border-radius:8px;background:#181818}video{margin-top:24px}figcaption{font-size:14px;margin-top:12px}figure{margin:24px 0}article{max-width:800px;margin-top:48px}li{margin:12px 0}code{font-size:14px;overflow-wrap:anywhere}time{display:inline-block;min-width:48px}summary{cursor:pointer;padding:16px 0}footer{font-size:14px;margin-top:48px}.transcript p{margin:12px 0}
+@media(prefers-color-scheme:dark){:root{background:#181818;color:#eee}a{color:#93b4ff}.meta,time{color:#b6c8e5}.skip{background:#272727;color:#eee}}
+@media(max-width:650px){header,main,footer{padding:16px}header{align-items:flex-start;flex-direction:column}h1{font-size:36px;line-height:40px}nav{gap:16px}}
+</style></head><body><a class="skip" href="#main">Skip to content</a>
+<header><a class="brand" href="https://okilum.app/">Okilum · Help</a><nav aria-label="On this page"><a href="#watch">Watch</a><a href="#steps">Written guide</a><a href="#transcript">Transcript</a></nav></header>
+<main id="main"><h1>Keep project work<br>in view</h1><p class="lede">Create a local Board, save a task and move it into progress. Your notes and project work stay together.</p>
+<section id="watch" aria-label="Board walkthrough"><video controls preload="metadata" poster="assets/board-saved.png" aria-describedby="recording"><source src="assets/board-tutorial.mp4" type="video/mp4"><track kind="captions" src="captions.vtt" srclang="en" label="English" default>Your browser cannot play this video. Follow the written guide below.</video>
+<p id="recording" class="meta">1:45 · Real Linux beta 7764 · Private practice vault · Visible cursor and English captions. No audio. Captions are also embedded below the recorded UI for offline playback.</p>
+<p><a href="assets/board-tutorial.mp4" download>Download the video</a></p></section>
+<article id="steps" aria-label="Written Board guide">
+<p>Board keeps local tasks and linked project issues beside your notes. Start with
+an ordinary vault; a local Board needs no repository or T3 connection.</p>
+<h2>Create and open</h2>
+<ol>
+<li>Open <strong>Settings → Features</strong>, enable <strong>Agents</strong>, then close Settings. This
+reveals Projects, Board and Manager; connecting a Manager is optional.</li>
+<li>If you need a folder, choose <strong>New Folder</strong> in the app menu and name it.
+Right-click that folder in Tree and choose <strong>Make this a project…</strong>.</li>
+<li>Keep or edit the project name and kind. Leave <strong>Create the project in T3</strong>
+unchecked for local work. Choose <strong>Create project</strong>.</li>
+<li>Open the <strong>Projects</strong> picker in the top bar and select your project. Select
+its <strong>Board</strong> tab when returning from Decisions, Reports or Handovers.</li>
+<li>Choose <strong>Create board</strong>. Keep its title; Goal, Repository and Stage note are
+optional. Choose <strong>Create board</strong> again to save. This opens Manage board.
+For an existing Board, use its <strong>Manage board</strong> settings button.</li>
+</ol>
+<h2>Add a card and save a change</h2>
+<ol>
+<li>In <strong>Manage board</strong>, choose <strong>Local cards → Add card</strong>. Enter a title, such
+as “Choose herb seeds”. Keep <strong>Todo</strong>, then choose <strong>Save card</strong>.</li>
+<li>Beside the saved card, choose <strong>Edit</strong>, select <strong>Doing</strong>, then <strong>Save card</strong>.</li>
+<li>Choose <strong>Back to Manage board</strong>, then its close button. The card now appears
+in <strong>В работе / In progress</strong>. <strong>Todo</strong> maps to <strong>Очередь / Queue</strong>;
+<strong>Done</strong> maps to <strong>Готово / Ready</strong>. Queue may be collapsed: click its heading.</li>
+<li>Reopen <strong>Manage board → Local cards → Edit</strong> to check the saved state.
+Cards persist in the project's <code>board-local.toml</code> service file; reopening
+the project retains the change. New projects keep service files in <code>.okilum</code>.</li>
+</ol>
+<p><strong>Done is a manual local state.</strong> It does not establish PR/CI success, an installed
+build or human verification. Local work does not enter Verified automatically.</p>
+<h2>Find and inspect work</h2>
+<p><strong>Список / Доска</strong> changes the view of the same saved tasks. <strong>/</strong> focuses search;
+use part of a title or an issue number. Clear search and selected filters when
+expected cards are missing. Queue and Verified groups can be collapsed.</p>
+<p>Open a linked issue by clicking it, or select it and use <strong>Enter / Space</strong>.
+<strong>Up / Down</strong> selects adjacent issues; <strong>Esc</strong> returns from the issue panel.
+<strong>Ждёт тебя / Waiting for you</strong> appears when the project has a decision, an
+exact-build try note or a new report requiring attention.</p>
+<p>A local Board has no PR/CI evidence. To link issues, add the project's Forgejo
+repository through <strong>Manage board → Board details</strong>, then use <strong>Link issue</strong>.
+Once bound, the repository cannot be changed because issue numbers belong to it.
+Manager discussion prepares a draft; review it before choosing Send.</p>
+<h2>If saving fails</h2>
+<p>Keep the draft. If another editor changed the source, reopen the form to reload
+its current revision before trying again. Do not replace the file by hand to
+bypass an error. A source error remains visible; last loaded cards can be stale.</p>
+<p>The bundled video shows a real Linux beta 7764, source
+<code>e2a6e8556aa2b974a0ddd4012b93ec77d746bfd7</code>, using a private practice vault.
+Its cursor and captions show every create/open step and a persisted Todo → Doing
+change. It is a tutorial, not a timing measurement or human acceptance.</p>
+
+<figure><img src="assets/board-saved.png" width="1440" height="960" alt="Garden plans Board in List view, with Choose herb seeds saved under В работе, In progress, and marked Local."><figcaption>The saved Doing state appears in In progress. Local work does not need a connected Manager.</figcaption></figure></article>
+<details id="transcript"><summary>Read the complete video transcript</summary><div class="transcript"><p><time>0:00</time> Start in an ordinary vault. Board keeps project tasks beside your notes.</p>
+<p><time>0:03</time> Open Settings.</p>
+<p><time>0:06</time> Choose Features.</p>
+<p><time>0:10</time> Enable Agents to reveal Projects, Board and Manager.</p>
+<p><time>0:13</time> Close Settings. Local Boards do not require a T3 connection.</p>
+<p><time>0:17</time> Open the app menu.</p>
+<p><time>0:20</time> Choose New Folder.</p>
+<p><time>0:25</time> Name the folder Garden plans.</p>
+<p><time>0:29</time> Create the folder.</p>
+<p><time>0:32</time> Right-click the folder.</p>
+<p><time>0:36</time> Choose Make this a project.</p>
+<p><time>0:39</time> Keep local defaults, then Create project.</p>
+<p><time>0:43</time> Open the Projects picker.</p>
+<p><time>0:46</time> Select Garden plans.</p>
+<p><time>0:50</time> Choose Create board.</p>
+<p><time>0:54</time> Keep the title. Goal, Repository and Stage note are optional.</p>
+<p><time>0:57</time> Save with Create board.</p>
+<p><time>1:01</time> Open Local cards.</p>
+<p><time>1:04</time> Choose Add card.</p>
+<p><time>1:08</time> Enter a title. Todo is the default state.</p>
+<p><time>1:12</time> Choose Save card.</p>
+<p><time>1:16</time> Edit the saved card.</p>
+<p><time>1:19</time> Choose Doing.</p>
+<p><time>1:23</time> Choose Save card to persist the new state.</p>
+<p><time>1:26</time> Return to Manage board.</p>
+<p><time>1:30</time> Close Manage board. The card is now in In progress.</p>
+<p><time>1:35</time> Switch to Board for the same saved tasks.</p>
+<p><time>1:41</time> Return to List.</p></div></details>
+</main><footer><nav aria-label="Related pages"><a href="https://okilum.app/">Okilum home</a><a href="https://okilum.app/download/">Download</a><a href="https://okilum.app/privacy/">Privacy</a><a href="https://okilum.app/terms/">Terms</a></nav><p>Okilum by BeFeast. Recorded 14 November 2026. The desktop Help bundles this same page, video and written instructions.</p></footer>
+</body></html>

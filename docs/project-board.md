@@ -548,3 +548,13 @@ and known-project matching. A bound repository cannot be retargeted. No executor
 or stage is required to create the empty Board. Local cards use an independent
 sidecar and draft-only discussion; verified local Manager launch follows
 separately. See [local project start](local-project-start.md).
+
+## Contextual Board Help (#2357)
+
+The empty Board, List toolbar and Board view expose **Help**. Its offline written
+guide covers enabling Agents, explicit local project/Board creation, returning
+through the Projects picker, adding a card and saving a manual state change.
+The optional bundled video and matching [website guide](help/board/README.md)
+show the complete workflow from a named production build with cursor/captions
+and canonical before/after evidence. Help itself never connects a Manager,
+requests repository data or writes project files.
