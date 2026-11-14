@@ -508,7 +508,18 @@ mod tests {
                 return;
             }
         }
-        panic!("not reached after 15 s: {what}");
+        let state = reader.read_with(visual, |r, _| {
+            format!(
+                "root={:?} rel={:?} single={} editing={} loading={:?} notice={:?}",
+                r.vault_root,
+                r.current_rel,
+                r.single_file,
+                r.editing.is_some(),
+                r.loading.as_ref().map(|l| l.active),
+                r.link_notice
+            )
+        });
+        panic!("not reached after 15 s: {what}; {state}");
     }
 
     fn open_single<'a>(
