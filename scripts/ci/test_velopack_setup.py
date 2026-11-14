@@ -76,6 +76,21 @@ class VelopackSetupTests(unittest.TestCase):
     def leftovers(self):
         return [p.name for p in self.dest.parent.iterdir() if p.name.startswith(".velopack-")]
 
+    def test_generation_inside_an_enclosing_git_repository(self):
+        # A TMPDIR under a checkout put the staged tree inside a repository;
+        # git apply then skipped the patch and generation failed (14.11).
+        outer = Path(tempfile.mkdtemp(prefix="velopack-outer-repo-"))
+        self.addCleanup(shutil.rmtree, outer, True)
+        subprocess.run(["git", "init", "-q", str(outer)], check=True)
+        nested = outer / "checkout" / "nested"
+        shutil.copytree(self.root, nested)
+        command = [sys.executable, str(nested / "scripts/velopack-setup.py"),
+                   "--archive", str(nested / self.archive.name)]
+        for extra in ([], ["--verify"]):
+            result = subprocess.run(command + extra, cwd=nested, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("v1", (nested / "vendor/velopack-1.2.161/src/lib.rs").read_text())
+
     def test_fresh_generation_and_verify(self):
         self.run_setup("--verify", success=False)
         self.assertIn("velopack ready", self.run_setup())

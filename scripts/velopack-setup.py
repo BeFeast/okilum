@@ -71,7 +71,13 @@ def generate(manifest, patch, dest, archive=None):
                 else:
                     raise ValueError("unsupported velopack archive member")
         # Zero-context patch is safe only against the exact verified archive.
-        subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
+        # Apply as a plain patch inside the staged tree. Inside an enclosing
+        # repository git silently skips paths outside the current directory
+        # (TMPDIR under a checkout), so hide every repository from it.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_CEILING_DIRECTORIES"] = str(staged.parent)
+        subprocess.run(["git", "apply", "--unidiff-zero", str(Path(patch).resolve())],
+                       cwd=staged, env=env, check=True)
         if tree_digest(staged) != manifest["tree_sha256"]:
             raise ValueError("velopack generated source/manifest mismatch")
         replace(staged, dest)
