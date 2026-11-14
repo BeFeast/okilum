@@ -70,7 +70,6 @@ pub mod search;
 pub mod search_snippet;
 #[cfg(all(unix, feature = "brain"))]
 pub mod source;
-pub mod ssh_askpass;
 pub mod source_classifier;
 pub mod source_fences;
 #[cfg(any(unix, windows))]
@@ -78,6 +77,7 @@ pub mod source_history;
 pub mod source_projection;
 #[cfg(any(unix, windows))]
 mod source_state;
+pub mod ssh_askpass;
 pub mod syncthing_ignore;
 pub mod task_edit;
 pub mod tasks;

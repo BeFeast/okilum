@@ -203,11 +203,11 @@ mod reader_reminder;
 mod reader_reminder_notify;
 mod reader_reminder_settings;
 mod reader_remote_markdown;
-mod reader_ssh_askpass;
 #[cfg(test)]
 mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
+mod reader_ssh_askpass;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
