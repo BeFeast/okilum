@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -460,6 +461,370 @@ class SprintTargetTests(unittest.TestCase):
         self.assertLess(calls[0], script.index('if ! cargo build'))
         self.assertLess(script.index('codesign --verify --deep --strict "$bundle_stage"'), calls[1])
         self.assertLess(calls[1], script.index('unregister "$bundle_stage"\n# Target only'))
+
+
+QUIT_MOCKS = r'''
+state=$MOCK_STATE
+app=/Applications/Okilum.app
+ps() { sed "s/UID/$(id -u)/" "$state/processes"; }
+drop_pid() { grep -v "^$1 " "$state/processes" > "$state/p" || true; mv "$state/p" "$state/processes"; }
+osascript() {
+    local script="$*"
+    echo "$script" >> "$state/apple-events"
+    if [[ $script == *'to quit'* ]]; then
+        echo quit >> "$state/calls"
+        echo 0 > "$state/since_quit"
+        case $MOCK_QUIT in
+            cancel*) echo "execution error: Okilum got an error: User canceled. (-128)" >&2; return 1 ;;
+            *) return 0 ;;
+        esac
+    fi
+}
+# MOCK_IDLE: idle seconds per ioreg call, space separated; the last one repeats.
+ioreg() {
+    local calls=0 values=($MOCK_IDLE)
+    [[ -f $state/ioreg ]] && calls=$(cat "$state/ioreg")
+    echo $((calls + 1)) > "$state/ioreg"
+    ((calls < ${#values[@]})) || calls=$((${#values[@]} - 1))
+    printf '    |   "HIDIdleTime" = %s\n' "$((values[calls] * 1000000000))"
+}
+# Events keyed to sleeps: MOCK_EXIT_AFTER = app exits that many sleeps after a
+# cancel-then-exit Quit; MOCK_EXIT_AT / MOCK_REUSE_AT = total sleeps after which
+# the app exits / its pid is reused by another process (new start time).
+sleep() {
+    local total=0 since
+    echo "$1" >> "$state/sleeps"
+    [[ -f $state/total ]] && total=$(cat "$state/total")
+    total=$((total + 1)); echo "$total" > "$state/total"
+    if [[ -f $state/since_quit ]]; then
+        since=$(( $(cat "$state/since_quit") + 1 )); echo "$since" > "$state/since_quit"
+        if [[ $MOCK_QUIT == cancel-then-exit ]] && (( since >= MOCK_EXIT_AFTER )); then drop_pid 501; fi
+    fi
+    if [[ -n ${MOCK_EXIT_AT:-} ]] && (( total >= MOCK_EXIT_AT )); then drop_pid 501; fi
+    if [[ -n ${MOCK_REUSE_AT:-} ]] && (( total == MOCK_REUSE_AT )); then
+        sed -i.bak 's/^501 UID Sat Nov 14 08:00:00 2026 /501 UID Sat Nov 14 10:59:59 2026 /' "$state/processes"
+    fi
+}
+kill() {
+    # kill -0 / plain kill only reach the bounded launchctl job; report it gone.
+    [[ $1 == -* && $1 != -0 ]] || return 1
+    local signal=$1 pid; shift
+    grep -q "^$1 " "$state/processes" || return 0
+    echo "$signal $*" >> "$state/calls"
+    if [[ $signal == -TERM && -n ${MOCK_SPAWN_ON_TERM:-} ]]; then
+        echo "$MOCK_SPAWN_ON_TERM UID Sat Nov 14 11:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum" >> "$state/processes"
+    fi
+    if [[ $MOCK_STOPS_ON == *"${signal#-}"* ]]; then
+        for pid in "$@"; do drop_pid "$pid"; done
+    fi
+}
+launchctl() {
+    echo "launchctl $*" >> "$state/calls"
+    if (( ${MOCK_LAUNCHCTL_RC:-0} )); then
+        echo "Could not find service \"com.befeast.okilum.sync\" in domain for user gui: $(id -u)" >&2
+    fi
+    return "${MOCK_LAUNCHCTL_RC:-0}"
+}
+open() { echo "open $*" >> "$state/calls"; }
+'''
+
+
+def quit_block():
+    script = SCRIPT.read_text()
+    return 'SPRINT_DEFERRED=' + script.split('\nSPRINT_DEFERRED=', 1)[1].split('\nsprint_exit() {', 1)[0]
+
+
+class SprintQuitTests(unittest.TestCase):
+    '''Okilum is closed only while the user is idle >= 60 s, by identity-bound
+    signals, never SIGKILLed; the old Sync helper is restarted (14.11 reviews).'''
+    START = 'Fri Nov 13 15:56:48 2026'
+    APP = '501 UID Sat Nov 14 08:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum\n'
+    HELPER = '502 UID Fri Nov 13 15:56:48 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+    QA_COPY = '503 UID Sat Nov 14 08:00:00 2026 /Users/qa/Okilum QA/Okilum.app/Contents/MacOS/okilum\n'
+    STAGED = ('504 UID Sat Nov 14 08:00:00 2026 /Users/o/Developer/worktrees/okilum/sprint/staging.noindex/'
+              'Okilum.app/Contents/MacOS/okilum\n')
+    OTHER_USER = '505 0 Sat Nov 14 08:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum\n'
+
+    def run_call(self, processes, call='stop_installed_app', quit='ignore', idle='120', stops_on='', **mock):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / 'processes').write_text(processes)
+            env = dict(os.environ, MOCK_STATE=str(state), MOCK_QUIT=quit, MOCK_IDLE=idle, MOCK_STOPS_ON=stops_on,
+                       MOCK_EXIT_AFTER=str(mock.pop('exit_after', 3)), TMPDIR=str(state))
+            env.update({'MOCK_' + key.upper(): str(value) for key, value in mock.items()})
+            command = ('set -Eeuo pipefail\n' + QUIT_MOCKS + quit_block() +
+                       '\nstatus=0; ' + call + ' || status=$?; echo RESULT=$status\n')
+            result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True, timeout=60)
+            read = lambda name: (state / name).read_text().split('\n') if (state / name).exists() else []
+            self.assertEqual(sorted(p.name for p in state.glob('okilum-launchctl.*')), [], 'temp file removed')
+            return (result, [c for c in read('calls') if c], [s for s in read('sleeps') if s],
+                    (state / 'processes').read_text(), ''.join(read('apple-events')))
+
+    def signals(self, calls):
+        return [c for c in calls if c.startswith('-')]
+
+    # Finding 1: nothing, not even Quit, before >= 60 s idle; idle re-read before the replacement.
+    def test_active_user_gets_no_quit_and_no_signal_and_the_sprint_defers(self):
+        result, calls, sleeps, processes, events = self.run_call(self.APP, idle='0', stops_on='TERM KILL')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertIn('Okilum was not sent Quit', result.stdout)
+        self.assertEqual(events, '', 'no AppleEvent at all')
+        self.assertEqual(calls, [])
+        self.assertEqual(sleeps, ['5'] * 24)
+        self.assertEqual(processes, self.APP)
+
+    def test_quit_is_sent_only_once_the_user_is_idle(self):
+        result, calls, sleeps, _, _ = self.run_call(self.APP, quit='cancel-then-exit', idle='5 5 61', exit_after=2)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(sleeps[:2], ['5', '5'])
+        self.assertIn('User idle 61s: asking Okilum to quit', result.stdout)
+        self.assertEqual(calls, ['quit'])
+
+    def test_self_exit_after_quit_still_rechecks_idle_before_replacement(self):
+        # -128, then Okilum exits by itself 20 s later; the user is back at the replacement.
+        result, calls, sleeps, _, _ = self.run_call(
+            self.APP, call='close_for_replacement', quit='cancel-then-exit', exit_after=20, idle='120 0')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertIn('right before the replacement; reopening the installed Okilum unchanged', result.stdout)
+        self.assertEqual(calls, ['quit', 'open /Applications/Okilum.app'])
+        self.assertEqual(sleeps, ['1'] * 20)
+
+    def test_self_exit_after_20_s_with_idle_user_proceeds_without_signal(self):
+        result, calls, sleeps, processes, _ = self.run_call(
+            self.APP + self.HELPER, call='close_for_replacement', quit='cancel-then-exit', exit_after=20,
+            stops_on='TERM KILL')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('User canceled. (-128)', result.stdout)
+        self.assertEqual(calls, ['quit'])
+        self.assertEqual(sleeps, ['1'] * 20)
+        self.assertEqual(processes, self.HELPER)
+
+    def test_app_closed_by_the_user_before_any_quit_is_not_reopened(self):
+        result, calls, _, _, events = self.run_call(self.APP, call='close_for_replacement', idle='0 0 0', exit_at=2)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('Okilum quit by itself', result.stdout)
+        self.assertEqual(calls, [])
+        self.assertEqual(events, '')
+
+    def test_quit_wait_for_self_exit_is_60_seconds(self):
+        result, calls, sleeps, _, _ = self.run_call(self.APP, quit='cancel', stops_on='TERM')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(sleeps.count('1'), 60)
+        self.assertEqual(self.signals(calls), ['-TERM 501'])
+
+    def test_user_back_before_sigterm_gets_no_signal(self):
+        result, calls, _, processes, _ = self.run_call(self.APP, idle='120 0', stops_on='TERM')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertIn('idle 0s < 60s); Okilum was not sent SIGTERM', result.stdout)
+        self.assertEqual(calls, ['quit'])
+        self.assertEqual(processes, self.APP)
+
+    def test_the_signal_logs_the_idle_read_that_allowed_it(self):
+        result, _, _, _, _ = self.run_call(self.APP, idle='61 75', stops_on='TERM')
+        self.assertIn('SIGTERM pid 501 (user idle 75s)', result.stdout)
+
+    # Finding 2: only captured identities, re-validated right before the signal.
+    def test_a_pid_reused_during_the_quit_wait_is_never_signalled(self):
+        result, calls, _, _, _ = self.run_call(self.APP, reuse_at=30, stops_on='TERM')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(self.signals(calls), [])
+
+    def test_a_new_instance_started_after_sigterm_is_never_signalled(self):
+        # Review 4 reproduced TERM 501 -> KILL 601 on e4a730a2.
+        result, calls, _, processes, _ = self.run_call(self.APP, spawn_on_term=601)
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertEqual(self.signals(calls), ['-TERM 501'])
+        self.assertIn('601 UID', processes)
+
+    def test_only_this_users_installed_app_is_quit_or_signalled(self):
+        others = self.QA_COPY + self.STAGED + self.OTHER_USER + self.HELPER
+        result, calls, _, _, events = self.run_call(self.APP + others, stops_on='TERM')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(self.signals(calls), ['-TERM 501'])
+        self.assertIn('application "/Applications/Okilum.app"', events)
+        self.assertNotIn('application id', events)
+        result, calls, _, _, events = self.run_call(others)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(calls, [], 'copies alone need no quit and get no signal')
+        self.assertEqual(events, '')
+
+    # Finding 3: no SIGKILL; still open 30 s after SIGTERM -> left running, deferred.
+    def test_app_still_open_after_sigterm_is_left_running_and_never_killed(self):
+        result, calls, sleeps, processes, _ = self.run_call(self.APP + self.HELPER)
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertIn('still runs 30s after SIGTERM; left running, no SIGKILL', result.stdout)
+        self.assertEqual(self.signals(calls), ['-TERM 501'])
+        self.assertEqual(sleeps, ['1'] * 90)
+        self.assertEqual(processes, self.APP + self.HELPER)
+        self.assertNotIn('-KILL', SCRIPT.read_text())
+
+    # Finding 4: helper restart reports launchctl's real exit status; bounded wait.
+    def restart_helper(self, processes, snapshot, stops_on='TERM', **mock):
+        return self.run_call(processes, call='restart_old_sync_helper ' + shlex.quote(snapshot),
+                             stops_on=stops_on, **mock)
+
+    def test_old_sync_helper_is_terminated_and_kickstarted_with_exit_0_reported(self):
+        result, calls, _, processes, _ = self.restart_helper(self.HELPER + self.QA_COPY, '502 ' + self.START)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(self.signals(calls), ['-TERM 502'])
+        self.assertTrue(any(c.startswith('launchctl kickstart gui/') and c.endswith('/com.befeast.okilum.sync')
+                            for c in calls), calls)
+        self.assertIn('/com.befeast.okilum.sync exit 0.', result.stdout)
+        self.assertEqual(processes, self.QA_COPY)
+
+    def test_failed_kickstart_is_a_warning_with_its_exit_code_not_success(self):
+        result, _, _, _, _ = self.restart_helper(self.HELPER, '502 ' + self.START, launchctl_rc=113)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)  # fail-soft
+        self.assertIn('WARNING: Sync helper restart request failed: launchctl kickstart gui/', result.stdout)
+        self.assertIn('exit 113: Could not find service', result.stdout)
+        self.assertNotIn('exit 0.', result.stdout)
+
+    def test_helper_that_ignores_sigterm_gets_a_bounded_wait_and_a_warning(self):
+        result, calls, sleeps, processes, _ = self.restart_helper(self.HELPER, '502 ' + self.START, stops_on='')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('WARNING: Sync helper (pid 502) still runs 15s after SIGTERM; left running, no SIGKILL', result.stdout)
+        self.assertEqual(self.signals(calls), ['-TERM 502'])
+        self.assertEqual(sleeps, ['1'] * 15)
+        self.assertEqual(processes, self.HELPER)
+
+    def test_new_helper_with_another_pid_or_start_time_is_left_alone(self):
+        new_pid = '602 UID Sat Nov 14 10:40:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+        reused = '502 UID Sat Nov 14 10:40:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+        for running in (new_pid, reused):
+            with self.subTest(running=running):
+                result, calls, _, processes, _ = self.restart_helper(running, '502 ' + self.START)
+                self.assertIn('RESULT=0', result.stdout, result.stderr)
+                self.assertEqual(self.signals(calls), [])
+                self.assertEqual(processes, running)
+
+    def test_helper_of_another_user_or_bundle_is_not_snapshotted(self):
+        others = ('702 0 Fri Nov 13 15:56:48 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+                  '703 UID Fri Nov 13 15:56:48 2026 /Users/qa/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n')
+        result, _, _, _, _ = self.run_call(self.HELPER + others, call='bundle_processes okilum-sync-supervisor')
+        self.assertEqual(result.stdout.splitlines(), ['502 ' + self.START, 'RESULT=0'])
+
+    def test_deferral_is_not_reported_as_a_failure(self):
+        script = SCRIPT.read_text()
+        trap = script.split('sprint_exit() {', 1)[1].split('\ntrap sprint_exit EXIT', 1)[0]
+        deferred = trap.split('if (( result == SPRINT_DEFERRED )); then', 1)[1].split('elif (( result != 0 )); then', 1)[0]
+        self.assertNotIn('reporter', deferred)
+        self.assertNotIn('FAILED', deferred)
+        self.assertIn('if ((closed == SPRINT_DEFERRED)); then exit "$SPRINT_DEFERRED"; fi', script)
+        self.assertLess(script.index('\nSPRINT_DEFERRED=75\n'), script.index('\ntrap sprint_exit EXIT\n'))
+
+    def test_sprint_order_close_snapshot_replace_restart_launch(self):
+        script = SCRIPT.read_text()
+        close = script.index('closed=0; close_for_replacement || closed=$?')
+        snapshot = script.index('old_sync_helper=$(bundle_processes "$SYNC_HELPER")')
+        self.assertLess(close, snapshot)
+        self.assertLess(snapshot, script.index('mv "$app" "$backup"'))
+        restart = script.index('restart_old_sync_helper "$old_sync_helper"')
+        self.assertLess(script.index('ditto "$bundle_stage" "$app"'), restart)
+        self.assertLess(script.index('keep_one_registration\nrestart_old_sync_helper'), script.index('set_stage launch'))
+        self.assertLess(restart, script.index('open "$app"\nrestore_on_failure=0'))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS renamex_np')
+    def test_native_mac_vendor_setup_swaps_directories_atomically(self):
+        # The Sprint's vendor stage runs scripts/velopack-setup.py on the Mac.
+        spec = importlib.util.spec_from_file_location('velopack_setup', ROOT / 'scripts/velopack-setup.py')
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / 'first', Path(directory) / 'second'
+            for path, text in ((first, '1'), (second, '2')):
+                path.mkdir()
+                (path / 'f').write_text(text)
+            setup.exchange(first, second)
+            self.assertEqual(((first / 'f').read_text(), (second / 'f').read_text()), ('2', '1'))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps/ioreg semantics')
+    def test_native_mac_finds_and_stops_only_the_exact_bundle_executable(self):
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / 'Okilum.app'
+            qa = Path(directory) / 'QA/Okilum.app'
+            pids = []
+            for executable in (app / 'Contents/MacOS/okilum', app / 'Contents/MacOS/okilum-sync-supervisor',
+                               qa / 'Contents/MacOS/okilum'):
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                # copy, not copy2: /bin/sleep carries SIP flags that chflags refuses.
+                shutil.copy('/bin/sleep', executable)
+                # Orphaned to launchd, which reaps it: no zombie left in ps.
+                started = subprocess.run(['/bin/bash', '-c', '"$0" 120 >/dev/null 2>&1 & echo $!', str(executable)],
+                                         check=True, capture_output=True, text=True)
+                pids.append(int(started.stdout))
+            target, helper, copy = pids
+            try:
+                # IDLE_NEEDED=0: a hosted runner's HID idle time is not controllable.
+                env = dict(os.environ, OKILUM_SPRINT_QUIT_WAIT='1', OKILUM_SPRINT_IDLE_WAIT='0',
+                           OKILUM_SPRINT_IDLE_NEEDED='0', OKILUM_SPRINT_TERM_GRACE='5')
+                command = ('set -Eeuo pipefail\napp="$1"\n' + quit_block() +
+                           '\nprintf "pids=%s\\n" "$(installed_app_pids | tr "\\n" " ")"'
+                           '\nprintf "idle=%s\\n" "$(user_idle_seconds)"'
+                           '\nstatus=0; stop_installed_app || status=$?; echo RESULT=$status\n')
+                result = subprocess.run(['/bin/bash', '-c', command, 'native', str(app)], env=env,
+                                        capture_output=True, text=True, timeout=60)
+                self.assertIn(f'pids={target} \n', result.stdout, result.stderr)
+                self.assertRegex(result.stdout, r'idle=\d+\n')
+                self.assertIn('RESULT=0', result.stdout, result.stderr)
+                self.assertIn('SIGTERM', result.stdout)
+                self.assertFalse(alive(target))
+                self.assertTrue(alive(helper), 'the Sync helper keeps running')
+                self.assertTrue(alive(copy), 'a copy elsewhere keeps running')
+            finally:
+                for pid in pids:
+                    if alive(pid):
+                        os.kill(pid, 9)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps semantics')
+    def test_native_mac_restarts_only_the_snapshotted_sync_helper(self):
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        def start(executable):
+            # Orphaned to launchd, which reaps it: no zombie left in ps.
+            started = subprocess.run(['/bin/bash', '-c', '"$0" 120 >/dev/null 2>&1 & echo $!', str(executable)],
+                                     check=True, capture_output=True, text=True)
+            return int(started.stdout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / 'Okilum.app'
+            helper = app / 'Contents/MacOS/okilum-sync-supervisor'
+            helper.parent.mkdir(parents=True)
+            # copy, not copy2: /bin/sleep carries SIP flags that chflags refuses.
+            shutil.copy('/bin/sleep', helper)
+            old = start(helper)
+            pids = [old]
+            try:
+                block = quit_block()
+                snapshot = subprocess.run(['/bin/bash', '-c', 'set -Eeuo pipefail\napp="$1"\n' + block +
+                                           '\nbundle_processes okilum-sync-supervisor', 'native', str(app)],
+                                          check=True, capture_output=True, text=True).stdout
+                self.assertRegex(snapshot, rf'^{old} \w{{3}} \w{{3}} +\d+ \d\d:\d\d:\d\d \d{{4}}\n$')
+                new = start(helper)  # e.g. launchd already started the new bundle's helper
+                pids.append(new)
+                env = dict(os.environ, OKILUM_SPRINT_SYNC_HELPER_WAIT='5')
+                result = subprocess.run(['/bin/bash', '-c', 'set -Eeuo pipefail\napp="$1"\n' + block +
+                                         '\nrestart_old_sync_helper "$2"; echo RESULT=$?', 'native', str(app), snapshot],
+                                        env=env, capture_output=True, text=True, timeout=60)
+                self.assertIn('RESULT=0', result.stdout, result.stderr)
+                self.assertIn(f'(pid {old})', result.stdout)
+                self.assertFalse(alive(old))
+                self.assertTrue(alive(new), 'a helper started after the snapshot is not signalled')
+            finally:
+                for pid in pids:
+                    if alive(pid):
+                        os.kill(pid, 9)
 
 
 if __name__ == '__main__':
