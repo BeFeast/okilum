@@ -1385,3 +1385,62 @@ fn contents2814_offsets_map_through_line_edits() {
     );
     assert_eq!(edit::map_offset(old, old, 3), 3);
 }
+
+#[gpui::test]
+fn contents2814_edit_reload_with_other_content_refreshes_contents_and_clears_the_warning(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, dirs) =
+        editable_reader_with(cx, &[("reload.yml", "first: 1\nsecond: 2\n")], "reload.yml");
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    type_at(&input, visual, 0..0, "bad: [1, 2\n");
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.last_valid_tooltip().is_some(),
+            "positive: stale before Reload"
+        );
+        assert_eq!(shown(v)[0], "first 1");
+    });
+    // Reload replaces the buffer with `set_value`, which emits no Change.
+    std::fs::write(dirs[0].path().join("reload.yml"), "reloaded: 3\n").unwrap();
+    reader.update_in(visual, |r, w, cx| r.resolve_source(true, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        editor_text(&input, visual),
+        "reloaded: 3\n",
+        "positive: reloaded"
+    );
+    view.read_with(visual, |v, _| {
+        assert_eq!(
+            shown(v),
+            ["reloaded 3"],
+            "Contents follows the reloaded text"
+        );
+        assert!(v.last_valid_tooltip().is_none(), "the warning is cleared");
+    });
+    assert!(visual.debug_bounds("file-contents-last-valid").is_none());
+}
+
+#[gpui::test]
+fn contents2814_edit_never_releases_a_tree_on_the_ui_thread(cx: &mut TestAppContext) {
+    let (reader, visual, _dirs) =
+        editable_reader_with(cx, &[("drops.yml", "first: 1\nsecond: 2\n")], "drops.yml");
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    let counts = reader_code_file::document::drop_probe::install(visual.executor());
+    // A replaced tree, an invalid tree, and a replaced tree again.
+    type_at(&input, visual, 0..0, "top: 0\n");
+    type_at(&input, visual, 0..0, "bad: [1, 2\n");
+    view.read_with(visual, |v, _| assert!(v.last_valid_tooltip().is_some()));
+    type_at(&input, visual, 0..11, "");
+    view.read_with(visual, |v, _| assert_eq!(shown(v)[0], "top 0"));
+    let counts = counts.borrow();
+    assert!(
+        counts.background >= 3,
+        "positive: trees were released ({} on a worker)",
+        counts.background
+    );
+    assert_eq!(counts.foreground, 0, "trees released on the UI thread");
+}

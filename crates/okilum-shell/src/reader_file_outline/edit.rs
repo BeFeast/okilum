@@ -6,7 +6,7 @@
 //! click lands where the node went through the edits made since.
 use super::*;
 use crate::reader_editor::FileChrome;
-use gpui_component::input::projection::SourceStamp;
+use gpui_component::input::projection::{SourceMutation, SourceStamp};
 use std::time::Instant;
 
 /// The edit buffer's tree is built once typing pauses this long.
@@ -79,10 +79,10 @@ impl View {
         self.snapshot.reveal = None;
         let observer = match &chrome {
             Some(chrome) => cx.observe(chrome, |this, chrome, cx| this.edit_verdict(&chrome, cx)),
-            None => cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.schedule_edit_parse(true, cx);
-                }
+            // Every text revision, Reload's `set_value` included (it emits
+            // no Change).
+            None => cx.subscribe(&input, |this, _, _: &SourceMutation, cx| {
+                this.schedule_edit_parse(true, cx);
             }),
         };
         self.snapshot.edit = Some(EditSource {
@@ -186,12 +186,19 @@ impl View {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let Some(edit) = this.snapshot.edit.as_mut() else {
+                    retire(doc, cx);
                     return;
                 };
+                // A newer revision has its own build scheduled.
+                if edit.input.read(cx).source_stamp() != stamp {
+                    retire(doc, cx);
+                    return;
+                }
                 // Only strict verdicts (JSON, YAML) make text stale; TOML and
                 // XML keep the rows their tolerant parse gives.
                 if let Some(error) = &doc.invalid {
                     let stale = Some((error.line, error.message.clone()));
+                    retire(doc, cx);
                     if edit.stale != stale {
                         edit.stale = stale;
                         cx.notify();
@@ -218,7 +225,7 @@ impl View {
         let Some(edit) = self.snapshot.edit.as_mut() else {
             return;
         };
-        edit.built = Some((doc.clone(), stamp));
+        retire(edit.built.replace((doc.clone(), stamp)), cx);
         let file = self.snapshot.file.clone();
         let source = if doc.semantic {
             ContentsSource::Ready(doc)

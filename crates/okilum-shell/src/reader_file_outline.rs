@@ -14,6 +14,14 @@ mod parse;
 #[path = "reader_file_outline/tree.rs"]
 pub(crate) mod tree;
 
+/// Release a whole tree (or its rows) on a worker: dropping one walks every
+/// node, which is file-sized work the UI thread must not do (#2814).
+fn retire<T: Send + 'static>(value: T, cx: &App) {
+    cx.background_executor()
+        .spawn(async move { drop(value) })
+        .detach();
+}
+
 /// «Reading structure…» appears only when reading takes longer than this.
 const READING_DELAY: Duration = Duration::from_millis(300);
 
@@ -400,11 +408,16 @@ impl View {
             // A new file starts from nothing: no rows, no pending rebuild and
             // no «Reading structure…» timer of the previous file.
             self.snapshot.file = file;
-            self.snapshot.doc = None;
-            self.snapshot.pending = None;
-            self.snapshot.rows = Arc::default();
-            self.snapshot.positions = Arc::default();
-            self.snapshot.groups = Arc::default();
+            retire(
+                (
+                    self.snapshot.doc.take(),
+                    self.snapshot.pending.take(),
+                    std::mem::take(&mut self.snapshot.rows),
+                    std::mem::take(&mut self.snapshot.positions),
+                    std::mem::take(&mut self.snapshot.groups),
+                ),
+                cx,
+            );
             self.snapshot.current = None;
             self.snapshot.seen = None;
             self.snapshot.follow_caret = false;
@@ -426,7 +439,7 @@ impl View {
                     .or(self.snapshot.doc.as_ref());
                 if newest.is_none_or(|old| !Arc::ptr_eq(old, &doc)) {
                     // The shown rows keep their document until the new rows land.
-                    self.snapshot.pending = Some(doc);
+                    retire(self.snapshot.pending.replace(doc), cx);
                     self.rebuild_rows(cx);
                 }
             }
@@ -450,19 +463,29 @@ impl View {
             ContentsSource::Invalid(reason) => {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Invalid(reason);
-                self.snapshot.doc = None;
-                self.snapshot.pending = None;
+                retire(
+                    (
+                        self.snapshot.doc.take(),
+                        self.snapshot.pending.take(),
+                        std::mem::take(&mut self.snapshot.rows),
+                    ),
+                    cx,
+                );
                 self.snapshot.task = None;
-                self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
             ContentsSource::Absent => {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Absent;
-                self.snapshot.doc = None;
-                self.snapshot.pending = None;
+                retire(
+                    (
+                        self.snapshot.doc.take(),
+                        self.snapshot.pending.take(),
+                        std::mem::take(&mut self.snapshot.rows),
+                    ),
+                    cx,
+                );
                 self.snapshot.task = None;
-                self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
         }
@@ -645,15 +668,19 @@ impl View {
                 {
                     this.snapshot.pending = None;
                 }
-                this.snapshot.doc = Some(used);
+                let old_doc = this.snapshot.doc.replace(used);
                 // No toggle ran since (it would have bumped the generation):
                 // the opened path replaces the state it was computed from.
                 if let Some(expansion) = expansion {
                     *this.expansion() = expansion;
                 }
-                this.snapshot.rows = Arc::new(rows);
-                this.snapshot.positions = Arc::new(positions);
-                this.snapshot.groups = Arc::new(groups);
+                let old = (
+                    old_doc,
+                    std::mem::replace(&mut this.snapshot.rows, Arc::new(rows)),
+                    std::mem::replace(&mut this.snapshot.positions, Arc::new(positions)),
+                    std::mem::replace(&mut this.snapshot.groups, Arc::new(groups)),
+                );
+                retire(old, cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
                 this.list.scroll_to(ListOffset {

@@ -40,6 +40,9 @@ pub(crate) struct Document {
     /// Child-walk steps, so tests can prove a row label costs O(1).
     #[cfg(test)]
     pub child_steps: std::sync::atomic::AtomicUsize,
+    /// Counts a drop on the foreground of a probing test (#2814).
+    #[cfg(test)]
+    pub drop_probe: drop_probe::Probe,
     pub foldable: bool,
     pub structure: Vec<StructureRow>,
 }
@@ -310,6 +313,8 @@ impl Document {
             node_lookups: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             child_steps: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            drop_probe: drop_probe::Probe,
             foldable,
             structure,
         }
@@ -634,5 +639,49 @@ mod tests {
         }
         let doc = Document::new("plain text".into(), "text");
         assert!(doc.node_range(0).is_none());
+    }
+}
+
+/// Tests prove a whole tree is never released on the UI thread: with a
+/// probe installed, every drop is counted as foreground or background by the
+/// test scheduler (#2814).
+#[cfg(test)]
+pub(crate) mod drop_probe {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    pub struct Counts {
+        pub foreground: usize,
+        pub background: usize,
+    }
+
+    thread_local! {
+        static PROBE: RefCell<Option<(gpui::BackgroundExecutor, Rc<RefCell<Counts>>)>> =
+            const { RefCell::new(None) };
+    }
+
+    pub fn install(executor: gpui::BackgroundExecutor) -> Rc<RefCell<Counts>> {
+        let counts = Rc::new(RefCell::new(Counts::default()));
+        PROBE.with(|probe| *probe.borrow_mut() = Some((executor, counts.clone())));
+        counts
+    }
+
+    #[derive(Debug, Default)]
+    pub struct Probe;
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = PROBE.try_with(|probe| {
+                if let Some((executor, counts)) = probe.borrow().as_ref() {
+                    let mut counts = counts.borrow_mut();
+                    if executor.is_main_thread() {
+                        counts.foreground += 1;
+                    } else {
+                        counts.background += 1;
+                    }
+                }
+            });
+        }
     }
 }

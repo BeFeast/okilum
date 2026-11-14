@@ -82,6 +82,8 @@ CONTROLS = [
  ('yaml-no-verdict', 'contents2814_edit_yaml_is_stale_while_invalid_and_toml_keeps_tolerant_rows'),
  ('map-unchanged', 'contents2814_offsets_map_through_line_edits'),
  ('edit-no-whereabouts', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
+ ('reload-change-only', 'contents2814_edit_reload_with_other_content_refreshes_contents_and_clears_the_warning'),
+ ('drop-on-ui', 'contents2814_edit_never_releases_a_tree_on_the_ui_thread'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -116,7 +118,9 @@ try:
     ed = 'reader_file_outline/edit.rs'
     edit(ed, '        let edit = self.snapshot.edit.as_ref()?;\n        let (built, stamp) = edit.built.as_ref()?;', '        let edit = self.snapshot.edit.as_ref()?;\n        if crate::contents2814_control("edit-no-whereabouts") {\n            return None;\n        }\n        let (built, stamp) = edit.built.as_ref()?;')
     edit(ed, '        if current {', '        if current || crate::contents2814_control("edit-unmapped-jump") {')
-    edit(ed, '        edit.built = Some((doc.clone(), stamp));', '        edit.built = Some((doc.clone(), stamp));\n        if crate::contents2814_control("edit-forget-open") {\n            *self.expansion() = Default::default();\n        }')
+    edit(ed, '        retire(edit.built.replace((doc.clone(), stamp)), cx);', '        retire(edit.built.replace((doc.clone(), stamp)), cx);\n        if crate::contents2814_control("edit-forget-open") {\n            *self.expansion() = Default::default();\n        }')
+    edit(ed, 'cx.subscribe(&input, |this, _, _: &SourceMutation, cx| {', 'cx.subscribe(&input, |this, _, event: &SourceMutation, cx| {\n                if crate::contents2814_control("reload-change-only") && matches!(event.reason, gpui_component::input::projection::SourceMutationReason::Reset) {\n                    return;\n                }')
+    edit(view, "fn retire<T: Send + 'static>(value: T, cx: &App) {\n", "fn retire<T: Send + 'static>(value: T, cx: &App) {\n    if crate::contents2814_control(\"drop-on-ui\") {\n        drop(value);\n        return;\n    }\n")
     edit(ed, '                if let Some(error) = &doc.invalid {', '                if let Some(error) = doc.invalid.as_ref().filter(|_| !crate::contents2814_control("yaml-no-verdict")) {')
     edit(ed, '    if old == new {', '    if old == new || crate::contents2814_control("map-unchanged") {')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
