@@ -17,6 +17,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -119,13 +120,21 @@ class FakeCompositor(threading.Thread):
     """Answers the registry with wl_seat + ext_idle_notifier_v1 and sends `idled`
     for the notification when `idle` is set. Records every request."""
 
-    def __init__(self, path, notifier_version=2, idle=True, offer=True):
+    def __init__(self, path, notifier_version=2, idle=True, offer=True, burst=None):
         super().__init__(daemon=True)
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(path)
         self.server.listen(1)
         self.version, self.idle, self.offer, self.requests = notifier_version, idle, offer, []
+        # Opcodes sent in ONE write right after the notification is created
+        # (0 idled, 1 resumed); replaces `idle` when given.
+        self.burst = burst
+        self.subscribed = threading.Event()
         self.start()
+
+    def send_event(self, opcode):
+        """A later idled/resumed, e.g. input during the quit."""
+        self.conn.sendall(D.wl_message(self.notification[0], opcode))
 
     def run(self):
         with self.server:
@@ -133,6 +142,7 @@ class FakeCompositor(threading.Thread):
             self.serve(conn)
 
     def serve(self, conn):
+        self.conn = conn
         buffer, objects = b'', {}
         with conn:
             while True:
@@ -163,8 +173,11 @@ class FakeCompositor(threading.Thread):
                     elif objects.get(8) and obj == objects[8][0] and opcode in (1, 2):
                         self.notification = struct.unpack_from('<III', payload)
                         self.opcode = opcode
-                        if self.idle:
+                        if self.burst is not None:
+                            out += b''.join(D.wl_message(self.notification[0], code) for code in self.burst)
+                        elif self.idle:
                             out += D.wl_message(self.notification[0], 0)
+                        self.subscribed.set()
                     if out:
                         conn.sendall(out)
 
@@ -190,6 +203,27 @@ class Idleness(unittest.TestCase):
         fake = FakeCompositor(self.path, notifier_version=1, idle=False)
         self.assertFalse(D.wait_idle(self.path, 60000, 0.5))
         self.assertEqual(fake.opcode, 1)                 # get_idle_notification
+
+    def test_idled_then_resumed_in_one_packet_is_not_idle(self):
+        # Review P1 (15760a27): the old client returned on the first `idled`.
+        FakeCompositor(self.path, burst=[0, 1])
+        self.assertFalse(D.wait_idle(self.path, 60000, 0.5))
+
+    def test_resumed_idled_in_one_packet_is_idle(self):
+        FakeCompositor(self.path, burst=[0, 1, 0])
+        self.assertTrue(D.wait_idle(self.path, 60000, 2))
+
+    def test_input_after_idle_is_seen_before_the_signal(self):
+        fake = FakeCompositor(self.path)
+        with D.IdleWatch(self.path, 60000) as watch:
+            self.assertTrue(watch.wait(5))
+            fake.send_event(1)                           # resumed
+            deadline = time.monotonic() + 5
+            while watch.still_idle() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(watch.still_idle())
+            fake.send_event(0)
+            self.assertTrue(watch.wait(5))
 
     def test_no_idle_protocol(self):
         FakeCompositor(self.path, offer=False)
@@ -226,54 +260,123 @@ class FakeProc:
         shutil.rmtree(self.root / str(pid))
 
 
+class FakeWatch:
+    def __init__(self, idle=True):
+        self.idle = idle
+
+    def still_idle(self):
+        return self.idle
+
+
+class Kernel:
+    """Stands in for pidfd_open / pidfd_send_signal / poll on a FakeProc."""
+
+    def __init__(self, test, proc, on_term='exit', on_open=None):
+        self.proc, self.on_term, self.on_open, self.sent, self.pinned = proc, on_term, on_open, [], {}
+        test.patches = getattr(test, 'patches', {})
+        for name in ('open_pidfd', 'close_pidfd', 'send_signal', 'wait_exit'):
+            test.patches.setdefault(name, getattr(D, name))
+            setattr(D, name, getattr(self, name))
+
+    def open_pidfd(self, pid):
+        if not (self.proc.root / str(pid)).exists():
+            raise ProcessLookupError(pid)
+        if self.on_open:
+            self.on_open(pid)
+        fd = 1000 + pid
+        self.pinned[fd] = pid
+        return fd
+
+    def close_pidfd(self, fd):
+        self.pinned.pop(fd, None)
+
+    def send_signal(self, fd, sig):
+        pid = self.pinned[fd]
+        self.sent.append((pid, sig))
+        if sig == signal.SIGTERM and self.on_term == 'exit':
+            self.proc.exit(pid)
+
+    def wait_exit(self, fd, seconds):
+        return not (self.proc.root / str(self.pinned[fd])).exists()
+
+
+def restore(test):
+    for name, value in getattr(test, 'patches', {}).items():
+        setattr(D, name, value)
+
+
 class Quit(unittest.TestCase):
+    IMAGE = '/h/.local/share/okilum/Okilum.AppImage'
+
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.proc = FakeProc(os.path.join(self.dir, 'proc'))
         self.lock = os.path.join(self.dir, 'state/okilum/reader-instance.lock')
-        self.proc.add(41, '/tmp/.mount_x/usr/bin/okilum', self.lock, '/h/.local/share/okilum/Okilum.AppImage')
+        self.proc.add(41, '/tmp/.mount_x/usr/bin/okilum', self.lock, self.IMAGE)
         self.proc.add(42, '/tmp/.mount_x/usr/bin/okilum', '/h/.local/state/okilum-sprint/reader-instance.lock', '/s')
         self.proc.add(43, '/usr/bin/okilum-sprint', self.lock, '/s')
-        self.timing = {'sleep': lambda _: None}
 
     def tearDown(self):
+        restore(self)
         shutil.rmtree(self.dir)
 
     def windows(self):
         return D.gui_processes(str(self.proc.root), self.lock)
 
+    def quit(self, idle=True):
+        return D.quit_app(str(self.proc.root), self.lock, self.IMAGE, FakeWatch(idle), 1)
+
     def test_only_the_window_of_this_state_directory(self):
-        self.assertEqual([(w['pid'], w['appimage']) for w in self.windows()],
-                         [(41, '/h/.local/share/okilum/Okilum.AppImage')])
+        self.assertEqual([(w['pid'], w['appimage']) for w in self.windows()], [(41, self.IMAGE)])
 
     def test_term_is_enough(self):
-        sent = []
-        result = D.quit_app(str(self.proc.root), self.windows(), 1, 1,
-                            kill=lambda pid, sig: (sent.append(sig), self.proc.exit(pid)), **self.timing)
-        self.assertEqual((result, sent), ('TERM', [signal.SIGTERM]))
+        kernel = Kernel(self, self.proc)
+        self.assertEqual((self.quit(), kernel.sent), ('TERM', [(41, signal.SIGTERM)]))
 
-    def test_kill_after_ignored_term_and_zombie_counts_as_gone(self):
-        sent = []
+    def test_ignored_term_is_never_followed_by_kill(self):
+        # Review P1 (15760a27): no SIGKILL without proof that everything is saved.
+        kernel = Kernel(self, self.proc, on_term='ignore')
+        self.assertEqual((self.quit(), kernel.sent), ('still running', [(41, signal.SIGTERM)]))
+        self.assertTrue((self.proc.root / '41').exists())
 
-        def kill(pid, sig):
-            sent.append(sig)
-            if sig == signal.SIGKILL:
-                self.proc.state(pid, 'Z')
-        ticks = iter(range(10**6))
-        result = D.quit_app(str(self.proc.root), self.windows(), 1, 1, kill=kill,
-                            sleep=lambda _: None, monotonic=lambda: next(ticks) * 0.3)
-        self.assertEqual((result, sent), ('KILL', [signal.SIGTERM, signal.SIGKILL]))
+    def test_input_before_the_signal_sends_nothing(self):
+        kernel = Kernel(self, self.proc)
+        self.assertEqual((self.quit(idle=False), kernel.sent), ('user active', []))
 
-    def test_unkillable_refuses(self):
-        ticks = iter(range(10**6))
-        with self.assertRaises(D.Refused):
-            D.quit_app(str(self.proc.root), self.windows(), 1, 1, kill=lambda *_: None,
-                       sleep=lambda _: None, monotonic=lambda: next(ticks) * 0.3)
+    def test_pid_reused_during_the_wait_is_never_signalled(self):
+        # Review P1 (15760a27): the window seen before the 25-min wait is gone and
+        # its pid now names another program; the old code signalled the stale pid.
+        kernel = Kernel(self, self.proc)
+        self.proc.exit(41)
+        self.proc.add(41, '/usr/bin/foot', '/dev/null', '')
+        self.assertEqual((self.quit(), kernel.sent), ('closed', []))
 
-    def test_reused_pid_is_not_the_window(self):
+    def test_restarted_window_gets_the_signal_under_its_new_identity(self):
+        kernel = Kernel(self, self.proc)
+        self.proc.exit(41)
+        self.proc.add(57, '/tmp/.mount_y/usr/bin/okilum', self.lock, self.IMAGE, start=900)
+        self.assertEqual((self.quit(), kernel.sent), ('TERM', [(57, signal.SIGTERM)]))
+
+    def test_pid_reused_between_scan_and_pidfd_is_not_signalled(self):
+        kernel = Kernel(self, self.proc, on_open=lambda pid: self.proc.state(pid, 'S', start=999))
+        self.assertEqual((self.quit(), kernel.sent), ('closed', []))
+        self.assertEqual(kernel.pinned, {})
+
+    def test_zombie_is_not_the_window(self):
         window = self.windows()[0]
-        self.proc.state(41, 'S', start=999)
-        self.assertFalse(D.alive(str(self.proc.root), window))
+        self.proc.state(41, 'Z')
+        self.assertFalse(D.same_process(str(self.proc.root), window))
+
+    def test_real_pidfd_on_a_child(self):
+        child = subprocess.Popen(['sleep', '30'])
+        try:
+            fd = D.open_pidfd(child.pid)
+            D.send_signal(fd, signal.SIGTERM)
+            self.assertTrue(D.wait_exit(fd, 5))
+            D.close_pidfd(fd)
+        finally:
+            child.kill()
+            child.wait()
 
 
 class Feed(BaseHTTPRequestHandler):
@@ -335,15 +438,35 @@ class Delivery(unittest.TestCase):
         self.proc = FakeProc(os.path.join(self.dir, 'proc'))
         self.launches, self.signals = [], []
         self.patches = {}
-        self.patch('wait_idle', lambda *a: True)
+        self.idle_result, self.on_wait = True, None
+        test = self
+
+        class Watch:
+            def __init__(self, *_):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def wait(self, seconds):
+                if test.on_wait:
+                    test.on_wait()
+                return test.idle_result
+
+            def still_idle(self):
+                return test.idle_result
+        self.patch('IdleWatch', Watch)
         self.patch('quit_app', self.fake_quit)
         self.patch('launch', self.fake_launch)
         self.patch('unit_active', lambda unit: self.app_runs)
         self.app_confirms, self.app_runs = True, True
+        self.on_quit = None
 
     def tearDown(self):
-        for name, value in self.patches.items():
-            setattr(D, name, value)
+        restore(self)
         shutil.rmtree(self.dir)
 
     def patch(self, name, value):
@@ -372,10 +495,13 @@ class Delivery(unittest.TestCase):
         lock = str(self.settings.app_state / D.INSTANCE_LOCK)
         self.proc.add(51058, '/tmp/x/usr/bin/okilum', lock, str(self.image))
 
-    def fake_quit(self, proc, windows, *_):
+    def fake_quit(self, proc, lock, image, watch, term_wait):
+        windows = D.gui_processes(proc, lock)
         self.signals.append([w['pid'] for w in windows])
         for window in windows:
             self.proc.exit(window['pid'])
+        if self.on_quit:
+            self.on_quit()
         return 'TERM'
 
     def lock_free(self, name):
@@ -443,7 +569,7 @@ class Delivery(unittest.TestCase):
 
     def test_active_user_waits_and_logs_once(self):
         self.open_window()
-        self.patch('wait_idle', lambda *a: False)
+        self.idle_result = False
         self.assertEqual(self.deliver(), 'user active')
         self.assertEqual(self.deliver(), 'user active')
         self.assertEqual((self.image.read_bytes(), self.signals, self.launches), (self.old, [], []))
@@ -488,6 +614,63 @@ class Delivery(unittest.TestCase):
             self.deliver()
         self.assertEqual(self.image.read_bytes(), self.old)
         self.assertEqual([(c, r) for c, r in self.launches], [(self.old, None)])
+
+    def real_quit(self, **kernel):
+        D.quit_app = self.patches['quit_app']           # the real one; restore() keeps the original
+        return Kernel(self, self.proc, **kernel)
+
+    def test_input_right_before_the_signal_cancels_the_run(self):
+        self.open_window()
+        kernel = self.real_quit()
+        self.on_wait = lambda: setattr(self, 'idle_result', True)
+        Watch = D.IdleWatch
+        Watch.still_idle = lambda _: False                # `resumed` after `idled`
+        self.assertEqual(self.deliver(), 'user active')
+        self.assertEqual((kernel.sent, self.image.read_bytes(), self.launches), ([], self.old, []))
+        self.assertIn('input arrived just before quitting; nothing sent', self.log())
+
+    def test_window_that_ignores_term_keeps_running_and_nothing_is_installed(self):
+        self.open_window()
+        kernel = self.real_quit(on_term='ignore')
+        self.settings.term_wait = 0.2
+        self.assertEqual(self.deliver(), 'Okilum did not quit')
+        self.assertEqual(self.deliver(), 'Okilum did not quit')
+        self.assertEqual(kernel.sent, [(51058, signal.SIGTERM)] * 2)
+        self.assertEqual((self.image.read_bytes(), self.launches), (self.old, []))
+        self.assertEqual(self.log().count('never killed'), 1)
+
+    def newer_in_app_update(self):
+        self.image.write_bytes(b'in-app 7761')
+        self.image.chmod(0o755)
+        D.write_build(self.image, 7761, self.image)
+
+    def test_in_app_update_during_the_quit_is_not_downgraded(self):
+        # Review P1 (15760a27): re-check under both locks right before installing.
+        self.open_window()
+        self.on_quit = self.newer_in_app_update
+        self.assertEqual(self.deliver(), 'up to date (7761)')
+        self.assertEqual(self.image.read_bytes(), b'in-app 7761')
+        self.assertEqual(D.recorded_build(self.image), 7761)
+        self.assertEqual(self.launches, [(b'in-app 7761', None)])   # reopened unchanged
+        self.assertIn('build 7760 not installed: build 7761 is already installed, reopened', self.log())
+        self.assertEqual(self.stages(), [])
+
+    def test_newer_build_after_the_first_check_is_kept_with_the_app_closed(self):
+        original = self.patches.setdefault('download_payload', D.download_payload)
+
+        def download_then_update(settings, release):
+            payload = original(settings, release)
+            self.newer_in_app_update()                   # lands before the locks are taken
+            return payload
+        D.download_payload = download_then_update
+        self.assertEqual(self.deliver(), 'up to date (7761)')
+        self.assertEqual((self.image.read_bytes(), self.launches), (b'in-app 7761', []))
+
+    def test_in_app_update_during_the_idle_wait_skips_the_quit(self):
+        self.open_window()
+        self.on_wait = self.newer_in_app_update
+        self.assertEqual(self.deliver(), 'up to date (7761)')
+        self.assertEqual((self.signals, self.launches, self.image.read_bytes()), ([], [], b'in-app 7761'))
 
     def test_held_updater_lock_is_respected(self):
         import fcntl

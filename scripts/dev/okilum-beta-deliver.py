@@ -12,10 +12,12 @@ few minutes inside the graphical session. One run:
    already holds that build or a newer one;
 3. downloads and verifies the payload in a private cache (no lock held);
 4. if Okilum is open, waits until the user has been idle for 60 s (Wayland
-   ext-idle-notify-v1), then quits it: SIGTERM, which the app handles like Quit
-   (editors saved, window state written), and SIGKILL only if it is still
-   running 30 s later;
-5. installs with the updater's own transaction beside the AppImage (install and
+   ext-idle-notify-v1, kept open so any later input counts), finds the windows
+   again, pins them by pidfd and sends SIGTERM, which the app handles like Quit
+   (editors saved, launch marker cleared). Input before the signal cancels the
+   run. It never sends SIGKILL: a window still open 30 s later keeps running
+   and the next run tries again;
+5. checks the installed build again under the locks (never a downgrade), installs with the updater's own transaction beside the AppImage (install and
    update locks, a `.okilum-update-*` stage with previous.AppImage and
    expected.json, the build record, an atomic rename);
 6. reopens Okilum if it was open, in its own systemd unit in the app slice,
@@ -98,7 +100,6 @@ class Settings:
         self.idle_ms = int(env.get('OKILUM_DELIVER_IDLE_SECONDS', '60')) * 1000
         self.idle_wait = float(env.get('OKILUM_DELIVER_IDLE_WAIT', '1500'))
         self.term_wait = float(env.get('OKILUM_DELIVER_TERM_SECONDS', '30'))
-        self.kill_wait = float(env.get('OKILUM_DELIVER_KILL_SECONDS', '10'))
         self.start_wait = float(env.get('OKILUM_DELIVER_START_SECONDS', '90'))
         self.lock_wait = float(env.get('OKILUM_DELIVER_LOCK_SECONDS', '60'))
         self.max_failures = int(env.get('OKILUM_DELIVER_MAX_FAILURES', '2'))
@@ -360,39 +361,93 @@ def gui_processes(proc, lock):
     return found
 
 
-def alive(proc, process):
+def same_process(proc, window):
+    """/proc/<pid> still names the scanned window: same uid, executable and start
+    time, not exited (a zombie has)."""
+    base = Path(proc) / str(window['pid'])
     try:
-        state, start = process_stat(proc, process['pid'])
+        if base.stat().st_uid != os.getuid():
+            return False
+        exe = os.readlink(base / 'exe').split(' (deleted)')[0]
+        state, start = process_stat(proc, window['pid'])
     except (OSError, ValueError, IndexError):
         return False
-    return start == process['start'] and state not in ('Z', 'X')
+    return exe == window['exe'] and start == window['start'] and state not in ('Z', 'X')
 
 
-def wait_gone(proc, processes, seconds, sleep=time.sleep, monotonic=time.monotonic):
-    deadline = monotonic() + seconds
-    while any(alive(proc, p) for p in processes):
-        if monotonic() >= deadline:
-            return False
-        sleep(0.25)
-    return True
+# Thin wrappers so tests can stand in for the kernel.
+def open_pidfd(pid):
+    return os.pidfd_open(pid)
 
 
-def quit_app(proc, processes, term_wait, kill_wait, kill=os.kill, **timing):
-    """SIGTERM = Quit (reader_recovery.rs: editors saved, state written). SIGKILL only
-    after the grace; by then the user has been idle >= 60 s, so autosave and the
-    recovery journal hold every edit (PR #2925). Returns 'TERM' or 'KILL'."""
-    for process in processes:
-        with contextlib.suppress(ProcessLookupError):
-            kill(process['pid'], signal.SIGTERM)
-    if wait_gone(proc, processes, term_wait, **timing):
-        return 'TERM'
-    for process in processes:
-        if alive(proc, process):
+def close_pidfd(fd):
+    os.close(fd)
+
+
+def send_signal(fd, sig):
+    signal.pidfd_send_signal(fd, sig)
+
+
+def wait_exit(fd, seconds):
+    """True once the pinned process has exited (a pidfd turns readable)."""
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    return bool(poller.poll(max(0, int(seconds * 1000))))
+
+
+def pin(proc, window):
+    """A pidfd for the scanned window, or None if that pid now names another
+    process. The identity is checked after opening: a match then proves the
+    pidfd holds the scanned process, and a pidfd never follows a reused pid."""
+    try:
+        fd = open_pidfd(window['pid'])
+    except ProcessLookupError:
+        return None
+    if same_process(proc, window):
+        return fd
+    close_pidfd(fd)
+    return None
+
+
+def quit_app(proc, lock, image, watch, term_wait, monotonic=time.monotonic):
+    """Quit the Okilum windows of `image` only while the user is idle.
+
+    Windows are resolved again now (the idle wait can last 25 min) and pinned by
+    pidfd to uid + executable + start time. SIGTERM is the app's Quit
+    (reader_recovery.rs: editors saved, then the launch marker is cleared), and it
+    is sent only if no input arrived up to this moment. There is no SIGKILL: the
+    app exposes no "everything is saved" state while it runs (its launch marker
+    is cleared only by a safe shutdown), so a window that does not quit within
+    the grace keeps running and the next timer run tries again.
+
+    Returns 'TERM' (every window exited), 'closed' (none left to quit),
+    'user active' (input before the signal, nothing sent) or 'still running'."""
+    fresh = [w for w in gui_processes(proc, lock) if w['appimage'] == str(image)]
+    pinned = []
+    try:
+        for window in fresh:
+            fd = pin(proc, window)
+            if fd is not None:
+                pinned.append(fd)
+        if not pinned:
+            return 'closed'
+        try:
+            idle = watch.still_idle()
+        except (OSError, ConnectionError):
+            idle = False                                 # cannot tell: never signal
+        if not idle:
+            return 'user active'
+        for fd in pinned:
             with contextlib.suppress(ProcessLookupError):
-                kill(process['pid'], signal.SIGKILL)
-    if wait_gone(proc, processes, kill_wait, **timing):
-        return 'KILL'
-    raise Refused('Okilum survived SIGKILL; nothing installed')
+                send_signal(fd, signal.SIGTERM)
+        deadline = monotonic() + term_wait
+        for fd in pinned:
+            if not wait_exit(fd, deadline - monotonic()):
+                return 'still running'
+        return 'TERM'
+    finally:
+        for fd in pinned:
+            close_pidfd(fd)
 
 
 # ------------------------------------------------------- Wayland idleness
@@ -427,19 +482,10 @@ class Wayland:
     def send(self, obj, opcode, payload=b''):
         self.sock.sendall(wl_message(obj, opcode, payload))
 
-    def event(self, deadline):
-        """(object, opcode, payload), or None at the deadline."""
-        while len(self.buffer) < 8 or len(self.buffer) < (struct.unpack_from('<I', self.buffer, 4)[0] >> 16):
-            left = deadline - time.monotonic()
-            if left <= 0:
-                return None
-            ready, _, _ = select.select([self.sock], [], [], left)
-            if not ready:
-                return None
-            chunk = self.sock.recv(65536)
-            if not chunk:
-                raise ConnectionError('Wayland compositor closed the connection')
-            self.buffer += chunk
+    def _take(self):
+        """One complete message from the buffer, or None."""
+        if len(self.buffer) < 8 or len(self.buffer) < (struct.unpack_from('<I', self.buffer, 4)[0] >> 16):
+            return None
         obj, header = struct.unpack_from('<II', self.buffer)
         size, opcode = header >> 16, header & 0xFFFF
         payload, self.buffer = self.buffer[8:size], self.buffer[size:]
@@ -447,6 +493,35 @@ class Wayland:
             message = payload[12:12 + struct.unpack_from('<I', payload, 8)[0] - 1].decode(errors='replace')
             raise ConnectionError(f'Wayland protocol error: {message}')
         return obj, opcode, payload
+
+    def _read(self, timeout):
+        ready, _, _ = select.select([self.sock], [], [], max(0, timeout))
+        if not ready:
+            return False
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise ConnectionError('Wayland compositor closed the connection')
+        self.buffer += chunk
+        return True
+
+    def event(self, deadline):
+        """(object, opcode, payload), or None at the deadline."""
+        while True:
+            message = self._take()
+            if message is not None:
+                return message
+            left = deadline - time.monotonic()
+            if left <= 0 or not self._read(left):
+                return None
+
+    def pending(self):
+        """Every message the compositor has sent so far, in order, without waiting."""
+        while self._read(0):
+            pass
+        messages = []
+        while (message := self._take()) is not None:
+            messages.append(message)
+        return messages
 
 
 def parse_global(payload):
@@ -456,11 +531,28 @@ def parse_global(payload):
     return name, interface, struct.unpack_from('<I', payload, offset)[0]
 
 
-def wait_idle(path, idle_ms, wait_seconds, connect=Wayland):
-    """True once the user has been idle for idle_ms (input idleness when the
-    compositor offers notifier v2, else v1), False if wait_seconds pass first."""
-    wl = connect(path)
-    try:
+class IdleWatch:
+    """An ext-idle-notify-v1 notification kept open for the whole quit, so input
+    at any moment counts. `idled`/`resumed` are applied strictly in order; the
+    user is idle only if the last event received so far is `idled`."""
+
+    def __init__(self, path, idle_ms, connect=Wayland):
+        self.wl = connect(path)
+        self.idle = False
+        try:
+            self.notification = self._subscribe(idle_ms)
+        except BaseException:
+            self.wl.close()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.wl.close()
+
+    def _subscribe(self, idle_ms):
+        wl = self.wl
         registry, callback = wl.new_id(), wl.new_id()
         wl.send(1, 1, struct.pack('<I', registry))      # wl_display.get_registry
         wl.send(1, 0, struct.pack('<I', callback))      # wl_display.sync
@@ -490,16 +582,35 @@ def wait_idle(path, idle_ms, wait_seconds, connect=Wayland):
         # get_input_idle_notification (v2) ignores idle inhibitors such as video.
         wl.send(notifier, 2 if version >= 2 else 1,
                 struct.pack('<III', notification, idle_ms, bound['wl_seat'][0]))
-        deadline = time.monotonic() + wait_seconds
+        return notification
+
+    def _apply(self, event):
+        obj, opcode, _ = event
+        if obj == self.notification and opcode in (0, 1):
+            self.idle = opcode == 0                      # 0 idled, 1 resumed
+
+    def still_idle(self):
+        """Apply everything received up to now; True only if still idle."""
+        for event in self.wl.pending():
+            self._apply(event)
+        return self.idle
+
+    def wait(self, seconds):
+        """True once idle with no later `resumed` already received; False at the deadline."""
+        deadline = time.monotonic() + seconds
         while True:
-            event = wl.event(deadline)
+            if self.still_idle():
+                return True
+            event = self.wl.event(deadline)
             if event is None:
                 return False
-            obj, opcode, _ = event
-            if obj == notification and opcode == 0:
-                return True
-    finally:
-        wl.close()
+            self._apply(event)
+
+
+def wait_idle(path, idle_ms, wait_seconds, connect=Wayland):
+    """One-shot form of IdleWatch.wait."""
+    with IdleWatch(path, idle_ms, connect) as watch:
+        return watch.wait(wait_seconds)
 
 
 # ------------------------------------------------------------- the install
@@ -764,15 +875,35 @@ def deliver(settings, proc='/proc'):
             return 'no Wayland session to measure idleness'
         idle_started = time.monotonic()
         try:
-            idle = wait_idle(settings.wayland, settings.idle_ms, settings.idle_wait)
+            watch = IdleWatch(settings.wayland, settings.idle_ms)
         except (OSError, ConnectionError) as error:
             note_once(settings, f'idle-error-{build}', f'build {build} waits: cannot measure idleness ({error})')
             return 'idleness unknown'
+        with watch:
+            try:
+                idle = watch.wait(settings.idle_wait)
+            except (OSError, ConnectionError) as error:
+                note_once(settings, f'idle-error-{build}', f'build {build} waits: cannot measure idleness ({error})')
+                return 'idleness unknown'
+            if idle:
+                # An in-app update may have landed during the wait.
+                current = installed_build(settings.image, release)
+                if current is not None and current >= build:
+                    return f'up to date ({current})'
+                quit_how = quit_app(proc, lock, settings.image, watch, settings.term_wait)
         if not idle:
             note_once(settings, f'busy-{build}', f'build {build} waits: user active for {settings.idle_wait:.0f} s')
             return 'user active'
+        if quit_how == 'user active':
+            note_once(settings, f'resumed-{build}', f'build {build} waits: input arrived just before quitting; nothing sent')
+            return 'user active'
+        if quit_how == 'still running':
+            note_once(settings, f'noquit-{build}', f'build {build} waits: Okilum did not quit {settings.term_wait:.0f} s'
+                      ' after SIGTERM (a dialog?); left running, never killed')
+            return 'Okilum did not quit'
+        if quit_how == 'closed':
+            windows = []
         idle_wait = int(time.monotonic() - idle_started)
-        quit_how = quit_app(proc, windows, settings.term_wait, settings.kill_wait)
     try:
         return install(settings, release, payload, windows, published, seen, idle_wait, quit_how)
     except BaseException:
@@ -785,35 +916,45 @@ def deliver(settings, proc='/proc'):
 
 def install(settings, release, payload, windows, published, seen, idle_wait, quit_how):
     build = release['build']
-    restored = False
+    summary = (f'build {build} source {release["source"][:9]} · beta published {clock(published)}'
+               f' · seen {clock(seen)} · idle wait {idle_wait}s · quit {quit_how}')
+    restored, newer = False, None
     with install_locks(settings.image, settings.lock_wait) as release_install:
-        stage, previous_build = apply(settings, release, payload)
-        release_install()
-        installed = now()
-        summary = (f'build {build} source {release["source"][:9]} · beta published {clock(published)}'
-                   f' · seen {clock(seen)} · idle wait {idle_wait}s · quit {quit_how}')
-        if not windows:
-            atomic_write(stage / 'completed', 'committed\n')
-            log_line(settings, f'installed {summary} · installed {clock(installed)} · Okilum was not open, not started')
-            forget_older(settings, build)
-            return f'installed {build}'
-        try:
-            unit = launch(settings.image, receipt=stage)
-            outcome = wait_started(stage, unit, settings.start_wait)
-        except Refused as error:
-            unit, outcome = str(error), 'exited'
-        if outcome == 'started':
-            atomic_write(stage / 'completed', 'committed\n')
-            log_line(settings, f'installed {summary} · installed {clock(installed)} · running {clock(now())}'
-                     f' (start confirmed by the app, unit {unit})')
-            forget_older(settings, build)
-            return f'installed {build}'
-        note_failure(settings, build)
-        if outcome == 'timeout':
-            log_line(settings, f'FAILED {summary} · installed {clock(installed)} · no start confirmation in'
-                     f' {settings.start_wait:.0f} s; it keeps running, previous copy in {stage}')
-            return 'unconfirmed'
-        restored = roll_back(settings, release, stage, previous_build)
+        # Under both locks: an in-app update made while this run waited is never
+        # replaced by an older or equal build.
+        current = installed_build(settings.image, release)
+        if current is not None and current >= build:
+            newer = current
+        else:
+            stage, previous_build = apply(settings, release, payload)
+            release_install()
+            installed = now()
+            if not windows:
+                atomic_write(stage / 'completed', 'committed\n')
+                log_line(settings, f'installed {summary} · installed {clock(installed)} · Okilum was not open, not started')
+                forget_older(settings, build)
+                return f'installed {build}'
+            try:
+                unit = launch(settings.image, receipt=stage)
+                outcome = wait_started(stage, unit, settings.start_wait)
+            except Refused as error:
+                unit, outcome = str(error), 'exited'
+            if outcome == 'started':
+                atomic_write(stage / 'completed', 'committed\n')
+                log_line(settings, f'installed {summary} · installed {clock(installed)} · running {clock(now())}'
+                         f' (start confirmed by the app, unit {unit})')
+                forget_older(settings, build)
+                return f'installed {build}'
+            note_failure(settings, build)
+            if outcome == 'timeout':
+                log_line(settings, f'FAILED {summary} · installed {clock(installed)} · no start confirmation in'
+                         f' {settings.start_wait:.0f} s; it keeps running, previous copy in {stage}')
+                return 'unconfirmed'
+            restored = roll_back(settings, release, stage, previous_build)
+    if newer is not None:
+        reopened = f', reopened (unit {launch(settings.image)})' if windows else ''
+        log_line(settings, f'build {build} not installed: build {newer} is already installed{reopened}')
+        return f'up to date ({newer})'
     reopened = launch(settings.image)
     log_line(settings, f'FAILED {summary} · exited before confirming its start ({unit}); '
              + ('previous AppImage restored' if restored else 'AppImage changed meanwhile, left as is')

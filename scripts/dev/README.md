@@ -119,12 +119,11 @@ Needs Rust, git, curl, python3, gpg and gpgv, flock (util-linux), readelf
 (binutils) and the system libraries gpui builds against (Wayland, xkbcommon,
 fontconfig, freetype, xcb, Vulkan).
 
-## Linux: newest beta on every merge, `okilum-beta-deliver.py`
+## Linux: newest beta without a person, `okilum-beta-deliver.py`
 
-Oleg 14.11: every merge to main reaches his Linux desktop within 30 minutes,
-with nobody in the loop, and Okilum is closed only after 60 s without input.
-Nothing is compiled on the desktop: the script installs the hosted Linux beta
-that CI publishes for every main push
+Oleg 14.11: the Linux desktop installs every new beta by itself, and Okilum is
+closed only after 60 s without input. Nothing is compiled on the desktop: the
+script installs the hosted Linux beta that CI publishes for every main push
 (`https://updates.befeast.com/okilum/linux/beta/latest.json`). A systemd user
 timer runs it 2.5 min after the previous run ends, in the graphical session.
 
@@ -143,28 +142,37 @@ One run:
    `~/.local/state/okilum/reader-instance.lock`; `okilum sync serve` and the
    Sprint build never match), waits for 60 s without input through Wayland
    `ext-idle-notify-v1` (input idleness on notifier v2, so a playing video does
-   not count as activity). It waits up to 25 min, then the next timer run
-   tries again.
-4. **Quit:** SIGTERM, which Okilum handles like Quit (editors saved, window
-   state written). If it still runs 30 s later: SIGKILL. That loses nothing
-   that autosave (1–2 s after typing) and the recovery journal do not already
-   hold, because the user has been idle for at least 60 s (the reasoning of
-   #2925 for the Mac).
+   not count as activity). The notification stays open until the quit is
+   over, and `idled`/`resumed` are applied in order, so the user counts as
+   idle only if the last event is `idled`. It waits up to 25 min, then the
+   next timer run tries again. If an in-app update installed this build or a
+   newer one meanwhile, it stops here.
+4. **Quit:** the windows are found again and pinned by pidfd to their uid,
+   executable and start time, so a pid reused during the wait is never
+   signalled. Input received up to that moment cancels the run, with nothing
+   sent. Then SIGTERM, which Okilum handles like Quit: editors are saved and
+   the launch marker is cleared on a safe shutdown. **No SIGKILL:** the app
+   shows no "everything is saved" state while it runs, so a window still open
+   30 s after SIGTERM (an open dialog, for example) keeps running. That is
+   logged, and the next timer run tries again.
 5. **Install** with the updater's transaction: Okilum's install and update
-   locks (an update the app has staged or is applying is never overwritten), a
-   `.okilum-update-*` stage beside the AppImage with `previous.AppImage`,
-   `expected.json` and `apply.log`, the build record, then a rename. Old stages
-   are pruned like the updater does (the newest completed and the newest
-   interrupted one are kept).
+   locks (an update the app has staged or is applying is never overwritten).
+   Under both locks the installed build is checked again: the script never
+   installs a build at or below the installed one, and reopens Okilum
+   unchanged instead. Then a `.okilum-update-*` stage beside the AppImage with
+   `previous.AppImage`, `expected.json` and `apply.log`, the build record and
+   a rename. Old stages are pruned like the updater does (the newest
+   completed and the newest interrupted one are kept).
 6. **Reopen** (only if it was open) in its own unit in `app-graphical.slice`
    (`systemd-run --user`, as uwsm launchers do), with
    `OKILUM_APPIMAGE_UPDATE_RECEIPT` set to the stage, so the new build itself
-   confirms that it started. If it exits before that, the previous AppImage
-   is put back and reopened; after two failures that build is skipped and the
-   next one is tried.
+   confirms that it started. Only the update lock is held meanwhile, as in the
+   updater's APPLY helper. If the build exits before confirming, the previous
+   AppImage is put back and reopened; after two failures that build is skipped
+   and the next one is tried.
 
 Log, one line per action: `~/.local/state/okilum-deliver.log`, for example
-`installed build 7760 source 1a2b3c4d5 · beta published 10:27:31 · seen 10:29:02 · idle wait 61s · quit TERM · installed 10:30:05 · running 10:30:09 (start confirmed by the app, …)`.
+`installed build 7760 source fc5a8fc9d · beta published 10:52:43 · seen 10:59:01 · idle wait 60s · quit TERM · installed 11:00:02 · running 11:00:03 (start confirmed by the app, …)`.
 Each check also writes `~/.local/state/okilum-deliver/last-check.json` (feed
 build, installed build, time). `okilum-beta-deliver --check` prints the feed
 and installed build and changes nothing.
@@ -187,12 +195,15 @@ rm -f ~/.local/bin/okilum-beta-deliver ~/.config/systemd/user/okilum-beta-delive
 systemctl --user daemon-reload; rm -rf ~/.cache/okilum-deliver ~/.local/state/okilum-deliver
 ```
 
-Timing (measured 14.11 over builds 7745–7759): the hosted beta appears 18.6–45
-min after the merge, median about 25 min; 8 of 12 were published within 27
-min. Delivery adds at most 2.5 min (timer), the idle wait, and about 20 s to
-quit, install and reopen. So the 30-minute target holds only when CI publishes
-within about 27 min. The rest of the latency is the hosted Linux build, not
-this script.
+Measured 14.11:
 
-Needs python3 (stdlib only), gpgv, systemd-run and a Wayland compositor with
-`ext-idle-notify-v1` (Hyprland has it).
+- merge → hosted Linux beta in the feed, builds 7745–7759: 18.6–45.0 min,
+  median about 25 min.
+- After publication, the script adds up to 2.5 min (timer), the idle wait and
+  about 1 min (60 s idle threshold, then quit, install and reopen in a few
+  seconds).
+- Build 7760: merged 10:32:59, published 10:52:43, seen 10:59:01, installed
+  11:00:02, running 11:00:03 (27 min from merge).
+
+Needs python3 3.9+ (stdlib only; pidfd needs Linux 5.3+), gpgv, systemd-run
+and a Wayland compositor with `ext-idle-notify-v1` (Hyprland has it).
