@@ -167,6 +167,11 @@ pub(crate) struct ProjectView {
     feed: Entity<feed::Feed>,
     #[cfg(native_manager)]
     chrome: Entity<chrome::Chrome>,
+    /// Whether the painted header candidate moved Open in T3 into the Manager
+    /// menu (#2748). Every measured candidate lays out the same keyed menu
+    /// popover and the first one builds the menu, so the builder reads the
+    /// painted choice here rather than its own candidate's flag.
+    header_open_in_menu: Rc<std::cell::Cell<bool>>,
     #[cfg(native_manager)]
     composer: Entity<composer::Composer>,
     #[cfg(native_manager)]
@@ -516,6 +521,7 @@ impl ProjectView {
             feed,
             #[cfg(native_manager)]
             chrome,
+            header_open_in_menu: Rc::default(),
             #[cfg(native_manager)]
             composer,
             #[cfg(native_manager)]
@@ -1155,7 +1161,7 @@ impl ProjectView {
         &self,
         status: &GatewayStatus,
         show_label: bool,
-        open_in_menu: bool,
+        can_open: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -1183,6 +1189,7 @@ impl ProjectView {
         let renew = matches!(status, GatewayStatus::ExpiresSoon { .. });
         let terminal_area = self.area.clone();
         let opening_t3 = self.opening_t3;
+        let open_in_menu = self.header_open_in_menu.clone();
         let dot = div().size(px(6.)).rounded_full().bg(match label {
             "Connected" | "Ready" => brand::palette(cx).success,
             "Working" => brand::palette(cx).accent,
@@ -1248,7 +1255,7 @@ impl ProjectView {
                         let terminal_area = terminal_area.clone();
                         // #2748: a narrow header moves Open in T3 here.
                         let open = owner.clone();
-                        let menu = if open_in_menu {
+                        let menu = if can_open && open_in_menu.get() {
                             menu.item(
                                 PopupMenuItem::new("Open in T3")
                                     .disabled(opening_t3)

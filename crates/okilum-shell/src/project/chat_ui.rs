@@ -26,13 +26,17 @@ impl ProjectView {
                         &status,
                         candidate.status_label,
                         can_open && candidate.open_inline,
-                        can_open && !candidate.open_inline,
+                        can_open,
                         cx,
                     ),
                 )
             })
             .collect();
-        fit_header(candidates, brand::palette(cx).border_subtle)
+        fit_header(
+            candidates,
+            self.header_open_in_menu.clone(),
+            brand::palette(cx).border_subtle,
+        )
     }
 
     fn header_navigation(&self, title: bool, tabs: Tabs, cx: &mut Context<Self>) -> AnyElement {
@@ -116,14 +120,14 @@ impl ProjectView {
         status: &GatewayStatus,
         status_label: bool,
         open_inline: bool,
-        open_in_menu: bool,
+        can_open: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut actions = h_flex()
             .flex_none()
             .items_center()
             .gap_1()
-            .child(self.connection_line(status, status_label, open_in_menu, cx));
+            .child(self.connection_line(status, status_label, can_open, cx));
         if open_inline {
             actions = actions.child(
                 Button::new("project-open-t3")
@@ -252,8 +256,13 @@ const HEADER_CANDIDATES: [HeaderCandidate; 6] = [
 
 /// Lays out each candidate's navigation and actions at their natural widths
 /// and paints the first pair that fits side by side; the last always paints.
-/// Only the painted pair registers hitboxes, tab stops and debug bounds.
-fn fit_header(candidates: Vec<(AnyElement, AnyElement)>, border: Hsla) -> AnyElement {
+/// Only the painted pair registers hitboxes, tab stops and debug bounds;
+/// `open_in_menu` records whether that pair moved Open in T3 into the menu.
+fn fit_header(
+    candidates: Vec<(AnyElement, AnyElement)>,
+    open_in_menu: Rc<std::cell::Cell<bool>>,
+    border: Hsla,
+) -> AnyElement {
     div()
         .relative()
         .w_full()
@@ -276,6 +285,7 @@ fn fit_header(candidates: Vec<(AnyElement, AnyElement)>, border: Hsla) -> AnyEle
                         if index < last && left.width + right.width > room {
                             continue;
                         }
+                        open_in_menu.set(!HEADER_CANDIDATES[index].open_inline);
                         let top = |height: Pixels| {
                             bounds.top() + ((bounds.size.height - height) / 2.).max(px(0.))
                         };
