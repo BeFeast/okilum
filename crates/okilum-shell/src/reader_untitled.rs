@@ -362,6 +362,7 @@ const WIKI_UNSAFE: &[char] = &['|', '#', '^', '[', ']', '\\', '\n', '\r'];
 const DESTINATION: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
     .add(b' ')
     .add(b'"')
+    .add(b'&')
     .add(b'#')
     .add(b'%')
     .add(b'(')
@@ -396,7 +397,14 @@ pub(super) struct Refused(pub String);
 fn attachments_folder_name(stem: &str, n: usize) -> String {
     let stem: String = stem
         .chars()
-        .map(|c| if WIKI_UNSAFE.contains(&c) { '-' } else { c })
+        // `&` too: a folder name like `A&amp;B` would read as `A&B`.
+        .map(|c| {
+            if WIKI_UNSAFE.contains(&c) || c == '&' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     let stem = stem.trim();
     let stem = if stem.is_empty() { "Untitled" } else { stem };
@@ -419,6 +427,9 @@ struct Destination {
     reason: Option<String>,
     /// The destination as the parser decoded it.
     url: String,
+    /// What the renderer resolves: the parser's decoded URL (entities and
+    /// escapes resolved), percent-decoded later by the resolver.
+    decoded: String,
 }
 
 /// Every link, embed and reference Okilum reads in `text` written in `from`:
@@ -439,6 +450,7 @@ fn destinations(text: &str, vault: &okilum_core::Vault, from: &str) -> Vec<Desti
                 wiki: target.wiki,
                 reason: target.reason,
                 url: target.text,
+                decoded: target.decoded,
             })
             .collect();
     let body = okilum_core::render::without_frontmatter(text);
@@ -473,6 +485,7 @@ fn destinations(text: &str, vault: &okilum_core::Vault, from: &str) -> Vec<Desti
                 (start + dest.start()..start + dest.end(), false)
             };
             found.push(Destination {
+                decoded: commonmark_unescape(&text[range.clone()]),
                 url: text[range.clone()].to_owned(),
                 range,
                 wiki: false,
@@ -497,9 +510,9 @@ fn destination_path(text: &str, destination: &Destination) -> String {
     }
 }
 
-/// Where Okilum's resolver takes one destination: tried as written, as the
-/// parser decoded it and as CommonMark decodes it. Any local resolution
-/// counts (attachments and notes alike); external URLs do not.
+/// Where Okilum's resolver takes one destination as the viewer reads it.
+/// Any local resolution counts (attachments and notes alike); external URLs
+/// do not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Lands {
     Nowhere,
@@ -513,22 +526,18 @@ fn lands(
     resolver: &okilum_core::document_links::IndexedResolver<'_>,
     from: &str,
 ) -> Lands {
-    let raw = text[destination.range.clone()].to_owned();
-    let mut tries = vec![raw, destination.url.clone()];
-    tries.push(commonmark_unescape(&destination.url));
-    tries.dedup();
-    for target in tries {
-        let resolved = resolver.resolve(&target, destination.wiki, from);
-        if resolved.status == "external" {
-            continue;
-        }
-        match resolved.candidates.as_slice() {
-            [] => continue,
-            [one] => return Lands::One(one.clone()),
-            many => return Lands::Several(many.to_vec()),
-        }
+    // Exactly what the viewer resolves: the parser's decoded target, which
+    // the resolver percent-decodes, never the raw source bytes.
+    let _ = text;
+    let resolved = resolver.resolve(&destination.decoded, destination.wiki, from);
+    if resolved.status == "external" {
+        return Lands::Nowhere;
     }
-    Lands::Nowhere
+    match resolved.candidates.as_slice() {
+        [] => Lands::Nowhere,
+        [one] => Lands::One(one.clone()),
+        many => Lands::Several(many.to_vec()),
+    }
 }
 
 /// A destination as CommonMark reads it: backslash-escaped punctuation and
@@ -580,6 +589,7 @@ fn record_links(
     text: &str,
     draft: &Path,
     prefix: &str,
+    note_name: &str,
     found: &[Attachment],
 ) -> Result<Vec<Option<String>>, Refused> {
     let vault = okilum_core::Vault::scan(draft)
@@ -590,17 +600,18 @@ fn record_links(
         .iter()
         .map(
             |destination| match lands(text, destination, &resolver, FILE) {
-                Lands::One(path) if path == FILE => Ok(None),
+                // A link to the draft itself must reach the saved note.
+                Lands::One(path) if path == FILE => Ok(Some(note_name.to_owned())),
                 Lands::One(path) if carried.contains(&path) => Ok(Some(format!("{prefix}/{path}"))),
                 Lands::One(path) => Err(Refused(format!(
                     "The link «{}» points to «{path}» in the draft, which Save does not carry.",
                     &text[destination.range.clone()]
                 ))),
-                Lands::Several(paths) if paths.iter().any(|p| p != FILE) => Err(Refused(format!(
+                Lands::Several(_) => Err(Refused(format!(
                     "The link «{}» could mean several files of the draft.",
                     &text[destination.range.clone()]
                 ))),
-                _ => Ok(None),
+                Lands::Nowhere => Ok(None),
             },
         )
         .collect()
@@ -631,10 +642,16 @@ fn rewrite_links(text: &str, all: &[Destination], recorded: &[Option<String>]) -
             }
             format!("{path}{fragment}")
         } else if destination.angled {
-            if path.contains(['<', '>', '\n', '\r', '\\']) {
-                continue;
+            // Inside angle brackets entities and escapes still decode: anything
+            // that would is percent-encoded there too.
+            if path.contains(['<', '>', '\n', '\r', '\\', '&']) {
+                format!(
+                    "{}{fragment}",
+                    percent_encoding::utf8_percent_encode(path, DESTINATION)
+                )
+            } else {
+                format!("{path}{fragment}")
             }
-            format!("{path}{fragment}")
         } else {
             format!(
                 "{}{fragment}",
@@ -722,12 +739,15 @@ fn verify_links(
         if lands(text, destination, &resolver, &name) != Lands::One(expected.clone()) {
             return Err(fail(format!("«{shown}» no longer reaches «{expected}»")));
         }
-        let named = if destination.reason.is_some() {
-            okilum_core::document_links::decode(&destination.url)
+        // What the viewer reads, not the source bytes.
+        let target = destination.decoded.split('#').next().unwrap_or("");
+        let named = if destination.wiki {
+            target.trim().to_owned()
         } else {
-            destination_path(text, destination)
+            okilum_core::document_links::decode(target)
+                .trim()
+                .to_owned()
         };
-        let named = named.trim().to_owned();
         if named != *expected && format!("{named}.md") != *expected {
             return Err(fail(format!("«{shown}» does not name «{expected}»")));
         }
@@ -787,13 +807,12 @@ pub(super) fn save_draft(
     };
     let prefix = chosen.as_ref().map_or("", |(name, _)| name.as_str());
     let result = (|| -> Result<Written, (bool, Refused)> {
-        let recorded = record_links(text, draft, prefix, found).map_err(|r| (false, r))?;
-        if recorded.iter().any(Option::is_some) && folder.is_none() {
-            return Err((
-                false,
-                Refused("Links point into the draft but nothing is carried.".into()),
-            ));
-        }
+        let note_name = note
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let recorded =
+            record_links(text, draft, prefix, &note_name, found).map_err(|r| (false, r))?;
         if let Some(folder) = &folder {
             for attachment in found {
                 let copied = (|| -> anyhow::Result<()> {
@@ -1528,6 +1547,51 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             "[[Note attachments/notes]] and [n](Note%20attachments/notes.md)\n"
         );
         assert!(docs.join("Note attachments/notes.md").is_file());
+    }
+
+    /// Re-review 5 (1): the viewer reads a destination after CommonMark
+    /// decoding. A note saved as `A&amp;B.md` gets an attachments folder
+    /// whose name cannot decode differently, and rewritten destinations
+    /// encode `&`, so each link decodes to its copy; an attachment whose own
+    /// name looks like an entity is percent-encoded rather than left to decode.
+    #[test]
+    fn destinations_decode_to_their_copies_like_the_viewer_reads_them() {
+        let (_temp, folder, found, docs) = draft_with(&["a.png", "x&amp;y.png"]);
+        let text = "![a](a.png) ![[a.png]] ![b](<a.png>) ![x](x%26amp;y.png)\n";
+        let saved = save_draft(&folder, &docs.join("A&amp;B.md"), &found, text).unwrap();
+        assert_eq!(
+            saved.folder.as_deref(),
+            Some(docs.join("A-amp;B attachments").as_path())
+        );
+        assert_eq!(
+            saved.text,
+            "![a](A-amp;B%20attachments/a.png) ![[A-amp;B attachments/a.png]] \
+             ![b](<A-amp;B attachments/a.png>) ![x](A-amp;B%20attachments/x%26amp;y.png)\n"
+        );
+        assert!(docs.join("A-amp;B attachments/x&amp;y.png").is_file());
+        // What the viewer resolves for every link of the saved note.
+        for target in okilum_core::link_candidates::syntax::targets(&saved.text) {
+            assert!(
+                okilum_core::document_links::decode(&target.decoded)
+                    .starts_with("A-amp;B attachments/"),
+                "{target:?}"
+            );
+        }
+    }
+
+    /// Re-review 5 (2): a link to the draft itself follows it to the saved
+    /// note's name, in Markdown and wiki form, keeping the fragment.
+    #[test]
+    fn self_links_follow_the_draft_to_its_saved_name() {
+        let (_temp, folder, found, docs) = draft_with(&[]);
+        let text = "[self](Untitled.md) and [[Untitled#Top]]\n";
+        let saved = save_draft(&folder, &docs.join("New note.md"), &found, text).unwrap();
+        assert_eq!(saved.text, "[self](New%20note.md) and [[New note#Top]]\n");
+        assert_eq!(saved.folder, None, "no attachments, no folder");
+        assert_eq!(
+            std::fs::read_to_string(docs.join("New note.md")).unwrap(),
+            saved.text
+        );
     }
 
     /// Re-review 3: a link to an attachment that cannot be rewritten safely

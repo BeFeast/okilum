@@ -7,6 +7,9 @@ use std::ops::Range;
 pub struct Target {
     pub range: Range<usize>,
     pub text: String,
+    /// The destination as the renderer reads it: the parser's decoded URL
+    /// (entities and escapes resolved), before percent-decoding.
+    pub decoded: String,
     pub wiki: bool,
     pub embedded: bool,
     pub reason: Option<String>,
@@ -17,6 +20,7 @@ pub fn targets_in_vault(source: &str, vault: &crate::Vault, from: &str) -> Vec<T
     for (link, range) in document_links::fallback_links(source, vault, from) {
         out.push(Target {
             range,
+            decoded: link.target.clone(),
             text: link.target,
             wiki: false,
             embedded: false,
@@ -48,6 +52,7 @@ pub(crate) fn property_targets(source: &str) -> Vec<Target> {
                     .is_some_and(|v| scalar_contains(&v, &sentinel))
                 {
                     out.push(Target {
+                        decoded: source[range.clone()].into(),
                         text: source[range.clone()].into(),
                         range,
                         wiki: true,
@@ -140,6 +145,7 @@ pub fn targets(source: &str) -> Vec<Target> {
                 out.push(Target {
                     range,
                     text,
+                    decoded: decoded.into(),
                     wiki,
                     embedded,
                     reason,
@@ -148,6 +154,7 @@ pub fn targets(source: &str) -> Vec<Target> {
             None => out.push(Target {
                 range: offset + start..offset + end,
                 text: decoded.into(),
+                decoded: decoded.into(),
                 wiki,
                 embedded,
                 reason: Some(
