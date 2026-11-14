@@ -27,6 +27,62 @@ def tree_digest(root):
     return result.hexdigest()
 
 
+def current_digest(root):
+    """Digest of an existing tree; a tree that cannot be digested is stale."""
+    try:
+        return tree_digest(root)
+    except (OSError, ValueError):
+        return None
+
+
+def generate(manifest, patch, dest, archive=None):
+    """Build the tree from the checksum-pinned archive and patch, verify it,
+    then put it at dest, replacing a stale tree only after verification."""
+    # Registry cache is a read-only archive source, never an extraction target.
+    cached = sorted((Path.home() / ".cargo/registry/cache").glob("*/velopack-1.2.161.crate"))
+    archive = archive or (cached[0] if cached else None)
+    if archive:
+        data = archive.read_bytes()
+    else:
+        with urllib.request.urlopen(manifest["archive_url"], timeout=60) as response:
+            data = response.read()
+    if digest(data) != manifest["archive_sha256"]:
+        raise ValueError("velopack archive checksum mismatch")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".velopack-", dir=dest.parent) as temporary:
+        staged = Path(temporary) / "source"
+        staged.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(data)) as source:
+            for member in source.getmembers():
+                parts = Path(member.name).parts
+                if not parts or parts[0] != "velopack-1.2.161" or ".." in parts:
+                    raise ValueError("unexpected velopack archive path")
+                target = staged.joinpath(*parts[1:])
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(source.extractfile(member).read())
+                    target.chmod(member.mode & 0o777)
+                else:
+                    raise ValueError("unsupported velopack archive member")
+        # Zero-context patch is safe only against the exact verified archive.
+        subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
+        if tree_digest(staged) != manifest["tree_sha256"]:
+            raise ValueError("velopack generated source/manifest mismatch")
+        stale = Path(temporary) / "stale"
+        if dest.exists():
+            # Same directory: both renames are atomic. The stale tree is
+            # removed with the temporary directory; a failed swap restores it.
+            dest.rename(stale)
+        try:
+            staged.rename(dest)
+        except OSError:
+            if stale.exists() and not dest.exists():
+                stale.rename(dest)
+            raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", action="store_true")
@@ -39,44 +95,20 @@ def main():
     if digest(patch.read_bytes()) != manifest["patch_sha256"]:
         raise ValueError("velopack patch/manifest mismatch")
     dest = repo / manifest["generated_path"]
-    if dest.exists():
-        if tree_digest(dest) != manifest["tree_sha256"]:
-            raise ValueError("generated velopack differs from pinned source+patch; inspect mismatch")
-    elif args.verify:
-        raise ValueError("generated velopack missing; run scripts/velopack-setup.py")
-    else:
-        # Registry cache is a read-only archive source, never an extraction target.
-        cached = sorted((Path.home() / ".cargo/registry/cache").glob("*/velopack-1.2.161.crate"))
-        archive = args.archive or (cached[0] if cached else None)
-        if archive:
-            data = archive.read_bytes()
-        else:
-            with urllib.request.urlopen(manifest["archive_url"], timeout=60) as response:
-                data = response.read()
-        if digest(data) != manifest["archive_sha256"]:
-            raise ValueError("velopack archive checksum mismatch")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".velopack-", dir=dest.parent) as temporary:
-            staged = Path(temporary)
-            with tarfile.open(fileobj=io.BytesIO(data)) as source:
-                for member in source.getmembers():
-                    parts = Path(member.name).parts
-                    if not parts or parts[0] != "velopack-1.2.161" or ".." in parts:
-                        raise ValueError("unexpected velopack archive path")
-                    target = staged.joinpath(*parts[1:])
-                    if member.isdir():
-                        target.mkdir(parents=True, exist_ok=True)
-                    elif member.isfile():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_bytes(source.extractfile(member).read())
-                        target.chmod(member.mode & 0o777)
-                    else:
-                        raise ValueError("unsupported velopack archive member")
-            # Zero-context patch is safe only against the exact verified archive.
-            subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
-            if tree_digest(staged) != manifest["tree_sha256"]:
-                raise ValueError("velopack generated source/manifest mismatch")
-            shutil.move(str(staged), str(dest))
+    if not dest.exists():
+        if args.verify:
+            raise ValueError("generated velopack missing; run scripts/velopack-setup.py")
+        generate(manifest, patch, dest, args.archive)
+    elif current_digest(dest) != manifest["tree_sha256"]:
+        if args.verify:
+            raise ValueError("generated velopack differs from pinned source+patch; run scripts/velopack-setup.py")
+        # vendor/ is not committed, so a kept worktree (the Mac Sprint one)
+        # still holds the tree of an older patch after main moves on (14.11).
+        # The tree is generated: rebuild it from the pinned archive and patch.
+        if dest.is_symlink() or not dest.is_dir():
+            raise ValueError("generated velopack path is not a plain directory; refusing to replace it")
+        print("velopack: generated tree is stale for the current patch; regenerating " + str(dest))
+        generate(manifest, patch, dest, args.archive)
     print("velopack ready: " + manifest["version"] + " checksum-pinned source + hidden delta helper verified")
 
 

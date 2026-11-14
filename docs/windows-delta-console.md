@@ -18,6 +18,9 @@ preparation and post-install callbacks, not only the SDK's final launch helper.
 recipe: verify the published crate archive, apply the small tracked diff and
 verify the complete generated tree. Only the diff, manifest and setup are
 committed; Cargo.lock pins the generated path dependency. No gpui core changes.
+A generated tree left from an older diff (vendor/ is not committed, so kept
+worktrees keep it) is regenerated from the same pinned archive and diff and
+verified before it replaces the old one; `--verify` still only reports it.
 
 The mandatory GitHub Windows agent job exercises `UpdateManager::download_updates`
 with a real console-subsystem helper. The test executable starts with

@@ -428,6 +428,82 @@ sprint_bundle_tool() {
             --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon --
     fi
 }
+# Quit the installed app before its bundle is replaced (Oleg, 14.11: Sprint may
+# close Okilum by force). A refused AppleScript Quit is not a user decision:
+# while Sparkle holds a prepared update, Okilum's applicationShouldTerminate
+# (crates/okilum-shell/src/updater/bridge.m) answers the first Quit with
+# NSTerminateCancel, cancels that update session and then quits by itself.
+# osascript reports that as "User canceled. (-128)", and under set -e this
+# aborted the Sprint although Okilum was gone 3 s later (14.11 08:50).
+# SIGTERM takes the same quit path as the menu (reader_recovery.rs). Edits are
+# journaled 300 ms after typing stops and autosaved within 2 s; after 60 s
+# without input SIGKILL loses nothing that the recovery drafts do not restore.
+OKILUM_EXECUTABLE_SUFFIX=/Okilum.app/Contents/MacOS/okilum
+QUIT_WAIT=${OKILUM_SPRINT_QUIT_WAIT:-15}
+IDLE_WAIT=${OKILUM_SPRINT_IDLE_WAIT:-120}
+IDLE_NEEDED=${OKILUM_SPRINT_IDLE_NEEDED:-60}
+TERM_GRACE=${OKILUM_SPRINT_TERM_GRACE:-15}
+installed_app_pids() {
+    # macOS ps prints the full executable path; the Sync helper in the same
+    # bundle (okilum-sync-supervisor) and dev binaries never match.
+    local pid command
+    while read -r pid command; do
+        if [[ $command == *"$OKILUM_EXECUTABLE_SUFFIX" ]]; then printf '%s\n' "$pid"; fi
+    done < <(ps -axo pid=,comm= 2>/dev/null || true)
+}
+installed_app_running() {
+    [[ -n $(installed_app_pids) ]] && return 0
+    [[ $(osascript -e 'application id "com.befeast.okilum" is running' 2>/dev/null || true) == true ]]
+}
+user_idle_seconds() {
+    local idle
+    idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {printf "%d\n", $NF / 1000000000; exit}' || true)
+    [[ $idle =~ ^[0-9]+$ ]] && printf '%s\n' "$idle" || echo 0
+}
+wait_for_app_exit() {
+    local attempt
+    for ((attempt=0; attempt<$1; attempt++)); do
+        installed_app_running || return 0
+        sleep 1
+    done
+    ! installed_app_running
+}
+stop_installed_app() {
+    local reply attempt idle pids
+    installed_app_running || return 0
+    if ! reply=$(osascript -e 'if application id "com.befeast.okilum" is running then' \
+            -e 'with timeout of 10 seconds' -e 'tell application id "com.befeast.okilum" to quit' \
+            -e 'end timeout' -e 'end if' 2>&1); then
+        printf 'Okilum answered Quit with: %s\nWaiting for it to quit by itself.\n' "$reply"
+    fi
+    wait_for_app_exit "$QUIT_WAIT" && { echo 'Okilum quit.'; return 0; }
+    printf 'Okilum still runs after %ss; waiting up to %ss for %ss without keyboard or mouse input.\n' \
+        "$QUIT_WAIT" "$IDLE_WAIT" "$IDLE_NEEDED"
+    idle=0
+    for ((attempt=0; attempt<IDLE_WAIT; attempt+=5)); do
+        installed_app_running || { echo 'Okilum quit.'; return 0; }
+        idle=$(user_idle_seconds)
+        ((idle >= IDLE_NEEDED)) && break
+        sleep 5
+    done
+    pids=$(installed_app_pids | tr '\n' ' ')
+    if [[ -z ${pids// /} ]]; then
+        installed_app_running || return 0
+        echo 'Okilum runs from an unexpected path; quit it, then rerun.' >&2
+        return 1
+    fi
+    printf 'Stopping Okilum (pid %s, user idle %ss) with SIGTERM: it saves and quits as from the menu.\n' "${pids% }" "$idle"
+    # shellcheck disable=SC2086 # one word per pid
+    kill -TERM $pids 2>/dev/null || true
+    wait_for_app_exit "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
+    pids=$(installed_app_pids | tr '\n' ' ')
+    if [[ -n ${pids// /} ]]; then
+        printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s.\n' "$TERM_GRACE" "${pids% }"
+        # shellcheck disable=SC2086
+        kill -KILL $pids 2>/dev/null || true
+    fi
+    wait_for_app_exit 5
+}
 sprint_exit() {
     result=$?
     trap - EXIT INT TERM
@@ -640,13 +716,7 @@ python3 "$reporter" --trim-target "$root"
 unregister "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
-    osascript -e 'if application id "com.befeast.okilum" is running then tell application id "com.befeast.okilum" to quit'
-    for ((attempt=0; attempt<15; attempt++)); do
-        running=$(osascript -e 'application id "com.befeast.okilum" is running')
-        [[ $running == false ]] && break
-        sleep 1
-    done
-    [[ $running == false ]] || { echo 'Quit Okilum, then rerun; app was not replaced.' >&2; exit 1; }
+    stop_installed_app || { echo 'Okilum is still running; app was not replaced.' >&2; exit 1; }
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
 backup="$root/$STAGE_DIR/previous-Okilum.app"
