@@ -438,7 +438,8 @@ impl FileEditor {
     }
 
     /// Whether a live editor (any window, any process) holds `path`'s editor
-    /// lock. Read-only: a missing lock file is not created.
+    /// lock. A probe only: the answer can be stale at once. Callers that act
+    /// on "idle" must hold `claim_idle`'s lock instead.
     pub fn editor_active(path: &Path, state: &Path) -> Result<bool> {
         let lock = state.join(format!("{}.lock", Self::journal_key(path)?));
         if !lock.exists() {
@@ -447,6 +448,19 @@ impl FileEditor {
         match EditorLock::acquire(&lock) {
             Ok(_released_on_drop) => Ok(false),
             Err(error) if lock_busy(&error) => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Take `path`'s editor lock when no editor holds it (`None` when one
+    /// does). While the returned lock lives, no editor can take ownership of
+    /// the file, so the caller may classify or remove it (#1528).
+    pub fn claim_idle(path: &Path, state: &Path) -> Result<Option<EditorLock>> {
+        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
+        let lock = state.join(format!("{}.lock", Self::journal_key(path)?));
+        match EditorLock::acquire(&lock) {
+            Ok(lock) => Ok(Some(lock)),
+            Err(error) if lock_busy(&error) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -658,6 +672,11 @@ impl FileEditor {
     }
     pub fn text(&self) -> &str {
         &self.draft.text
+    }
+    /// The file as this editor last read or wrote it: what it believes is on
+    /// disk. Differing disk bytes are someone else's edit.
+    pub fn base(&self) -> &str {
+        &self.draft.base
     }
     pub fn dirty(&self) -> bool {
         if self.raw_transaction.is_some() {

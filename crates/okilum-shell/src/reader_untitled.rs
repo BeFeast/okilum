@@ -230,9 +230,17 @@ fn collect(session: &Path, now: u64) {
     };
     for entry in entries.flatten().take(256) {
         let folder = entry.path();
-        if !folder.is_dir() || live(session, &folder) {
+        if !folder.is_dir() {
             continue;
         }
+        // Held through classification and removal: no editor can take the
+        // draft in between. Busy or unknown keeps the folder.
+        let Ok(Some(_claim)) = okilum_core::file_editor::FileEditor::claim_idle(
+            &folder.join(FILE),
+            &recovery_directory(session),
+        ) else {
+            continue;
+        };
         let age = |name: &str| {
             std::fs::symlink_metadata(folder.join(name))
                 .and_then(|m| m.modified())
@@ -245,9 +253,22 @@ fn collect(session: &Path, now: u64) {
             age(FILE).is_some_and(|age| age > EMPTY_DRAFT_LIFETIME) && untouched(session, &folder)
         };
         if expired {
+            #[cfg(test)]
+            BEFORE_REMOVAL.with(|hook| {
+                if let Some(hook) = hook.borrow().as_ref() {
+                    hook(&folder)
+                }
+            });
             let _ = std::fs::remove_dir_all(&folder);
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs right before a draft folder is removed, with the claim still held.
+    static BEFORE_REMOVAL: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The draft folder `root` is, when it is one: a direct child of this
@@ -400,7 +421,7 @@ pub(super) fn copy_attachments(
             );
             let renamed = name(&target);
             if renamed != original {
-                *text = text.replace(&original, &renamed);
+                *text = rewrite_attachment_links(text, &attachment.relative, &renamed);
             }
         }
         Ok(())
@@ -414,6 +435,99 @@ pub(super) fn copy_attachments(
             Err(error)
         }
     }
+}
+
+/// Point the links that resolve to the attachment at `relative` (below the
+/// draft folder) to its renamed copy `renamed`. Only parsed link and embed
+/// targets change: prose, code and links to other files keep their bytes.
+/// A wiki target resolves by its path's tail (Obsidian's shortest path); a
+/// Markdown target by its path from the note's folder. Escaped targets the
+/// parser cannot round-trip are left alone.
+pub(super) fn rewrite_attachment_links(text: &str, relative: &Path, renamed: &str) -> String {
+    let relative = relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    let mut edits = Vec::new();
+    for target in okilum_core::link_candidates::syntax::targets(text) {
+        if target.reason.is_some() {
+            continue;
+        }
+        let raw = &text[target.range.clone()];
+        let path_end = raw.find(['#', '?']).unwrap_or(raw.len());
+        let (path, suffix) = raw.split_at(path_end);
+        let decoded = if target.wiki {
+            path.to_owned()
+        } else {
+            percent_encoding::percent_decode_str(path)
+                .decode_utf8_lossy()
+                .into_owned()
+        };
+        let decoded = decoded.trim_start_matches("./");
+        let resolves = if target.wiki {
+            relative == decoded || relative.ends_with(&format!("/{decoded}"))
+        } else {
+            relative == decoded
+        };
+        if !resolves {
+            continue;
+        }
+        let cut = path.rfind('/').map_or(0, |at| at + 1);
+        let name = if target.wiki || !path.contains('%') {
+            renamed.to_owned()
+        } else {
+            renamed.replace('%', "%25").replace(' ', "%20")
+        };
+        edits.push((
+            target.range.clone(),
+            format!("{}{name}{suffix}", &path[..cut]),
+        ));
+    }
+    let mut out = text.to_owned();
+    for (range, replacement) in edits.into_iter().rev() {
+        out.replace_range(range, &replacement);
+    }
+    out
+}
+
+/// Bring the draft file to the saved text, so retirement can prove nothing in
+/// the draft is newer. Written only when the disk still holds `expected` (what
+/// this window last knew): anything else is an edit made elsewhere while
+/// saving, kept as it is. Rechecked right before the atomic replace.
+pub(super) fn sync_draft_file(
+    folder: &Path,
+    saved: &str,
+    expected: &str,
+) -> anyhow::Result<DraftFile> {
+    let file = folder.join(FILE);
+    let disk = std::fs::read_to_string(&file)?;
+    if disk == saved {
+        return Ok(DraftFile::Same);
+    }
+    if disk != expected {
+        return Ok(DraftFile::ChangedElsewhere);
+    }
+    let temporary = folder.join(format!(".{FILE}.{}", uuid::Uuid::new_v4()));
+    write_new(&temporary, saved.as_bytes())?;
+    if std::fs::read_to_string(&file)? != expected {
+        let _ = std::fs::remove_file(&temporary);
+        return Ok(DraftFile::ChangedElsewhere);
+    }
+    if let Err(error) = std::fs::rename(&temporary, &file) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    Ok(DraftFile::Written)
+}
+
+/// What `sync_draft_file` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DraftFile {
+    Same,
+    Written,
+    /// The draft changed outside this window: both are kept, nothing retired.
+    ChangedElsewhere,
 }
 
 /// Retire a saved draft: only when no editor holds it and its current text and
@@ -609,6 +723,8 @@ impl Reader {
             .unwrap_or_else(std::env::temp_dir);
         let name = suggested_name(&contents);
         let root = self.vault_root.clone();
+        // Without an editor, the disk as Save found it is what this window knows.
+        let disk_before = std::fs::read_to_string(folder.join(FILE)).unwrap_or_default();
         let picker = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = picker.await else {
@@ -630,8 +746,12 @@ impl Reader {
                     );
                     return;
                 }
-                // Text typed while the picker was open is saved too.
-                let mut contents = this.source_text(cx).unwrap_or(contents);
+                // Text typed while the picker was open is saved too. The
+                // draft keeps its own text; only the saved copy may get links
+                // rewritten to renamed attachments.
+                let draft_text = this.source_text(cx).unwrap_or(contents);
+                // What this window last knew on disk, before Save changes it.
+                let expected = this.source_disk_base().unwrap_or(disk_before);
                 let fail = |error: anyhow::Error, window: &mut Window, cx: &mut Context<Reader>| {
                     diagnostic_error!("Could not save the untitled draft: {error:#}");
                     reader_toast::error(
@@ -647,38 +767,40 @@ impl Reader {
                 let Some(destination) = path.parent().map(Path::to_path_buf) else {
                     return;
                 };
-                let created = match copy_attachments(&folder, &destination, &found, &mut contents)
-                {
-                    Ok(created) => created,
-                    Err(error) => return fail(error, window, cx),
-                };
-                if let Err(error) = reader_deleted_note::save_new_copy(&path, &contents) {
+                let mut saved_text = draft_text.clone();
+                let created =
+                    match copy_attachments(&folder, &destination, &found, &mut saved_text) {
+                        Ok(created) => created,
+                        Err(error) => return fail(error, window, cx),
+                    };
+                if let Err(error) = reader_deleted_note::save_new_copy(&path, &saved_text) {
                     for file in &created {
                         let _ = std::fs::remove_file(file);
                     }
                     return fail(error, window, cx);
                 }
                 // Its text is saved: the draft's editor has nothing left to
-                // protect. The draft file gets the same text, so the manifest
-                // below can prove nothing in the draft is newer.
+                // protect. The draft file gets the same text only while the
+                // disk is still what this window knew, so the manifest below
+                // can prove nothing in the draft is newer.
                 this.source_saved_elsewhere(cx);
                 this.remember_source_mode();
                 this.editing = None;
-                let original = this
-                    .source_text(cx)
-                    .or_else(|| match content(&session, &folder) {
-                        Content::Text(text) => Some(text),
-                        Content::Unknown => None,
-                    });
-                let draft_text = contents.clone();
-                if original.as_deref() != Some(draft_text.as_str()) {
-                    let temporary = folder.join(format!(".{FILE}.{}", uuid::Uuid::new_v4()));
-                    let replaced = write_new(&temporary, draft_text.as_bytes())
-                        .and_then(|()| Ok(std::fs::rename(&temporary, folder.join(FILE))?));
-                    if replaced.is_err() {
-                        let _ = std::fs::remove_file(&temporary);
+                let retirable = match sync_draft_file(&folder, &draft_text, &expected) {
+                    Ok(DraftFile::Same | DraftFile::Written) => true,
+                    Ok(DraftFile::ChangedElsewhere) => {
+                        reader_toast::error(
+                            "The draft changed outside this window while saving. The saved file has this window’s text; the draft keeps the other changes and stays in Recent.",
+                            window,
+                            cx,
+                        );
+                        false
                     }
-                }
+                    Err(error) => {
+                        diagnostic_error!("Could not update the saved draft: {error:#}");
+                        false
+                    }
+                };
                 this.start_loading(
                     Opts {
                         open_path: Some(path.clone()),
@@ -694,6 +816,10 @@ impl Reader {
                     .unwrap_or_default();
                 reader_toast::transient(format!("Saved as «{label}»"), window, cx);
                 let history = this.session_directory.clone();
+                if !retirable {
+                    cx.notify();
+                    return;
+                }
                 // The editor lock is released once its last journal write is
                 // done; retire only then, and only if nothing changed.
                 cx.spawn(async move |_, cx| {
@@ -936,6 +1062,68 @@ mod tests {
         assert!(file.exists(), "a newer file keeps the folder");
     }
 
+    /// Re-review P1-1: a renamed attachment copy changes only the link and
+    /// embed targets that resolve to it: prose, code spans, a web URL and a
+    /// link to another folder's file of the same name keep their bytes.
+    #[test]
+    fn renamed_attachments_rewrite_only_their_own_links() {
+        let text = "\
+I named it Pasted image 1.png yesterday.\n\
+![[Pasted image 1.png]] and ![[Images/Pasted image 1.png|small]]\n\
+![alt](@Assets/Images/Pasted%20image%201.png)\n\
+[[Elsewhere/Pasted image 1.png]]\n\
+[web](https://example.com/Pasted%20image%201.png)\n\
+`![[Pasted image 1.png]]`\n";
+        let rewritten = rewrite_attachment_links(
+            text,
+            Path::new("@Assets/Images/Pasted image 1.png"),
+            "Pasted image 1 1.png",
+        );
+        assert_eq!(
+            rewritten,
+            "\
+I named it Pasted image 1.png yesterday.\n\
+![[Pasted image 1 1.png]] and ![[Images/Pasted image 1 1.png|small]]\n\
+![alt](@Assets/Images/Pasted%20image%201%201.png)\n\
+[[Elsewhere/Pasted image 1.png]]\n\
+[web](https://example.com/Pasted%20image%201.png)\n\
+`![[Pasted image 1.png]]`\n"
+        );
+    }
+
+    /// Re-review P1-3: cleanup holds the editor lock from classification
+    /// through removal, so no editor can take the draft in between.
+    #[test]
+    fn cleanup_holds_ownership_until_the_folder_is_gone() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("state");
+        let file = create(&session, None).unwrap();
+        let folder = file.parent().unwrap().to_path_buf();
+        let recovery = recovery_directory(&session);
+        let attempts = Rc::new(std::cell::RefCell::new(Vec::new()));
+        BEFORE_REMOVAL.with(|hook| {
+            let (attempts, recovery) = (attempts.clone(), recovery.clone());
+            *hook.borrow_mut() = Some(Box::new(move |folder: &Path| {
+                // Another window tries to open the draft for editing now.
+                let refused = FileEditor::open(&folder.join(FILE), &recovery)
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                attempts.borrow_mut().push(refused);
+            }));
+        });
+        collect(&session, reader_sidebar::now() + LATER);
+        BEFORE_REMOVAL.with(|hook| *hook.borrow_mut() = None);
+        let attempts = attempts.borrow();
+        assert_eq!(attempts.len(), 1, "positive control: removal was reached");
+        assert!(
+            attempts[0]
+                .as_deref()
+                .is_some_and(|error| error.contains(okilum_core::file_editor::BEING_EDITED)),
+            "no editor got in while cleanup decided: {attempts:?}"
+        );
+        assert!(!folder.exists());
+    }
+
     /// Real time for the watcher and writers, test time for the Reader's
     /// timers, until `done` holds or ~15 s are up.
     fn settle(
@@ -1143,6 +1331,60 @@ mod tests {
         collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
         assert!(!folder.exists(), "removed once retired and expired");
         reader.read_with(visual, |r, _| assert!(r.single_file));
+    }
+
+    /// Re-review P1-2: an edit to the draft made outside this window while
+    /// the Save dialog is open is never overwritten. Both are kept: the saved
+    /// file has this window's text, the draft keeps the other edit and stays
+    /// an unsaved draft in Recent.
+    #[gpui::test]
+    fn an_edit_elsewhere_during_save_keeps_both(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let docs = docs.canonicalize().unwrap();
+        let session = temp.path().join("state");
+        let draft = create(&session, Some(&docs)).unwrap();
+        std::fs::write(&draft, "Mine\n").unwrap();
+        let (reader, visual) = open_single(cx, &draft, &session);
+        settle(visual, &reader, "the draft is on screen", |r, _| {
+            r.current_draft().is_some() && r.note_source.contains("Mine")
+        });
+        reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+        visual.simulate_keystrokes("secondary-s");
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path(), "Save asks where");
+        // Meanwhile something else writes the draft file.
+        std::fs::write(&draft, "Theirs\n").unwrap();
+        let saved = docs.join("Mine.md");
+        visual.simulate_new_path_selection({
+            let saved = saved.clone();
+            move |_| Some(saved)
+        });
+        settle(visual, &reader, "the saved file is on screen", |r, _| {
+            r.current_rel == "Mine.md"
+        });
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "Mine\n");
+        assert_eq!(
+            std::fs::read_to_string(&draft).unwrap(),
+            "Theirs\n",
+            "the other edit is never overwritten"
+        );
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(50));
+            visual.executor().advance_clock(Duration::from_millis(300));
+            visual.run_until_parked();
+        }
+        let listed = list(&session);
+        assert_eq!(listed.len(), 1, "the draft stays unsaved in Recent");
+        assert_eq!(listed[0].label, "Theirs");
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(draft.exists());
     }
 
     /// In a single-file window New note proposes the open file's folder, not

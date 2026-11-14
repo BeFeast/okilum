@@ -1908,6 +1908,14 @@ impl Reader {
         cx.notify();
     }
 
+    /// What the editor believes is on disk (its last read or write), while
+    /// editing: differing disk bytes were written by someone else.
+    pub(super) fn source_disk_base(&self) -> Option<String> {
+        self.editing
+            .as_ref()
+            .map(|editing| editing.store.base().to_owned())
+    }
+
     /// The editor's current buffer, while editing.
     pub(super) fn source_text(&self, cx: &App) -> Option<String> {
         self.editing
