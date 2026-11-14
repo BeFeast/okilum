@@ -105,7 +105,14 @@ pub(crate) struct ReadingHistory {
     last_opened: BTreeMap<PathBuf, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_root: Option<PathBuf>,
+    /// Files opened on their own, newest first, with when (#1528): Recent of
+    /// a single-file window lists them across folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quick_files: Vec<(PathBuf, u64)>,
 }
+
+/// Recent of single-file windows lists at most this many files.
+const QUICK_FILES: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct KnownVault {
@@ -232,6 +239,7 @@ impl ReadingHistory {
         history
             .last_opened
             .retain(|root, _| history.last_documents.contains_key(root));
+        history.quick_files.retain(|(file, _)| file.is_absolute());
         if history.default_root.as_ref().is_some_and(|root| {
             !history.last_documents.contains_key(root)
                 || history.hidden_roots.contains(root)
@@ -281,9 +289,20 @@ impl ReadingHistory {
             hidden_roots: Default::default(),
             last_opened: Default::default(),
             default_root: None,
+            quick_files: Vec::new(),
         });
         state.hidden_roots.remove(root);
         if single_file {
+            if !document.is_empty() {
+                let file = root.join(document);
+                state
+                    .quick_files
+                    .retain(|(old, _)| old != &file && old.is_file());
+                state
+                    .quick_files
+                    .insert(0, (file, crate::reader_sidebar::now()));
+                state.quick_files.truncate(QUICK_FILES);
+            }
             state.quick_roots.insert(root.to_owned());
         } else {
             state.quick_roots.remove(root);
@@ -301,6 +320,11 @@ impl ReadingHistory {
         }
         state.persist(directory)
     }
+    /// Files opened on their own, newest first, with when they were opened.
+    pub fn quick_files(directory: &Path) -> Result<Vec<(PathBuf, u64)>> {
+        Ok(Self::load(directory)?.map_or_else(Vec::new, |state| state.quick_files))
+    }
+
     /// Older history has no ordering: only a single root can be restored without guessing.
     pub fn quick_document(directory: &Path, root: &Path) -> Result<Option<String>> {
         Ok(Self::load(directory)?.and_then(|state| {
@@ -580,6 +604,51 @@ mod tests {
         assert!(ReadingHistory::remove_from_list(&state, &vault).is_err());
         assert!(ReadingHistory::set_default_vault(&state, Some(&vault)).is_err());
         assert_eq!(fs::read(state.join(FILE)).unwrap(), b"invalid JSON");
+    }
+
+    /// #1528: Recent of a single-file window lists every file opened on its
+    /// own, across folders, newest first, once each; vault notes are not
+    /// listed and a file gone from disk drops out at the next recording.
+    #[test]
+    fn single_files_are_listed_across_folders_newest_first() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let (a, b, vault) = (
+            fixture.path().join("a"),
+            fixture.path().join("b"),
+            fixture.path().join("vault"),
+        );
+        for (folder, file) in [(&a, "one.md"), (&a, "two.md"), (&b, "three.md")] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join(file), "# x\n").unwrap();
+        }
+        ReadingHistory::record_document_mode(&state, &a, "one.md", true).unwrap();
+        ReadingHistory::record_document_mode(&state, &b, "three.md", true).unwrap();
+        ReadingHistory::record_document_mode(&state, &vault, "note.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &a, "two.md", true).unwrap();
+        ReadingHistory::record_document_mode(&state, &a, "one.md", true).unwrap();
+        let files = |state: &Path| -> Vec<PathBuf> {
+            ReadingHistory::quick_files(state)
+                .unwrap()
+                .into_iter()
+                .map(|(file, _)| file)
+                .collect()
+        };
+        assert_eq!(
+            files(&state),
+            [a.join("one.md"), a.join("two.md"), b.join("three.md")],
+            "two files of one folder both stay listed"
+        );
+        fs::remove_file(b.join("three.md")).unwrap();
+        ReadingHistory::record_document_mode(&state, &a, "two.md", true).unwrap();
+        assert_eq!(files(&state), [a.join("two.md"), a.join("one.md")]);
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &a)
+                .unwrap()
+                .as_deref(),
+            Some("two.md"),
+            "per-folder restore is unchanged"
+        );
     }
 
     #[test]

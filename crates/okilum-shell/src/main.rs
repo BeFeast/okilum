@@ -236,6 +236,7 @@ mod reader_tree_preview;
 mod reader_tree_rules;
 mod reader_typed_view;
 mod reader_ui_state;
+mod reader_untitled;
 mod reader_update_restart;
 mod search_label;
 #[cfg(any(unix, windows))]
@@ -384,6 +385,8 @@ actions!(
     okilum,
     [
         NewNote,
+        NewUntitled,
+        ShowRecentFiles,
         CloseNote,
         NewFolder,
         RenameNote,
@@ -7447,6 +7450,7 @@ fn reader_more_menu(
             .separator()
             .when(cfg!(any(unix, windows)), |menu| {
                 menu.menu("New note…", Box::new(NewNote))
+                    .menu("New untitled file", Box::new(NewUntitled))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
                     .item(reader_capture::menu_item(reader.clone(), vault.clone(), cx))
@@ -7454,6 +7458,7 @@ fn reader_more_menu(
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
             })
             .separator()
+            .menu("Recent files…", Box::new(ShowRecentFiles))
             .menu("Open file…", Box::new(reader_open::OpenFile))
             .menu("Open folder…", Box::new(reader_open::OpenFolder))
             .menu(mode_label, Box::new(SwitchWindowMode))
@@ -8495,8 +8500,19 @@ impl Reader {
             .on_action(cx.listener(|this, _: &OpenLivePreview, window, cx| {
                 this.open_live_preview(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &SaveSource, _, cx| {
-                this.request_source_save(cx);
+            .on_action(cx.listener(|this, _: &SaveSource, window, cx| {
+                // An untitled draft has no place yet: Save asks for one (#1528).
+                if this.current_draft().is_some() {
+                    this.save_draft_as(window, cx);
+                } else {
+                    this.request_source_save(cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &NewUntitled, window, cx| this.new_untitled(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowRecentFiles, window, cx| {
+                this.toggle_recent_gallery(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &reader_editor::FormatCode, window, cx| {

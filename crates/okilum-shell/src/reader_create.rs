@@ -283,6 +283,12 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A draft's folder is Okilum's own storage, never a place for files:
+        // New there is another untitled draft (#1528).
+        if self.current_draft().is_some() {
+            self.new_untitled(window, cx);
+            return;
+        }
         self.begin_create(folder, false, window, cx);
     }
     pub(super) fn new_folder(
@@ -291,6 +297,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.current_draft().is_some() {
+            return;
+        }
         self.begin_create(folder, true, window, cx);
     }
     fn begin_create(
@@ -324,12 +333,23 @@ impl Reader {
             .creation
             .take()
             .map_or_else(|| self.tree.cursor.clone(), |c| c.previous_cursor);
-        // Next to the tree selection (a selected note: its folder); with
-        // nothing selected, in the tree's root: the vault root, or the
-        // project's folder (#1512). Never a folder nobody selected.
+        // In a single-file window a new file belongs beside the file it was
+        // created from (#1528), even when browsing moved the tree selection.
+        // Explicit destinations and New Folder keep their tree semantics.
+        // Vault mode: next to the tree selection (a selected note: its
+        // folder); with nothing selected, in the tree's root: the vault root,
+        // or the project's folder (#1512). Never a folder nobody selected.
         let root = self.tree.scope().to_owned();
+        let source_folder = (self.single_file && !directory)
+            .then(|| {
+                Path::new(self.selected_file())
+                    .parent()
+                    .map(okilum_core::vault::note_path)
+            })
+            .flatten();
         let mut folder = folder
             .map(str::to_owned)
+            .or(source_folder)
             .or_else(|| self.tree.selected_creation_folder())
             .unwrap_or_else(|| root.clone());
         let templates = self.creation_templates();

@@ -14,6 +14,11 @@ pub(super) struct Switcher {
     release_generation: u64,
     gallery_open: bool,
     gallery: Option<GallerySession>,
+    /// Recent entries outside the vault inventory (#1528): unsaved drafts and,
+    /// in a single-file window, every file opened on its own. Absolute paths;
+    /// read off the UI thread whenever the gallery opens.
+    external: Vec<reader_title_nav::Entry>,
+    external_generation: u64,
 }
 impl Switcher {
     fn begin(
@@ -144,6 +149,30 @@ mod lifecycle {
     }
 }
 
+/// A Recent card for a file outside the vault inventory, by absolute path.
+fn external_entry(
+    path: &str,
+    age: Option<String>,
+    unsaved: bool,
+    label: Option<String>,
+) -> reader_title_nav::Entry {
+    let file = Path::new(path);
+    let name = |path: Option<&Path>| {
+        path.and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+    };
+    reader_title_nav::Entry {
+        path: path.to_owned(),
+        label: label
+            .or_else(|| name(Some(file)))
+            .unwrap_or_else(|| path.to_owned()),
+        location: (!unsaved).then(|| name(file.parent())).flatten(),
+        age,
+        folder: false,
+        unsaved,
+    }
+}
+
 impl Reader {
     /// Parent's existing Recent button/menu route calls this instead of the list
     /// popover. No main field or new inventory is needed; render_recent owns it.
@@ -194,6 +223,18 @@ impl Reader {
                 window,
                 |this, _, target: &gallery::OpenFile, window, cx| {
                     if !this.recent_switcher.gallery_open || target.root != this.vault_root {
+                        return;
+                    }
+                    // A draft or a file opened on its own (#1528).
+                    if Path::new(&target.relative).is_absolute() {
+                        let listed = this
+                            .recent_gallery_entries()
+                            .iter()
+                            .any(|entry| entry.path == target.relative);
+                        this.close_recent_gallery(window, cx);
+                        if listed {
+                            this.open_recent_file(PathBuf::from(&target.relative), window, cx);
+                        }
                         return;
                     }
                     // Revalidate against the accepted current scope, not a stale card index.
@@ -248,13 +289,14 @@ impl Reader {
         if let Some(session) = &mut self.recent_switcher.gallery {
             session.navigation = self.navigation.generation;
         }
+        self.load_recent_external(cx);
         self.refresh_recent_gallery(cx);
         if let Some(session) = &mut self.recent_switcher.gallery {
             session.focused = true;
             let view = session.view.clone();
             view.update(cx, |view, cx| view.set_query(String::new(), cx));
             // Reopening validates every retained source revision in the same worker.
-            if session.inventory.is_some() {
+            if session.inventory.is_some() || self.single_file {
                 view.update(cx, |view, cx| {
                     view.refresh(session.entries.clone(), &[], cx)
                 });
@@ -267,15 +309,117 @@ impl Reader {
         cx.notify();
     }
 
-    fn recent_gallery_entries(&self) -> Vec<reader_title_nav::Entry> {
+    /// Unsaved drafts first, then this scope's files: the vault or project
+    /// inventory, or in a single-file window every file opened on its own.
+    pub(super) fn recent_gallery_entries(&self) -> Vec<reader_title_nav::Entry> {
+        let mut entries = self.recent_switcher.external.clone();
+        if self.single_file {
+            // The file on screen leads even before history records it; a
+            // draft on screen is already listed with the drafts.
+            let current = self.vault_root.join(&self.current_rel);
+            let current = current.to_string_lossy().into_owned();
+            if !self.current_rel.is_empty() && !entries.iter().any(|entry| entry.path == current) {
+                let position = entries.iter().take_while(|entry| entry.unsaved).count();
+                entries.insert(
+                    position,
+                    external_entry(&current, Some("now".into()), false, None),
+                );
+            }
+            entries.truncate(40);
+            return entries;
+        }
         let Some(inventory) = &self.quick_open.inventory else {
-            return Vec::new();
+            return entries;
         };
-        self.nav_entries(reader_title_nav::Menu::Recent, reader_sidebar::now())
-            .into_iter()
-            .filter(|entry| !entry.folder && inventory.iter().any(|file| file.path == entry.path))
-            .take(40)
-            .collect()
+        entries.extend(
+            self.nav_entries(reader_title_nav::Menu::Recent, reader_sidebar::now())
+                .into_iter()
+                .filter(|entry| {
+                    !entry.folder && inventory.iter().any(|file| file.path == entry.path)
+                })
+                .take(40),
+        );
+        entries.truncate(40);
+        entries
+    }
+
+    /// Read drafts (and, in a single-file window, the files opened on their
+    /// own) off the UI thread; the gallery refreshes when they arrive.
+    fn load_recent_external(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session_directory.clone() else {
+            return;
+        };
+        let single_file = self.single_file;
+        let current = (single_file && self.current_rel == reader_untitled::FILE)
+            .then(|| self.vault_root.clone());
+        self.recent_switcher.external_generation =
+            self.recent_switcher.external_generation.wrapping_add(1);
+        let generation = self.recent_switcher.external_generation;
+        let read = cx.background_executor().spawn(async move {
+            let now = reader_sidebar::now();
+            let drafts = reader_untitled::list(&session);
+            let mut entries: Vec<_> = drafts
+                .iter()
+                .map(|draft| {
+                    external_entry(
+                        &draft.file.to_string_lossy(),
+                        Some(reader_sidebar::age_label(draft.modified, now)),
+                        true,
+                        Some(draft.label.clone()),
+                    )
+                })
+                .collect();
+            // An empty draft on screen is not listed yet, but it is unsaved.
+            if let Some(root) =
+                current.filter(|root| reader_untitled::draft_folder(&session, root).is_some())
+            {
+                let path = root
+                    .join(reader_untitled::FILE)
+                    .to_string_lossy()
+                    .into_owned();
+                if !entries.iter().any(|entry| entry.path == path) {
+                    entries.insert(
+                        0,
+                        external_entry(&path, Some("now".into()), true, Some("Untitled".into())),
+                    );
+                }
+            }
+            if single_file {
+                let files =
+                    reader_history::ReadingHistory::quick_files(&session).unwrap_or_default();
+                for (file, at) in files {
+                    // Drafts are listed above, saved or not.
+                    if reader_untitled::draft_folder(&session, file.parent().unwrap_or(&file))
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    let path = file.to_string_lossy().into_owned();
+                    if !entries.iter().any(|entry| entry.path == path) {
+                        entries.push(external_entry(
+                            &path,
+                            Some(reader_sidebar::age_label(at, now)),
+                            false,
+                            None,
+                        ));
+                    }
+                }
+            }
+            entries.truncate(40);
+            entries
+        });
+        cx.spawn(async move |this, cx| {
+            let entries = read.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.recent_switcher.external_generation == generation
+                    && this.recent_switcher.external != entries
+                {
+                    this.recent_switcher.external = entries;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn recent_gallery_appearance(&self, cx: &App) -> String {
@@ -324,7 +468,8 @@ impl Reader {
                 .update(cx, |view, cx| view.appearance_changed(cx));
         }
         // Missing inventory is a preparation state, not evidence of deletion.
-        if inventory.is_none() {
+        // A single-file window lists files by absolute path, not inventory.
+        if inventory.is_none() && !self.single_file {
             if session.inventory.take().is_some() {
                 session.view.update(cx, |view, cx| view.suspend(cx));
             }
@@ -462,17 +607,77 @@ impl Reader {
                             cx.stop_propagation();
                         }
                     }))
+                    .child(
+                        h_flex()
+                            .p_4()
+                            .pb_0()
+                            .gap_2()
+                            .when_some(self.nav_scope(), |row, scope| {
+                                row.child(self.render_recent_gallery_scope(scope, cx))
+                            })
+                            .child(div().flex_1())
+                            .child(
+                                Button::new("recent-gallery-new-untitled")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Plus)
+                                    .label("New untitled file")
+                                    .debug_selector(|| "recent-gallery-new-untitled".into())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.new_untitled(window, cx)
+                                    })),
+                            ),
+                    )
                     .child(div().p_4().child(
                         Input::new(&session.input).prefix(Icon::new(IconName::Search).small()),
                     ))
-                    .when(self.quick_open.inventory.is_none(), |view| {
-                        view.child(div().p_4().child("Recent files are loading…"))
-                    })
-                    .when(self.quick_open.inventory.is_some(), |view| {
-                        view.child(session.view.clone())
-                    }),
+                    .when(
+                        self.quick_open.inventory.is_none() && !self.single_file,
+                        |view| view.child(div().p_4().child("Recent files are loading…")),
+                    )
+                    .when(
+                        self.quick_open.inventory.is_some() || self.single_file,
+                        |view| view.child(session.view.clone()),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// The This project / All vault switch of #1517, inside the gallery.
+    fn render_recent_gallery_scope(
+        &self,
+        scope: reader_title_nav::Scope,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use reader_title_nav::Scope;
+        gpui_component::button::ButtonGroup::new("recent-gallery-scope").children(
+            [
+                (Scope::Project, "This project"),
+                (Scope::Vault, "All vault"),
+            ]
+            .into_iter()
+            .map(|(choice, label)| {
+                let id = match choice {
+                    Scope::Project => "recent-gallery-scope-project",
+                    Scope::Vault => "recent-gallery-scope-vault",
+                };
+                Button::new(id)
+                    .small()
+                    .ghost()
+                    .label(label)
+                    .selected(scope == choice)
+                    .debug_selector(move || id.into())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_nav_scope(choice, cx);
+                        this.refresh_recent_gallery(cx);
+                        if let Some(session) = &this.recent_switcher.gallery {
+                            let input = session.input.clone();
+                            input.update(cx, |input, cx| input.focus(window, cx));
+                        }
+                        cx.notify();
+                    }))
+            }),
+        )
     }
 
     pub(super) fn cycle_recent(&mut self, delta: isize, cx: &mut Context<Self>) {

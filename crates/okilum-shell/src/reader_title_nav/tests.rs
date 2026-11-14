@@ -177,6 +177,12 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     assert!(visual.debug_bounds("recent-gallery-card-2").is_some());
     assert!(visual.debug_bounds("recent-gallery-card-3").is_none());
     assert!(visual.debug_bounds("title-nav-scope-project").is_none());
+    assert!(
+        visual
+            .debug_bounds("recent-gallery-scope-project")
+            .is_none(),
+        "no scope switch outside a project"
+    );
     let (trigger, menu) = (
         visual.debug_bounds("title-recent").unwrap(),
         visual.debug_bounds("recent-gallery-overlay").unwrap(),
@@ -234,6 +240,21 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
 
     assert!(visual.debug_bounds("recent-gallery-card-1").is_some());
     assert!(visual.debug_bounds("recent-gallery-card-2").is_none());
+    // #1528: the gallery carries the same This project / All vault switch.
+    click(visual, "recent-gallery-scope-vault");
+    assert!(
+        visual.debug_bounds("recent-gallery-overlay").is_some(),
+        "the switch keeps the gallery open"
+    );
+    assert!(visual.debug_bounds("recent-gallery-card-2").is_some());
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.nav_scope(), Some(Scope::Vault))
+    });
+    click(visual, "recent-gallery-scope-project");
+    assert!(visual.debug_bounds("recent-gallery-card-2").is_none());
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.nav_scope(), Some(Scope::Project))
+    });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     // #2329: Recent is now a gallery; the Pinned menu retains the shared
