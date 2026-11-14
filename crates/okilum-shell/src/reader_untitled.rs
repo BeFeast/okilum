@@ -577,6 +577,38 @@ fn destination_path(text: &str, destination: &Destination) -> String {
     }
 }
 
+/// A destination as CommonMark reads it: backslash-escaped punctuation and
+/// numeric or common named character references decoded.
+fn commonmark_unescape(raw: &str) -> String {
+    let entity = regex::Regex::new(
+        r"&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos|nbsp));",
+    )
+    .expect("valid entity pattern");
+    let escaped = regex::Regex::new(r"\\([!-/:-@\[-`{-~])").expect("valid escape pattern");
+    let text = escaped.replace_all(raw, "$1");
+    entity
+        .replace_all(&text, |c: &regex::Captures| {
+            let code = if let Some(n) = c.get(1) {
+                n.as_str().parse::<u32>().ok()
+            } else if let Some(h) = c.get(2) {
+                u32::from_str_radix(h.as_str(), 16).ok()
+            } else {
+                Some(match &c[3] {
+                    "amp" => '&' as u32,
+                    "lt" => '<' as u32,
+                    "gt" => '>' as u32,
+                    "quot" => '"' as u32,
+                    "apos" => '\'' as u32,
+                    _ => 0xa0,
+                })
+            };
+            code.and_then(char::from_u32)
+                .map(String::from)
+                .unwrap_or_else(|| c[0].to_owned())
+        })
+        .into_owned()
+}
+
 /// Rewrite the links of `text` that Okilum's resolver resolves to one of the
 /// draft's attachments, so they name it below `prefix` (the attachments
 /// folder beside the saved note). Wiki links stay wiki links; Markdown
@@ -636,6 +668,15 @@ pub(super) fn rewrite_draft_links(
             continue;
         }
         let Some(relative) = resolve(raw, destination.wiki)? else {
+            // CommonMark decodes entities and backslash escapes in a
+            // destination; Okilum's resolver reads it raw. Where the two
+            // disagree about pointing at an attachment, refuse.
+            let unescaped = commonmark_unescape(raw);
+            if !destination.wiki && unescaped != raw && resolve(&unescaped, false)?.is_some() {
+                return Err(Refused(format!(
+                    "The link «{raw}» to an attachment is written in a way Okilum cannot rewrite safely."
+                )));
+            }
             expected.push(Some((
                 destination.wiki,
                 destination_path(text, destination),
