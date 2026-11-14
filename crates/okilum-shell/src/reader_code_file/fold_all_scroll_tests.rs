@@ -264,3 +264,104 @@ fn issue2958_tree_fold_all_while_scrolled_paints_the_first_rows(cx: &mut TestApp
         "the first folded row is at the top of the Tree viewport: {row:?} in {viewport:?}"
     );
 }
+
+/// Synthetic TOML of four tables of forty keys: 164 lines, and no fold over
+/// the whole document, unlike JSON's root object.
+fn issue2958_toml() -> String {
+    (0..4)
+        .map(|t| {
+            let keys: String = (0..40)
+                .map(|k| format!("key_{t}_{k} = {}\n", t * 100 + k))
+                .collect();
+            format!("[table_{t}]\n{keys}")
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn issue2958_fold_all_without_a_root_fold_paints_every_folded_table(cx: &mut TestAppContext) {
+    let (preview, visual, _temp) = fixture(cx, "data.toml", &issue2958_toml());
+    settled_frame(visual);
+    let input = preview.read_with(visual, |p, _| {
+        assert_eq!(p.view, View::Raw, "TOML opens Raw");
+        p.input().expect("Raw view is the code editor")
+    });
+    let last_table = 3 * 41;
+    let target = 2 * 41 + 10;
+    input.read_with(visual, |s, _| {
+        assert_eq!(s.value().lines().nth(last_table), Some("[table_3]"));
+        assert_eq!(s.value().lines().nth(target), Some("key_2_9 = 209"));
+    });
+    scroll_to_line(&input, target, visual);
+
+    let fold = visual
+        .debug_bounds("code-fold-all")
+        .expect("header Fold all button is mounted");
+    visual.simulate_click(fold.center(), Modifiers::default());
+    frame(visual);
+    input.read_with(visual, |s, _| {
+        let folds = s.folded_ranges();
+        assert!(
+            folds.iter().any(|fold| fold.start_line == 2 * 41),
+            "Fold all folds the table above the old top line: {folds:?}"
+        );
+        assert!(
+            !folds
+                .iter()
+                .any(|fold| fold.start_line == 0 && fold.end_line >= last_table),
+            "positive control: no fold covers the whole document: {folds:?}"
+        );
+        let rows = s.visible_row_range();
+        assert_eq!(
+            s.top_visible_line(),
+            Some(0),
+            "the short folded text is shown from its first table in the first frame (rows {rows:?})"
+        );
+        assert!(painted_in_viewport(s, 0), "`[table_0]` is painted");
+        assert!(
+            painted_in_viewport(s, 2 * 41),
+            "the old top line's table `[table_2]` is painted"
+        );
+        assert!(painted_in_viewport(s, last_table), "`[table_3]` is painted");
+        assert!(
+            s.scroll_offset().y <= px(0.) && s.scroll_offset().y >= px(-1.),
+            "the scroll offset fits the short folded content: {:?}",
+            s.scroll_offset()
+        );
+    });
+}
+
+#[test]
+fn issue2958_batch_fold_top_keeps_the_scroll_range_filled() {
+    use super::structure::{batch_fold_anchor, batch_fold_top};
+    use gpui_component::input::FoldRange;
+    // A 600 px viewport of 20 px lines: 30 rows, the bottom 15 may be empty.
+    let top = |anchor, lines, folds: &[FoldRange]| {
+        batch_fold_top(anchor, lines, folds, px(600.), px(20.))
+    };
+    // Unfolded: a top line in the last 15 lines moves up; others stay.
+    assert_eq!(top(10, 100, &[]), 10);
+    assert_eq!(top(85, 100, &[]), 85);
+    assert_eq!(top(90, 100, &[]), 85);
+    // Folded text shorter than the rows to fill: shown from its first line.
+    let tables: Vec<FoldRange> = (0..4)
+        .map(|t| FoldRange::new(t * 20, t * 20 + 20))
+        .collect();
+    assert_eq!(top(batch_fold_anchor(65, &tables), 81, &tables), 0);
+    // Nested folds hide one merged range.
+    let nested = [FoldRange::new(0, 99), FoldRange::new(10, 20)];
+    assert_eq!(batch_fold_anchor(50, &nested), 0);
+    assert_eq!(top(99, 100, &nested), 0);
+    // A fold hides the lines between its header and closing line: 71..=80
+    // and 95..=99 are the last 15 shown lines.
+    let late = [FoldRange::new(80, 95)];
+    assert_eq!(batch_fold_anchor(90, &late), 80);
+    assert_eq!(top(80, 100, &late), 71);
+    assert_eq!(top(60, 100, &late), 60);
+    // A long fold far from the end changes nothing.
+    let early = [FoldRange::new(10, 150)];
+    assert_eq!(top(10, 200, &early), 10);
+    assert_eq!(top(195, 200, &early), 185);
+    // No layout yet: the anchor as is.
+    assert_eq!(batch_fold_top(90, 100, &[], px(600.), px(0.)), 90);
+}
