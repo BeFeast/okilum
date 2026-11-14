@@ -504,33 +504,51 @@ def wait_idle(path, idle_ms, wait_seconds, connect=Wayland):
 
 # ------------------------------------------------------------- the install
 
+def take_lock(path, mode, deadline, private=False):
+    """flock `path` exclusively, waiting until `deadline`; returns the fd."""
+    flags = os.O_RDWR | os.O_CREAT | (os.O_NOFOLLOW if private else 0)
+    try:
+        fd = os.open(path, flags, mode)
+    except OSError as error:
+        raise Refused(f'cannot open {Path(path).name}: {error.strerror}') from None
+    try:
+        st = os.fstat(fd)
+        if private and (st.st_nlink != 1 or st.st_uid != os.geteuid() or st.st_mode & 0o077):
+            raise Refused('unsafe AppImage update lock')
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Refused('an Okilum install or update holds its lock') from None
+                time.sleep(0.5)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 @contextlib.contextmanager
 def install_locks(image, seconds):
     """Okilum's installer and updater locks (installation.rs, lib.rs update_lock),
-    in their order; a staged or applying in-app update is never overwritten."""
-    parent = image.parent
-    if (parent / f'.{image.name}.update-lock').is_symlink():
-        raise Refused('symlinked update lock')
-    install = os.open(parent / '.install-lock', os.O_RDWR | os.O_CREAT, 0o644)
-    update = os.open(parent / f'.{image.name}.update-lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    in their order; a staged or applying in-app update is never overwritten.
+    Yields a function that releases the install lock early: like the APPLY
+    helper, only the update lock is held while the new build starts, because
+    an ordinary launch takes the install lock and blocks on it (#2455 path)."""
+    deadline = time.monotonic() + seconds
+    install = take_lock(image.parent / '.install-lock', 0o644, deadline)
+    held = [install]
+
+    def release_install():
+        if install in held:
+            held.remove(install)
+            os.close(install)
     try:
-        st = os.fstat(update)
-        if st.st_nlink != 1 or st.st_uid != os.geteuid() or st.st_mode & 0o077:
-            raise Refused('unsafe AppImage update lock')
-        deadline = time.monotonic() + seconds
-        for fd in (install, update):
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise Refused('an Okilum install or update holds its lock') from None
-                    time.sleep(0.5)
-        yield
+        held.append(take_lock(image.parent / f'.{image.name}.update-lock', 0o600, deadline, private=True))
+        yield release_install
     finally:
-        os.close(update)
-        os.close(install)
+        for fd in held:
+            os.close(fd)
 
 
 def private_stages(parent):
@@ -655,7 +673,9 @@ def launch(image, receipt=None, run=subprocess.run, suffix=None):
     unit = f'app-okilum-beta-deliver-{suffix or time.time_ns()}.service'
     command = ['systemd-run', '--user', '--quiet', '--collect', '--unit', unit,
                '--slice', 'app-graphical.slice', '--property', 'Type=exec',
-               '--property', 'UnsetEnvironment=' + ' '.join(RUNTIME_ENV),
+               # UnsetEnvironment= applies after --setenv: never list the receipt there.
+               '--property', 'UnsetEnvironment=' + ' '.join(
+                   name for name in RUNTIME_ENV if not (receipt and name == 'OKILUM_APPIMAGE_UPDATE_RECEIPT')),
                '--description', 'Okilum (reopened by okilum-beta-deliver)']
     if receipt:
         command += ['--setenv', f'OKILUM_APPIMAGE_UPDATE_RECEIPT={receipt}']
@@ -766,8 +786,9 @@ def deliver(settings, proc='/proc'):
 def install(settings, release, payload, windows, published, seen, idle_wait, quit_how):
     build = release['build']
     restored = False
-    with install_locks(settings.image, settings.lock_wait):
+    with install_locks(settings.image, settings.lock_wait) as release_install:
         stage, previous_build = apply(settings, release, payload)
+        release_install()
         installed = now()
         summary = (f'build {build} source {release["source"][:9]} · beta published {clock(published)}'
                    f' · seen {clock(seen)} · idle wait {idle_wait}s · quit {quit_how}')

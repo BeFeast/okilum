@@ -51,7 +51,8 @@ OLD_IMAGES = "scripts/rebrand/old-brand-images.sha256"
 NAME_ALLOWED = ("vendor/",)
 # Bytes that cannot change without a secret: the Arch signing key's user id names
 # the old brand inside its armored base64, and rewriting it needs the private key.
-ENCODED_ALLOWED = ("scripts/arch/okilum-signing-key.asc",)
+# okilum-beta-deliver.py pins a copy (scripts/ci/test_beta_deliver.py keeps it equal).
+ENCODED_ALLOWED = ("scripts/arch/okilum-signing-key.asc", "scripts/dev/okilum-beta-deliver.py")
 # A base64 run, joined across line wraps (armored keys, MIME) before decoding.
 BASE64_RUN = re.compile(rb"[A-Za-z0-9+/]{16,}={0,2}(?:\r?\n[A-Za-z0-9+/]{4,}={0,2})*")
 

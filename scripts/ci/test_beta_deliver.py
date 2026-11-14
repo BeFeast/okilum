@@ -378,7 +378,24 @@ class Delivery(unittest.TestCase):
             self.proc.exit(window['pid'])
         return 'TERM'
 
+    def lock_free(self, name):
+        import fcntl
+        try:
+            fd = os.open(self.image.parent / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        finally:
+            os.close(fd)
+
     def fake_launch(self, image, receipt=None, **_):
+        # An ordinary launch blocks on .install-lock (installation::install), so
+        # only the update lock may be held while the new build starts (APPLY).
+        self.locks_at_launch = (self.lock_free('.install-lock'), self.lock_free('.Okilum.AppImage.update-lock'))
         self.launches.append((Path(image).read_bytes(), receipt))
         if receipt and self.app_confirms:
             Path(receipt, 'started').write_text('startup confirmed\n')
@@ -399,6 +416,7 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.deliver(), 'installed 7760')
         self.assertEqual(self.image.read_bytes(), self.payload)
         self.assertEqual(self.signals, [[51058]])
+        self.assertEqual(self.locks_at_launch, (True, False))
         (content, receipt), = self.launches
         self.assertEqual(content, self.payload)
         stage = Path(receipt)
@@ -524,9 +542,16 @@ class Units(unittest.TestCase):
         self.assertEqual(command[:3], ['systemd-run', '--user', '--quiet'])
         self.assertIn('app-graphical.slice', command)
         self.assertIn('OKILUM_APPIMAGE_UPDATE_RECEIPT=/h/.okilum-update-x', command)
+        unset = next(part for part in command if part.startswith('UnsetEnvironment='))
+        # systemd applies UnsetEnvironment= after --setenv (14.11 on idunn: the
+        # receipt vanished and the new build could not confirm its start).
+        self.assertNotIn('OKILUM_APPIMAGE_UPDATE_RECEIPT', unset)
+        self.assertIn('APPIMAGE', unset.split('=', 1)[1].split())
         self.assertEqual(command[-2:], ['--', '/h/Okilum.AppImage'])
         D.launch(Path('/h/Okilum.AppImage'), run=run, suffix='2')
-        self.assertFalse(any('RECEIPT=' in part for part in calls[1]))
+        self.assertFalse(any('RECEIPT=/' in part for part in calls[1]))
+        unset = next(part for part in calls[1] if part.startswith('UnsetEnvironment='))
+        self.assertIn('OKILUM_APPIMAGE_UPDATE_RECEIPT', unset)
 
 
 if __name__ == '__main__':
