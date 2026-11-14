@@ -248,7 +248,10 @@ class LinuxBridgeTests(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         self.assertIn("branches: ['forgejo-linux-pr/**']", workflow)
         self.assertIn('actions/cache/restore@v4', workflow)
-        self.assertIn("if: github.ref == 'refs/heads/main' && github.event.schedule != '5 22 * * 2,6'", workflow)
+        # The beta producer restores main's dependency cache; it saves only on main,
+        # which write-once beta refs and PR proxies never are (#2881).
+        self.assertIn('uses: Swatinem/rust-cache@v2', workflow)
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", workflow)
         self.assertIn('persist-credentials: false', workflow)
         self.assertIn('bash scripts/ci/check-linux.sh', workflow)
 

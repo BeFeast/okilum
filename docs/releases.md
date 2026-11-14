@@ -46,9 +46,13 @@ skip is a pushed commit that already is that platform's beta (the actual feed
 head, not an archive catalog).
 
 A running beta always finishes (manager 13.11: merges faster than a build kept
-cancelling the Linux beta, so none was published for hours). Push runs share
-the concurrency group `<platform>-beta-main` without `cancel-in-progress`: a
-newer push waits for the running one. When a queued push run starts and main
+cancelling the Linux beta, so none was published for hours). Linux push runs
+each have their own group (`linux-beta-<run id>`), so a merge starts its beta at
+once instead of queueing behind the previous merge's whole run (14.11: queueing
+added up to 23 minutes); release-publish still serializes feed writes and files
+an older build that finishes after a newer one as archive-only. Mac and Windows
+push runs share the concurrency group `<platform>-beta-main` without
+`cancel-in-progress`: a newer push waits for the running one. When a queued push run starts and main
 has moved on, its select step skips (`hourly_beta.push_select` reads main's tip;
 the newer push's own run builds it). If the tip cannot be read, the run builds as
 before rather than skip; the same holds when the check exceeds its 60-second
@@ -57,22 +61,37 @@ it does not fail closed, and publishers still refuse a build older than the feed
 Forgejo 17 queues the group FIFO and never replaces a pending run, so the push
 run that starts cancels every older queued push run of its workflow and keeps
 only the newest (`coalesce_queued_pushes`); a burst of merges costs one extra
-select at most. The beta is therefore at most one build behind main. The hosted GitHub producers follow: Linux
-AppImage producers share the GitHub group `forgejo-linux-beta`, and Mac beta
-signing runs share `macos-shipping-beta`, both cancelling the older run
-(the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
+select at most. The beta is therefore at most one build behind main. The hosted GitHub producers follow: each Linux
+AppImage producer runs in the group of its own write-once ref and always
+finishes, and Mac beta signing runs share `macos-shipping-beta`, cancelling the
+older run (the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
 archive, AppImage-only and Windows re-sign dispatches keep their own Forgejo
 groups: a push never cancels their Forgejo run, and they never cancel a push
-run. A manual main beta's hosted Linux/Mac producer is still superseded by a
-newer push's producer, which is the intended outcome. Hosted producers only
-overlap when a manual dispatch runs beside a push.
+run. A manual main beta's hosted Mac producer is still superseded by a
+newer push's producer, which is the intended outcome.
 
 Linux retains exact run/job/artifact SHA provenance by creating a write-once
 GitHub branch `forgejo-linux-pr/hourly-<source>` (the name predates push betas).
 Its push starts the producer; existing completed or active producers are reused.
 A mismatched existing ref is an error, never force-updated. The branch is
 created only after the GitHub mirror has the pushed commit (bounded wait, 10
-minutes); the Mac bridge waits the same bound for the mirror. Mac and Windows
+minutes); the Mac bridge waits the same bound for the mirror.
+A cache saved on such a ref is never visible to the next one, so
+`beta-appimage-cache.yml` builds the same graph on each mirrored `main` push
+(only when its exact entry is missing) and saves a `Swatinem/rust-cache` entry
+on `main`; producers restore it and never save. It holds registry/git
+dependencies only: workspace and vendored path crates always compile from the
+producer's checkout. After a new entry is saved, the same workflow deletes every
+other `v0-rust-beta-appimage-v1-Linux-*` entry, so the beta cache occupies one
+entry (~1 GiB) of the 10 GiB quota.
+
+The Ubuntu/Fedora smoke and disposable-key signing checks stay the beta gate
+(idunn installs every beta automatically). For a pushed beta they run in
+`appimage-acceptance` after the `appimage` job, while the bridge already takes
+the bytes; `appimage-reuse` then waits for that job (`appimage_handoff.py
+await-acceptance`, 15 min budget) before `appimage-publication` may dispatch,
+and the publisher refuses a handoff whose `appimage-reuse` job did not succeed.
+A failed or missing check never reaches the feed. Mac and Windows
 build the pushed product source with their existing delivery tooling.
 
 Push runs carry Forgejo's native statuses on their own commit, named
@@ -93,7 +112,8 @@ three new `push` runs on that commit (`linux-release`, `macos-release`,
 `forgejo-linux-pr/hourly-<sha>` on GitHub and a `forgejo-linux` run there; Mac
 starts a `forgejo-macos-shipping` run. Each successful build dispatches
 `release-publish`, which then refreshes `releases` (the GitHub rolling Beta).
-A second merge before those finish shows the first commit's runs as cancelled.
+A second merge before those finish shows the first commit's Mac and Windows runs as
+cancelled or skipped; both Linux betas run to completion.
 
 Release compilation uses pinned sccache with the existing private S3 cache when
 credentials are available, otherwise the ordinary compiler. Arch/Windows cache

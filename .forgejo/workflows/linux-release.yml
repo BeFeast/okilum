@@ -20,14 +20,15 @@ on:
         default: ''
 
 concurrency:
-  # A newer main push never cancels a running beta of an older commit.
-  # Manual, pinned, archive and AppImage-only dispatches keep their own groups
-  # and always finish; publication runs in release-publish and is never cancelled.
-  group: linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
-  # A running beta always finishes (manager 13.11). Forgejo queues this group
-  # FIFO and never replaces a pending run, so the push run that starts cancels
-  # older queued push runs and keeps the newest (hourly_beta.coalesce_queued_pushes);
-  # a stale push run that starts anyway skips in select because main moved on.
+  # Every push run has its own group: a merge starts its beta at once instead of
+  # queueing behind the previous merge's whole run (measured 14.11: up to 23 min
+  # of queue on top of the build). A running beta still always finishes (manager
+  # 13.11): nothing cancels it. Its exact-source GitHub producer runs in its own
+  # per-ref group, a push run that starts after main moved on skips in select,
+  # and release-publish serializes feed writes, filing an older build as
+  # archive-only. Pinned retries keep one group per source; manual, archive and
+  # AppImage-only dispatches keep their own groups and always finish.
+  group: linux-beta-${{ inputs.hourly_source || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -159,8 +160,8 @@ jobs:
     # Frozen or failed Arch never holds the AppImage beta of the same push.
     if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
-    # Mirror wait (10m) + bounded producer wait (90m) + setup.
-    timeout-minutes: 105
+    # Mirror wait (10m) + bounded producer wait (90m) + acceptance wait (15m) + setup.
+    timeout-minutes: 120
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -189,6 +190,17 @@ jobs:
           name: appimage-publication
           path: dist/appimage-publication/
           retention-days: 7
+      # Beta gate: the bytes above were taken while the producer's Ubuntu/Fedora
+      # smoke and disposable-key signing checks still ran. Publication (needs
+      # this job's success) waits for both; a failure never reaches the feed.
+      - name: Wait for the producer's Ubuntu/Fedora smoke and signing checks
+        if: steps.reuse.outputs.accepted == 'true'
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+        run: python3 scripts/releases/appimage_handoff.py await-acceptance --directory dist/appimage-publication --wait-seconds 900
 
   appimage-publication:
     needs: [select, appimage-reuse]

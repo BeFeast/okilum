@@ -15,9 +15,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  # All beta producers share one group: a newer source cancels an unfinished
-  # older one, as its Forgejo run was already cancelled by the newer push.
-  group: forgejo-linux-${{ startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-') && 'beta' || github.ref }}
+  # One group per ref. Every write-once beta ref has its own group, so a newer
+  # main push never cancels the producer of an older one: each Forgejo push beta
+  # runs to completion in parallel (manager 13.11) and the publisher files an
+  # older build as archive-only. A re-push of a PR proxy ref still supersedes.
+  group: forgejo-linux-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   select:
@@ -96,6 +98,9 @@ jobs:
       actions: read
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    outputs:
+      artifact-id: ${{ steps.producer.outputs.artifact-id }}
+    # Keep this env identical to beta-appimage-cache.yml: rust-cache keys on it.
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
@@ -113,14 +118,18 @@ jobs:
             build-essential cmake pkg-config curl git mold file patchelf gpgv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1
-      - uses: actions/cache@v4
-        if: github.ref == 'refs/heads/main' && github.event.schedule != '5 22 * * 2,6'
+      # Beta producers run on write-once forgejo-linux-pr/hourly-<sha> refs, whose
+      # own cache scope is never reused. They restore the registry-dependency
+      # cache that beta-appimage-cache.yml saves on main (any branch may read
+      # main's caches) and never save (10 GB repo quota, #2881). rust-cache keeps
+      # only registry/git dependencies: workspace and vendored path crates always
+      # compile from this checkout, so a restore can never stand in for product code.
+      # A Cargo.lock change falls back to the newest entry for the same toolchain/env.
+      - uses: Swatinem/rust-cache@v2
+        if: github.event.schedule != '5 22 * * 2,6'
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: beta-appimage-v2-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
+          shared-key: beta-appimage-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build exact-source AppImage once
         if: github.event.schedule != '5 22 * * 2,6'
         run: bash scripts/appimage/build.sh
@@ -161,8 +170,12 @@ jobs:
           sha256sum -c SHA256SUMS
           chmod +x Okilum-x86_64.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./Okilum-x86_64.AppImage --help
+      # A pushed beta ref runs these two checks in appimage-acceptance instead, so
+      # the Forgejo bridge can take the bytes once this job completes. They stay
+      # the beta gate: publication waits for them (appimage_handoff.acceptance).
+      # PR proxies, dispatches and nightly keep them here.
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
-        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6'
+        if: (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6') && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-'))
         run: |
           set -euo pipefail
           mkdir -p dist/appimage/evidence
@@ -174,7 +187,7 @@ jobs:
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
       - name: Verify signed AppImage installation with disposable CI key
-        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6'
+        if: (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6') && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-'))
         env:
           GH_TOKEN: ${{ github.token }}
           APPIMAGE_ARTIFACT_ID: ${{ steps.producer.outputs.artifact-id }}
@@ -187,6 +200,57 @@ jobs:
         if: always()
         with:
           name: linux-appimage-evidence-${{ github.sha }}
+          path: dist/appimage/evidence/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Same two checks on the same uploaded bytes for a pushed beta ref, while the
+  # Forgejo bridge already takes them. Beta gate: Forgejo publishes only after
+  # this job succeeded (appimage_handoff.py await-acceptance). Job and step names
+  # are part of that contract.
+  appimage-acceptance:
+    needs: appimage
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage-${{ github.sha }}
+          path: dist/appimage
+      - name: Verify unchanged AppImage on clean Ubuntu and Fedora
+        run: |
+          set -euo pipefail
+          cd dist/appimage
+          sha256sum -c SHA256SUMS
+          chmod +x Okilum-x86_64.AppImage
+          cd ../..
+          mkdir -p dist/appimage/evidence
+          for image in ubuntu:24.04 fedora:44; do
+            docker run --rm --network bridge \
+              -v /etc/ssl/certs/ca-certificates.crt:/ci-ca-certificates.crt:ro \
+              -v "$PWD/dist/appimage:/artifact:ro" -v "$PWD:/source:ro" \
+              "$image" bash /source/scripts/appimage/smoke.sh \
+              2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
+          done
+      - name: Verify signed AppImage installation with disposable CI key
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPIMAGE_ARTIFACT_ID: ${{ needs.appimage.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/releases/appimage_ci.py dist/appimage \
+            2>&1 | tee dist/appimage/evidence/signature-install.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-appimage-acceptance-evidence-${{ github.sha }}
           path: dist/appimage/evidence/
           retention-days: 7
           if-no-files-found: warn

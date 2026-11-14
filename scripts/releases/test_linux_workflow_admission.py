@@ -11,11 +11,12 @@ ROOT = Path(__file__).resolve().parents[2]
 class LinuxAdmission(unittest.TestCase):
     def test_arch_cannot_block_next_main_appimage_path(self):
         workflow = yaml.safe_load((ROOT / '.forgejo/workflows/linux-release.yml').read_text())
-        # A newer main push cancels an unfinished older push beta. Explicit
-        # archive/reuse runs have independent groups, so Arch cannot occupy
-        # their admission and they are never cancelled by a push.
+        # Every push run has its own group, so a merge never queues behind the
+        # previous merge's run and nothing cancels a running beta. Pinned
+        # retries share a group per source; other dispatches are independent,
+        # so Arch cannot occupy their admission.
         self.assertEqual(workflow['concurrency']['group'],
-                         "linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
+                         "linux-beta-${{ inputs.hourly_source || github.run_id }}")
         self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
