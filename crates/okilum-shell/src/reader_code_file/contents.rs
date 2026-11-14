@@ -100,7 +100,7 @@ impl CodePreview {
         let node = |index: Option<usize>| index.filter(|&i| i > 0 && i < raw.structure.len());
         match self.view {
             View::Tree => {
-                let top = tree_top_row(&self.structure.scroll);
+                let top = self.structure.scroll.logical_scroll_top_index();
                 Some(Whereabouts {
                     view: View::Tree,
                     page: 0,
@@ -201,16 +201,4 @@ impl CodePreview {
         }
         cx.notify();
     }
-}
-
-/// The topmost Tree row, or the row a pending `scroll_to_item` will bring to
-/// the top. Same logic as gpui's `logical_scroll_top_index`, which exists only
-/// under gpui's `test-support` feature and so breaks the release build (#2916).
-fn tree_top_row(scroll: &UniformListScrollHandle) -> usize {
-    let state = scroll.0.borrow();
-    state
-        .deferred_scroll_to_item
-        .as_ref()
-        .map(|deferred| deferred.item_index)
-        .unwrap_or_else(|| state.base_handle.logical_scroll_top().0)
 }
