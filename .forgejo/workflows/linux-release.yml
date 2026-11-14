@@ -20,15 +20,19 @@ on:
         default: ''
 
 concurrency:
-  # Every push run has its own group: a merge starts its beta at once instead of
-  # queueing behind the previous merge's whole run (measured 14.11: up to 23 min
-  # of queue on top of the build). A running beta still always finishes (manager
+  # Every push run has its own group, keyed by its commit: a merge starts its beta
+  # at once instead of queueing behind the previous merge's whole run (measured
+  # 14.11: up to 23 min of queue on top of the build). Forgejo evaluates this
+  # block before the run exists, so github.run_id is empty here
+  # (services/actions/context.go generateGiteaContextForRun, RunID: ""); a group
+  # keyed on it put every push run back into one FIFO `linux-beta-` group after
+  # #2934. github.sha is set. A running beta still always finishes (manager
   # 13.11): nothing cancels it. Its exact-source GitHub producer runs in its own
   # per-ref group, a push run that starts after main moved on skips in select,
   # and release-publish serializes feed writes, filing an older build as
-  # archive-only. Pinned retries keep one group per source; manual, archive and
-  # AppImage-only dispatches keep their own groups and always finish.
-  group: linux-beta-${{ inputs.hourly_source || github.run_id }}
+  # archive-only. Pinned retries share the push group of their source; other
+  # dispatches keep their previous (shared) group and always finish.
+  group: linux-beta-${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}
   cancel-in-progress: false
 
 jobs:
