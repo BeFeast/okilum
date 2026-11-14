@@ -1,0 +1,13 @@
+# Installs the newest Okilum Linux beta once the user is idle (Oleg 14.11).
+# Started by okilum-beta-deliver.timer; docs: scripts/dev/README.md.
+[Unit]
+Description=Okilum: install the newest Linux beta when the user is idle
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/.local/bin/okilum-beta-deliver
+# Waits up to 25 min for 60 s of idleness, then quits, installs and reopens.
+TimeoutStartSec=40min
+Nice=10

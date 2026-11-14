@@ -118,3 +118,92 @@ Okilum did not quit and keeps the old build until it is reopened. Logs: the last
 Needs Rust, git, curl, python3, gpg and gpgv, flock (util-linux), readelf
 (binutils) and the system libraries gpui builds against (Wayland, xkbcommon,
 fontconfig, freetype, xcb, Vulkan).
+
+## Linux: newest beta without a person, `okilum-beta-deliver.py`
+
+Oleg 14.11: the Linux desktop installs every new beta by itself, and Okilum is
+closed only after 60 s without input. Nothing is compiled on the desktop: the
+script installs the hosted Linux beta that CI publishes for every main push
+(`https://updates.befeast.com/okilum/linux/beta/latest.json`). A systemd user
+timer runs it 2.5 min after the previous run ends, in the graphical session.
+
+One run:
+
+1. **Feed:** reads the signed beta descriptor and checks it the way the in-app
+   AppImage updater does (`crates/okilum-appimage/src/lib.rs`): gpgv against
+   the pinned release key (fingerprint and key are copies of the crate's,
+   `scripts/ci/test_beta_deliver.py` keeps them equal), every descriptor field,
+   the payload signature, size and sha256, and the signed provenance (source,
+   build, version, sha256). Stops if the managed AppImage already holds that
+   build or a newer one (the `.appimage-build` record, or the same bytes).
+2. **Download** into `~/.cache/okilum-deliver/<build>` before anything else, so
+   a bad or slow payload never closes Okilum.
+3. **Idle:** if Okilum is open (an `okilum` process holding
+   `~/.local/state/okilum/reader-instance.lock`; `okilum sync serve` and the
+   Sprint build never match), waits for 60 s without input through Wayland
+   `ext-idle-notify-v1` (input idleness on notifier v2, so a playing video does
+   not count as activity). The notification stays open until the quit is
+   over, and `idled`/`resumed` are applied in order, so the user counts as
+   idle only if the last event is `idled`. It waits up to 25 min, then the
+   next timer run tries again. If an in-app update installed this build or a
+   newer one meanwhile, it stops here.
+4. **Quit:** the windows are found again and pinned by pidfd to their uid,
+   executable and start time, so a pid reused during the wait is never
+   signalled. Input received up to that moment cancels the run, with nothing
+   sent. Then SIGTERM, which Okilum handles like Quit: editors are saved and
+   the launch marker is cleared on a safe shutdown. **No SIGKILL:** the app
+   shows no "everything is saved" state while it runs, so a window still open
+   30 s after SIGTERM (an open dialog, for example) keeps running. That is
+   logged, and the next timer run tries again.
+5. **Install** with the updater's transaction: Okilum's install and update
+   locks (an update the app has staged or is applying is never overwritten).
+   Under both locks the installed build is checked again: the script never
+   installs a build at or below the installed one, and reopens Okilum
+   unchanged instead. Then a `.okilum-update-*` stage beside the AppImage with
+   `previous.AppImage`, `expected.json` and `apply.log`, the build record and
+   a rename. Old stages are pruned like the updater does (the newest
+   completed and the newest interrupted one are kept).
+6. **Reopen** (only if it was open) in its own unit in `app-graphical.slice`
+   (`systemd-run --user`, as uwsm launchers do), with
+   `OKILUM_APPIMAGE_UPDATE_RECEIPT` set to the stage, so the new build itself
+   confirms that it started. Only the update lock is held meanwhile, as in the
+   updater's APPLY helper. If the build exits before confirming, the previous
+   AppImage is put back and reopened; after two failures that build is skipped
+   and the next one is tried.
+
+Log, one line per action: `~/.local/state/okilum-deliver.log`, for example
+`installed build 7760 source fc5a8fc9d · beta published 10:52:43 · seen 10:59:01 · idle wait 60s · quit TERM · installed 11:00:02 · running 11:00:03 (start confirmed by the app, …)`.
+Each check also writes `~/.local/state/okilum-deliver/last-check.json` (feed
+build, installed build, time). `okilum-beta-deliver --check` prints the feed
+and installed build and changes nothing.
+
+Install (as the desktop user, no sudo; from a checkout or copies of the three
+files):
+
+```bash
+install -Dm755 scripts/dev/okilum-beta-deliver.py ~/.local/bin/okilum-beta-deliver
+install -Dm644 scripts/dev/systemd/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.service
+install -Dm644 scripts/dev/systemd/okilum-beta-deliver.timer ~/.config/systemd/user/okilum-beta-deliver.timer
+systemctl --user daemon-reload && systemctl --user enable --now okilum-beta-deliver.timer
+```
+
+Remove:
+
+```bash
+systemctl --user disable --now okilum-beta-deliver.timer; systemctl --user stop okilum-beta-deliver.service
+rm -f ~/.local/bin/okilum-beta-deliver ~/.config/systemd/user/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.timer
+systemctl --user daemon-reload; rm -rf ~/.cache/okilum-deliver ~/.local/state/okilum-deliver
+```
+
+Measured 14.11:
+
+- merge → hosted Linux beta in the feed, builds 7745–7759: 18.6–45.0 min,
+  median about 25 min.
+- After publication, the script adds up to 2.5 min (timer), the idle wait and
+  about 1 min (60 s idle threshold, then quit, install and reopen in a few
+  seconds).
+- Build 7760: merged 10:32:59, published 10:52:43, seen 10:59:01, installed
+  11:00:02, running 11:00:03 (27 min from merge).
+
+Needs python3 3.9+ (stdlib only; pidfd needs Linux 5.3+), gpgv, systemd-run
+and a Wayland compositor with `ext-idle-notify-v1` (Hyprland has it).

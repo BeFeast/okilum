@@ -1,0 +1,14 @@
+# Checks the Linux beta feed 2.5 min after each run ends, in the graphical
+# session only. Docs: scripts/dev/README.md.
+[Unit]
+Description=Okilum: check for a new Linux beta
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Timer]
+OnActiveSec=30s
+OnUnitInactiveSec=150s
+AccuracySec=10s
+
+[Install]
+WantedBy=graphical-session.target
