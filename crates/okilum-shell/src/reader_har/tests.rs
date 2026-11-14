@@ -1219,7 +1219,7 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     assert!(measured_bounds(visual, "har-overview-status-5xx").is_none());
 
     // A status row toggles the Status filter.
-    let click = |visual: &mut VisualTestContext, id: &str| {
+    let click = |visual: &mut VisualTestContext, id: &'static str| {
         let bounds = measured_bounds(visual, id).unwrap_or_else(|| panic!("{id} is drawn"));
         visual.simulate_click(bounds.center(), Modifiers::default());
         draw(visual);
