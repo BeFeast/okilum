@@ -7,8 +7,9 @@ use std::ops::Range;
 pub struct Target {
     pub range: Range<usize>,
     pub text: String,
-    /// The destination as the renderer reads it: the parser's decoded URL
-    /// (entities and escapes resolved), before percent-decoding.
+    /// The destination as the viewer resolves it: for Markdown the parser's
+    /// decoded URL (entities and escapes resolved, before percent-decoding),
+    /// for a wiki link its authored target.
     pub decoded: String,
     pub wiki: bool,
     pub embedded: bool,
@@ -144,8 +145,10 @@ pub fn targets(source: &str) -> Vec<Target> {
                 });
                 out.push(Target {
                     range,
+                    // As the viewer resolves it: a wiki link by its authored
+                    // target (render::rewrite_links), Markdown by the URL.
+                    decoded: if wiki { text.clone() } else { decoded.into() },
                     text,
-                    decoded: decoded.into(),
                     wiki,
                     embedded,
                     reason,
