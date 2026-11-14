@@ -1,12 +1,6 @@
 //! Contextual offline Sync Help. No controller, runtime or service dependency.
 use crate::*;
 use gpui_component::{text::TextView, WindowExt};
-use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
 
 const GUIDE: &str = include_str!("../../../docs/help/sync/setup.md");
 const FILES: &[(&str, &[u8])] = &[
@@ -74,7 +68,7 @@ impl SyncHelp {
                 .background_executor()
                 .spawn(async move {
                     let state = reader_history::state_directory()?;
-                    let file = publish_local(&state)?;
+                    let file = crate::reader_help_assets::publish(&state, "sync", FILES)?;
                     let mut url = url::Url::from_file_path(file)
                         .map_err(|_| anyhow::anyhow!("Local Help path cannot be opened"))?;
                     url.set_fragment(Some("watch"));
@@ -111,85 +105,4 @@ impl Render for SyncHelp {
         }
         content
     }
-}
-
-fn fingerprint() -> String {
-    let mut digest = Sha256::new();
-    for (name, bytes) in FILES {
-        digest.update((name.len() as u64).to_le_bytes());
-        digest.update(name.as_bytes());
-        digest.update((bytes.len() as u64).to_le_bytes());
-        digest.update(bytes);
-    }
-    format!("{:x}", digest.finalize())
-}
-fn real_directory(path: &Path) -> anyhow::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    anyhow::ensure!(
-        metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "Help directory replaced"
-    );
-    Ok(())
-}
-fn verify_local(root: &Path) -> anyhow::Result<PathBuf> {
-    real_directory(root)?;
-    real_directory(&root.join("assets"))?;
-    for (name, bytes) in FILES {
-        let path = root.join(name);
-        let metadata = fs::symlink_metadata(&path)?;
-        anyhow::ensure!(
-            metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.len() == bytes.len() as u64,
-            "Help asset replaced"
-        );
-        anyhow::ensure!(fs::read(path)? == *bytes, "Help asset changed");
-    }
-    Ok(root.join("index.html"))
-}
-/// Publish only immutable bundled assets outside vaults/indexes. Stage a complete
-/// generation before making it visible; never overwrite a changed existing copy.
-fn publish_local(state: &Path) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(state)?;
-    real_directory(state)?;
-    let help = state.join("help");
-    match fs::create_dir(&help) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e.into()),
-    }
-    real_directory(&help)?;
-    let destination = help.join(format!("sync-{}", fingerprint()));
-    match fs::symlink_metadata(&destination) {
-        Ok(_) => return verify_local(&destination),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-    let temporary = tempfile::Builder::new()
-        .prefix(".sync-help-")
-        .tempdir_in(&help)?;
-    fs::create_dir(temporary.path().join("assets"))?;
-    for (name, bytes) in FILES {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary.path().join(name))?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    #[cfg(unix)]
-    {
-        fs::File::open(temporary.path().join("assets"))?.sync_all()?;
-        fs::File::open(temporary.path())?.sync_all()?;
-    }
-    if let Err(error) = fs::rename(temporary.path(), &destination) {
-        // Another Help window may have published this exact generation first.
-        // Only a byte-verified copy can win that race.
-        if verify_local(&destination).is_err() {
-            return Err(error.into());
-        }
-    }
-    #[cfg(unix)]
-    fs::File::open(help)?.sync_all()?;
-    verify_local(&destination)
 }

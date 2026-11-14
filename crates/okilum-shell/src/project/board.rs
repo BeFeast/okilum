@@ -11,6 +11,7 @@ mod delivery;
 mod filters;
 #[cfg(feature = "project-ui-harness")]
 pub(super) mod fixture;
+mod help;
 mod kanban;
 #[cfg(test)]
 mod layout_work;
@@ -918,7 +919,8 @@ impl Render for Board {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_management(window, cx)
                                 })),
-                        ),
+                        )
+                        .child(help::entry()),
                 );
             }
             return root.into_any_element();

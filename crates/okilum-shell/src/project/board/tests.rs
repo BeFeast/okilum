@@ -2,6 +2,80 @@ use super::*;
 use ::core::prelude::v1::test;
 
 #[gpui::test]
+fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    // Root stores modal state; its content owns the overlay render layers,
+    // just as Reader does. A bare Board does not render window-wide sheets.
+    struct Surface(Entity<Board>);
+    impl Render for Surface {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.0.clone())
+                .children(Root::render_sheet_layer(window, cx))
+        }
+    }
+
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_reduce_motion(true);
+    });
+    for (mode, zero_matches) in [
+        (None, false),
+        (Some(list::Mode::List), false),
+        (Some(list::Mode::Board), false),
+        (Some(list::Mode::List), true),
+        (Some(list::Mode::Board), true),
+    ] {
+        let area = tempfile::tempdir().unwrap();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let board = cx.new(|cx| {
+                let mut board = Board::with_reader(
+                    area.path().into(),
+                    |_| panic!("Reading Help must not access repository sources"),
+                    window,
+                    cx,
+                );
+                if let Some(mode) = mode {
+                    board.binding =
+                        Some(Binding::parse("version: 1\ntitle: Practice\nissues: []\n").unwrap());
+                    board.list.preferences.mode = mode;
+                }
+                if zero_matches {
+                    board.filter.search = "No matching tasks".into();
+                }
+                board
+            });
+            let surface = cx.new(|_| Surface(board));
+            Root::new(surface, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("board-filter-empty").is_some(),
+            zero_matches,
+            "positive control: exercise the zero-match render path"
+        );
+        assert!(visual.debug_bounds("board-help-content").is_none());
+        let entry = visual
+            .debug_bounds("board-help")
+            .expect("contextual Help entry");
+        visual.simulate_click(entry.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                window.has_active_sheet(cx),
+                "Help click must open its sheet"
+            );
+            window.draw(cx).clear(cx);
+        });
+        assert!(visual.debug_bounds("board-help-content").is_some());
+        assert_eq!(visual.opened_url(), None);
+        assert_eq!(std::fs::read_dir(area.path()).unwrap().count(), 0);
+    }
+}
+
+#[gpui::test]
 fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserved(
     cx: &mut TestAppContext,
 ) {

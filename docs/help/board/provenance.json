@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "recorded_on": "2026-11-14",
+  "platform": "Linux x86_64",
+  "build": "0.1.7764",
+  "source_commit": "e2a6e8556aa2b974a0ddd4012b93ec77d746bfd7",
+  "artifact_url": "https://updates.befeast.com/okilum/linux/builds/7764/Okilum-x86_64.AppImage",
+  "artifact_sha256": "b1f47a85a47e105a2c778cbdb14e5eba7b5d1f3fbc04408e4b9bdb7c9b0c7311",
+  "capture": "Real production GPUI application from the published AppImage; private Xvfb display and isolated application state on maestro, software Vulkan rendering. All notes and tasks are synthetic tutorial content. No source fixture or simulated Board.",
+  "editing": "Continuous 15 fps x11grab with real cursor. No cuts or speed changes. English action captions added in a band below the full UI; no audio. Original recording and session launcher retained at /home/god/work/qa-evidence/issue-2357/.",
+  "saved_state": {
+    "before": "recorded-before.toml",
+    "after": "recorded-after.toml",
+    "same_card_id": "5d5b7f2c-c1e8-42b4-9477-76f05ac34ff4",
+    "before_state": "todo",
+    "after_state": "doing"
+  },
+  "website": "https://okilum.app/help/board/",
+  "video": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1440,
+        "height": 1056
+      }
+    ],
+    "format": {
+      "duration": "104.866667",
+      "size": "842325"
+    }
+  },
+  "files": {
+    "index.html": "4a4f6f167d8658fb0c8e86c868259a9000c4f5e2c7b48144c5708a4973322fe3",
+    "setup.md": "13139c11590e0a54d6f9b719cc261a48660d23a0b05102b3a8fe01058ef08911",
+    "captions.vtt": "0be4d072abdbfe67be029900710977f5d71d824163bb3d86b51f5fbe0ba38744",
+    "assets/board-tutorial.mp4": "f4c532b2f655cc554e206f89987ae8e69caaf57d5e8be1ef941960aa1fce38d6",
+    "assets/board-saved.png": "24609868e0651575241c76ea86343296b96a92b672e3ad21caeabd59e1150b9a",
+    "assets/Manrope.ttf": "3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6",
+    "assets/OFL.txt": "58172e0c0fac2cda8a37b348164bb55e44b0e69051e557e92b1d3f6910141f7b",
+    "recorded-before.toml": "50202d4c15db2ef5afb09426ea5eb6193d730ed21a0bbd250af7f9e939c30b2c",
+    "recorded-after.toml": "64761e2f903c63fdcb0fceea1dcebe4dfe66bfa9cd919a15abc2f1381c09a633",
+    "events.json": "97ad3094411b37c3f6d388ccc62a89e8b3546d7e5197f91a51f3329fd42e8a26",
+    "actions.py": "668345b84b13def91d7d8b157e6502f098da33be69a4e9fce937420b9cd0a02c"
+  }
+}
