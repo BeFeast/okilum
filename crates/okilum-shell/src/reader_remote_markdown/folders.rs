@@ -3,7 +3,8 @@ use super::{view::Panel, *};
 use crate::*;
 use okilum_core::remote_markdown::folder::{self, Folder, Kind, Listing};
 
-pub(super) type Lister = Arc<dyn Fn(&Folder, &AtomicBool) -> io::Result<Listing> + Send + Sync>;
+pub(super) type Lister =
+    Arc<dyn Fn(&Folder, &Arc<AtomicBool>) -> io::Result<Listing> + Send + Sync>;
 pub(super) struct Browser {
     pub(super) folder: Folder,
     pub(super) result: Option<io::Result<Listing>>,
@@ -214,7 +215,8 @@ impl Panel {
 }
 pub(super) fn default_lister() -> Lister {
     Arc::new(|folder, cancel| {
-        folder::list(folder, &mut OpenSsh::default(), || {
+        // The same flag aborts a connection waiting in an askpass dialog.
+        folder::list(folder, &mut OpenSsh::cancellable(cancel.clone()), || {
             cancel.load(Ordering::Acquire)
         })
     })

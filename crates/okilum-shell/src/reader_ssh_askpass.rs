@@ -84,6 +84,8 @@ pub(crate) struct Prompt {
     lines: Vec<String>,
     input: Option<Entity<InputState>>,
     _enter: Option<Subscription>,
+    /// Closes the window once the connection is stopped or ends elsewhere.
+    _watch: Task<()>,
     focus: FocusHandle,
 }
 
@@ -114,12 +116,31 @@ impl Prompt {
         if input.is_none() {
             focus.focus(window, cx);
         }
+        let watch = cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            let closed = this.update_in(cx, |this, window, _| {
+                let stopped = this
+                    .request
+                    .as_ref()
+                    .is_none_or(|request| request.is_cancelled());
+                if stopped {
+                    this.answer(None, window);
+                }
+                stopped
+            });
+            if closed.unwrap_or(true) {
+                break;
+            }
+        });
         Self {
             request: Some(request),
             kind,
             lines,
             input,
             _enter: enter,
+            _watch: watch,
             focus,
         }
     }
@@ -213,7 +234,7 @@ mod tests {
         &'a mut VisualTestContext,
         std::sync::mpsc::Receiver<Option<String>>,
     ) {
-        let (request, reply) = Request::detached(prompt, kind);
+        let (request, reply, _ended) = Request::detached(prompt, kind);
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let prompt = cx.new(|cx| Prompt::new(request, window, cx));
@@ -259,6 +280,25 @@ mod tests {
 
         let (prompt, visual, reply) = open("u@box's password: ", Kind::Secret, cx);
         prompt.update_in(visual, |prompt, window, _| prompt.answer(None, window));
+        assert_eq!(reply.try_recv().unwrap(), None);
+    }
+
+    #[gpui::test]
+    fn stopping_the_connection_closes_the_open_dialog(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (request, reply, ended) = Request::detached("u@box's password: ", Kind::Secret);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let prompt = cx.new(|cx| Prompt::new(request, window, cx));
+            Root::new(prompt, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(reply.try_recv().is_err(), "still waiting for the person");
+        // The remote view's Stop drops the askpass session.
+        ended.store(true, std::sync::atomic::Ordering::Release);
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(250));
+        visual.run_until_parked();
         assert_eq!(reply.try_recv().unwrap(), None);
     }
 

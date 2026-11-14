@@ -3,9 +3,12 @@
 //! This adapter deliberately stops on a changed consumed prefix: SFTP v3 has no
 //! portable inode identity and cannot recover an unobserved rotated-away file.
 //! Callers must display `ContinuityLost`, rather than imply gap-free recovery.
+use crate::ssh_askpass::{self, Clock, Deadline};
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub mod directory;
@@ -119,28 +122,38 @@ impl Target {
             interactive: true,
         })
     }
-    fn command(&self) -> Command {
-        let mut command = self.ssh_command();
+    /// The askpass session (if any) must live exactly as long as the child.
+    fn command(&self, clock: &Arc<Clock>) -> (Command, Option<ssh_askpass::Session>) {
+        let (mut command, session) = self.ssh_command(clock);
         command.args(["-s", "--", &self.host, "sftp"]);
-        command
+        (command, session)
     }
     /// Trusted, fixed program only. Remote paths and content belong on stdin,
     /// never in shell arguments. Used only by explicit guarded Markdown Save.
-    pub(crate) fn guarded_markdown_save_command(&self, program: &'static str) -> Command {
-        let mut command = self.ssh_command();
+    pub(crate) fn guarded_markdown_save_command(
+        &self,
+        program: &'static str,
+        clock: &Arc<Clock>,
+    ) -> (Command, Option<ssh_askpass::Session>) {
+        let (mut command, session) = self.ssh_command(clock);
         command.args(["--", &self.host, program]);
-        command
+        (command, session)
     }
     pub(crate) fn remote_path(&self) -> &[u8] {
         &self.path
     }
-    fn ssh_command(&self) -> Command {
+    fn ssh_command(&self, clock: &Arc<Clock>) -> (Command, Option<ssh_askpass::Session>) {
         let mut command = Command::new("ssh");
         command.arg("-T");
         // Without the askpass bridge OpenSSH must never wait for an answer.
         // With it, agent/keys still go first; only OpenSSH's own questions
         // reach the app, and a changed host key is still refused.
-        if self.interactive && crate::ssh_askpass::configure(&mut command) {
+        let session = if self.interactive {
+            ssh_askpass::configure(&mut command, clock)
+        } else {
+            None
+        };
+        if session.is_some() {
             command.args(["-oBatchMode=no", "-oStrictHostKeyChecking=ask"]);
         } else {
             command.args(["-oBatchMode=yes", "-oStrictHostKeyChecking=yes"]);
@@ -156,7 +169,7 @@ impl Target {
         if let Some(port) = self.port {
             command.args(["-p", &port.to_string()]);
         }
-        command
+        (command, session)
     }
 }
 fn hex(b: u8) -> Option<u8> {
@@ -203,17 +216,67 @@ pub trait Transport {
     fn open(&mut self, target: &Target) -> io::Result<()>;
     fn read_at(&mut self, offset: u64, limit: usize) -> io::Result<Vec<u8>>;
     fn disconnect(&mut self);
+    /// Clock of this transport's askpass dialogs: operation deadlines pause
+    /// while one of its own connections waits for the person, never for others.
+    fn prompt_clock(&self) -> Option<Arc<Clock>> {
+        None
+    }
 }
 #[derive(Default)]
 pub struct OpenSsh {
     session: Option<Session>,
+    clock: Arc<Clock>,
+    cancel: Option<Arc<AtomicBool>>,
 }
-struct Session {
+impl OpenSsh {
+    /// Setting `cancel` aborts a waiting request at once: the ssh process is
+    /// killed, its askpass dialog closed and the worker released.
+    pub fn cancellable(cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            cancel: Some(cancel),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn spawn(&mut self, target: &Target) -> io::Result<Session> {
+        let (mut command, askpass) = target.command(&self.clock);
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let input = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (sender, output) = mpsc::sync_channel(1);
+        std::thread::spawn(move || loop {
+            let result = packet(&mut stdout);
+            let failed = result.is_err();
+            if sender.send(result).is_err() || failed {
+                break;
+            }
+        });
+        Ok(Session {
+            child,
+            input,
+            output,
+            id: 0,
+            handle: Vec::new(),
+            clock: askpass.as_ref().map(|_| self.clock.clone()),
+            cancel: self.cancel.clone(),
+            _askpass: askpass,
+        })
+    }
+}
+pub(crate) struct Session {
     child: Child,
     input: ChildStdin,
     output: Receiver<io::Result<Vec<u8>>>,
     id: u32,
     handle: Vec<u8>,
+    /// Present only for an interactive connection.
+    clock: Option<Arc<Clock>>,
+    cancel: Option<Arc<AtomicBool>>,
+    /// Dropped after the child is killed (fields drop after `Drop::drop`).
+    _askpass: Option<ssh_askpass::Session>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -222,18 +285,28 @@ impl Drop for Session {
     }
 }
 impl Session {
-    fn exchange(&mut self, payload: &[u8]) -> io::Result<Vec<u8>> {
+    pub(crate) fn exchange(&mut self, payload: &[u8]) -> io::Result<Vec<u8>> {
         self.input
             .write_all(&(payload.len() as u32).to_be_bytes())?;
         self.input.write_all(payload)?;
         self.input.flush()?;
-        // The first response waits for authentication; time spent in an
-        // askpass dialog does not count against the response deadline.
-        let deadline = crate::ssh_askpass::Deadline::after(Duration::from_secs(15));
+        // The first response waits for authentication; time spent in this
+        // connection's own askpass dialog does not count against the deadline.
+        let deadline = Deadline::after(Duration::from_secs(15), self.clock.clone());
         loop {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Remote connection cancelled",
+                ));
+            }
             match self
                 .output
-                .recv_timeout(deadline.remaining().min(Duration::from_millis(250)))
+                .recv_timeout(deadline.remaining().min(Duration::from_millis(50)))
             {
                 Ok(result) => return result,
                 Err(mpsc::RecvTimeoutError::Timeout) if !deadline.expired() => continue,
@@ -282,29 +355,7 @@ fn decode_data(kind: u8, mut body: &[u8], limit: usize) -> io::Result<Vec<u8>> {
 impl Transport for OpenSsh {
     fn open(&mut self, target: &Target) -> io::Result<()> {
         self.disconnect();
-        let mut child = target
-            .command()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let input = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let (sender, output) = mpsc::sync_channel(1);
-        std::thread::spawn(move || loop {
-            let result = packet(&mut stdout);
-            let failed = result.is_err();
-            if sender.send(result).is_err() || failed {
-                break;
-            }
-        });
-        let mut session = Session {
-            child,
-            input,
-            output,
-            id: 0,
-            handle: Vec::new(),
-        };
+        let mut session = self.spawn(target)?;
         let version = session.exchange(&[1, 0, 0, 0, 3])?;
         if version.len() < 5 || version[0] != 2 || version[1..5] != 3u32.to_be_bytes() {
             return Err(invalid("SFTP v3 required"));
@@ -337,6 +388,9 @@ impl Transport for OpenSsh {
 
     fn disconnect(&mut self) {
         self.session = None;
+    }
+    fn prompt_clock(&self) -> Option<Arc<Clock>> {
+        Some(self.clock.clone())
     }
 }
 

@@ -144,7 +144,8 @@ fn read_until(
     cancelled: impl Fn() -> bool,
     deadline: Instant,
 ) -> io::Result<String> {
-    let deadline = crate::ssh_askpass::Deadline::at(deadline);
+    // Pauses only while this transport's own connection waits in a dialog.
+    let deadline = crate::ssh_askpass::Deadline::at(deadline, transport.prompt_clock());
     let check = || {
         if cancelled() {
             Err(io::Error::new(

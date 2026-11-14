@@ -212,9 +212,10 @@ fn safe1610_sftp_only_and_missing_python_send_no_draft() {
 fn safe1610_fixed_command_never_interpolates_path_content_or_revision() {
     let source = Source::parse("ssh://offline/notes/%24%28touch%20owned%29%20%27.md").unwrap();
     let attempt = Attempt::new(Revision::of("base"), "$(touch owned) ' ; draft".into());
-    let command = source
+    let clock = std::sync::Arc::new(crate::ssh_askpass::Clock::default());
+    let (command, _askpass) = source
         .target
-        .guarded_markdown_save_command(COMMAND.as_str());
+        .guarded_markdown_save_command(COMMAND.as_str(), &clock);
     let args = command
         .get_args()
         .map(|a| a.to_str().unwrap())

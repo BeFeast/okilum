@@ -55,6 +55,9 @@ fn write(path: &Path, text: &str) {
 struct Script {
     answers: VecDeque<Option<String>>,
     asked: Vec<(Kind, String)>,
+    /// Keep requests open, as a dialog the person has not answered yet.
+    hold: bool,
+    held: Vec<ssh_askpass::Request>,
 }
 
 #[test]
@@ -63,13 +66,14 @@ fn real_openssh_asks_for_unknown_host_and_passphrase_through_the_bridge() {
     let sshd = which("sshd", &["/usr/sbin", "/usr/local/sbin"]);
     let ssh = which("ssh", &[]);
     let keygen = which("ssh-keygen", &[]);
-    let helper = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/ssh_askpass_helper");
+    // `cargo build -p okilum-core --example ssh_askpass_helper` first; the
+    // test binary may sit deeper than the profile directory.
+    let exe = std::env::current_exe().unwrap();
+    let helper = exe
+        .ancestors()
+        .map(|dir| dir.join("examples/ssh_askpass_helper"))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("build the ssh_askpass_helper example for {}", exe.display()));
     assert!(helper.is_file(), "missing {}", helper.display());
 
     let dir = tempfile::tempdir().unwrap();
@@ -155,6 +159,10 @@ fn real_openssh_asks_for_unknown_host_and_passphrase_through_the_bridge() {
     ssh_askpass::install(helper, move |request| {
         let mut script = handler.lock().unwrap();
         script.asked.push((request.kind, request.prompt.clone()));
+        if script.hold {
+            script.held.push(request);
+            return;
+        }
         let answer = script.answers.pop_front().flatten();
         drop(script);
         request.answer(answer);
@@ -199,7 +207,50 @@ fn real_openssh_asks_for_unknown_host_and_passphrase_through_the_bridge() {
     assert!(remote_markdown::read(&source, &mut OpenSsh::default(), || false).is_err());
     assert_eq!(asked().len(), 1, "{:?}", asked());
 
-    // 4. A wrong host key is still refused by OpenSSH, with no dialog.
+    // 4. Stop while the passphrase dialog is open: the read ends at once,
+    //    ssh is killed, the dialog is told to close, and later prompts work.
+    script.lock().unwrap().hold = true;
+    answer(vec![]);
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = {
+        let cancel = cancel.clone();
+        let source = source.clone();
+        std::thread::spawn(move || {
+            let result =
+                remote_markdown::read(&source, &mut OpenSsh::cancellable(cancel), || false);
+            (result, Instant::now())
+        })
+    };
+    let started = Instant::now();
+    while script.lock().unwrap().held.is_empty() {
+        assert!(started.elapsed() < Duration::from_secs(20), "no dialog");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!script.lock().unwrap().held[0].is_cancelled());
+    let stopped = Instant::now();
+    cancel.store(true, std::sync::atomic::Ordering::Release);
+    let (result, ended) = worker.join().unwrap();
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+    assert!(
+        ended - stopped < Duration::from_secs(2),
+        "not a 15 s deadline"
+    );
+    assert!(
+        script.lock().unwrap().held[0].is_cancelled(),
+        "dialog closes"
+    );
+    {
+        let mut script = script.lock().unwrap();
+        script.hold = false;
+        script.held.clear();
+    }
+    answer(vec![Some(PASSPHRASE)]);
+    let text = remote_markdown::read(&source, &mut OpenSsh::default(), || false).unwrap();
+    assert_eq!(text, "# Remote\n\nvia OpenSSH\n");
+    assert_eq!(asked().len(), 1, "{:?}", asked());
+
+    // 5. A wrong host key is still refused by OpenSSH, with no dialog.
     write(
         &path("known_hosts"),
         &format!(

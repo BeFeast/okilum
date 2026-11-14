@@ -152,7 +152,8 @@ pub fn list(
     transport: &mut impl DirectoryTransport,
     cancelled: impl Fn() -> bool,
 ) -> io::Result<Listing> {
-    let deadline = crate::ssh_askpass::Deadline::after(DEADLINE);
+    let deadline =
+        crate::ssh_askpass::Deadline::after(DEADLINE, transport.directory_prompt_clock());
     let check = || {
         if cancelled() {
             Err(io::Error::new(
