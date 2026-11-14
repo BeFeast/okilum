@@ -49,7 +49,10 @@ fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppCo
         visual.simulate_click(entry.center(), Modifiers::default());
         visual.run_until_parked();
         visual.update(|window, cx| {
-            assert!(window.has_active_sheet(cx), "Help click must open its sheet");
+            assert!(
+                window.has_active_sheet(cx),
+                "Help click must open its sheet"
+            );
             window.draw(cx).clear(cx);
         });
         assert!(visual.debug_bounds("board-help-content").is_some());
