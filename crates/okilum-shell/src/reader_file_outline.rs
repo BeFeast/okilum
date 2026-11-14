@@ -74,7 +74,8 @@ struct Columns {
     table: Entity<reader_delimited::TablePreview>,
     /// Names are read again only when the table snapshot or header changes.
     key: (usize, bool),
-    names: Arc<Vec<String>>,
+    /// `(label, full name)` per column.
+    names: Arc<Vec<(String, String)>>,
     current: Option<usize>,
     list: ListState,
     _observer: Subscription,
@@ -851,13 +852,12 @@ impl View {
         let Some(columns) = &self.snapshot.columns else {
             return div().into_any_element();
         };
-        let Some(name) = columns.names.get(ix).cloned() else {
+        let Some((name, tooltip)) = columns.names.get(ix).cloned() else {
             return div().into_any_element();
         };
         let current = columns.current == Some(ix);
         let p = brand::palette(cx);
         let hover = brand::reader_palette(cx).hover;
-        let tooltip = name.clone();
         h_flex()
             .id(("file-outline-column", ix))
             .debug_selector(move || format!("file-outline-column-{ix}"))

@@ -89,6 +89,9 @@ CONTROLS = [
  ('column-no-scroll', 'contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column'),
  ('columns-ignore-header', 'contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column'),
  ('columns-stay', 'contents2814_a_json_array_lists_columns_only_in_table'),
+ ('edit-keeps-columns', 'contents2814_entering_edit_drops_the_column_list'),
+ ('column-no-rows-select', 'contents2814_a_column_click_after_a_find_with_no_rows_selects_nothing'),
+ ('column-tooltip-cut', 'contents2814_long_headers_sharing_a_prefix_keep_full_names_in_the_tooltip'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -121,6 +124,7 @@ try:
     edit(view, '            .zip(Self::edit_contents_language(reader))', '            .zip(Self::edit_contents_language(reader).filter(|_| !crate::contents2814_control("edit-reads-viewer")))')
     edit(view, '        let (line, message) = self.snapshot.edit.as_ref()?.stale.as_ref()?;', '        if crate::contents2814_control("edit-no-stale") {\n            return None;\n        }\n        let (line, message) = self.snapshot.edit.as_ref()?.stale.as_ref()?;')
     ed = 'reader_file_outline/edit.rs'
+    edit(ed, '        self.snapshot.columns = None;\n        self.snapshot.active = true;', '        if !crate::contents2814_control("edit-keeps-columns") {\n            self.snapshot.columns = None;\n        }\n        self.snapshot.active = true;')
     edit(ed, '        let edit = self.snapshot.edit.as_ref()?;\n        let (built, stamp) = edit.built.as_ref()?;', '        let edit = self.snapshot.edit.as_ref()?;\n        if crate::contents2814_control("edit-no-whereabouts") {\n            return None;\n        }\n        let (built, stamp) = edit.built.as_ref()?;')
     edit(ed, '        if current {', '        if current || crate::contents2814_control("edit-unmapped-jump") {')
     edit(ed, '        retire(edit.built.replace((doc.clone(), stamp)), cx);', '        retire(edit.built.replace((doc.clone(), stamp)), cx);\n        if crate::contents2814_control("edit-forget-open") {\n            *self.expansion() = Default::default();\n        }')
@@ -146,9 +150,11 @@ try:
     edit(view, '            (None, Some(_)) => {\n                self.snapshot.columns = None;', '            (None, Some(_)) => {\n                if crate::contents2814_control("columns-stay") {\n                    return;\n                }\n                self.snapshot.columns = None;')
     dl = 'reader_delimited/chrome.rs'
     edit(dl, '        self.end.map(|cell| cell.column)\n    }', '        self.end.map(|cell| cell.column).filter(|_| !crate::contents2814_control("columns-no-mark"))\n    }')
-    edit(dl, '            .map_or(usize::from(self.header), |cell| cell.row);', '            .map_or(usize::from(self.header), |cell| cell.row);\n        let row = if crate::contents2814_control("column-jump-row") { usize::from(self.header) } else { row };')
+    edit(dl, '            .unwrap_or(first);', '            .unwrap_or(first);\n        let row = if crate::contents2814_control("column-jump-row") { first } else { row };')
     edit(dl, '        self.reveal_column_offset(column);\n        self.focus', '        if !crate::contents2814_control("column-no-scroll") {\n            self.reveal_column_offset(column);\n        }\n        self.focus')
-    edit(dl, '                let name = if self.header {', '                let name = if self.header || crate::contents2814_control("columns-ignore-header") {')
+    edit(dl, '                let cell = if self.header {', '                let cell = if self.header || crate::contents2814_control("columns-ignore-header") {')
+    edit(dl, '                    (visible(cell), cell.to_owned())', '                    (visible(cell), if crate::contents2814_control("column-tooltip-cut") { visible(cell) } else { cell.to_owned() })')
+    edit(dl, '        if self.order.is_empty() {', '        if self.order.is_empty() && !crate::contents2814_control("column-no-rows-select") {')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))
     if '--audit' in sys.argv:
         print('CONTENTS2814_MUTATION_ANCHORS_PASS', flush=True)

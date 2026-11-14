@@ -16,21 +16,25 @@ impl TablePreview {
     /// Column names for Contents (#2814 9d): the header row's cells, or
     /// «Column N» as the grid shows a table without one. A blank header cell
     /// reads «Column N» too.
-    pub(crate) fn column_names(&self) -> Vec<String> {
+    /// Each column as `(label, full name)`: the label is cut like a grid
+    /// cell; the full name is for the tooltip, so long headers that share a
+    /// prefix stay apart.
+    pub(crate) fn column_names(&self) -> Vec<(String, String)> {
         let Some(table) = &self.table else {
             return Vec::new();
         };
         (0..table.columns)
             .map(|column| {
-                let name = if self.header {
-                    visible(table.cell(0, column))
+                let cell = if self.header {
+                    table.cell(0, column)
                 } else {
-                    String::new()
+                    ""
                 };
-                if name.trim().is_empty() {
-                    format!("Column {}", column + 1)
+                if cell.trim().is_empty() {
+                    let name = format!("Column {}", column + 1);
+                    (name.clone(), name)
                 } else {
-                    name
+                    (visible(cell), cell.to_owned())
                 }
             })
             .collect()
@@ -63,10 +67,21 @@ impl TablePreview {
         if self.updating || column >= table.columns {
             return;
         }
+        // Rows shown now: the header row and the rows Find and sort left.
+        let first = usize::from(self.header);
+        let shown = first + self.order.len();
+        if self.order.is_empty() {
+            // No data row to select (a Find matched none): scroll only.
+            self.reveal_column_offset(column);
+            cx.notify();
+            return;
+        }
         let row = self
             .end
             .or(self.anchor)
-            .map_or(usize::from(self.header), |cell| cell.row);
+            .map(|cell| cell.row)
+            .filter(|&row| row < shown)
+            .unwrap_or(first);
         let cell = Cell { row, column };
         self.anchor = Some(cell);
         self.end = Some(cell);

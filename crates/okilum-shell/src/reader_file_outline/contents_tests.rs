@@ -1456,7 +1456,16 @@ fn columns(view: &Entity<View>, visual: &VisualTestContext) -> Vec<String> {
         v.snapshot
             .columns
             .as_ref()
-            .map_or_else(Vec::new, |c| c.names.to_vec())
+            .map_or_else(Vec::new, |c| c.names.iter().map(|n| n.0.clone()).collect())
+    })
+}
+
+fn column_tooltips(view: &Entity<View>, visual: &VisualTestContext) -> Vec<String> {
+    view.read_with(visual, |v, _| {
+        v.snapshot
+            .columns
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.names.iter().map(|n| n.1.clone()).collect())
     })
 }
 
@@ -1689,4 +1698,91 @@ fn contents2814_budget_numbers() {
             "{label}: rows {rows_mb} MB"
         );
     }
+}
+
+#[gpui::test]
+fn contents2814_entering_edit_drops_the_column_list(cx: &mut TestAppContext) {
+    let (reader, visual, _dirs) = editable_reader_with(
+        cx,
+        &[("rows.json", "[{\"id\":1,\"amount\":10}]\n")],
+        "rows.json",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount"],
+        "positive: Table columns"
+    );
+    edit_mode(&reader, visual);
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.snapshot.columns.is_none(),
+            "Edit shows the buffer's outline"
+        );
+        assert!(v.snapshot.edit.is_some());
+        assert_eq!(shown(v)[0], "0 2 keys");
+    });
+}
+
+#[gpui::test]
+fn contents2814_a_column_click_after_a_find_with_no_rows_selects_nothing(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[("find.csv", "id,amount,status\n1,10,paid\n2,20,open\n")],
+        "find.csv",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let table = table(&code, visual);
+    visual.update(|w, cx| {
+        let target = code.read(cx).find_target(code.clone(), cx);
+        target.set_query("no such value", w, cx);
+    });
+    settle(visual);
+    paint(visual);
+    view.update_in(visual, |v, w, cx| v.jump_column(2, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), None, "no row to select")
+    });
+    assert_eq!(column_mark(&view, visual), None, "nothing is marked");
+    // Positive control: with rows shown, the same click selects.
+    visual.update(|w, cx| {
+        let target = code.read(cx).find_target(code.clone(), cx);
+        target.set_query("", w, cx);
+    });
+    settle(visual);
+    paint(visual);
+    view.update_in(visual, |v, w, cx| v.jump_column(2, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), Some((1, 2)))
+    });
+}
+
+#[gpui::test]
+fn contents2814_long_headers_sharing_a_prefix_keep_full_names_in_the_tooltip(
+    cx: &mut TestAppContext,
+) {
+    let prefix = "a".repeat(170);
+    let text = format!("{prefix}X,{prefix}Y\n1,2\n");
+    let (reader, visual, _root) = reader_with(cx, &[("long.csv", text.as_str())], "long.csv");
+    let view = outline(&reader, visual);
+    paint(visual);
+    let labels = columns(&view, visual);
+    assert_eq!(labels.len(), 2);
+    assert_eq!(
+        labels[0], labels[1],
+        "positive: the cut labels look the same"
+    );
+    assert_eq!(
+        column_tooltips(&view, visual),
+        [format!("{prefix}X"), format!("{prefix}Y")],
+        "the tooltips keep the full names"
+    );
 }
