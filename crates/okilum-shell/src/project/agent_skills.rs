@@ -99,6 +99,13 @@ pub(super) fn render<R: Clone + Eq>(
             .child(skill.name.clone())
             .child(skill.description.clone())
             .child(status);
+        if let Some(command) = &skill.claude_command {
+            row = row.child(
+                div()
+                    .debug_selector(move || format!("project-skill-{index}-claude-command"))
+                    .child(format!("Claude Code runs it as {command}")),
+            );
+        }
         if skill.paired.as_ref().is_some_and(|paired| paired.differs) {
             row = row.child(
                 div()

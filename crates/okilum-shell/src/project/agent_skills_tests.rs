@@ -439,7 +439,12 @@ async fn skills_2938_claude_skills_are_listed_paired_and_open_their_exact_source
         assert_eq!(skills[1].name, "course-harvest");
         assert_eq!(skills[1].provider, Provider::Claude);
         assert!(skills[1].paired.is_none());
+        assert_eq!(skills[0].claude_command.as_deref(), Some("/alpha"));
+        assert_eq!(skills[1].claude_command.as_deref(), Some("/course-harvest"));
     });
+    assert!(visual
+        .debug_bounds("project-skill-1-claude-command")
+        .is_some());
     assert!(visual.debug_bounds("project-skill-0-differs").is_some());
     assert!(visual.debug_bounds("project-skill-0-source-1").is_some());
     assert!(visual.debug_bounds("project-skill-1-differs").is_none());

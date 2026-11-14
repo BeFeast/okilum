@@ -64,9 +64,13 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub availability: Availability,
-    /// Set only when exactly one available skill of this name exists in each
-    /// provider's folders; `source` is then the `.agents` copy.
+    /// Set when the same directory holds an available skill of this name in
+    /// both `.agents/skills` and `.claude/skills`; `source` is then the
+    /// `.agents` copy.
     pub paired: Option<PairedSource>,
+    /// The command Claude Code runs this skill under, such as `/project` or
+    /// `/Dev:project`, when a `.claude` source of this row is available.
+    pub claude_command: Option<String>,
 }
 
 impl Skill {
@@ -363,28 +367,38 @@ pub fn discover(root: &Path, project: &Path, disabled: &[PathBuf]) -> Snapshot {
             break;
         }
     }
-    // Duplicate state is per provider: each agent sees only its own folders.
-    let mut names = BTreeMap::<(Provider, String), usize>::new();
+    // Codex and other agents see one flat set of `.agents` skills, so a name
+    // found twice anywhere is a duplicate. Claude Code keeps same-named skills
+    // from different directories (see `claude_commands`); only two of one name
+    // inside a single `.claude/skills` folder clash.
+    let key = |skill: &Skill| {
+        let scope = match skill.provider {
+            Provider::Agents => PathBuf::new(),
+            Provider::Claude => scope_of(&skill.source).to_path_buf(),
+        };
+        (skill.provider, scope, skill.name.clone())
+    };
+    let mut names = BTreeMap::<(Provider, PathBuf, String), usize>::new();
     for skill in &result.skills {
         if skill.availability == Availability::Available {
-            *names
-                .entry((skill.provider, skill.name.clone()))
-                .or_default() += 1;
+            *names.entry(key(skill)).or_default() += 1;
         }
     }
     for skill in &mut result.skills {
-        if skill.availability == Availability::Available
-            && names[&(skill.provider, skill.name.clone())] > 1
-        {
+        if skill.availability == Availability::Available && names[&key(skill)] > 1 {
             skill.availability = Availability::Duplicate;
         }
     }
-    // One available skill of a name in each provider is one skill with two
-    // sources; any other combination stays as separate, visible rows.
-    let mut claude = BTreeMap::<String, usize>::new();
+    claude_commands(&mut result.skills);
+    // An available skill of one name in both folders of the same directory is
+    // one skill with two sources; anything else stays a separate, visible row.
+    let mut claude = BTreeMap::<(PathBuf, String), usize>::new();
     for (index, skill) in result.skills.iter().enumerate() {
         if skill.provider == Provider::Claude && skill.availability == Availability::Available {
-            claude.insert(skill.name.clone(), index);
+            claude.insert(
+                (scope_of(&skill.source).to_path_buf(), skill.name.clone()),
+                index,
+            );
         }
     }
     let mut merged = vec![false; result.skills.len()];
@@ -393,7 +407,8 @@ pub fn discover(root: &Path, project: &Path, disabled: &[PathBuf]) -> Snapshot {
         if skill.provider != Provider::Agents || skill.availability != Availability::Available {
             continue;
         }
-        let Some(&other) = claude.get(&skill.name) else {
+        let Some(&other) = claude.get(&(scope_of(&skill.source).to_path_buf(), skill.name.clone()))
+        else {
             continue;
         };
         let differs = contents.get(&skill.source) != contents.get(&result.skills[other].source);
@@ -402,6 +417,7 @@ pub fn discover(root: &Path, project: &Path, disabled: &[PathBuf]) -> Snapshot {
             provider: Provider::Claude,
             differs,
         };
+        result.skills[index].claude_command = result.skills[other].claude_command.clone();
         result.skills[index].paired = Some(paired);
         merged[other] = true;
     }
@@ -412,6 +428,44 @@ pub fn discover(root: &Path, project: &Path, disabled: &[PathBuf]) -> Snapshot {
     });
     result.skills.sort_by(|a, b| a.source.cmp(&b.source));
     result
+}
+
+/// Directory whose `<provider>/skills` folder holds `source`
+/// (`<scope>/.claude/skills/<dir>/SKILL.md`), vault-relative; empty at the root.
+fn scope_of(source: &Path) -> &Path {
+    source
+        .ancestors()
+        .nth(4)
+        .expect("discovered sources have four trailing components")
+}
+
+/// Claude Code loads `.claude/skills` from the start directory and every parent,
+/// and same-named skills from different directories all stay available: the
+/// one nearest the repository root keeps `/name`, the others run as
+/// `/<directory>:name` (code.claude.com/docs/en/skills, nested skills). The
+/// vault root stands in for the repository root.
+fn claude_commands(skills: &mut [Skill]) {
+    let mut by_name = BTreeMap::<String, Vec<usize>>::new();
+    for (index, skill) in skills.iter().enumerate() {
+        if skill.provider == Provider::Claude && skill.availability == Availability::Available {
+            by_name.entry(skill.name.clone()).or_default().push(index);
+        }
+    }
+    for (name, mut indices) in by_name {
+        indices.sort_by_key(|&index| scope_of(&skills[index].source).components().count());
+        for (rank, index) in indices.into_iter().enumerate() {
+            let command = if rank == 0 {
+                format!("/{name}")
+            } else {
+                let scope: Vec<_> = scope_of(&skills[index].source)
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                format!("/{}:{name}", scope.join("/"))
+            };
+            skills[index].claude_command = Some(command);
+        }
+    }
 }
 
 /// Scan one `<provider>/skills` folder. `Err` stops the ancestor walk, as a
@@ -484,8 +538,9 @@ fn scan_directory(
             description: String::new(),
             availability: Availability::Available,
             paired: None,
+            claude_command: None,
         };
-        match read_metadata(root, &source) {
+        match read_metadata(root, &source, provider, &skill.name) {
             Ok((name, description, bytes)) => {
                 skill.name = name;
                 skill.description = description;
@@ -501,7 +556,12 @@ fn scan_directory(
     Ok(())
 }
 
-fn read_metadata(root: &Path, source: &Path) -> Result<(String, String, Vec<u8>), String> {
+fn read_metadata(
+    root: &Path,
+    source: &Path,
+    provider: Provider,
+    directory_name: &str,
+) -> Result<(String, String, Vec<u8>), String> {
     let canonical = source.canonicalize().map_err(|e| e.to_string())?;
     if !canonical.starts_with(root) {
         return Err("Source is outside the vault".into());
@@ -519,33 +579,80 @@ fn read_metadata(root: &Path, source: &Path) -> Result<(String, String, Vec<u8>)
         return Err("Source exceeds 64 KiB".into());
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
-    let mut lines = text.trim_start_matches('\u{feff}').lines();
-    if lines.next() != Some("---") {
-        return Err("Missing YAML frontmatter".into());
+    let (name, description) = match provider {
+        Provider::Agents => agents_metadata(text)?,
+        Provider::Claude => claude_metadata(text, directory_name),
+    };
+    Ok((name, description, bytes))
+}
+
+/// Split `---` frontmatter from the body. `None` when the file does not open
+/// with a closed frontmatter block.
+fn split_frontmatter(text: &str) -> Option<(String, &str)> {
+    let text = text.trim_start_matches('\u{feff}');
+    let mut lines = text.split_inclusive('\n');
+    let first = lines.next()?;
+    if first.trim_end_matches(['\r', '\n']) != "---" {
+        return None;
     }
+    let mut offset = first.len();
     let mut frontmatter = String::new();
-    let mut closed = false;
     for line in lines {
+        offset += line.len();
+        let line = line.trim_end_matches(['\r', '\n']);
         if line == "---" {
-            closed = true;
-            break;
+            return Some((frontmatter, &text[offset..]));
         }
         frontmatter.push_str(line);
         frontmatter.push('\n');
     }
-    if !closed {
-        return Err("Unclosed YAML frontmatter".into());
+    None
+}
+
+fn string_field(value: Option<&serde_yaml::Value>, key: &str) -> Option<String> {
+    value?
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// Codex and other agents require frontmatter with `name` and `description`.
+fn agents_metadata(text: &str) -> Result<(String, String), String> {
+    let body = text.trim_start_matches('\u{feff}');
+    if body.lines().next() != Some("---") {
+        return Err("Missing YAML frontmatter".into());
     }
+    let (frontmatter, _) = split_frontmatter(text).ok_or("Unclosed YAML frontmatter")?;
     let value: serde_yaml::Value = serde_yaml::from_str(&frontmatter).map_err(|e| e.to_string())?;
     let field = |key: &str| {
-        value
-            .get(key)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("Missing or invalid {key}"))
+        string_field(Some(&value), key).ok_or_else(|| format!("Missing or invalid {key}"))
     };
-    Ok((field("name")?, field("description")?, bytes))
+    Ok((field("name")?, field("description")?))
+}
+
+/// Claude Code treats every field as optional: `name` defaults to the skill
+/// directory name and `description` to the first non-empty line of the
+/// content. Without an opening `---` line the whole file is content, and
+/// frontmatter that does not parse loads the skill with no fields set.
+fn claude_metadata(text: &str, directory_name: &str) -> (String, String) {
+    let (value, content) = match split_frontmatter(text) {
+        Some((frontmatter, content)) => (
+            serde_yaml::from_str::<serde_yaml::Value>(&frontmatter).ok(),
+            content,
+        ),
+        None => (None, text.trim_start_matches('\u{feff}')),
+    };
+    let name = string_field(value.as_ref(), "name").unwrap_or_else(|| directory_name.to_owned());
+    let description = string_field(value.as_ref(), "description").unwrap_or_else(|| {
+        content
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .to_owned()
+    });
+    (name, description)
 }
 
 /// Revalidate an explicit Open action; outside-root/non-file sources never open.
@@ -933,30 +1040,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn duplicates_stay_per_provider_and_disabled_or_broken_copies_are_not_merged() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::create_dir_all(root.join("Dev")).unwrap();
-        // Two .claude copies of one name: Claude Code has a duplicate; the
-        // single .agents copy is still available to Codex and is not merged.
-        write(root, ".claude/skills/onboarding", "onboarding");
-        write(root, "Dev/.claude/skills/onboarding", "onboarding");
-        write(root, ".agents/skills/onboarding", "onboarding");
-        // A disabled side and an unreadable side keep their own rows.
-        write(root, ".agents/skills/off", "off");
-        write(root, ".claude/skills/off", "off");
-        write(root, ".agents/skills/broken", "broken");
-        let broken = root.join(".claude/skills/broken");
-        fs::create_dir_all(&broken).unwrap();
-        fs::write(broken.join("SKILL.md"), "no frontmatter").unwrap();
-        let snapshot = discover(
-            root,
-            &root.join("Dev"),
-            &[PathBuf::from(".claude/skills/off/SKILL.md")],
-        );
-        assert!(snapshot.diagnostics.is_empty());
-        let rows: Vec<_> = snapshot
+    type Row = (
+        String,
+        Provider,
+        Availability,
+        Option<String>,
+        Option<String>,
+    );
+    fn rows(snapshot: &Snapshot) -> Vec<Row> {
+        snapshot
             .skills
             .iter()
             .map(|s| {
@@ -964,57 +1056,232 @@ mod tests {
                     s.source.to_string_lossy().into_owned(),
                     s.provider,
                     s.availability.clone(),
-                    s.paired.is_some(),
+                    s.paired
+                        .as_ref()
+                        .map(|p| p.source.to_string_lossy().into_owned()),
+                    s.claude_command.clone(),
+                )
+            })
+            .collect()
+    }
+    fn row(
+        source: &str,
+        provider: Provider,
+        availability: Availability,
+        paired: Option<&str>,
+        command: Option<&str>,
+    ) -> Row {
+        (
+            source.into(),
+            provider,
+            availability,
+            paired.map(Into::into),
+            command.map(Into::into),
+        )
+    }
+
+    #[test]
+    fn claude_same_name_in_parent_and_project_folders_both_stay_available() {
+        // Vault today: root .claude/skills/project-onboarding and
+        // Dev/.claude/skills/project-onboarding. Claude Code loads both; the
+        // deeper one runs as /Dev:project-onboarding.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("Dev/Areas/demo")).unwrap();
+        write(root, ".claude/skills/onboarding", "onboarding");
+        write(root, "Dev/.claude/skills/onboarding", "onboarding");
+        write(
+            root,
+            "Dev/Areas/demo/.claude/skills/onboarding",
+            "onboarding",
+        );
+        write(root, ".agents/skills/onboarding", "onboarding");
+        let snapshot = discover(root, &root.join("Dev/Areas/demo"), &[]);
+        assert!(snapshot.diagnostics.is_empty());
+        use Availability::Available;
+        use Provider::{Agents, Claude};
+        assert_eq!(
+            rows(&snapshot),
+            vec![
+                row(
+                    ".agents/skills/onboarding/SKILL.md",
+                    Agents,
+                    Available,
+                    Some(".claude/skills/onboarding/SKILL.md"),
+                    Some("/onboarding"),
+                ),
+                row(
+                    "Dev/.claude/skills/onboarding/SKILL.md",
+                    Claude,
+                    Available,
+                    None,
+                    Some("/Dev:onboarding"),
+                ),
+                row(
+                    "Dev/Areas/demo/.claude/skills/onboarding/SKILL.md",
+                    Claude,
+                    Available,
+                    None,
+                    Some("/Dev/Areas/demo:onboarding"),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicates_stay_per_provider_and_disabled_or_broken_copies_are_not_merged() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("Dev")).unwrap();
+        // Codex sees one flat set: two .agents copies of a name clash even in
+        // different directories, and the .claude copy is not paired.
+        write(root, ".agents/skills/review", "review");
+        write(root, "Dev/.agents/skills/review", "review");
+        write(root, ".claude/skills/review", "review");
+        // Two folders in one .claude/skills declaring the same name clash.
+        write(root, ".claude/skills/one", "same");
+        write(root, ".claude/skills/two", "same");
+        // A disabled side and an unreadable side keep their own rows.
+        write(root, ".agents/skills/off", "off");
+        write(root, ".claude/skills/off", "off");
+        write(root, ".agents/skills/broken", "broken");
+        let broken = root.join(".claude/skills/broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("SKILL.md"),
+            vec![b'x'; MAX_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        let snapshot = discover(
+            root,
+            &root.join("Dev"),
+            &[PathBuf::from(".claude/skills/off/SKILL.md")],
+        );
+        assert!(snapshot.diagnostics.is_empty());
+        use Availability::{Available, Disabled, Duplicate};
+        use Provider::{Agents, Claude};
+        let too_large = Availability::Unavailable("Source exceeds 64 KiB".into());
+        assert_eq!(
+            rows(&snapshot),
+            vec![
+                row(
+                    ".agents/skills/broken/SKILL.md",
+                    Agents,
+                    Available,
+                    None,
+                    None
+                ),
+                row(".agents/skills/off/SKILL.md", Agents, Available, None, None),
+                row(
+                    ".agents/skills/review/SKILL.md",
+                    Agents,
+                    Duplicate,
+                    None,
+                    None
+                ),
+                row(
+                    ".claude/skills/broken/SKILL.md",
+                    Claude,
+                    too_large,
+                    None,
+                    None
+                ),
+                row(".claude/skills/off/SKILL.md", Claude, Disabled, None, None),
+                row(".claude/skills/one/SKILL.md", Claude, Duplicate, None, None),
+                row(
+                    ".claude/skills/review/SKILL.md",
+                    Claude,
+                    Available,
+                    None,
+                    Some("/review"),
+                ),
+                row(".claude/skills/two/SKILL.md", Claude, Duplicate, None, None),
+                row(
+                    "Dev/.agents/skills/review/SKILL.md",
+                    Agents,
+                    Duplicate,
+                    None,
+                    None
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn claude_frontmatter_is_optional_and_defaults_like_claude_code() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let put = |folder: &str, text: &str| {
+            let path = root.join(folder).join("SKILL.md");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        put(".claude/skills/bare", "\n\n# Bare skill\nBody\n");
+        put(
+            ".claude/skills/partial",
+            "---\nallowed-tools: Read\n---\n\n  Do the thing  \n",
+        );
+        put(
+            ".claude/skills/named",
+            "---\nname: renamed\n---\nFirst line\n",
+        );
+        put(
+            ".claude/skills/broken-yaml",
+            "---\nname: [unclosed\n---\nStill loads\n",
+        );
+        put(".claude/skills/unclosed", "---\nname: never\nText\n");
+        put(".claude/skills/empty", "");
+        // Codex keeps requiring frontmatter with both fields.
+        put(".agents/skills/bare-agents", "# Bare skill\n");
+        let snapshot = discover(root, root, &[]);
+        assert!(snapshot.diagnostics.is_empty());
+        let found: Vec<_> = snapshot
+            .skills
+            .iter()
+            .map(|s| {
+                (
+                    s.source
+                        .parent()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    s.name.clone(),
+                    s.description.clone(),
+                    s.availability.clone(),
                 )
             })
             .collect();
-        let unavailable = Availability::Unavailable("Missing YAML frontmatter".into());
+        let ok = |dir: &str, name: &str, description: &str| {
+            (
+                dir.to_owned(),
+                name.to_owned(),
+                description.to_owned(),
+                Availability::Available,
+            )
+        };
         assert_eq!(
-            rows,
+            found,
             vec![
                 (
-                    ".agents/skills/broken/SKILL.md".into(),
-                    Provider::Agents,
-                    Availability::Available,
-                    false
+                    "bare-agents".to_owned(),
+                    "bare-agents".to_owned(),
+                    String::new(),
+                    Availability::Unavailable("Missing YAML frontmatter".into()),
                 ),
-                (
-                    ".agents/skills/off/SKILL.md".into(),
-                    Provider::Agents,
-                    Availability::Available,
-                    false
-                ),
-                (
-                    ".agents/skills/onboarding/SKILL.md".into(),
-                    Provider::Agents,
-                    Availability::Available,
-                    false
-                ),
-                (
-                    ".claude/skills/broken/SKILL.md".into(),
-                    Provider::Claude,
-                    unavailable,
-                    false
-                ),
-                (
-                    ".claude/skills/off/SKILL.md".into(),
-                    Provider::Claude,
-                    Availability::Disabled,
-                    false
-                ),
-                (
-                    ".claude/skills/onboarding/SKILL.md".into(),
-                    Provider::Claude,
-                    Availability::Duplicate,
-                    false
-                ),
-                (
-                    "Dev/.claude/skills/onboarding/SKILL.md".into(),
-                    Provider::Claude,
-                    Availability::Duplicate,
-                    false
-                ),
+                ok("bare", "bare", "# Bare skill"),
+                ok("broken-yaml", "broken-yaml", "Still loads"),
+                ok("empty", "empty", ""),
+                ok("named", "renamed", "First line"),
+                ok("partial", "partial", "Do the thing"),
+                ok("unclosed", "unclosed", "---"),
             ]
+        );
+        assert_eq!(snapshot.skills[1].claude_command.as_deref(), Some("/bare"));
+        assert_eq!(
+            snapshot.skills[4].claude_command.as_deref(),
+            Some("/renamed")
         );
     }
 
