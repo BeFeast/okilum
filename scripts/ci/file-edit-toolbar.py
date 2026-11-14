@@ -95,6 +95,8 @@ CONTROLS = [
     ('bom-body', 'file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo'),
     ('bottom-wording', 'file2811_real_refusals_and_syntax_verdicts_have_one_bottom_home'),
     ('language-fallback', 'file2811_ambiguous_language_has_a_button_then_a_narrow_menu'),
+    ('fixed-language-menu', 'file2909_known_file_types_have_no_language_picker'),
+    ('fixed-language-button', 'file2909_known_file_types_have_no_language_picker'),
 ]
 
 try:
@@ -164,8 +166,11 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
          'if !crate::file2811_control("lost-toast") {reader_toast::transient(toast,window,cx);}')
     edit(base, '    if text == "Valid strict JSON" {',
          '    if crate::file2811_control("bottom-wording") {return text.into();}\n    if text == "Valid strict JSON" {')
-    edit(base, 'if language_bounds.get().is_none() {',
-         'if language_bounds.get().is_none() && !crate::file2811_control("language-fallback") {')
+    edit(base, 'if language_bounds.get().is_none() && scope.as_ref().is_some_and(|s| !s.fixed) {',
+         'if language_bounds.get().is_none() && !crate::file2811_control("language-fallback")'
+         ' && (scope.as_ref().is_some_and(|s| !s.fixed) || crate::file2811_control("fixed-language-menu")) {')
+    edit(base, 'if !super::file_language_is_fixed(self.selected_file()) {',
+         'if !super::file_language_is_fixed(self.selected_file()) || crate::file2811_control("fixed-language-button") {')
     edit('reader_editor/code_operations.rs', 'if !editing.markdown {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);',
          'if !editing.markdown && !crate::file2811_control("stale-conflict-sheet") {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);')
     edit('reader_editor/code_operations.rs', 'usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3',
