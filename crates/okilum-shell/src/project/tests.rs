@@ -1591,6 +1591,9 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
     });
     visual.simulate_resize(size(px(320.), px(900.)));
     visual.run_until_parked();
+    // Header controls may collapse at this width; the shared check proves
+    // what is shown stays in the one row without overlap (#2748).
+    assert_one_row_header(visual, 320.);
     let mut bounds = |selector| {
         visual
             .debug_bounds(selector)
@@ -1622,9 +1625,6 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
         "active status and Stop belong to the same message surface above text entry"
     );
     for selector in [
-        "project-manager-title",
-        "project-chat-status",
-        "project-open-t3",
         "project-manager-model",
         "project-interrupt",
         "project-attach",
@@ -1714,9 +1714,10 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
         reader.panel_widths.backlinks = 560.;
         cx.notify();
     });
-    // The real mounted panel, including section navigation, must retain the
-    // identity header at its top at both ordinary and narrow panel widths.
-    for width in [560., 320.] {
+    // The real mounted panel must keep identity, section navigation, status
+    // and actions in one header row at its top, from the reported width down
+    // to the minimum panel width (#2748).
+    for width in [560., 320., reader_layout::PANEL_MIN_WIDTH] {
         reader.update(visual, |reader, cx| {
             reader.panel_widths.backlinks = width;
             cx.notify();
@@ -1728,45 +1729,20 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
         let panel = visual
             .debug_bounds("reader-backlinks-panel")
             .expect("mounted Manager panel");
-        let header = visual
-            .debug_bounds("project-chat-header")
-            .expect("workspace owns one header");
         assert!(
             visual.debug_bounds("reader-backlinks-header").is_none(),
             "no duplicate outer Manager title"
         );
         assert_eq!(panel.size.width, px(width));
+        let header = visual
+            .debug_bounds("project-chat-header")
+            .expect("workspace owns one header");
         assert_eq!(header.top(), panel.top());
-        assert_eq!(header.size.height, px(40.));
-        assert_eq!(header.right(), panel.right());
-        let mut previous_right = header.left();
-        for selector in [
-            "project-manager-title",
-            "project-chat-status",
-            "project-connection-menu",
-            "project-open-t3",
-        ] {
-            let bounds = visual
-                .debug_bounds(selector)
-                .unwrap_or_else(|| panic!("functional header control: {selector}"));
-            assert!(
-                bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
-                "{selector} stays in the single header at {width}px: {bounds:?}"
-            );
-            assert!(
-                bounds.left() >= previous_right && bounds.right() <= header.right(),
-                "{selector} keeps its order without overlap or horizontal overflow at {width}px: {bounds:?}"
-            );
-            assert!(
-                (bounds.center().y - header.center().y).abs() <= px(1.),
-                "{selector} is vertically centered at {width}px: {bounds:?}"
-            );
-            previous_right = bounds.right();
+        assert_eq!(header.left(), panel.left());
+        let open_inline = assert_one_row_header(visual, width);
+        if width == 560. {
+            assert!(open_inline, "Open in T3 stays a header action at 560px");
         }
-        let title = visual.debug_bounds("project-manager-title").unwrap();
-        let open = visual.debug_bounds("project-open-t3").unwrap();
-        assert_eq!(title.left() - header.left(), px(design::INSET));
-        assert_eq!(header.right() - open.right(), px(design::INSET));
 
         // #2463 was the identity heading plus a section tab also labelled
         // Manager. Selectors use each button's actual rendered label, so
@@ -1785,7 +1761,8 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
                 assert!(reader.project.as_ref().unwrap().read(cx).section == section);
             });
             assert!(
-                visual.debug_bounds("project-manager-title").is_some(),
+                visual.debug_bounds("project-chat-header").is_some()
+                    && (width < 560. || visual.debug_bounds("project-manager-title").is_some()),
                 "positive control: the Manager identity is mounted after selecting {selector}"
             );
             assert!(
@@ -1806,6 +1783,143 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
             }
         }
     }
+}
+
+#[gpui::test]
+fn one_row_header_keeps_tabs_menu_open_and_draft_by_keyboard_at_every_width(
+    cx: &mut TestAppContext,
+) {
+    // simulate_keystrokes sends only KeyDown; a Button activates on the
+    // matching KeyUp, so exercise the complete physical key press.
+    fn press(visual: &mut VisualTestContext, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        visual.simulate_event(gpui::KeyUpEvent { keystroke });
+        visual.run_until_parked();
+    }
+    fn focus_next(visual: &mut VisualTestContext, count: usize) {
+        visual.update(|window, cx| {
+            for _ in 0..count {
+                window.focus_next(cx);
+            }
+        });
+        visual.run_until_parked();
+    }
+
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    let mut entity = None;
+    let (_root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture::view(temp.path().into(), gateway.clone(), window, cx);
+            view.active = false;
+            view.identity = Some(ServerIdentity {
+                environment_id: "environment:fixture".into(),
+                label: "Fixture".into(),
+            });
+            view.compose.update(cx, |input, cx| {
+                input.set_value("Keep this draft", window, cx)
+            });
+            view
+        });
+        entity = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let view = entity.unwrap();
+    let expected = view.read_with(visual, |view, _| {
+        view.identity
+            .as_ref()
+            .unwrap()
+            .thread_url(&view.chat.as_ref().unwrap().thread_id)
+    });
+    let section = |visual: &mut VisualTestContext| view.read_with(visual, |view, _| view.section);
+    let mut menu_opened_t3 = false;
+    for width in [560., 320., reader_layout::PANEL_MIN_WIDTH] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let open_inline = assert_one_row_header(visual, width);
+
+        // Tab order runs through the row: Chat, Rules, Skills, then the menu.
+        // Nothing precedes the header in this window, so the first stop is
+        // the Chat tab; selecting Rules proves the order started there.
+        visual.update(|window, cx| window.blur(cx));
+        focus_next(visual, 2);
+        press(visual, "enter");
+        assert!(
+            section(visual) == ProjectSection::Rules,
+            "Enter on the second header stop selects Rules at {width}px"
+        );
+        focus_next(visual, 1);
+        press(visual, "space");
+        assert!(
+            section(visual) == ProjectSection::Skills,
+            "Space on the third header stop selects Skills at {width}px"
+        );
+        visual.update(|window, cx| {
+            window.focus_prev(cx);
+            window.focus_prev(cx);
+        });
+        press(visual, "enter");
+        assert!(
+            section(visual) == ProjectSection::Manager,
+            "Enter on the first header stop returns to Chat at {width}px"
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_one_row_header(visual, width);
+
+        // The fourth stop is the Manager menu. A narrow row moves Open in T3
+        // into it as the first item; otherwise Details is reachable there.
+        focus_next(visual, 3);
+        press(visual, "enter");
+        if open_inline {
+            // The native Manager has Rotation policy before Details.
+            #[cfg(native_manager)]
+            visual.simulate_keystrokes("down down enter");
+            #[cfg(not(native_manager))]
+            visual.simulate_keystrokes("down enter");
+            visual.run_until_parked();
+            assert!(
+                view.read_with(visual, |view, _| view.connection_details),
+                "the keyboard-opened menu reaches Details at {width}px"
+            );
+            view.update(visual, |view, cx| {
+                view.connection_details = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+        } else {
+            if !menu_opened_t3 {
+                assert_eq!(visual.opened_url(), None, "control: nothing opened yet");
+            }
+            visual.simulate_keystrokes("down enter");
+            visual.run_until_parked();
+            assert_eq!(
+                visual.opened_url().as_deref(),
+                Some(expected.as_str()),
+                "Open in T3 moved into the menu still opens the bound thread at {width}px"
+            );
+            menu_opened_t3 = true;
+        }
+    }
+    assert!(
+        menu_opened_t3,
+        "the minimum panel width moves Open in T3 into the menu"
+    );
+    view.read_with(visual, |view, cx| {
+        assert_eq!(view.compose.read(cx).value().as_ref(), "Keep this draft");
+    });
+    assert!(
+        gateway.sends.lock().unwrap().is_empty(),
+        "header navigation never sends the draft"
+    );
 }
 
 #[gpui::test]
@@ -1877,4 +1991,87 @@ fn service2772_stale_connection_cannot_clear_metadata_failure(cx: &mut TestAppCo
         );
         assert!(view.gateway.is_none());
     });
+}
+
+/// #2748: identity, section tabs, status and actions share one 40 px header
+/// row. Every visible control stays inside it, vertically centred, in order,
+/// without overlap or clipping; section content starts directly below it.
+/// Returns whether Open in T3 is a visible header action.
+fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
+    let header = visual
+        .debug_bounds("project-chat-header")
+        .expect("one Manager header row");
+    assert_eq!(header.size.width, px(width), "header spans the panel");
+    assert_eq!(header.size.height, px(40.), "one compact row at {width}px");
+    let mut present = Vec::new();
+    let mut previous = header.left();
+    for selector in [
+        "project-manager-title",
+        "project-section-label-Chat",
+        "project-section-label-Rules",
+        "project-section-label-Skills",
+        "project-chat-status-dot",
+        "project-chat-status",
+        "project-connection-menu",
+        "project-open-t3",
+    ] {
+        let Some(bounds) = visual.debug_bounds(selector) else {
+            continue;
+        };
+        assert!(
+            bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
+            "{selector} shares the header row at {width}px: {bounds:?} in {header:?}"
+        );
+        assert!(
+            (bounds.center().y - header.center().y).abs() <= px(1.),
+            "{selector} is vertically centred at {width}px: {bounds:?} in {header:?}"
+        );
+        assert!(
+            bounds.left() >= previous && bounds.right() <= header.right(),
+            "{selector} keeps its order without overlap or clipping at {width}px: {bounds:?} in {header:?}"
+        );
+        previous = bounds.right();
+        present.push((selector, bounds));
+    }
+    let shown = |selector: &str| present.iter().any(|(name, _)| *name == selector);
+    for required in [
+        "project-section-label-Chat",
+        "project-section-label-Rules",
+        "project-section-label-Skills",
+        "project-connection-menu",
+    ] {
+        assert!(shown(required), "{required} is visible at {width}px");
+    }
+    assert!(
+        shown("project-chat-status") != shown("project-chat-status-dot"),
+        "connection status is shown exactly once, as a label or its dot, at {width}px"
+    );
+    if width >= 560. {
+        for selector in [
+            "project-manager-title",
+            "project-chat-status",
+            "project-open-t3",
+        ] {
+            assert!(shown(selector), "{selector} fits the row at {width}px");
+        }
+    }
+    let (_, first) = present.first().unwrap();
+    let (_, last) = present.last().unwrap();
+    assert!(
+        (first.left() - header.left() - px(design::INSET)).abs() <= px(1.),
+        "row starts at the inset at {width}px: {first:?}"
+    );
+    assert!(
+        (header.right() - last.right() - px(design::INSET)).abs() <= px(1.),
+        "row ends at the inset at {width}px: {last:?}"
+    );
+    let content = visual
+        .debug_bounds("project-panel-content")
+        .expect("section content");
+    assert_eq!(
+        content.top(),
+        header.bottom(),
+        "section content starts directly below the single header row at {width}px"
+    );
+    shown("project-open-t3")
 }

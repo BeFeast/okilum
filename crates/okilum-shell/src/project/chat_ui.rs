@@ -8,68 +8,91 @@ impl ProjectView {
             .as_ref()
             .map(|gateway| gateway.status())
             .unwrap_or(GatewayStatus::NotConnected);
-        let open = self
-            .identity
-            .as_ref()
-            .zip(self.chat.as_ref())
-            .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
-        let mut tabs = h_flex().id("project-sections").gap_2().p_2();
+        let can_open = self.identity.as_ref().zip(self.chat.as_ref()).is_some();
+        #[cfg(native_manager)]
+        let can_open = can_open || (self.native.active() && self.chat.is_some());
+        // #2748: identity, section navigation, status and actions share one
+        // row. Candidates run from fullest to most compact: the status label
+        // collapses to its dot, then the title goes, then Open in T3 moves
+        // into the Manager menu, then the tabs shrink. The first candidate
+        // whose natural width fits the panel is painted.
+        let candidates = HEADER_CANDIDATES
+            .iter()
+            .map(|candidate| {
+                (
+                    self.header_navigation(candidate.title, candidate.compact_tabs, cx),
+                    self.header_actions(
+                        &status,
+                        candidate.status_label,
+                        can_open && candidate.open_inline,
+                        can_open && !candidate.open_inline,
+                        cx,
+                    ),
+                )
+            })
+            .collect();
+        fit_header(candidates, brand::palette(cx).border_subtle)
+    }
+
+    fn header_navigation(&self, title: bool, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+        let mut tabs = h_flex()
+            .id("project-sections")
+            .flex_none()
+            .items_center()
+            .map(|tabs| {
+                if compact {
+                    tabs.gap_0p5()
+                } else {
+                    tabs.gap_1()
+                }
+            });
         for (id, label, section) in [
             ("project-section-manager", "Chat", ProjectSection::Manager),
             ("project-section-rules", "Rules", ProjectSection::Rules),
             ("project-section-skills", "Skills", ProjectSection::Skills),
         ] {
-            tabs = tabs.child(
-                Button::new(id)
-                    .debug_selector(move || format!("project-section-label-{label}"))
-                    .ghost()
-                    .label(label)
-                    .selected(self.section == section)
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx))),
-            );
+            let tab = Button::new(id)
+                .debug_selector(move || format!("project-section-label-{label}"))
+                .ghost()
+                .label(label)
+                .selected(self.section == section)
+                .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx)));
+            tabs = tabs.child(if compact { tab.xsmall() } else { tab.small() });
         }
-        v_flex()
-            .w_full()
-            .child(self.render_chat_header(&status, open, cx))
+        h_flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .when(title, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(design::CHROME))
+                        .line_height(px(design::LINE))
+                        .debug_selector(|| "project-manager-title".into())
+                        .child("Manager"),
+                )
+            })
             .child(tabs)
             .into_any_element()
     }
 
-    pub(super) fn render_chat_header(
+    fn header_actions(
         &self,
         status: &GatewayStatus,
-        open: Option<String>,
+        status_label: bool,
+        open_inline: bool,
+        open_in_menu: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Keep conversation identity separate from configuration: a long model
-        // name must not squeeze the title or push connection actions offscreen.
-        let mut heading = h_flex()
-            .w_full()
-            .min_w_0()
-            .items_center()
-            .h(px(40.))
-            .flex_none()
-            .gap_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(design::CHROME))
-                    .line_height(px(design::LINE))
-                    .debug_selector(|| "project-manager-title".into())
-                    .child("Manager"),
-            );
         let mut actions = h_flex()
             .flex_none()
             .items_center()
             .gap_1()
-            .child(self.connection_line(status, cx));
-        let can_open = open.is_some();
-        #[cfg(native_manager)]
-        let can_open = can_open || (self.native.active() && self.chat.is_some());
-        if can_open {
+            .child(self.connection_line(status, status_label, open_in_menu, cx));
+        if open_inline {
             actions = actions.child(
                 Button::new("project-open-t3")
                     .debug_selector(|| "project-open-t3".into())
@@ -81,13 +104,7 @@ impl ProjectView {
                     .on_click(cx.listener(|this, _, window, cx| this.open_in_t3(window, cx))),
             );
         }
-        heading = heading.child(actions);
-        heading
-            .px(px(design::INSET))
-            .border_b_1()
-            .border_color(brand::palette(cx).border_subtle)
-            .debug_selector(|| "project-chat-header".into())
-            .into_any_element()
+        actions.into_any_element()
     }
 
     pub(super) fn render_model_controls(
@@ -161,4 +178,100 @@ impl ProjectView {
             )
             .into_any_element()
     }
+}
+
+struct HeaderCandidate {
+    title: bool,
+    compact_tabs: bool,
+    status_label: bool,
+    open_inline: bool,
+}
+
+const HEADER_CANDIDATES: [HeaderCandidate; 5] = [
+    HeaderCandidate {
+        title: true,
+        compact_tabs: false,
+        status_label: true,
+        open_inline: true,
+    },
+    HeaderCandidate {
+        title: true,
+        compact_tabs: false,
+        status_label: false,
+        open_inline: true,
+    },
+    HeaderCandidate {
+        title: false,
+        compact_tabs: false,
+        status_label: false,
+        open_inline: true,
+    },
+    HeaderCandidate {
+        title: false,
+        compact_tabs: false,
+        status_label: false,
+        open_inline: false,
+    },
+    HeaderCandidate {
+        title: false,
+        compact_tabs: true,
+        status_label: false,
+        open_inline: false,
+    },
+];
+
+/// Lays out each candidate's navigation and actions at their natural widths
+/// and paints the first pair that fits side by side; the last always paints.
+/// Only the painted pair registers hitboxes, tab stops and debug bounds.
+fn fit_header(candidates: Vec<(AnyElement, AnyElement)>, border: Hsla) -> AnyElement {
+    div()
+        .relative()
+        .w_full()
+        .h(px(40.))
+        .flex_none()
+        .border_b_1()
+        .border_color(border)
+        .debug_selector(|| "project-chat-header".into())
+        .child(
+            canvas(
+                move |bounds, window, cx| {
+                    let natural = size(AvailableSpace::MaxContent, AvailableSpace::MaxContent);
+                    let inset = px(design::INSET);
+                    let room = bounds.size.width - inset * 2. - px(design::GAP);
+                    let last = candidates.len().saturating_sub(1);
+                    for (index, (mut navigation, mut actions)) in candidates.into_iter().enumerate()
+                    {
+                        let left = navigation.layout_as_root(natural, window, cx);
+                        let right = actions.layout_as_root(natural, window, cx);
+                        if index < last && left.width + right.width > room {
+                            continue;
+                        }
+                        let top = |height: Pixels| {
+                            bounds.top() + ((bounds.size.height - height) / 2.).max(px(0.))
+                        };
+                        navigation.prepaint_at(
+                            point(bounds.left() + inset, top(left.height)),
+                            window,
+                            cx,
+                        );
+                        actions.prepaint_at(
+                            point(bounds.right() - inset - right.width, top(right.height)),
+                            window,
+                            cx,
+                        );
+                        return Some((navigation, actions));
+                    }
+                    None
+                },
+                |_, painted, window, cx| {
+                    if let Some((mut navigation, mut actions)) = painted {
+                        navigation.paint(window, cx);
+                        actions.paint(window, cx);
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .into_any_element()
 }

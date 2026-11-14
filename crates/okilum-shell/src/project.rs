@@ -1151,7 +1151,13 @@ impl ProjectView {
         cfg!(native_manager) || (!self.connection_details && self.environment.is_some())
     }
 
-    fn connection_line(&self, status: &GatewayStatus, cx: &mut Context<Self>) -> AnyElement {
+    fn connection_line(
+        &self,
+        status: &GatewayStatus,
+        show_label: bool,
+        open_in_menu: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let Some(env) = self.environment.clone() else {
             return div().into_any_element();
@@ -1176,25 +1182,56 @@ impl ProjectView {
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
         let renew = matches!(status, GatewayStatus::ExpiresSoon { .. });
         let terminal_area = self.area.clone();
+        let opening_t3 = self.opening_t3;
+        let dot = div().size(px(6.)).rounded_full().bg(match label {
+            "Connected" | "Ready" => brand::palette(cx).success,
+            "Working" => brand::palette(cx).accent,
+            "Connecting" | "Reconnecting" | "Reconnect needed" => brand::palette(cx).warning,
+            "Error" => cx.theme().danger,
+            _ => brand::palette(cx).text_muted,
+        });
         h_flex()
             .items_center()
-            .gap_2()
+            .map(|line| {
+                if show_label {
+                    line.gap_2()
+                } else {
+                    line.gap_1()
+                }
+            })
             .debug_selector(|| "project-connected-line".into())
-            .child(div().size(px(6.)).rounded_full().bg(match label {
-                "Connected" | "Ready" => brand::palette(cx).success,
-                "Working" => brand::palette(cx).accent,
-                "Connecting" | "Reconnecting" | "Reconnect needed" => brand::palette(cx).warning,
-                "Error" => cx.theme().danger,
-                _ => brand::palette(cx).text_muted,
-            }))
-            .child(
-                div()
-                    .min_w_0()
-                    .text_size(px(design::LABEL))
-                    .debug_selector(|| "project-chat-status".into())
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(label),
-            )
+            .map(|line| {
+                if show_label {
+                    line.child(dot).child(
+                        div()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .text_size(px(design::LABEL))
+                            .debug_selector(|| "project-chat-status".into())
+                            .text_color(brand::palette(cx).text_muted)
+                            .child(label),
+                    )
+                } else {
+                    // A narrow header keeps the status color; its words stay
+                    // available on hover.
+                    let tooltip = SharedString::new_static(label);
+                    line.child(
+                        div()
+                            .id("project-chat-status-dot")
+                            .flex()
+                            .flex_none()
+                            .size(px(14.))
+                            .items_center()
+                            .justify_center()
+                            .debug_selector(|| "project-chat-status-dot".into())
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                    .build(window, cx)
+                            })
+                            .child(dot),
+                    )
+                }
+            })
             .child(
                 Button::new("project-connection-menu")
                     .debug_selector(|| "project-connection-menu".into())
@@ -1209,6 +1246,20 @@ impl ProjectView {
                         let launch = owner.clone();
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
+                        // #2748: a narrow header moves Open in T3 here.
+                        let open = owner.clone();
+                        let menu = if open_in_menu {
+                            menu.item(
+                                PopupMenuItem::new("Open in T3")
+                                    .disabled(opening_t3)
+                                    .on_click(move |_, window, cx| {
+                                        let _ =
+                                            open.update(cx, |this, cx| this.open_in_t3(window, cx));
+                                    }),
+                            )
+                        } else {
+                            menu
+                        };
                         #[cfg(native_manager)]
                         let menu = menu.item(rotation::policy_owner::menu_item(owner.clone(), cx));
                         menu.item(PopupMenuItem::new("Details").on_click(move |_, _, cx| {
@@ -2262,7 +2313,7 @@ impl Render for ProjectView {
             .cached(
                 StyleRefinement::default()
                     .w_full()
-                    .h(px(40.) + window.rem_size() * 3.)
+                    .h(px(40.))
                     .flex_shrink_0(),
             )
             .into_any_element();
@@ -2286,6 +2337,7 @@ impl Render for ProjectView {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .debug_selector(|| "project-panel-content".into())
                     .when(self.section == ProjectSection::Rules, |view| {
                         view.flex().flex_col().min_w_0().overflow_hidden()
                     })
