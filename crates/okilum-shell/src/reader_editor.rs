@@ -1147,6 +1147,8 @@ impl Reader {
                 // landing toast must explicitly synchronize its presentation.
                 cx.notify();
             }
+            // A hover popup describes the text before this edit (#2953).
+            this.sync_hover_revision(cx);
             let Some(editing) = &mut this.editing else {
                 return;
             };
