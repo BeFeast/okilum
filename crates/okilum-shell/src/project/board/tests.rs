@@ -3,7 +3,24 @@ use ::core::prelude::v1::test;
 
 #[gpui::test]
 fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    use gpui_component::WindowExt;
+
+    // Root stores modal state; its content owns the overlay render layers,
+    // just as Reader does. A bare Board does not render window-wide sheets.
+    struct Surface(Entity<Board>);
+    impl Render for Surface {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.0.clone())
+                .children(Root::render_sheet_layer(window, cx))
+        }
+    }
+
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_reduce_motion(true);
+    });
     for mode in [None, Some(list::Mode::List), Some(list::Mode::Board)] {
         let area = tempfile::tempdir().unwrap();
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -21,7 +38,8 @@ fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppCo
                 }
                 board
             });
-            Root::new(board, window, cx)
+            let surface = cx.new(|_| Surface(board));
+            Root::new(surface, window, cx)
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("board-help-content").is_none());
@@ -30,6 +48,10 @@ fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppCo
             .expect("contextual Help entry");
         visual.simulate_click(entry.center(), Modifiers::default());
         visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(window.has_active_sheet(cx), "Help click must open its sheet");
+            window.draw(cx).clear(cx);
+        });
         assert!(visual.debug_bounds("board-help-content").is_some());
         assert_eq!(visual.opened_url(), None);
         assert_eq!(std::fs::read_dir(area.path()).unwrap().count(), 0);
