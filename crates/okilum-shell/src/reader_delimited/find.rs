@@ -184,6 +184,11 @@ impl TablePreview {
             cell.row.saturating_sub(usize::from(self.header)),
             ScrollStrategy::Top,
         );
+        self.reveal_column_offset(cell.column);
+    }
+    /// Scroll sideways only as far as needed to show the whole column.
+    pub(super) fn reveal_column_offset(&self, column: usize) {
+        let cell = Cell { row: 0, column };
         let width = f32::from(self.pane_bounds.get().size.width).max(COLUMN_WIDTH);
         let left = GUTTER + cell.column as f32 * COLUMN_WIDTH;
         let right = left + COLUMN_WIDTH;

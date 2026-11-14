@@ -251,7 +251,7 @@ fn shown(view: &View) -> Vec<String> {
 }
 
 #[gpui::test]
-fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
+fn contents2814_json_rows_states_and_table_columns(cx: &mut TestAppContext) {
     let long = format!(
         "{{\"head\":\"{}\",\"tail\":{{\"x\":1}}}}",
         "x".repeat(300_000)
@@ -275,7 +275,7 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
     for (file, expect) in [
         ("big.json", Some("rows")),
         ("bad.json", Some("invalid")),
-        ("array.json", None),
+        ("array.json", Some("columns")),
         ("plain.txt", None),
     ] {
         reader.update_in(visual, |r, w, cx| r.open_note(file, None, w, cx));
@@ -297,6 +297,12 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
                     )
                 });
             }
+            Some("columns") => {
+                // A JSON array opens in Table: Contents lists its columns (9d).
+                paint(visual);
+                assert_eq!(columns(&view, visual), ["a"], "{file}");
+                view.read_with(visual, |v, _| assert!(v.has_entries(), "{file}"));
+            }
             Some(_) => {
                 assert!(
                     visual.debug_bounds("file-contents-heading").is_some(),
@@ -311,7 +317,7 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
                 assert!(visual.debug_bounds("file-outline-state").is_some());
             }
             None => {
-                // No rows (Table view, or no structure): only the heading and
+                // No structure: only the heading and
                 // its empty line remain; data files have no «Linked from» (#2885).
                 view.read_with(visual, |v, _| assert!(!v.has_entries(), "{file}"));
                 assert!(visual.debug_bounds("file-outline-list").is_none(), "{file}");
@@ -1443,4 +1449,157 @@ fn contents2814_edit_never_releases_a_tree_on_the_ui_thread(cx: &mut TestAppCont
         counts.background
     );
     assert_eq!(counts.foreground, 0, "trees released on the UI thread");
+}
+
+fn columns(view: &Entity<View>, visual: &VisualTestContext) -> Vec<String> {
+    view.read_with(visual, |v, _| {
+        v.snapshot
+            .columns
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.names.to_vec())
+    })
+}
+
+fn column_mark(view: &Entity<View>, visual: &VisualTestContext) -> Option<usize> {
+    view.read_with(visual, |v, _| v.snapshot.columns.as_ref()?.current)
+}
+
+fn table(
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &VisualTestContext,
+) -> Entity<reader_delimited::TablePreview> {
+    code.read_with(visual, |p, _| p.table_view().expect("a table"))
+}
+
+#[gpui::test]
+fn contents2814_csv_and_tsv_list_their_columns_and_follow_the_selected_cell(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[
+            (
+                "charges.csv",
+                "id,amount,currency,status\n1,10,EUR,paid\n2,20,USD,open\n",
+            ),
+            ("people.tsv", "name\tage\nAda\t36\n"),
+        ],
+        "charges.csv",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    code.read_with(visual, |p, _| assert_eq!(p.active_view(), CodeView::Table));
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount", "currency", "status"]
+    );
+    assert_eq!(column_mark(&view, visual), None, "nothing selected yet");
+    assert!(
+        visual.debug_bounds("file-outline-columns").is_some(),
+        "the column list is drawn"
+    );
+    let table = table(&code, visual);
+    table.update_in(visual, |t, w, cx| t.select_for_tests(2, 1, w, cx));
+    settle(visual);
+    assert_eq!(
+        column_mark(&view, visual),
+        Some(1),
+        "the selected cell's column"
+    );
+    // A click: the selection moves into that column, same row.
+    view.update_in(visual, |v, w, cx| v.jump_column(3, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), Some((2, 3)))
+    });
+    assert_eq!(column_mark(&view, visual), Some(3));
+    reader.update_in(visual, |r, w, cx| r.open_note("people.tsv", None, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(columns(&view, visual), ["name", "age"]);
+}
+
+#[gpui::test]
+fn contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column(
+    cx: &mut TestAppContext,
+) {
+    let row = |r: usize| {
+        (0..256)
+            .map(|c| format!("r{r}c{c}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let text = format!("{}\n{}\n{}\n", row(0), row(1), row(2));
+    let (reader, visual, _root) = reader_with(cx, &[("wide.csv", text.as_str())], "wide.csv");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let table = table(&code, visual);
+    table.update(visual, |t, cx| t.toggle_header_for_tests(cx));
+    settle(visual);
+    paint(visual);
+    let names = columns(&view, visual);
+    assert_eq!(names.len(), 256);
+    assert_eq!(
+        (names[0].as_str(), names[255].as_str()),
+        ("Column 1", "Column 256")
+    );
+    table.update_in(visual, |t, w, cx| t.select_for_tests(1, 0, w, cx));
+    settle(visual);
+    let (before, _) = table.read_with(visual, |t, _| t.horizontal_for_tests());
+    view.update_in(visual, |v, w, cx| v.jump_column(200, w, cx));
+    settle(visual);
+    paint(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(
+            t.selection_for_tests(),
+            Some((1, 200)),
+            "same row, new column"
+        );
+        let (offset, width) = t.horizontal_for_tests();
+        assert!(
+            offset > before,
+            "the grid scrolled sideways ({before} → {offset})"
+        );
+        let (left, right) = (48. + 200. * 200., 48. + 201. * 200.);
+        assert!(
+            offset <= left && right <= offset + width.max(200.) + 0.5,
+            "column 200 is on screen: {left}..{right} in {offset}..{}",
+            offset + width
+        );
+    });
+    assert_eq!(column_mark(&view, visual), Some(200));
+}
+
+#[gpui::test]
+fn contents2814_a_json_array_lists_columns_only_in_table(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[(
+            "charges.json",
+            "[{\"id\":1,\"amount\":10},{\"id\":2,\"amount\":20}]",
+        )],
+        "charges.json",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount"],
+        "Table lists columns"
+    );
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Tree, w, cx));
+    settle(visual);
+    paint(visual);
+    view.read_with(visual, |v, _| {
+        assert!(v.snapshot.columns.is_none(), "Tree lists keys and items");
+        assert_eq!(shown(v)[0], "0 2 keys");
+    });
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    assert_eq!(columns(&view, visual), ["id", "amount"]);
 }

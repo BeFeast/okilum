@@ -39,6 +39,12 @@ impl CodePreview {
         self.raw_document.clone()
     }
 
+    /// The table Contents lists the columns of (#2814 9d): a CSV or TSV
+    /// file, or a JSON array, while Table is the active view.
+    pub(crate) fn contents_table(&self) -> Option<Entity<reader_delimited::TablePreview>> {
+        self.table.clone().filter(|_| self.view == View::Table)
+    }
+
     #[cfg(test)]
     pub(crate) fn tree_selection_for_tests(&self) -> Option<usize> {
         self.structure.selected

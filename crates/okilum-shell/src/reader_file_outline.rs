@@ -55,6 +55,8 @@ struct Snapshot {
     reveal: Option<(usize, bool)>,
     /// The edit buffer the rows come from while the file is edited.
     edit: Option<edit::EditSource>,
+    /// The column list while Table is the active view (#2814 9d).
+    columns: Option<Columns>,
     /// Children walked on the UI thread by «where you are» samples.
     #[cfg(test)]
     ui_child_steps: usize,
@@ -64,6 +66,18 @@ struct Snapshot {
     /// Open rows per file, by key path: survive rebuilds, view switches and
     /// closing the panel.
     expansions: HashMap<String, tree::Expansion>,
+}
+
+/// Contents of a table (#2814 9d): a flat list of column names; the current
+/// row is the column of the selected cell.
+struct Columns {
+    table: Entity<reader_delimited::TablePreview>,
+    /// Names are read again only when the table snapshot or header changes.
+    key: (usize, bool),
+    names: Arc<Vec<String>>,
+    current: Option<usize>,
+    list: ListState,
+    _observer: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -138,7 +152,8 @@ impl View {
         // Read mode of a JSON file: rows come from the viewer's own tree.
         if let Some(code) = code.clone().filter(|_| reader.source_input().is_none()) {
             let source = code.read(cx).contents_source();
-            if !matches!(source, ContentsSource::Absent) || Self::snapshot_file(reader) {
+            let table = code.read(cx).contents_table().is_some();
+            if table || !matches!(source, ContentsSource::Absent) || Self::snapshot_file(reader) {
                 let file = reader.selected_file().to_owned();
                 view.update(cx, |this, cx| this.bind_snapshot(code, file, source, cx));
                 return;
@@ -337,6 +352,9 @@ impl View {
     }
 
     pub(super) fn has_entries(&self) -> bool {
+        if let Some(columns) = &self.snapshot.columns {
+            return !columns.names.is_empty();
+        }
         if self.snapshot.active {
             return match self.snapshot.state {
                 SnapshotState::Absent => false,
@@ -381,10 +399,80 @@ impl View {
                 let source = code.read(cx).contents_source();
                 let file = this.snapshot.file.clone();
                 this.apply_source(file, source, cx);
+                this.sync_columns(&code, cx);
             }));
             self.snapshot.active = true;
         }
         self.apply_source(file, source, cx);
+        self.sync_columns(&code, cx);
+    }
+
+    /// Table active: the column list replaces the rows; another view brings
+    /// the rows back.
+    fn sync_columns(
+        &mut self,
+        code: &Entity<reader_code_file::CodePreview>,
+        cx: &mut Context<Self>,
+    ) {
+        let table = code.read(cx).contents_table();
+        match (table, &self.snapshot.columns) {
+            (Some(table), Some(columns)) if columns.table == table => {}
+            (Some(table), _) => {
+                let observer =
+                    cx.observe(&table, |this, table, cx| this.refresh_columns(&table, cx));
+                self.snapshot.columns = Some(Columns {
+                    table: table.clone(),
+                    key: (usize::MAX, false),
+                    names: Arc::default(),
+                    current: None,
+                    list: ListState::new(0, ListAlignment::Top, px(200.)),
+                    _observer: observer,
+                });
+                self.refresh_columns(&table, cx);
+                cx.notify();
+            }
+            (None, Some(_)) => {
+                self.snapshot.columns = None;
+                cx.notify();
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// A table notify: names only when the snapshot or header changed; the
+    /// mark when the selected column changed. O(columns) at most.
+    fn refresh_columns(
+        &mut self,
+        table: &Entity<reader_delimited::TablePreview>,
+        cx: &mut Context<Self>,
+    ) {
+        let (key, current) = {
+            let table = table.read(cx);
+            (table.columns_key(), table.selected_column())
+        };
+        let Some(columns) = self.snapshot.columns.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        if columns.key != key {
+            columns.key = key;
+            columns.names = Arc::new(table.read(cx).column_names());
+            columns
+                .list
+                .reset_with_uniform_height(columns.names.len(), px(OUTLINE_ROW_HEIGHT));
+            changed = true;
+        }
+        let current = current.filter(|&column| column < columns.names.len());
+        if columns.current != current {
+            columns.current = current;
+            if let Some(column) = current {
+                columns.list.scroll_to_reveal_item(column);
+            }
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
     }
 
     fn leave_snapshot(&mut self, cx: &mut Context<Self>) {
@@ -735,7 +823,88 @@ impl View {
 
 impl View {
     #[inline(never)]
+    fn render_columns(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(columns) = &self.snapshot.columns else {
+            return div().into_any_element();
+        };
+        let rows = columns.names.len() as f32 * OUTLINE_ROW_HEIGHT;
+        v_flex()
+            .id("file-outline-columns")
+            .debug_selector(|| "file-outline-columns".into())
+            .flex_shrink(1.)
+            .h(px(rows + 2. * OUTLINE_PADDING_Y))
+            .min_h(px(
+                (rows + 2. * OUTLINE_PADDING_Y).min(6. * OUTLINE_ROW_HEIGHT)
+            ))
+            .py(px(OUTLINE_PADDING_Y))
+            .child(
+                list(
+                    columns.list.clone(),
+                    cx.processor(|this, ix: usize, _, cx| this.column_row(ix, cx)),
+                )
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    fn column_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(columns) = &self.snapshot.columns else {
+            return div().into_any_element();
+        };
+        let Some(name) = columns.names.get(ix).cloned() else {
+            return div().into_any_element();
+        };
+        let current = columns.current == Some(ix);
+        let p = brand::palette(cx);
+        let hover = brand::reader_palette(cx).hover;
+        let tooltip = name.clone();
+        h_flex()
+            .id(("file-outline-column", ix))
+            .debug_selector(move || format!("file-outline-column-{ix}"))
+            .flex_none()
+            .h(px(OUTLINE_ROW_HEIGHT))
+            .items_center()
+            .pl(px(14. + 16. + 8.))
+            .pr_3()
+            .border_l_2()
+            .border_color(gpui::transparent_black())
+            .text_color(p.text)
+            // Where you are: the accent bar and the weight.
+            .when(current, |row| {
+                row.border_color(p.accent).font_weight(FontWeight::MEDIUM)
+            })
+            .overflow_hidden()
+            .cursor_pointer()
+            .hover(move |row| row.bg(hover))
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(name),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| this.jump_column(ix, window, cx)))
+            .into_any_element()
+    }
+
+    fn jump_column(&mut self, column: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(columns) = &self.snapshot.columns {
+            columns
+                .table
+                .clone()
+                .update(cx, |table, cx| table.reveal_column(column, window, cx));
+        }
+    }
+
+    #[inline(never)]
     fn render_snapshot(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.snapshot.columns.is_some() {
+            return self.render_columns(cx);
+        }
         let p = brand::palette(cx);
         let line = |text: &'static str| {
             div()

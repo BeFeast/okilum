@@ -49,7 +49,7 @@ CONTROLS = [
  ('reading-immediate', 'contents2814_reading_line_waits_300_ms'),
  ('click-switches-view', 'contents2814_click_goes_to_the_node_in_every_view_without_switching'),
  ('forget-on-close', 'contents2814_open_rows_survive_view_switch_and_panel_close'),
- ('table-contents', 'contents2814_json_rows_states_and_absent_table'),
+ ('table-no-columns', 'contents2814_json_rows_states_and_table_columns'),
  ('labels-walk-children', 'contents2814_group_labels_cost_no_child_walk'),
  ('group-children-open', 'contents2814_children_of_an_opened_group_start_closed'),
  ('shared-duplicate-key', 'contents2814_repeated_keys_open_and_close_independently'),
@@ -84,6 +84,11 @@ CONTROLS = [
  ('edit-no-whereabouts', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
  ('reload-change-only', 'contents2814_edit_reload_with_other_content_refreshes_contents_and_clears_the_warning'),
  ('drop-on-ui', 'contents2814_edit_never_releases_a_tree_on_the_ui_thread'),
+ ('columns-no-mark', 'contents2814_csv_and_tsv_list_their_columns_and_follow_the_selected_cell'),
+ ('column-jump-row', 'contents2814_csv_and_tsv_list_their_columns_and_follow_the_selected_cell'),
+ ('column-no-scroll', 'contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column'),
+ ('columns-ignore-header', 'contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column'),
+ ('columns-stay', 'contents2814_a_json_array_lists_columns_only_in_table'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -137,7 +142,13 @@ try:
     edit(code, ".take_while(|b| *b == b' ' || *b == b'\\t')", ".take_while(|b| !crate::contents2814_control(\"indent-current\") && (*b == b' ' || *b == b'\\t'))")
     edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
     edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
-    edit(code, 'if !self.contents_format() || self.view == View::Table {', 'if !self.contents_format() || (self.view == View::Table && !crate::contents2814_control("table-contents")) {')
+    edit(code, '        self.table.clone().filter(|_| self.view == View::Table)', '        self.table.clone().filter(|_| self.view == View::Table && !crate::contents2814_control("table-no-columns"))')
+    edit(view, '            (None, Some(_)) => {\n                self.snapshot.columns = None;', '            (None, Some(_)) if !crate::contents2814_control("columns-stay") => {\n                self.snapshot.columns = None;')
+    dl = 'reader_delimited/chrome.rs'
+    edit(dl, '        self.end.map(|cell| cell.column)\n    }', '        self.end.map(|cell| cell.column).filter(|_| !crate::contents2814_control("columns-no-mark"))\n    }')
+    edit(dl, '            .map_or(usize::from(self.header), |cell| cell.row);', '            .map_or(usize::from(self.header), |cell| cell.row);\n        let row = if crate::contents2814_control("column-jump-row") { usize::from(self.header) } else { row };')
+    edit(dl, '        self.reveal_column_offset(column);\n        self.focus', '        if !crate::contents2814_control("column-no-scroll") {\n            self.reveal_column_offset(column);\n        }\n        self.focus')
+    edit(dl, '                let name = if self.header {', '                let name = if self.header || crate::contents2814_control("columns-ignore-header") {')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))
     if '--audit' in sys.argv:
         print('CONTENTS2814_MUTATION_ANCHORS_PASS', flush=True)

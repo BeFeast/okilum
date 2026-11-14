@@ -13,6 +13,92 @@ impl TablePreview {
     pub(crate) fn failure(&self) -> Option<&'static str> {
         self.error
     }
+    /// Column names for Contents (#2814 9d): the header row's cells, or
+    /// «Column N» as the grid shows a table without one. A blank header cell
+    /// reads «Column N» too.
+    pub(crate) fn column_names(&self) -> Vec<String> {
+        let Some(table) = &self.table else {
+            return Vec::new();
+        };
+        (0..table.columns)
+            .map(|column| {
+                let name = if self.header {
+                    visible(table.cell(0, column))
+                } else {
+                    String::new()
+                };
+                if name.trim().is_empty() {
+                    format!("Column {}", column + 1)
+                } else {
+                    name
+                }
+            })
+            .collect()
+    }
+    /// Changes whenever the names may: another snapshot or header choice.
+    pub(crate) fn columns_key(&self) -> (usize, bool) {
+        (
+            self.table
+                .as_ref()
+                .map_or(0, |table| Arc::as_ptr(table) as usize),
+            self.header,
+        )
+    }
+    /// The column of the selected cell.
+    pub(crate) fn selected_column(&self) -> Option<usize> {
+        self.end.map(|cell| cell.column)
+    }
+    /// A click in Contents: the grid scrolls sideways to `column` and the
+    /// selection moves into it, in the same row (the first data row when
+    /// nothing is selected). The rows do not scroll.
+    pub(crate) fn reveal_column(
+        &mut self,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        if self.updating || column >= table.columns {
+            return;
+        }
+        let row = self
+            .end
+            .or(self.anchor)
+            .map_or(usize::from(self.header), |cell| cell.row);
+        let cell = Cell { row, column };
+        self.anchor = Some(cell);
+        self.end = Some(cell);
+        self.reveal_column_offset(column);
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+    #[cfg(test)]
+    pub(crate) fn select_for_tests(
+        &mut self,
+        row: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select(Cell { row, column }, false, window, cx);
+    }
+    #[cfg(test)]
+    pub(crate) fn toggle_header_for_tests(&mut self, cx: &mut Context<Self>) {
+        self.toggle_header(cx);
+    }
+    #[cfg(test)]
+    pub(crate) fn selection_for_tests(&self) -> Option<(usize, usize)> {
+        self.end.map(|cell| (cell.row, cell.column))
+    }
+    #[cfg(test)]
+    pub(crate) fn horizontal_for_tests(&self) -> (f32, f32) {
+        (
+            -f32::from(self.horizontal.offset().x),
+            f32::from(self.pane_bounds.get().size.width),
+        )
+    }
     pub(crate) fn chrome(&self, owner: Entity<Self>, live: bool, cx: &App) -> ViewerChrome {
         let mut chrome = ViewerChrome {
             find: Some(self.find_target(owner.clone(), live, cx)),
