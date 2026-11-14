@@ -371,3 +371,107 @@ async fn skills_1591_stale_open_refuses_rebind_and_fresh_reload_opens_exact_sour
         assert!(view.gateway.is_none());
     });
 }
+
+fn write_claude_skill(root: &std::path::Path, folder: &str, name: &str, body: &str) {
+    let source = root.join("p/.claude/skills").join(folder).join("SKILL.md");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(
+        source,
+        format!("---\nname: {name}\ndescription: Local fixture\n---\n{body}\n"),
+    )
+    .unwrap();
+}
+
+fn publish_source_change(
+    reader: &Entity<Reader>,
+    root: &std::path::Path,
+    cx: &mut VisualTestContext,
+) {
+    reader.update_in(cx, |reader, _, cx| {
+        reader.vault = publication(root, false);
+        reader.source_publication_epoch = reader.source_publication_epoch.wrapping_add(1);
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+async fn skills_2938_claude_skills_are_listed_paired_and_open_their_exact_source(
+    cx: &mut TestAppContext,
+) {
+    let state = tempfile::tempdir().unwrap();
+    let (reader, project, visual) = mount(cx, state.path());
+    visual.condition(&project, |view, _| is_fresh(view)).await;
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-skill-1").is_none(),
+        "control: only the .agents skill before .claude/skills exists"
+    );
+    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = opened.clone();
+    let _subscription = project.update_in(visual, |_, window, cx| {
+        cx.subscribe_in(
+            &project,
+            window,
+            move |_, _, event: &ProjectSkillOpen, _, _| {
+                capture.lock().unwrap().push(event.0.clone())
+            },
+        )
+    });
+    let root = state.path().join("vault");
+    // A Claude Code-only skill plus a same-named copy of the .agents skill
+    // whose body differs; an edit under .claude/skills refreshes the list.
+    write_claude_skill(&root, "card", "alpha", "Different Claude body");
+    write_claude_skill(&root, "harvest", "course-harvest", "Claude only");
+    publish_source_change(&reader, &root, visual);
+    visual
+        .condition(&project, |view, _| {
+            is_fresh(view) && view.skills.snapshot().unwrap().skills.len() == 2
+        })
+        .await;
+    visual.run_until_parked();
+    project.read_with(visual, |view, _| {
+        let skills = &view.skills.snapshot().unwrap().skills;
+        assert_eq!(skills[0].name, "alpha");
+        assert_eq!(skills[0].provider, Provider::Agents);
+        let paired = skills[0].paired.as_ref().unwrap();
+        assert_eq!(paired.provider, Provider::Claude);
+        assert!(paired.differs);
+        assert_eq!(skills[1].name, "course-harvest");
+        assert_eq!(skills[1].provider, Provider::Claude);
+        assert!(skills[1].paired.is_none());
+    });
+    assert!(visual.debug_bounds("project-skill-0-differs").is_some());
+    assert!(visual.debug_bounds("project-skill-0-source-1").is_some());
+    assert!(visual.debug_bounds("project-skill-1-differs").is_none());
+    for selector in [
+        "open-project-skill-0",
+        "open-project-skill-0-1",
+        "open-project-skill-1",
+    ] {
+        let open = visual.debug_bounds(selector).unwrap();
+        visual.simulate_click(open.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        *opened.lock().unwrap(),
+        vec![
+            PathBuf::from("p/.agents/skills/card/SKILL.md"),
+            PathBuf::from("p/.claude/skills/card/SKILL.md"),
+            PathBuf::from("p/.claude/skills/harvest/SKILL.md"),
+        ]
+    );
+    // Editing only the .claude copy to match clears the difference.
+    write_claude_skill(&root, "card", "alpha", "Exact local body");
+    publish_source_change(&reader, &root, visual);
+    visual
+        .condition(&project, |view, _| {
+            is_fresh(view)
+                && view.skills.snapshot().unwrap().skills[0]
+                    .paired
+                    .as_ref()
+                    .is_some_and(|paired| !paired.differs)
+        })
+        .await;
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-skill-0-differs").is_none());
+}
