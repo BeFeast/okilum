@@ -1,0 +1,64 @@
+# Forgejo linux-release `release` (#2927): the beta Arch package, built and
+# validated on a hosted runner instead of a homelab `ubuntu-latest` runner
+# (Okilum left baldr, Oleg 14.11). The write-once ref names the exact source,
+# the Forgejo build number (5000 + run number) and the QA harness choice; the
+# Forgejo bridge waiter stages this artifact as `arch-publication`.
+# Exact pushed source only; no cache, signing, publication or Forgejo secrets.
+name: forgejo-arch-release
+on:
+  push:
+    branches: ['forgejo-arch-release-pr/**', 'forgejo-arch-qa-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-arch-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  arch-release:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    # Observed hosted Arch builds: 13-31 min (forgejo-arch, November 2026).
+    timeout-minutes: 45
+    steps:
+      - name: Install Arch build and packaging tools
+        run: |
+          pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
+            wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb alsa-lib \
+            vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read the Forgejo build number from the exact-source ref
+        id: build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python scripts/releases/arch_handoff.py ref --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Prepare build user
+        run: useradd -m builder
+      - name: Build package as an unprivileged user
+        env:
+          BUILD: ${{ steps.build.outputs.build }}
+          HARNESS: ${{ steps.build.outputs.harness }}
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$HARNESS" OKILUM_BUILD_VERSION="$BUILD" bash scripts/arch/build.sh
+          # Publication reads the built commit from here, not from the run (#1040).
+          runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
+      - name: Validate package and install without changing MIME defaults
+        run: |
+          desktop-file-validate scripts/arch/okilum.desktop
+          pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
+          okilum --help
+          if ldd /usr/bin/okilum | grep 'not found'; then exit 1; fi
+          python -m unittest discover -s scripts/arch -p 'test_*.py'
+          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-release
+          path: |
+            dist/arch/*.pkg.tar.zst
+            dist/arch/release-source.txt
+          retention-days: 3
+          if-no-files-found: error

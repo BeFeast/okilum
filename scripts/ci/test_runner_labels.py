@@ -51,11 +51,10 @@ WORKFLOW_GLOBS = ('*.yml', '*.yaml')
 FORBIDDEN = {'heavy', 'heavy-sprint', 'fast-linux', 'docker', 'ubuntu-latest', 'idunn-sprint'}
 # Labels Okilum workflows may use. Move build or test work to GitHub through `bridge`.
 ALLOWED = {'bridge', 'light', 'publish', 'macos', 'windows-signer'}
-# Temporary: these two beta builders still need their Forgejo-side signing,
-# packaging and publication handoff. Issue #2927 moves them to GitHub and
-# removes these entries. Nothing else may be added here.
+# Temporary: the Windows beta builder still signs, packs (velopack) and
+# dispatches publication in the same Forgejo job. Issue #2927 moves it to
+# GitHub and removes this entry. Nothing else may be added here.
 EXCEPTIONS = {
-    ('linux-release.yml', 'release'): 'ubuntu-latest',
     ('windows-diagnostic.yml', 'release'): 'ubuntu-latest',
 }
 # Expressions the guard cannot evaluate, each reviewed: (workflow, job, expression) -> reason.
@@ -479,9 +478,9 @@ class RunnerLabels(unittest.TestCase):
     def test_github_workflows_never_target_homelab_runners(self):
         self.assertEqual(github_violations(), [])
 
-    def test_exceptions_are_only_the_two_beta_builders(self):
-        self.assertEqual(set(EXCEPTIONS), {('linux-release.yml', 'release'),
-                                           ('windows-diagnostic.yml', 'release')})
+    def test_exceptions_are_only_the_windows_beta_builder(self):
+        # #2927: the Arch beta builds on GitHub through a bridge handoff.
+        self.assertEqual(set(EXCEPTIONS), {('windows-diagnostic.yml', 'release')})
         self.assertEqual(EXTERNAL_CALLEE_EXCEPTIONS, {})
         self.assertNotIn('ci-interactive', ALLOWED)
         self.assertFalse(ALLOWED & FORBIDDEN)
