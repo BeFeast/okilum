@@ -35,7 +35,14 @@ pub(super) fn render_file(
     // when a note actually links the file; Contents uses the room otherwise.
     // Notes and documents always keep it.
     let service = service_file(reader) && reader.backlinks.is_empty();
-    let contents = outline.read(cx).has_entries();
+    // A HAR file's request list: its Overview takes the place of Contents,
+    // which has nothing to list there (#2932). Source keeps the JSON Contents.
+    let har = reader
+        .file_preview
+        .as_ref()
+        .filter(|preview| preview.code.is_none())
+        .and_then(|preview| preview.har.clone());
+    let contents = har.is_none() && outline.read(cx).has_entries();
     let separator = || {
         div()
             .flex_none()
@@ -49,7 +56,27 @@ pub(super) fn render_file(
         .h_full()
         .flex_none()
         .text_size(px(brand::READER_CHROME_FONT_SIZE))
-        .when(contents || service, |panel| {
+        .when_some(har.as_ref(), |panel, har| {
+            let overview = reader_har::overview::render(har, cx);
+            let empty = overview.is_none();
+            panel
+                .child(
+                    section("icons/activity.svg", "Overview".into())
+                        .debug_selector(|| "har-overview-heading".into()),
+                )
+                .children(overview)
+                .when(empty, |panel| {
+                    panel.child(
+                        div()
+                            .flex_none()
+                            .px_4()
+                            .py_1()
+                            .text_color(p.text_muted)
+                            .child(contents_empty(true)),
+                    )
+                })
+        })
+        .when(har.is_none() && (contents || service), |panel| {
             // Editing text that does not parse: the rows are of the last valid
             // text. The heading says so; nothing is inserted above the list.
             let stale = outline.read(cx).last_valid_tooltip();
@@ -76,7 +103,7 @@ pub(super) fn render_file(
             )
         })
         .when(contents, |panel| panel.child(outline))
-        .when(service && !contents, |panel| {
+        .when(har.is_none() && service && !contents, |panel| {
             panel.child(
                 div()
                     .flex_none()
@@ -88,7 +115,7 @@ pub(super) fn render_file(
         })
         .when(!service, |panel| {
             panel
-                .when(contents, |panel| panel.child(separator()))
+                .when(contents || har.is_some(), |panel| panel.child(separator()))
                 .child(
                     section("icons/link.svg", reader.linked_from_title())
                         .debug_selector(|| "file-linked-from-heading".into()),

@@ -16,6 +16,11 @@ pub(crate) struct SidePanel {
     _reader: Subscription,
     pub(super) file_outline: Option<Entity<reader_right_panel::file_outline::View>>,
     _outline: Option<Subscription>,
+    /// The open HAR view, observed by the right panel for its Overview
+    /// (#2932), and what the panel last showed of it: the panel redraws only
+    /// when that changes, not on every list scroll or Find keystroke.
+    har: Option<(EntityId, Subscription)>,
+    har_key: Option<reader_har::overview::Key>,
 }
 
 impl SidePanel {
@@ -45,11 +50,39 @@ impl SidePanel {
                         outline.update(cx, |outline, cx| outline.clear(cx));
                     }
                 }
+                if !this.left {
+                    this.watch_har(&reader, cx);
+                }
                 cx.notify();
             }),
             file_outline,
             _outline: outline_observer,
+            har: None,
+            har_key: None,
         }
+    }
+
+    /// Follows the open file's HAR view, if any (#2932).
+    fn watch_har(&mut self, reader: &Entity<Reader>, cx: &mut Context<Self>) {
+        let har = reader
+            .read(cx)
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.har.clone());
+        if self.har.as_ref().map(|(id, _)| *id) == har.as_ref().map(Entity::entity_id) {
+            return;
+        }
+        self.har_key = None;
+        self.har = har.map(|har| {
+            let observer = cx.observe(&har, |this, har, cx| {
+                let key = reader_har::overview::key(har.read(cx), cx);
+                if this.har_key.as_ref() != Some(&key) {
+                    this.har_key = Some(key);
+                    cx.notify();
+                }
+            });
+            (har.entity_id(), observer)
+        });
     }
 }
 
