@@ -1,0 +1,73 @@
+# Forgejo fast.yml `sync-source-sharing`: the nightly pinned managed-runtime
+# source-sharing and offline network-policy acceptance, on a hosted runner
+# instead of baldr's fast-linux host runner (Okilum left baldr, Oleg 14.11).
+# Exact pushed source only; no cache, signing, publication or Forgejo secrets.
+name: forgejo-sync-source-sharing
+on:
+  push:
+    branches: ['forgejo-sync-source-sharing-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-sync-source-sharing-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  sync-source-sharing:
+    # Public repositories receive the standard 4-vCPU hosted Linux runner; its
+    # passwordless sudo provides the disposable network namespace.
+    runs-on: ubuntu-24.04
+    # 10 min apt + 26 min gate step + 90 s setup/cleanup leave >= 10 min of the
+    # job ceiling for the warm compile (typically 5-8 min, cold, 4 vCPU).
+    timeout-minutes: 48
+    env:
+      # Same compiler settings as the former fast-linux job.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+          free -h
+          df -h / "$RUNNER_TEMP"
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git python3 python3-venv iproute2 util-linux
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      - name: Allocate job-owned fixture directory
+        run: |
+          fixture_root=$(mktemp -d "${RUNNER_TEMP:?}/sync-fixtures-XXXXXX")
+          echo "OKILUM_SYNC_FIXTURE_ROOT=$fixture_root" >> "$GITHUB_ENV"
+          echo "TMPDIR=$fixture_root" >> "$GITHUB_ENV"
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
+      # The gate groups below were sized on baldr's warm dedicated target. Build
+      # the same test targets into that target first, outside the group limits,
+      # so the timed groups measure the same work as before.
+      - name: Warm the dedicated sync target
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-sync-source-sharing/target"
+          mkdir -p "$CARGO_TARGET_DIR"
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+          cargo test --locked -p okilum-sync-controller --lib --no-run
+          cargo test --locked -p okilum-sync-controller --test direct_bidirectional --test network_policy --no-run
+      - name: Verify ordinary source sharing with two pinned managed runtimes
+        timeout-minutes: 26
+        run: bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh
+      - name: Reject and reap surviving job fixture daemons
+        if: always()
+        run: |
+          if [[ -n "${OKILUM_SYNC_FIXTURE_ROOT:-}" ]]; then
+            python3 scripts/ci/sync-fixture-processes.py --root "$OKILUM_SYNC_FIXTURE_ROOT" --cleanup
+          fi

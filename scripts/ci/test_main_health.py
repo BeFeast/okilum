@@ -203,7 +203,18 @@ class MainHealthTests(unittest.TestCase):
         jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
                          {'name': 'linux-local', 'status': 'success', 'id': 2}]}
         api, out = self.red_reading({'/actions/runs/7/jobs': jobs})
-        self.assert_merges_blamed(api, out, 'LookupError: no failed linux-local job in run 7')
+        self.assert_merges_blamed(api, out, 'LookupError: no failed Linux lane job in run 7')
+
+    def test_a_failed_hosted_waiter_log_is_infrastructure(self):
+        # Since 14.11 the daily full set's only Linux lane is linux-github; its log
+        # is the hosted waiter's, so it never blames a merge from cargo output.
+        jobs = {'jobs': [{'name': 'linux', 'status': 'failure', 'id': 1},
+                         {'name': 'linux-github', 'status': 'failure', 'id': 42}]}
+        log = '2026Z Hosted Linux unavailable; no fallback success: queue timeout\n'
+        api, out = self.red_reading({'/actions/runs/7/jobs': jobs, '/actions/jobs/42/logs': log})
+        self.assertEqual(out, '', 'the log was read')
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
+        self.assertIn('looks like infrastructure', api.writes[0][2]['body'])
 
     def test_an_expired_job_log_blames_the_merges(self):
         jobs = {'jobs': [{'name': 'linux-local', 'status': 'failure', 'id': 41}]}

@@ -1,0 +1,36 @@
+# Forgejo feedback-ci (nightly): the portable Feedback harness, on a hosted
+# runner instead of the `docker` label that also matched baldr (Oleg 14.11).
+# Exact pushed source only; no cache, signing, publication or Forgejo secrets.
+name: forgejo-feedback
+on:
+  push:
+    branches: ['forgejo-feedback-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-feedback-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  feedback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      - name: Resolve and verify pinned workspace dependencies
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      - name: Format, lint and execute the complete portable Feedback suite
+        run: |
+          cargo fmt -p okilum-http --check
+          cargo clippy --locked -p okilum-http --test feedback_model -- -D warnings
+          cargo test --locked -p okilum-http --test feedback_model

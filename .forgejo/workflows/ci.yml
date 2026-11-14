@@ -1,7 +1,7 @@
-# Full acceptance: daily at 04:00 UTC (06:00 Israel in winter), a fixed hour
-# while baldr is idle, before the 09:00 Stable (Oleg 13.11 evening). Budgets
-# are unchanged; a failing run whose host load exceeded 2x cores is reported as
-# no verdict (scripts/ci/host-load.py). No PR/main-push trigger.
+# Full acceptance: daily at 04:00 UTC (06:00 Israel in winter), before the
+# 09:00 Stable (Oleg 13.11 evening). Since 14.11 Okilum compiles nothing on
+# baldr or idunn: the shared and Linux gates run the exact source on GitHub's
+# hosted runners through the bridge waiters below. No PR/main-push trigger.
 name: ci
 
 on:
@@ -92,12 +92,12 @@ jobs:
         run: |
           python3 - <<'PYSELECT'
           import os, time
-          lane, measure = 'local', False
+          # Hosted is the only shared lane: Okilum left baldr's heavy runner
+          # (14.11). Untrusted code selects nothing and the shared gate fails.
           trusted = os.environ['TRUSTED'] == 'true'
+          lane, measure = ('hosted' if trusted else 'none'), False
           if trusted and os.environ['EVENT'] in ('push', 'pull_request'):
-              if os.environ['SHARED_LANE'] == 'hosted':
-                  lane = 'hosted'
-              elif os.environ['SHARED_LANE'] == 'measure':
+              if os.environ['SHARED_LANE'] == 'measure':
                   try:
                       deadline = int(os.environ['MEASURE_UNTIL'])
                       first = int(os.environ['MEASURE_FIRST_RUN'])
@@ -110,125 +110,6 @@ jobs:
               output.write(f'lane={lane}\nmeasure={str(measure).lower()}\n')
           print(f'Shared required lane={lane}; independent hosted measurement={measure}')
           PYSELECT
-
-  shared-local:
-    # These two heavy jobs can land on the SAME multi-capacity runner. Keep
-    # their compile/runtime budgets independent without competing on that host.
-    # A Linux failure still leaves the complete shared result observable.
-    needs: [shared-select, linux-local]
-    if: always() && !cancelled() && needs.shared-select.outputs.lane == 'local'
-    # ubuntu-latest also matches light runners capped below shell test RSS.
-    runs-on: heavy
-    # The gate step keeps the old 60-minute job budget; the 5 extra minutes
-    # let the always() host-load report run after a timed-out gate (#2840).
-    timeout-minutes: 65
-    # Shared sccache on the LAN S3 backend (private runner operations runbook,
-    # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
-    # they are absent (fork PRs) the build simply runs without the wrapper.
-    env:
-      CARGO_INCREMENTAL: "0"
-      OKILUM_WORKSPACE_ORDINARY_SHARDS: "4"
-      # Match required hosted checks: omit CI debug info, retain assertions and
-      # every suite/deadline. Developer, macOS and release profiles stay intact.
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Sample host load (no-verdict guard)
-        run: python3 scripts/ci/host-load.py start "$RUNNER_TEMP/host-load.tsv"
-
-      - name: Sprint reporting and cache/vendor regressions (isolated)
-        run: python3 scripts/dev/test-sprint-report.py
-
-      - name: Install system libraries (README "Building")
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            build-essential cmake pkg-config curl git mold zstd tini python3-venv \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
-
-      - name: Install repository Rust toolchain
-        run: |
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-            --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/cargo" --version
-
-      - name: Vendor gpui-component (pinned revision + patches)
-        run: |
-          scripts/vendor-setup.sh
-          scripts/vendor-setup.sh --verify
-          python3 scripts/ci/check-vendor-generation.py
-
-      - name: Enable sccache
-        run: |
-          set -euo pipefail
-          source scripts/ci/release-cache.sh
-          for name in RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR; do
-            printf '%s=%s\n' "$name" "${!name:-}" >> "$GITHUB_ENV"
-          done
-          if [ -n "${RUSTC_WRAPPER:-}" ]; then dirname "$RUSTC_WRAPPER" >> "$GITHUB_PATH"; fi
-
-      - name: Identify compatible Cargo cache
-        id: cargo-cache-key
-        run: |
-          set -euo pipefail
-          compatibility=$({
-            rustc -vV
-            cargo -V
-            cargo clippy -V
-            uname -m
-            cat /etc/os-release
-            cc --version
-            ld --version
-            mold --version
-            dpkg-query -W -f='${Package}=${Version}\n' \
-              libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-              libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
-            python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
-          } | sha256sum | cut -d ' ' -f 1)
-          echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"
-
-      # Runner cache: Cargo downloads only, saved once per dependency set.
-      # Compiled output comes from sccache. Per-commit target/debug entries
-      # (~2.5 GB each) filled the runner disks within two days (2026-10-04).
-      - name: Restore Cargo downloads cache
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
-
-      - name: Prepare isolated Python test dependencies
-        run: bash scripts/ci/setup-python-tests.sh
-      - name: Check every shared suite and summarize failures
-        timeout-minutes: 60
-        run: |
-          set -euo pipefail
-          printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
-          ulimit -n "$(ulimit -Hn)"
-          printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
-          # The native container has tail as PID 1. Reap orphaned fixtures
-          # throughout the suites without changing Stopped certification (#1541).
-          tini -s -- bash scripts/ci/check-shared.sh
-      - name: sccache stats
-        if: always()
-        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
-      - name: Report host load and verdict
-        if: always()
-        run: python3 scripts/ci/host-load.py verdict "$RUNNER_TEMP/host-load.tsv" --job-status "${{ job.status }}"
 
   shared-github:
     needs: [shared-select]
@@ -281,7 +162,7 @@ jobs:
         run: python3 scripts/ci/github-pr.py
 
   shared:
-    needs: [shared-select, shared-local, shared-github]
+    needs: [shared-select, shared-github]
     if: always()
     runs-on: bridge
     timeout-minutes: 3
@@ -290,142 +171,20 @@ jobs:
         env:
           SELECTION: ${{ needs.shared-select.result }}
           LANE: ${{ needs.shared-select.outputs.lane }}
-          LOCAL: ${{ needs.shared-local.result }}
           HOSTED_JOB: ${{ needs.shared-github.result }}
           HOSTED_RESULT: ${{ needs.shared-github.outputs.result }}
         run: |
           set -euo pipefail
           test "$SELECTION" = success
-          case "$LANE" in
-            local) test "$LOCAL" = success ;;
-            hosted)
-              test "$LOCAL" = skipped
-              test "$HOSTED_JOB" = success
-              test "$HOSTED_RESULT" = success ;;
-            *) exit 1 ;;
-          esac
+          test "$LANE" = hosted
+          test "$HOSTED_JOB" = success
+          test "$HOSTED_RESULT" = success
 
-  linux-local:
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository ||
-      (vars.OKILUM_LINUX_LANE != 'hosted' &&
-       vars.OKILUM_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
-    # Keep compile-inclusive admission on the measured heavy resource class.
-    runs-on: heavy
-    # Vendored gpui-kit tests (vendor-tests.sh) add ~25 min when the patch stack changes.
-    # The gate step keeps the old 80-minute job budget; the 5 extra minutes
-    # let the always() host-load report run after a timed-out gate (#2840).
-    timeout-minutes: 85
-    # Shared sccache on the LAN S3 backend (private runner operations runbook,
-    # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
-    # they are absent (fork PRs) the build simply runs without the wrapper.
-    env:
-      CARGO_INCREMENTAL: "0"
-      OKILUM_WORKSPACE_ORDINARY_SHARDS: "4"
-      # Match required hosted checks: omit CI debug info, retain assertions and
-      # every suite/deadline. Developer, macOS and release profiles stay intact.
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Sample host load (no-verdict guard)
-        run: python3 scripts/ci/host-load.py start "$RUNNER_TEMP/host-load.tsv"
-
-      - name: Install system libraries (README "Building")
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            build-essential cmake pkg-config curl git mold zstd python3-venv \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
-
-      - name: Install repository Rust toolchain
-        run: |
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-            --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/cargo" --version
-
-      - name: Vendor gpui-component (pinned revision + patches)
-        run: |
-          scripts/vendor-setup.sh
-          scripts/vendor-setup.sh --verify
-
-      - name: Enable sccache
-        run: |
-          set -euo pipefail
-          source scripts/ci/release-cache.sh
-          for name in RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR; do
-            printf '%s=%s\n' "$name" "${!name:-}" >> "$GITHUB_ENV"
-          done
-          if [ -n "${RUSTC_WRAPPER:-}" ]; then dirname "$RUSTC_WRAPPER" >> "$GITHUB_PATH"; fi
-
-      - name: Identify compatible Cargo cache
-        id: cargo-cache-key
-        run: |
-          set -euo pipefail
-          compatibility=$({
-            rustc -vV
-            cargo -V
-            cargo clippy -V
-            uname -m
-            cat /etc/os-release
-            cc --version
-            ld --version
-            mold --version
-            dpkg-query -W -f='${Package}=${Version}\n' \
-              libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-              libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
-            python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
-          } | sha256sum | cut -d ' ' -f 1)
-          echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"
-
-      # Runner cache: Cargo downloads only, saved once per dependency set.
-      # Compiled output comes from sccache. Per-commit target/debug entries
-      # (~2.5 GB each) filled the runner disks within two days (2026-10-04).
-      - name: Restore Cargo downloads cache
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
-
-      - name: Prepare isolated Python test dependencies
-        run: bash scripts/ci/setup-python-tests.sh
-      - name: Run full Linux gate
-        timeout-minutes: 80
-        run: |
-          set -euo pipefail
-          printf 'nofile before: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
-          ulimit -n "$(ulimit -Hn)"
-          printf 'nofile for tests: soft=%s hard=%s\n' "$(ulimit -n)" "$(ulimit -Hn)"
-          bash scripts/ci/check-linux.sh
-
-      - name: sccache stats
-        if: always()
-        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
-      - name: Report host load and verdict
-        if: always()
-        run: python3 scripts/ci/host-load.py verdict "$RUNNER_TEMP/host-load.tsv" --job-status "${{ job.status }}"
-
+  # The only Linux lane: the full gate (check-linux.sh) runs on GitHub's hosted
+  # runner (.github/workflows/forgejo-linux.yml). Okilum left baldr (14.11).
   linux-github:
     if: >-
-      github.event_name == 'pull_request' &&
-      (vars.OKILUM_LINUX_LANE == 'hosted' ||
-       vars.OKILUM_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
     # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
     timeout-minutes: 110
@@ -437,7 +196,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - name: Run exact PR head on GitHub Linux
+      - name: Run exact source on GitHub Linux
         id: remote
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
@@ -452,10 +211,10 @@ jobs:
   # one closes that issue. Keyed on the Linux lane itself: a superseded run is
   # cancelled and leaves `check` failed or pending without saying anything.
   main-health:
-    needs: [linux-local]
+    needs: [linux-github]
     if: >-
       always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
-      (needs.linux-local.result == 'success' || needs.linux-local.result == 'failure')
+      (needs.linux-github.result == 'success' || needs.linux-github.result == 'failure')
     runs-on: bridge
     timeout-minutes: 5
     permissions:
@@ -477,28 +236,25 @@ jobs:
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           RUN_ID: ${{ github.run_id }}
-        run: python3 scripts/ci/main-health.py ${{ needs.linux-local.result == 'success' && 'green' || 'red' }}
+        run: python3 scripts/ci/main-health.py ${{ needs.linux-github.result == 'success' && 'green' || 'red' }}
 
-  # Preserve ci/linux and existing downstream required contexts. A variable
-  # switch in flight never changes which completed lane counts as evidence.
+  # Preserve ci/linux and existing downstream required contexts.
   linux:
-    needs: [linux-local, linux-github]
+    needs: [linux-github]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
     steps:
-      - name: Require exactly one successful Linux lane
+      - name: Require the successful hosted Linux lane
         env:
-          LOCAL_RESULT: ${{ needs.linux-local.result }}
           HOSTED_JOB: ${{ needs.linux-github.result }}
           HOSTED_RESULT: ${{ needs.linux-github.outputs.result }}
         run: |
           set -euo pipefail
-          case "$LOCAL_RESULT:$HOSTED_JOB" in
-            success:skipped) ;;
-            skipped:success) test "$HOSTED_RESULT" = success ;;
-            *) echo "Missing, failed or ambiguous Linux result" >&2; exit 1 ;;
-          esac
+          if [ "$HOSTED_JOB" != success ] || [ "$HOSTED_RESULT" != success ]; then
+            echo "Missing or failed hosted Linux result: job=$HOSTED_JOB result=$HOSTED_RESULT" >&2
+            exit 1
+          fi
 
   macos-github:
     needs: native-scope

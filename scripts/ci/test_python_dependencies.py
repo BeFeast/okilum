@@ -97,9 +97,11 @@ class PythonDependencies(unittest.TestCase):
         # #2589: certification check's Python suites run in its hosted run.
         self.assertIn(('.github/workflows', 'forgejo-check.yml', 'python'), jobs_checked)
         self.assertNotIn(('.forgejo/workflows', 'fast.yml', 'check'), jobs_checked)
-        self.assertIn(('.forgejo/workflows', 'ci.yml', 'linux-local'), jobs_checked)
+        # Okilum left baldr (14.11): the daily Linux gate and the nightly source
+        # sharing acceptance run their Python discovery in hosted jobs.
+        self.assertIn(('.github/workflows', 'forgejo-linux.yml', 'linux-checks'), jobs_checked)
         self.assertIn(('.github/workflows', 'agent-checks.yml', 'linux'), jobs_checked)
-        self.assertIn(('.forgejo/workflows', 'fast.yml', 'sync-source-sharing'), jobs_checked)
+        self.assertIn(('.github/workflows', 'forgejo-sync-source-sharing.yml', 'sync-source-sharing'), jobs_checked)
 
 
 if __name__ == '__main__':

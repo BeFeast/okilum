@@ -230,19 +230,17 @@ class LinuxBridgeTests(unittest.TestCase):
                 self.assertTrue(Path(env['GITHUB_OUTPUT']).read_text().endswith(f'result={result}\n'))
 
     def test_aggregate_counts_actual_lanes_not_mutable_variable(self):
+        # The hosted lane is the only Linux lane (Okilum left baldr, 14.11).
         workflow = (ROOT / '.forgejo/workflows/ci.yml').read_text()
         block = re.search(r'^  linux:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
         import textwrap
         script = textwrap.dedent(block.split('        run: |\n')[1])
-        for local in ['success', 'skipped', 'failure', 'cancelled']:
-            for hosted in ['success', 'skipped', 'failure', 'cancelled']:
-                for result in ['success', 'failure', 'unavailable', '']:
-                    env = dict(os.environ, LOCAL_RESULT=local, HOSTED_JOB=hosted, HOSTED_RESULT=result,
-                               OKILUM_LINUX_LANE='changed-mid-flight')
-                    code = subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode
-                    expected = (local == 'success' and hosted == 'skipped') or (
-                        local == 'skipped' and hosted == 'success' and result == 'success')
-                    self.assertEqual(code == 0, expected, (local, hosted, result))
+        for hosted in ['success', 'skipped', 'failure', 'cancelled', '']:
+            for result in ['success', 'failure', 'unavailable', '']:
+                env = dict(os.environ, HOSTED_JOB=hosted, HOSTED_RESULT=result,
+                           OKILUM_LINUX_LANE='changed-mid-flight')
+                code = subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode
+                self.assertEqual(code == 0, hosted == result == 'success', (hosted, result))
 
     def test_hosted_workflow_has_no_secrets_or_cache_writes(self):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()
@@ -277,30 +275,27 @@ class LinuxBridgeTests(unittest.TestCase):
 
 
 class CanaryRoutingTests(unittest.TestCase):
-    def test_real_guards_preserve_main_forks_and_canary_isolation(self):
+    def test_real_guards_run_hosted_for_trusted_code_and_never_locally(self):
+        # Okilum left baldr (14.11): no local Linux lane remains, the variable no
+        # longer routes, and fork code still never reaches the hosted bridge.
         workflow = (ROOT / '.forgejo/workflows/ci.yml').read_text()
-        def evaluate(job, event, value, number, fork=False):
-            block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
-            expression = re.search(r'    if: >-\n(.*?)(?=^    [a-z])', block, re.M | re.S)[1]
+        self.assertNotIn('vars.OKILUM_LINUX_LANE', workflow)
+        self.assertNotIn('\n  linux-local:\n', workflow)
+        block = re.search(r'^  linux-github:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
+        expression = re.search(r'    if: >-\n(.*?)(?=^    [a-z])', block, re.M | re.S)[1]
+        for event, fork, hosted in [('schedule', False, True), ('workflow_dispatch', False, True),
+                                    ('push', False, True), ('pull_request', False, True),
+                                    ('pull_request', True, False)]:
             replacements = {
                 'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
-                'github.event.pull_request.number': number,
                 'github.event_name': event,
                 'github.repository': 'BeFeast/okilum',
-                'vars.OKILUM_LINUX_LANE': value,
             }
+            text = expression
             for key, item in replacements.items():
-                expression = expression.replace(key, repr(item))
-            expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
-            return eval(expression, {'__builtins__': {}, 'format': lambda pattern, n: pattern.format(n)})
-        for event, value, number, fork, hosted in [
-            ('push', 'hosted', 1, False, False), ('pull_request', 'local', 1, False, False),
-            ('pull_request', 'pr-1', 1, False, True), ('pull_request', 'pr-1', 2, False, False),
-            ('pull_request', 'hosted', 2, False, True), ('pull_request', '', 1, False, False),
-            ('pull_request', 'hosted', 2, True, False), ('pull_request', 'pr-1', 1, True, False),
-        ]:
-            self.assertEqual(evaluate('linux-github', event, value, number, fork), hosted)
-            self.assertEqual(evaluate('linux-local', event, value, number, fork), not hosted)
+                text = text.replace(key, repr(item))
+            text = ' '.join(text.split()).replace('&&', ' and ').replace('||', ' or ')
+            self.assertEqual(eval(text, {'__builtins__': {}}), hosted, (event, fork))
 
 
 class HourlyAppImageProductionBuild(unittest.TestCase):

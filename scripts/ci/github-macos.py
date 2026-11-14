@@ -364,6 +364,7 @@ BRIDGE_PREFIXES = (
     "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
     "forgejo-native-core-pr", "forgejo-native-sync-pr", "forgejo-native-shell-pr",
     "forgejo-perf-linux-pr", "forgejo-fast-pr", "forgejo-shell-full-pr", "forgejo-check-pr",
+    "forgejo-sync-source-sharing-pr", "forgejo-feedback-pr", "forgejo-excalidraw-pr",
 )
 
 

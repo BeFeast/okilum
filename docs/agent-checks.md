@@ -153,8 +153,10 @@ evidence for explicit workload routing, not a reason to relax deadlines or
 change host configuration. A scheduler eligibility regression rejects either
 compile job or the diagnostic becoming eligible for light/interactive pools.
 
-`cold-writer-diagnostic.yml` is a manual, source-pinned measurement on the
-same `heavy` runner class as canonical Linux. It checks out diagnostic
+**Retired 14.11:** Okilum left baldr (Oleg), so the manual
+`cold-writer-diagnostic.yml` workflow and its `heavy` runner are gone; the
+measurement script remains for reference. It was a manual, source-pinned
+measurement on the same `heavy` runner class as canonical Linux. It checks out diagnostic
 tools and the measured source separately. The measured checkout begins without
 a target cache and reproduces the observed unavailable compiler wrapper. Its
 original `check-linux.sh` prelude runs unchanged; a source-directory-qualified
