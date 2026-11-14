@@ -591,3 +591,5 @@ single poll reached the loopback server. It now uses the existing cfg(test)
 HTTP clock: observe the real held empty poll, expire exactly120ms, require the
 actual timer to fire, then retain all timeout/partial/empty-result assertions.
 The production transport and its real timers are unchanged.
+
+**Critical issues.** An issue labelled `critical` is fixed by a writer the dev controller starts at once; its PR is reviewed by another model family as soon as the fast check is green, merged on PASS and built for every platform without waiting for anyone. Every step is a `ctl critical:` line in the issue.
