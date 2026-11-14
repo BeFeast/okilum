@@ -639,6 +639,12 @@ impl CodePreview {
             _ => None,
         }
     }
+
+    /// Focus is on this viewer or inside it (its read-only editor, tree or
+    /// table) in the last drawn frame.
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+    }
 }
 
 /// The read-only code view: line numbers and folding on, wrap from the global
