@@ -429,8 +429,9 @@ sprint_bundle_tool() {
     fi
 }
 # Quit the installed app before its bundle is replaced (Oleg, 14.11: Sprint may
-# close Okilum by force). A refused AppleScript Quit is not a user decision:
-# while Sparkle holds a prepared update, Okilum's applicationShouldTerminate
+# close Okilum by force, but only while he is idle for at least 60 s).
+# A refused AppleScript Quit is not a user decision: while Sparkle holds a
+# prepared update, Okilum's applicationShouldTerminate
 # (crates/okilum-shell/src/updater/bridge.m) answers the first Quit with
 # NSTerminateCancel, cancels that update session and then quits by itself.
 # osascript reports that as "User canceled. (-128)", and under set -e this
@@ -438,28 +439,30 @@ sprint_bundle_tool() {
 # SIGTERM takes the same quit path as the menu (reader_recovery.rs). Edits are
 # journaled 300 ms after typing stops and autosaved within 2 s; after 60 s
 # without input SIGKILL loses nothing that the recovery drafts do not restore.
-OKILUM_EXECUTABLE_SUFFIX=/Okilum.app/Contents/MacOS/okilum
+# If the user stays active, nothing is signalled: the Sprint exits with
+# SPRINT_DEFERRED and the next delivery tick retries.
+SPRINT_DEFERRED=75
 QUIT_WAIT=${OKILUM_SPRINT_QUIT_WAIT:-15}
 IDLE_WAIT=${OKILUM_SPRINT_IDLE_WAIT:-120}
 IDLE_NEEDED=${OKILUM_SPRINT_IDLE_NEEDED:-60}
 TERM_GRACE=${OKILUM_SPRINT_TERM_GRACE:-15}
 installed_app_pids() {
-    # macOS ps prints the full executable path; the Sync helper in the same
-    # bundle (okilum-sync-supervisor) and dev binaries never match.
-    local pid command
-    while read -r pid command; do
-        if [[ $command == *"$OKILUM_EXECUTABLE_SUFFIX" ]]; then printf '%s\n' "$pid"; fi
-    done < <(ps -axo pid=,comm= 2>/dev/null || true)
+    # Only this user's process of exactly $app (macOS ps prints the full
+    # executable path): never a QA or staged copy, the Sync helper in the same
+    # bundle, or another user's session.
+    local executable="$app/Contents/MacOS/okilum" uid pid owner command
+    uid=$(id -u)
+    while read -r pid owner command; do
+        if [[ $owner == "$uid" && $command == "$executable" ]]; then printf '%s\n' "$pid"; fi
+    done < <(ps -axo pid=,uid=,comm= 2>/dev/null || true)
 }
-installed_app_running() {
-    [[ -n $(installed_app_pids) ]] && return 0
-    [[ $(osascript -e 'application id "com.befeast.okilum" is running' 2>/dev/null || true) == true ]]
-}
+installed_app_running() { [[ -n $(installed_app_pids) ]]; }
 user_idle_seconds() {
     local idle
     idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {printf "%d\n", $NF / 1000000000; exit}' || true)
     [[ $idle =~ ^[0-9]+$ ]] && printf '%s\n' "$idle" || echo 0
 }
+user_idle() { (( $(user_idle_seconds) >= IDLE_NEEDED )); }
 wait_for_app_exit() {
     local attempt
     for ((attempt=0; attempt<$1; attempt++)); do
@@ -468,46 +471,54 @@ wait_for_app_exit() {
     done
     ! installed_app_running
 }
+defer_for_user() {
+    printf 'Sprint deferred: user active (idle %ss < %ss); Okilum was not signalled at %s.\n' \
+        "$(user_idle_seconds)" "$IDLE_NEEDED" "$1"
+    return "$SPRINT_DEFERRED"
+}
 stop_installed_app() {
-    local reply attempt idle pids
+    local reply attempt pids
     installed_app_running || return 0
-    if ! reply=$(osascript -e 'if application id "com.befeast.okilum" is running then' \
-            -e 'with timeout of 10 seconds' -e 'tell application id "com.befeast.okilum" to quit' \
+    # The path form targets this bundle, not a QA copy with the same bundle ID.
+    if ! reply=$(osascript -e "if application \"$app\" is running then" \
+            -e 'with timeout of 10 seconds' -e "tell application \"$app\" to quit" \
             -e 'end timeout' -e 'end if' 2>&1); then
         printf 'Okilum answered Quit with: %s\nWaiting for it to quit by itself.\n' "$reply"
     fi
     wait_for_app_exit "$QUIT_WAIT" && { echo 'Okilum quit.'; return 0; }
     printf 'Okilum still runs after %ss; waiting up to %ss for %ss without keyboard or mouse input.\n' \
         "$QUIT_WAIT" "$IDLE_WAIT" "$IDLE_NEEDED"
-    idle=0
-    for ((attempt=0; attempt<IDLE_WAIT; attempt+=5)); do
+    for ((attempt=0; ; attempt+=5)); do
         installed_app_running || { echo 'Okilum quit.'; return 0; }
-        idle=$(user_idle_seconds)
-        ((idle >= IDLE_NEEDED)) && break
+        user_idle && break
+        ((attempt < IDLE_WAIT)) || { defer_for_user 'SIGTERM'; return; }
         sleep 5
     done
+    # Fresh checks immediately before each signal.
     pids=$(installed_app_pids | tr '\n' ' ')
-    if [[ -z ${pids// /} ]]; then
-        installed_app_running || return 0
-        echo 'Okilum runs from an unexpected path; quit it, then rerun.' >&2
-        return 1
-    fi
-    printf 'Stopping Okilum (pid %s, user idle %ss) with SIGTERM: it saves and quits as from the menu.\n' "${pids% }" "$idle"
+    [[ -n ${pids// /} ]] || { echo 'Okilum quit.'; return 0; }
+    user_idle || { defer_for_user 'SIGTERM'; return; }
+    printf 'Stopping Okilum (pid %s, user idle %ss) with SIGTERM: it saves and quits as from the menu.\n' \
+        "${pids% }" "$(user_idle_seconds)"
     # shellcheck disable=SC2086 # one word per pid
     kill -TERM $pids 2>/dev/null || true
     wait_for_app_exit "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
     pids=$(installed_app_pids | tr '\n' ' ')
-    if [[ -n ${pids// /} ]]; then
-        printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s.\n' "$TERM_GRACE" "${pids% }"
-        # shellcheck disable=SC2086
-        kill -KILL $pids 2>/dev/null || true
-    fi
+    [[ -n ${pids// /} ]] || { echo 'Okilum quit after SIGTERM.'; return 0; }
+    user_idle || { defer_for_user 'SIGKILL'; return; }
+    printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s.\n' "$TERM_GRACE" "${pids% }"
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
     wait_for_app_exit 5
 }
 sprint_exit() {
     result=$?
     trap - EXIT INT TERM
-    if (( result != 0 )); then
+    if (( result == SPRINT_DEFERRED )); then
+        # Not a failure: no report; the next delivery tick retries.
+        printf '\nSprint DEFERRED at stage %s (exit %s): user active, app not replaced\n' "$stage" "$result" >&2
+        if [[ -n $bundle_stage ]]; then unregister "$bundle_stage" || true; fi
+    elif (( result != 0 )); then
         # Visible even when the caller pipes into tee, which reports tee's status.
         printf '\nSprint FAILED at stage %s (exit %s)\n' "$stage" "$result" >&2
         write_context || true
@@ -716,7 +727,9 @@ python3 "$reporter" --trim-target "$root"
 unregister "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
-    stop_installed_app || { echo 'Okilum is still running; app was not replaced.' >&2; exit 1; }
+    stopped=0; stop_installed_app || stopped=$?
+    if ((stopped == SPRINT_DEFERRED)); then exit "$SPRINT_DEFERRED"; fi
+    ((stopped == 0)) || { echo 'Okilum is still running; app was not replaced.' >&2; exit 1; }
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
 backup="$root/$STAGE_DIR/previous-Okilum.app"

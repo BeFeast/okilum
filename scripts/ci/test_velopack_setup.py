@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("velopack_setup", ROOT / "scripts/velopack-setup.py")
@@ -120,6 +121,54 @@ class VelopackSetupTests(unittest.TestCase):
         (self.root / "scripts/velopack/hidden-delta.diff").write_text("tampered\n")
         self.assertIn("patch/manifest mismatch", self.run_setup(success=False))
         self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v1 */ }\n")
+
+    def interrupt_rename(self, call):
+        """Raise KeyboardInterrupt on the call-th Path.rename (1-based)."""
+        original = Path.rename
+        calls = []
+
+        def rename(path, target):
+            calls.append((Path(path).name, Path(target).name))
+            if len(calls) == call:
+                raise KeyboardInterrupt
+            return original(path, target)
+        return mock.patch.object(Path, "rename", rename), calls
+
+    def generate_in_process(self):
+        patch = self.root / "scripts/velopack/hidden-delta.diff"
+        setup.generate(self.manifest, patch, self.dest, self.archive)
+
+    def test_interrupt_between_the_renames_keeps_the_old_tree(self):
+        self.run_setup()
+        self.pin("pub fn helper() { /* v2 */ }\n")
+        # Rename 1: old tree -> backup; rename 2: new tree -> dest (interrupted).
+        patcher, calls = self.interrupt_rename(2)
+        with patcher, self.assertRaises(KeyboardInterrupt):
+            self.generate_in_process()
+        self.assertEqual(calls[0], ("velopack-1.2.161", ".velopack-1.2.161.previous"))
+        self.assertEqual(calls[1][1], "velopack-1.2.161")
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v1 */ }\n")
+        self.assertEqual(self.leftovers(), [])
+        self.assertIn("regenerating", self.run_setup())
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v2 */ }\n")
+
+    def test_interrupt_before_any_rename_keeps_the_old_tree(self):
+        self.run_setup()
+        self.pin("pub fn helper() { /* v2 */ }\n")
+        patcher, _ = self.interrupt_rename(1)
+        with patcher, self.assertRaises(KeyboardInterrupt):
+            self.generate_in_process()
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v1 */ }\n")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_backup_left_by_a_killed_swap_is_recovered(self):
+        # A SIGKILL between the renames leaves only the backup; nothing is lost.
+        self.run_setup()
+        self.dest.rename(self.dest.with_name(".velopack-1.2.161.previous"))
+        self.pin("pub fn helper() { /* v2 */ }\n")
+        self.assertIn("velopack ready", self.run_setup())
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v2 */ }\n")
+        self.assertEqual(self.leftovers(), [])
 
     def test_symlinked_stale_tree_is_refused(self):
         elsewhere = self.root / "elsewhere"

@@ -70,18 +70,33 @@ def generate(manifest, patch, dest, archive=None):
         subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
         if tree_digest(staged) != manifest["tree_sha256"]:
             raise ValueError("velopack generated source/manifest mismatch")
-        stale = Path(temporary) / "stale"
-        if dest.exists():
-            # Same directory: both renames are atomic. The stale tree is
-            # removed with the temporary directory; a failed swap restores it.
-            dest.rename(stale)
-        try:
-            staged.rename(dest)
-        except OSError:
-            if stale.exists() and not dest.exists():
-                stale.rename(dest)
-            raise
+        replace(staged, dest)
 
+
+def replace(staged, dest):
+    """Put the verified tree at dest. The old tree is kept beside dest (not in
+    the temporary directory, whose cleanup would delete it) until the new one
+    is in place, and restored on any interruption, KeyboardInterrupt included."""
+    backup = dest.with_name("." + dest.name + ".previous")
+    if backup.is_symlink():
+        raise ValueError("velopack backup path is a symlink; refusing to use it")
+    if backup.exists():
+        if dest.exists():
+            shutil.rmtree(backup)  # leftover of an interrupted earlier cleanup
+        else:
+            backup.rename(dest)  # an interrupted swap: put the old tree back first
+    moved = False
+    try:
+        if dest.exists():
+            dest.rename(backup)
+            moved = True
+        staged.rename(dest)
+    except BaseException:
+        if moved and not dest.exists():
+            backup.rename(dest)
+        raise
+    if moved:
+        shutil.rmtree(backup)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
