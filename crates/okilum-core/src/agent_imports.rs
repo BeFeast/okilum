@@ -64,9 +64,13 @@ fn directives(source: &str, max_imports: usize, ignored: bool) -> Vec<Import> {
             }
         } else if fence.is_none() && leading <= 3 && body.starts_with('@') {
             let target = body[1..].trim_end();
-            if !target.is_empty()
-                && !target.chars().any(char::is_control)
-                && target.starts_with('@') == ignored
+            // `@@ -1 +1 @@` and similar text is neither an import nor a hint.
+            let kind = match target.strip_prefix('@') {
+                None => Some(false),
+                Some(name) if name.starts_with(|c: char| !c.is_whitespace()) => Some(true),
+                Some(_) => None,
+            };
+            if !target.is_empty() && !target.chars().any(char::is_control) && kind == Some(ignored)
             {
                 let start = offset + leading + 1;
                 result.push(Import {
@@ -862,7 +866,7 @@ mod tests {
     #[test]
     fn issue2939_at_at_lines_are_hints_not_imports() {
         let text =
-            "@@AgentContract.md\n  @@x.md  \n@./@AgentContract.md\n```\n@@x\n```\n    @@code\n";
+            "@@AgentContract.md\n  @@x.md  \n@./@AgentContract.md\n```\n@@x\n```\n    @@code\n@@ -1 +1 @@\n@@\n";
         let imports = parse(text);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].target, "./@AgentContract.md");
