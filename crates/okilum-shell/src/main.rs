@@ -459,29 +459,31 @@ actions!(
 const FOCUS_MODE_KEY: &str = "f8";
 const TYPEWRITER_MODE_KEY: &str = "f9";
 
-/// The six Ctrl+Alt+letter defaults that predate the toolbar series. On
-/// Windows Ctrl+Alt is AltGr, and AltGr (with or without Shift) types
-/// characters on many layouts, so there they use Alt+Shift, which has no
-/// Ctrl and is not AltGr (Oleg, 2026-11-14: «без Ctrl+Alt»). F and V are
-/// taken by Format and Validate in File Edit, so Maximize uses Alt+Shift+Enter
-/// and Paste as Titled Link Alt+Shift+L (link). macOS (⌥⌘) and Linux
-/// (Ctrl+Alt) keep them.
-const fn legacy_alt_key(elsewhere: &'static str, windows: &'static str) -> &'static str {
+/// A default whose chord differs on Windows (Oleg, 2026-11-14). There Ctrl+Alt
+/// is AltGr, which types characters on many layouts, with or without Shift,
+/// and Alt+Shift switches the input language. Windows chords use neither:
+/// Ctrl+Shift+key. macOS and Linux keep `elsewhere`.
+const fn windows_key(elsewhere: &'static str, windows: &'static str) -> &'static str {
     if cfg!(windows) {
         windows
     } else {
         elsewhere
     }
 }
-pub(crate) const COPY_WITH_FORMATTING_KEY: &str = legacy_alt_key("secondary-alt-c", "alt-shift-c");
-const TOGGLE_PROJECT_KEY: &str = legacy_alt_key("secondary-alt-p", "alt-shift-p");
-const OPEN_BLOCK_EXTERNALLY_KEY: &str = legacy_alt_key("secondary-alt-e", "alt-shift-e");
-const PASTE_AS_TITLED_LINK_KEY: &str = legacy_alt_key("secondary-alt-v", "alt-shift-l");
-pub(crate) const MAXIMIZE_NOTE_KEY: &str = legacy_alt_key("secondary-alt-f", "alt-shift-enter");
+pub(crate) const COPY_WITH_FORMATTING_KEY: &str = windows_key("secondary-alt-c", "ctrl-shift-h");
+const TOGGLE_PROJECT_KEY: &str = windows_key("secondary-alt-p", "ctrl-shift-p");
+const OPEN_BLOCK_EXTERNALLY_KEY: &str = windows_key("secondary-alt-e", "ctrl-shift-d");
+const PASTE_AS_TITLED_LINK_KEY: &str = windows_key("secondary-alt-v", "ctrl-shift-k");
+pub(crate) const MAXIMIZE_NOTE_KEY: &str = windows_key("secondary-alt-f", "ctrl-shift-enter");
+pub(crate) const BACKLINKS_KEY: &str = windows_key("ctrl-alt-\\", "ctrl-shift-b");
+pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shift-t");
+pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
+pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shift-j");
+pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
 
-/// ⌥⌘W / Ctrl+Alt+W (Alt+Shift+W on Windows): normal (reading width) or
+/// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
-const NOTE_WIDTH_KEY: &str = legacy_alt_key("secondary-alt-w", "alt-shift-w");
+const NOTE_WIDTH_KEY: &str = windows_key("secondary-alt-w", "ctrl-shift-w");
 
 /// One app-wide, remembered toggle; every window follows it.
 pub(crate) fn toggle_note_width(cx: &mut App) {
@@ -579,14 +581,18 @@ fn bind_keys(cx: &mut App) {
     reader_code_file::bind_keys(cx);
     for context in ["ReaderFileEdit", "ReaderFileEdit > Input"] {
         cx.bind_keys([
-            KeyBinding::new("alt-shift-f", reader_editor::FormatCode, Some(context)),
-            KeyBinding::new("alt-shift-v", reader_editor::ValidateCode, Some(context)),
-            KeyBinding::new("alt-shift-r", reader_editor::RepairCode, Some(context)),
+            KeyBinding::new(FORMAT_CODE_KEY, reader_editor::FormatCode, Some(context)),
+            KeyBinding::new(
+                VALIDATE_CODE_KEY,
+                reader_editor::ValidateCode,
+                Some(context),
+            ),
+            KeyBinding::new(REPAIR_CODE_KEY, reader_editor::RepairCode, Some(context)),
         ]);
     }
     for context in ["ReaderCode", "ReaderCode > Input"] {
         cx.bind_keys([KeyBinding::new(
-            "alt-shift-r",
+            REPAIR_CODE_KEY,
             reader_editor::RepairCode,
             Some(context),
         )]);
@@ -805,7 +811,7 @@ fn bind_keys(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-|", ToggleLeftMode, Some("Reader > Input")),
         KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
-        KeyBinding::new("ctrl-alt-\\", ToggleBacklinks, ctx),
+        KeyBinding::new(BACKLINKS_KEY, ToggleBacklinks, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, Some("Reader > Input")),
         #[cfg(target_os = "macos")]
@@ -12331,7 +12337,7 @@ mod document_link_landing_tests {
             visual.simulate_keystrokes(if side == reader_layout::Panel::Notes {
                 "ctrl-\\"
             } else {
-                "ctrl-alt-\\"
+                BACKLINKS_KEY
             });
             visual.run_until_parked();
             view.read_with(visual, |v, _| assert!(!v.panels.visible(side, 800.)));
@@ -13185,7 +13191,7 @@ mod document_link_landing_tests {
             v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
         });
         visual.run_until_parked();
-        visual.simulate_keystrokes("ctrl-alt-\\");
+        visual.simulate_keystrokes(crate::BACKLINKS_KEY);
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert!(v.content.read(cx).focus_handle().is_focused(window));

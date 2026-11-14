@@ -922,17 +922,17 @@ fn file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host(
     let bytes = std::fs::read(temp.path().join("vault/source.rs")).unwrap();
     input.update_in(visual, |i, w, cx| i.focus(w, cx));
     frame(visual);
-    visual.simulate_keystrokes("alt-shift-v");
+    visual.simulate_keystrokes(crate::VALIDATE_CODE_KEY);
     frame(visual);
     assert!(drawn(&input).1.contains("No syntax problems found"));
     assert_eq!(
         std::fs::read(temp.path().join("vault/source.rs")).unwrap(),
         bytes
     );
-    visual.simulate_keystrokes("alt-shift-f");
+    visual.simulate_keystrokes(crate::FORMAT_CODE_KEY);
     frame(visual);
     assert!(drawn(&input).1.starts_with("Not formatted."));
-    visual.simulate_keystrokes("alt-shift-r");
+    visual.simulate_keystrokes(crate::REPAIR_CODE_KEY);
     frame(visual);
     assert!(drawn(&input).1.starts_with("No safe repair."));
     assert_eq!(
@@ -1471,7 +1471,7 @@ fn xml2912_format_button_and_shortcut_pretty_print_as_one_undo_step(cx: &mut Tes
     // The keyboard path runs the same operation.
     input.update_in(visual, |i, w, cx| i.focus(w, cx));
     frame(visual);
-    visual.simulate_keystrokes("alt-shift-f");
+    visual.simulate_keystrokes(crate::FORMAT_CODE_KEY);
     frame(visual);
     assert_eq!(text(&input, visual), pretty);
     // Formatting the result again changes nothing.

@@ -90,7 +90,7 @@ Copy as Markdown uses Ctrl+Shift+C (Cmd+Shift+C on macOS) in Read, Source and
 Live Preview (#2625). In the editors it copies the selected authored Markdown,
 including markup and original line endings, and appears beside Copy in the
 context menu. Plain Copy keeps its existing behavior. Read offers Copy as Rich
-Text on Ctrl+Alt+C / Cmd+Option+C (Alt+Shift+C on Windows), which writes rich HTML plus plain text for
+Text on Ctrl+Alt+C / Cmd+Option+C (Ctrl+Shift+H on Windows), which writes rich HTML plus plain text for
 other applications. Its menu shows each command's live key bindings. Editor
 Paste shows Ctrl+V / Cmd+V as the primary shortcut; Shift+Insert remains available.
 
@@ -209,7 +209,7 @@ the selection when its HTML confirms the exact plain URL. Otherwise rich text
 precedes the selection-link shortcut so a URL-looking Slack label cannot replace
 its actual destination. Paste as Plain Text is
 Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
-Cmd+Alt+V / Ctrl+Alt+V (Alt+Shift+L on Windows). Files dropped onto the editor take the files path.
+Cmd+Alt+V / Ctrl+Alt+V (Ctrl+Shift+K on Windows). Files dropped onto the editor take the files path.
 Background results land only in the editing session of the note they were
 pasted into; otherwise a toast names the saved file. macOS supports rich-text, image and file offers. Linux also routes native
 PNG/JPEG and other supported image MIME offers, local `text/uri-list` files,

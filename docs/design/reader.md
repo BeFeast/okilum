@@ -453,7 +453,7 @@ vault. Every window of the vault repaints at once. No per-vault theme and no
 tinted rows.
 
 **Maximize note** (#1821): the title-bar glyph, View → Maximize Note and
-Option+Command+F on macOS / Ctrl+Alt+F on Linux / Alt+Shift+Enter on Windows toggle both side panels off
+Option+Command+F on macOS / Ctrl+Alt+F on Linux / Ctrl+Shift+Enter on Windows toggle both side panels off
 and restore their previous open/closed choices. Preferred widths and the
 separate full/normal reading-width preference remain unchanged. The same
 action works while editing and retains the editor, draft and selection.

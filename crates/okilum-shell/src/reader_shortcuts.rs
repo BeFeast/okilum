@@ -749,11 +749,11 @@ mod tests {
     #[gpui::test]
     fn altgr2813_no_default_uses_ctrl_alt_letter(cx: &mut TestAppContext) {
         // AltGr arrives as Ctrl+Alt on Windows layouts that type characters
-        // with it, so a Ctrl+Alt+letter default would steal printable keys.
-        // AltGr+Shift types characters too, so on Windows no default may use
-        // Ctrl+Alt+letter with or without Shift: the six older ones use
-        // Alt+Shift there (Oleg, 2026-11-14). macOS (⌥⌘) and Linux keep these six,
-        // which predate the toolbar series (#2813 asks for no *new* ones).
+        // with it (with or without Shift, on letters, digits and punctuation),
+        // and Alt+Shift switches the input language there. So on Windows no
+        // default may contain Ctrl+Alt, nor be Alt+Shift+key (Oleg,
+        // 2026-11-14). macOS (⌥⌘) and Linux keep these six Ctrl+Alt+letter
+        // chords, which predate the toolbar series (#2813 asks for no *new* ones).
         const EXISTING: [&str; 6] = [
             "reader_read_menu::CopyWithFormatting ctrl-alt-c",
             "okilum::ToggleNoteWidth ctrl-alt-w",
@@ -769,23 +769,50 @@ mod tests {
             .flat_map(|binding| {
                 binding.keystrokes().iter().filter_map(move |stroke| {
                     let m = stroke.modifiers();
-                    let letter = stroke.key().len() == 1
-                        && stroke.key().chars().all(|c| c.is_ascii_alphabetic());
-                    // Shift does not make it AltGr-safe on Windows; elsewhere
-                    // the six older chords are plain Ctrl+Alt+letter.
-                    (m.control && m.alt && letter && (cfg!(windows) || !m.shift))
-                        .then(|| format!("{} ctrl-alt-{}", binding.action().name(), stroke.key()))
+                    let name = binding.action().name();
+                    let key = stroke.key();
+                    if cfg!(windows) {
+                        let ctrl_alt = m.control && m.alt;
+                        let alt_shift = m.alt && m.shift && !m.control && !m.platform;
+                        return (ctrl_alt || alt_shift).then(|| {
+                            let parts = [
+                                (m.control, "ctrl-"),
+                                (m.alt, "alt-"),
+                                (m.shift, "shift-"),
+                                (m.platform, "win-"),
+                            ];
+                            let held: String = parts
+                                .iter()
+                                .filter(|(on, _)| *on)
+                                .map(|(_, s)| *s)
+                                .collect();
+                            format!("{name} {held}{key}")
+                        });
+                    }
+                    let letter = key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic());
+                    (m.control && m.alt && !m.shift && letter)
+                        .then(|| format!("{name} ctrl-alt-{key}"))
                 })
             })
             .filter(|found| cfg!(windows) || !EXISTING.contains(&found.as_str()))
             .collect();
         assert!(
             offenders.is_empty(),
-            "Ctrl+Alt+letter defaults: {offenders:?}"
+            "AltGr / input-language defaults: {offenders:?}"
         );
-        // Moved, not dropped: each of the six keeps a default on every OS.
-        for existing in EXISTING {
-            let action = existing.split(' ').next().unwrap();
+        // Moved, not dropped: each keeps a default on every OS.
+        let moved = [
+            crate::ToggleBacklinks::name_for_type(),
+            crate::reader_editor::format::Paragraph::name_for_type(),
+            crate::reader_editor::FormatCode::name_for_type(),
+            crate::reader_editor::ValidateCode::name_for_type(),
+            crate::reader_editor::RepairCode::name_for_type(),
+        ];
+        for action in EXISTING
+            .iter()
+            .map(|existing| existing.split(' ').next().unwrap())
+            .chain(moved)
+        {
             assert!(
                 keymap
                     .bindings()
