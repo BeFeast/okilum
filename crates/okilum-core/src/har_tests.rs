@@ -1127,3 +1127,14 @@ fn review2904_base64_stream_rejects_bad_padding_at_once_and_keeps_three_bytes() 
     .is_err());
     assert!(out.is_empty());
 }
+
+/// #2932: a known header size with an unknown body (`bodySize: -1`) is not
+/// a wire size; a known body without header size still is.
+#[test]
+fn review2932_an_unknown_body_leaves_the_wire_size_unknown() {
+    let har = br#"{"log":{"entries":[{"response":{"headersSize":200,"bodySize":-1,"content":{"size":50}}},{"response":{"headersSize":-1,"bodySize":40}}]}}"#;
+    let (entries, outcome) = index_text(har);
+    assert_eq!(outcome.problem, None);
+    assert_eq!((entries[0].transferred, entries[0].size), (None, Some(50)));
+    assert_eq!(entries[1].transferred, Some(40));
+}

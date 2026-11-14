@@ -1180,3 +1180,118 @@ fn review2904_save_as_refuses_the_capture_itself(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read(&other).unwrap(), png_bytes());
     assert!(same_file(&capture_path, &capture_path) && !same_file(&capture_path, &other));
 }
+
+/// #2932: the right panel sums up the capture instead of an empty Contents.
+/// Its rows drive the list's Status filter, Find and the selection; in
+/// Source the Overview stays, and a row brings the request list back.
+#[gpui::test]
+fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
+    let text = sample();
+    let (reader, visual, _temp) = open(cx, &[("capture.har", &text)], "capture.har");
+    visual.simulate_resize(size(px(1440.), px(900.)));
+    reader.update(visual, |reader, cx| {
+        reader.panels.open(reader_layout::Panel::Backlinks);
+        cx.notify();
+    });
+    draw(visual);
+    let har = har(&reader, visual);
+    assert!(
+        measured_bounds(visual, "har-overview-heading").is_some(),
+        "the Overview heading is drawn"
+    );
+    assert!(
+        measured_bounds(visual, "file-contents-heading").is_none(),
+        "no empty Contents next to the request list"
+    );
+    for id in [
+        "har-overview-requests",
+        "har-overview-transferred",
+        "har-overview-content",
+        "har-overview-errors",
+        "har-overview-creator",
+        "har-overview-status-2xx",
+        "har-overview-status-4xx",
+        "har-overview-status-Failed",
+        "har-overview-host-0",
+        "har-overview-slowest-0",
+    ] {
+        assert!(measured_bounds(visual, id).is_some(), "{id} is drawn");
+    }
+    assert!(measured_bounds(visual, "har-overview-status-5xx").is_none());
+
+    // A status row toggles the Status filter.
+    let click = |visual: &mut VisualTestContext, id: &'static str| {
+        let bounds = measured_bounds(visual, id).unwrap_or_else(|| panic!("{id} is drawn"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        draw(visual);
+    };
+    click(visual, "har-overview-status-4xx");
+    assert_eq!(rows(&har, visual), [1]);
+    assert_eq!(
+        har.read_with(visual, |har, _| har.filters.status),
+        Some(StatusClass::ClientError)
+    );
+    click(visual, "har-overview-status-4xx");
+    assert_eq!(har.read_with(visual, |har, _| har.filters.status), None);
+    assert_eq!(rows(&har, visual), [0, 1, 2]);
+
+    // Hosts with equal counts and sizes are listed by name: api first. Its
+    // row puts the host into Find, and a second click takes it out.
+    let host = har.read_with(visual, |har, _| har.overview.top_hosts[0].0.to_string());
+    assert_eq!(host, "api.example.test");
+    click(visual, "har-overview-host-0");
+    assert_eq!(
+        har.read_with(visual, |har, cx| har.filter.read(cx).value().to_string()),
+        host
+    );
+    assert_eq!(rows(&har, visual), [1]);
+    click(visual, "har-overview-host-0");
+    assert_eq!(
+        har.read_with(visual, |har, cx| har.filter.read(cx).value().to_string()),
+        ""
+    );
+    assert_eq!(rows(&har, visual), [0, 1, 2]);
+
+    // Values copy like the details pane's: one line's value, or all of it.
+    let requests = har.read_with(visual, |har, _| {
+        overview::lines(har)
+            .iter()
+            .position(|line| matches!(line, overview::Line::Fact { id: "requests", .. }))
+            .unwrap()
+    });
+    visual
+        .update(|window, cx| overview::copy(&har, requests, overview::CopyWhat::Value, window, cx));
+    assert_eq!(clipboard_text(visual).as_deref(), Some("3"));
+    visual
+        .update(|window, cx| overview::copy(&har, requests, overview::CopyWhat::Pair, window, cx));
+    assert_eq!(clipboard_text(visual).as_deref(), Some("Requests: 3"));
+    visual.update(|window, cx| {
+        overview::copy(&har, requests, overview::CopyWhat::Overview, window, cx)
+    });
+    let all = clipboard_text(visual).unwrap_or_default();
+    for wanted in [
+        "Requests: 3\n",
+        "Errors: 2\n",
+        "\nDomains\n  api.example.test: ",
+    ] {
+        assert!(all.contains(wanted), "{wanted:?} in {all}");
+    }
+
+    // A request row selects that request and opens its details.
+    click(visual, "har-overview-slowest-2");
+    assert_eq!(har.read_with(visual, |har, _| har.selected), Some(2));
+
+    // Source keeps the Overview; a row there goes back to the requests.
+    click(visual, "har-view-source");
+    reader.read_with(visual, |reader, _| {
+        assert!(reader.file_preview.as_ref().unwrap().code.is_some())
+    });
+    assert!(measured_bounds(visual, "har-overview-heading").is_some());
+    assert!(measured_bounds(visual, "file-contents-heading").is_none());
+    click(visual, "har-overview-status-4xx");
+    reader.read_with(visual, |reader, _| {
+        assert!(reader.file_preview.as_ref().unwrap().code.is_none())
+    });
+    assert_eq!(rows(&har, visual), [1]);
+    assert!(measured_bounds(visual, "har-list").is_some());
+}

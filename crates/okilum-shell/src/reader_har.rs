@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) mod curl;
 pub(crate) mod details;
 pub(crate) mod model;
+pub(crate) mod overview;
 #[cfg(test)]
 mod tests;
 
@@ -81,6 +82,8 @@ pub(crate) struct HarView {
     index: Index,
     entries: Entries,
     stats: Stats,
+    /// The right panel's Overview, tallied as batches arrive (#2932).
+    overview: overview::Overview,
     filter: Entity<InputState>,
     sort: Option<(Column, bool)>,
     /// The header's Status, Method and Type filters.
@@ -187,6 +190,7 @@ impl HarView {
             index: Index::Reading { offset: 0 },
             entries: Entries::default(),
             stats: Stats::default(),
+            overview: overview::Overview::default(),
             filter,
             sort: None,
             filters: Filters::default(),
@@ -264,6 +268,7 @@ impl HarView {
                     for message in messages {
                         this.apply(message);
                     }
+                    this.overview.finish();
                     this.refresh(cx);
                     cx.notify();
                     Ok(())
@@ -282,8 +287,10 @@ impl HarView {
                     self.revision = Some(revision);
                     self.bytes = revision.len;
                 }
-                for entry in &entries {
+                let first = self.entries.len();
+                for (i, entry) in entries.iter().enumerate() {
                     self.stats.add(entry);
+                    self.overview.add(first + i, entry);
                     if self.methods.len() < 32
                         && !entry.method.is_empty()
                         && !self
@@ -328,6 +335,7 @@ impl HarView {
         self.reset_detail_rows();
         self.entries = Entries::default();
         self.stats = Stats::default();
+        self.overview.reset();
         self.methods.clear();
         self.rows = Rows::default();
         self.revision = None;
@@ -475,6 +483,16 @@ impl HarView {
         cx.notify();
     }
 
+    /// Selects request `entry` from the Overview and scrolls it into view
+    /// when the list shows it (#2932).
+    fn reveal(&mut self, entry: usize, cx: &mut Context<Self>) {
+        self.select(entry, cx);
+        if let Some(position) = self.rows.position(entry) {
+            self.scroll.scroll_to_item(position, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
     fn close_details(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
         self.detail_row = None;
@@ -563,10 +581,11 @@ impl HarView {
         } else {
             format!("{} requests", model::count(total))
         });
-        parts.push(format!(
-            "{} transferred",
-            model::bytes(self.stats.transferred)
-        ));
+        // Wire bytes only; a decoded size never stands in for them (#2932).
+        parts.push(match self.stats.transferred_label() {
+            Some(bytes) => format!("{bytes} transferred"),
+            None => "transfer size unknown".to_owned(),
+        });
         if let Some(span) = self.stats.span_ms() {
             parts.push(model::millis(span));
         }

@@ -550,8 +550,14 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
             "{file}: «Linked from» only where it can have backlinks"
         );
         if !keeps {
+            // A HAR file's Overview takes the place of Contents (#2932).
+            let heading = if file.ends_with(".har") {
+                "har-overview-heading"
+            } else {
+                "file-contents-heading"
+            };
             assert!(
-                visual.debug_bounds("file-contents-heading").is_some(),
+                visual.debug_bounds(heading).is_some(),
                 "{file}: Contents takes the panel"
             );
         }
