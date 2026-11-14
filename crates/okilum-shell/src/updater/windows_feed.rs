@@ -212,6 +212,11 @@ mod tests {
         };
         let manifest_path = current.join("sq.version");
         std::fs::write(&manifest_path, manifest("1.0.0")).unwrap();
+        // #2855: on Windows the SDK reports a pending package only when the
+        // installed Update.exe is byte-identical to that package's helper
+        // entry. The fixture therefore stages a package whose helper entry is
+        // the installed (never executed) helper, as `download_updates` leaves it.
+        let helper = b"Fixture updater must never execute";
         let staged = packages.join("OkilumStartupFixture-2.0.0-full.nupkg");
         let mut package = zip::ZipWriter::new(std::fs::File::create(&staged).unwrap());
         package
@@ -221,15 +226,19 @@ mod tests {
             )
             .unwrap();
         package.write_all(manifest("2.0.0").as_bytes()).unwrap();
+        package
+            .start_file(
+                "lib/app/Squirrel.exe",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        package.write_all(helper).unwrap();
         package.finish().unwrap();
-        std::fs::write(
-            root.join("must-not-run.exe"),
-            b"Fixture updater must never execute",
-        )
-        .unwrap();
+        let update_exe = root.join("must-not-run.exe");
+        std::fs::write(&update_exe, b"Fixture updater must never executX").unwrap();
         let locator = velopack::locator::VelopackLocatorConfig {
             RootAppDir: root.to_path_buf(),
-            UpdateExePath: root.join("must-not-run.exe"),
+            UpdateExePath: update_exe.clone(),
             PackagesDir: packages,
             ManifestPath: manifest_path.clone(),
             CurrentBinaryDir: current,
@@ -241,6 +250,11 @@ mod tests {
             Some(locator.clone()),
         )
         .unwrap();
+        assert!(
+            manager.get_update_pending_restart().is_none(),
+            "control: a same-size helper that differs from the package's is not pending"
+        );
+        std::fs::write(&update_exe, helper).unwrap();
         let pending = manager
             .get_update_pending_restart()
             .expect("SDK must detect the actual newer nupkg");
