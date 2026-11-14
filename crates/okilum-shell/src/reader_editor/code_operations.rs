@@ -767,10 +767,18 @@ impl Reader {
                             this.retire_large_plain_preview(input.read(cx).text().len() - target.range.len() + text.len());
                         }
                         let edits = edits.take().expect("prepared format edits");
-                        input.update(cx, |state, cx| {
-                            apply_source_edits(state, &target, edits, markdown, window, cx);
+                        let applied = input.update(cx, |state, cx| {
+                            let applied = apply_source_edits(state, &target, edits, markdown, window, cx);
                             state.focus(window, cx);
+                            applied
                         });
+                        // A refused edit changes nothing; never report it as applied.
+                        if !applied {
+                            let editing = this.editing.as_mut().unwrap();
+                            editing.operations.notice = Some("Format could not be applied; the source is unchanged.".into());
+                            editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
+                            this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
+                        }
                         status_range.end = status_range.start + text.len();
                         this.editing.as_mut().unwrap().operations.notice = Some(
                             "Formatted. Validation refreshed; Undo restores the original source.".into());
@@ -844,10 +852,19 @@ impl Reader {
                 input.read(cx).text().len() - preview.target.range.len() + preview.proposed.len(),
             );
         }
-        input.update(cx, |state, cx| {
+        let applied = input.update(cx, |state, cx| {
             apply_source_edits(state, &preview.target, preview.edits, markdown, window, cx)
         });
         let editing = self.editing.as_mut().unwrap();
+        // A refused edit changes nothing; never report it as applied.
+        if !applied {
+            editing.operations.notice =
+                Some("Repair could not be applied; the source is unchanged.".into());
+            editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
+            self.publish_file_operation_notice(window, cx);
+            self.refresh_code_host(cx);
+            return;
+        }
         editing.operations.status = Some((
             input.read(cx).source_stamp(),
             current.range.start..current.range.start + preview.proposed.len(),
