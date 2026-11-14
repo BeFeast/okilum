@@ -942,7 +942,8 @@ mod tests {
     #[test]
     fn mocked_worker_publishes_source_and_cancel_rejects_stale_completion() {
         let mut controller = Controller::default();
-        assert!(controller.open("ssh://user@host/note.md").is_err());
+        // A URL password is refused before any worker starts (#1610).
+        assert!(controller.open("ssh://user:secret@host/note.md").is_err());
         assert!(matches!(controller.state, State::Idle));
         let receiver = controller.start(
             Source::parse("ssh://alias/notes/start.md").unwrap(),
@@ -1016,8 +1017,13 @@ mod tests {
         let (source, heading) = destination("ssh://alias/a.md#Part%20One").unwrap();
         assert_eq!(source.url(), "ssh://alias/a.md");
         assert_eq!(heading.as_deref(), Some("Part One"));
+        // #1610: user and port are part of the route; a URL password is not.
+        let (source, heading) = destination("ssh://oleg@alias:2222/a.md#Part%20One").unwrap();
+        assert_eq!(source.url(), "ssh://oleg@alias:2222/a.md");
+        assert_eq!(heading.as_deref(), Some("Part One"));
         for invalid in [
-            "ssh://user@alias/a.md",
+            "ssh://user:secret@alias/a.md",
+            "ssh://@alias/a.md",
             "ssh://alias/a.md#",
             "ssh://alias/a.md#%20",
             "ssh://alias/a.md?x",
