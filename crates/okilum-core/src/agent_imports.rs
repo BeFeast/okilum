@@ -17,17 +17,102 @@ pub struct Import {
     pub target: String,
 }
 
-/// Recognize standalone @path lines, excluding fenced and indented code.
+/// Recognize standalone @path lines, excluding fenced and indented code and
+/// lines that start inside an inline code span (Claude Code skips code spans,
+/// which may cross line breaks within a paragraph).
 /// Whitespace in a path is literal; shell quoting and interpolation are never evaluated.
+/// A line whose target itself starts with `@` (`@@name`) is not an import:
+/// Claude Code silently ignores it (#2939). See [`ignored`].
 pub fn parse(source: &str) -> Vec<Import> {
     parse_bounded(source, usize::MAX)
 }
 
 /// Parse at most `max_imports` directives without allocating for the remainder.
 pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
+    scan(source, max_imports, false)
+}
+
+/// Standalone `@@name` lines (#2939). Claude Code imports a file whose name
+/// starts with `@` only as `@./@name`, `@~/@name` or `@/…`; it ignores `@@name`
+/// without a message. These lines are never imports: no link, expansion or
+/// Rules layer. `target` keeps the text after the first `@`, e.g. `@name`.
+pub fn ignored(source: &str) -> Vec<Import> {
+    ignored_bounded(source, usize::MAX)
+}
+
+/// [`ignored`] with the same allocation bound as [`parse_bounded`].
+pub fn ignored_bounded(source: &str, max: usize) -> Vec<Import> {
+    scan(source, max, true)
+}
+
+/// The user-facing explanation for an [`ignored`] line; `target` is its
+/// [`Import::target`] (it starts with `@`).
+pub fn ignored_message(target: &str) -> String {
+    format!("Not an import: Claude Code ignores `@{target}`. Write `@./{target}`.")
+}
+
+/// A line that ends a paragraph, so no inline code span crosses it: blank,
+/// a fence marker or an ATX heading.
+fn paragraph_boundary(text: &str) -> bool {
+    let leading = text.len() - text.trim_start_matches(' ').len();
+    let body = &text[leading..];
+    let fence = |m: char| body.chars().take_while(|c| *c == m).count() >= 3;
+    // ATX heading: 1-6 `#`, then a space, a tab or the end of the line.
+    let hashes = body.bytes().take_while(|b| *b == b'#').count();
+    let heading = (1..=6).contains(&hashes)
+        && matches!(body.as_bytes().get(hashes), None | Some(b' ' | b'\t'));
+    body.trim().is_empty() || (leading <= 3 && (fence('`') || fence('~') || heading))
+}
+
+/// Byte ranges of CommonMark inline code spans in the paragraph `start..end`:
+/// a run of n backticks closes at the next run of exactly n backticks, across
+/// line breaks; an unmatched run is literal text.
+fn code_spans(source: &str, start: usize, end: usize) -> Vec<Range<usize>> {
+    let bytes = &source.as_bytes()[..end];
+    let run = |at: usize| bytes[at..].iter().take_while(|b| **b == b'`').count();
+    let mut spans = Vec::new();
+    let mut at = start;
+    while at < end {
+        match bytes[at] {
+            // A backslash escapes the next character outside code spans.
+            b'\\' => at += 2,
+            b'`' => {
+                let n = run(at);
+                let mut next = at + n;
+                let mut close = None;
+                while next < end {
+                    if bytes[next] == b'`' {
+                        let m = run(next);
+                        if m == n {
+                            close = Some(next + m);
+                            break;
+                        }
+                        next += m;
+                    } else {
+                        next += 1;
+                    }
+                }
+                match close {
+                    Some(close) => {
+                        spans.push(at..close);
+                        at = close;
+                    }
+                    None => at += n,
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    spans
+}
+
+fn scan(source: &str, max_imports: usize, ignored: bool) -> Vec<Import> {
     let mut result = Vec::new();
     let mut offset = 0;
     let mut fence: Option<(u8, usize)> = None;
+    // Current paragraph start and, once a directive candidate needs them, its
+    // code spans. Computed at most once per paragraph.
+    let mut paragraph: Option<(usize, Option<Vec<Range<usize>>>)> = None;
     for line in source.split_inclusive('\n') {
         if result.len() >= max_imports {
             break;
@@ -37,6 +122,11 @@ pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
         let body = &text[leading..];
         let marker = body.as_bytes().first().copied();
         let count = marker.map_or(0, |m| body.bytes().take_while(|b| *b == m).count());
+        if fence.is_some() || paragraph_boundary(text) {
+            paragraph = None;
+        } else if paragraph.is_none() {
+            paragraph = Some((offset, None));
+        }
         if leading <= 3 && matches!(marker, Some(b'`' | b'~')) && count >= 3 {
             if let Some((m, n)) = fence {
                 if marker == Some(m) && count >= n && body[count..].trim().is_empty() {
@@ -47,7 +137,32 @@ pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
             }
         } else if fence.is_none() && leading <= 3 && body.starts_with('@') {
             let target = body[1..].trim_end();
-            if !target.is_empty() && !target.chars().any(char::is_control) {
+            let at = offset + leading;
+            let in_code_span = paragraph.as_mut().is_some_and(|(start, spans)| {
+                let start = *start;
+                spans
+                    .get_or_insert_with(|| {
+                        let end = source[offset..]
+                            .split_inclusive('\n')
+                            .scan(offset, |position, line| {
+                                let here = *position;
+                                *position += line.len();
+                                Some((here, line))
+                            })
+                            .find(|(_, line)| {
+                                paragraph_boundary(line.trim_end_matches(['\r', '\n']))
+                            })
+                            .map_or(source.len(), |(here, _)| here);
+                        code_spans(source, start, end)
+                    })
+                    .iter()
+                    .any(|span| span.start < at && at < span.end)
+            });
+            if !in_code_span
+                && !target.is_empty()
+                && !target.chars().any(char::is_control)
+                && target.starts_with('@') == ignored
+            {
                 let start = offset + leading + 1;
                 result.push(Import {
                     line: offset..offset + text.len(),
@@ -838,6 +953,102 @@ mod tests {
         assert_eq!(&text[imports[0].target_bytes.clone()], "child/日本.md");
         assert_eq!(&text[imports[0].line.clone()], "  @child/日本.md  ");
         assert_eq!(imports[1].target, "last");
+    }
+    #[test]
+    fn issue2939_double_at_is_not_an_import_but_dot_slash_is() {
+        let text = "@@AgentContract.md\n@./@AgentContract.md\n```\n@@fenced.md\n```\n  @@x.md \n";
+        let imports = parse(text);
+        assert_eq!(
+            imports
+                .iter()
+                .map(|i| i.target.as_str())
+                .collect::<Vec<_>>(),
+            ["./@AgentContract.md"]
+        );
+        let ignored = ignored(text);
+        assert_eq!(
+            ignored
+                .iter()
+                .map(|i| i.target.as_str())
+                .collect::<Vec<_>>(),
+            ["@AgentContract.md", "@x.md"]
+        );
+        assert_eq!(&text[ignored[0].line.clone()], "@@AgentContract.md");
+        assert_eq!(&text[ignored[1].target_bytes.clone()], "@x.md");
+        assert_eq!(
+            ignored_message(&ignored[0].target),
+            "Not an import: Claude Code ignores `@@AgentContract.md`. Write `@./@AgentContract.md`."
+        );
+        // Expansion never reads an ignored target.
+        let store = Mock {
+            files: [("/vault/@AgentContract.md".into(), "rules".into())].into(),
+            reads: RefCell::new(vec![]),
+        };
+        let nodes = expand(
+            &store,
+            Path::new("/vault"),
+            Path::new("/vault/AGENTS.md"),
+            "@@AgentContract.md\n",
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(nodes.is_empty());
+        assert!(store.reads.borrow().is_empty());
+    }
+    #[test]
+    fn issue2939_multiline_code_spans_are_not_directives() {
+        // Single and multi-backtick spans that open before and close after
+        // the line hide it, for imports and ignored lines alike.
+        for text in [
+            "See `inline\n@@AgentContract.md\ncode` here.\n",
+            "See ``a ` b\n@@AgentContract.md\nc`` here.\n",
+            "See `inline\n@rules.md\ncode` here.\n",
+        ] {
+            assert!(ignored(text).is_empty(), "{text:?}");
+            assert!(parse(text).is_empty(), "{text:?}");
+        }
+        // Controls: an unmatched backtick, a closed span, a mismatched run, an
+        // escaped backtick and a blank line ending the paragraph keep the line.
+        for text in [
+            "An unmatched ` backtick\n@@AgentContract.md\n",
+            "A closed `span` here\n@@AgentContract.md\n",
+            "Run ``a\n@@AgentContract.md\nb` only\n",
+            "Escaped \\` tick\n@@AgentContract.md\nclose` later\n",
+            "Open `span\n\n@@AgentContract.md\nclose` later\n",
+        ] {
+            assert_eq!(
+                ignored(text)
+                    .iter()
+                    .map(|i| i.target.as_str())
+                    .collect::<Vec<_>>(),
+                ["@AgentContract.md"],
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            parse("Open `span\n\n@rules.md\nclose`\n")[0].target,
+            "rules.md"
+        );
+        // Only an ATX heading ends the paragraph: `#tag`, `#######` and a
+        // heading indented four spaces are span text, so the span still hides
+        // the later line.
+        for text in [
+            "See `inline\n#not-a-heading\n@@AgentContract.md\ncode` here.\n",
+            "See ``a ` b\n#not-a-heading\n@@AgentContract.md\nc`` here.\n",
+            "See `inline\n####### seven\n@@AgentContract.md\ncode` here.\n",
+            "See ``a\n    # indented\n@@AgentContract.md\nb`` here.\n",
+        ] {
+            assert!(ignored(text).is_empty(), "{text:?}");
+        }
+        // Controls: a real ATX heading (with text, a tab, or bare) ends the
+        // paragraph, so the unclosed span cannot hide the line.
+        for text in [
+            "See `inline\n# Heading\n@@AgentContract.md\ncode` here.\n",
+            "See ``a\n   ###\tHeading\n@@AgentContract.md\nb`` here.\n",
+            "See `inline\n##\n@@AgentContract.md\ncode` here.\n",
+        ] {
+            assert_eq!(ignored(text).len(), 1, "{text:?}");
+        }
     }
     #[test]
     fn nested_context_cycle_and_escape_never_read_outside() {

@@ -95,6 +95,21 @@ impl LiveImportView {
     pub fn tree(&self) -> &[Expansion] {
         &self.tree
     }
+    /// 1-based line and hint for each `@@name` line of the displayed snapshot
+    /// (#2939). These are never links; the snapshot itself is the authority.
+    pub fn ignored(&self) -> Vec<(usize, String)> {
+        agent_imports::ignored_bounded(&self.snapshot, self.limits.imports)
+            .into_iter()
+            .map(|import| {
+                let line = self.snapshot[..import.line.start]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count()
+                    + 1;
+                (line, agent_imports::ignored_message(&import.target))
+            })
+            .collect()
+    }
     pub fn expanded(&self) -> bool {
         self.expanded
     }

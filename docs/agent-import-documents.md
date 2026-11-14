@@ -25,3 +25,15 @@ Preview receives directive ranges from its background classification, draws
 them as document blocks only for agent documents, and exposes exact source while
 the caret/selection/composition touches the directive. Unclassified edits cannot
 reuse earlier directive offsets. No gpui core or vendor changes are needed.
+
+## `@@name` is not an import (#2939)
+
+Claude Code imports a file whose name starts with `@` only as `@./@name`,
+`@~/@name` or `@/…`; it silently ignores a line `@@name`. Okilum follows what an
+agent actually loads: `agent_imports::parse` never returns such a line, so it is
+not a link, never expands, adds no Rules layer and counts no bytes or tokens.
+`agent_imports::ignored` returns these lines instead. Reader and Live Preview
+draw them as plain text with the hint from `agent_imports::ignored_message`
+("Not an import: Claude Code ignores `@@AgentContract.md`. Write
+`@./@AgentContract.md`."), the Agent file panel lists it with its line, and the Rules tab lists the same hint as a diagnostic
+of the file and line that contain it.

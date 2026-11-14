@@ -7853,6 +7853,15 @@ impl Reader {
                     })),
             );
         }
+        for (index, (line, hint)) in current.imports.ignored().into_iter().enumerate() {
+            panel = panel.child(
+                div()
+                    .id(("agent-import-ignored", index))
+                    .debug_selector(move || format!("agent-import-ignored-{index}"))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Line {line} · {hint}")),
+            );
+        }
         if let Some(error) = &current.language_error {
             panel = panel.child(error.clone());
         }

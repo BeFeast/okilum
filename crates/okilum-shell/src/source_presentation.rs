@@ -88,6 +88,7 @@ pub struct CachedProvider {
     /// (S7, #936).
     tables: Vec<(Range<usize>, String)>,
     fenced_blocks: HashMap<String, String>,
+    /// Import and ignored `@@name` directive lines, in source order.
     document_imports: Vec<okilum_core::agent_imports::Import>,
     syntax: code_syntax::CodeSyntax,
     /// One-line renderings of inline formulas by their TeX, None when the TeX
@@ -216,7 +217,12 @@ impl CachedProvider {
         );
         let classified = source_classifier::classify_reusing(&snapshot, predecessor.as_ref());
         let document_imports = if source.text.len() <= source_classifier::MAX_BYTES {
-            okilum_core::agent_imports::parse(&source.text)
+            // Ignored `@@name` lines (#2939) are drawn through the same
+            // decoration renderer, which shows them as text with a hint.
+            let mut lines = okilum_core::agent_imports::parse(&source.text);
+            lines.extend(okilum_core::agent_imports::ignored(&source.text));
+            lines.sort_by_key(|line| line.line.start);
+            lines
         } else {
             Vec::new()
         };

@@ -9,11 +9,14 @@ struct Fixture<'a> {
     root: PathBuf,
     _directory: tempfile::TempDir,
 }
+const SOURCE: &str = "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n";
 fn open<'a>(cx: &'a mut TestAppContext, note: &str) -> Fixture<'a> {
+    open_with(cx, note, SOURCE)
+}
+fn open_with<'a>(cx: &'a mut TestAppContext, note: &str, source: &str) -> Fixture<'a> {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("vault");
     std::fs::create_dir_all(root.join("project/imports")).unwrap();
-    let source = "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n";
     for path in ["project/AGENTS.md", "@AgentContract.md"] {
         std::fs::write(root.join(path), source).unwrap();
     }
@@ -86,6 +89,60 @@ impl Fixture<'_> {
         self.draw();
     }
 }
+#[gpui::test]
+fn issue2939_double_at_line_is_text_with_hint_not_an_import(cx: &mut TestAppContext) {
+    let mut f = open_with(
+        cx,
+        "project/AGENTS.md",
+        "# Agent instructions\n\n@@AgentContract.md\n\n@../@AgentContract.md\n",
+    );
+    f.draw();
+    assert!(
+        f.visual
+            .debug_bounds("agent-line-../@AgentContract.md")
+            .is_some(),
+        "positive control: @../@name stays a live import link"
+    );
+    assert!(
+        f.visual
+            .debug_bounds("agent-line-@AgentContract.md")
+            .is_none()
+            && f.visual
+                .debug_bounds("agent-disclosure-@AgentContract.md")
+                .is_none(),
+        "@@name is neither a link nor expandable"
+    );
+    assert!(
+        f.visual
+            .debug_bounds("agent-ignored-@AgentContract.md")
+            .is_some(),
+        "the ignored line carries its hint"
+    );
+    let targets = f.reader.update(f.visual, |reader, _| {
+        reader
+            .agent_document
+            .as_ref()
+            .unwrap()
+            .imports
+            .links()
+            .iter()
+            .map(|link| link.import.target.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(targets, ["../@AgentContract.md"]);
+    let ignored = f.reader.update(f.visual, |reader, _| {
+        reader.agent_document.as_ref().unwrap().imports.ignored()
+    });
+    assert_eq!(
+        ignored,
+        [(
+            3,
+            "Not an import: Claude Code ignores `@@AgentContract.md`. Write `@./@AgentContract.md`."
+                .to_owned()
+        )]
+    );
+}
+
 #[gpui::test]
 fn issue1588_line_click_and_inline_nested_expansion(cx: &mut TestAppContext) {
     let mut f = open(cx, "project/AGENTS.md");

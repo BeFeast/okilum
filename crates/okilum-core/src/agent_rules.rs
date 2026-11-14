@@ -323,9 +323,9 @@ fn expand(
         read_source(root, &path)
     };
     let expand_imports = error.is_none();
-    let imports: Vec<_> = if expand_imports {
-        let text = source.as_deref().unwrap_or_default();
-        crate::agent_imports::parse_bounded(text, MAX_LAYERS + 1)
+    let text = source.as_deref().unwrap_or_default();
+    let numbered = |imports: Vec<crate::agent_imports::Import>| -> Vec<(usize, String)> {
+        imports
             .into_iter()
             .map(|import| {
                 (
@@ -338,9 +338,23 @@ fn expand(
                 )
             })
             .collect()
+    };
+    let imports = if expand_imports {
+        numbered(crate::agent_imports::parse_bounded(text, MAX_LAYERS + 1))
     } else {
         vec![]
     };
+    // An agent never loads `@@name` (#2939): no layer, bytes or tokens, but
+    // the file that contains it says how to write a real import.
+    if expand_imports {
+        for (line, target) in numbered(crate::agent_imports::ignored_bounded(text, MAX_LAYERS)) {
+            stack.diagnostics.push(format!(
+                "{}:{line}: {}",
+                path.display(),
+                crate::agent_imports::ignored_message(&target)
+            ));
+        }
+    }
     stack.layers.push(Layer {
         path: path.clone(),
         provenance,
