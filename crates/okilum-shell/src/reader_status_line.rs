@@ -1,6 +1,9 @@
 //! One quiet bottom line, shared by file viewers.
 use super::*;
 
+/// Height of the bottom line; the toast stack stands above it (`reader_toast::init`).
+pub(crate) const HEIGHT: Pixels = px(28.);
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Tone {
     #[default]
@@ -51,7 +54,7 @@ pub(crate) fn render_with_content(
         .debug_selector(move || format!("{selector}-line"))
         .flex_none()
         .min_w_0()
-        .h(px(28.))
+        .h(HEIGHT)
         .px_3()
         .gap_2()
         .border_t_1()

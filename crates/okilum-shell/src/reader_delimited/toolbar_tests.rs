@@ -223,11 +223,27 @@ fn table2812_sort_header_toggle_status_and_copy_toast(cx: &mut TestAppContext) {
         assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "item999");
         assert!(!w.notifications(cx).is_empty(), "Copy cells shows feedback");
     });
+    // Toasts enter and stack on wall-clock springs (400 ms), not the test
+    // clock, and reduced motion snaps them above their resting place. Let the
+    // copy toast come to rest, so the click below meets it where a user does
+    // on every host, instead of only on hosts fast enough to click before the
+    // slide ends (#2840: the resting toast covered Load more rows).
+    std::thread::sleep(Duration::from_secs(1));
     let more = measured_bounds(v, "table-load-more").unwrap();
+    v.update(|w, cx| {
+        assert!(
+            !w.notifications(cx).is_empty(),
+            "the copy toast is still shown when Load more rows is clicked"
+        )
+    });
     v.simulate_click(more.center(), Modifiers::default());
     settle(v);
     t.read_with(v, |p, cx| {
-        assert_eq!(p.order.len(), 1200);
+        assert_eq!(
+            p.order.len(),
+            1200,
+            "Load more rows takes the click while the copy toast is shown"
+        );
         assert!(p.status(t.clone(), cx).actions.is_empty());
     });
     t.update(v, |p, cx| p.reset_sort(cx));
