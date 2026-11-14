@@ -332,36 +332,171 @@ fn issue2958_fold_all_without_a_root_fold_paints_every_folded_table(cx: &mut Tes
 }
 
 #[test]
-fn issue2958_batch_fold_top_keeps_the_scroll_range_filled() {
-    use super::structure::{batch_fold_anchor, batch_fold_top};
+fn issue2958_batch_fold_anchor_keeps_a_visible_top_line() {
+    use super::structure::batch_fold_anchor;
     use gpui_component::input::FoldRange;
-    // A 600 px viewport of 20 px lines: 30 rows, the bottom 15 may be empty.
-    let top = |anchor, lines, folds: &[FoldRange]| {
-        batch_fold_top(anchor, lines, folds, px(600.), px(20.))
-    };
-    // Unfolded: a top line in the last 15 lines moves up; others stay.
-    assert_eq!(top(10, 100, &[]), 10);
-    assert_eq!(top(85, 100, &[]), 85);
-    assert_eq!(top(90, 100, &[]), 85);
-    // Folded text shorter than the rows to fill: shown from its first line.
-    let tables: Vec<FoldRange> = (0..4)
-        .map(|t| FoldRange::new(t * 20, t * 20 + 20))
-        .collect();
-    assert_eq!(top(batch_fold_anchor(65, &tables), 81, &tables), 0);
-    // Nested folds hide one merged range.
+    // Nothing folded: the top line stays.
+    assert_eq!(batch_fold_anchor(50, &[]), 50);
+    // Nested folds: the outermost header that hides the line.
     let nested = [FoldRange::new(0, 99), FoldRange::new(10, 20)];
     assert_eq!(batch_fold_anchor(50, &nested), 0);
-    assert_eq!(top(99, 100, &nested), 0);
-    // A fold hides the lines between its header and closing line: 71..=80
-    // and 95..=99 are the last 15 shown lines.
+    assert_eq!(batch_fold_anchor(15, &nested), 0);
+    // A header stays visible; a closing line goes to its header.
     let late = [FoldRange::new(80, 95)];
+    assert_eq!(batch_fold_anchor(80, &late), 80);
     assert_eq!(batch_fold_anchor(90, &late), 80);
-    assert_eq!(top(80, 100, &late), 71);
-    assert_eq!(top(60, 100, &late), 60);
-    // A long fold far from the end changes nothing.
-    let early = [FoldRange::new(10, 150)];
-    assert_eq!(top(10, 200, &early), 10);
-    assert_eq!(top(195, 200, &early), 185);
-    // No layout yet: the anchor as is.
-    assert_eq!(batch_fold_top(90, 100, &[], px(600.), px(0.)), 90);
+    assert_eq!(batch_fold_anchor(95, &late), 80);
+    assert_eq!(batch_fold_anchor(60, &late), 60);
+}
+
+/// Synthetic Rust: eight functions of ten body lines (one fold each), then
+/// thirty one-line constants. Every constant holds a string of about 1300
+/// characters that soft wraps to many rows, and no fold covers them.
+fn issue2958_wrapped_rust() -> String {
+    let mut text = String::new();
+    for f in 0..8 {
+        text.push_str(&format!("fn function_{f}() {{\n"));
+        for l in 0..10 {
+            text.push_str(&format!("    let value_{l} = {};\n", f * 100 + l));
+        }
+        text.push_str("}\n");
+    }
+    let words = "lorem ipsum dolor sit amet ".repeat(48);
+    for c in 0..30 {
+        text.push_str(&format!("const LONG_{c}: &str = \"{c} {words}\";\n"));
+    }
+    text
+}
+
+/// The top of `line`'s first row relative to the viewport top, while the line
+/// is laid out.
+fn line_top_in_viewport(input: &EditorState, line: usize) -> Option<Pixels> {
+    if !input
+        .visible_row_range()
+        .is_some_and(|lines| lines.contains(&line))
+    {
+        return None;
+    }
+    let text = input.value();
+    let range = line_range(text.as_ref(), line);
+    let bounds = input.range_to_bounds(&(range.start..range.start + 1))?;
+    Some(bounds.top() - input.input_bounds().top())
+}
+
+/// Soft wrap near the end of the text (#2958 review): a top line that sits
+/// in the last half viewport of source lines is still a valid scroll
+/// position when the lines after it wrap to many rows. Fold all and Unfold
+/// all must keep that line, at the same distance from the viewport top, in
+/// the first frame, within the editor's scroll range. Counting source lines
+/// instead moved the top up to a line that wraps past the whole viewport.
+#[gpui::test]
+fn issue2958_soft_wrap_near_the_end_keeps_the_top_line_in_place(cx: &mut TestAppContext) {
+    let (preview, visual, _temp) = fixture(cx, "source.rs", &issue2958_wrapped_rust());
+    settled_frame(visual);
+    let input = preview.read_with(visual, |p, _| {
+        assert_eq!(p.fold_availability(), Availability::Available);
+        p.input().expect("source opens in the code editor")
+    });
+    visual.update(|window, cx| input.update(cx, |s, cx| s.set_soft_wrap(true, window, cx)));
+    settled_frame(visual);
+    let anchor = 8 * 12 + 25;
+    input.read_with(visual, |s, _| {
+        let line = s.value().lines().nth(anchor).map(str::to_owned);
+        assert!(
+            line.as_deref()
+                .is_some_and(|line| line.starts_with("const LONG_25:")),
+            "fixture line {anchor}: {line:?}"
+        );
+    });
+    scroll_to_line(&input, anchor, visual);
+    // Put the viewport top two rows inside the anchor line.
+    input.update(visual, |s, cx| {
+        let line_height = s.line_height().expect("laid out");
+        let offset = s.scroll_offset();
+        s.set_scroll_offset(point(offset.x, offset.y - line_height * 2.), cx);
+    });
+    settled_frame(visual);
+    settled_frame(visual);
+    let before = input.read_with(visual, |s, _| {
+        let line_height = s.line_height().expect("laid out");
+        assert_eq!(s.top_visible_line(), Some(anchor), "positive control");
+        let top = line_top_in_viewport(s, anchor).expect("anchor laid out");
+        assert!(
+            (top + line_height * 2.).abs() <= px(1.),
+            "positive control: the viewport top is two rows into the anchor line ({top:?})"
+        );
+        let next = line_top_in_viewport(s, anchor + 1).expect("next line laid out");
+        assert!(
+            next - top > line_height * 6.,
+            "positive control: the anchor line wraps to many rows ({top:?}..{next:?})"
+        );
+        assert!(
+            painted_in_viewport(s, anchor + 1),
+            "positive control: the line after the anchor is in view"
+        );
+        assert!(
+            s.scroll_settled(),
+            "positive control: settled before the batch fold"
+        );
+        top
+    });
+
+    let assert_in_place =
+        |input: &Entity<EditorState>, visual: &mut VisualTestContext, what: &str| {
+            input.read_with(visual, |s, _| {
+                let rows = s.visible_row_range();
+                assert_eq!(
+                    s.top_visible_line(),
+                    Some(anchor),
+                    "{what}: the anchor line stays at the top in the first frame (rows {rows:?})"
+                );
+                let top = line_top_in_viewport(s, anchor).expect("anchor laid out");
+                assert!(
+                    (top - before).abs() <= px(1.),
+                    "{what}: the anchor row keeps its viewport position: {top:?}, was {before:?}"
+                );
+                assert!(
+                    painted_in_viewport(s, anchor + 1),
+                    "{what}: the line after the anchor is still in view"
+                );
+                assert!(
+                    s.scroll_settled(),
+                    "{what}: the first frame painted an offset within the scroll range ({:?})",
+                    s.scroll_offset()
+                );
+            });
+            let offset = input.read_with(visual, |s, _| s.scroll_offset());
+            settled_frame(visual);
+            input.read_with(visual, |s, _| {
+                assert_eq!(
+                    s.scroll_offset(),
+                    offset,
+                    "{what}: the editor's own clamp keeps the offset (it is <= max)"
+                );
+                assert_eq!(s.top_visible_line(), Some(anchor));
+            });
+        };
+
+    let fold = visual
+        .debug_bounds("code-fold-all")
+        .expect("header Fold all button is mounted");
+    visual.simulate_click(fold.center(), Modifiers::default());
+    frame(visual);
+    input.read_with(visual, |s, _| {
+        assert!(
+            s.folded_ranges().iter().any(|fold| fold.start_line == 0),
+            "Fold all folds the functions above the top line"
+        );
+    });
+    assert_in_place(&input, visual, "Fold all");
+
+    let unfold = visual
+        .debug_bounds("code-unfold-all")
+        .expect("header Unfold all button is mounted");
+    visual.simulate_click(unfold.center(), Modifiers::default());
+    frame(visual);
+    input.read_with(visual, |s, _| {
+        assert!(s.folded_ranges().is_empty(), "Unfold all opens every fold");
+    });
+    assert_in_place(&input, visual, "Unfold all");
 }

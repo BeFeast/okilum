@@ -206,62 +206,6 @@ pub(super) fn batch_fold_anchor(top: usize, folded: &[gpui_component::input::Fol
         .unwrap_or(top)
 }
 
-/// `anchor`, moved up so that the rows from it to the end of the folded text
-/// reach the bottom of the scroll range (#2958). The code editor scrolls
-/// until its last line sits above an empty area of half a viewport (at least
-/// three lines). A top line closer to the end than that is clamped only after
-/// paint, which no frame shows: without a root fold (TOML tables, source code)
-/// Fold all would otherwise paint the anchor's fold at the top and the folds
-/// above it nowhere. A fold shows its header and closing line and hides the
-/// lines between. Lines are counted, not wrapped rows: a wrapped line only
-/// adds rows, so the result never asks for more than the editor can scroll.
-pub(super) fn batch_fold_top(
-    anchor: usize,
-    line_count: usize,
-    folded: &[gpui_component::input::FoldRange],
-    viewport: Pixels,
-    line_height: Pixels,
-) -> usize {
-    if line_height <= px(0.) || viewport <= px(0.) {
-        return anchor;
-    }
-    let rows = viewport / line_height;
-    let empty = (rows / 2.).max(3.);
-    let needed = (rows - empty).ceil().max(0.) as usize;
-    if needed == 0 {
-        return anchor;
-    }
-    let mut hidden: Vec<(usize, usize)> = folded
-        .iter()
-        .filter(|fold| fold.end_line >= fold.start_line + 2)
-        .map(|fold| (fold.start_line + 1, fold.end_line))
-        .collect();
-    hidden.sort_unstable();
-    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(hidden.len());
-    for (start, end) in hidden {
-        match merged.last_mut() {
-            Some(last) if start <= last.1 => last.1 = last.1.max(end),
-            _ => merged.push((start, end)),
-        }
-    }
-    // Walk the shown lines up from the end until they fill `needed` rows.
-    let mut end = line_count;
-    let mut needed = needed;
-    for &(start, stop) in merged.iter().rev() {
-        let stop = stop.min(end);
-        if start >= stop {
-            continue;
-        }
-        let shown = end - stop;
-        if shown >= needed {
-            return anchor.min(end - needed);
-        }
-        needed -= shown;
-        end = start;
-    }
-    anchor.min(end.saturating_sub(needed))
-}
-
 impl CodePreview {
     pub(super) fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
         self.provisional_interacted.set(true);
@@ -274,24 +218,21 @@ impl CodePreview {
             }
         } else if let Some(input) = self.input() {
             input.update(cx, |s, cx| {
-                let top = s.top_visible_line();
+                let top = s.top_visible_line_offset();
                 s.set_all_folded(folded, cx);
                 // #2958: the pixel scroll offset belongs to the old rows. Kept
                 // as is, Fold all leaves it past the end of the much shorter
                 // folded text: the next frame lays out no visible row, and the
                 // editor's own clamp after paint cannot schedule a repaint.
-                // Re-anchor on the source line instead; the editor resolves
-                // the request against the new rows before it picks the lines
-                // of that same frame.
-                if let Some(top) = top {
-                    use gpui_component::input::RopeExt as _;
+                // Re-anchor on the source line instead, at the same distance
+                // from the viewport top (soft wrap can put the top inside the
+                // line). The editor resolves the request on the new display
+                // rows and clamps it to their scroll range before it picks the
+                // lines of that same frame.
+                if let Some((top, offset)) = top {
                     let anchor = batch_fold_anchor(top, s.folded_ranges());
-                    let line = s.line_height().map_or(anchor, |line_height| {
-                        let lines = s.text().lines_len();
-                        let viewport = s.input_bounds().size.height;
-                        batch_fold_top(anchor, lines, s.folded_ranges(), viewport, line_height)
-                    });
-                    s.scroll_line_to_top(line, cx);
+                    let offset = if anchor == top { offset } else { px(0.) };
+                    s.scroll_line_to_offset(anchor, offset, cx);
                 }
             });
         }
