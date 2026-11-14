@@ -61,6 +61,17 @@ impl From<&str> for Notice {
     }
 }
 
+/// Gap between the toast stack and what it stands on (the toolkit's default).
+const TOAST_GAP: Pixels = px(16.);
+
+/// Bottom toasts stand above the bottom line, never on it: a four-second
+/// «Copied 1 cell.» toast covered the line's right-hand actions, so Load more
+/// rows took no clicks until it closed (#2840). Theme changes keep this
+/// setting; set it once after `gpui_component::init`.
+pub(super) fn init(cx: &mut App) {
+    Theme::global_mut(cx).notification.margins.bottom = TOAST_GAP + reader_status_line::HEIGHT;
+}
+
 /// Scroll-only space: keep the last line reachable above the notification stack.
 /// This never takes a layout row or changes the document viewport.
 pub(super) fn bottom_space(window: &Window, cx: &App) -> Pixels {

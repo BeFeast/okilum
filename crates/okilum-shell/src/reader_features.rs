@@ -318,6 +318,7 @@ pub(crate) fn open_second_brain(cx: &mut App) {
 #[cfg(test)]
 pub(crate) fn test_init(cx: &mut App) {
     gpui_component::init(cx);
+    crate::reader_toast::init(cx);
     enable_test_modules(cx);
 }
 
