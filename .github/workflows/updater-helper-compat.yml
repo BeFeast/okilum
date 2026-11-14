@@ -39,6 +39,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: storage-compat-zip-v1
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Verify exact source and vendor
         shell: bash
@@ -90,6 +92,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: updater-ready-guard-v1
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: actions/download-artifact@v4
         with:
@@ -128,6 +132,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: updater-helper-vm-binary-v1
+          # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Build recovery test binary
         shell: bash
