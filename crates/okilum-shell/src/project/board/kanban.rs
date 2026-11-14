@@ -62,7 +62,18 @@ impl Board {
             }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
-            .child(self.filter_bar(&prepared.projection, window, cx));
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().child(self.filter_bar(
+                        &prepared.projection,
+                        window,
+                        cx,
+                    )))
+                    .child(super::help::entry()),
+            );
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into()).text_size(px(12.))
                 .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
@@ -309,7 +320,6 @@ impl Board {
             }));
         let mut end = v_flex().w(px(36.)).flex_none().gap_2();
         end = end
-            .child(super::help::entry())
             .child(
                 Button::new("board-manage")
                     .debug_selector(|| "board-manage".into())

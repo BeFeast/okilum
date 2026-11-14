@@ -21,7 +21,13 @@ fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppCo
         crate::test_init(cx);
         cx.set_reduce_motion(true);
     });
-    for mode in [None, Some(list::Mode::List), Some(list::Mode::Board)] {
+    for (mode, zero_matches) in [
+        (None, false),
+        (Some(list::Mode::List), false),
+        (Some(list::Mode::Board), false),
+        (Some(list::Mode::List), true),
+        (Some(list::Mode::Board), true),
+    ] {
         let area = tempfile::tempdir().unwrap();
         let (_, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
@@ -36,12 +42,20 @@ fn board_help_opens_offline_before_creation_and_in_both_views(cx: &mut TestAppCo
                         Some(Binding::parse("version: 1\ntitle: Practice\nissues: []\n").unwrap());
                     board.list.preferences.mode = mode;
                 }
+                if zero_matches {
+                    board.filter.search = "No matching tasks".into();
+                }
                 board
             });
             let surface = cx.new(|_| Surface(board));
             Root::new(surface, window, cx)
         });
         visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("board-filter-empty").is_some(),
+            zero_matches,
+            "positive control: exercise the zero-match render path"
+        );
         assert!(visual.debug_bounds("board-help-content").is_none());
         let entry = visual
             .debug_bounds("board-help")
