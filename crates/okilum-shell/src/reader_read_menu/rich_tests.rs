@@ -323,7 +323,8 @@ fn read_rich_text_shortcut_reaches_the_real_multiformat_boundary(cx: &mut TestAp
     let plain = f.select_all();
     f.focus_text();
     f.seed_clipboard();
-    f.visual.simulate_keystrokes("secondary-alt-c");
+    f.visual
+        .simulate_keystrokes(crate::COPY_WITH_FORMATTING_KEY);
     f.visual.run_until_parked();
     assert_eq!(f.clipboard(), plain);
     let seen = f.seen.borrow();
