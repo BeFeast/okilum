@@ -179,7 +179,13 @@ One run:
    unchanged instead. Then a `.okilum-update-*` stage beside the AppImage with
    `previous.AppImage`, `expected.json` and `apply.log`, the build record and
    a rename. Old stages are pruned like the updater does (the newest
-   completed and the newest interrupted one are kept).
+   completed and the newest interrupted one are kept). The new build is
+   always a new file renamed into place; the running file is never written
+   to or truncated. Other processes started from the same AppImage (QA
+   instances with their own `OKILUM_STATE_DIR`, `okilum sync serve`) are not
+   quit. They keep running the old build from the old inode, which stays
+   alive while their AppImage runtime holds it open, even after
+   `previous.AppImage` is pruned.
 6. **Reopen** (only if it was open) in its own unit in `app-graphical.slice`
    (`systemd-run --user`, as uwsm launchers do), with
    `OKILUM_APPIMAGE_UPDATE_RECEIPT` set to the stage, so the new build itself
