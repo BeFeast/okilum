@@ -104,6 +104,35 @@ def cache_save_violations(workflows):
                         violations.append(where)
     return found, violations
 
+
+def release_shape(command, verb):
+    """Profile, packages, binaries and features of one cargo invocation."""
+    words = command.split()
+    assert words[:2] == ["cargo", verb], command
+    shape = {"profile": "dev", "-p": set(), "--bin": set(), "features": set(), "other": set()}
+    rest = iter(words[2:])
+    for word in rest:
+        if word == "--release":
+            shape["profile"] = "release"
+        elif word == "--profile":
+            shape["profile"] = next(rest)
+        elif word in ("-p", "--bin"):
+            shape[word].add(next(rest))
+        elif word in ("--features", "--all-features", "--all-targets", "--tests", "--benches", "--examples"):
+            shape["features"].add(word if word != "--features" else next(rest))
+        elif word not in ("--locked", "--offline"):
+            shape["other"].add(word)
+    return shape
+
+
+def appimage_release_shape():
+    lines = [line for line in (ROOT / "scripts/appimage/build.sh").read_text().splitlines()
+             if line.startswith("cargo build ")]
+    assert len(lines) == 1, lines
+    # The beta build: release profile, no acceptance-harness features.
+    command = lines[0].replace('"$cargo_profile"', "release").replace('"${build_features[@]}"', "")
+    return release_shape(command, "build")
+
 class VerdictTests(unittest.TestCase):
     def setUp(self):
         ambient = patch.dict(os.environ, OKILUM_WORKSPACE_ORDINARY_SHARDS='2')
@@ -380,6 +409,11 @@ class VerdictTests(unittest.TestCase):
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
         runs = [step.get("run", "") for step in steps]
         self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", runs)
+        # #2916: clippy over all targets enables dev-dependency features (gpui
+        # test-support), so the gate also checks the release binaries without
+        # them, with the packages, binaries and profile the AppImage builds.
+        check = next(s for s in steps if s.get("name") == "Check release binaries without test features")
+        self.assertEqual(release_shape(check["run"], "check"), appimage_release_shape())
         for run in runs:
             for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
                           "at-vault-regression-control", "linux-rust-tests"):

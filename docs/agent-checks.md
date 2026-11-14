@@ -12,9 +12,13 @@
   It pushes to `agent-checks-fast/<branch>`, where only the `pre-merge` job
   runs: pinned vendor/comrak verification, `cargo fmt --check`, the helper,
   CI, releases, updater, Syncthing and Sprint Python suites, Sync Help and
-  brand, and `cargo clippy --workspace --all-targets --locked -- -D warnings`
-  with its own warm cache. No Rust test suites, no desktop build, no Windows
-  or macOS job. A pre-merge verdict never counts as a full one.
+  brand, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  with its own warm cache, and `cargo check --release` of the `okilum` and
+  `okilum-sync-launch` binaries the AppImage builds. Clippy over all targets
+  turns on dev-dependency features such as gpui `test-support`, so a call to a
+  test-only API passes it and still breaks the beta (#2916); the check builds
+  without dev-dependencies and catches that. No Rust test suites, no desktop
+  build, no Windows or macOS job. A pre-merge verdict never counts as a full one.
 - **Beta** is built hourly from the newest main as it is; no check gates it.
   If main does not build, that hour's beta is skipped and the offending PR is
   reverted or fixed within the hour.

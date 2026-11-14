@@ -202,6 +202,14 @@ jobs:
         env:
           CARGO_NET_OFFLINE: 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Clippy over all targets pulls dev-dependency features (gpui
+      # test-support) into every crate, so a test-only API compiles there and
+      # still breaks the beta (#2916). Same packages, binaries and profile as
+      # scripts/appimage/build.sh, without dev-dependencies.
+      - name: Check release binaries without test features
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo check --release --locked -p okilum-shell -p okilum-sync-controller --bin okilum --bin okilum-sync-launch
       - name: Save Rust downloads and target cache
         if: ${{ (!cancelled() && steps.cache.outputs.cache-hit != 'true') && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
