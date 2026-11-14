@@ -97,3 +97,64 @@ class AppImageTests(unittest.TestCase):
         self.assertIn('runs-on: ubuntu-22.04', workflow)
         self.assertIn('for image in ubuntu:24.04 fedora:44;', workflow)
         self.assertEqual(workflow.count('bash scripts/appimage/build.sh'), 1)
+
+    def test_beta_producer_restores_main_seeded_dependency_cache_without_saving(self):
+        import yaml
+        producer = yaml.safe_load((ROOT / '.github/workflows/forgejo-linux.yml').read_text())
+        seeder = yaml.safe_load((ROOT / '.github/workflows/beta-appimage-cache.yml').read_text())
+        appimage, seed = producer['jobs']['appimage'], seeder['jobs']['seed']
+        # rust-cache hashes the job env into its key; drift means a silent cold build.
+        self.assertEqual(appimage['env'], seed['env'])
+        self.assertEqual(appimage['runs-on'], seed['runs-on'])
+        caches = [[s for s in job['steps'] if str(s.get('uses', '')).startswith('Swatinem/rust-cache@')]
+                  for job in (appimage, seed)]
+        self.assertEqual([len(c) for c in caches], [1, 1])
+        for (step,) in [caches[0], caches[1]]:
+            self.assertEqual(step['with']['shared-key'], 'beta-appimage-v1')
+            # Only main saves (#2881); write-once beta refs restore main's entry.
+            self.assertEqual(step['with']['save-if'], "${{ github.ref == 'refs/heads/main' }}")
+            # Registry dependencies only: path crates must compile from the checkout.
+            self.assertNotIn('cache-workspace-crates', step['with'])
+        self.assertEqual(caches[0][0]['if'], "github.event.schedule != '5 22 * * 2,6'")
+        triggers = seeder.get('on', seeder.get(True))  # PyYAML reads a bare on: as True
+        self.assertEqual(triggers['push']['branches'], ['main'])
+        build = [s for s in seed['steps'] if s.get('run') == 'bash scripts/appimage/build.sh']
+        self.assertEqual(len(build), 1)
+        self.assertEqual(build[0]['if'], "steps.cargo-cache.outputs.cache-hit != 'true'")
+        self.assertFalse(any('upload-artifact' in str(s.get('uses', '')) for s in seed['steps']))
+        self.assertNotIn('${{ secrets.', (ROOT / '.github/workflows/beta-appimage-cache.yml').read_text())
+        # The old main-only actions/cache step never ran on hourly refs.
+        self.assertFalse(any(str(s.get('uses', '')).startswith('actions/cache') for s in appimage['steps']))
+
+    def test_pushed_beta_runs_distribution_and_signing_checks_after_the_handoff_job(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/forgejo-linux.yml').read_text())
+        hourly = "github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')"
+        names = ('Verify unchanged AppImage on clean Ubuntu and Fedora',
+                 'Verify signed AppImage installation with disposable CI key')
+        steps = {s.get('name'): s for s in workflow['jobs']['appimage']['steps']}
+        for name in names:
+            self.assertTrue(steps[name]['if'].endswith('&& !(' + hourly + ')'), name)
+        # The handoff gate stays in the producer job and still precedes completion.
+        self.assertNotIn('if', steps['Verify AppImage package'])
+        acceptance = workflow['jobs']['appimage-acceptance']
+        self.assertEqual(acceptance['needs'], 'appimage')
+        self.assertEqual(acceptance['if'], hourly)
+        accepted = {s.get('name'): s for s in acceptance['steps']}
+        for name in names:
+            self.assertNotIn('if', accepted[name])
+        self.assertIn('scripts/appimage/smoke.sh', accepted[names[0]]['run'])
+        self.assertIn('for image in ubuntu:24.04 fedora:44;', accepted[names[0]]['run'])
+        self.assertEqual(accepted[names[1]]['env']['APPIMAGE_ARTIFACT_ID'],
+                         '${{ needs.appimage.outputs.artifact-id }}')
+        download = [s for s in acceptance['steps'] if str(s.get('uses', '')).startswith('actions/download-artifact@')]
+        self.assertEqual(download[0]['with']['name'], 'linux-appimage-${{ github.sha }}')
+        # Evidence keeps a distinct name: the handoff matches linux-appimage-<sha> exactly.
+        uploads = [s['with']['name'] for s in acceptance['steps'] if 'upload-artifact' in str(s.get('uses', ''))]
+        self.assertEqual(uploads, ['linux-appimage-acceptance-evidence-${{ github.sha }}'])
+        self.assertEqual(workflow['jobs']['appimage']['outputs']['artifact-id'],
+                         '${{ steps.producer.outputs.artifact-id }}')
+
+
+if __name__ == '__main__':
+    unittest.main()

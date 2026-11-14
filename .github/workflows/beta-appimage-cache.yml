@@ -1,0 +1,48 @@
+# Seeds the main-scoped Cargo cache that pushed beta AppImage producers restore.
+# Producers run on write-once forgejo-linux-pr/hourly-<sha> refs; a cache saved
+# there is never visible to the next ref, so without this every beta compiled
+# cold (12-20 min, measured 14.11). Off the beta critical path: it never uploads
+# an artifact, never touches a feed, and needs no secrets.
+name: beta-appimage-cache
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # One seeding build at a time; a newer main push waits, then usually hits the
+  # entry the running build saves and exits after the restore.
+  group: beta-appimage-cache
+  cancel-in-progress: false
+jobs:
+  seed:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    # Must match forgejo-linux.yml `appimage` exactly: rust-cache hashes these
+    # variables into its key, and Cargo fingerprints depend on them.
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=bfd'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Ubuntu 22.04 build dependencies
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold file patchelf gpgv \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1
+      - uses: Swatinem/rust-cache@v2
+        id: cargo-cache
+        with:
+          shared-key: beta-appimage-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The producer's own build script, so the dependency graph, features, CC and
+      # profile cannot drift from the beta build. Skipped on an exact hit.
+      - name: Build the beta AppImage graph to fill the cache
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/appimage/build.sh

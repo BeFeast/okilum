@@ -699,8 +699,11 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(data['on']['push'], {'branches': ['main']})
             self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
             prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
-            self.assertEqual(data['concurrency']['group'], prefix + "-beta-${{ github.event_name == 'push' && 'main' "
-                             "|| inputs.hourly_source || github.run_id }}")
+            # Linux push runs start at once in their own group (no queue behind the
+            # previous merge); Mac and Windows still queue FIFO and coalesce.
+            group = ("${{ inputs.hourly_source || github.run_id }}" if platform == 'linux'
+                     else "${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
+            self.assertEqual(data['concurrency']['group'], prefix + '-beta-' + group)
             self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
             report = data['jobs']['shipping-status']
             self.assertIn("github.event_name == 'workflow_dispatch'", report['if'])
@@ -719,7 +722,7 @@ class WorkflowContract(unittest.TestCase):
         self.assertIn("BACKEND: ${{ github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' "
                       "&& vars.OKILUM_WINDOWS_SIGN_BACKEND || '' }}", windows)
 
-    def test_public_proxies_keep_pr_refs_and_supersede_older_beta_producers(self):
+    def test_public_proxies_keep_pr_refs_and_beta_producer_groups(self):
         for name, branch in [('forgejo-linux', 'forgejo-linux-pr/**'), ('forgejo-macos', 'forgejo-pr/**')]:
             path = '.github/workflows/' + name + '.yml'
             data = self.load(path)
@@ -730,8 +733,8 @@ class WorkflowContract(unittest.TestCase):
             self.assertIn('hourly_beta.py', (ROOT / path).read_text())
         linux = self.load('.github/workflows/forgejo-linux.yml')
         self.assertEqual(linux['on']['schedule'], [{'cron': '5 22 * * 2,6'}])  # nightly acceptance only
-        self.assertEqual(linux['concurrency']['group'], "forgejo-linux-${{ startsWith(github.ref, "
-                         "'refs/heads/forgejo-linux-pr/hourly-') && 'beta' || github.ref }}")
+        # Per-ref: every write-once beta ref finishes even when a newer one starts.
+        self.assertEqual(linux['concurrency']['group'], 'forgejo-linux-${{ github.ref }}')
         self.assertNotIn('schedule', self.load('.github/workflows/forgejo-macos.yml')['on'])
         shipping = self.load('.github/workflows/forgejo-macos-shipping.yml')
         self.assertEqual(set(shipping['on']), {'workflow_dispatch'})

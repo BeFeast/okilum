@@ -423,8 +423,8 @@ def dispatch_linux(source):
     exact = [ref for ref in refs if ref['ref'] == 'refs/heads/' + branch]
     if not exact:
         wait_for_mirror(client, source)
-        # The push trigger starts the exact-source producer immediately. Its
-        # concurrency group cancels an unfinished producer of an older source.
+        # The push trigger starts the exact-source producer immediately, in a
+        # per-ref concurrency group: a newer source never cancels this one.
         client.request('git/refs', 'POST', {'ref': 'refs/heads/' + branch, 'sha': source})
         return
     if len(exact) != 1 or exact[0]['object']['sha'] != source:

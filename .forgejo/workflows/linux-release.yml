@@ -20,14 +20,15 @@ on:
         default: ''
 
 concurrency:
-  # A newer main push never cancels a running beta of an older commit.
-  # Manual, pinned, archive and AppImage-only dispatches keep their own groups
-  # and always finish; publication runs in release-publish and is never cancelled.
-  group: linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
-  # A running beta always finishes (manager 13.11). Forgejo queues this group
-  # FIFO and never replaces a pending run, so the push run that starts cancels
-  # older queued push runs and keeps the newest (hourly_beta.coalesce_queued_pushes);
-  # a stale push run that starts anyway skips in select because main moved on.
+  # Every push run has its own group: a merge starts its beta at once instead of
+  # queueing behind the previous merge's whole run (measured 14.11: up to 23 min
+  # of queue on top of the build). A running beta still always finishes (manager
+  # 13.11): nothing cancels it. Its exact-source GitHub producer runs in its own
+  # per-ref group, a push run that starts after main moved on skips in select,
+  # and release-publish serializes feed writes, filing an older build as
+  # archive-only. Pinned retries keep one group per source; manual, archive and
+  # AppImage-only dispatches keep their own groups and always finish.
+  group: linux-beta-${{ inputs.hourly_source || github.run_id }}
   cancel-in-progress: false
 
 jobs:
