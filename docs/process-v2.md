@@ -36,12 +36,13 @@ remains; no system hard limits change. No data/native gate is added to fast CI.
 
 ## Full acceptance
 
-Full Forgejo CI runs daily at 04:00 UTC (06:00 Israel in winter), a fixed hour
-while the shared heavy host is idle, before the 09:00 Stable; it gates Stable
-only (Oleg 13.11 evening). Budgets are unchanged. Each heavy job samples the
-host's 5-minute load average (`scripts/ci/host-load.py`); a failing job whose
-peak exceeded twice the core count is reported as **no verdict**, not as a code
-failure, in its summary and outputs. Brain, Inbox and compatibility suites run
+Full Forgejo CI runs daily at 04:00 UTC (06:00 Israel in winter), before the
+09:00 Stable; it gates Stable only (Oleg 13.11 evening). Budgets are unchanged.
+Since 14.11 Okilum compiles nothing on baldr or idunn: the shared and Linux
+gates run the exact source on GitHub's hosted runners through `bridge` waiters,
+so the former baldr host-load "no verdict" guard is removed. No Okilum job may
+use a baldr or idunn runner label (`scripts/ci/test_runner_labels.py`; the two
+beta builders are temporary exceptions, #2927). Brain, Inbox and compatibility suites run
 at 22:05 UTC Tuesday and Saturday. All of them also run on workflow_dispatch.
 The full Linux and native macOS scripts keep their complete suites. AppImage
 native installation tests reuse the original main beta artifact on the nightly

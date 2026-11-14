@@ -6,7 +6,8 @@ import subprocess
 import textwrap
 import unittest
 
-WORKFLOW = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml').read_text()
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = (ROOT / '.forgejo/workflows/ci.yml').read_text()
 
 
 def gate(job, **overrides):
@@ -92,10 +93,11 @@ class NativeGates(unittest.TestCase):
             return set(value[1].strip('[]').split(', ')) if value else set()
         self.assertEqual(needs('check'), {'shared', 'macos'})
         self.assertEqual(needs('macos'), {'native-scope', 'macos-github', 'macos-local'})
-        self.assertEqual(needs('shared'), {'shared-select', 'shared-local', 'shared-github'})
+        self.assertEqual(needs('shared'), {'shared-select', 'shared-github'})
         for job in ('macos-github', 'macos-local'):
             self.assertEqual(needs(job), {'native-scope'})
-        shared = re.search(r'^  shared-local:\n(.*?)(?=^  [\w-]+:)', WORKFLOW, re.M | re.S)[1]
+        # The shared gate runs on GitHub's hosted runner (Okilum left baldr, 14.11).
+        shared = (ROOT / '.github/workflows/forgejo-shared.yml').read_text()
         self.assertIn('tini -s -- bash scripts/ci/check-shared.sh', shared)
         self.assertIn('scripts/vendor-setup.sh --verify', shared)
         self.assertNotIn('check-linux.sh', shared)

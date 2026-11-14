@@ -183,7 +183,9 @@ raise SystemExit(int(sys.argv[2]))
 
     def test_workflow_bounds_setup_with_additive_job_budgets(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
-        self.assertIn('bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh', workflow)
+        # The source sharing gate runs on GitHub since Okilum left baldr (14.11).
+        sync = (ROOT / '.github/workflows/forgejo-sync-source-sharing.yml').read_text()
+        self.assertIn('bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh', sync)
         self.assertIn('timeout-minutes: 60', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
         self.assertIn('timeout-minutes: 60', workflow.split('  shell-full:', 1)[1].split('  certification-status:', 1)[0])
         # #2589: both certification gates keep their outer groups on GitHub.
@@ -195,7 +197,9 @@ raise SystemExit(int(sys.argv[2]))
                         "releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v",
                         "updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v"]:
             self.assertIn('bash scripts/ci/test-group.sh ' + command, check)
-        self.assertIn('timeout-minutes: 30', workflow.split('  sync-source-sharing:', 1)[1])
+        # The hosted job bounds apt, the warm compile and the 1500 s gate group.
+        self.assertIn('timeout-minutes: 48', sync)
+        self.assertIn('timeout-minutes: 60', workflow.split('  sync-source-sharing:', 1)[1])
 
 
 if __name__ == '__main__':

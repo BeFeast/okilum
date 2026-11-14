@@ -12,30 +12,30 @@ permissions:
   contents: read
 jobs:
   feedback-model:
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
-    timeout-minutes: 15
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '4'
+    # The exact source runs on GitHub's hosted runner
+    # (.github/workflows/forgejo-feedback.yml). The former job used the `docker`
+    # label, which also matched baldr; Okilum left baldr (Oleg 14.11). This
+    # waiter compiles nothing.
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bridge
+    # 53 min shared queue/run budget + poll/cancel/cleanup, within the primary
+    # bridge runner's 60 min ceiling (docs/fast-runner.md).
+    timeout-minutes: 60
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Install compiler and pinned Rust
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends build-essential curl git
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Resolve and verify pinned workspace dependencies
-        run: |
-          scripts/vendor-setup.sh
-          scripts/vendor-setup.sh --verify
-      - name: Format, lint and execute the complete portable Feedback suite
-        run: |
-          cargo fmt -p okilum-http --check
-          cargo clippy --locked -p okilum-http --test feedback_model -- -D warnings
-          cargo test --locked -p okilum-http --test feedback_model
+      - name: Run the portable Feedback suite on GitHub
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_LANE: feedback
+        timeout-minutes: 56
+        run: python3 scripts/ci/github-pr.py

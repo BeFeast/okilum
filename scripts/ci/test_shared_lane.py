@@ -34,6 +34,8 @@ def execute(name, env):
 
 class SharedLaneTests(unittest.TestCase):
     def test_selector_matrix_runs_actual_inline_policy(self):
+        # Hosted is the only shared lane since Okilum left baldr (14.11); untrusted
+        # code selects nothing. The measurement switch is unchanged.
         for setting, event, trusted in itertools.product(('', 'local', 'hosted', 'measure'),
                                                         ('push', 'pull_request', 'schedule'), ('true', 'false')):
             env = dict(SHARED_LANE=setting, EVENT=event, TRUSTED=trusted,
@@ -42,7 +44,7 @@ class SharedLaneTests(unittest.TestCase):
             eligible = trusted == 'true' and event in ('push', 'pull_request')
             with self.subTest(setting=setting, event=event, trusted=trusted):
                 self.assertEqual(code, 0)
-                self.assertEqual(outputs['lane'], 'hosted' if eligible and setting == 'hosted' else 'local')
+                self.assertEqual(outputs['lane'], 'hosted' if trusted == 'true' else 'none')
                 self.assertEqual(outputs['measure'], str(eligible and setting == 'measure').lower())
 
     def test_measurement_expires_and_is_bounded_to_at_most_ten_run_numbers(self):
@@ -51,25 +53,24 @@ class SharedLaneTests(unittest.TestCase):
         for run in range(98, 113):
             _, output = execute('shared-select', dict(base, RUN_NUMBER=str(run)))
             self.assertEqual(output['measure'], str(100 <= run < 110).lower())
-            self.assertEqual(output['lane'], 'local')
+            self.assertEqual(output['lane'], 'hosted')
         for key, value in [('MEASURE_UNTIL', ''), ('MEASURE_UNTIL', 'invalid'),
                            ('MEASURE_UNTIL', str(int(time.time())-1)),
                            ('MEASURE_UNTIL', str(int(time.time())+90000)),
                            ('MEASURE_FIRST_RUN', ''), ('RUN_NUMBER', '')]:
             _, output = execute('shared-select', dict(base, **{key: value}))
-            self.assertEqual(output, {'lane': 'local', 'measure': 'false'})
+            self.assertEqual(output, {'lane': 'hosted', 'measure': 'false'})
 
-    def test_aggregate_local_ignores_measurement_but_hosted_requires_exact_success(self):
+    def test_aggregate_requires_exact_hosted_success(self):
         states = ('success', 'failure', 'skipped', 'cancelled', '')
-        for lane, local, hosted, result in itertools.product(('local', 'hosted', 'unknown'), states, states, states):
-            env = dict(SELECTION='success', LANE=lane, LOCAL=local, HOSTED_JOB=hosted, HOSTED_RESULT=result)
+        for lane, hosted, result in itertools.product(('local', 'hosted', 'none', ''), states, states):
+            env = dict(SELECTION='success', LANE=lane, HOSTED_JOB=hosted, HOSTED_RESULT=result)
             code, _ = execute('shared', env)
-            expected = (local == 'success' if lane == 'local' else
-                        lane == 'hosted' and local == 'skipped' and hosted == result == 'success')
+            expected = lane == 'hosted' and hosted == result == 'success'
             self.assertEqual(code == 0, expected, env)
         for selection in states[1:]:
-            self.assertNotEqual(execute('shared', dict(SELECTION=selection, LANE='local',
-                LOCAL='success', HOSTED_JOB='success', HOSTED_RESULT='success'))[0], 0)
+            self.assertNotEqual(execute('shared', dict(SELECTION=selection, LANE='hosted',
+                HOSTED_JOB='success', HOSTED_RESULT='success'))[0], 0)
 
     def test_measurement_and_activation_execute_identical_bridge_jobs(self):
         # Separate jobs keep an independent measurement outside required needs.
@@ -79,37 +80,22 @@ class SharedLaneTests(unittest.TestCase):
                              if not line.startswith('    if:'))
         self.assertEqual(execution('shared-github'), execution('shared-measure'))
 
-    def test_heavy_local_gates_wait_without_suppressing_shared_after_linux_failure(self):
+    def test_no_local_compile_lane_remains(self):
+        # Okilum left baldr's heavy runner (Oleg 14.11): the daily full set has no
+        # local shared or Linux lane; both gates run on GitHub's hosted runners.
         jobs = yaml.safe_load(WORKFLOW)['jobs']
-        shared = jobs['shared-local']
-        self.assertIn('linux-local', shared['needs'])
-        self.assertNotIn('shared-local', jobs['linux-local'].get('needs', []))
-        # Gate budgets stay 60/80 on the gate steps; jobs add 5 minutes for the
-        # always() host-load report (#2840).
-        self.assertEqual(shared['timeout-minutes'], 65)
-        self.assertEqual(jobs['linux-local']['timeout-minutes'], 85)
-        condition = shared['if']
-        self.assertIn('always()', condition)
-        self.assertIn('!cancelled()', condition)
-        expression = condition.replace('always()', 'True').replace('!cancelled()', 'not cancelled')
-        expression = expression.replace('needs.shared-select.outputs.lane', 'lane').replace('&&', 'and')
-        for linux in ('success', 'failure', 'skipped'):
-            for lane, cancelled in itertools.product(('local', 'hosted', ''), (False, True)):
-                with self.subTest(linux=linux, lane=lane, cancelled=cancelled):
-                    # Actions waits for every need. always() must remove its
-                    # implicit success() guard even when Linux did not pass.
-                    result = eval(expression, {'__builtins__': {}},
-                                  {'lane': lane, 'cancelled': cancelled})
-                    self.assertEqual(result, lane == 'local' and not cancelled)
+        self.assertNotIn('shared-local', jobs)
+        self.assertNotIn('linux-local', jobs)
+        self.assertEqual(jobs['linux']['needs'], ['linux-github'])
+        self.assertEqual(jobs['main-health']['needs'], ['linux-github'])
 
     def test_wiring_and_public_runner_isolation(self):
         self.assertEqual(WORKFLOW.count('vars.OKILUM_SHARED_LANE'), 1)
         self.assertNotIn('checkout', block('shared-select'))
-        self.assertIn("if: always() && !cancelled() && needs.shared-select.outputs.lane == 'local'", block('shared-local'))
         self.assertIn("if: needs.shared-select.outputs.lane == 'hosted'", block('shared-github'))
         self.assertIn("if: needs.shared-select.outputs.measure == 'true'", block('shared-measure'))
         self.assertNotIn('shared-measure', block('shared'))
-        self.assertIn('needs: [shared-select, shared-local, shared-github]', block('shared'))
+        self.assertIn('needs: [shared-select, shared-github]', block('shared'))
         self.assertIn('needs: [shared, macos]', block('check'))
         self.assertIn('github.event.pull_request.head.sha || github.sha', block('shared-github'))
         hosted = (ROOT / '.github/workflows/forgejo-shared.yml').read_text()

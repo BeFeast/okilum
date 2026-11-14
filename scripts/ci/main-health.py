@@ -149,9 +149,11 @@ def lane_log(api, run_id):
     """The failed Linux lane's log in this run; raises when it cannot be read."""
     jobs = api.call('GET', f'/actions/runs/{run_id}/jobs')
     jobs = jobs if isinstance(jobs, list) else jobs.get('jobs', [])
-    job = next((j for j in jobs if j['name'] == 'linux-local' and j['status'] == 'failure'), None)
+    # linux-github (the only lane since 14.11) logs the hosted waiter, which has no
+    # cargo output, so classify() reports it as infrastructure and blames no merge.
+    job = next((j for j in jobs if j['name'] in ('linux-local', 'linux-github') and j['status'] == 'failure'), None)
     if job is None:
-        raise LookupError(f'no failed linux-local job in run {run_id}')
+        raise LookupError(f'no failed Linux lane job in run {run_id}')
     return api.text(f"/actions/jobs/{job['id']}/logs")
 
 

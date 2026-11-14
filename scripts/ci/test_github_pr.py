@@ -108,8 +108,7 @@ class HostedPRTests(unittest.TestCase):
     def test_supplemental_routing_is_exclusive_and_keeps_main_and_forks_local(self):
         import re
         root = Path(__file__).resolve().parents[2]
-        for file, job, lane in [('brain-ci', 'brain-tests', 'brain'), ('inbox-ci', 'inbox-tests', 'inbox'),
-                                 ('linux-release', 'release', 'arch'), ('windows-diagnostic', 'release', 'windows-release')]:
+        for file, job, lane in [('linux-release', 'release', 'arch'), ('windows-diagnostic', 'release', 'windows-release')]:
             workflow = (root / f'.forgejo/workflows/{file}.yml').read_text()
             def evaluate(name, event, setting, fork, appimage_only='', arch='true'):
                 block = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)[1]
@@ -139,6 +138,34 @@ class HostedPRTests(unittest.TestCase):
                             self.assertTrue(evaluate(job, 'workflow_dispatch', setting, fork, 'false'))
                             self.assertFalse(evaluate(job, 'workflow_dispatch', setting, fork, 'true'))
                             self.assertFalse(evaluate(lane+'-github', 'workflow_dispatch', setting, fork, 'true'))
+
+
+    def test_nightly_brain_inbox_feedback_and_excalidraw_are_hosted_only(self):
+        # Okilum left baldr (Oleg 14.11): their former `docker` jobs are gone and
+        # the bridge waiter runs for every trusted event, never for fork code.
+        import re
+        root = Path(__file__).resolve().parents[2]
+        for file, job, lane in [('brain-ci', 'brain-github', 'brain'), ('inbox-ci', 'inbox-github', 'inbox'),
+                                ('feedback-ci', 'feedback-model', 'feedback'),
+                                ('excalidraw-compat', 'plugin-oracle', 'excalidraw')]:
+            workflow = (root / f'.forgejo/workflows/{file}.yml').read_text()
+            jobs = re.findall(r'^  ([\w-]+):\n', workflow.split('\njobs:\n', 1)[1], re.M)
+            self.assertEqual(jobs, [job], file)
+            block = workflow.split(f'\n  {job}:\n', 1)[1]
+            self.assertIn('    runs-on: bridge\n', block)
+            self.assertIn(f'CI_LANE: {lane}\n', block)
+            self.assertIn('github.event.pull_request.number || github.run_number', block)
+            self.assertIn('fetch-depth: 0', block)
+            self.assertTrue((root / f'.github/workflows/forgejo-{lane}.yml').exists(), lane)
+            expr = re.search(r'    if: >-\n      ([^\n]+)', block)[1]
+            for event in ['pull_request', 'push', 'schedule', 'workflow_dispatch']:
+                for fork in [False, True]:
+                    text = expr
+                    for key, value in {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
+                                       'github.repository': 'BeFeast/okilum', 'github.event_name': event}.items():
+                        text = text.replace(key, repr(value))
+                    result = eval(text.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
+                    self.assertEqual(result, not (event == 'pull_request' and fork), (file, event, fork))
 
 
 class CleanupDiagnosticTests(unittest.TestCase):

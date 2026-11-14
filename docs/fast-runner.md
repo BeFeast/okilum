@@ -4,7 +4,10 @@ Since #2589 neither certification job compiles on baldr: `check` and
 `shell-full` wait on `bridge` while GitHub's dedicated runners execute them
 (see [Hosted certification check](#hosted-certification-check-2589) and
 [Hosted certification shell-full](#hosted-certification-shell-full-2589)).
-`fast-linux` now runs only nightly/manual `sync-source-sharing`. The slot pool
+Since 14.11 (Okilum left baldr) nothing uses `fast-linux`: nightly/manual
+`sync-source-sharing` waits on `bridge` while GitHub runs it
+(`.github/workflows/forgejo-sync-source-sharing.yml`, same group limits, test
+targets built first outside the timed groups). The slot pool
 (`fast-local.sh`, `fast-source.sh`) is removed; the sections below are the
 history behind the unchanged phase deadlines.
 

@@ -186,41 +186,47 @@ jobs:
 
   sync-source-sharing:
     # Keep this additional compiler/daemon load outside the bounded desktop gate.
+    # The acceptance runs on GitHub's hosted runner
+    # (.github/workflows/forgejo-sync-source-sharing.yml); it formerly ran on
+    # baldr's fast-linux host runner, which Okilum left (Oleg 14.11). This
+    # waiter compiles nothing; the hosted job runs the exact source's
+    # scripts/ci/sync-source-sharing-fast.sh with its unchanged group limits.
     needs: [check]
     if: inputs.certification_source == ''
-    runs-on: fast-linux
-    timeout-minutes: 30
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      CARGO_BUILD_JOBS: "3"
+    runs-on: bridge
+    # 56 min hosted bridge + margin, within the primary bridge runner's 60 min
+    # ceiling (docs/fast-runner.md).
+    timeout-minutes: 60
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Allocate job-owned fixture directory
-        run: |
-          fixture_root=$(mktemp -d "${RUNNER_TEMP:?}/sync-fixtures-XXXXXX")
-          echo "OKILUM_SYNC_FIXTURE_ROOT=$fixture_root" >> "$GITHUB_ENV"
-          echo "TMPDIR=$fixture_root" >> "$GITHUB_ENV"
-      - name: Install Python venv support
-        run: |
-          if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends python3-venv
-          fi
-      - name: Prepare isolated Python test dependencies
-        run: bash scripts/ci/setup-python-tests.sh
-      - name: Verify ordinary source sharing with two pinned managed runtimes
+      - name: Stage the hosted bridge from the workflow revision
         run: |
           set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh
-      - name: Reject and reap surviving job fixture daemons
-        if: always()
+          bridge_root=$(mktemp -d "${RUNNER_TEMP:?}/sync-bridge-XXXXXX")
+          cp scripts/ci/github-pr.py scripts/ci/github-macos.py scripts/ci/github_auth.py \
+            scripts/ci/gate_log_evidence.py scripts/ci/fast_evidence.py "$bridge_root/"
+          echo "OKILUM_HOSTED_BRIDGE=$bridge_root" >> "$GITHUB_ENV"
+      - name: Run source sharing and network policy on GitHub
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          CI_LANE: sync-source-sharing
+          PR_NUMBER: ${{ github.run_number }}
+          PR_HEAD_SHA: ${{ github.sha }}
+        # 60 s history + 53 min shared queue/run budget + 2 min poll/cancel/cleanup.
+        timeout-minutes: 56
         run: |
-          if [[ -n "${OKILUM_SYNC_FIXTURE_ROOT:-}" ]]; then
-            python3 scripts/ci/sync-fixture-processes.py --root "$OKILUM_SYNC_FIXTURE_ROOT" --cleanup
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          # A shallow commit can be pushed only if GitHub already mirrors it.
+          # Connect it to full history so a not-yet-mirrored main still pushes.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            timeout 60 git fetch -q --no-tags --unshallow origin "$PR_HEAD_SHA"
           fi
+          python3 "$OKILUM_HOSTED_BRIDGE/github-pr.py"

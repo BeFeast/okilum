@@ -23,6 +23,8 @@ BRIDGE_CLEANUP = 120
 HOSTED = {
     'check': '.github/workflows/forgejo-check.yml',
     'shell-full': '.github/workflows/forgejo-shell-full.yml',
+    # Formerly baldr's fast-linux runner; hosted since Okilum left baldr (14.11).
+    'sync-source-sharing': '.github/workflows/forgejo-sync-source-sharing.yml',
 }
 # #2589 hosted shell-full exercises, GitHub runs 42049574081 and 42052787792
 # (cold, 4 vCPU): the slower phase seconds and bridge wait.
@@ -170,11 +172,11 @@ class FastBudgets(unittest.TestCase):
                 step['run'] = step['run'].replace(command, smaller)
                 with self.assertRaisesRegex(AssertionError, 'children/setup/margin'):
                     self.validate(hosted=hosted)
-        workflow = copy.deepcopy(self.workflow)
-        step = workflow['jobs']['sync-source-sharing']['steps'][-2]
+        hosted = copy.deepcopy(self.hosted)
+        step = self.hosted_step(hosted, 'sync-source-sharing', 'sync-source-sharing', 'sync-local 1500')
         step['run'] = re.sub(r'sync-local \d+', 'sync-local 840', step['run'])
         with self.assertRaisesRegex(AssertionError, 'sync-local:'):
-            self.validate(workflow)
+            self.validate(hosted=hosted)
 
     def test_increasing_any_inner_phase_or_lock_requires_resizing_ancestors(self):
         for name in ['fast.sh', 'shell-full.sh', 'sync-source-sharing-fast.sh']:
@@ -198,7 +200,8 @@ class FastBudgets(unittest.TestCase):
         for lane, job, marker, step_value, job_value in [
                 ('check', 'python', 'ci-python 180', 3, 26),
                 ('check', 'check', 'fast.sh 2040', 34, 46),
-                ('shell-full', 'shell-full', 'shell-full.sh 1920', 32, 44)]:
+                ('shell-full', 'shell-full', 'shell-full.sh 1920', 32, 44),
+                ('sync-source-sharing', 'sync-source-sharing', 'sync-local 1500', 25, 37)]:
             for field, value in [('step', step_value), ('job', job_value)]:
                 with self.subTest(lane=lane, job=job, field=field):
                     hosted = copy.deepcopy(self.hosted)
@@ -226,7 +229,7 @@ class FastBudgets(unittest.TestCase):
                     self.validate(workflow)
 
     def test_bridge_waiters_fit_the_bridge_runner_ceiling(self):
-        for name in ['check', 'shell-full']:
+        for name in ['check', 'shell-full', 'sync-source-sharing']:
             with self.subTest(job=name):
                 workflow = copy.deepcopy(self.workflow)
                 workflow['jobs'][name]['timeout-minutes'] = 61
@@ -238,7 +241,7 @@ class FastBudgets(unittest.TestCase):
                     self.validate(workflow)
 
     def test_bridge_steps_cover_history_shared_budget_and_cleanup(self):
-        for name in ['check', 'shell-full']:
+        for name in ['check', 'shell-full', 'sync-source-sharing']:
             with self.subTest(job=name):
                 workflow = copy.deepcopy(self.workflow)
                 step = next(s for s in workflow['jobs'][name]['steps'] if WAITER in s.get('run', ''))

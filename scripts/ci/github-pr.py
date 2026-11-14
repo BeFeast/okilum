@@ -30,6 +30,13 @@ LANES = {
     # #2589: Forgejo fast.yml `check` (Beta's gate). Exceeds the longer hosted
     # job's 47 min ceiling, so GitHub's deadline fires and is observed first.
     'check': ('check', 'Build Linux desktop and run fast unit tests', 49 * 60),
+    # Forgejo fast.yml nightly `sync-source-sharing`, formerly on baldr's
+    # fast-linux runner (Oleg 14.11). Exceeds the hosted job's 48 min ceiling.
+    'sync-source-sharing': ('sync-source-sharing', 'Verify ordinary source sharing with two pinned managed runtimes', 50 * 60),
+    # Nightly feedback-ci and excalidraw-compat, formerly on the `docker` label
+    # that also matched baldr (Oleg 14.11). Each exceeds its hosted job ceiling.
+    'feedback': ('feedback', 'Format, lint and execute the complete portable Feedback suite', 27 * 60),
+    'excalidraw': ('excalidraw', "Load writer output with the plugin's own loader", 42 * 60),
 }
 # Further gate steps of the same hosted run, each proven by the jobs API.
 ALSO_REQUIRED = {
@@ -40,7 +47,8 @@ ALSO_REQUIRED = {
 # Waiters inside a fixed Forgejo step ceiling. The primary `bridge` runner stops
 # every job at 60 min, so queue and run share one budget; the run still gets at
 # most its lane timeout. See docs/fast-runner.md (#2589).
-BRIDGE_BUDGETS = {'shell-full': 53 * 60, 'check': 53 * 60}
+BRIDGE_BUDGETS = {'shell-full': 53 * 60, 'check': 53 * 60, 'sync-source-sharing': 53 * 60,
+                  'feedback': 53 * 60, 'excalidraw': 53 * 60}
 
 
 def main():

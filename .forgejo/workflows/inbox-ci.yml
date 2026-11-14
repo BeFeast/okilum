@@ -13,61 +13,18 @@ permissions:
   contents: read
 
 jobs:
-  inbox-tests:
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local'
-    # Existing baldr Docker label: keep long builds off light/bridge waiters.
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
-    timeout-minutes: 20
-    # Not a required branch check; failures remain visible instead of being masked.
-    # Inbox PRs must pass this job before their executor merges them.
-    env:
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Install compiler and pinned Rust
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev python3-venv
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Format, lint and test isolated Inbox workspace
-        working-directory: inbox
-        run: |
-          # --all follows path dependencies into the Reader workspace, whose
-          # GPUI vendor is intentionally absent from this isolated Inbox job.
-          cargo fmt --check
-          cargo fmt --manifest-path ../crates/okilum-sync/Cargo.toml -p okilum-sync --check
-          cargo clippy --locked --workspace --all-targets -- -D warnings
-          cargo test --locked --workspace
-      - name: Consistent SQLite backup and restore
-        run: python3 inbox/deploy/test_backup.py
-      - name: Web outbox and WebAuthn encoding tests
-        working-directory: web/inbox
-        run: |
-          npm ci --ignore-scripts
-          npm test
-      - name: T3 bridge projection, transport and recovery tests
-        run: |
-          python3 -m venv /tmp/okilum-bridge-tests
-          /tmp/okilum-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
-          /tmp/okilum-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
-      - name: Read-only Forgejo collector pagination and failure tests
-        run: python3 -m unittest discover -s inbox/forgejo -p 'test_*.py' -v
-
+  # The only lane: the exact source runs on GitHub's hosted runner
+  # (.github/workflows/forgejo-inbox.yml). The former local job used the
+  # `docker` label, which also matched baldr; Okilum left baldr (Oleg 14.11).
   inbox-github:
     if: >-
-      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.OKILUM_PR_LANE != 'local'
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
     timeout-minutes: 125
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Wait for exact-head hosted inbox
@@ -76,7 +33,7 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_LANE: inbox
         run: python3 scripts/ci/github-pr.py

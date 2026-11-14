@@ -1,5 +1,10 @@
 # Reader CI image candidates
 
+> **Retired 14.11:** Okilum left baldr (Oleg). The `reader-ci-image` dispatch
+> workflow required baldr's host Docker and is removed; no Okilum job may land
+> on a baldr runner (`scripts/ci/test_runner_labels.py`). The recipe below is
+> kept for reference only.
+
 The manual `reader-ci-image` workflow builds on the existing `heavy` lane and
 checks that the host is Baldr. It does not change runner labels or the active
 Reader CI image. Requires the root `rust-toolchain.toml` from #710.
