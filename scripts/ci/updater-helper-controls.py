@@ -96,10 +96,26 @@ CONTROLS = [
      [(b'                return Err(other(\n                    "update helper matches neither side of its transaction record and no verified copy exists; record kept, repair needed",\n                ));',
        b'                warn!("keeping it");')],
      RECOVERY, 'machine_install_never_bootstraps_from_a_root_helper_its_record_rejects'),
-    ('keep-empty-unbound', 'helper_replace.rs',
-     [(b'} else if recorded.is_none() && is_plain(&file)? && file.metadata()?.len() == 0 {',
-       b'} else if false {')],
-     RECOVERY, 'owned_temporaries_are_bound_to_their_file_identity'),
+    ('sweep-empty-unbound', 'helper_replace.rs',
+     [(b'                            } else {\n                                // Only a bound, identity-verified temporary is ours.',
+       b'                            } else if recorded.is_none() && is_plain(&file)? && file.metadata()?.len() == 0 {\n'
+       b'                                let failed = delete_handle_ref(&file).is_err();\n'
+       b'                                drop(file);\n'
+       b'                                failed\n'
+       b'                            } else {\n                                // Only a bound, identity-verified temporary is ours.')],
+     RECOVERY, 'an_existing_empty_file_under_a_reserved_name_is_never_deleted'),
+    ('sweep-on-already-exists', 'helper_replace.rs',
+     [(b'            let file = create_owned(&temporary)?;',
+       b'            let file = match create_owned(&temporary) {\n'
+       b'                Ok(file) => file,\n'
+       b'                Err(error) => {\n'
+       b'                    if let Ok(Some(taken)) = open_entry(&temporary, GENERIC_READ | DELETE | FILE_WRITE_ATTRIBUTES) {\n'
+       b'                        let _ = delete_handle_ref(&taken);\n'
+       b'                    }\n'
+       b'                    return Err(error);\n'
+       b'                }\n'
+       b'            };')],
+     RECOVERY, 'an_existing_empty_file_under_a_reserved_name_is_never_deleted'),
     ('bootstrap-trusts-root', 'helper_replace.rs',
      [(b'        recover(source)?;\n        if let Some(pending) = inspect(source) {\n'
        b'            return Err(other(&format!("root {pending}; not used as a bootstrap source")).into());\n        }\n', b'')],

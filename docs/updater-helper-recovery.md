@@ -38,11 +38,13 @@ SHA-256 before it is renamed. Sweeps touch only ledger entries: a temporary is
 deleted only when an exclusive open shows that no process holds it and the file
 is exactly the recorded one (a reused name or a replayed ledger does not match);
 an obsolete copy only while it is still a single-link regular file with the
-recorded content identity. A reservation whose file exists but was never bound
-(the process died between creating the file and recording its identity) is
-deleted only if it is still empty, plain and held by no process, since data is
-written only after binding. A non-empty unbound file, a link, or a changed copy
-is never deleted. Unlisted files are never touched. A ledger that is not exactly
+recorded content identity. Only a bound, identity-verified temporary is ever deleted. An unbound
+reservation proves nothing (after a crash another file may take the name), so
+its file is left in place, and a name collision on creation fails without
+touching the existing file. Residual: a crash between creating a temporary and
+the ledger write, flush and rename that bind it leaves one empty
+`Update.exe.vpk-tmp-<id>` file; it is never deleted and is harmless. A link or a
+changed copy is never deleted either. Unlisted files are never touched. A ledger that is not exactly
 what this code writes (wrong header, malformed line, over 1 MiB, not a plain
 file) means unknown ownership: nothing is swept, recovery and publication fail,
 and Okilum shows the repair state. The ledger, its pending update and a lone

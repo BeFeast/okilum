@@ -66,7 +66,7 @@
 +            self.extract_zip_idx_to_path(i, &dest_path)?;
 --- /dev/null
 +++ b/src/helper_replace.rs
-@@ -0,0 +1,1064 @@
+@@ -0,0 +1,1065 @@
 +//! Recoverable publication of fully verified helper/stub bytes. ZIP version independent.
 +//!
 +//! Recovery decides by identity, never by file name. Before anything in a
@@ -588,17 +588,10 @@
 +                                    operations.checkpoint(p, "swept-one")?;
 +                                }
 +                                failed
-+                            } else if recorded.is_none() && is_plain(&file)? && file.metadata()?.len() == 0 {
-+                                // Reserved and created, but the process died before
-+                                // binding. Data is written only after binding, so an
-+                                // empty, unheld, plain file under our reserved name
-+                                // (older than this transaction: we hold the lock) is ours.
-+                                let failed = delete_handle_ref(&file).is_err();
-+                                drop(file);
-+                                failed
 +                            } else {
-+                                // A different file under the name, or a non-empty
-+                                // unbound one: never deleted, no longer ours.
++                                // Only a bound, identity-verified temporary is ours.
++                                // An unbound reservation proves nothing (another file
++                                // may have taken the name): left in place, harmless.
 +                                warn!("Temporary next to the update helper is not provably ours; left in place");
 +                                false
 +                            }
@@ -707,6 +700,10 @@
 +        /// Named transaction phase; production does nothing (test seam only).
 +        fn checkpoint(&self, _paths: &Paths, _phase: &str) -> io::Result<()> {
 +            Ok(())
++        }
++        /// Unique id naming this transaction's temporaries (fixed by a test seam).
++        fn transaction_id(&self) -> String {
++            transaction_id()
 +        }
 +    }
 +    struct Windows;
@@ -896,7 +893,7 @@
 +            let paths = Paths::new(destination);
 +            let transaction = Transaction::begin(&paths)?;
 +            recover_locked(&paths, operations)?;
-+            let id = transaction_id();
++            let id = operations.transaction_id();
 +            let temporary = sibling(destination, &format!(".vpk-tmp-{id}"));
 +            let record_temporary = sibling(destination, &format!(".vpk-tmp-{id}-record"));
 +            add_owned(
@@ -904,13 +901,9 @@
 +                vec![Owned::Temporary(file_name(&temporary), None), Owned::Temporary(file_name(&record_temporary), None)],
 +                operations,
 +            )?;
-+            let file = match create_owned(&temporary) {
-+                Ok(file) => file,
-+                Err(error) => {
-+                    let _ = sweep_owned(&paths, operations);
-+                    return Err(error);
-+                }
-+            };
++            // An existing file under the reserved name (AlreadyExists) is not
++            // ours: fail without touching it; the reservation stays unbound.
++            let file = create_owned(&temporary)?;
 +            if let Err(error) = bind_owned(&paths, &temporary, &file, operations) {
 +                // Our own handle: the unbound temporary goes, the reservation is swept.
 +                let _ = delete_handle_ref(&file);
@@ -1050,6 +1043,8 @@
 +        /// Real operations; at the named phase, write and flush a marker next to
 +        /// the helper and block forever so a power cut can be applied there.
 +        Pause(&'static str),
++        /// Real operations with a fixed transaction id, to force a name collision.
++        FixedId(&'static str),
 +    }
 +    #[cfg(feature = "helper-replacement-tests")]
 +    impl Operations for Fault {
@@ -1080,7 +1075,7 @@
 +                    };
 +                    Windows.replace(p)
 +                }
-+                Self::Pause(_) => Windows.replace(p),
++                Self::Pause(_) | Self::FixedId(_) => Windows.replace(p),
 +            }
 +        }
 +        fn checkpoint(&self, p: &Paths, phase: &str) -> io::Result<()> {
@@ -1105,6 +1100,12 @@
 +        }
 +        fn leave_interrupted(&self) -> bool {
 +            matches!(self, Self::LeaveBeforeSwap | Self::LeaveAfterBackupMove | Self::LeaveAfterSwap)
++        }
++        fn transaction_id(&self) -> String {
++            match self {
++                Self::FixedId(id) => (*id).to_owned(),
++                _ => transaction_id(),
++            }
 +        }
 +    }
 +    /// Leave an extraction exactly as a killed process would: listed, bound

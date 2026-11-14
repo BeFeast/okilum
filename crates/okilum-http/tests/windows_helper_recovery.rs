@@ -814,7 +814,7 @@ fn owned_temporaries_are_bound_to_their_file_identity() {
     // A reservation that was never bound (crash right after creation).
     let unbound = sibling(&helper, ".vpk-tmp-unbound");
     fs::write(&unbound, b"unknown").unwrap();
-    // Reserved and created, but the process died before binding: empty, unheld.
+    // An unbound reservation whose name holds an empty file: proves nothing.
     let reserved = sibling(&helper, ".vpk-tmp-reserved");
     fs::write(&reserved, b"").unwrap();
     // A bound entry whose file is exactly the recorded one.
@@ -842,11 +842,12 @@ fn owned_temporaries_are_bound_to_their_file_identity() {
     );
     assert!(!bound.exists(), "the recorded temporary was not swept");
     assert!(
-        !reserved.exists(),
-        "an empty reservation left by a crash before binding was kept"
+        reserved.exists(),
+        "an empty file under an unbound reservation was deleted"
     );
     fs::remove_file(&replayed).unwrap();
     fs::remove_file(&unbound).unwrap();
+    fs::remove_file(&reserved).unwrap();
     assert_clean(&helper);
 }
 
@@ -1109,4 +1110,29 @@ fn machine_install_never_bootstraps_from_a_root_helper_its_record_rejects() {
         "root record deleted"
     );
     assert!(inspect(&install.root.path().join("Update.exe")).is_some());
+}
+
+#[test]
+fn an_existing_empty_file_under_a_reserved_name_is_never_deleted() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = fixture(root.path());
+    // Someone else's empty file already holds the name this transaction reserves.
+    let taken = sibling(&helper, ".vpk-tmp-collide");
+    fs::write(&taken, b"").unwrap();
+    let result = publish_fault(NEW, &helper, Fault::FixedId("collide"));
+    assert!(result.is_err(), "publication used a name that was taken");
+    assert!(
+        taken.exists(),
+        "AlreadyExists collision deleted an existing file"
+    );
+    assert_eq!(fs::read(&helper).unwrap(), OLD);
+    // The reservation stays unbound; recovery must not delete the file either.
+    recover(&helper).unwrap();
+    assert!(
+        taken.exists(),
+        "recovery deleted a file under an unbound reservation"
+    );
+    assert_eq!(fs::read(&taken).unwrap(), b"");
+    fs::remove_file(&taken).unwrap();
+    assert_clean(&helper);
 }
