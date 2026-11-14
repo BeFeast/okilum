@@ -377,17 +377,17 @@ const DESTINATION: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
     .add(b'|')
     .add(b'}');
 
-/// The draft's attachments as Save carries them: a fresh folder beside the
-/// saved note, every file keeping its name and path below it.
+/// What Save wrote for a draft: the note and its attachments folder.
 #[derive(Debug)]
-pub(super) struct Carried {
-    /// The folder created for them, if there were any.
+#[cfg_attr(not(test), allow(dead_code, reason = "read by tests"))]
+pub(super) struct Written {
+    /// The fresh attachments folder, if the draft had attachments.
     pub folder: Option<PathBuf>,
-    /// The note text with its links to them pointing into that folder.
+    /// The saved note's text, its links to attachments pointing into it.
     pub text: String,
 }
 
-/// Why Save refused before writing anything; the draft is kept.
+/// Why Save refused; nothing it wrote is left behind and the draft is kept.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Refused(pub String);
 
@@ -407,86 +407,6 @@ fn attachments_folder_name(stem: &str, n: usize) -> String {
     }
 }
 
-/// Carry the draft's attachments next to the saved note `note`: a fresh
-/// folder (`<stem> attachments`, numbered only at folder level when taken),
-/// every file under its own name and path, each verified by digest. Only the
-/// links Okilum resolves to one of them are rewritten. Nothing is written
-/// when a link cannot be rewritten safely; a failed copy removes the folder
-/// this call created and nothing else.
-pub(super) fn carry_attachments(
-    draft: &Path,
-    note: &Path,
-    found: &[Attachment],
-    text: &str,
-) -> Result<Carried, Refused> {
-    if found.is_empty() {
-        return Ok(Carried {
-            folder: None,
-            text: text.to_owned(),
-        });
-    }
-    let destination = note
-        .parent()
-        .ok_or_else(|| Refused("The saved file has no folder.".into()))?;
-    let stem = note
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    for n in 1..1000 {
-        let name = attachments_folder_name(&stem, n);
-        let folder = destination.join(&name);
-        if folder.exists() {
-            continue;
-        }
-        let rewritten = rewrite_draft_links(text, draft, &name, found)?;
-        match std::fs::create_dir(&folder) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(Refused(format!("The attachments folder: {error}"))),
-        }
-        let copied = (|| -> anyhow::Result<()> {
-            for attachment in found {
-                anyhow::ensure!(
-                    attachment
-                        .relative
-                        .components()
-                        .all(|c| matches!(c, std::path::Component::Normal(_))),
-                    "Unexpected attachment path"
-                );
-                let bytes = std::fs::read(draft.join(&attachment.relative))?;
-                anyhow::ensure!(
-                    digest(&bytes) == attachment.sha256,
-                    "An attachment changed while saving"
-                );
-                let target = folder.join(&attachment.relative);
-                std::fs::create_dir_all(
-                    target
-                        .parent()
-                        .ok_or_else(|| anyhow::anyhow!("Attachment has no folder"))?,
-                )?;
-                write_new(&target, &bytes)?;
-                anyhow::ensure!(
-                    std::fs::read(&target)? == bytes,
-                    "An attachment copy could not be verified"
-                );
-            }
-            Ok(())
-        })();
-        return match copied {
-            Ok(()) => Ok(Carried {
-                folder: Some(folder),
-                text: rewritten,
-            }),
-            Err(error) => {
-                // Only this call's fresh folder: nothing else was there.
-                let _ = std::fs::remove_dir_all(&folder);
-                Err(Refused(format!("{error:#}")))
-            }
-        };
-    }
-    Err(Refused("No free name for the attachments folder.".into()))
-}
-
 /// One link destination in the source: where it is, how it is written and
 /// the path Okilum reads from it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,28 +419,28 @@ struct Destination {
     reason: Option<String>,
     /// The destination as the parser decoded it.
     url: String,
-    definition: bool,
 }
 
-/// Every link destination: inline links and images, wiki links and embeds
-/// (frontmatter too) from the parser, and reference definitions outside
-/// code, front matter and containers the scan does not understand.
-fn destinations(text: &str) -> Vec<Destination> {
+/// Every link, embed and reference Okilum reads in `text` written in `from`:
+/// the parser's targets including Okilum's existing-file fallback for
+/// destinations with spaces (`targets_in_vault`), plus reference definitions
+/// outside code and front matter.
+fn destinations(text: &str, vault: &okilum_core::Vault, from: &str) -> Vec<Destination> {
     let bytes = text.as_bytes();
     let angled = |range: &std::ops::Range<usize>| {
         range.start > 0 && bytes[range.start - 1] == b'<' && bytes.get(range.end) == Some(&b'>')
     };
-    let mut found: Vec<Destination> = okilum_core::link_candidates::syntax::targets(text)
-        .into_iter()
-        .map(|target| Destination {
-            angled: !target.wiki && target.reason.is_none() && angled(&target.range),
-            range: target.range,
-            wiki: target.wiki,
-            reason: target.reason,
-            url: target.text,
-            definition: false,
-        })
-        .collect();
+    let mut found: Vec<Destination> =
+        okilum_core::link_candidates::syntax::targets_in_vault(text, vault, from)
+            .into_iter()
+            .map(|target| Destination {
+                angled: !target.wiki && target.reason.is_none() && angled(&target.range),
+                range: target.range,
+                wiki: target.wiki,
+                reason: target.reason,
+                url: target.text,
+            })
+            .collect();
     let body = okilum_core::render::without_frontmatter(text);
     let offset = text.len() - body.len();
     let definition =
@@ -558,11 +478,11 @@ fn destinations(text: &str) -> Vec<Destination> {
                 wiki: false,
                 angled: is_angled,
                 reason: None,
-                definition: true,
             });
         }
     }
     found.sort_by_key(|d| d.range.start);
+    found.dedup_by(|a, b| a.range == b.range);
     found
 }
 
@@ -575,6 +495,40 @@ fn destination_path(text: &str, destination: &Destination) -> String {
     } else {
         okilum_core::document_links::decode(raw)
     }
+}
+
+/// Where Okilum's resolver takes one destination: tried as written, as the
+/// parser decoded it and as CommonMark decodes it. Any local resolution
+/// counts (attachments and notes alike); external URLs do not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Lands {
+    Nowhere,
+    One(String),
+    Several(Vec<String>),
+}
+
+fn lands(
+    text: &str,
+    destination: &Destination,
+    resolver: &okilum_core::document_links::IndexedResolver<'_>,
+    from: &str,
+) -> Lands {
+    let raw = text[destination.range.clone()].to_owned();
+    let mut tries = vec![raw, destination.url.clone()];
+    tries.push(commonmark_unescape(&destination.url));
+    tries.dedup();
+    for target in tries {
+        let resolved = resolver.resolve(&target, destination.wiki, from);
+        if resolved.status == "external" {
+            continue;
+        }
+        match resolved.candidates.as_slice() {
+            [] => continue,
+            [one] => return Lands::One(one.clone()),
+            many => return Lands::Several(many.to_vec()),
+        }
+    }
+    Lands::Nowhere
 }
 
 /// A destination as CommonMark reads it: backslash-escaped punctuation and
@@ -609,159 +563,288 @@ fn commonmark_unescape(raw: &str) -> String {
         .into_owned()
 }
 
-/// Rewrite the links of `text` that Okilum's resolver resolves to one of the
-/// draft's attachments, so they name it below `prefix` (the attachments
-/// folder beside the saved note). Wiki links stay wiki links; Markdown
-/// destinations are percent-encoded or keep their angle brackets. Prose,
-/// code, web URLs and links to anything else keep their bytes. Any link to
-/// an attachment that cannot be rewritten safely refuses the whole Save.
-pub(super) fn rewrite_draft_links(
+/// A carried attachment's path below the draft folder, as a vault path.
+fn vault_path(relative: &Path) -> String {
+    relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Before Save: every link, embed and reference of the draft that Okilum
+/// resolves into the draft folder, with the copy it must reach afterwards
+/// (`<prefix>/<path>`). A link into the draft that Save cannot carry (an
+/// ambiguous one, a file not carried) refuses.
+fn record_links(
     text: &str,
     draft: &Path,
     prefix: &str,
     found: &[Attachment],
-) -> Result<String, Refused> {
+) -> Result<Vec<Option<String>>, Refused> {
     let vault = okilum_core::Vault::scan(draft)
         .map_err(|error| Refused(format!("The draft folder could not be read: {error:#}")))?;
     let resolver = okilum_core::document_links::IndexedResolver::new(&vault);
-    let carried = |candidate: &str| {
-        found
-            .iter()
-            .find(|attachment| {
-                attachment
-                    .relative
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-                    .join("/")
-                    == candidate
-            })
-            .map(|attachment| attachment.relative.clone())
-    };
-    let all = destinations(text);
-    let mut edits = Vec::new();
-    let mut expected = Vec::new();
-    let mut rewritten = Vec::new();
-    // The attachment a destination resolves to, if any. Several candidates
-    // or a file Save does not carry refuse.
-    let resolve = |target: &str, wiki: bool| -> Result<Option<PathBuf>, Refused> {
-        let resolved = resolver.resolve(target, wiki, FILE);
-        match (resolved.status, resolved.candidates.as_slice()) {
-            ("attachment", [candidate]) => match carried(candidate) {
-                Some(relative) => Ok(Some(relative)),
-                None if candidate == FILE => Ok(None),
-                None => Err(Refused(format!(
-                    "The link «{target}» points to a file of the draft that Save does not carry."
+    let carried: Vec<String> = found.iter().map(|a| vault_path(&a.relative)).collect();
+    destinations(text, &vault, FILE)
+        .iter()
+        .map(
+            |destination| match lands(text, destination, &resolver, FILE) {
+                Lands::One(path) if path == FILE => Ok(None),
+                Lands::One(path) if carried.contains(&path) => Ok(Some(format!("{prefix}/{path}"))),
+                Lands::One(path) => Err(Refused(format!(
+                    "The link «{}» points to «{path}» in the draft, which Save does not carry.",
+                    &text[destination.range.clone()]
                 ))),
+                Lands::Several(paths) if paths.iter().any(|p| p != FILE) => Err(Refused(format!(
+                    "The link «{}» could mean several files of the draft.",
+                    &text[destination.range.clone()]
+                ))),
+                _ => Ok(None),
             },
-            ("attachment", candidates) if candidates.len() > 1 => Err(Refused(format!(
-                "The link «{target}» could mean several attachments."
-            ))),
-            _ => Ok(None),
-        }
-    };
-    for destination in &all {
-        let raw = &text[destination.range.clone()];
-        // Reference usages and escaped targets are checked below.
+        )
+        .collect()
+}
+
+/// Rewrite the destinations recorded for a copy so they name it explicitly.
+/// Wiki links stay wiki links (keeping fragment, alias and a missing `.md`);
+/// Markdown destinations are percent-encoded or keep their angle brackets.
+/// Reference usages and escaped targets are left for the post-check.
+fn rewrite_links(text: &str, all: &[Destination], recorded: &[Option<String>]) -> String {
+    let mut edits = Vec::new();
+    for (destination, expected) in all.iter().zip(recorded) {
+        let Some(path) = expected else { continue };
         if destination.reason.is_some() {
-            expected.push(None);
             continue;
         }
-        let Some(relative) = resolve(raw, destination.wiki)? else {
-            // CommonMark decodes entities and backslash escapes in a
-            // destination; Okilum's resolver reads it raw. Where the two
-            // disagree about pointing at an attachment, refuse.
-            let unescaped = commonmark_unescape(raw);
-            if !destination.wiki && unescaped != raw && resolve(&unescaped, false)?.is_some() {
-                return Err(Refused(format!(
-                    "The link «{raw}» to an attachment is written in a way Okilum cannot rewrite safely."
-                )));
-            }
-            expected.push(Some((
-                destination.wiki,
-                destination_path(text, destination),
-            )));
-            continue;
-        };
-        let path = std::iter::once(prefix.to_owned())
-            .chain(
-                relative
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned()),
-            )
-            .collect::<Vec<_>>()
-            .join("/");
+        let raw = &text[destination.range.clone()];
         let fragment = raw.find('#').map_or("", |at| &raw[at..]);
         let replacement = if destination.wiki {
+            let written = destination_path(text, destination);
+            let path = if !written.to_lowercase().ends_with(".md") {
+                path.strip_suffix(".md").unwrap_or(path)
+            } else {
+                path.as_str()
+            };
             if path.contains(WIKI_UNSAFE) {
-                return Err(Refused(format!(
-                    "The attachment «{path}» cannot be named in a wiki link."
-                )));
+                continue;
             }
             format!("{path}{fragment}")
         } else if destination.angled {
             if path.contains(['<', '>', '\n', '\r', '\\']) {
-                return Err(Refused(format!(
-                    "The attachment «{path}» cannot be named in this link."
-                )));
+                continue;
             }
             format!("{path}{fragment}")
         } else {
             format!(
                 "{}{fragment}",
-                percent_encoding::utf8_percent_encode(&path, DESTINATION)
+                percent_encoding::utf8_percent_encode(path, DESTINATION)
             )
         };
-        if destination.definition {
-            rewritten.push(relative);
-        }
-        expected.push(Some((destination.wiki, path)));
         edits.push((destination.range.clone(), replacement));
-    }
-    // A reference-style usage reaches its attachment through a definition,
-    // which must have been rewritten above; one the scan did not find (in a
-    // quote, a list…) or an escaped target the parser cannot round-trip
-    // refuses the Save.
-    for destination in all.iter().filter(|d| d.reason.is_some()) {
-        // Read as written and as CommonMark decodes it (entities, escapes).
-        let unescaped = commonmark_unescape(&destination.url);
-        let resolved = match resolve(&destination.url, destination.wiki)? {
-            Some(relative) => Some(relative),
-            None if !destination.wiki && unescaped != destination.url => {
-                resolve(&unescaped, false)?
-            }
-            None => None,
-        };
-        if let Some(relative) = resolved {
-            if !rewritten.contains(&relative) {
-                return Err(Refused(format!(
-                    "The link «{}» to an attachment is written in a way Okilum cannot rewrite safely.",
-                    &text[destination.range.clone()]
-                )));
-            }
-        }
     }
     let mut out = text.to_owned();
     for (range, replacement) in edits.into_iter().rev() {
         out.replace_range(range, &replacement);
     }
-    // Proof: the parser reads exactly the intended paths from the result,
-    // and every reference usage is still one.
-    let reread = destinations(&out);
-    let same = reread.len() == expected.len()
-        && reread.iter().zip(&expected).all(|(got, want)| match want {
-            Some((wiki, path)) => {
-                got.reason.is_none()
-                    && (got.wiki, destination_path(&out, got)) == (*wiki, path.clone())
-            }
-            None => got.reason.is_some(),
-        });
-    if !same {
-        return Err(Refused(
-            "The rewritten links did not read back as intended.".into(),
-        ));
+    out
+}
+
+/// After Save: resolve every link of the written note again from its new
+/// place, with exactly what Save wrote (the note and the copies, hard-linked
+/// into a scratch folder laid out like the destination). Each recorded link
+/// must reach its copy and name it explicitly; a bare name that only a
+/// lenient search finds does not count.
+fn verify_links(
+    note: &Path,
+    folder: Option<&Path>,
+    text: &str,
+    recorded: &[Option<String>],
+) -> Result<(), Refused> {
+    let fail = |why: String| Refused(format!("The saved links did not check out: {why}"));
+    if recorded.iter().all(Option::is_none) {
+        return Ok(());
     }
-    Ok(out)
+    let name = note
+        .file_name()
+        .ok_or_else(|| fail("the saved file has no name".into()))?
+        .to_string_lossy()
+        .into_owned();
+    let scratch = tempfile::tempdir().map_err(|error| fail(error.to_string()))?;
+    let place = |from: &Path, to: &Path| -> std::io::Result<()> {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ()))
+    };
+    place(note, &scratch.path().join(&name)).map_err(|error| fail(error.to_string()))?;
+    if let Some(folder) = folder {
+        let folder_name = folder
+            .file_name()
+            .ok_or_else(|| fail("the attachments folder has no name".into()))?;
+        let mut pending = vec![PathBuf::new()];
+        while let Some(relative) = pending.pop() {
+            for entry in
+                std::fs::read_dir(folder.join(&relative)).map_err(|e| fail(e.to_string()))?
+            {
+                let entry = entry.map_err(|e| fail(e.to_string()))?;
+                let child = relative.join(entry.file_name());
+                if entry.file_type().map_err(|e| fail(e.to_string()))?.is_dir() {
+                    pending.push(child);
+                } else {
+                    place(
+                        &folder.join(&child),
+                        &scratch.path().join(folder_name).join(&child),
+                    )
+                    .map_err(|e| fail(e.to_string()))?;
+                }
+            }
+        }
+    }
+    let written = std::fs::read_to_string(scratch.path().join(&name))
+        .map_err(|error| fail(error.to_string()))?;
+    if written != text {
+        return Err(fail("the note on disk is not the text Save wrote".into()));
+    }
+    let vault = okilum_core::Vault::scan(scratch.path()).map_err(|e| fail(format!("{e:#}")))?;
+    let resolver = okilum_core::document_links::IndexedResolver::new(&vault);
+    let after = destinations(text, &vault, &name);
+    if after.len() != recorded.len() {
+        return Err(fail(format!(
+            "{} links before Save, {} after",
+            recorded.len(),
+            after.len()
+        )));
+    }
+    for (destination, expected) in after.iter().zip(recorded) {
+        let Some(expected) = expected else { continue };
+        let shown = &text[destination.range.clone()];
+        if lands(text, destination, &resolver, &name) != Lands::One(expected.clone()) {
+            return Err(fail(format!("«{shown}» no longer reaches «{expected}»")));
+        }
+        let named = if destination.reason.is_some() {
+            okilum_core::document_links::decode(&destination.url)
+        } else {
+            destination_path(text, destination)
+        };
+        let named = named.trim().to_owned();
+        if named != *expected && format!("{named}.md") != *expected {
+            return Err(fail(format!("«{shown}» does not name «{expected}»")));
+        }
+    }
+    Ok(())
+}
+
+/// Save a draft as `note`: record where its links lead, copy its attachments
+/// into a fresh `<stem> attachments` folder (numbered only at folder level
+/// when taken) under their own names, write the note with those links
+/// pointing into it, then resolve every link again from the note's new place.
+/// Anything that does not check out removes what this call wrote (the note
+/// and the fresh folder, nothing else) and refuses; the draft is untouched.
+pub(super) fn save_draft(
+    draft: &Path,
+    note: &Path,
+    found: &[Attachment],
+    text: &str,
+) -> Result<Written, Refused> {
+    let destination = note
+        .parent()
+        .ok_or_else(|| Refused("The saved file has no folder.".into()))?;
+    if note.exists() {
+        return Err(Refused("A file with that name already exists.".into()));
+    }
+    let stem = note
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut chosen = None;
+    if !found.is_empty() {
+        for n in 1..1000 {
+            let name = attachments_folder_name(&stem, n);
+            let folder = destination.join(&name);
+            match std::fs::create_dir(&folder) {
+                Ok(()) => {
+                    chosen = Some((name, folder));
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(Refused(format!("The attachments folder: {error}"))),
+            }
+        }
+        if chosen.is_none() {
+            return Err(Refused("No free name for the attachments folder.".into()));
+        }
+    }
+    let folder = chosen.as_ref().map(|(_, folder)| folder.clone());
+    let roll_back = |note_written: bool| {
+        if note_written {
+            let _ = std::fs::remove_file(note);
+        }
+        if let Some(folder) = &folder {
+            // Only the fresh folder this call created.
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    };
+    let prefix = chosen.as_ref().map_or("", |(name, _)| name.as_str());
+    let result = (|| -> Result<Written, (bool, Refused)> {
+        let recorded = record_links(text, draft, prefix, found).map_err(|r| (false, r))?;
+        if recorded.iter().any(Option::is_some) && folder.is_none() {
+            return Err((
+                false,
+                Refused("Links point into the draft but nothing is carried.".into()),
+            ));
+        }
+        if let Some(folder) = &folder {
+            for attachment in found {
+                let copied = (|| -> anyhow::Result<()> {
+                    anyhow::ensure!(
+                        attachment
+                            .relative
+                            .components()
+                            .all(|c| matches!(c, std::path::Component::Normal(_))),
+                        "Unexpected attachment path"
+                    );
+                    let bytes = std::fs::read(draft.join(&attachment.relative))?;
+                    anyhow::ensure!(
+                        digest(&bytes) == attachment.sha256,
+                        "An attachment changed while saving"
+                    );
+                    let target = folder.join(&attachment.relative);
+                    std::fs::create_dir_all(
+                        target
+                            .parent()
+                            .ok_or_else(|| anyhow::anyhow!("Attachment has no folder"))?,
+                    )?;
+                    write_new(&target, &bytes)?;
+                    anyhow::ensure!(
+                        std::fs::read(&target)? == bytes,
+                        "An attachment copy could not be verified"
+                    );
+                    Ok(())
+                })();
+                copied.map_err(|error| (false, Refused(format!("{error:#}"))))?;
+            }
+        }
+        let vault = okilum_core::Vault::scan(draft).map_err(|e| {
+            (
+                false,
+                Refused(format!("The draft folder could not be read: {e:#}")),
+            )
+        })?;
+        let all = destinations(text, &vault, FILE);
+        let rewritten = rewrite_links(text, &all, &recorded);
+        reader_deleted_note::save_new_copy(note, &rewritten)
+            .map_err(|error| (false, Refused(format!("{error:#}"))))?;
+        verify_links(note, folder.as_deref(), &rewritten, &recorded).map_err(|r| (true, r))?;
+        Ok(Written {
+            folder: folder.clone(),
+            text: rewritten,
+        })
+    })();
+    result.map_err(|(note_written, refused)| {
+        roll_back(note_written);
+        refused
+    })
 }
 
 /// Bring the draft file to the saved text, so retirement can prove nothing in
@@ -1041,25 +1124,17 @@ impl Reader {
                     return fail(anyhow::anyhow!("destination exists"), window, cx);
                 }
                 // Attachments go to a fresh folder beside the note under their
-                // own names; only links Okilum resolves to them are rewritten.
-                let carried = match carry_attachments(&folder, &path, &found, &draft_text) {
-                    Ok(carried) => carried,
-                    Err(Refused(reason)) => {
-                        diagnostic_error!("Save of the untitled draft refused: {reason}");
-                        reader_toast::error(
-                            format!("Nothing was saved and the draft is kept. {reason}"),
-                            window,
-                            cx,
-                        );
-                        return;
-                    }
-                };
-                if let Err(error) = reader_deleted_note::save_new_copy(&path, &carried.text) {
-                    if let Some(created) = &carried.folder {
-                        // Only the fresh folder this Save made.
-                        let _ = std::fs::remove_dir_all(created);
-                    }
-                    return fail(error, window, cx);
+                // own names; links Okilum resolves to them are rewritten, and
+                // every one is resolved again from the note's new place.
+                // Anything that does not check out leaves nothing written.
+                if let Err(Refused(reason)) = save_draft(&folder, &path, &found, &draft_text) {
+                    diagnostic_error!("Save of the untitled draft refused: {reason}");
+                    reader_toast::error(
+                        format!("Nothing was saved and the draft is kept. {reason}"),
+                        window,
+                        cx,
+                    );
+                    return;
                 }
                 // Its text is saved: the draft's editor has nothing left to
                 // protect. The draft file gets the same text only while the
@@ -1285,9 +1360,13 @@ mod tests {
         std::fs::write(docs.join("Note attachments/keep.txt"), b"theirs").unwrap();
         let found = attachments(&folder).unwrap();
         assert_eq!(found.len(), 1);
-        let carried = carry_attachments(&folder, &docs.join("Note.md"), &found, text).unwrap();
+        let carried = save_draft(&folder, &docs.join("Note.md"), &found, text).unwrap();
         let fresh = docs.join("Note attachments 2");
         assert_eq!(carried.folder.as_deref(), Some(fresh.as_path()));
+        assert_eq!(
+            std::fs::read_to_string(docs.join("Note.md")).unwrap(),
+            carried.text
+        );
         assert_eq!(std::fs::read(fresh.join(image)).unwrap(), b"draft image");
         assert_eq!(
             carried.text,
@@ -1347,7 +1426,7 @@ mod tests {
         assert!(file.exists(), "a newer file keeps the folder");
     }
 
-    fn draft_with(files: &[&str]) -> (tempfile::TempDir, PathBuf, Vec<Attachment>) {
+    fn draft_with(files: &[&str]) -> (tempfile::TempDir, PathBuf, Vec<Attachment>, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("draft");
         std::fs::create_dir_all(&folder).unwrap();
@@ -1358,7 +1437,14 @@ mod tests {
             std::fs::write(path, file.as_bytes()).unwrap();
         }
         let found = attachments(&folder).unwrap();
-        (temp, folder, found)
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        (temp, folder, found, docs)
+    }
+
+    /// Nothing at all was written into `docs`.
+    fn untouched_docs(docs: &Path) -> bool {
+        std::fs::read_dir(docs).unwrap().next().is_none()
     }
 
     /// Re-review 3: only links Okilum's resolver resolves to a draft
@@ -1368,7 +1454,7 @@ mod tests {
     /// Prose, code, web URLs and the reference usage keep their bytes.
     #[test]
     fn draft_links_are_rewritten_where_they_resolve_to_attachments() {
-        let (_temp, folder, found) =
+        let (_temp, folder, found, docs) =
             draft_with(&["a.png", "sub/a.png", "my pic (1).png", "ref pic.png"]);
         let text = "\
 I named it a.png yesterday, see `![[a.png]]`.\n\
@@ -1379,9 +1465,9 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
 [web](https://example.com/a.png)\n\
 \n\
 [pic]: <ref pic.png> \"Ref\"\n";
-        let rewritten = rewrite_draft_links(text, &folder, "Note attachments", &found).unwrap();
+        let saved = save_draft(&folder, &docs.join("Note.md"), &found, text).unwrap();
         assert_eq!(
-            rewritten,
+            saved.text,
             "\
 I named it a.png yesterday, see `![[a.png]]`.\n\
 ![[Note attachments/a.png]] and ![[Note attachments/sub/a.png|small]]\n\
@@ -1395,34 +1481,72 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         // A plain reference definition is percent-encoded like inline ones.
         let plain = "![r][pic]\n\n[pic]: my%20pic%20%281%29.png\n";
         assert_eq!(
-            rewrite_draft_links(plain, &folder, "Note attachments", &found).unwrap(),
-            "![r][pic]\n\n[pic]: Note%20attachments/my%20pic%20%281%29.png\n"
+            save_draft(&folder, &docs.join("Plain.md"), &found, plain)
+                .unwrap()
+                .text,
+            "![r][pic]\n\n[pic]: Plain%20attachments/my%20pic%20%281%29.png\n"
         );
     }
 
+    /// Re-review 4 (1): a reference definition the rewrite does not reach
+    /// (here inside a list item) while another definition of the same file
+    /// is rewritten. The post-check sees its usage no longer reaching the
+    /// copy, rolls back and refuses.
+    #[test]
+    fn an_unrewritten_reference_definition_refuses_and_rolls_back() {
+        let (_temp, folder, found, docs) = draft_with(&["a.png"]);
+        let text = "![p][p] ![q][q]\n\n[p]: a.png\n\n- [q]: a.png\n";
+        let refused = save_draft(&folder, &docs.join("Note.md"), &found, text);
+        assert!(refused.is_err(), "must refuse: {refused:?}");
+        assert!(untouched_docs(&docs), "the note and copies are rolled back");
+    }
+
+    /// Re-review 4 (2): Okilum's existing-file fallback reads a destination
+    /// with a space; the link is rewritten (now valid CommonMark) and checked.
+    #[test]
+    fn a_destination_with_spaces_is_carried() {
+        let (_temp, folder, found, docs) = draft_with(&["my pic.png"]);
+        let saved = save_draft(
+            &folder,
+            &docs.join("Note.md"),
+            &found,
+            "[file](my pic.png)\n",
+        )
+        .unwrap();
+        assert_eq!(saved.text, "[file](Note%20attachments/my%20pic.png)\n");
+    }
+
+    /// Re-review 4 (3): a pasted Markdown file is a resolved note link, not an
+    /// attachment link; it is carried and its wiki and Markdown links follow.
+    #[test]
+    fn a_pasted_markdown_file_is_carried_and_its_links_follow() {
+        let (_temp, folder, found, docs) = draft_with(&["notes.md"]);
+        let text = "[[notes]] and [n](notes.md)\n";
+        let saved = save_draft(&folder, &docs.join("Note.md"), &found, text).unwrap();
+        assert_eq!(
+            saved.text,
+            "[[Note attachments/notes]] and [n](Note%20attachments/notes.md)\n"
+        );
+        assert!(docs.join("Note attachments/notes.md").is_file());
+    }
+
     /// Re-review 3: a link to an attachment that cannot be rewritten safely
-    /// refuses the Save before anything is written; the draft is kept.
+    /// refuses the Save; whatever was written is rolled back.
     #[test]
     fn unsafe_attachment_links_refuse_before_writing() {
-        let (temp, folder, found) = draft_with(&["a.png"]);
-        let docs = temp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
+        let (_temp, folder, found, docs) = draft_with(&["a.png"]);
         for text in [
             // The definition sits in a quote the scan does not rewrite.
             "![q][qq]\n\n> [qq]: a.png\n",
             // An entity-encoded destination the parser cannot round-trip.
             "![e](a&#46;png)\n",
         ] {
-            let refused = carry_attachments(&folder, &docs.join("Note.md"), &found, text);
+            let refused = save_draft(&folder, &docs.join("Note.md"), &found, text);
             assert!(refused.is_err(), "{text:?} must refuse: {refused:?}");
-            assert!(
-                std::fs::read_dir(&docs).unwrap().next().is_none(),
-                "nothing was written for {text:?}"
-            );
+            assert!(untouched_docs(&docs), "nothing is left for {text:?}");
         }
         // Positive control: the same attachment linked plainly is carried.
-        let carried =
-            carry_attachments(&folder, &docs.join("Note.md"), &found, "![[a.png]]\n").unwrap();
+        let carried = save_draft(&folder, &docs.join("Note.md"), &found, "![[a.png]]\n").unwrap();
         assert_eq!(carried.text, "![[Note attachments/a.png]]\n");
     }
 
@@ -1720,6 +1844,56 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         let listed = list(&session);
         assert_eq!(listed.len(), 1, "the draft stays unsaved in Recent");
         assert_eq!(listed[0].label, "Theirs");
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(draft.exists());
+    }
+
+    /// Re-review 4: when the post-check refuses, Save leaves nothing behind
+    /// and the draft is not retired: still on screen, unchanged, in Recent.
+    #[gpui::test]
+    fn a_refused_post_check_keeps_the_draft_unretired(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let docs = docs.canonicalize().unwrap();
+        let session = temp.path().join("state");
+        let draft = create(&session, Some(&docs)).unwrap();
+        let folder = draft.parent().unwrap().to_path_buf();
+        std::fs::write(folder.join("a.png"), b"image").unwrap();
+        let text = "Mine ![p][p] ![q][q]\n\n[p]: a.png\n\n- [q]: a.png\n";
+        std::fs::write(&draft, text).unwrap();
+        let (reader, visual) = open_single(cx, &draft, &session);
+        settle(visual, &reader, "the draft is on screen", |r, _| {
+            r.current_draft().is_some() && r.note_source.contains("Mine")
+        });
+        reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+        visual.simulate_keystrokes("secondary-s");
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path(), "Save asks where");
+        visual.simulate_new_path_selection({
+            let saved = docs.join("Mine.md");
+            move |_| Some(saved)
+        });
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(50));
+            visual.executor().advance_clock(Duration::from_millis(300));
+            visual.run_until_parked();
+        }
+        assert!(
+            std::fs::read_dir(&docs).unwrap().next().is_none(),
+            "nothing is left in the destination"
+        );
+        assert_eq!(std::fs::read_to_string(&draft).unwrap(), text);
+        assert!(!folder.join(SAVED).exists(), "never retired");
+        assert_eq!(list(&session).len(), 1, "still unsaved in Recent");
+        reader.read_with(visual, |r, _| {
+            assert!(r.current_draft().is_some(), "the draft stays on screen")
+        });
         collect(&session, reader_sidebar::now() + LATER);
         assert!(draft.exists());
     }
