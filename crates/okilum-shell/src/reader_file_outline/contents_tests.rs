@@ -1531,7 +1531,9 @@ fn contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column(
             .join(",")
     };
     let text = format!("{}\n{}\n{}\n", row(0), row(1), row(2));
-    let (reader, visual, _root) = reader_with(cx, &[("wide.csv", text.as_str())], "wide.csv");
+    // The header choice is stored in the session state.
+    let (reader, visual, _dirs) =
+        editable_reader_with(cx, &[("wide.csv", text.as_str())], "wide.csv");
     let view = outline(&reader, visual);
     let code = code(&reader, visual);
     paint(visual);
