@@ -446,9 +446,10 @@ impl Reader {
         // Neither mode replaces the buffer or touches its undo transaction chain.
         // Native LSP overlays require raw editor coordinates and deliberately
         // disable projection. Source owns that hover provider; rendered Live
-        // blocks keep their own target-bound tooltips.
-        let source_hover =
-            (!enabled).then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
+        // blocks keep their own target-bound tooltips. Language marks already
+        // keep Live on raw coordinates, so marked terms hover there too.
+        let source_hover = (!enabled || self.agent_language_marked(cx))
+            .then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
         input.update(cx, |input, cx| {
             input.clear_hover_state(cx);
             input.lsp_mut().hover_provider = source_hover;
@@ -457,6 +458,35 @@ impl Reader {
         self.schedule_live_preview(cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
+    }
+
+    /// Whether the open editor shows agent language marks (#1593).
+    fn agent_language_marked(&self, cx: &App) -> bool {
+        self.agent_language_marks.as_ref().is_some_and(|marks| {
+            self.editing
+                .as_ref()
+                .is_some_and(|editing| editing.input.entity_id() == marks.input)
+                && !marks.collection.get_ranges(cx).is_empty()
+        })
+    }
+
+    /// Editor decorations have no projected mapping, so language marks turn
+    /// Live projection off and Live shows raw source coordinates. There the
+    /// Source hover maps offsets exactly and shows a marked term's Latin form
+    /// (#2953); without marks Live keeps projection and no native hover.
+    pub(crate) fn sync_live_language_hover(&self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref().filter(|e| e.live_preview.enabled) else {
+            return;
+        };
+        let hover = self
+            .agent_language_marked(cx)
+            .then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
+        editing.input.update(cx, |input, cx| {
+            if input.lsp().hover_provider.is_some() != hover.is_some() {
+                input.clear_hover_state(cx);
+                input.lsp_mut().hover_provider = hover;
+            }
+        });
     }
 
     fn live_input(&self, entity: EntityId, cx: &App) -> Option<nav::Input> {

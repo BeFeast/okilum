@@ -2026,6 +2026,13 @@ struct Reader {
     /// Inline marks of the published language matches on the open source
     /// editor, keyed by that editor and the published capture.
     agent_language_marks: Option<AgentLanguageMarks>,
+    /// Editor, source revision and language publication the native hover
+    /// was last valid for; a change clears its cached popup (#2953).
+    hover_revision: Option<(
+        EntityId,
+        gpui_component::input::projection::SourceStamp,
+        Option<u64>,
+    )>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
     workbench: Arc<okilum_core::workbench::Index>,
@@ -2375,6 +2382,7 @@ impl Reader {
             agent_language: None,
             _agent_language_events: None,
             agent_language_marks: None,
+            hover_revision: None,
             inbox: Vec::new(),
             projects: Arc::default(),
             workbench: Arc::default(),
@@ -7621,6 +7629,7 @@ impl Reader {
     /// Marks follow text edits, so a capture older than the editor text keeps
     /// the current marks until its replacement arrives; no source is changed.
     fn sync_agent_language_marks(&mut self, cx: &mut Context<Self>) {
+        self.sync_hover_revision(cx);
         let input = self.source_input();
         let published = self.agent_language.as_ref().and_then(|c| c.published());
         // Key on the publication, never the source: a policy-only refresh
@@ -7678,6 +7687,29 @@ impl Reader {
                     collection,
                 });
             }
+        }
+        // Marked terms hover in Live as in Source (#2953).
+        self.sync_live_language_hover(cx);
+    }
+
+    /// The native hover keeps its popup and skips the provider while the
+    /// pointer stays in the cached range, so it would bypass the published
+    /// text guard. Clear it whenever the source revision or the language
+    /// publication (the key the marks use) changes, in Source and Live (#2953).
+    fn sync_hover_revision(&mut self, cx: &mut Context<Self>) {
+        let key = self.source_input().map(|input| {
+            (
+                input.entity_id(),
+                input.read(cx).source_stamp(),
+                self.agent_language.as_ref().and_then(|c| c.publication()),
+            )
+        });
+        if self.hover_revision == key {
+            return;
+        }
+        self.hover_revision = key;
+        if let Some(input) = self.source_input() {
+            input.update(cx, |input, cx| input.clear_hover_state(cx));
         }
     }
 
