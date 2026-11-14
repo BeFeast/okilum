@@ -118,8 +118,9 @@ JSON/JSONC, XML/XSD/XSL, TOML, YAML and TXT use the Reader's code viewer.
 XML uses the pinned MIT tree-sitter-xml 0.7.0 grammar; no network resolution or
 DTD/entity expansion occurs. Viewing, Pretty, Find, folding and copying do not
 write canonical files; only an explicit Edit does. XML/XSD/XSL edit like YAML and
-TOML (#2887): Edit, Save, Validate (the tree-sitter syntax check) and the Format
-menu, which has no XML formatter and leaves the text unchanged. The editor
+TOML (#2887): Edit, Save, Validate (a well-formedness check; the grammar
+only highlights) and Format, which pretty-prints XML (#2912, see
+`docs/code-format-repair.md`). The editor
 saves UTF-8, so an XML file whose declaration names another encoding
 (ISO-8859-1, Windows-1251, UTF-16, …) stays read-only with «Editing XML in
 <encoding> isn't supported; the file stays as is». No declaration, `UTF-8` or

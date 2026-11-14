@@ -1311,7 +1311,8 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
 /// #2887: an XML file (the QA showcase Ant build) had no Edit button and a
 /// «view-only» lock. It now edits through the same header as YAML and TOML:
 /// the real Edit button opens it, typed text lands, Validate runs the XML
-/// syntax check, Format refuses without touching the text, and Save writes.
+/// syntax check, Format leaves already formatted text alone (#2912), and
+/// Save writes.
 #[gpui::test]
 fn xml2887_edit_button_typing_validate_format_and_save(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
@@ -1358,14 +1359,15 @@ fn xml2887_edit_button_typing_validate_format_and_save(cx: &mut TestAppContext) 
     let edited = text(&input, visual);
     assert_eq!(edited, format!("{source}<!-- edited -->"));
 
-    // Validate runs the XML grammar, Format refuses and changes nothing.
+    // Validate runs the XML grammar; the text already has Format's layout.
     reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
     frame(visual);
     let bottom = drawn(&input).1;
     assert!(bottom.contains("No syntax problems found"), "{bottom}");
     reader.update_in(visual, |r, w, cx| r.code_operation(Action::Format, w, cx));
     frame(visual);
-    assert!(drawn(&input).1.starts_with("Not formatted."));
+    let bottom = drawn(&input).1;
+    assert!(bottom.contains("No syntax problems found"), "{bottom}");
     assert_eq!(text(&input, visual), edited);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
 
@@ -1437,4 +1439,250 @@ fn xml2887_utf8_non_ascii_round_trip(cx: &mut TestAppContext) {
         std::fs::read(temp.path().join("vault/utf8.xml")).unwrap(),
         expected.as_bytes()
     );
+}
+
+/// #2912 (Oleg, 13.11): «нажатие кнопки "Формат" … ничего не делает … хоть
+/// одной строчкой». The Format button and Alt+Shift+F pretty-print a one-line
+/// pom.xml with the editor's two-space indent as one Undo step, keeping its
+/// BOM, CRLF, declaration and comment; Save writes exactly that.
+#[gpui::test]
+fn xml2912_format_button_and_shortcut_pretty_print_as_one_undo_step(cx: &mut TestAppContext) {
+    let original = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?><project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><!-- deps --><dependencies><dependency><groupId>junit</groupId><scope>test</scope></dependency></dependencies></project>\r\n";
+    let pretty = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\r\n  <modelVersion>4.0.0</modelVersion>\r\n  <!-- deps -->\r\n  <dependencies>\r\n    <dependency>\r\n      <groupId>junit</groupId>\r\n      <scope>test</scope>\r\n    </dependency>\r\n  </dependencies>\r\n</project>\r\n";
+    let (reader, _file, input, visual, temp) = open(cx, "pom.xml", original);
+    let path = temp.path().join("vault/pom.xml");
+    click(visual, "file-format");
+    assert_eq!(text(&input, visual), pretty);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original.as_bytes(),
+        "no implicit save"
+    );
+    assert!(
+        visual.update(|w, cx| !w.notifications(cx).is_empty()),
+        "Format posted its toast"
+    );
+    let bottom = drawn(&input).1;
+    assert!(bottom.contains("No syntax problems found"), "{bottom}");
+    visual.dispatch_action(Undo);
+    frame(visual);
+    assert_eq!(text(&input, visual), original, "one Undo restores it all");
+
+    // The keyboard path runs the same operation.
+    input.update_in(visual, |i, w, cx| i.focus(w, cx));
+    frame(visual);
+    visual.simulate_keystrokes("alt-shift-f");
+    frame(visual);
+    assert_eq!(text(&input, visual), pretty);
+    // Formatting the result again changes nothing.
+    click(visual, "file-format");
+    assert_eq!(text(&input, visual), pretty);
+    reader.update(visual, |r, cx| assert!(r.save_source(cx)));
+    assert_eq!(std::fs::read(&path).unwrap(), pretty.as_bytes());
+}
+
+fn line_of(bottom: &str, marker: &str) -> usize {
+    bottom
+        .split(marker)
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no line after {marker:?} in {bottom:?}"))
+}
+
+/// #2912: invalid XML stays as it was, and Format points at the same line
+/// Validate reports, with Go to error. Duplicate attributes pass the grammar
+/// and are caught by the well-formedness check; a mismatched tag by both.
+#[gpui::test]
+fn xml2912_invalid_xml_is_unchanged_and_shares_the_validate_position(cx: &mut TestAppContext) {
+    for (name, source, line) in [
+        (
+            "duplicate.xml",
+            "<project>\n  <a x=\"1\" x=\"2\"/>\n</project>\n",
+            Some(2),
+        ),
+        (
+            "mismatch.xml",
+            "<project>\n  <a><b></a>\n</project>\n",
+            None,
+        ),
+        ("two-roots.xml", "<a/>\n<b/>\n", None),
+    ] {
+        let (reader, _file, input, visual, temp) = open(cx, name, source);
+        click(visual, "file-format");
+        let (_, bottom, actions) = drawn(&input);
+        assert!(
+            bottom.starts_with("Not formatted. The text has a syntax error on line "),
+            "{name}: {bottom}"
+        );
+        assert!(actions.contains(&"file-go-to-error"), "{name}: {actions:?}");
+        let format_line = line_of(&bottom, "on line ");
+        assert_eq!(text(&input, visual), source, "{name}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault").join(name)).unwrap(),
+            source
+        );
+        click(visual, "file-go-to-error");
+        let caret = input.read_with(visual, |i, _| i.selected_range().start);
+        assert_eq!(
+            source[..caret].matches('\n').count() + 1,
+            format_line,
+            "{name}: Go to error lands on the reported line"
+        );
+        reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
+        frame(visual);
+        let bottom = drawn(&input).1;
+        assert!(
+            bottom.starts_with("Syntax problem in XML. Line "),
+            "{name}: {bottom}"
+        );
+        assert_eq!(line_of(&bottom, "Line "), format_line, "{name}");
+        if let Some(line) = line {
+            assert_eq!(format_line, line, "{name}");
+        }
+    }
+}
+
+/// #2912: above the grammar's 256 KiB budget Format still runs on the worker
+/// with the streaming check, can be cancelled without a result, and Validate
+/// checks the same file instead of reporting it as too large.
+#[gpui::test]
+fn xml2912_large_file_formats_off_thread_and_cancels(cx: &mut TestAppContext) {
+    let item = "<item id=\"1\"><name>n</name><value>42</value></item>";
+    let original = format!("<items>{}</items>\n", item.repeat(8_000));
+    assert!(original.len() > 256 * 1024);
+    let (reader, _file, input, visual, _temp) = open(cx, "big.xml", &original);
+    let (send, receive) = futures::channel::oneshot::channel();
+    reader.update_in(visual, |r, w, cx| {
+        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.code_operation(Action::Format, w, cx);
+        assert!(
+            r.editing.as_ref().unwrap().operations.busy,
+            "queued, not run inline"
+        );
+        assert_eq!(r.editing.as_ref().unwrap().input.read(cx).value(), original);
+    });
+    frame(visual);
+    assert_eq!(drawn(&input).1, "Formatting…");
+    reader.update(visual, |r, cx| r.cancel_code_operation(cx));
+    send.send(()).unwrap();
+    frame(visual);
+    assert_eq!(text(&input, visual), original, "cancel applies nothing");
+    reader.read_with(visual, |r, _| {
+        assert!(!r.editing.as_ref().unwrap().operations.busy)
+    });
+    // Positive control: the same file really formats.
+    click(visual, "file-format");
+    let formatted = text(&input, visual);
+    assert!(formatted.starts_with("<items>\n  <item id=\"1\">\n    <name>n</name>\n"));
+    assert_eq!(formatted.matches("    <value>42</value>\n").count(), 8_000);
+    let bottom = drawn(&input).1;
+    assert!(bottom.contains("No syntax problems found"), "{bottom}");
+}
+
+/// #2912: in Read, Format code does for XML exactly what it does for JSON —
+/// nothing, with no editor opened and no bytes written. An XML file declaring
+/// a non-UTF-8 encoding stays read-only (#2887), so Format cannot reach it.
+#[gpui::test]
+fn xml2912_read_mode_format_matches_json_and_non_utf8_stays_read_only(cx: &mut TestAppContext) {
+    for (name, source, editable) in [
+        ("data.json", "{\"a\":1}".to_string(), true),
+        ("pom.xml", "<project><a/></project>".to_string(), true),
+        (
+            "latin.xml",
+            "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a><b/></a>".to_string(),
+            false,
+        ),
+    ] {
+        cx.executor().allow_parking();
+        let (reader, visual, temp) =
+            crate::reader_viewer_chrome::tests::fixture_with_files(cx, name, &[(name, &source)]);
+        visual.simulate_resize(size(px(1440.), px(900.)));
+        tick(visual, 130);
+        reader.update_in(visual, |r, w, cx| {
+            assert_eq!(r.selected_file(), name);
+            assert_eq!(r.code_file_editable(cx), editable, "{name}");
+            r.run_format_code(w, cx);
+            assert!(r.editing.is_none(), "{name}: Format does not open Edit");
+        });
+        frame(visual);
+        assert!(visual.debug_bounds("file-format").is_none(), "{name}");
+        assert_eq!(
+            std::fs::read(temp.path().join("vault").join(name)).unwrap(),
+            source.as_bytes(),
+            "{name}"
+        );
+    }
+}
+
+/// #2912: the repository's XML corpus keeps every token through Format, and
+/// a second Format changes nothing.
+#[test]
+fn xml2912_corpus_files_keep_tokens_and_reformat_idempotently() {
+    use okilum_core::code_operations::{format, Formatted};
+    for (name, source) in [
+        (
+            "pom.xml",
+            include_str!("../../../reader_code_file/document/corpus/pom.xml"),
+        ),
+        (
+            "atom.xml",
+            include_str!("../../../reader_code_file/document/corpus/atom.xml"),
+        ),
+        (
+            "schema.xsd",
+            include_str!("../../../reader_code_file/document/corpus/schema.xsd"),
+        ),
+    ] {
+        let result = match format("xml", source) {
+            Formatted::Changed(text) => text,
+            Formatted::Unchanged(reason) => {
+                assert_eq!(reason, "Already formatted.", "{name}");
+                source.to_string()
+            }
+        };
+        let tokens = |s: &str| s.split_ascii_whitespace().collect::<Vec<_>>().concat();
+        assert_eq!(tokens(&result), tokens(source), "{name}");
+        assert_eq!(
+            format("xml", &result),
+            Formatted::Unchanged("Already formatted.".into()),
+            "{name}"
+        );
+    }
+}
+
+/// #2912 review: the highlighting grammar no longer vetoes valid XML.
+/// A processing instruction before the root, a non-ASCII attribute name and
+/// an internal-subset entity whose replacement holds markup validate and
+/// format; the well-formedness check is the authority for both.
+#[gpui::test]
+fn xml2912_grammar_never_vetoes_valid_xml(cx: &mut TestAppContext) {
+    for (name, source, expected) in [
+        (
+            "pi.xml",
+            "<?p before?><r><x/></r>\n",
+            "<?p before?>\n<r>\n  <x/>\n</r>\n",
+        ),
+        (
+            "names.xml",
+            "<r имя=\"x\"><x/></r>\n",
+            "<r имя=\"x\">\n  <x/>\n</r>\n",
+        ),
+        (
+            "entity.xml",
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r><k>&e;</k><y/></r>\n",
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r>\n  <k>&e;</k>\n  <y/>\n</r>\n",
+        ),
+    ] {
+        let (reader, _file, input, visual, _temp) = open(cx, name, source);
+        reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
+        frame(visual);
+        let bottom = drawn(&input).1;
+        assert!(
+            bottom.contains("No syntax problems found"),
+            "{name}: {bottom}"
+        );
+        click(visual, "file-format");
+        assert_eq!(text(&input, visual), expected, "{name}");
+    }
 }

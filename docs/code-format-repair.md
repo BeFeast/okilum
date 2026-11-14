@@ -30,6 +30,49 @@ validator, which never builds a value tree. Unsupported formatters/repairs remai
 explicitly unavailable. A size/depth/output refusal is one message containing the
 limit and source size, never a syntax verdict.
 
+### XML Format (#2912)
+
+Format code on XML/XSD/XSL files and `xml` fences pretty-prints with the
+editor's indent unit (its default TabSize, two spaces, as JSON Format writes).
+A streaming two-pass formatter in `okilum-core` builds no tree and expands no
+entity. It changes only whitespace between tokens and copies everything else
+byte for byte: start and end tags (attribute order, quotes and spacing), text,
+comments, CDATA, processing instructions, the XML declaration and DOCTYPE.
+One blank line before a child survives; BOM, CRLF/LF and the final newline
+follow the source, and mixed line endings are refused as for JSON.
+
+An element's content is re-indented, one child per line, only when that
+cannot change its text:
+
+- its content is child elements, comments or processing instructions and
+  nothing else — no non-whitespace text, CDATA or reference;
+- `xml:space` does not apply, after resolving the value (character
+  references, whitespace): anything other than `default` freezes the subtree,
+  an unresolvable value counts as `preserve`, and `default` inside a frozen
+  subtree keeps it frozen;
+- in a prose vocabulary — XHTML, DocBook, TEI, SVG text elements, and in no
+  namespace the HTML, DocBook and DITA names that carry prose (`p`, `b`,
+  `li`, `para`, `emphasis`, `ph`, …) — whitespace between children may be
+  text, so the element is re-indented only when every boundary between its
+  tags and children already holds whitespace. `<p><b>a</b><i>b</i></p>`
+  reads «ab» and stays byte for byte.
+
+Data vocabularies (a Maven POM, Atom, configuration files) are element-only,
+so a one-line file is indented. Every other element is copied verbatim.
+
+The formatter's well-formedness check is the authority for Format and
+Validate; the tree-sitter grammar only highlights. It checks matched tags,
+one root, quoted and unique attributes, XML characters, character references
+to XML characters, entity references that are predefined or declared in the
+internal subset (an external subset or parameter entity reference allows
+others), comments without `--`, no text outside the root, and at most 10 000
+nesting levels (deeper input is refused as a budget, not as invalid), at any
+size up to 64 MiB. Format refuses exactly what Validate reports as a syntax
+error, with the same line and column and Go to error; nothing changes. The
+64 MiB input and output limits, the worker, Cancel and the single Undo step
+are JSON's. In Read, Format does what it does for JSON. XML declaring a
+non-UTF-8 encoding stays read-only, so Format never reaches it.
+
 Explicit file Edit admission retains the viewer's 4 MiB UI cap. An existing
 editing session can grow beyond that cap and keeps the 64 MiB JSON operations
 budget. The read-only viewer, pagination, Tree, Find, shaping and save pipeline

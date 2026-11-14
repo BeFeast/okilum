@@ -74,6 +74,26 @@ pub fn json_validation_controlled(
     (!control.cancelled()).then_some(Ok(result))
 }
 
+/// XML well-formedness (#2912): matched tags, one root, quoted and unique
+/// attributes, legal characters and references, declared entities, comments
+/// without `--`, no text outside the root. Streaming, no tree and no entity
+/// expansion; the authority for XML Format and Validate. `None` means
+/// cancellation; `Err` a size or nesting budget, never a verdict.
+pub fn xml_validation_controlled(
+    source: &str,
+    control: &Control,
+) -> Option<Result<Result<(), Invalid>, String>> {
+    if control.cancelled() {
+        return None;
+    }
+    if source.len() > MAX_BYTES {
+        return Some(Err(size_notice("Validate", source.len())));
+    }
+    xml::validation(source, &|| control.cancelled())
+}
+
+pub use xml::invalid_notice as xml_invalid_notice;
+
 /// Explicit dialects: sharing a highlighting grammar does not make JSONC JSON.
 pub const LANGUAGES: &[&str] = &[
     "astro",
@@ -181,12 +201,31 @@ pub fn format_controlled(
     ending: LineEnding,
     control: &Control,
 ) -> Option<Formatted> {
+    format_indented(language, source, ending, DEFAULT_INDENT, control)
+}
+
+/// One indentation level when the editor supplies none: its own default
+/// (two spaces), which JSON Format also writes.
+pub const DEFAULT_INDENT: &str = "  ";
+
+/// `indent` is one level of the editor's indentation. XML uses it; JSON keeps
+/// its fixed two-space layout.
+pub fn format_indented(
+    language: &str,
+    source: &str,
+    ending: LineEnding,
+    indent: &str,
+    control: &Control,
+) -> Option<Formatted> {
     if control.cancelled() {
         return None;
     }
     let unchanged = |text: String| Some(Formatted::Unchanged(text));
     if source.len() > MAX_BYTES {
         return unchanged(size_notice("Format", source.len()));
+    }
+    if language == "xml" {
+        return xml::format(source, ending, indent, &|| control.cancelled());
     }
     if language != "json" {
         return unchanged(format!("No safe built-in formatter for {language}; source unchanged. Its whitespace, comments and strings are not rewritten using another language's rules."));
@@ -514,7 +553,7 @@ mod tests {
         for language in LANGUAGES
             .iter()
             .copied()
-            .filter(|language| *language != "json")
+            .filter(|language| !matches!(*language, "json" | "xml"))
         {
             for source in [
                 "if True:\n    print('a: {x}')\n",
@@ -563,3 +602,4 @@ mod tests {
 
 #[cfg(test)]
 mod large_tests;
+mod xml;
