@@ -75,6 +75,13 @@ CONTROLS = [
  ('reveal-on-ui', 'contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_walk'),
  ('page-jump-is-caret', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
  ('page-caret-ignored', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
+ ('edit-reads-viewer', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
+ ('edit-no-stale', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
+ ('edit-unmapped-jump', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
+ ('edit-forget-open', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
+ ('yaml-no-verdict', 'contents2814_edit_yaml_is_stale_while_invalid_and_toml_keeps_tolerant_rows'),
+ ('map-unchanged', 'contents2814_offsets_map_through_line_edits'),
+ ('edit-no-whereabouts', 'contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -95,7 +102,7 @@ try:
     edit(tree, '    if doc.key_text(first_index).is_some() {', '    let first_index = if crate::contents2814_control("labels-walk-children") { doc.children(doc.parent(first_index).unwrap()).nth(first).unwrap() } else { first_index };\n    if doc.key_text(first_index).is_some() {')
     view = 'reader_file_outline.rs'
     edit(view, '    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {\n', '    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {\n        if crate::contents2814_control("no-current-mark") {\n            return None;\n        }\n')
-    edit(view, '        if !Arc::ptr_eq(&raw, &doc) {\n            return self.snapshot.current;\n        }\n', '        if !Arc::ptr_eq(&raw, &doc) {\n            if crate::contents2814_control("remap-every-sample") {\n                let node = code.read(cx).contents_whereabouts(cx).and_then(|w| w.top_node)?;\n                raw.node_in(node, &doc)?;\n            }\n            return self.snapshot.current;\n        }\n')
+    edit(view, '            if !Arc::ptr_eq(&raw, &doc) {\n                return self.snapshot.current;\n            }\n', '            if !Arc::ptr_eq(&raw, &doc) {\n                if crate::contents2814_control("remap-every-sample") {\n                    let node = code.read(cx).contents_whereabouts(cx).and_then(|w| w.top_node)?;\n                    raw.node_in(node, &doc)?;\n                }\n                return self.snapshot.current;\n            }\n')
     edit(view, '        let groups = self.snapshot.groups.get(&parent)?;', '        if crate::contents2814_control("groups-unmarked") {\n            return None;\n        }\n        let groups = self.snapshot.groups.get(&parent)?;')
     edit(view, '                self.snapshot.follow_caret = true;\n', '                self.snapshot.follow_caret = !crate::contents2814_control("caret-never-leads");\n')
     edit(view, '                self.snapshot.reveal = None;\n            }\n            _ => {}', '                self.snapshot.reveal = if crate::contents2814_control("scroll-opens") { now.top_node.map(|node| (node, false)) } else { None };\n            }\n            _ => {}')
@@ -104,6 +111,14 @@ try:
     edit(view, '                        && now.caret == Some((now.page, 0))\n                        && before.jumps == now.jumps) =>', '                        && (crate::contents2814_control("page-caret-ignored") || now.caret == Some((now.page, 0)) && !crate::contents2814_control("page-jump-is-caret"))\n                        && (before.jumps == now.jumps || crate::contents2814_control("page-caret-ignored"))) =>')
     edit(view, 'Some(before) if before.top != now.top && before.settled && now.settled => {', 'Some(before) if before.top != now.top && (crate::contents2814_control("scroll-before-landed") || before.settled && now.settled) && (!crate::contents2814_control("caret-sticks") || !self.snapshot.follow_caret) => {')
     edit(view, '                self.rebuild_rows_revealing(Some(node), cx);', '                if crate::contents2814_control("reveal-on-ui") {\n                    tree::open_path(&doc, node, self.expansion());\n                }\n                self.rebuild_rows_revealing(Some(node), cx);')
+    edit(view, '            .zip(Self::edit_contents_language(reader))', '            .zip(Self::edit_contents_language(reader).filter(|_| !crate::contents2814_control("edit-reads-viewer")))')
+    edit(view, '        let (line, message) = self.snapshot.edit.as_ref()?.stale.as_ref()?;', '        if crate::contents2814_control("edit-no-stale") {\n            return None;\n        }\n        let (line, message) = self.snapshot.edit.as_ref()?.stale.as_ref()?;')
+    ed = 'reader_file_outline/edit.rs'
+    edit(ed, '        let edit = self.snapshot.edit.as_ref()?;\n        let (built, stamp) = edit.built.as_ref()?;', '        let edit = self.snapshot.edit.as_ref()?;\n        if crate::contents2814_control("edit-no-whereabouts") {\n            return None;\n        }\n        let (built, stamp) = edit.built.as_ref()?;')
+    edit(ed, '        if current {', '        if current || crate::contents2814_control("edit-unmapped-jump") {')
+    edit(ed, '        edit.built = Some((doc.clone(), stamp));', '        edit.built = Some((doc.clone(), stamp));\n        if crate::contents2814_control("edit-forget-open") {\n            *self.expansion() = Default::default();\n        }')
+    edit(ed, '                if let Some(error) = &doc.invalid {', '                if let Some(error) = doc.invalid.as_ref().filter(|_| !crate::contents2814_control("yaml-no-verdict")) {')
+    edit(ed, '    if old == new {', '    if old == new || crate::contents2814_control("map-unchanged") {')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')

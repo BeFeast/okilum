@@ -3,6 +3,7 @@ mod block_context;
 mod block_entry;
 mod code_comforts;
 mod code_operations;
+pub(crate) use code_operations::file_chrome::FileChrome;
 pub(crate) use code_operations::{FormatCode, RepairCode, ValidateCode};
 mod context_menu;
 mod external_edit;
@@ -631,6 +632,11 @@ impl Reader {
     /// The source editor's input, while editing.
     pub(super) fn source_input(&self) -> Option<Entity<EditorState>> {
         self.editing.as_ref().map(|editing| editing.input.clone())
+    }
+
+    /// The edited file's strict JSON parse, which Contents reads (#2814).
+    pub(crate) fn file_editor_parse(&self) -> Option<Entity<FileChrome>> {
+        self.editing.as_ref()?.file_chrome.clone()
     }
 
     #[cfg(test)]
