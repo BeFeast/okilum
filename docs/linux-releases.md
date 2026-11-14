@@ -162,11 +162,22 @@ channel refuses backwards publication.
 
 ## Release and promotion
 
-`.forgejo/workflows/linux-release.yml` builds each merge to `main` with shared
-sccache and cached dependency downloads, in a pinned
+`.forgejo/workflows/linux-release.yml` builds each merge to `main` in a pinned
 Arch `base-devel` container, with the compiler pinned in `rust-toolchain.toml`
-and the locked dependency graph.
-The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packaging
+and the locked dependency graph. Since #2927 (Okilum left baldr, Oleg 14.11)
+the build and its install/smoke validation run on a GitHub-hosted runner
+(`.github/workflows/forgejo-arch-release.yml`). The Forgejo `release` job is a
+`bridge` waiter (`scripts/releases/arch_handoff.py`). It always pushes the
+current workflow commit, so orchestration never comes from an old tree. The
+write-once ref names the product source, the Forgejo build number and the
+QA-harness choice, and the hosted job checks the product out separately. An
+explicit older `source` (#1040) or a pinned retry therefore still builds that
+tree with its own build scripts. The waiter accepts only the single run of
+that ref: both steps must be executed in the validated attempt, and the
+artifact must be uploaded by that attempt with a present, matching sha256
+digest. It then stages only the expected package and `release-source.txt` as
+the unchanged `arch-publication` artifact.
+The package version is `0.1.<5000 + Forgejo workflow run number>-1`. PRs touching packaging
 build/install the package and test signing with a disposable key; they cannot
 publish. Main builds publish beta. Workflow concurrency serializes publication.
 

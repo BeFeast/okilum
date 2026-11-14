@@ -82,59 +82,44 @@ jobs:
   release:
     needs: select
     if: needs.select.outputs.arch != 'false' && inputs.appimage_only != 'true' && needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
-    timeout-minutes: 90
-    env:
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    # GitHub builds and validates the exact source (.github/workflows/forgejo-arch-release.yml,
+    # #2927); this bridge waiter compiles nothing. Okilum left baldr's
+    # ubuntu-latest runner (Oleg 14.11). The Forgejo build number 5000 +
+    # run_number travels in the write-once ref, so the package, the
+    # `arch-publication` artifact and release-publish's pkgver check are unchanged.
+    runs-on: bridge
+    # 53 min shared queue/run budget + push/cleanup, within the primary bridge
+    # runner's 60 min ceiling (docs/fast-runner.md). Hosted builds take 13-31 min.
+    timeout-minutes: 60
     steps:
-      - name: Install Arch build and packaging tools
-        run: |
-          pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
-            wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb alsa-lib \
-            vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
+      # Orchestration always comes from this workflow commit (github.sha); only
+      # the product source is pinned. An explicit older main commit (#1040) or a
+      # pinned retry predates the hosted handoff, so it is never checked out here.
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a pinned retry sets the checkout;
-          # a push builds its own commit, which is the default ref.
-          ref: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || '' }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Prepare build user
-        run: useradd -m builder
-      - name: Restore dependency downloads and pinned vendor
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            /home/builder/.cargo/registry/
-            /home/builder/.cargo/git/
-            vendor/gpui-component/
-          key: okilum-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
-      - name: Build package as an unprivileged user
+      - name: Build and validate the Arch package on GitHub
+        env:
+          # A push builds its own commit; an explicit older main commit (#1040)
+          # or a pinned retry builds the source selected above.
+          PRODUCT_SOURCE: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || github.sha }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+        timeout-minutes: 56
         run: |
-          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+          set -euo pipefail
           # Only branch dispatch artifacts may contain the visual QA harness.
           harness=0
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
             harness=1
           fi
-          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$harness" OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
-          # Publication reads the built commit from here, not from the run (#1040).
-          runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
-      - name: Validate package and install without changing MIME defaults
-        run: |
-          desktop-file-validate scripts/arch/okilum.desktop
-          pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
-          okilum --help
-          if ldd /usr/bin/okilum | grep 'not found'; then exit 1; fi
-          python -m unittest discover -s scripts/arch -p 'test_*.py'
-          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
+          tooling=$(git rev-parse HEAD)
+          test "$tooling" = "$GITHUB_SHA"
+          python3 scripts/releases/arch_handoff.py run --source "$PRODUCT_SOURCE" --tooling "$tooling" \
+            --build "$((5000 + GITHUB_RUN_NUMBER))" --harness "$harness" --directory dist/arch --budget 3180
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
         if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
