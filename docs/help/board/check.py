@@ -72,6 +72,13 @@ def normalize(text):
     return " ".join(text.split())
 
 
+def check_media(probe, expected):
+    # FFprobe 8 emits an empty stream_groups section that FFprobe 6 omits.
+    # Compare every requested media property, not version-specific envelope keys.
+    for section in ("streams", "format"):
+        assert probe[section] == expected[section], (section, probe, expected)
+
+
 def main():
     html = (ROOT / "index.html").read_text()
     page = Page()
@@ -101,7 +108,24 @@ def main():
         "format=duration,size:stream=codec_type,codec_name,width,height", "-of", "json",
         str(ROOT / "assets/board-tutorial.mp4"),
     ]))
-    assert probe == manifest["video"]
+    check_media(probe, manifest["video"])
+    legacy_probe = {key: probe[key] for key in ("streams", "format")}
+    check_media(legacy_probe, manifest["video"])
+    for section, key, value in (
+        ("format", "duration", "18.4"),
+        ("format", "size", "1"),
+        ("streams", "width", 1),
+        ("streams", "codec_name", "unknown"),
+    ):
+        changed = json.loads(json.dumps(legacy_probe))
+        target = changed[section] if section == "format" else changed[section][0]
+        target[key] = value
+        try:
+            check_media(changed, manifest["video"])
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Changed media property accepted: {section}.{key}")
     assert len(probe["streams"]) == 1 and probe["streams"][0]["codec_name"] == "h264"
     events = json.loads((ROOT / "events.json").read_text())
     assert len(events) == 28 and float(probe["format"]["duration"]) > events[-1]["start"]
