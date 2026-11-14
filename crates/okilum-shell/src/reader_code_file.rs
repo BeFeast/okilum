@@ -16,6 +16,8 @@ mod loading;
 mod presentation;
 pub(crate) use presentation::PresentationState;
 #[cfg(test)]
+mod fold_all_scroll_tests;
+#[cfg(test)]
 mod loading_tests;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;

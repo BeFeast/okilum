@@ -1,0 +1,85 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 6fe35ede..b3e4fc36 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2296,6 +2296,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     state.scroll_handle.set_offset(scroll);
+                     state.deferred_scroll_offset = Some(scroll);
+                 }
++                // The same request, kept within this frame's scroll range:
++                // the extent `scroll_size` gets below, on these rows.
++                if let Some((line, offset)) = state.pending_top_anchor.take() {
++                    let row = state.display_map.buffer_line_to_display_row(line.min(count - 1));
++                    let max = (natural + state.projection_anchor_tail - bounds.size.height).max(px(0.));
++                    let y = (rows.row_top(row) + offset).clamp(px(0.), max);
++                    let scroll = point(state.scroll_handle.offset().x, -y);
++                    state.scroll_handle.set_offset(scroll);
++                    state.deferred_scroll_offset = Some(scroll);
++                }
+             }
+             let caret = state.ime_marked_range.as_ref().map_or(state.cursor(), |range| range.end);
+             // Typewriter mode (#1643): a caret move or an edit (Undo too) puts
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 45de5e46..bc06d0ec 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -547,6 +547,9 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) layout_scroll_y: Option<Pixels>,
+     /// A buffer line to scroll to the top of the viewport at the next layout.
+     pub(super) pending_top_line: Option<usize>,
++    /// A buffer line and how far its first row starts above the viewport top,
++    /// resolved and clamped to the scroll range at the next layout.
++    pub(super) pending_top_anchor: Option<(usize, Pixels)>,
+     /// Typewriter mode: every caret move or edit scrolls the caret row to the
+     /// middle of the viewport (#1643).
+     pub(super) typewriter: bool,
+@@ -976,6 +979,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             deferred_scroll_offset: None,
+             layout_scroll_y: None,
+             pending_top_line: None,
++            pending_top_anchor: None,
+             typewriter: false,
+             typewriter_paused: false,
+             typewriter_last_scroll: None,
+@@ -3524,6 +3528,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// next one; until then `top_visible_line` is not where the view goes.
+     pub fn scroll_settled(&self) -> bool {
+         self.pending_top_line.is_none()
++            && self.pending_top_anchor.is_none()
+             && self.layout_scroll_y == Some(self.scroll_handle.offset().y)
+     }
+ 
+@@ -3531,6 +3536,33 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// next layout (#1296: entering the editor keeps the Reader's place).
+     pub fn scroll_line_to_top(&mut self, line: usize, cx: &mut Context<Self>) {
+         self.pending_top_line = Some(line);
++        self.pending_top_anchor = None;
++        cx.notify();
++    }
++
++    /// The buffer line at the top of the viewport in the last layout, and how
++    /// far its first display row starts above the viewport top. With soft
++    /// wrap the viewport top can sit inside the line. `None` before the first
++    /// layout. Read it before refolding or rewrapping: the offset is measured
++    /// on the rows of the last layout.
++    pub fn top_visible_line_offset(&self) -> Option<(usize, Pixels)> {
++        let layout = self.last_layout.as_ref()?;
++        let line = *layout.visible_buffer_lines.first()?;
++        let row = self.display_map.buffer_line_to_display_row(line);
++        let scroll_y = self.layout_scroll_y.unwrap_or(self.scroll_handle.offset().y);
++        Some((line, -scroll_y - layout.rows.row_top(row)))
++    }
++
++    /// Scroll so that the first display row of buffer line `line` starts
++    /// `offset` above the viewport top, at the next layout. Unlike
++    /// [`Self::scroll_line_to_top`], the result is clamped to the scroll range
++    /// of that layout: its display rows (folds and wrapping included) and its
++    /// bottom padding. A request made right after a refold or rewrap is
++    /// therefore painted in range by the first frame, not moved by the clamp
++    /// after paint, which no frame shows.
++    pub fn scroll_line_to_offset(&mut self, line: usize, offset: Pixels, cx: &mut Context<Self>) {
++        self.pending_top_anchor = Some((line, offset));
++        self.pending_top_line = None;
+         cx.notify();
+     }
+ 

@@ -193,6 +193,19 @@ impl Structure {
     }
 }
 
+/// The source line to keep at the top after a batch fold or unfold (#2958):
+/// the previous top line while it stays visible, otherwise the header of the
+/// outermost fold that now hides it. A top line on a fold's closing line goes
+/// to the header as well, so the whole folded block stays in view.
+pub(super) fn batch_fold_anchor(top: usize, folded: &[gpui_component::input::FoldRange]) -> usize {
+    folded
+        .iter()
+        .filter(|fold| fold.start_line < top && top <= fold.end_line)
+        .map(|fold| fold.start_line)
+        .min()
+        .unwrap_or(top)
+}
+
 impl CodePreview {
     pub(super) fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
         self.provisional_interacted.set(true);
@@ -204,7 +217,24 @@ impl CodePreview {
                 self.structure.all(folded, doc);
             }
         } else if let Some(input) = self.input() {
-            input.update(cx, |s, cx| s.set_all_folded(folded, cx));
+            input.update(cx, |s, cx| {
+                let top = s.top_visible_line_offset();
+                s.set_all_folded(folded, cx);
+                // #2958: the pixel scroll offset belongs to the old rows. Kept
+                // as is, Fold all leaves it past the end of the much shorter
+                // folded text: the next frame lays out no visible row, and the
+                // editor's own clamp after paint cannot schedule a repaint.
+                // Re-anchor on the source line instead, at the same distance
+                // from the viewport top (soft wrap can put the top inside the
+                // line). The editor resolves the request on the new display
+                // rows and clamps it to their scroll range before it picks the
+                // lines of that same frame.
+                if let Some((top, offset)) = top {
+                    let anchor = batch_fold_anchor(top, s.folded_ranges());
+                    let offset = if anchor == top { offset } else { px(0.) };
+                    s.scroll_line_to_offset(anchor, offset, cx);
+                }
+            });
         }
         cx.notify();
     }
