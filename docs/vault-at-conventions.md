@@ -45,7 +45,10 @@ rule stays. The capture attachment publisher receives its explicit immutable
 folder from its caller; the desktop capture composer has no attachment caller.
 
 Only root `@AgentContract.md` participates implicitly in Rules and agent
-diagnostics, while remaining an ordinary default Quick open result. Both
+diagnostics. Search treats it as an agent file: the Agent files chip lists it
+and the default Quick open and content search views leave it out, Pinned and
+Recent included (#2940). `Area/@AgentContract.md` and `_AgentContract.md` stay
+ordinary results. Both
 `@@AgentContract.md` and `@./@AgentContract.md` imports resolve. An explicit import
 may still name any ordinary file. Language policy uses `@Schema/language.yaml`;
 both guarded native shared-ignore readers use `@Schema/stignore.template`.

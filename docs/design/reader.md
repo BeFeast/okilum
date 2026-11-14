@@ -507,6 +507,8 @@ the exact, case-sensitive filename classifier: `AGENTS.md`, `CLAUDE.md`,
 instruction files remain in inventory and can always be opened explicitly;
 Tree lists them with Show hidden files, or temporarily on explicit reveal.
 Ordinary `agent.md`, `agents.md`, `my-AGENTS.md` and backup suffixes do not match.
+Search Agent files also lists the vault-root `@AgentContract.md` and the default
+search views leave it out (#2940); Tree keeps it under the @ rule.
 Only @ and dot path segments are hidden; underscore paths are ordinary (#2847).
 Templates follow the same rule, while @ index rows lead their visible folder.
 This shared visibility switch does not rename or delete files.

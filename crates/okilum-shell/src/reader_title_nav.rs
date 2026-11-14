@@ -198,14 +198,17 @@ impl Reader {
             Some(Scope::Project) => self.project_folder().unwrap_or_default(),
             _ => String::new(),
         };
-        // Hidden notes follow Show hidden files, as in the tree (#635).
+        // Hidden notes follow Show hidden files, as in the tree (#635). The
+        // Agent files view lists agent documents anyway; the root contract is
+        // an `@` entry but still one of them (#2940).
         let shown = |path: &str| {
             in_folder(path, &folder)
                 && !okilum_core::vault_conventions::markdown_asset(path)
                 && (!self.tree.hidden_by_preference(path)
                     || (agent_files
-                        && okilum_core::quick_open::is_agent_file(path)
-                        && !crate::reader_tree::hidden(path)))
+                        && okilum_core::agent_imports::is_agent_document(path)
+                        && (path == okilum_core::agent_imports::ROOT_CONTRACT
+                            || !crate::reader_tree::hidden(path))))
         };
         let entry = |path: &str, age: Option<String>| Entry {
             path: path.to_owned(),
