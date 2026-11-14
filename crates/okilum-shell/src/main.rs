@@ -2847,6 +2847,14 @@ impl Reader {
             || self.table_overlay.as_ref().is_some_and(|overlay| {
                 overlay.read(cx).focus_handle().contains_focused(window, cx)
             });
+        // The empty vault page draws no note, so `focus_document` gives the
+        // Reader's own handle in its place; a note opened from there (a
+        // compact navigator click, #677) takes that focus as it would from
+        // the note it replaces (#2957). A root publication keeps the startup
+        // focus on the Reader.
+        let document_focus_held_by_reader = prepared_content.is_none()
+            && self.empty_vault_shown()
+            && self.focus_handle.is_focused(window);
         // A new state owns this document's parse/list. An old document's list
         // can never satisfy heading/Back readiness while replacement parses.
         self.content = prepared_content.unwrap_or_else(|| {
@@ -2868,7 +2876,7 @@ impl Reader {
             this.content_changed(cx);
         });
         // Transfer focus only at replacement; asynchronous landing never steals it.
-        if content_had_focus {
+        if content_had_focus || document_focus_held_by_reader {
             window.focus(&self.content.read(cx).focus_handle().clone(), cx);
         }
         self.invalidate_links();
@@ -3374,8 +3382,18 @@ impl Reader {
     /// hides the Notes panel), through `refocus_lost_field`. These actions
     /// reach the Reader along the focused element's dispatch path or from a
     /// click inside it, so drawn focus outside the Reader does not occur here.
+    ///
+    /// The vault search entry is the exception: the header always draws it,
+    /// but it is the Notes panel's entry point (opening Notes focuses it), so
+    /// once Notes is hidden it hands focus to the document, as a resize that
+    /// hides Notes already does.
     fn focus_after_layout_change(&mut self, window: &mut Window, cx: &mut App) {
-        if focus_drawn_in_reader(window) {
+        let search_without_notes = self.sidebar_search_focus.is_focused(window)
+            && !self.panels.visible(
+                reader_layout::Panel::Notes,
+                f32::from(self.body_bounds.size.width),
+            );
+        if focus_drawn_in_reader(window) && !search_without_notes {
             self.refocus_if_lost = true;
         } else {
             self.refocus_if_lost = false;
