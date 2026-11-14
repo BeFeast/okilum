@@ -1,13 +1,17 @@
 # Forgejo linux-release `release` (#2927): the beta Arch package, built and
 # validated on a hosted runner instead of a homelab `ubuntu-latest` runner
-# (Okilum left baldr, Oleg 14.11). The write-once ref names the exact source,
-# the Forgejo build number (5000 + run number) and the QA harness choice; the
-# Forgejo bridge waiter stages this artifact as `arch-publication`.
-# Exact pushed source only; no cache, signing, publication or Forgejo secrets.
+# (Okilum left baldr, Oleg 14.11). The pushed commit is the current workflow
+# ("tooling") commit; its write-once ref names the exact product source, the
+# Forgejo build number (5000 + run number) and the QA harness choice. The
+# product is checked out separately, so historical `inputs.source` and pinned
+# retry builds use today's orchestration and the old tree's own build scripts.
+# The Forgejo bridge waiter stages this artifact as `arch-publication`.
+# No cache, signing, publication or Forgejo secrets.
 name: forgejo-arch-release
 on:
   push:
-    branches: ['forgejo-arch-release-pr/**', 'forgejo-arch-qa-pr/**']
+    branches: ['forgejo-arch-release-pr/**', 'forgejo-arch-qa-pr/**',
+               'forgejo-arch-pinned-pr/**', 'forgejo-arch-pinned-qa-pr/**']
 permissions:
   contents: read
 concurrency:
@@ -26,27 +30,39 @@ jobs:
           pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
             wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb alsa-lib \
             vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
-      - uses: actions/checkout@v4
+      - name: Check out the workflow tooling
+        uses: actions/checkout@v4
         with:
+          path: tooling
           persist-credentials: false
-      - name: Read the Forgejo build number from the exact-source ref
+      - name: Read the build number and product source from the write-once ref
         id: build
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          python scripts/releases/arch_handoff.py ref --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          git config --global --add safe.directory '*'
+          test "$(git -C tooling rev-parse HEAD)" = "$GITHUB_SHA"
+          python tooling/scripts/releases/arch_handoff.py ref --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Check out the exact product source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.build.outputs.source }}
+          path: product
+          persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
       - name: Build package as an unprivileged user
+        working-directory: product
         env:
           BUILD: ${{ steps.build.outputs.build }}
           HARNESS: ${{ steps.build.outputs.harness }}
+          SOURCE: ${{ steps.build.outputs.source }}
         run: |
-          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          chown -R builder:builder "$PWD" /home/builder
           runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$HARNESS" OKILUM_BUILD_VERSION="$BUILD" bash scripts/arch/build.sh
           # Publication reads the built commit from here, not from the run (#1040).
-          runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
+          runuser -u builder -- git -C "$PWD" rev-parse HEAD > dist/arch/release-source.txt
       - name: Validate package and install without changing MIME defaults
+        working-directory: product
         run: |
           desktop-file-validate scripts/arch/okilum.desktop
           pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
@@ -58,7 +74,7 @@ jobs:
         with:
           name: arch-release
           path: |
-            dist/arch/*.pkg.tar.zst
-            dist/arch/release-source.txt
+            product/dist/arch/*.pkg.tar.zst
+            product/dist/arch/release-source.txt
           retention-days: 3
           if-no-files-found: error

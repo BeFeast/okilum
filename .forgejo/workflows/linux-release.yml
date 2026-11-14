@@ -92,15 +92,18 @@ jobs:
     # runner's 60 min ceiling (docs/fast-runner.md). Hosted builds take 13-31 min.
     timeout-minutes: 60
     steps:
+      # Orchestration always comes from this workflow commit (github.sha); only
+      # the product source is pinned. An explicit older main commit (#1040) or a
+      # pinned retry predates the hosted handoff, so it is never checked out here.
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a pinned retry sets the checkout;
-          # a push builds its own commit, which is the default ref.
-          ref: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || '' }}
           fetch-depth: 0
           persist-credentials: false
       - name: Build and validate the Arch package on GitHub
         env:
+          # A push builds its own commit; an explicit older main commit (#1040)
+          # or a pinned retry builds the source selected above.
+          PRODUCT_SOURCE: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || github.sha }}
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
@@ -113,7 +116,9 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
             harness=1
           fi
-          python3 scripts/releases/arch_handoff.py run --source "$(git rev-parse HEAD)" \
+          tooling=$(git rev-parse HEAD)
+          test "$tooling" = "$GITHUB_SHA"
+          python3 scripts/releases/arch_handoff.py run --source "$PRODUCT_SOURCE" --tooling "$tooling" \
             --build "$((5000 + GITHUB_RUN_NUMBER))" --harness "$harness" --directory dist/arch --budget 3180
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
         if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
