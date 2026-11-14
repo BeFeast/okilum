@@ -198,14 +198,20 @@ def original_main_producer(api, source, runs):
             if items.get('total_count', len(items['artifacts'])) != len(items['artifacts']):
                 raise ValueError('Incomplete GitHub artifact inventory')
             if any(item.get('name') == f'linux-appimage-{source}' for item in items['artifacts']):
-                if candidate.get('event') != 'push':
-                    jobs = api.request(f"actions/runs/{candidate['id']}/attempts/1/jobs?per_page=100")
-                    if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
-                        raise ValueError('Incomplete GitHub job inventory')
-                    try:
-                        accepted(api.request(f"actions/runs/{candidate['id']}"), jobs['jobs'], source)
-                    except ReuseUnavailable:
-                        continue
+                # Push producers too: the artifact is uploaded before the checks,
+                # so a push run whose in-job acceptance failed still carries it.
+                # Its recovery dispatch rebuilds the same ref; without this filter
+                # the failed push run would shadow or make ambiguous the good one.
+                run = api.request(f"actions/runs/{candidate['id']}")
+                if run.get('conclusion') == 'cancelled':
+                    continue
+                jobs = api.request(f"actions/runs/{candidate['id']}/attempts/1/jobs?per_page=100")
+                if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
+                    raise ValueError('Incomplete GitHub job inventory')
+                try:
+                    accepted(run, jobs['jobs'], source)
+                except ReuseUnavailable:
+                    continue
                 producers.append(candidate)
         if not producers:
             raise ReuseUnavailable('no-exact-main-producer')

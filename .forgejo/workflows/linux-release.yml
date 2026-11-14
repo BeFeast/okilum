@@ -179,9 +179,10 @@ jobs:
           name: appimage-publication
           path: dist/appimage-publication/
           retention-days: 7
-      # Beta gate: the bytes above were taken while the producer's Ubuntu/Fedora
-      # smoke and disposable-key signing checks still ran. Publication (needs
-      # this job's success) waits for both; a failure never reaches the feed.
+      # Beta gate: publication (needs this job's success) requires the producer's
+      # Ubuntu/Fedora smoke and disposable-key signing checks to have passed; a
+      # failure never reaches the feed. They run in the producer's appimage job,
+      # so this re-check normally passes at once.
       - name: Wait for the producer's Ubuntu/Fedora smoke and signing checks
         if: steps.reuse.outputs.accepted == 'true'
         env:

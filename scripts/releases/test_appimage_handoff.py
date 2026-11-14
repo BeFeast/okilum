@@ -214,6 +214,47 @@ class ReuseOutcomes(unittest.TestCase):
             self.assertTrue(handoff.stage_result(api, SOURCE, Path(directory) / 'handoff', lambda _: data))
         # Existing real-producer ambiguity test below remains the negative control.
 
+    def retry(self, first_change):
+        """A push producer R1 and its recovery dispatch R2 on the same hourly ref."""
+        receipt, data, _, _ = evidence()
+        ref = 'forgejo-linux-pr/hourly-' + SOURCE
+        second = {**receipt['run'], 'id': 18, 'run_number': 24, 'event': 'workflow_dispatch', 'head_branch': ref}
+        first = {**receipt['run'], 'head_branch': ref}
+        first_jobs = copy.deepcopy(receipt['jobs'])
+        first_change(first, first_jobs)
+        second_jobs = [{**job, 'run_id': 18} for job in copy.deepcopy(receipt['jobs'])]
+        # A dispatched producer counts only with its own executed build step.
+        second_jobs[0]['steps'].append({'name': 'Build exact-source AppImage once',
+                                        'status': 'completed', 'conclusion': 'success'})
+        item = {**receipt['artifact'], 'workflow_run': {'id': 18, 'head_sha': SOURCE}}
+        def request(path):
+            if '/runs?' in path:
+                return {'workflow_runs': [first, second], 'total_count': 2}
+            if '/artifacts?' in path:
+                return {'artifacts': [item if '/runs/18/' in path else receipt['artifact']]}
+            if '/jobs?' in path:
+                return {'jobs': second_jobs if '/runs/18/' in path else first_jobs}
+            return second if '/runs/18' in path else first
+        api = Mock(); api.request.side_effect = request
+        return api, data
+
+    def test_failed_or_cancelled_push_producer_does_not_shadow_its_recovery_build(self):
+        # In-job acceptance failed after the upload: the push run still has bytes.
+        def failed(run, jobs):
+            run.update(conclusion='failure'); jobs[0].update(conclusion='failure')
+        def cancelled(run, jobs):
+            run.update(conclusion='cancelled')
+        for change in (failed, cancelled):
+            api, data = self.retry(change)
+            with self.subTest(change=change.__name__):
+                self.assertEqual(handoff.original_main_producer(
+                    api, SOURCE, api.request('/runs?'))['id'], 18)
+        # Negative control: two accepted producers stay ambiguous.
+        api, data = self.retry(lambda run, jobs: None)
+        with self.assertRaises(ValueError) as caught:
+            handoff.original_main_producer(api, SOURCE, api.request('/runs?'))
+        self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
+
     def stage(self, change=None, error=None):
         receipt, data, _, _ = evidence()
         responses = {'runs': {'workflow_runs': [receipt['run']]},
