@@ -57,7 +57,11 @@ fn paragraph_boundary(text: &str) -> bool {
     let leading = text.len() - text.trim_start_matches(' ').len();
     let body = &text[leading..];
     let fence = |m: char| body.chars().take_while(|c| *c == m).count() >= 3;
-    body.trim().is_empty() || (leading <= 3 && (fence('`') || fence('~') || body.starts_with('#')))
+    // ATX heading: 1-6 `#`, then a space, a tab or the end of the line.
+    let hashes = body.bytes().take_while(|b| *b == b'#').count();
+    let heading = (1..=6).contains(&hashes)
+        && matches!(body.as_bytes().get(hashes), None | Some(b' ' | b'\t'));
+    body.trim().is_empty() || (leading <= 3 && (fence('`') || fence('~') || heading))
 }
 
 /// Byte ranges of CommonMark inline code spans in the paragraph `start..end`:
@@ -1025,6 +1029,26 @@ mod tests {
             parse("Open `span\n\n@rules.md\nclose`\n")[0].target,
             "rules.md"
         );
+        // Only an ATX heading ends the paragraph: `#tag`, `#######` and a
+        // heading indented four spaces are span text, so the span still hides
+        // the later line.
+        for text in [
+            "See `inline\n#not-a-heading\n@@AgentContract.md\ncode` here.\n",
+            "See ``a ` b\n#not-a-heading\n@@AgentContract.md\nc`` here.\n",
+            "See `inline\n####### seven\n@@AgentContract.md\ncode` here.\n",
+            "See ``a\n    # indented\n@@AgentContract.md\nb`` here.\n",
+        ] {
+            assert!(ignored(text).is_empty(), "{text:?}");
+        }
+        // Controls: a real ATX heading (with text, a tab, or bare) ends the
+        // paragraph, so the unclosed span cannot hide the line.
+        for text in [
+            "See `inline\n# Heading\n@@AgentContract.md\ncode` here.\n",
+            "See ``a\n   ###\tHeading\n@@AgentContract.md\nb`` here.\n",
+            "See `inline\n##\n@@AgentContract.md\ncode` here.\n",
+        ] {
+            assert_eq!(ignored(text).len(), 1, "{text:?}");
+        }
     }
     #[test]
     fn nested_context_cycle_and_escape_never_read_outside() {
