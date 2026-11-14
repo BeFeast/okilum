@@ -326,23 +326,30 @@ impl PlatformTextSystem for ShapedLineCache {
                 drop(lines);
                 return exact.copy_layout();
             }
-            let previous = eligible.then(|| lines.candidate(font_size, runs)).flatten();
+            let previous = if eligible {
+                lines.take_candidate(text, font_size, runs)
+            } else {
+                None
+            };
             drop(lines);
-            let incremental = previous
-                .as_ref()
-                .and_then(|previous| previous.reshape(text, font_size, runs, self.shaper.as_ref()));
-            let (layout, native) = match incremental {
-                Some((layout, native)) => (layout, Some(native)),
+            let reshaped = previous.and_then(|(previous, edit)| {
+                previous.reshape(text, font_size, runs, edit, self.shaper.as_ref())
+            });
+            let (layout, next) = match reshaped {
+                Some(reshaped) => reshaped,
                 None => {
                     #[cfg(test)]
                     self.full_large_shapes
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let _timing = text_diagnostics::time(Work::PlatformShape);
-                    (self.shaper.layout_line(text, font_size, runs), None)
+                    let layout = {
+                        let _timing = text_diagnostics::time(Work::PlatformShape);
+                        self.shaper.layout_line(text, font_size, runs)
+                    };
+                    let next =
+                        large::LargeLine::new(text, font_size, runs, &layout, self.shaper.as_ref());
+                    (layout, next)
                 }
             };
-            let next =
-                large::LargeLine::new(text, font_size, runs, &layout, native, self.shaper.as_ref());
             self.large
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1014,6 +1021,133 @@ mod tests {
             );
             assert!(cache.large.lock().unwrap().bytes <= large::MAX_BYTES);
         }
+    }
+
+    /// #2803: typing into a long line re-derives the native word ends near
+    /// the edit only. Line-break analysis per keystroke must not grow with the
+    /// line; every edit is also checked against the complete derivation.
+    #[test]
+    fn edit2803_long_line_keystrokes_analyse_only_nearby_words() {
+        let unit = "{\"summary\":\"Retrieve an item\",\"description\":\"Returns the item if it exists.\",\"maxLength\":5000},";
+        let scanned = || native_ascii::WORD_SCAN_BYTES.with(|n| n.get());
+        let mut most_by_size = Vec::new();
+        for bytes in [128 * 1024, 1024 * 1024] {
+            let shaper = Arc::new(CountingShaper::default());
+            let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+            let mut text = format!("[{}]", unit.repeat(bytes / unit.len()));
+            let before = scanned();
+            cache.layout_line(&text, px(16.), &run(&text));
+            assert!(
+                scanned() - before >= text.len(),
+                "positive control: admission analyses the complete line and the counter observes it"
+            );
+            assert!(
+                cache
+                    .large
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .back()
+                    .unwrap()
+                    .incremental,
+                "positive control: incremental state admitted"
+            );
+            let full_shapes = cache.full_large_shapes.load(Ordering::Relaxed);
+            let mut most = 0;
+            for start in [text.len() / 2, 40, text.len() - 40] {
+                let mut at = start;
+                for c in "ab, \"c\": [1]".chars() {
+                    text.insert(at, c);
+                    at += 1;
+                    let before = scanned();
+                    let actual = cache.layout_line(&text, px(16.), &run(&text));
+                    most = most.max(scanned() - before);
+                    assert_eq!(actual.width, px(text.len() as f32));
+                }
+                for _ in 0..2 {
+                    at -= 1;
+                    text.remove(at);
+                    let before = scanned();
+                    cache.layout_line(&text, px(16.), &run(&text));
+                    most = most.max(scanned() - before);
+                }
+                text.replace_range(at - 6..at, "replacement words");
+                let before = scanned();
+                cache.layout_line(&text, px(16.), &run(&text));
+                most = most.max(scanned() - before);
+            }
+            assert_eq!(
+                cache.full_large_shapes.load(Ordering::Relaxed),
+                full_shapes,
+                "no keystroke falls back to whole-line native shaping"
+            );
+            most_by_size.push(most);
+        }
+        // Two safe-pair windows (4 KiB each) plus the edited words.
+        for (bytes, most) in [128 * 1024, 1024 * 1024].iter().zip(&most_by_size) {
+            assert!(
+                *most < 16 * 1024,
+                "a keystroke analysed {most} bytes of a {bytes}-byte line"
+            );
+        }
+    }
+
+    /// Random edits of punctuation, numbers and spaces in a long JSON line:
+    /// the spliced layout equals a complete shape (and, in `edit`, the
+    /// complete word-end derivation and replay).
+    #[test]
+    fn edit2803_random_long_line_edits_match_complete_layout() {
+        let shaper = Arc::new(CountingShaper::default());
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let mut text =
+            "{\"a\":\"b c\",\"n\":[1,2.5,-3],\"s\":\"x--y  z\",\"t\":\"a/b (c) d!\"}".repeat(1500);
+        cache.layout_line(&text, px(16.), &run(&text));
+        let mut seed = 0x2803_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let pieces = [
+            " ", "  ", "a", "word", "\"", ",", ":", "{", "}", "[", "]", "1", "2.5", "-", "--",
+            "!=", "->", "/", "x y", "(", ")", "!", "?", "%", "$1", "a-b",
+        ];
+        for _ in 0..300 {
+            let at = next(text.len() + 1);
+            let piece = pieces[next(pieces.len())];
+            match next(3) {
+                0 => text.insert_str(at, piece),
+                1 => {
+                    let end = (at + 1 + next(8)).min(text.len());
+                    text.replace_range(at.min(end)..end, "");
+                }
+                _ => {
+                    let end = (at + next(8)).min(text.len());
+                    text.replace_range(at..end, piece);
+                }
+            }
+            let actual = cache.layout_line(&text, px(16.), &run(&text));
+            let direct = CountingShaper::default().layout_line(&text, px(16.), &run(&text));
+            assert_eq!((actual.len, actual.width), (direct.len, direct.width));
+            let a: Vec<_> = actual.runs.iter().flat_map(|r| &r.glyphs).collect();
+            let b: Vec<_> = direct.runs.iter().flat_map(|r| &r.glyphs).collect();
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.into_iter().zip(b) {
+                assert_eq!((a.index, a.id, a.position), (b.index, b.id, b.position));
+            }
+        }
+        assert!(
+            cache
+                .large
+                .lock()
+                .unwrap()
+                .entries
+                .back()
+                .unwrap()
+                .incremental,
+            "positive control: the edits stayed on the incremental path"
+        );
     }
 
     #[test]
