@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Recreate/verify the checksum-pinned velopack source plus the hidden Windows delta-helper patch."""
 import argparse
+import ctypes
+import errno
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -73,27 +77,68 @@ def generate(manifest, patch, dest, archive=None):
         replace(staged, dest)
 
 
+def exchange(first, second):
+    """Atomically swap two existing paths: renameat2(RENAME_EXCHANGE) on Linux,
+    renamex_np(RENAME_SWAP) on macOS. OSError when this platform or filesystem
+    cannot; the caller then uses the backup-rename fallback."""
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+    else:
+        raise OSError(errno.ENOSYS, "no atomic directory exchange on this platform")
+    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        call = libc.renameat2
+        call.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        result = call(-100, os.fsencode(first), -100, os.fsencode(second), 2)  # AT_FDCWD, RENAME_EXCHANGE
+    elif sys.platform == "darwin" and hasattr(libc, "renamex_np"):
+        call = libc.renamex_np
+        call.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        result = call(os.fsencode(first), os.fsencode(second), 0x2)  # RENAME_SWAP
+    else:
+        raise OSError(errno.ENOSYS, "no atomic directory exchange on this platform")
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
 def backups(dest):
-    """Earlier trees kept beside dest by an interrupted replace()."""
+    """Earlier trees kept beside dest by an interrupted fallback replace()."""
     prefix = "." + dest.name + ".previous"
-    return sorted(path for path in dest.parent.iterdir()
-                  if path.name == prefix or path.name.startswith(prefix + "-"))
+    if not dest.parent.is_dir():
+        return []
+    found = sorted(path for path in dest.parent.iterdir()
+                   if path.name == prefix or path.name.startswith(prefix + "-"))
+    for old in found:
+        if old.is_symlink() or not old.is_dir():
+            raise ValueError("velopack backup is not a plain directory; refusing to use it: " + str(old))
+    return found
+
+
+def recover(dest):
+    """First step of every run: a fallback swap killed between its two renames
+    leaves dest missing and the old tree in a backup. Put it back."""
+    olds = backups(dest)
+    if olds and not dest.exists():
+        olds[0].rename(dest)
+        print("velopack: restored " + str(dest) + " from an interrupted replacement")
 
 
 def replace(staged, dest):
-    """Put the verified tree at dest. No earlier tree (dest or a backup left by
-    an interrupted run) is deleted until the verified tree is in place; on any
-    interruption, KeyboardInterrupt included, dest is put back. Backups live
-    beside dest, never in the temporary directory whose cleanup deletes it."""
+    """Put the verified tree at dest. With an atomic exchange there is no moment
+    without dest; the old tree ends up at the staged path and goes with the
+    temporary directory. Without one, dest is renamed to a backup beside it and
+    the new tree renamed into place; any interruption puts dest back, and a
+    killed run is repaired by recover() at the start of the next one. No earlier
+    tree is deleted before the verified tree is in place."""
     olds = backups(dest)
-    for old in olds:
-        if old.is_symlink() or not old.is_dir():
-            raise ValueError("velopack backup is not a plain directory; refusing to use it: " + str(old))
-    if olds and not dest.exists():
-        # A killed swap left only backups: restore one first, so that an
-        # interruption below never leaves dest missing.
-        olds[0].rename(dest)
-        olds = olds[1:]
+    if dest.exists():
+        try:
+            exchange(staged, dest)
+        except OSError:
+            pass
+        else:
+            for old in olds:
+                shutil.rmtree(old)
+            return
     prefix = "." + dest.name + ".previous"
     aside = dest.with_name(prefix)
     for number in range(1, 1000):
@@ -128,6 +173,7 @@ def main():
     if digest(patch.read_bytes()) != manifest["patch_sha256"]:
         raise ValueError("velopack patch/manifest mismatch")
     dest = repo / manifest["generated_path"]
+    recover(dest)
     if not dest.exists():
         if args.verify:
             raise ValueError("generated velopack missing; run scripts/velopack-setup.py")

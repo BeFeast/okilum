@@ -1,6 +1,7 @@
 """Offline controls for scripts/velopack-setup.py: a stale generated tree is
 regenerated from the pinned archive and patch, never trusted or left in place."""
 import difflib
+import errno
 import importlib.util
 import io
 import json
@@ -134,9 +135,62 @@ class VelopackSetupTests(unittest.TestCase):
             return original(path, target)
         return mock.patch.object(Path, "rename", rename), calls
 
-    def generate_in_process(self):
+    def generate_in_process(self, atomic=False):
         patch = self.root / "scripts/velopack/hidden-delta.diff"
-        setup.generate(self.manifest, patch, self.dest, self.archive)
+        if atomic:
+            setup.generate(self.manifest, patch, self.dest, self.archive)
+            return
+        # The backup-rename fallback, as on a platform/filesystem without exchange.
+        unsupported = OSError(errno.ENOSYS, "no atomic exchange")
+        with mock.patch.object(setup, "exchange", side_effect=unsupported):
+            setup.generate(self.manifest, patch, self.dest, self.archive)
+
+    def exchange_supported(self):
+        probe = Path(tempfile.mkdtemp(dir=self.root))
+        (probe / "a").mkdir()
+        (probe / "b").mkdir()
+        try:
+            setup.exchange(probe / "a", probe / "b")
+            return True
+        except OSError:
+            return False
+        finally:
+            shutil.rmtree(probe)
+
+    def test_existing_tree_is_replaced_by_one_atomic_exchange(self):
+        # Review 4: two renames leave a window without dest. With an exchange no
+        # rename of dest happens at all: an interrupt cannot fall between steps.
+        if not self.exchange_supported():
+            self.skipTest("filesystem without atomic directory exchange")
+        self.run_setup()
+        self.pin("pub fn helper() { /* v2 */ }\n")
+        patcher, calls = self.interrupt_rename(1)
+        with patcher:
+            self.generate_in_process(atomic=True)
+        self.assertEqual(calls, [], "no rename: dest is swapped atomically")
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v2 */ }\n")
+        self.assertEqual(setup.tree_digest(self.dest), self.manifest["tree_sha256"])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_exchange_swaps_two_directories(self):
+        if not self.exchange_supported():
+            self.skipTest("filesystem without atomic directory exchange")
+        first, second = self.root / "first", self.root / "second"
+        for path, text in ((first, "1"), (second, "2")):
+            path.mkdir()
+            (path / "f").write_text(text)
+        setup.exchange(first, second)
+        self.assertEqual(((first / "f").read_text(), (second / "f").read_text()), ("2", "1"))
+
+    def test_killed_fallback_swap_is_restored_first_by_every_run_even_verify(self):
+        # A SIGKILL after the first fallback rename leaves dest missing.
+        self.run_setup()
+        self.dest.rename(self.dest.with_name(".velopack-1.2.161.previous"))
+        output = self.run_setup("--verify")
+        self.assertIn("restored", output)
+        self.assertIn("velopack ready", output)
+        self.assertEqual(setup.tree_digest(self.dest), self.manifest["tree_sha256"])
+        self.assertEqual(self.leftovers(), [])
 
     def test_interrupt_between_the_renames_keeps_the_old_tree(self):
         self.run_setup()

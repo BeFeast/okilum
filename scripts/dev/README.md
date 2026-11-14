@@ -30,9 +30,26 @@ What it does:
 3. Builds the `sprint` profile, adds the Sync helper and the pinned Syncthing
    runtime, and signs with the local Developer ID (`OKILUM_SIGNING_IDENTITY`).
    It does not notarize.
-4. Quits Okilum and replaces `/Applications/Okilum.app`. The previous app is
+4. Closes Okilum and replaces `/Applications/Okilum.app`, the same way as the
+   Linux delivery below (Oleg 14.11). Okilum is closed only after 60 s without
+   keyboard or mouse input (`HIDIdleTime`, waits up to 2 min), and the idle
+   time is read again before each step and right before the replacement.
+   First Quit, then up to 60 s for Okilum to quit by itself: «User canceled.
+   (-128)» is not a refusal, because Okilum cancels the first Quit while its
+   updater/editor guard runs and then quits by itself. Then SIGTERM, which
+   saves like Quit. Signals go only to the processes found at the start (pid,
+   start time, exact `/Applications/Okilum.app` executable, your uid),
+   checked again right before the signal. **No SIGKILL:** if Okilum is still
+   open 30 s after SIGTERM, it keeps running. If the user is active or Okilum
+   stays open, the build is kept and the Sprint exits 75 with `Sprint DEFERRED`
+   and no report; the next run retries. If the user comes back after Okilum
+   closed, the installed Okilum is reopened unchanged. The previous app is
    kept in `…/sprint/staging.noindex/previous-Okilum.app`. If the new app fails
-   before launch, the previous one is put back.
+   before launch, the previous one is put back. The old bundle's Sync helper
+   (`okilum-sync-supervisor`, a launchd agent that outlives the app) gets
+   SIGTERM after the replacement, never SIGKILL, and `launchctl kickstart`
+   starts it from the new bundle; a failed kickstart is logged as a warning
+   with its exit code.
 5. **One registered app:** the staged and previous bundles live in
    `staging.noindex`, which Spotlight does not index, and are unregistered from
    LaunchServices. Any other registered `com.befeast.okilum` bundle (copies left

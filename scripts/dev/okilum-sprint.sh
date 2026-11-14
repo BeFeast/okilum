@@ -428,28 +428,32 @@ sprint_bundle_tool() {
             --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon --
     fi
 }
-# Quit the installed app before its bundle is replaced (Oleg, 14.11: Sprint may
-# close Okilum by force, but only while he is idle for at least 60 s).
-# A refused AppleScript Quit is not a user decision: while Sparkle holds a
-# prepared update, Okilum's applicationShouldTerminate
-# (crates/okilum-shell/src/updater/bridge.m) answers the first Quit with
-# NSTerminateCancel, cancels that update session and then quits by itself.
-# osascript reports that as "User canceled. (-128)", and under set -e this
-# aborted the Sprint although Okilum was gone 3 s later (14.11 08:50).
-# SIGTERM takes the same quit path as the menu (reader_recovery.rs). Edits are
-# journaled 300 ms after typing stops and autosaved within 2 s; after 60 s
-# without input SIGKILL loses nothing that the recovery drafts do not restore.
-# So after any Quit reply the Sprint first waits up to 60 s for Okilum to
-# exit by itself. If the user stays active, nothing is signalled: the Sprint
-# exits with SPRINT_DEFERRED and the next delivery tick retries.
+# Close the installed app before its bundle is replaced (Oleg, 14.11), the same
+# way as the Linux beta delivery (scripts/dev/okilum-beta-deliver.py):
+# - nothing is sent, not even Quit, until the user has been idle >= 60 s;
+#   the idle time is read again right before each step and right before the
+#   replacement, and the last read decides;
+# - only the processes captured at the start are signalled, re-validated by
+#   pid + start time + exact executable path + uid right before each signal;
+# - no SIGKILL: Okilum shows no "everything is saved" state while it runs, so
+#   if it is still open 30 s after SIGTERM it keeps running;
+# - whenever a step cannot run, the Sprint exits SPRINT_DEFERRED (75) with the
+#   build ready, and the next delivery tick retries.
+# Quit may be answered "User canceled. (-128)" although nobody declined: while
+# Sparkle holds a prepared update, applicationShouldTerminate
+# (crates/okilum-shell/src/updater/bridge.m) cancels the first Quit, runs the
+# updater/editor guard and then quits by itself (14.11: Quit 08:50:08,
+# app_quit 08:50:11). So after any reply the Sprint waits up to 60 s for that.
+# SIGTERM takes the same path as Quit from the menu (reader_recovery.rs).
 SPRINT_DEFERRED=75
 QUIT_WAIT=${OKILUM_SPRINT_QUIT_WAIT:-60}
 IDLE_WAIT=${OKILUM_SPRINT_IDLE_WAIT:-120}
 IDLE_NEEDED=${OKILUM_SPRINT_IDLE_NEEDED:-60}
-TERM_GRACE=${OKILUM_SPRINT_TERM_GRACE:-15}
+TERM_GRACE=${OKILUM_SPRINT_TERM_GRACE:-30}
 SYNC_HELPER=okilum-sync-supervisor
 SYNC_HELPER_LABEL=com.befeast.okilum.sync
 SYNC_HELPER_WAIT=${OKILUM_SPRINT_SYNC_HELPER_WAIT:-15}
+CLOSED_BY_SPRINT=0
 # "pid start-time" of this user's processes running exactly
 # $app/Contents/MacOS/$1 (macOS ps prints the full executable path): never a QA
 # or staged copy, another executable of the bundle, or another user's session.
@@ -462,70 +466,96 @@ bundle_processes() {
         fi
     done < <(ps -axo pid=,uid=,lstart=,comm= 2>/dev/null || true)
 }
-installed_app_pids() {
-    local pid rest
-    while read -r pid rest; do
-        if [[ -n $pid ]]; then printf '%s\n' "$pid"; fi
-    done < <(bundle_processes okilum)
+# Captured identities ($1) that are still the same process of $app/.../$2.
+live_identities() {
+    local current pid start
+    current=$(bundle_processes "$2")
+    while read -r pid start; do
+        if [[ -n $pid ]] && grep -qxF "$pid $start" <<< "$current"; then printf '%s %s\n' "$pid" "$start"; fi
+    done <<< "$1"
 }
-installed_app_running() { [[ -n $(installed_app_pids) ]]; }
+identity_pids() {
+    local pid rest pids=
+    while read -r pid rest; do
+        if [[ -n $pid ]]; then pids="$pids $pid"; fi
+    done <<< "$1"
+    printf '%s\n' "${pids# }"
+}
+installed_app_pids() { identity_pids "$(bundle_processes okilum)"; }
 user_idle_seconds() {
     local idle
     idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {printf "%d\n", $NF / 1000000000; exit}' || true)
     [[ $idle =~ ^[0-9]+$ ]] && printf '%s\n' "$idle" || echo 0
 }
-wait_for_app_exit() {
+# Wait up to $3 s until none of the identities $1 of executable $2 is alive.
+wait_for_identities() {
     local attempt
-    for ((attempt=0; attempt<$1; attempt++)); do
-        installed_app_running || return 0
+    for ((attempt=0; attempt<$3; attempt++)); do
+        [[ -n $(live_identities "$1" "$2") ]] || return 0
         sleep 1
     done
-    ! installed_app_running
+    [[ -z $(live_identities "$1" "$2") ]]
 }
-# $1 = idle seconds of the read that decided, $2 = the signal not sent.
+# $1 = idle seconds of the read that decided, $2 = the step not taken.
 defer_for_user() {
-    printf 'Sprint deferred: user active (idle %ss < %ss); Okilum was not signalled at %s.\n' \
-        "$1" "$IDLE_NEEDED" "$2"
+    printf 'Sprint deferred: user active (idle %ss < %ss); Okilum was not sent %s.\n' "$1" "$IDLE_NEEDED" "$2"
     return "$SPRINT_DEFERRED"
 }
 stop_installed_app() {
-    local reply attempt pids idle
-    installed_app_running || return 0
+    local captured live reply attempt idle
+    captured=$(bundle_processes okilum)
+    [[ -n $captured ]] || return 0
+    printf 'Okilum runs (pid %s); waiting up to %ss for %ss without keyboard or mouse input before closing it.\n' \
+        "$(identity_pids "$captured")" "$IDLE_WAIT" "$IDLE_NEEDED"
+    for ((attempt=0; ; attempt+=5)); do
+        [[ -n $(live_identities "$captured" okilum) ]] || { echo 'Okilum quit by itself.'; return 0; }
+        idle=$(user_idle_seconds)
+        ((idle >= IDLE_NEEDED)) && break
+        ((attempt < IDLE_WAIT)) || { defer_for_user "$idle" Quit; return; }
+        sleep 5
+    done
+    printf 'User idle %ss: asking Okilum to quit.\n' "$idle"
+    CLOSED_BY_SPRINT=1
     # The path form targets this bundle, not a QA copy with the same bundle ID.
     if ! reply=$(osascript -e "if application \"$app\" is running then" \
             -e 'with timeout of 10 seconds' -e "tell application \"$app\" to quit" \
             -e 'end timeout' -e 'end if' 2>&1); then
-        printf 'Okilum answered Quit with: %s\nWaiting for it to quit by itself.\n' "$reply"
+        printf 'Okilum answered Quit with: %s\n' "$reply"
     fi
-    wait_for_app_exit "$QUIT_WAIT" && { echo 'Okilum quit.'; return 0; }
-    printf 'Okilum still runs after %ss; waiting up to %ss for %ss without keyboard or mouse input.\n' \
-        "$QUIT_WAIT" "$IDLE_WAIT" "$IDLE_NEEDED"
-    for ((attempt=0; ; attempt+=5)); do
-        installed_app_running || { echo 'Okilum quit.'; return 0; }
-        idle=$(user_idle_seconds)
-        ((idle >= IDLE_NEEDED)) && break
-        ((attempt < IDLE_WAIT)) || { defer_for_user "$idle" SIGTERM; return; }
-        sleep 5
-    done
-    # One fresh idle read immediately before each signal decides, and is the
-    # value logged: below IDLE_NEEDED nothing is sent.
-    pids=$(installed_app_pids | tr '\n' ' ')
-    [[ -n ${pids// /} ]] || { echo 'Okilum quit.'; return 0; }
+    printf 'Waiting up to %ss for Okilum to quit by itself.\n' "$QUIT_WAIT"
+    wait_for_identities "$captured" okilum "$QUIT_WAIT" && { echo 'Okilum quit.'; return 0; }
     idle=$(user_idle_seconds)
     ((idle >= IDLE_NEEDED)) || { defer_for_user "$idle" SIGTERM; return; }
-    printf 'Stopping Okilum (pid %s, user idle %ss) with SIGTERM: it saves and quits as from the menu.\n' \
-        "${pids% }" "$idle"
-    # shellcheck disable=SC2086 # one word per pid
-    kill -TERM $pids 2>/dev/null || true
-    wait_for_app_exit "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
-    pids=$(installed_app_pids | tr '\n' ' ')
-    [[ -n ${pids// /} ]] || { echo 'Okilum quit after SIGTERM.'; return 0; }
+    # Re-validated immediately before the signal: a reused pid is never signalled.
+    live=$(live_identities "$captured" okilum)
+    [[ -n $live ]] || { echo 'Okilum quit.'; return 0; }
+    printf 'Okilum still runs after %ss; SIGTERM pid %s (user idle %ss): it saves and quits as from the menu.\n' \
+        "$QUIT_WAIT" "$(identity_pids "$live")" "$idle"
+    # shellcheck disable=SC2046 # one word per pid
+    kill -TERM $(identity_pids "$live") 2>/dev/null || true
+    wait_for_identities "$live" okilum "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
+    printf 'Okilum (pid %s) still runs %ss after SIGTERM; left running, no SIGKILL (its buffers may be unsaved).\n' \
+        "$(identity_pids "$(live_identities "$live" okilum)")" "$TERM_GRACE"
+    printf 'Sprint deferred: the next delivery tick retries.\n'
+    return "$SPRINT_DEFERRED"
+}
+# Closes Okilum for the replacement. If the Sprint closed it, the idle time is
+# read once more right before the bundle is replaced; if the user came back
+# meanwhile, the installed Okilum is reopened unchanged and the Sprint defers.
+# (Closed by the user before any Quit was sent: nothing to reopen.)
+close_for_replacement() {
+    local status=0 idle
+    CLOSED_BY_SPRINT=0
+    stop_installed_app || status=$?
+    ((status == 0)) || return "$status"
+    ((CLOSED_BY_SPRINT)) || return 0
     idle=$(user_idle_seconds)
-    ((idle >= IDLE_NEEDED)) || { defer_for_user "$idle" SIGKILL; return; }
-    printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s (user idle %ss).\n' "$TERM_GRACE" "${pids% }" "$idle"
-    # shellcheck disable=SC2086
-    kill -KILL $pids 2>/dev/null || true
-    wait_for_app_exit 5
+    if ((idle < IDLE_NEEDED)); then
+        printf 'Sprint deferred: user active (idle %ss < %ss) right before the replacement; reopening the installed Okilum unchanged.\n' \
+            "$idle" "$IDLE_NEEDED"
+        open "$app" || true
+        return "$SPRINT_DEFERRED"
+    fi
 }
 # The Sync helper is a launchd agent (SMAppService, KeepAlive on failure) that
 # survives the app: after a bundle replacement it keeps running the replaced
@@ -536,43 +566,42 @@ stop_installed_app() {
 # launchd starts it again from the new bundle. Never SIGKILL: that orphans its
 # Sync runtime, which the helper lease then refuses.
 restart_old_sync_helper() {
-    local old=$1 current pid start alive attempt
+    local old=$1 live attempt pid rc output
     if [[ -z $old ]]; then echo 'Sync helper: none ran from the replaced bundle.'; return 0; fi
-    current=$(bundle_processes "$SYNC_HELPER")
-    alive=
-    while read -r pid start; do
-        if [[ -n $pid ]] && grep -qxF "$pid $start" <<< "$current"; then alive="$alive $pid"; fi
-    done <<< "$old"
-    if [[ -n $alive ]]; then
-        printf 'Sync helper (pid%s) still runs the replaced binary; SIGTERM so launchd restarts it from the new bundle.\n' "$alive"
-        # shellcheck disable=SC2086 # one word per pid
-        kill -TERM $alive 2>/dev/null || true
-        for ((attempt=0; attempt<SYNC_HELPER_WAIT; attempt++)); do
-            current=$(bundle_processes "$SYNC_HELPER")
-            alive=
-            while read -r pid start; do
-                if [[ -n $pid ]] && grep -qxF "$pid $start" <<< "$current"; then alive="$alive $pid"; fi
-            done <<< "$old"
-            [[ -n $alive ]] || break
-            sleep 1
-        done
-        if [[ -n $alive ]]; then
-            printf 'Sync helper (pid%s) did not exit after %ss; left running (SIGKILL would orphan its runtime).\n' \
-                "$alive" "$SYNC_HELPER_WAIT"
+    live=$(live_identities "$old" "$SYNC_HELPER")
+    if [[ -n $live ]]; then
+        printf 'Sync helper (pid %s) still runs the replaced binary; SIGTERM so launchd restarts it from the new bundle.\n' \
+            "$(identity_pids "$live")"
+        # shellcheck disable=SC2046 # one word per pid
+        kill -TERM $(identity_pids "$live") 2>/dev/null || true
+        if ! wait_for_identities "$live" "$SYNC_HELPER" "$SYNC_HELPER_WAIT"; then
+            printf 'WARNING: Sync helper (pid %s) still runs %ss after SIGTERM; left running, no SIGKILL (it would orphan its Sync runtime).\n' \
+                "$(identity_pids "$(live_identities "$live" "$SYNC_HELPER")")" "$SYNC_HELPER_WAIT"
             return 0
         fi
     fi
-    # Start it now rather than after launchd's 30 s throttle; a running or
-    # unregistered service makes this a no-op. launchctl can hang: bounded.
-    launchctl kickstart "gui/$(id -u)/$SYNC_HELPER_LABEL" >/dev/null 2>&1 &
+    # Start it now rather than after launchd's 30 s throttle. launchctl can
+    # hang, so the request is bounded; its real exit status is reported.
+    output=$(mktemp "${TMPDIR:-/tmp}/okilum-launchctl.XXXXXX")
+    launchctl kickstart "gui/$(id -u)/$SYNC_HELPER_LABEL" >"$output" 2>&1 &
     pid=$!
     for ((attempt=0; attempt<5; attempt++)); do
         kill -0 "$pid" 2>/dev/null || break
         sleep 1
     done
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    echo 'Sync helper: old process stopped; launchd starts it from the new bundle.'
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        printf 'WARNING: launchctl kickstart gui/%s/%s did not answer within 5 s; the Sync helper may start only after launchd'"'"'s 30 s throttle.\n' \
+            "$(id -u)" "$SYNC_HELPER_LABEL"
+    elif wait "$pid"; then
+        printf 'Sync helper: launchctl kickstart gui/%s/%s exit 0.\n' "$(id -u)" "$SYNC_HELPER_LABEL"
+    else
+        rc=$?
+        printf 'WARNING: Sync helper restart request failed: launchctl kickstart gui/%s/%s exit %s: %s\n' \
+            "$(id -u)" "$SYNC_HELPER_LABEL" "$rc" "$(tr '\n' ' ' < "$output")"
+    fi
+    rm -f "$output"
 }
 sprint_exit() {
     result=$?
@@ -790,9 +819,9 @@ python3 "$reporter" --trim-target "$root"
 unregister "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
-    stopped=0; stop_installed_app || stopped=$?
-    if ((stopped == SPRINT_DEFERRED)); then exit "$SPRINT_DEFERRED"; fi
-    ((stopped == 0)) || { echo 'Okilum is still running; app was not replaced.' >&2; exit 1; }
+    closed=0; close_for_replacement || closed=$?
+    if ((closed == SPRINT_DEFERRED)); then exit "$SPRINT_DEFERRED"; fi
+    ((closed == 0)) || { echo 'Okilum could not be closed; app was not replaced.' >&2; exit 1; }
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
 backup="$root/$STAGE_DIR/previous-Okilum.app"
