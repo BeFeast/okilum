@@ -723,7 +723,16 @@ pub(super) fn rewrite_draft_links(
     // quote, a list…) or an escaped target the parser cannot round-trip
     // refuses the Save.
     for destination in all.iter().filter(|d| d.reason.is_some()) {
-        if let Some(relative) = resolve(&destination.url, destination.wiki)? {
+        // Read as written and as CommonMark decodes it (entities, escapes).
+        let unescaped = commonmark_unescape(&destination.url);
+        let resolved = match resolve(&destination.url, destination.wiki)? {
+            Some(relative) => Some(relative),
+            None if !destination.wiki && unescaped != destination.url => {
+                resolve(&unescaped, false)?
+            }
+            None => None,
+        };
+        if let Some(relative) = resolved {
             if !rewritten.contains(&relative) {
                 return Err(Refused(format!(
                     "The link «{}» to an attachment is written in a way Okilum cannot rewrite safely.",
