@@ -1,7 +1,7 @@
-use super::tests::{click, open, open_file, settle, value};
+use super::tests::{click, open, open_file, settle, value, Fixture};
 use super::*;
 use ::core::prelude::v1::test;
-use gpui_component::input::Undo;
+use gpui_component::input::{Redo, Undo};
 
 fn document(valid: bool) -> String {
     // Same scale as the tester's OpenAPI, with spaces and Unicode retained.
@@ -549,4 +549,149 @@ fn file_validate(visual: &mut VisualTestContext) {
     );
     visual.simulate_keystrokes("down down enter");
     settle(visual);
+}
+
+/// Formatter output for `rows` objects, so a fixture differs from Format's
+/// result only where a test changes it.
+fn formatted_rows(rows: usize) -> String {
+    let minified = format!(
+        "[{}]",
+        (0..rows)
+            .map(|i| format!("{{\"id\":{i},\"name\":\"item {i} שלום\",\"tags\":[\"a\",\"b\"]}}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    match model::format_indented(
+        "json",
+        &minified,
+        model::LineEnding::Lf,
+        &indent_unit(),
+        &model::Control::default(),
+    ) {
+        Some(model::Formatted::Changed(text)) => text,
+        _ => panic!("fixture formats"),
+    }
+}
+
+/// Lines the editor re-wrapped for source edits since the last call.
+fn rewrapped_lines(f: &Fixture, visual: &mut VisualTestContext) -> usize {
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    f.input.update(visual, |input, _| {
+        input
+            .take_layout_frames()
+            .iter()
+            .filter(|frame| frame.edit)
+            .map(|frame| frame.reshaped_lines)
+            .sum()
+    })
+}
+
+/// #2804: applying a multi-MB Format/Repair result, and undoing it, re-wraps
+/// only the lines that change, whatever the file size. A whole-file
+/// replacement re-wrapped (and stored in Undo) every line, twice.
+#[gpui::test]
+fn large2804_apply_and_undo_touch_only_changed_lines(cx: &mut TestAppContext) {
+    let pretty = formatted_rows(30_000);
+    let lines = pretty.lines().count();
+    assert!(pretty.len() > 2 * 1024 * 1024 && lines > 200_000);
+    // Repair: three bare keys at the start, middle and end of the file.
+    let mut broken = pretty.clone();
+    for i in [2, 15_000, 29_998] {
+        let quoted = format!("\"id\": {i},");
+        let at = broken.find(&quoted).unwrap();
+        broken.replace_range(at..at + quoted.len(), &format!("id: {i},"));
+    }
+    let (f, visual) = open_file(cx, &broken, "data.json");
+    f.input
+        .update(visual, |input, _| input.enable_layout_diagnostics());
+    rewrapped_lines(&f, visual);
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.code_operation(Action::Repair, window, cx)
+    });
+    visual.run_until_parked();
+    f.reader.update_in(visual, |reader, window, cx| {
+        assert_eq!(
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .operations
+                .preview
+                .as_ref()
+                .unwrap()
+                .edits
+                .len(),
+            3
+        );
+        reader.apply_code_repair(window, cx)
+    });
+    f.reader.read_with(visual, |_, cx| {
+        assert_eq!(value(&f, cx), pretty, "exact Repair result")
+    });
+    let applied = rewrapped_lines(&f, visual);
+    visual.dispatch_action(Undo);
+    f.reader.read_with(visual, |_, cx| {
+        assert_eq!(value(&f, cx), broken, "one Undo restores every byte")
+    });
+    let undone = rewrapped_lines(&f, visual);
+    assert!(
+        applied <= 16 && undone <= 16,
+        "Repair re-wrapped {applied} and Undo {undone} of {lines} lines"
+    );
+    visual.dispatch_action(Redo);
+    f.reader
+        .read_with(visual, |_, cx| assert_eq!(value(&f, cx), pretty));
+    visual.dispatch_action(Undo);
+    settle(visual);
+
+    // Format: two objects collapsed onto one line each.
+    let mut collapsed = pretty.clone();
+    for i in [7, 22_222] {
+        let start = collapsed.find(&format!("\"id\": {i},")).unwrap();
+        let start = collapsed[..start].rfind('{').unwrap();
+        let end = start + collapsed[start..].find('}').unwrap();
+        let flat: String = collapsed[start..end].lines().map(str::trim_start).collect();
+        collapsed.replace_range(start..end, &flat);
+    }
+    f.input.update_in(visual, |input, window, cx| {
+        let len = input.text().len();
+        input.replace_source_range(0..len, &collapsed, window, cx);
+    });
+    settle(visual);
+    rewrapped_lines(&f, visual);
+    let source = value_of(&f, visual);
+    f.reader.update_in(visual, |reader, window, cx| {
+        reader.code_operation(Action::Format, window, cx)
+    });
+    visual.run_until_parked();
+    f.reader.read_with(visual, |_, cx| {
+        assert_eq!(value(&f, cx), pretty, "exact Format result")
+    });
+    let applied = rewrapped_lines(&f, visual);
+    visual.dispatch_action(Undo);
+    f.reader.read_with(visual, |_, cx| {
+        assert_eq!(value(&f, cx), source, "one Undo restores every byte")
+    });
+    let undone = rewrapped_lines(&f, visual);
+    assert!(
+        applied <= 64 && undone <= 64,
+        "Format re-wrapped {applied} and Undo {undone} of {lines} lines"
+    );
+
+    // Positive control: the same counter sees a whole-file change.
+    f.input.update_in(visual, |input, window, cx| {
+        let len = input.text().len();
+        input.replace_source_range(0..len, &format!(" {source}"), window, cx);
+    });
+    let whole = rewrapped_lines(&f, visual);
+    let lines = source.lines().count();
+    assert!(
+        whole >= lines,
+        "control: a whole-file replacement re-wraps {whole} of {lines} lines"
+    );
+}
+
+fn value_of(f: &Fixture, visual: &mut VisualTestContext) -> String {
+    f.input
+        .read_with(visual, |input, _| input.value().to_string())
 }
