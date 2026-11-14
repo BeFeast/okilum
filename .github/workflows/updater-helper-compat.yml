@@ -40,6 +40,7 @@ jobs:
         with:
           shared-key: storage-compat-zip-v1
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify exact source and vendor
         shell: bash
         run: |
@@ -91,6 +92,7 @@ jobs:
         with:
           shared-key: updater-ready-guard-v1
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/download-artifact@v4
         with:
           name: updater-helper-icon
@@ -129,6 +131,7 @@ jobs:
         with:
           shared-key: updater-helper-vm-binary-v1
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build recovery test binary
         shell: bash
         run: |
