@@ -387,11 +387,19 @@ fn folder1610_existing_ssh_entrypoint_routes_folder_or_document_before_any_worke
     assert!(
         matches!(location("ssh://same_alias/notes/a.md#Part%20One").unwrap(),Location::Document(source,Some(heading)) if source.url()=="ssh://same_alias/notes/a.md" && heading=="Part One")
     );
+    // #1610: a user/port folder link routes like an alias; a URL password does not.
+    assert!(matches!(
+        location("ssh://oleg@same_alias:2222/notes/").unwrap(),
+        Location::Folder(_)
+    ));
+    assert!(
+        matches!(location("ssh://oleg@same_alias:2222/notes/a.md").unwrap(), Location::Document(source, None) if source.url()=="ssh://oleg@same_alias:2222/notes/a.md")
+    );
     for invalid in [
-        "ssh://user@same_alias/notes/",
+        "ssh://user:secret@same_alias/notes/",
         "ssh://same_alias/notes/#heading",
         "ssh://same_alias/notes/?query",
     ] {
-        assert!(location(invalid).is_err());
+        assert!(location(invalid).is_err(), "{invalid}");
     }
 }
