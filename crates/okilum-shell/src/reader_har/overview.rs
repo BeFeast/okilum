@@ -190,13 +190,19 @@ fn act(
     }
 }
 
-/// The last path segment without its query, or the path, or the host.
+/// The last path segment without its query: a file name alone, anything
+/// else (`34`, `me`, an id) with its parent (`items/34`); else the host.
 pub(crate) fn request_name(entry: &Entry) -> String {
     let path = entry.path();
     let bare = path.split(['?', '#']).next().unwrap_or(path);
-    let tail = bare.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    let mut segments = bare.trim_end_matches('/').rsplit('/');
+    let tail = segments.next().unwrap_or("");
+    let parent = segments.next().filter(|parent| !parent.is_empty());
     if !tail.is_empty() {
-        tail.to_owned()
+        match parent {
+            Some(parent) if !tail.contains('.') => format!("{parent}/{tail}"),
+            _ => tail.to_owned(),
+        }
     } else if !entry.host().is_empty() {
         entry.host().to_owned()
     } else {
@@ -863,6 +869,11 @@ mod tests {
         assert_eq!(overview.largest, [(3, 400), (0, 100), (1, 50)]);
         assert_eq!(request_name(&entries[1]), "x.js");
         assert_eq!(request_name(&entries[2]), "b.test");
+        let named = |url: &str| request_name(&entry(url, Some(200), None, 0));
+        assert_eq!(named("https://a.test/api/v1/items/34?x=1"), "items/34");
+        assert_eq!(named("https://a.test/api/v1/auth/me"), "auth/me");
+        assert_eq!(named("https://a.test/readyz"), "readyz");
+        assert_eq!(named("https://a.test/assets/index-1.js"), "index-1.js");
     }
 
     #[test]
