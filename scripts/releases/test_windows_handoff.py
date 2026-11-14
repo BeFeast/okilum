@@ -270,6 +270,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all(s['with'] == xwin[0]['with'] for s in seed_xwin))
         build = next(s for s in seed['steps'] if s.get('name') == 'Build the Windows beta graph to fill the cache')
         self.assertIn('bash scripts/build-windows-ci.sh', build['run'])
+        # A cached payload made the beta's syncthing staging refuse to run (measured 14.11).
+        clean = 'rm -rf target/windows-dist target/windows-release'
+        self.assertLess(build['run'].index('bash scripts/build-windows-ci.sh'), build['run'].index(clean))
+        compile_step = next(s for s in self.beta['steps'] if s.get('name') == handoff.BUILD_STEP)
+        self.assertLess(compile_step['run'].index(clean), compile_step['run'].index('bash scripts/build-windows-ci.sh'))
         self.assertEqual(checkouts(seed['steps']), {'product': '${{ inputs.source || github.sha }}'})
 
     def test_caches_are_seeded_only_on_main_or_an_explicit_seed(self):

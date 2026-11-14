@@ -206,6 +206,8 @@ jobs:
         run: |
           export OKILUM_BUILD_VERSION="$BUILD"
           export OKILUM_RELEASE_VERSION="0.1.$BUILD"
+          # Only Cargo outputs may come from the restored cache, never a payload.
+          rm -rf target/windows-dist target/windows-release
           bash scripts/build-windows-ci.sh
           bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
       - name: Restore previous beta package for delta
@@ -325,6 +327,9 @@ jobs:
         working-directory: product
         run: |
           bash scripts/build-windows-ci.sh
+          # The cache holds Cargo outputs only: the staged payload would make the
+          # beta's runtime staging refuse an existing syncthing.exe (and add ~200 MB).
+          rm -rf target/windows-dist target/windows-release
           du -sh target
 
   # Keep one entry per cache (rust-cache deps, xwin SDK) in the 10 GiB repository
