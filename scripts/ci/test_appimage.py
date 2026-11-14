@@ -87,7 +87,7 @@ class AppImageTests(unittest.TestCase):
 
     def test_required_workflow_retains_artifact_before_testing_and_aggregates_both_gates(self):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()
-        self.assertIn('needs: [select, linux-checks, appimage]', workflow)
+        self.assertIn('needs: [linux-checks, appimage]', workflow)
         # The actual aggregate command and fail-closed evidence are exercised
         # across main/branch and manual/automatic runs in test_gate_log_evidence.
         self.assertIn('CHECKS: ${{ needs.linux-checks.result }}', workflow)
@@ -115,7 +115,8 @@ class AppImageTests(unittest.TestCase):
             self.assertEqual(step['with']['save-if'], "${{ github.ref == 'refs/heads/main' }}")
             # Registry dependencies only: path crates must compile from the checkout.
             self.assertNotIn('cache-workspace-crates', step['with'])
-        self.assertEqual(caches[0][0]['if'], "github.event.schedule != '5 22 * * 2,6'")
+        self.assertEqual(caches[0][0]['if'],
+                         "steps.select.outputs.build == 'true' && github.event.schedule != '5 22 * * 2,6'")
         triggers = seeder.get('on', seeder.get(True))  # PyYAML reads a bare on: as True
         self.assertEqual(triggers['push']['branches'], ['main'])
         build = [s for s in seed['steps'] if s.get('run') == 'bash scripts/appimage/build.sh']
@@ -138,35 +139,39 @@ class AppImageTests(unittest.TestCase):
         # The old main-only actions/cache step never ran on hourly refs.
         self.assertFalse(any(str(s.get('uses', '')).startswith('actions/cache') for s in appimage['steps']))
 
-    def test_pushed_beta_runs_distribution_and_signing_checks_after_the_handoff_job(self):
+    def test_beta_is_one_hosted_job_with_inline_admission_and_blocking_checks(self):
         import yaml
         workflow = yaml.safe_load((ROOT / '.github/workflows/forgejo-linux.yml').read_text())
-        hourly = "github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')"
+        jobs = workflow['jobs']
+        # Every extra job on the critical path is another wait for a free hosted
+        # runner (14.11: a separate select job queued 11 min), so admission and
+        # both acceptance checks run inside the single producer job.
+        self.assertEqual(set(jobs), {'linux-checks', 'appimage', 'linux'})
+        appimage = jobs['appimage']
+        self.assertNotIn('needs', appimage)
+        self.assertNotIn('if', appimage)
+        steps = appimage['steps']
+        self.assertEqual(steps[1]['id'], 'select')
+        self.assertIn('python3 scripts/releases/hourly_beta.py linux', steps[1]['run'])
+        self.assertEqual(appimage['outputs']['build'], '${{ steps.select.outputs.build }}')
+        gate = "steps.select.outputs.build == 'true'"
+        for step in steps[2:]:
+            self.assertTrue(str(step.get('if', '')).startswith(gate) or
+                            step.get('if') == 'always() && ' + gate, step.get('name') or step.get('uses'))
         names = ('Verify unchanged AppImage on clean Ubuntu and Fedora',
                  'Verify signed AppImage installation with disposable CI key')
-        steps = {s.get('name'): s for s in workflow['jobs']['appimage']['steps']}
+        by_name = {step.get('name'): step for step in steps}
         for name in names:
-            self.assertTrue(steps[name]['if'].endswith('&& !(' + hourly + ')'), name)
-        # The handoff gate stays in the producer job and still precedes completion.
-        self.assertNotIn('if', steps['Verify AppImage package'])
-        acceptance = workflow['jobs']['appimage-acceptance']
-        self.assertEqual(acceptance['needs'], 'appimage')
-        self.assertEqual(acceptance['if'], hourly)
-        accepted = {s.get('name'): s for s in acceptance['steps']}
-        for name in names:
-            self.assertNotIn('if', accepted[name])
-        self.assertIn('scripts/appimage/smoke.sh', accepted[names[0]]['run'])
-        self.assertIn('for image in ubuntu:24.04 fedora:44;', accepted[names[0]]['run'])
-        self.assertEqual(accepted[names[1]]['env']['APPIMAGE_ARTIFACT_ID'],
-                         '${{ needs.appimage.outputs.artifact-id }}')
-        download = [s for s in acceptance['steps'] if str(s.get('uses', '')).startswith('actions/download-artifact@')]
-        self.assertEqual(download[0]['with']['name'], 'linux-appimage-${{ github.sha }}')
-        # Evidence keeps a distinct name: the handoff matches linux-appimage-<sha> exactly.
-        uploads = [s['with']['name'] for s in acceptance['steps'] if 'upload-artifact' in str(s.get('uses', ''))]
-        self.assertEqual(uploads, ['linux-appimage-acceptance-evidence-${{ github.sha }}'])
-        self.assertEqual(workflow['jobs']['appimage']['outputs']['artifact-id'],
-                         '${{ steps.producer.outputs.artifact-id }}')
-
+            # Runs for pushed beta refs (ref != main) as well as PR proxies,
+            # dispatches and nightly; publication waits for it (beta gate).
+            self.assertEqual(by_name[name]['if'], gate + " && (github.ref != 'refs/heads/main' || "
+                             "github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6')")
+        order = [step.get('name') for step in steps]
+        self.assertLess(order.index('Verify AppImage package'), order.index(names[0]))
+        aggregate = jobs['linux']
+        self.assertEqual(aggregate['needs'], ['linux-checks', 'appimage'])
+        self.assertEqual(aggregate['if'], "always() && (needs.appimage.outputs.build == 'true' "
+                                          "|| needs.appimage.result != 'success')")
 
 if __name__ == '__main__':
     unittest.main()

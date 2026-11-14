@@ -87,12 +87,15 @@ other `v0-rust-beta-appimage-v1-Linux-*` entry, so the beta cache occupies one
 entry (~1 GiB) of the 10 GiB quota.
 
 The Ubuntu/Fedora smoke and disposable-key signing checks stay the beta gate
-(idunn installs every beta automatically). For a pushed beta they run in
-`appimage-acceptance` after the `appimage` job, while the bridge already takes
-the bytes; `appimage-reuse` then waits for that job (`appimage_handoff.py
-await-acceptance`, 15 min budget) before `appimage-publication` may dispatch,
-and the publisher refuses a handoff whose `appimage-reuse` job did not succeed.
-A failed or missing check never reaches the feed. Mac and Windows
+(idunn installs every beta automatically). The producer is one hosted job:
+admission (`hourly_beta.py linux`), build, package check, both acceptance
+checks. Since every Okilum lane runs on GitHub (#2928) the free plan's 20-job
+limit is often full, and each further job on the critical path is another queue
+wait (14.11: a separate `select` job waited 11 minutes, and a separate
+acceptance job would be a third wait). `appimage-reuse` still re-checks both
+steps (`appimage_handoff.py await-acceptance`) before `appimage-publication`
+may dispatch, and the publisher refuses a handoff whose `appimage-reuse` job
+did not succeed. A failed or missing check never reaches the feed. Mac and Windows
 build the pushed product source with their existing delivery tooling.
 
 Push runs carry Forgejo's native statuses on their own commit, named

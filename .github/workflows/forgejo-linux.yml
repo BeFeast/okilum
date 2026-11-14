@@ -22,26 +22,6 @@ concurrency:
   group: forgejo-linux-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  select:
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-24.04
-    outputs:
-      build: ${{ steps.select.outputs.build }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - id: select
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HOURLY_SOURCE: ${{ inputs.source }}
-          NIGHTLY: ${{ github.event.schedule == '5 22 * * 2,6' }}
-        run: |
-          if [ "$NIGHTLY" = true ]; then echo 'build=true' >> "$GITHUB_OUTPUT";
-          else python3 scripts/releases/hourly_beta.py linux; fi
-
   linux-checks:
     if: (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -90,15 +70,18 @@ jobs:
         run: bash scripts/ci/check-linux.sh
 
   # One source-pinned product build; both distributions consume its exact bytes.
+  # Admission runs inside this job, so a beta occupies one hosted runner slot
+  # from start to handoff: since every Okilum lane runs on GitHub (#2928), the
+  # free plan's 20-job limit is often full, and each extra job on the critical
+  # path is another queue wait (14.11: the separate select job waited 11 min).
   appimage:
-    needs: select
-    if: needs.select.outputs.build == 'true'
     permissions:
       contents: read
       actions: read
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     outputs:
+      build: ${{ steps.select.outputs.build }}
       artifact-id: ${{ steps.producer.outputs.artifact-id }}
     # Keep this env identical to beta-appimage-cache.yml: rust-cache keys on it.
     env:
@@ -111,7 +94,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Read-only admission (hourly_beta.github_main). Every later step runs only
+      # when it admits; a refused run ends green without bytes, as a skipped job did.
+      - name: Admit exact source
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOURLY_SOURCE: ${{ inputs.source }}
+          NIGHTLY: ${{ github.event.schedule == '5 22 * * 2,6' }}
+        run: |
+          if [ "$NIGHTLY" = true ]; then echo 'build=true' >> "$GITHUB_OUTPUT";
+          else python3 scripts/releases/hourly_beta.py linux; fi
       - name: Install Ubuntu 22.04 build dependencies
+        if: steps.select.outputs.build == 'true'
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
@@ -126,15 +121,15 @@ jobs:
       # compile from this checkout, so a restore can never stand in for product code.
       # A Cargo.lock change falls back to the newest entry for the same toolchain/env.
       - uses: Swatinem/rust-cache@v2
-        if: github.event.schedule != '5 22 * * 2,6'
+        if: steps.select.outputs.build == 'true' && github.event.schedule != '5 22 * * 2,6'
         with:
           shared-key: beta-appimage-v1
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build exact-source AppImage once
-        if: github.event.schedule != '5 22 * * 2,6'
+        if: steps.select.outputs.build == 'true' && github.event.schedule != '5 22 * * 2,6'
         run: bash scripts/appimage/build.sh
       - name: Reuse original main AppImage for nightly acceptance
-        if: github.event.schedule == '5 22 * * 2,6'
+        if: steps.select.outputs.build == 'true' && github.event.schedule == '5 22 * * 2,6'
         env:
           MIRROR_TOKEN: ${{ github.token }}
         run: |
@@ -155,6 +150,7 @@ jobs:
       # Deliver bytes before compatibility testing; failed smoke is visible evidence.
       - uses: actions/upload-artifact@v4
         id: producer
+        if: steps.select.outputs.build == 'true'
         with:
           name: linux-appimage-${{ github.sha }}
           path: |
@@ -165,17 +161,18 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Verify AppImage package
+        if: steps.select.outputs.build == 'true'
         run: |
           cd dist/appimage
           sha256sum -c SHA256SUMS
           chmod +x Okilum-x86_64.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./Okilum-x86_64.AppImage --help
-      # A pushed beta ref runs these two checks in appimage-acceptance instead, so
-      # the Forgejo bridge can take the bytes once this job completes. They stay
-      # the beta gate: publication waits for them (appimage_handoff.acceptance).
-      # PR proxies, dispatches and nightly keep them here.
+      # Beta gate as well (idunn installs every beta): the Forgejo bridge hands
+      # off bytes only after this job, and publication waits for both checks
+      # (appimage_handoff.acceptance). They stay in this job, not a separate one:
+      # a second job is a second hosted-runner queue wait on the critical path.
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
-        if: (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6') && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-'))
+        if: steps.select.outputs.build == 'true' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6')
         run: |
           set -euo pipefail
           mkdir -p dist/appimage/evidence
@@ -187,7 +184,7 @@ jobs:
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
       - name: Verify signed AppImage installation with disposable CI key
-        if: (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6') && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-'))
+        if: steps.select.outputs.build == 'true' && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6')
         env:
           GH_TOKEN: ${{ github.token }}
           APPIMAGE_ARTIFACT_ID: ${{ steps.producer.outputs.artifact-id }}
@@ -197,67 +194,17 @@ jobs:
           python3 scripts/releases/appimage_ci.py dist/appimage \
             2>&1 | tee dist/appimage/evidence/signature-install.log
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.select.outputs.build == 'true'
         with:
           name: linux-appimage-evidence-${{ github.sha }}
           path: dist/appimage/evidence/
           retention-days: 7
           if-no-files-found: warn
 
-  # Same two checks on the same uploaded bytes for a pushed beta ref, while the
-  # Forgejo bridge already takes them. Beta gate: Forgejo publishes only after
-  # this job succeeded (appimage_handoff.py await-acceptance). Job and step names
-  # are part of that contract.
-  appimage-acceptance:
-    needs: appimage
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: linux-appimage-${{ github.sha }}
-          path: dist/appimage
-      - name: Verify unchanged AppImage on clean Ubuntu and Fedora
-        run: |
-          set -euo pipefail
-          cd dist/appimage
-          sha256sum -c SHA256SUMS
-          chmod +x Okilum-x86_64.AppImage
-          cd ../..
-          mkdir -p dist/appimage/evidence
-          for image in ubuntu:24.04 fedora:44; do
-            docker run --rm --network bridge \
-              -v /etc/ssl/certs/ca-certificates.crt:/ci-ca-certificates.crt:ro \
-              -v "$PWD/dist/appimage:/artifact:ro" -v "$PWD:/source:ro" \
-              "$image" bash /source/scripts/appimage/smoke.sh \
-              2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
-          done
-      - name: Verify signed AppImage installation with disposable CI key
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APPIMAGE_ARTIFACT_ID: ${{ needs.appimage.outputs.artifact-id }}
-        run: |
-          set -euo pipefail
-          python3 scripts/releases/appimage_ci.py dist/appimage \
-            2>&1 | tee dist/appimage/evidence/signature-install.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: linux-appimage-acceptance-evidence-${{ github.sha }}
-          path: dist/appimage/evidence/
-          retention-days: 7
-          if-no-files-found: warn
-
   linux:
-    needs: [select, linux-checks, appimage]
-    if: always() && needs.select.outputs.build == 'true'
+    needs: [linux-checks, appimage]
+    # Built, or the producer job itself did not succeed (then the gate reports it).
+    if: always() && (needs.appimage.outputs.build == 'true' || needs.appimage.result != 'success')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

@@ -100,10 +100,10 @@ def accepted(run, jobs, source):
 
 
 # Beta gate (manager 14.11: idunn installs every beta on Oleg's desktop, so a
-# broken AppImage must never reach the feed). A pushed beta runs these two
-# checks in appimage-acceptance after the appimage job, so the bridge can take
-# the bytes meanwhile; dispatches, PR proxies and older producers ran them in
-# the appimage job itself. Either way publication waits for both to pass.
+# broken AppImage must never reach the feed). The producer runs these two
+# checks in its appimage job; producers from #2934 until the single-job layout
+# ran them in a separate appimage-acceptance job. Either way publication waits
+# for both to pass.
 ACCEPTANCE_JOB = 'appimage-acceptance'
 ACCEPTANCE_STEPS = ('Verify unchanged AppImage on clean Ubuntu and Fedora',
                     'Verify signed AppImage installation with disposable CI key')
@@ -198,14 +198,20 @@ def original_main_producer(api, source, runs):
             if items.get('total_count', len(items['artifacts'])) != len(items['artifacts']):
                 raise ValueError('Incomplete GitHub artifact inventory')
             if any(item.get('name') == f'linux-appimage-{source}' for item in items['artifacts']):
-                if candidate.get('event') != 'push':
-                    jobs = api.request(f"actions/runs/{candidate['id']}/attempts/1/jobs?per_page=100")
-                    if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
-                        raise ValueError('Incomplete GitHub job inventory')
-                    try:
-                        accepted(api.request(f"actions/runs/{candidate['id']}"), jobs['jobs'], source)
-                    except ReuseUnavailable:
-                        continue
+                # Push producers too: the artifact is uploaded before the checks,
+                # so a push run whose in-job acceptance failed still carries it.
+                # Its recovery dispatch rebuilds the same ref; without this filter
+                # the failed push run would shadow or make ambiguous the good one.
+                run = api.request(f"actions/runs/{candidate['id']}")
+                if run.get('conclusion') == 'cancelled':
+                    continue
+                jobs = api.request(f"actions/runs/{candidate['id']}/attempts/1/jobs?per_page=100")
+                if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
+                    raise ValueError('Incomplete GitHub job inventory')
+                try:
+                    accepted(run, jobs['jobs'], source)
+                except ReuseUnavailable:
+                    continue
                 producers.append(candidate)
         if not producers:
             raise ReuseUnavailable('no-exact-main-producer')
