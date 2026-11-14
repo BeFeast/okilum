@@ -10,7 +10,7 @@
 #   stages the artifact as the unchanged Forgejo artifacts. Modes: `pack` without
 #   delta, `delta` with the previous beta package read from the public feed,
 #   `payload` stops before packing because the Forgejo windows-signer packs.
-# - push to main (and dispatch `mode: seed`): `windows-cache` seeds the
+# - push to main (or dispatch `mode: seed` on main): `windows-cache` seeds the
 #   main-scoped caches the beta restores: the checked xwin SDK (keyed by the
 #   cargo-xwin version and Microsoft manifest hash) and the compiled registry
 #   dependencies (Swatinem/rust-cache, shared key beta-windows-v1), built with
@@ -31,7 +31,7 @@ on:
         description: 'Forgejo build number (5000 + Forgejo run number)'
         required: true
       mode:
-        description: 'pack, delta or payload (beta); seed (fill the caches on this ref)'
+        description: 'pack, delta or payload (beta); seed (fill the caches; saves only on main)'
         required: true
       producer:
         description: 'Forgejo run ID'
@@ -173,7 +173,8 @@ jobs:
         with:
           workspaces: product -> target
           shared-key: beta-windows-v1
-          save-if: false
+          # Beta refs are write-once forgejo-windows-beta-src/*: never main, never saved.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Identify Microsoft SDK manifest
         working-directory: product
         id: xwin-key
@@ -236,7 +237,7 @@ jobs:
   # Seeds the main-scoped caches `windows-beta` restores. Beta runs use
   # write-once refs, whose own cache scope is never reused, so without this every
   # beta downloaded the SDK (8.5 min) and compiled cold (17 min, measured 14.11).
-  # Off the beta critical path: no artifact, no feed, no secrets. On an exact hit
+  # Off the beta critical path: no artifact, no feed and no secrets; on an exact hit
   # it exits after the restores.
   windows-cache:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'seed')
@@ -253,7 +254,6 @@ jobs:
       XWIN_ARCH: x86_64
       XWIN_VARIANT: desktop
       XWIN_VERSION: "17"
-      SAVE: ${{ github.ref == 'refs/heads/main' || inputs.mode == 'seed' }}
     steps:
       - name: Check out the product
         uses: actions/checkout@v4
@@ -288,7 +288,7 @@ jobs:
         with:
           workspaces: product -> target
           shared-key: beta-windows-v1
-          save-if: ${{ env.SAVE == 'true' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Identify Microsoft SDK manifest
         working-directory: product
         id: xwin-key
@@ -307,7 +307,7 @@ jobs:
           python3 scripts/ci/xwin-cache.py prepare
           du -sh "$XWIN_CACHE_DIR"
       - name: Save the checked xwin SDK
-        if: steps.xwin.outputs.cache-hit != 'true' && env.SAVE == 'true'
+        if: steps.xwin.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: target/xwin-sdk/
