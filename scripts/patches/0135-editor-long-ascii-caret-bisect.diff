@@ -1,0 +1,138 @@
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -925,7 +925,7 @@
+                     map.position(Caret { index: local, affinity }).or_else(||
+                         map.position(Caret { index: local, affinity: if affinity == Affinity::Before {
+                             Affinity::After } else { Affinity::Before } }))
+-                }).unwrap_or_else(|| line.x_for_index(local))
++                }).unwrap_or_else(|| row_x_for_index(line, local))
+                     + self.row_x(i, last_layout);
+                 return Some(point(x, rows.row_top(i)));
+             }
+@@ -1011,7 +1011,7 @@
+             Some(anchor) => map.hit_extending(x, anchor - offset as isize),
+             None => map.hit(x),
+         });
+-        let ix = hit.map_or_else(|| line.closest_index_for_x(x), |caret| caret.index);
++        let ix = hit.map_or_else(|| row_closest_index_for_x(line, x), |caret| caret.index);
+         let line_end_affinity = i + 1 < self.wrapped_lines.len() && ix == line.len;
+ 
+         Some((offset + ix, line_end_affinity, hit.map_or(Affinity::Before, |caret| caret.affinity)))
+@@ -1080,7 +1080,7 @@
+             if range.start < end && range.end > start {
+                 let local = range.start.saturating_sub(start)..range.end.min(end)-start;
+                 let spans = if let Some(map) = &self.bidi[i] { map.selection(local) }
+-                    else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
++                    else { vec![row_x_for_index(line, local.start)..row_x_for_index(line, local.end)] };
+                 let x = self.row_x(i, last);
+                 for span in spans {
+                     result.push(gpui::Bounds::new(point(x + span.start, self.rows(&last.rows).row_top(i)),
+@@ -1108,7 +1108,7 @@
+         if let Some(map) = &self.bidi[i] {
+             return map.hit(x).map(|caret| offset + caret.index);
+         }
+-        Some(offset + self.wrapped_lines[i].index_for_x(x)?)
++        Some(offset + row_index_for_x(&self.wrapped_lines[i], x)?)
+     }
+ 
+     pub(crate) fn size(&self, rows: &RowMetrics) -> Size<Pixels> {
+@@ -1212,6 +1212,52 @@
+     }
+ }
+ 
++/// GPUI's caret lookups visit glyphs from the start of the row: milliseconds
++/// per call far into a multi-MB minified line, several calls per keystroke
++/// (#2803). An ASCII row is left to right, its glyph indices and positions
++/// never decrease, so bisection gives the same answers.
++fn long_ascii_glyphs(line: &ShapedLine) -> Option<&[gpui::ShapedGlyph]> {
++    (line.len >= 64 * 1024 && line.runs.len() == 1 && line.text.is_ascii())
++        .then(|| line.runs[0].glyphs.as_slice())
++}
++
++/// `ShapedLine::x_for_index`, bisecting long ASCII rows.
++fn row_x_for_index(line: &ShapedLine, index: usize) -> Pixels {
++    match long_ascii_glyphs(line) {
++        Some(glyphs) => glyphs
++            .get(glyphs.partition_point(|g| g.index < index))
++            .map_or(line.width, |g| g.position.x),
++        None => line.x_for_index(index),
++    }
++}
++
++/// `ShapedLine::closest_index_for_x`, bisecting long ASCII rows.
++fn row_closest_index_for_x(line: &ShapedLine, x: Pixels) -> usize {
++    let Some(glyphs) = long_ascii_glyphs(line) else {
++        return line.closest_index_for_x(x);
++    };
++    let at = glyphs.partition_point(|g| g.position.x < x);
++    let Some(glyph) = glyphs.get(at) else {
++        return line.len;
++    };
++    let (prev_index, prev_x) = at
++        .checked_sub(1)
++        .map_or((0, px(0.)), |prev| (glyphs[prev].index, glyphs[prev].position.x));
++    if glyph.position.x - x < x - prev_x { glyph.index } else { prev_index }
++}
++
++/// `ShapedLine::index_for_x`, bisecting long ASCII rows.
++fn row_index_for_x(line: &ShapedLine, x: Pixels) -> Option<usize> {
++    let Some(glyphs) = long_ascii_glyphs(line) else {
++        return line.index_for_x(x);
++    };
++    if x >= line.width {
++        return None;
++    }
++    let at = glyphs.partition_point(|g| g.position.x <= x);
++    Some(at.checked_sub(1).map_or(0, |at| glyphs[at].index))
++}
++
+ /// Retain exact source geometry for caret/selection, but submit only glyphs
+ /// intersecting the horizontal paint mask. GPUI otherwise visits millions of
+ /// clipped glyphs even on a popup-hover frame. Non-ASCII keeps its full path.
+@@ -2111,4 +2157,46 @@
+         assert!(viewport_paint_line(&line, px(0.), px(160.)).is_none());
+     }
+ 
++    #[test]
++    fn long_ascii_caret_lookups_bisect_to_gpui_answers() {
++        // Uneven advances, a two-byte ligature cluster and a trailing space.
++        let mut line = ShapedLine::default();
++        line.text = "a!=b ".repeat(16 * 1024).into();
++        let mut x = 0f32;
++        let mut glyphs = Vec::new();
++        let bytes = line.text.as_bytes();
++        let mut index = 0;
++        while index < bytes.len() {
++            let ligature = bytes[index] == b'!';
++            glyphs.push(gpui::ShapedGlyph {
++                index,
++                id: gpui::GlyphId(bytes[index] as u32),
++                position: point(px(x), px(0.)),
++                is_emoji: false,
++            });
++            x += if ligature { 15.25 } else { 7.625 };
++            index += if ligature { 2 } else { 1 };
++        }
++        *line = std::sync::Arc::new(gpui::LineLayout {
++            len: line.text.len(),
++            width: px(x),
++            runs: vec![gpui::ShapedRun { font_id: gpui::FontId(0), glyphs }],
++            ..Default::default()
++        });
++        assert!(long_ascii_glyphs(&line).is_some(), "positive control: bisection applies");
++        let len = line.len;
++        for index in [0, 1, 2, 3, 4, 5, len / 2, len / 2 + 2, len - 3, len - 1, len, len + 1] {
++            assert_eq!(row_x_for_index(&line, index), line.x_for_index(index), "x for {index}");
++        }
++        let width = line.width;
++        for x in [px(-3.), px(0.), px(3.8), px(7.625), px(11.), px(22.875), width / 2.,
++            width / 2. + px(0.3), width - px(1.), width, width + px(5.)] {
++            assert_eq!(row_closest_index_for_x(&line, x), line.closest_index_for_x(x), "closest at {x:?}");
++            assert_eq!(row_index_for_x(&line, x), line.index_for_x(x), "index at {x:?}");
++        }
++        // Short or non-ASCII rows keep GPUI's own scans.
++        line.text = format!("{}ש", line.text).into();
++        assert!(long_ascii_glyphs(&line).is_none());
++    }
++
+ }

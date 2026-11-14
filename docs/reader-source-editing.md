@@ -33,6 +33,20 @@ native reshape. A native word context above 64 KiB still takes the full path
 typing latency limitation, separate from exact reuse of unchanged rows and menu
 frames. Backends/fonts that fail exact admission retain their full native path.
 
+A keystroke in such a line (#2803) no longer re-analyses the whole line. Native
+word ends are re-derived only between two UAX #14 safe pairs around the edit
+(`unicode_linebreak::split_at_safe`: later breaks do not depend on earlier text),
+at most a few KiB; past the second pair the old ends are shifted. Glyph positions
+and the running word-width sum stay unchanged before the first changed word and
+are replayed from there in native order, so exact global geometry still holds.
+The retained layout is spliced in place; the copy handed to GPUI is the one
+whole-line copy per keystroke. Without a safe pair nearby the whole line is
+analysed as before. Tests check every spliced edit against the complete
+derivation, and a work count fails if analysis per keystroke grows with the line.
+Caret, selection and hit lookups on rows of 64 KiB or more of ASCII bisect the
+glyphs instead of scanning them from the start of the line; GPUI's answers are
+unchanged.
+
 Latency diagnostics observe a second frame callback after the mutation frame's
 draw, rate-limit detailed observations above 32 ms to one per second, and record
 periodic aggregates. They include process-wide Reader render counts and contain
