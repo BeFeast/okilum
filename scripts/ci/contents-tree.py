@@ -8,6 +8,9 @@ import re
 import subprocess
 import sys
 
+# Test output carries non-ASCII (→, «»); a Windows console codepage cannot
+# print it, which failed the run after every control had passed.
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'target/contents-tree-controls'
 OUT.mkdir(parents=True, exist_ok=True)
