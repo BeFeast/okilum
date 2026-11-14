@@ -645,6 +645,12 @@ impl CodePreview {
 
 /// The read-only code view: line numbers and folding on, wrap from the global
 /// preference. `toggle_source` configures the writable editor the same way.
+///
+/// Keep the editor's default `scroll_beyond_last_line` (`None`: half a viewport,
+/// at least three lines, below the last line). `structure::batch_fold_top`
+/// repeats that formula to keep Fold all inside the scroll range in the same
+/// frame (#2958); a smaller padding here must be passed on to it, or Fold all
+/// paints an empty first frame again.
 fn editor(
     language: &'static str,
     text: &str,

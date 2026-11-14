@@ -215,6 +215,8 @@ pub(super) fn batch_fold_anchor(top: usize, folded: &[gpui_component::input::Fol
 /// above it nowhere. A fold shows its header and closing line and hides the
 /// lines between. Lines are counted, not wrapped rows: a wrapped line only
 /// adds rows, so the result never asks for more than the editor can scroll.
+/// The empty area is the editor's default `scroll_beyond_last_line`, which
+/// the `editor()` builder in `reader_code_file.rs` keeps; change both together.
 pub(super) fn batch_fold_top(
     anchor: usize,
     line_count: usize,
