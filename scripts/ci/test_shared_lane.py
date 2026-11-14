@@ -84,8 +84,10 @@ class SharedLaneTests(unittest.TestCase):
         shared = jobs['shared-local']
         self.assertIn('linux-local', shared['needs'])
         self.assertNotIn('shared-local', jobs['linux-local'].get('needs', []))
-        self.assertEqual(shared['timeout-minutes'], 60)
-        self.assertEqual(jobs['linux-local']['timeout-minutes'], 80)
+        # Gate budgets stay 60/80 on the gate steps; jobs add 5 minutes for the
+        # always() host-load report (#2840).
+        self.assertEqual(shared['timeout-minutes'], 65)
+        self.assertEqual(jobs['linux-local']['timeout-minutes'], 85)
         condition = shared['if']
         self.assertIn('always()', condition)
         self.assertIn('!cancelled()', condition)
