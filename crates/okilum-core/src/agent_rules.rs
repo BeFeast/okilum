@@ -55,6 +55,34 @@ impl Layer {
 pub struct RuleStack {
     pub layers: Vec<Layer>,
     pub diagnostics: Vec<String>,
+    /// Vault-relative `CLAUDE.md` files in the vault-to-project folder chain,
+    /// outermost first (#2970). Claude Code reads `AGENTS.md` only when no
+    /// `CLAUDE.md` exists in the working directory or any ancestor, so each
+    /// entry switches that fallback off for Claude Code.
+    pub claude_md: Vec<PathBuf>,
+}
+
+impl RuleStack {
+    /// One warning per `CLAUDE.md` in the folder chain, paired with the file
+    /// it names so the Rules tab can open it (#2970).
+    pub fn agents_fallback_warnings(&self) -> Vec<(PathBuf, String)> {
+        self.claude_md
+            .iter()
+            .map(|path| {
+                let folder = path
+                    .parent()
+                    .filter(|folder| !folder.as_os_str().is_empty())
+                    .map_or_else(
+                        || "the vault root".to_owned(),
+                        |folder| folder.display().to_string(),
+                    );
+                (
+                    path.clone(),
+                    format!("CLAUDE.md in {folder} switches off AGENTS.md for Claude Code"),
+                )
+            })
+            .collect()
+    }
 }
 
 impl RuleStack {
@@ -216,6 +244,11 @@ pub fn discover(vault: &Path, project: &Path) -> RuleStack {
                 continue;
             }
             let path = relative.join(name);
+            // Recorded before the layer limit: the fallback warning (#2970)
+            // depends only on the file existing, not on room for its layer.
+            if name == "CLAUDE.md" && fs::symlink_metadata(root.join(&path)).is_ok() {
+                stack.claude_md.push(path.clone());
+            }
             if stack.layers.len() >= MAX_LAYERS {
                 stack
                     .diagnostics
@@ -962,6 +995,60 @@ mod underscore_tests {
         assert_eq!(
             stack.layers[0].path,
             std::path::Path::new("@AgentContract.md")
+        );
+    }
+}
+
+#[cfg(test)]
+mod claude_fallback_tests {
+    use std::{fs, path::PathBuf};
+
+    #[test]
+    fn issue2970_claude_md_in_folder_chain_warns_agents_fallback_is_off() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir_all(root.join("Dev/App/sub")).unwrap();
+        fs::create_dir_all(root.join("Other")).unwrap();
+        fs::write(root.join("AGENTS.md"), "# Rules\n").unwrap();
+        fs::write(root.join("Dev/App/AGENTS.md"), "# App\n").unwrap();
+        let stack = super::discover(root, &root.join("Dev/App/sub"));
+        assert!(
+            stack.claude_md.is_empty() && stack.agents_fallback_warnings().is_empty(),
+            "control: AGENTS.md alone keeps the fallback"
+        );
+        // Outside the chain: a sibling folder and a child of the project.
+        fs::write(root.join("Other/CLAUDE.md"), "x\n").unwrap();
+        fs::create_dir_all(root.join("Dev/App/sub/deeper")).unwrap();
+        fs::write(root.join("Dev/App/sub/deeper/CLAUDE.md"), "x\n").unwrap();
+        assert!(super::discover(root, &root.join("Dev/App/sub"))
+            .claude_md
+            .is_empty());
+        fs::write(root.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
+        fs::write(root.join("Dev/App/CLAUDE.md"), "Claude only\n").unwrap();
+        let stack = super::discover(root, &root.join("Dev/App/sub"));
+        assert_eq!(
+            stack.claude_md,
+            [
+                PathBuf::from("CLAUDE.md"),
+                PathBuf::from("Dev/App/CLAUDE.md")
+            ]
+        );
+        assert_eq!(
+            stack.agents_fallback_warnings(),
+            [
+                (
+                    PathBuf::from("CLAUDE.md"),
+                    "CLAUDE.md in the vault root switches off AGENTS.md for Claude Code".to_owned()
+                ),
+                (
+                    PathBuf::from("Dev/App/CLAUDE.md"),
+                    "CLAUDE.md in Dev/App switches off AGENTS.md for Claude Code".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
+            "@AGENTS.md\n"
         );
     }
 }

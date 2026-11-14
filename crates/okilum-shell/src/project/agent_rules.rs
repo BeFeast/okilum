@@ -3,6 +3,10 @@
 use super::*;
 use okilum_core::agent_rules::{discover, Provenance, Refresh, RuleStack};
 
+/// Open a vault-relative rule source in the Reader (#2970). The owning
+/// ProjectView forwards it through its existing source-open path.
+pub(crate) struct RuleSourceOpen(pub(crate) PathBuf);
+
 pub(crate) struct RulesView {
     stack: RuleStack,
     opened: Option<usize>,
@@ -113,6 +117,8 @@ impl RulesView {
     }
 }
 
+impl EventEmitter<RuleSourceOpen> for RulesView {}
+
 impl Render for RulesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut panel = v_flex()
@@ -176,6 +182,32 @@ impl Render for RulesView {
         )));
         if self.stack.layers.is_empty() && !self.refresh.is_pending() {
             panel = panel.child("No ancestor instruction files found for this project.");
+        }
+        // Claude Code reads AGENTS.md only without any CLAUDE.md in the folder
+        // chain (#2970); say which file switches that off and open it.
+        for (index, (path, warning)) in self
+            .stack
+            .agents_fallback_warnings()
+            .into_iter()
+            .enumerate()
+        {
+            panel = panel.child(
+                h_flex()
+                    .id(("rules-claude-fallback", index))
+                    .debug_selector(move || format!("rules-claude-fallback-{index}"))
+                    .gap_2()
+                    .flex_wrap()
+                    .child(div().text_color(brand::palette(cx).warning).child(warning))
+                    .child(
+                        Button::new(("rules-claude-open", index))
+                            .ghost()
+                            .label(format!("Open {}", path.display()))
+                            .debug_selector(move || format!("rules-claude-open-{index}"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(RuleSourceOpen(path.clone()))
+                            })),
+                    ),
+            );
         }
         for diagnostic in &self.stack.diagnostics {
             panel = panel.child(
@@ -385,6 +417,111 @@ mod tests {
         assert_eq!(
             std::fs::read(vault.join("instructions/layer-7-with-a-distinct-name.md")).unwrap(),
             original
+        );
+    }
+
+    /// #2970: a CLAUDE.md in the project folder chain shows one warning line
+    /// whose link opens that exact file through the Project source-open path.
+    #[gpui::test]
+    async fn issue2970_claude_md_warning_opens_the_file(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_features::enable_test_modules(cx);
+        });
+        let state = tempfile::tempdir().unwrap();
+        let root = state.path().join("vault");
+        std::fs::create_dir_all(root.join("p")).unwrap();
+        std::fs::write(root.join("p/AGENTS.md"), "# Project rules\n").unwrap();
+        let mut entities = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                let mut reader = Reader::new(
+                    Opts {
+                        defer_loading: true,
+                        session_directory: Some(state.path().join("state")),
+                        panel_settings_override: Some(state.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                reader.vault_root = root.clone();
+                reader
+            });
+            let project = cx.new(|cx| {
+                let mut view = ProjectView::empty(Some(state.path().join("state")), window, cx);
+                view.area = Some(root.join("p"));
+                view.bind_resources(
+                    &reader,
+                    root.clone(),
+                    reader.read(cx).vault.clone(),
+                    reader.read(cx).source_publication_epoch,
+                    cx,
+                );
+                view.select_section(ProjectSection::Rules, cx);
+                view
+            });
+            entities = Some(project.clone());
+            Root::new(project, window, cx)
+        });
+        let project = entities.unwrap();
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        visual
+            .condition(&project, |view, cx| {
+                view.rules.as_ref().is_some_and(|rules| {
+                    let rules = rules.read(cx);
+                    !rules.refresh.is_pending() && !rules.stack.layers.is_empty()
+                })
+            })
+            .await;
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("rules-layer-0").is_some(),
+            "positive control: the AGENTS.md layer is painted"
+        );
+        assert!(
+            visual.debug_bounds("rules-claude-fallback-0").is_none(),
+            "control: no warning without a CLAUDE.md"
+        );
+        std::fs::write(root.join("p/CLAUDE.md"), "Claude-only rules\n").unwrap();
+        let rules = project.read_with(visual, |view, _| view.rules.clone().unwrap());
+        rules.update(visual, |rules, cx| rules.reload(cx));
+        visual
+            .condition(&rules, |rules, _| {
+                !rules.refresh.is_pending() && !rules.stack.claude_md.is_empty()
+            })
+            .await;
+        visual.run_until_parked();
+        let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = opened.clone();
+        let _subscription = project.update_in(visual, |_, window, cx| {
+            cx.subscribe_in(
+                &project,
+                window,
+                move |_, _, event: &ProjectSkillOpen, _, _| {
+                    capture.lock().unwrap().push(event.0.clone())
+                },
+            )
+        });
+        assert!(visual.debug_bounds("rules-claude-fallback-0").is_some());
+        assert!(visual.debug_bounds("rules-claude-fallback-1").is_none());
+        rules.read_with(visual, |rules, _| {
+            assert_eq!(
+                rules.stack.agents_fallback_warnings(),
+                [(
+                    PathBuf::from("p/CLAUDE.md"),
+                    "CLAUDE.md in p switches off AGENTS.md for Claude Code".to_owned()
+                )]
+            );
+        });
+        let open = visual.debug_bounds("rules-claude-open-0").unwrap();
+        visual.simulate_click(open.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(*opened.lock().unwrap(), [PathBuf::from("p/CLAUDE.md")]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("p/CLAUDE.md")).unwrap(),
+            "Claude-only rules\n"
         );
     }
 }

@@ -91,7 +91,8 @@ enum ProjectSection {
     Skills,
 }
 
-/// An explicit Skills open keeps the portable vault-relative source identity.
+/// An explicit Skills or Rules open keeps the portable vault-relative source
+/// identity; the Reader opens it as a note.
 struct ProjectSkillOpen(PathBuf);
 impl EventEmitter<ProjectSkillOpen> for ProjectView {}
 
@@ -758,8 +759,17 @@ impl ProjectView {
                 if let Some(rules) = &self.rules {
                     rules.update(cx, |view, cx| view.bind(vault, area, cx));
                 } else {
-                    self.rules =
-                        Some(cx.new(|cx| agent_rules::RulesView::for_project(vault, area, cx)));
+                    let rules = cx.new(|cx| agent_rules::RulesView::for_project(vault, area, cx));
+                    cx.subscribe(&rules, |this, _, open: &agent_rules::RuleSourceOpen, cx| {
+                        if this.active
+                            && this.section == ProjectSection::Rules
+                            && reader_features::enabled(reader_features::Feature::Agents, cx)
+                        {
+                            cx.emit(ProjectSkillOpen(open.0.clone()));
+                        }
+                    })
+                    .detach();
+                    self.rules = Some(rules);
                 }
             }
         } else if let Some(rules) = &self.rules {
