@@ -157,7 +157,11 @@ impl LargeLine {
         Arc::make_mut(&mut self.text)
             .replace_range(prefix..old_end, &text[prefix..text.len() - suffix]);
         debug_assert_eq!(self.text.as_str(), text);
-        let layout = Arc::make_mut(&mut self.layout);
+        if Arc::get_mut(&mut self.layout).is_none() {
+            // An exact-hit copy is in flight on another thread.
+            self.layout = Arc::new(copy_layout(&self.layout));
+        }
+        let layout = Arc::get_mut(&mut self.layout)?;
         if layout.runs.len() != 1 {
             // Native batches of one font become one run on the first edit.
             let glyphs = layout

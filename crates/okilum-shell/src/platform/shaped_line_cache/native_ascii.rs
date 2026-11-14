@@ -206,8 +206,8 @@ impl NativeAscii {
 
     pub(super) fn bytes(&self) -> usize {
         size_of::<Self>()
-            + size_of_val(self.boundaries.as_ref())
-            + size_of_val(self.widths.as_ref())
+            + size_of_val(self.boundaries.as_slice())
+            + size_of_val(self.widths.as_slice())
             + size_of_val(self.advances.as_ref())
             + self.pairs.capacity() * (size_of::<([u8; 2], bool)>() + size_of::<usize>() * 2)
     }
