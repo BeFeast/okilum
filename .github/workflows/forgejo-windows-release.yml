@@ -10,13 +10,18 @@
 #   stages the artifact as the unchanged Forgejo artifacts. Modes: `pack` without
 #   delta, `delta` with the previous beta package read from the public feed,
 #   `payload` stops before packing because the Forgejo windows-signer packs.
-# No secrets, cache, signing or publication here.
+# - push to main (and dispatch `mode: seed`): `windows-cache` seeds the
+#   main-scoped caches the beta restores: the checked xwin SDK (keyed by the
+#   cargo-xwin version and Microsoft manifest hash) and the compiled registry
+#   dependencies (Swatinem/rust-cache, shared key beta-windows-v1), built with
+#   the beta's own script and env. Beta runs never save (#2881).
+# No secrets, signing or publication here.
 name: forgejo-windows-release
 # Push runs keep GitHub's default name; a beta run is named by its waiter invocation.
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('Windows beta Forgejo {0} attempt {1} {2}', inputs.producer, inputs.attempt, inputs.invocation) || '' }}
 on:
   push:
-    branches: ['forgejo-windows-release-pr/**']
+    branches: ['forgejo-windows-release-pr/**', main]
   workflow_dispatch:
     inputs:
       source:
@@ -26,7 +31,7 @@ on:
         description: 'Forgejo build number (5000 + Forgejo run number)'
         required: true
       mode:
-        description: 'pack, delta or payload'
+        description: 'pack, delta or payload (beta); seed (fill the caches on this ref)'
         required: true
       producer:
         description: 'Forgejo run ID'
@@ -47,11 +52,12 @@ permissions:
   contents: read
 concurrency:
   # One group per beta invocation: a shared group would replace a pending beta.
+  # Main pushes share one seeding group; a newer push replaces a pending seed.
   group: forgejo-windows-release-${{ github.event_name == 'workflow_dispatch' && inputs.invocation || github.ref }}
   cancel-in-progress: false
 jobs:
   icon:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -71,7 +77,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   windows-release:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     needs: icon
     runs-on: windows-latest
     timeout-minutes: 90
@@ -105,7 +111,7 @@ jobs:
           retention-days: 3
           if-no-files-found: error
   windows-beta:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'seed'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -146,6 +152,9 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           "$HOME/.cargo/bin/rustup" target add x86_64-pc-windows-msvc
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # The product's pinned toolchain everywhere, also for rust-cache's key
+          # outside the product directory (no default toolchain is installed).
+          echo "RUSTUP_TOOLCHAIN=$("$HOME/.cargo/bin/rustup" show active-toolchain | cut -d' ' -f1)" >> "$GITHUB_ENV"
           python3 -m venv "$RUNNER_TEMP/icon-env"
           "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
           echo "$RUNNER_TEMP/icon-env/bin" >> "$GITHUB_PATH"
@@ -156,13 +165,28 @@ jobs:
             --destination "$RUNNER_TEMP/cargo-xwin.tgz"
           echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
-      # The repository's 10 GiB Actions cache is full; the SDK is downloaded and
-      # checked each run, and the Rust build is cold. xwin-cache.py keeps the SDK
-      # at $GITHUB_WORKSPACE/target/xwin-sdk (XWIN_CACHE_DIR), outside the product.
+      # Main-scoped compiled registry dependencies from `windows-cache`; workspace
+      # and vendored path crates always compile from the product checkout. A
+      # Cargo.lock change falls back to the newest entry. Never saved here.
+      - name: Restore warm Windows dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: product -> target
+          shared-key: beta-windows-v1
+          save-if: false
       - name: Identify Microsoft SDK manifest
         working-directory: product
         id: xwin-key
         run: python3 scripts/ci/xwin-cache.py key
+      # xwin-cache.py keeps the SDK at $GITHUB_WORKSPACE/target/xwin-sdk
+      # (XWIN_CACHE_DIR), outside the product, and verifies a restored copy file
+      # by file against its receipt; a bad or missing copy is downloaded (8.5 min).
+      - name: Restore the checked xwin SDK
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: target/xwin-sdk/
+          key: ${{ steps.xwin-key.outputs.key }}
       - name: Download and verify the xwin SDK
         working-directory: product
         env:
@@ -208,3 +232,127 @@ jobs:
             product/target/windows-release/
           retention-days: 3
           if-no-files-found: error
+
+  # Seeds the main-scoped caches `windows-beta` restores. Beta runs use
+  # write-once refs, whose own cache scope is never reused, so without this every
+  # beta downloaded the SDK (8.5 min) and compiled cold (17 min, measured 14.11).
+  # Off the beta critical path: no artifact, no feed, no secrets. On an exact hit
+  # it exits after the restores.
+  windows-cache:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'seed')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      saved: ${{ steps.deps.outputs.cache-hit != 'true' || steps.xwin.outputs.cache-hit != 'true' }}
+    # Must match `windows-beta`: rust-cache hashes CARGO_* into its key, the cache
+    # paths are part of the entry identity, and Cargo fingerprints depend on env.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "4"
+      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-sdk
+      XWIN_ARCH: x86_64
+      XWIN_VARIANT: desktop
+      XWIN_VERSION: "17"
+      SAVE: ${{ github.ref == 'refs/heads/main' || inputs.mode == 'seed' }}
+    steps:
+      - name: Check out the product
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source || github.sha }}
+          path: product
+          persist-credentials: false
+      - name: Install cross-build tools
+        working-directory: product
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends clang lld llvm curl git python3-venv libcairo2
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          "$HOME/.cargo/bin/rustup" target add x86_64-pc-windows-msvc
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # The product's pinned toolchain everywhere, also for rust-cache's key
+          # outside the product directory (no default toolchain is installed).
+          echo "RUSTUP_TOOLCHAIN=$("$HOME/.cargo/bin/rustup" show active-toolchain | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          echo "$RUNNER_TEMP/icon-env/bin" >> "$GITHUB_PATH"
+          python3 scripts/pinned_download.py \
+            --url https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz \
+            --fallback https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512900063 \
+            --sha256 c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360 \
+            --destination "$RUNNER_TEMP/cargo-xwin.tgz"
+          echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
+      - name: Restore or seed warm Windows dependencies
+        id: deps
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: product -> target
+          shared-key: beta-windows-v1
+          save-if: ${{ env.SAVE == 'true' }}
+      - name: Identify Microsoft SDK manifest
+        working-directory: product
+        id: xwin-key
+        run: python3 scripts/ci/xwin-cache.py key
+      - name: Restore the checked xwin SDK
+        id: xwin
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xwin-sdk/
+          key: ${{ steps.xwin-key.outputs.key }}
+      - name: Download and verify the xwin SDK
+        working-directory: product
+        env:
+          XWIN_CACHE_KEY: ${{ steps.xwin-key.outputs.key }}
+        run: |
+          python3 scripts/ci/xwin-cache.py prepare
+          du -sh "$XWIN_CACHE_DIR"
+      - name: Save the checked xwin SDK
+        if: steps.xwin.outputs.cache-hit != 'true' && env.SAVE == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target/xwin-sdk/
+          key: ${{ steps.xwin-key.outputs.key }}
+      - name: Prepare pinned vendor
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: product
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      # The beta's own build script, so the dependency graph, features, profile and
+      # wrappers cannot drift from the beta build. Skipped on an exact hit.
+      - name: Build the Windows beta graph to fill the cache
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: product
+        run: |
+          bash scripts/build-windows-ci.sh
+          du -sh target
+
+  # Keep one entry per cache (rust-cache deps, xwin SDK) in the 10 GiB repository
+  # quota, so a lock or manifest change never leaves superseded copies that push
+  # out other lanes' caches. Runs after the seed job's post step saved its entry.
+  windows-cache-prune:
+    needs: windows-cache
+    if: needs.windows-cache.outputs.saved == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded Windows beta cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for prefix in v0-rust-beta-windows-v1-Linux- xwin-v2-linux-x86_64-cargo-; do
+            keep=$(gh api "repos/$GH_REPO/actions/caches?key=$prefix&ref=refs/heads/main&sort=created_at&direction=desc&per_page=1" \
+              --jq '.actions_caches[0].id // empty')
+            if [ -z "$keep" ]; then echo "No main $prefix entry; nothing pruned"; continue; fi
+            echo "Keeping $prefix entry $keep"
+            gh api --paginate "repos/$GH_REPO/actions/caches?key=$prefix&per_page=100" \
+              --jq ".actions_caches[] | select(.id != $keep) | \"\\(.id) \\(.key) \\(.ref)\"" |
+            while read -r id key ref; do
+              gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" >/dev/null
+              echo "Deleted superseded $key ($ref)"
+            done
+          done
