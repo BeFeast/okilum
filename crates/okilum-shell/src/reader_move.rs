@@ -276,6 +276,12 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Naming an untitled draft is saving it somewhere (#1528); renaming it
+        // inside Okilum's storage would hide it from Recent.
+        if self.current_draft().is_some() {
+            self.save_draft_as(window, cx);
+            return;
+        }
         if self.note_move_pending || self.trash_pending || self.batch.running {
             self.file_operation_blocked(
                 "rename",

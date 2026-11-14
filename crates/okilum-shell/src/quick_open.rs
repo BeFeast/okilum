@@ -3148,6 +3148,7 @@ canaryhidden [[Target]]",
             location: None,
             age: None,
             folder: !path.ends_with(".md"),
+            unsaved: false,
         };
         let entries = vec![
             entry("B/notes.md", "Notes"),

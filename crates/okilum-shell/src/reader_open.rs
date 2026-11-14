@@ -671,6 +671,20 @@ pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mu
     }
 }
 
+/// Another open Reader window (not `except`) shows `root`. Never reads
+/// `except`, so a Reader may ask about itself while it is being updated.
+pub(crate) fn root_open_elsewhere(root: &Path, except: EntityId, cx: &App) -> bool {
+    cx.try_global::<Readers>().is_some_and(|readers| {
+        readers.0.iter().any(|(reader, registered)| {
+            reader.entity_id() != except
+                && registered == root
+                && reader
+                    .upgrade()
+                    .is_some_and(|r| cx.windows().contains(&r.read(cx).reader_window))
+        })
+    })
+}
+
 fn reusable_roots(cx: &App) -> Vec<PathBuf> {
     cx.try_global::<Readers>()
         .map(|readers| {
@@ -718,6 +732,8 @@ pub(crate) fn file_menu() -> Menu {
         name: "File".into(),
         disabled: false,
         items: vec![
+            MenuItem::action("New Untitled File", super::NewUntitled),
+            MenuItem::action("Recent Files…", super::ShowRecentFiles),
             MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("New Vault…", NewVault),

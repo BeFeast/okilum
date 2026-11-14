@@ -425,6 +425,63 @@ impl FileEditor {
         }
     }
 
+    /// The recovery text of `path` while it holds edits the file does not,
+    /// e.g. after a crash before the first autosave (#1528). Read-only, like
+    /// `has_unsaved_draft`: no editor is acquired and nothing is rewritten.
+    pub fn unsaved_draft_text(path: &Path, state: &Path) -> Result<Option<String>> {
+        if !Self::has_unsaved_draft(path, state)? {
+            return Ok(None);
+        }
+        let key = Self::journal_key(path)?;
+        let draft: Draft = serde_json::from_slice(&fs::read(state.join(format!("{key}.json")))?)?;
+        Ok(Some(draft.text.to_string()))
+    }
+
+    /// Whether a live editor (any window, any process) holds `path`'s editor
+    /// lock. A probe only: the answer can be stale at once. Callers that act
+    /// on "idle" must hold `claim_idle`'s lock instead.
+    pub fn editor_active(path: &Path, state: &Path) -> Result<bool> {
+        let lock = state.join(format!("{}.lock", Self::journal_key(path)?));
+        if !lock.exists() {
+            return Ok(false);
+        }
+        match EditorLock::acquire(&lock) {
+            Ok(_released_on_drop) => Ok(false),
+            Err(error) if lock_busy(&error) => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Take `path`'s editor lock when no editor holds it (`None` when one
+    /// does). While the returned lock lives, no editor can take ownership of
+    /// the file, so the caller may classify or remove it (#1528).
+    pub fn claim_idle(path: &Path, state: &Path) -> Result<Option<EditorLock>> {
+        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
+        let lock = state.join(format!("{}.lock", Self::journal_key(path)?));
+        match EditorLock::acquire(&lock) {
+            Ok(lock) => Ok(Some(lock)),
+            Err(error) if lock_busy(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The journal name for `path`, as `has_unsaved_draft` derives it.
+    fn journal_key(path: &Path) -> Result<String> {
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => path
+                .parent()
+                .context("Source has no folder")?
+                .canonicalize()?
+                .join(path.file_name().context("Source has no filename")?),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(path.as_os_str().as_encoded_bytes())
+        ))
+    }
+
     /// Reserve a not-yet-existing destination without adopting an old draft.
     /// The caller holds this lock through rename, then releases it before opening
     /// the moved note in a new editor. No journal is deleted or rewritten.
@@ -615,6 +672,11 @@ impl FileEditor {
     }
     pub fn text(&self) -> &str {
         &self.draft.text
+    }
+    /// The file as this editor last read or wrote it: what it believes is on
+    /// disk. Differing disk bytes are someone else's edit.
+    pub fn base(&self) -> &str {
+        &self.draft.base
     }
     pub fn dirty(&self) -> bool {
         if self.raw_transaction.is_some() {
