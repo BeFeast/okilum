@@ -73,30 +73,48 @@ def generate(manifest, patch, dest, archive=None):
         replace(staged, dest)
 
 
+def backups(dest):
+    """Earlier trees kept beside dest by an interrupted replace()."""
+    prefix = "." + dest.name + ".previous"
+    return sorted(path for path in dest.parent.iterdir()
+                  if path.name == prefix or path.name.startswith(prefix + "-"))
+
+
 def replace(staged, dest):
-    """Put the verified tree at dest. The old tree is kept beside dest (not in
-    the temporary directory, whose cleanup would delete it) until the new one
-    is in place, and restored on any interruption, KeyboardInterrupt included."""
-    backup = dest.with_name("." + dest.name + ".previous")
-    if backup.is_symlink():
-        raise ValueError("velopack backup path is a symlink; refusing to use it")
-    if backup.exists():
-        if dest.exists():
-            shutil.rmtree(backup)  # leftover of an interrupted earlier cleanup
-        else:
-            backup.rename(dest)  # an interrupted swap: put the old tree back first
+    """Put the verified tree at dest. No earlier tree (dest or a backup left by
+    an interrupted run) is deleted until the verified tree is in place; on any
+    interruption, KeyboardInterrupt included, dest is put back. Backups live
+    beside dest, never in the temporary directory whose cleanup deletes it."""
+    olds = backups(dest)
+    for old in olds:
+        if old.is_symlink() or not old.is_dir():
+            raise ValueError("velopack backup is not a plain directory; refusing to use it: " + str(old))
+    if olds and not dest.exists():
+        # A killed swap left only backups: restore one first, so that an
+        # interruption below never leaves dest missing.
+        olds[0].rename(dest)
+        olds = olds[1:]
+    prefix = "." + dest.name + ".previous"
+    aside = dest.with_name(prefix)
+    for number in range(1, 1000):
+        if not aside.exists():
+            break
+        aside = dest.with_name(f"{prefix}-{number}")
+    else:
+        raise ValueError("too many velopack backups beside " + str(dest))
     moved = False
     try:
         if dest.exists():
-            dest.rename(backup)
+            dest.rename(aside)
             moved = True
         staged.rename(dest)
     except BaseException:
         if moved and not dest.exists():
-            backup.rename(dest)
+            aside.rename(dest)
         raise
-    if moved:
-        shutil.rmtree(backup)
+    # The verified tree is in place: no earlier tree is needed any more.
+    for old in olds + ([aside] if moved else []):
+        shutil.rmtree(old)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

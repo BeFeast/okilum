@@ -152,6 +152,34 @@ class VelopackSetupTests(unittest.TestCase):
         self.assertIn("regenerating", self.run_setup())
         self.assertEqual((self.dest / "src/lib.rs").read_text(), "pub fn helper() { /* v2 */ }\n")
 
+    def test_pinned_backup_survives_an_interrupt_while_a_corrupt_tree_is_replaced(self):
+        # Review 14.11: pinned .previous + corrupted dest + KeyboardInterrupt
+        # while the staged tree is installed: the good backup must survive.
+        self.run_setup()
+        backup = self.dest.with_name(".velopack-1.2.161.previous")
+        shutil.copytree(self.dest, backup)
+        (self.dest / "src/lib.rs").write_text("corrupted\n")
+        # Rename 1: corrupt dest -> a new backup name; rename 2: staged -> dest (interrupted).
+        patcher, calls = self.interrupt_rename(2)
+        with patcher, self.assertRaises(KeyboardInterrupt):
+            self.generate_in_process()
+        self.assertEqual(calls[0], ("velopack-1.2.161", ".velopack-1.2.161.previous-1"))
+        self.assertEqual(setup.tree_digest(backup), self.manifest["tree_sha256"])
+        self.assertEqual((self.dest / "src/lib.rs").read_text(), "corrupted\n")
+        self.assertIn("regenerating", self.run_setup())
+        self.assertEqual(setup.tree_digest(self.dest), self.manifest["tree_sha256"])
+        self.assertEqual(self.leftovers(), [], "all backups go once the verified tree is in place")
+
+    def test_backups_kept_when_install_fails_before_the_swap(self):
+        self.run_setup()
+        backup = self.dest.with_name(".velopack-1.2.161.previous")
+        shutil.copytree(self.dest, backup)
+        (self.dest / "src/lib.rs").write_text("corrupted\n")
+        self.manifest["archive_sha256"] = "0" * 64
+        self.write_manifest()
+        self.assertIn("archive checksum mismatch", self.run_setup(success=False))
+        self.assertEqual(setup.tree_digest(backup), self.manifest["tree_sha256"])
+
     def test_interrupt_before_any_rename_keeps_the_old_tree(self):
         self.run_setup()
         self.pin("pub fn helper() { /* v2 */ }\n")

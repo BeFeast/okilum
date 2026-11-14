@@ -462,7 +462,6 @@ user_idle_seconds() {
     idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {printf "%d\n", $NF / 1000000000; exit}' || true)
     [[ $idle =~ ^[0-9]+$ ]] && printf '%s\n' "$idle" || echo 0
 }
-user_idle() { (( $(user_idle_seconds) >= IDLE_NEEDED )); }
 wait_for_app_exit() {
     local attempt
     for ((attempt=0; attempt<$1; attempt++)); do
@@ -471,13 +470,14 @@ wait_for_app_exit() {
     done
     ! installed_app_running
 }
+# $1 = idle seconds of the read that decided, $2 = the signal not sent.
 defer_for_user() {
     printf 'Sprint deferred: user active (idle %ss < %ss); Okilum was not signalled at %s.\n' \
-        "$(user_idle_seconds)" "$IDLE_NEEDED" "$1"
+        "$1" "$IDLE_NEEDED" "$2"
     return "$SPRINT_DEFERRED"
 }
 stop_installed_app() {
-    local reply attempt pids
+    local reply attempt pids idle
     installed_app_running || return 0
     # The path form targets this bundle, not a QA copy with the same bundle ID.
     if ! reply=$(osascript -e "if application \"$app\" is running then" \
@@ -490,23 +490,27 @@ stop_installed_app() {
         "$QUIT_WAIT" "$IDLE_WAIT" "$IDLE_NEEDED"
     for ((attempt=0; ; attempt+=5)); do
         installed_app_running || { echo 'Okilum quit.'; return 0; }
-        user_idle && break
-        ((attempt < IDLE_WAIT)) || { defer_for_user 'SIGTERM'; return; }
+        idle=$(user_idle_seconds)
+        ((idle >= IDLE_NEEDED)) && break
+        ((attempt < IDLE_WAIT)) || { defer_for_user "$idle" SIGTERM; return; }
         sleep 5
     done
-    # Fresh checks immediately before each signal.
+    # One fresh idle read immediately before each signal decides, and is the
+    # value logged: below IDLE_NEEDED nothing is sent.
     pids=$(installed_app_pids | tr '\n' ' ')
     [[ -n ${pids// /} ]] || { echo 'Okilum quit.'; return 0; }
-    user_idle || { defer_for_user 'SIGTERM'; return; }
+    idle=$(user_idle_seconds)
+    ((idle >= IDLE_NEEDED)) || { defer_for_user "$idle" SIGTERM; return; }
     printf 'Stopping Okilum (pid %s, user idle %ss) with SIGTERM: it saves and quits as from the menu.\n' \
-        "${pids% }" "$(user_idle_seconds)"
+        "${pids% }" "$idle"
     # shellcheck disable=SC2086 # one word per pid
     kill -TERM $pids 2>/dev/null || true
     wait_for_app_exit "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
     pids=$(installed_app_pids | tr '\n' ' ')
     [[ -n ${pids// /} ]] || { echo 'Okilum quit after SIGTERM.'; return 0; }
-    user_idle || { defer_for_user 'SIGKILL'; return; }
-    printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s.\n' "$TERM_GRACE" "${pids% }"
+    idle=$(user_idle_seconds)
+    ((idle >= IDLE_NEEDED)) || { defer_for_user "$idle" SIGKILL; return; }
+    printf 'Okilum still runs %ss after SIGTERM; SIGKILL pid %s (user idle %ss).\n' "$TERM_GRACE" "${pids% }" "$idle"
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
     wait_for_app_exit 5

@@ -566,12 +566,29 @@ class SprintQuitTests(unittest.TestCase):
         self.assertEqual(sleeps.count('5'), 3)
 
     def test_user_active_again_before_sigkill_defers_without_sigkill(self):
-        # ioreg: loop check 120, pre-TERM 120, log line 120, then active before KILL.
-        result, calls, _, processes, _ = self.run_stop(self.APP, idle='120 120 120 2')
+        # Review 14.11: idle 120 -> 120 -> 0. Reads: wait loop, pre-SIGTERM, pre-SIGKILL.
+        result, calls, _, processes, _ = self.run_stop(self.APP, idle='120 120 0')
         self.assertIn('RESULT=75', result.stdout, result.stderr)
-        self.assertIn('not signalled at SIGKILL', result.stdout)
+        self.assertIn('user idle 120s) with SIGTERM', result.stdout)
+        self.assertNotIn('user idle 0s', result.stdout)
+        self.assertIn('idle 0s < 60s); Okilum was not signalled at SIGKILL', result.stdout)
         self.assertEqual(self.signals(calls), ['-TERM 501'])
         self.assertEqual(processes, self.APP)
+
+    def test_the_read_immediately_before_sigterm_decides(self):
+        # Idle in the wait loop, active at the pre-SIGTERM read: nothing is sent.
+        result, calls, _, processes, _ = self.run_stop(self.APP, idle='120 0', stops_on='TERM KILL')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertIn('idle 0s < 60s); Okilum was not signalled at SIGTERM', result.stdout)
+        self.assertEqual(self.signals(calls), [])
+        self.assertEqual(processes, self.APP)
+
+    def test_each_signal_logs_the_idle_read_that_allowed_it(self):
+        result, calls, _, _, _ = self.run_stop(self.APP, idle='61 75 90', stops_on='KILL')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('user idle 75s) with SIGTERM', result.stdout)
+        self.assertIn('SIGKILL pid 501 (user idle 90s)', result.stdout)
+        self.assertEqual(self.signals(calls), ['-TERM 501', '-KILL 501'])
 
     def test_only_this_users_installed_app_is_quit_or_signalled(self):
         others = self.QA_COPY + self.STAGED + self.OTHER_USER + self.HELPER
