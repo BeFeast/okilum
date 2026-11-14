@@ -2,19 +2,31 @@ diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/
 index 6fe35ede..b3e4fc36 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2296,6 +2296,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2296,6 +2296,28 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      state.scroll_handle.set_offset(scroll);
                      state.deferred_scroll_offset = Some(scroll);
                  }
 +                // The same request, kept within this frame's scroll range:
-+                // the extent `scroll_size` gets below, on these rows.
++                // the extent `scroll_size` gets below, on these rows. It
++                // replaces a refold's or edit's source anchor and the tail
++                // that anchor leased to hold the old position, which would
++                // otherwise keep a short folded text scrolled (#2958).
++                // `natural` counts every wrap row, folded or not; this range
++                // counts the display rows the frame shows, so a short folded
++                // text is shown from its first row.
 +                if let Some((line, offset)) = state.pending_top_anchor.take() {
 +                    let row = state.display_map.buffer_line_to_display_row(line.min(count - 1));
-+                    let max = (natural + state.projection_anchor_tail - bounds.size.height).max(px(0.));
++                    let shown = (rows.rows_height(state.display_map.display_row_count())
++                        + empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
++                            bounds.size.height, window.line_height()))
++                    .max(bounds.size.height);
++                    let max = (shown - bounds.size.height).max(px(0.));
 +                    let y = (rows.row_top(row) + offset).clamp(px(0.), max);
 +                    let scroll = point(state.scroll_handle.offset().x, -y);
 +                    state.scroll_handle.set_offset(scroll);
 +                    state.deferred_scroll_offset = Some(scroll);
++                    state.projection_anchored = false;
++                    state.projection_anchor_tail = px(0.);
 +                }
              }
              let caret = state.ime_marked_range.as_ref().map_or(state.cursor(), |range| range.end);
