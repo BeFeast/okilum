@@ -194,14 +194,29 @@ Each check also writes `~/.local/state/okilum-deliver/last-check.json` (feed
 build, installed build, time). `okilum-beta-deliver --check` prints the feed
 and installed build and changes nothing.
 
+**User assumed absent (idunn only, Oleg 14.11).** On idunn, agents drive the
+GUI with synthetic input (Toroid window tests) while Oleg is away, so Wayland
+idleness says nothing about him. There the drop-in
+`scripts/dev/systemd/okilum-beta-deliver.service.d/assume-user-absent.conf`
+sets `OKILUM_DELIVER_ASSUME_USER_ABSENT=1` (the same as `--assume-user-absent`):
+no idle wait, Okilum is closed straight away and reopened on the new build.
+Everything else stays the same: the window is re-resolved and pinned by
+pidfd, SIGTERM only and never SIGKILL, deferred if Okilum restarts mid-quit,
+no downgrade. The log names the mode once, and every install line says
+`no idle wait (user assumed absent)`. The default is off; do not install the
+drop-in on a desktop someone is using.
+
 Install (as the desktop user, no sudo; from a checkout or copies of the three
-files):
+files; on idunn also the drop-in):
 
 ```bash
 install -Dm755 scripts/dev/okilum-beta-deliver.py ~/.local/bin/okilum-beta-deliver
 install -Dm644 scripts/dev/systemd/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.service
 install -Dm644 scripts/dev/systemd/okilum-beta-deliver.timer ~/.config/systemd/user/okilum-beta-deliver.timer
 systemctl --user daemon-reload && systemctl --user enable --now okilum-beta-deliver.timer
+# idunn only:
+install -Dm644 scripts/dev/systemd/okilum-beta-deliver.service.d/assume-user-absent.conf ~/.config/systemd/user/okilum-beta-deliver.service.d/assume-user-absent.conf
+systemctl --user daemon-reload
 ```
 
 Remove:
@@ -209,6 +224,7 @@ Remove:
 ```bash
 systemctl --user disable --now okilum-beta-deliver.timer; systemctl --user stop okilum-beta-deliver.service
 rm -f ~/.local/bin/okilum-beta-deliver ~/.config/systemd/user/okilum-beta-deliver.service ~/.config/systemd/user/okilum-beta-deliver.timer
+rm -rf ~/.config/systemd/user/okilum-beta-deliver.service.d
 systemctl --user daemon-reload; rm -rf ~/.cache/okilum-deliver ~/.local/state/okilum-deliver
 ```
 

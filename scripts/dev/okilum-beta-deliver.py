@@ -16,7 +16,8 @@ few minutes inside the graphical session. One run:
    again, pins them by pidfd and sends SIGTERM, which the app handles like Quit
    (editors saved, launch marker cleared). Input before the signal cancels the
    run. It never sends SIGKILL: a window still open 30 s later keeps running
-   and the next run tries again;
+   and the next run tries again. With OKILUM_DELIVER_ASSUME_USER_ABSENT=1
+   (or --assume-user-absent; idunn only) there is no idle wait at all;
 5. checks the installed build again under the locks (never a downgrade), installs with the updater's own transaction beside the AppImage (install and
    update locks, a `.okilum-update-*` stage with previous.AppImage and
    expected.json, the build record, an atomic rename);
@@ -99,6 +100,10 @@ class Settings:
         self.cache = cache / 'okilum-deliver'
         self.idle_ms = int(env.get('OKILUM_DELIVER_IDLE_SECONDS', '60')) * 1000
         self.idle_wait = float(env.get('OKILUM_DELIVER_IDLE_WAIT', '1500'))
+        # Default off. Only for a desktop whose user is known to be away while
+        # other agents drive its GUI (idunn, Oleg 14.11): their synthetic input
+        # keeps Wayland "active", so idleness says nothing about the user there.
+        self.assume_absent = env.get('OKILUM_DELIVER_ASSUME_USER_ABSENT', '').lower() in ('1', 'true', 'yes')
         self.term_wait = float(env.get('OKILUM_DELIVER_TERM_SECONDS', '30'))
         self.start_wait = float(env.get('OKILUM_DELIVER_START_SECONDS', '90'))
         self.lock_wait = float(env.get('OKILUM_DELIVER_LOCK_SECONDS', '60'))
@@ -555,6 +560,22 @@ def parse_global(payload):
     return name, interface, struct.unpack_from('<I', payload, offset)[0]
 
 
+class AbsentWatch:
+    """Stands in for IdleWatch when the user is assumed absent: no idle wait."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def wait(self, seconds):
+        return True
+
+    def still_idle(self):
+        return True
+
+
 class IdleWatch:
     """An ext-idle-notify-v1 notification kept open for the whole quit, so input
     at any moment counts. `idled`/`resumed` are applied strictly in order; the
@@ -904,16 +925,21 @@ def deliver(settings, proc='/proc'):
     windows = [w for w in windows if w['appimage'] == str(settings.image)]
     for window in foreign:
         log_line(settings, f'Okilum pid {window["pid"]} runs {window["appimage"] or window["exe"]}, not the managed AppImage: left running')
-    quit_how, idle_wait = 'not running', 0
+    quit_how, idle_wait = 'not running', 'idle wait 0s'
     if windows:
-        if not settings.wayland:
-            return 'no Wayland session to measure idleness'
         idle_started = time.monotonic()
-        try:
-            watch = IdleWatch(settings.wayland, settings.idle_ms)
-        except (OSError, ConnectionError) as error:
-            note_once(settings, f'idle-error-{build}', f'build {build} waits: cannot measure idleness ({error})')
-            return 'idleness unknown'
+        if settings.assume_absent:
+            note_once(settings, 'assume-absent', 'user assumed absent (OKILUM_DELIVER_ASSUME_USER_ABSENT):'
+                      ' Okilum is closed without waiting for idleness; SIGTERM only, never killed')
+            watch = AbsentWatch()
+        elif not settings.wayland:
+            return 'no Wayland session to measure idleness'
+        else:
+            try:
+                watch = IdleWatch(settings.wayland, settings.idle_ms)
+            except (OSError, ConnectionError) as error:
+                note_once(settings, f'idle-error-{build}', f'build {build} waits: cannot measure idleness ({error})')
+                return 'idleness unknown'
         with watch:
             try:
                 idle = watch.wait(settings.idle_wait)
@@ -941,7 +967,8 @@ def deliver(settings, proc='/proc'):
             return 'Okilum did not quit'
         if quit_how == 'closed':
             windows = []
-        idle_wait = int(time.monotonic() - idle_started)
+        idle_wait = ('no idle wait (user assumed absent)' if settings.assume_absent
+                     else f'idle wait {int(time.monotonic() - idle_started)}s')
     try:
         return install(settings, release, payload, windows, published, seen, idle_wait, quit_how, proc, lock)
     except BaseException:
@@ -956,7 +983,7 @@ def install(settings, release, payload, windows, published, seen, idle_wait, qui
     build = release['build']
     lock = lock or str(settings.app_state / INSTANCE_LOCK)
     summary = (f'build {build} source {release["source"][:9]} · beta published {clock(published)}'
-               f' · seen {clock(seen)} · idle wait {idle_wait}s · quit {quit_how}')
+               f' · seen {clock(seen)} · {idle_wait} · quit {quit_how}')
     restored, newer = False, None
     with install_locks(settings.image, settings.lock_wait) as release_install:
         # Under both locks: an in-app update made while this run waited is never
@@ -1037,8 +1064,11 @@ def single_run(settings):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n', 1)[0])
     parser.add_argument('--check', action='store_true', help='print feed and installed build, change nothing')
+    parser.add_argument('--assume-user-absent', action='store_true',
+                        help='close Okilum without waiting for idleness (same as OKILUM_DELIVER_ASSUME_USER_ABSENT=1)')
     args = parser.parse_args(argv)
     settings = Settings()
+    settings.assume_absent = settings.assume_absent or args.assume_user_absent
     if args.check:
         with tempfile.TemporaryDirectory(prefix='okilum-deliver.') as scratch:
             release, published = descriptor(settings, scratch)
