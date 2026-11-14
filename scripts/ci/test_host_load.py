@@ -61,6 +61,13 @@ class Workflow(unittest.TestCase):
             self.assertEqual(names[-1], 'Report host load and verdict', job)
             self.assertEqual(steps[-1]['if'], 'always()')
             self.assertIn('--job-status "${{ job.status }}"', steps[-1]['run'])
+        # A timed-out gate step must leave time for the report (run 27378 was
+        # killed at the job limit before the always() step could run).
+        for job, step, budget in (('shared-local', 'Check every shared suite and summarize failures', 60),
+                                  ('linux-local', 'Run full Linux gate', 80)):
+            gate = next(s for s in data['jobs'][job]['steps'] if s.get('name') == step)
+            self.assertEqual(gate['timeout-minutes'], budget)
+            self.assertGreaterEqual(data['jobs'][job]['timeout-minutes'], budget + 5)
 
 
 if __name__ == '__main__':
