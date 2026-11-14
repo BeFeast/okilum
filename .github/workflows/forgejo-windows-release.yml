@@ -1,14 +1,57 @@
+# Two hosted Windows lanes (#2927 added the second):
+# - push to forgejo-windows-release-pr/**: the exact-head PR lane for the Forgejo
+#   `windows-release-github` waiter, a native Windows build (`icon`, `windows-release`).
+# - workflow_dispatch on main: the Windows beta of Forgejo windows-release `release`
+#   (`windows-beta`), cross-compiled and packed with Velopack here instead of on a
+#   homelab `ubuntu-latest` runner (Okilum left baldr, Oleg 14.11). The Forgejo
+#   bridge waiter (scripts/releases/windows_handoff.py) dispatches the exact source,
+#   the Forgejo build number (5000 + run number), the mode and the Authenticode
+#   policy the build embeds (public certificate names from Forgejo variables), and
+#   stages the artifact as the unchanged Forgejo artifacts. Modes: `pack` without
+#   delta, `delta` with the previous beta package read from the public feed,
+#   `payload` stops before packing because the Forgejo windows-signer packs.
+# No secrets, cache, signing or publication here.
 name: forgejo-windows-release
+# Push runs keep GitHub's default name; a beta run is named by its waiter invocation.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Windows beta Forgejo {0} attempt {1} {2}', inputs.producer, inputs.attempt, inputs.invocation) || '' }}
 on:
   push:
     branches: ['forgejo-windows-release-pr/**']
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Exact full commit SHA to build'
+        required: true
+      build:
+        description: 'Forgejo build number (5000 + Forgejo run number)'
+        required: true
+      mode:
+        description: 'pack, delta or payload'
+        required: true
+      producer:
+        description: 'Forgejo run ID'
+        required: true
+      attempt:
+        description: 'Forgejo run attempt'
+        required: true
+      invocation:
+        description: 'Waiter invocation (32 hex), names this run'
+        required: true
+      sign_subject:
+        description: 'OKILUM_WINDOWS_SIGN_SUBJECT embedded by the build'
+        default: ''
+      sign_issuer_chain:
+        description: 'OKILUM_WINDOWS_SIGN_ISSUER_CHAIN embedded by the build'
+        default: ''
 permissions:
   contents: read
 concurrency:
-  group: forgejo-windows-release-${{ github.ref }}
+  # One group per beta invocation: a shared group would replace a pending beta.
+  group: forgejo-windows-release-${{ github.event_name == 'workflow_dispatch' && inputs.invocation || github.ref }}
   cancel-in-progress: false
 jobs:
   icon:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -28,6 +71,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   windows-release:
+    if: github.event_name == 'push'
     needs: icon
     runs-on: windows-latest
     timeout-minutes: 90
@@ -58,5 +102,109 @@ jobs:
         with:
           name: unsigned-windows
           path: target/windows-release/*
+          retention-days: 3
+          if-no-files-found: error
+  windows-beta:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE: ${{ inputs.source }}
+      BUILD: ${{ inputs.build }}
+      MODE: ${{ inputs.mode }}
+      PRODUCER: ${{ inputs.producer }}
+      ATTEMPT: ${{ inputs.attempt }}
+      INVOCATION: ${{ inputs.invocation }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "4"
+      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-sdk
+      XWIN_ARCH: x86_64
+      XWIN_VARIANT: desktop
+      XWIN_VERSION: "17"
+    steps:
+      # Orchestration comes from the dispatched workflow commit (github.sha, the
+      # waiter's write-once ref); only the product is the requested source, so an
+      # older source (#1040) that predates this handoff still builds.
+      - name: Check out the workflow tooling
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Check out the exact product source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source }}
+          path: product
+          persist-credentials: false
+      - name: Check the exact-source inputs
+        run: python3 tooling/scripts/releases/windows_handoff.py inputs --tooling tooling --product product
+      - name: Install cross-build tools
+        working-directory: product
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends clang lld llvm curl git python3-venv libcairo2
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          "$HOME/.cargo/bin/rustup" target add x86_64-pc-windows-msvc
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          echo "$RUNNER_TEMP/icon-env/bin" >> "$GITHUB_PATH"
+          python3 scripts/pinned_download.py \
+            --url https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz \
+            --fallback https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512900063 \
+            --sha256 c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360 \
+            --destination "$RUNNER_TEMP/cargo-xwin.tgz"
+          echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
+      # The repository's 10 GiB Actions cache is full; the SDK is downloaded and
+      # checked each run, and the Rust build is cold. xwin-cache.py keeps the SDK
+      # at $GITHUB_WORKSPACE/target/xwin-sdk (XWIN_CACHE_DIR), outside the product.
+      - name: Identify Microsoft SDK manifest
+        working-directory: product
+        id: xwin-key
+        run: python3 scripts/ci/xwin-cache.py key
+      - name: Download and verify the xwin SDK
+        working-directory: product
+        env:
+          XWIN_CACHE_KEY: ${{ steps.xwin-key.outputs.key }}
+        run: python3 scripts/ci/xwin-cache.py prepare
+      - name: Prepare pinned vendor
+        working-directory: product
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      - name: Cross-compile Reader and install packager
+        working-directory: product
+        env:
+          OKILUM_WINDOWS_SIGN_SUBJECT: ${{ inputs.sign_subject }}
+          OKILUM_WINDOWS_SIGN_ISSUER_CHAIN: ${{ inputs.sign_issuer_chain }}
+        run: |
+          export OKILUM_BUILD_VERSION="$BUILD"
+          export OKILUM_RELEASE_VERSION="0.1.$BUILD"
+          bash scripts/build-windows-ci.sh
+          bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
+      - name: Restore previous beta package for delta
+        working-directory: product
+        if: inputs.mode == 'delta'
+        run: python3 ../tooling/scripts/releases/windows_handoff.py previous --directory target/windows-release
+      - name: Package Windows installer and update feed on Linux
+        working-directory: product
+        if: inputs.mode != 'payload'
+        run: |
+          export OKILUM_RELEASE_VERSION="0.1.$BUILD"
+          bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
+          # Publication reads the built commit from here, not from the run (#1040).
+          git rev-parse HEAD > target/windows-release/release-source.txt
+          python3 -m unittest discover -s scripts/windows -p 'test_*.py'
+      - name: Record the handoff identity
+        working-directory: product
+        run: python3 ../tooling/scripts/releases/windows_handoff.py record --output target/handoff.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-beta
+          path: |
+            product/target/handoff.json
+            product/target/windows-dist/
+            product/target/windows-release/
           retention-days: 3
           if-no-files-found: error

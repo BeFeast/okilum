@@ -61,7 +61,11 @@ class ReleasePathsTests(unittest.TestCase):
         self.assertIn('  workflow_dispatch:', acceptance)
 
     def test_windows_cross_build_helpers_remain_in_delivery(self):
+        # The beta cross-build runs on GitHub (#2927); Forgejo stages and hands it on.
         workflow = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
-        self.assertIn('bash scripts/build-windows-ci.sh', workflow)
-        self.assertIn('scripts/vendor-setup.sh --verify', workflow)
+        self.assertIn('python3 scripts/releases/windows_handoff.py run --source "$PRODUCT_SOURCE" --tooling', workflow)
         self.assertIn('name: windows-payload', workflow)
+        hosted = (ROOT / '.github/workflows/forgejo-windows-release.yml').read_text()
+        self.assertIn('bash scripts/build-windows-ci.sh', hosted)
+        self.assertIn('scripts/vendor-setup.sh --verify', hosted)
+        self.assertIn('bash scripts/windows/pack.sh', hosted)

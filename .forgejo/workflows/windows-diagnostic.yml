@@ -61,91 +61,24 @@ jobs:
   release:
     needs: select
     if: needs.select.outputs.build == 'true' && needs.select.outputs.resign == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
-    runs-on: ubuntu-latest
+    # GitHub cross-compiles and, unless the signer packs, packs with Velopack
+    # (.github/workflows/forgejo-windows-release.yml `windows-beta`, #2927); this
+    # bridge waiter compiles nothing. Okilum left baldr's ubuntu-latest runner
+    # (Oleg 14.11). The Forgejo build number 5000 + run_number travels in the
+    # dispatch, so the package, the artifacts below and publication are unchanged.
+    runs-on: bridge
+    # Within the primary bridge runner's 60 min ceiling (docs/fast-runner.md).
     timeout-minutes: 60
     outputs:
       signed: ${{ steps.signing.outputs.on }}
-    env:
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-      CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "4"
-      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-sdk
-      XWIN_ARCH: x86_64
-      XWIN_VARIANT: desktop
-      XWIN_VERSION: "17"
     steps:
+      # Orchestration always comes from this workflow commit (github.sha); only
+      # the product source is pinned. An explicit older main commit (#1040) or a
+      # pinned retry predates the hosted handoff, so it is never checked out here.
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a pinned retry sets the checkout;
-          # a push builds its own commit, which is the default ref.
-          ref: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || '' }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Install cross-build tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends clang lld llvm curl git python3-venv libcairo2
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          "$HOME/.cargo/bin/rustup" target add x86_64-pc-windows-msvc
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          python3 -m venv "$RUNNER_TEMP/icon-env"
-          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
-          echo "$RUNNER_TEMP/icon-env/bin" >> "$GITHUB_PATH"
-          python3 scripts/pinned_download.py \
-            --url https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz \
-            --fallback https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512900063 \
-            --sha256 c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360 \
-            --destination "$RUNNER_TEMP/cargo-xwin.tgz"
-          echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
-      - name: Restore cross-build downloads
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            vendor/gpui-component/
-          key: okilum-windows-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.forgejo/workflows/windows-diagnostic.yml') }}
-      - name: Identify Microsoft SDK manifest
-        id: xwin-key
-        run: python3 scripts/ci/xwin-cache.py key
-      - name: Restore independent xwin SDK
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        continue-on-error: true
-        with:
-          path: target/xwin-sdk/
-          key: ${{ steps.xwin-key.outputs.key }}
-      - name: Verify SDK cache or download
-        env:
-          XWIN_CACHE_KEY: ${{ steps.xwin-key.outputs.key }}
-          BENCHMARK: ${{ inputs.cache-benchmark }}
-        run: |
-          mode=prepare
-          if [ "$BENCHMARK" = true ]; then mode=benchmark; fi
-          python3 scripts/ci/xwin-cache.py "$mode"
-      - name: Prepare pinned vendor
-        run: |
-          scripts/vendor-setup.sh
-          scripts/vendor-setup.sh --verify
-      - name: Restore beta compiler dependencies
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: target/x86_64-pc-windows-msvc/
-          key: beta-windows-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
-      - name: Cross-compile Reader and install packager
-        env:
-          OKILUM_WINDOWS_SIGN_SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
-          OKILUM_WINDOWS_SIGN_ISSUER_CHAIN: ${{ vars.OKILUM_WINDOWS_SIGN_ISSUER_CHAIN }}
-        run: |
-          export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
-          export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
-          bash scripts/build-windows-ci.sh
-          bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
 
       # Main builds are signed on the windows-signer runner once OKILUM_WINDOWS_SIGN_BACKEND
       # is set (#1104); pull requests and an unset variable keep the unsigned path below.
@@ -167,6 +100,31 @@ jobs:
           echo "on=$on" >> "$GITHUB_OUTPUT"
           echo "Windows signing on the signer runner: $on"
 
+      - name: Build on GitHub and stage the payload or package
+        env:
+          # A push builds its own commit; an explicit older main commit (#1040)
+          # or a pinned retry builds the source selected above.
+          PRODUCT_SOURCE: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || github.sha }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          # Embedded by the build (the Sync sidecar's Authenticode policy); not secrets.
+          OKILUM_WINDOWS_SIGN_SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
+          OKILUM_WINDOWS_SIGN_ISSUER_CHAIN: ${{ vars.OKILUM_WINDOWS_SIGN_ISSUER_CHAIN }}
+          SIGNED: ${{ steps.signing.outputs.on }}
+          ARCHIVE: ${{ inputs.source != '' }}
+        timeout-minutes: 56
+        # Signed: the signer packs (payload only). A main beta is packed with a delta;
+        # an explicit older commit is archived, not appended to the delta chain.
+        run: |
+          set -euo pipefail
+          tooling=$(git rev-parse HEAD)
+          test "$tooling" = "$GITHUB_SHA"
+          python3 scripts/releases/windows_handoff.py run --source "$PRODUCT_SOURCE" --tooling "$tooling" \
+            --build "$((5000 + GITHUB_RUN_NUMBER))" --signed "$SIGNED" --archive "$ARCHIVE" \
+            --directory target --budget 3180
+
       - name: Hand the unsigned payload to the signer
         if: steps.signing.outputs.on == 'true'
         uses: https://code.forgejo.org/actions/upload-artifact@v3
@@ -174,24 +132,6 @@ jobs:
           name: windows-payload
           path: target/windows-dist/
           retention-days: 1
-
-      - name: Restore previous beta package for delta
-        # An explicit older commit is archived, not appended to the beta delta chain.
-        if: steps.signing.outputs.on != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && inputs.source == ''
-        env:
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python3 scripts/windows/publish.py prepare --directory target/windows-release
-
-      - name: Package Windows installer and update feed on Linux
-        if: steps.signing.outputs.on != 'true'
-        run: |
-          export OKILUM_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
-          bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
-          # Publication reads the built commit from here, not from the run (#1040).
-          git rev-parse HEAD > target/windows-release/release-source.txt
-          python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 
       - name: Upload unsigned installer for Windows QA
         if: steps.signing.outputs.on != 'true'

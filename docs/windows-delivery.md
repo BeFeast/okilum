@@ -1,8 +1,21 @@
 # Windows installation and updates
 
-Windows Reader uses Velopack 1.2.161. The Linux CI runner cross-compiles with
+Windows Reader uses Velopack 1.2.161. A Linux CI runner cross-compiles with
 cargo-xwin and packages unsigned Beta Setup.exe/full/delta/feed artifacts with
 `vpk [win] pack`. No Windows runner, Wine or user-installed .NET is required.
+Since #2927 (Okilum left baldr, Oleg 14.11) the beta build and `vpk pack` run on
+a GitHub-hosted runner (`windows-beta` in `.github/workflows/forgejo-windows-release.yml`).
+The Forgejo `windows-release` `release` job is a `bridge` waiter
+(`scripts/releases/windows_handoff.py`). As for the Arch beta, orchestration always
+comes from the current workflow commit and only the product source is pinned, so an
+older commit (#1040) that predates the handoff still builds. The waiter pushes the
+workflow commit to a write-once GitHub ref and dispatches the hosted job on it with
+the product source, the Forgejo build number (`5000 +` run number) and the embedded
+Authenticode policy variables. It accepts exactly one run of that ref, proven by that
+attempt's jobs, and only an artifact uploaded by that attempt with a matching sha256
+digest. It then stages the result as the unchanged Forgejo artifacts. The R2 upload,
+the signing decision and publication stay on Forgejo; GitHub holds no Okilum secrets
+for this.
 The existing Windows workflow performs one cross-build per PR/main event;
 PR artifacts never publish. Main publishes Beta; [release promotion](releases.md)
 supports an independently accepted Windows Stable build without rebuilding it.
@@ -50,7 +63,9 @@ your PC”; verify the official URL, then use **More info → Run anyway** for t
 owner-approved preview. Stable requires signed artifacts and separate native
 installation/update acceptance; this preview does not establish either gate.
 
-CI restores the previous full beta package to create deltas. Publishing verifies
+CI restores the previous full beta package to create deltas; the hosted build
+reads it from the public feed (`https://updates.befeast.com`) with the same
+size and SHA256 checks, so it needs no R2 credentials. Publishing verifies
 package sizes/SHA256, uploads packages first and the feed last; failure before
 feed publication leaves clients on the previous release. Immutable build metadata
 and Setup.exe support exact-build promotion. Failed or older publications cannot
