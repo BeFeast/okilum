@@ -219,8 +219,8 @@ fn issue1588_expanded_markdown_link_uses_imported_origin(cx: &mut TestAppContext
 #[gpui::test]
 fn issue1588_entered_project_note_and_contract_keep_document_features(cx: &mut TestAppContext) {
     let mut f = open(cx, "@AgentContract.md");
-    assert!(okilum_core::quick_open::FileFilter::Default.admits("@AgentContract.md"));
-    assert!(!okilum_core::quick_open::FileFilter::AgentFiles.admits("@AgentContract.md"));
+    assert!(!okilum_core::quick_open::FileFilter::Default.admits("@AgentContract.md"));
+    assert!(okilum_core::quick_open::FileFilter::AgentFiles.admits("@AgentContract.md"));
     f.reader.update(f.visual, |r, cx| {
         r.project_open = true;
         r.project_navigation.active = Some(okilum_t3::projects::Project {

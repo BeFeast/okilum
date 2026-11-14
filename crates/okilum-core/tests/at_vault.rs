@@ -198,7 +198,9 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
     );
     assert!(agent_imports::is_agent_document("@AgentContract.md"));
     assert!(!agent_imports::is_agent_document("Area/@AgentContract.md"));
-    assert!(quick_open::FileFilter::Default.admits("@AgentContract.md"));
+    assert!(!quick_open::FileFilter::Default.admits("@AgentContract.md"));
+    assert!(quick_open::FileFilter::AgentFiles.admits("@AgentContract.md"));
+    assert!(quick_open::FileFilter::Default.admits("Area/@AgentContract.md"));
     let imports = agent_imports::parse("@@AgentContract.md\n@./@AgentContract.md\n");
     assert_eq!(
         imports

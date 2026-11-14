@@ -4,10 +4,14 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// Document behavior is independent of tree/search visibility. The root contract
-/// participates in Rules, while remaining an ordinary vault inventory entry.
+/// The vault-root agent contract every agent loads through root `AGENTS.md`.
+/// Only the root file counts: `Area/@AgentContract.md` is an ordinary note.
+pub const ROOT_CONTRACT: &str = "@AgentContract.md";
+
+/// Agent documents: conventional agent files plus the root contract. Rules and
+/// the search file filter use this class (#2940); tree visibility does not.
 pub fn is_agent_document(path: &str) -> bool {
-    path == "@AgentContract.md" || crate::quick_open::is_agent_file(path)
+    path == ROOT_CONTRACT || crate::quick_open::is_agent_file(path)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1467,5 +1471,9 @@ mod document_classification_tests {
         assert!(!super::is_agent_document("project/not-AGENTS.md"));
         assert!(crate::quick_open::FileFilter::Default.admits("_AgentContract.md"));
         assert!(!crate::quick_open::FileFilter::AgentFiles.admits("_AgentContract.md"));
+        assert!(crate::quick_open::FileFilter::AgentFiles.admits("@AgentContract.md"));
+        assert!(!crate::quick_open::FileFilter::Default.admits("@AgentContract.md"));
+        assert!(crate::quick_open::FileFilter::Default.admits("project/@AgentContract.md"));
+        assert!(!crate::quick_open::FileFilter::AgentFiles.admits("project/@AgentContract.md"));
     }
 }

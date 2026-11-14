@@ -6,10 +6,12 @@ and Live Preview use the same decoration renderer. Source retains exact bytes
 and follows a directive with Cmd/Ctrl+click. Entering a project does not remove
 these note features; the Board remains separate.
 
-`agent_imports::is_agent_document` is a document classifier. It includes the
-vault-root `@AgentContract.md` independently of the conventional names used by
-`quick_open::is_agent_file` for tree/search filtering. Adding a document feature
-must not silently change which files the browser hides.
+`agent_imports::is_agent_document` is the agent document classifier. It adds the
+vault-root `@AgentContract.md` to the conventional names of
+`quick_open::is_agent_file`. Document features and the search file filter
+(Quick Open, content search, Pinned and Recent; #2940) use it; tree visibility
+keeps the filename rule. Adding a document feature must not silently change
+which files the browser hides.
 
 `reader_document_decorations::install` is the shared document decoration hook.
 It preserves ordinary Markdown parts and binds imported documents to their own

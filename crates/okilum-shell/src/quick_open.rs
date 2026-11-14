@@ -3833,6 +3833,141 @@ canaryhidden [[Target]]",
             assert_eq!(&std::fs::read_to_string(root.join(path)).unwrap(), body);
         }
     }
+
+    #[gpui::test]
+    fn root_agent_contract_is_an_agent_file_in_both_palettes(cx: &mut TestAppContext) {
+        // #2940: the vault-root @AgentContract.md behaves like AGENTS.md in
+        // Quick Open, content search, Pinned and Recent; a nested or
+        // differently prefixed contract stays an ordinary note.
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let sources = [
+            ("start.md", "# Start\n"),
+            ("AGENTS.md", "@./@AgentContract.md\n"),
+            (
+                "@AgentContract.md",
+                "# Agent Contract\n\norbitcanary root\n",
+            ),
+            (
+                "Area/@AgentContract.md",
+                "# Area contract\n\norbitcanary area\n",
+            ),
+            (
+                "_AgentContract.md",
+                "# Draft contract\n\norbitcanary draft\n",
+            ),
+        ];
+        for (path, body) in &sources {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), body).unwrap();
+        }
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let now = reader_sidebar::now();
+        reader.update(visual, |v, _| {
+            assert!(v.searcher.is_some(), "published index positive control");
+            assert!(!v.tree.show_hidden());
+            v.sidebar.pinned = vec!["@AgentContract.md".into(), "_AgentContract.md".into()];
+            v.sidebar.recent = vec![("AGENTS.md".into(), now - 60)];
+        });
+        let type_text = |visual: &mut VisualTestContext, text: &str| {
+            reader.update_in(visual, |v, window, cx| {
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+        };
+        let set_filter = |visual: &mut VisualTestContext, filter: FileFilter| {
+            reader.update_in(visual, |v, window, cx| {
+                v.set_palette_filter(filter, window, cx)
+            });
+            visual.run_until_parked();
+        };
+        let paths = |visual: &mut VisualTestContext| -> Vec<String> {
+            let mut paths: Vec<String> = reader.read_with(visual, |v, _| {
+                v.quick_open.rows.iter().map(|h| h.path.clone()).collect()
+            });
+            paths.sort();
+            paths
+        };
+        let rows = |visual: &mut VisualTestContext| -> Vec<String> {
+            reader.read_with(visual, |v, _| palette_rows(v))
+        };
+
+        // Names palette, default view: the root contract is not a file row.
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        type_text(visual, "AgentContract");
+        assert_eq!(
+            paths(visual),
+            ["Area/@AgentContract.md", "_AgentContract.md"]
+        );
+        // Agent files view: the root contract alone, before and after typing.
+        set_filter(visual, FileFilter::AgentFiles);
+        assert_eq!(paths(visual), ["@AgentContract.md"]);
+        type_text(visual, "");
+        assert_eq!(
+            rows(visual),
+            ["Pinned: @AgentContract.md", "Recent: AGENTS.md"]
+        );
+        // With hidden files shown, the default view still leaves it out of Pinned.
+        reader.update(visual, |v, cx| v.toggle_hidden_files(cx));
+        set_filter(visual, FileFilter::Default);
+        type_text(visual, "");
+        let default_rows = rows(visual);
+        assert!(
+            default_rows.contains(&"Pinned: _AgentContract.md".to_string()),
+            "{default_rows:?}"
+        );
+        assert!(
+            !default_rows
+                .iter()
+                .any(|row| row.ends_with(": @AgentContract.md")),
+            "{default_rows:?}"
+        );
+        assert!(
+            !default_rows.iter().any(|row| row.ends_with(": AGENTS.md")),
+            "{default_rows:?}"
+        );
+        reader.update(visual, |v, cx| v.toggle_hidden_files(cx));
+        reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
+
+        // Content search: same split, filtered before the result limit.
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(true, window, cx));
+        visual.run_until_parked();
+        type_text(visual, "orbitcanary");
+        assert_eq!(
+            paths(visual),
+            ["Area/@AgentContract.md", "_AgentContract.md"]
+        );
+        set_filter(visual, FileFilter::AgentFiles);
+        assert_eq!(paths(visual), ["@AgentContract.md"]);
+        reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
+    }
 }
 
 #[cfg(test)]

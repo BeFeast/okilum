@@ -91,9 +91,10 @@ pub enum FileFilter {
 }
 
 impl FileFilter {
-    /// Whether a file at `path` belongs to this view.
+    /// Whether a file at `path` belongs to this view. The vault-root
+    /// `@AgentContract.md` is an agent document like `AGENTS.md` (#2940).
     pub fn admits(self, path: &str) -> bool {
-        is_agent_file(path) == (self == FileFilter::AgentFiles)
+        crate::agent_imports::is_agent_document(path) == (self == FileFilter::AgentFiles)
     }
 }
 
@@ -541,12 +542,20 @@ mod tests {
             "Dev/agent-handbook.md",
             "Dev/SKILLS.md",
             "Dev/AGENTS .md",
+            "Area/@AgentContract.md",
+            "_AgentContract.md",
+            "AgentContract.md",
         ] {
             assert!(!is_agent_file(path), "{path}");
             assert!(FileFilter::Default.admits(path), "{path}");
             assert!(!FileFilter::AgentFiles.admits(path), "{path}");
         }
         assert_eq!(FileFilter::default(), FileFilter::Default);
+        // #2940: the vault-root contract joins the Agent files view, while the
+        // naming rule (tree visibility, Rules discovery) stays unchanged.
+        assert!(!is_agent_file("@AgentContract.md"));
+        assert!(FileFilter::AgentFiles.admits("@AgentContract.md"));
+        assert!(!FileFilter::Default.admits("@AgentContract.md"));
     }
     #[test]
     fn filtering_the_inventory_precedes_the_result_limit() {
