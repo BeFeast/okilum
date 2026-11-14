@@ -19,12 +19,37 @@ pub struct Import {
 
 /// Recognize standalone @path lines, excluding fenced and indented code.
 /// Whitespace in a path is literal; shell quoting and interpolation are never evaluated.
+/// A line whose target itself starts with `@` (`@@name`) is not an import:
+/// Claude Code silently ignores it (#2939). See [`ignored`].
 pub fn parse(source: &str) -> Vec<Import> {
     parse_bounded(source, usize::MAX)
 }
 
 /// Parse at most `max_imports` directives without allocating for the remainder.
 pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
+    scan(source, max_imports, false)
+}
+
+/// Standalone `@@name` lines (#2939). Claude Code imports a file whose name
+/// starts with `@` only as `@./@name`, `@~/@name` or `@/…`; it ignores `@@name`
+/// without a message. These lines are never imports: no link, expansion or
+/// Rules layer. `target` keeps the text after the first `@`, e.g. `@name`.
+pub fn ignored(source: &str) -> Vec<Import> {
+    ignored_bounded(source, usize::MAX)
+}
+
+/// [`ignored`] with the same allocation bound as [`parse_bounded`].
+pub fn ignored_bounded(source: &str, max: usize) -> Vec<Import> {
+    scan(source, max, true)
+}
+
+/// The user-facing explanation for an [`ignored`] line; `target` is its
+/// [`Import::target`] (it starts with `@`).
+pub fn ignored_message(target: &str) -> String {
+    format!("Not an import: Claude Code ignores `@{target}`. Write `@./{target}`.")
+}
+
+fn scan(source: &str, max_imports: usize, ignored: bool) -> Vec<Import> {
     let mut result = Vec::new();
     let mut offset = 0;
     let mut fence: Option<(u8, usize)> = None;
@@ -47,7 +72,10 @@ pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
             }
         } else if fence.is_none() && leading <= 3 && body.starts_with('@') {
             let target = body[1..].trim_end();
-            if !target.is_empty() && !target.chars().any(char::is_control) {
+            if !target.is_empty()
+                && !target.chars().any(char::is_control)
+                && target.starts_with('@') == ignored
+            {
                 let start = offset + leading + 1;
                 result.push(Import {
                     line: offset..offset + text.len(),
@@ -838,6 +866,47 @@ mod tests {
         assert_eq!(&text[imports[0].target_bytes.clone()], "child/日本.md");
         assert_eq!(&text[imports[0].line.clone()], "  @child/日本.md  ");
         assert_eq!(imports[1].target, "last");
+    }
+    #[test]
+    fn issue2939_double_at_is_not_an_import_but_dot_slash_is() {
+        let text = "@@AgentContract.md\n@./@AgentContract.md\n```\n@@fenced.md\n```\n  @@x.md \n";
+        let imports = parse(text);
+        assert_eq!(
+            imports
+                .iter()
+                .map(|i| i.target.as_str())
+                .collect::<Vec<_>>(),
+            ["./@AgentContract.md"]
+        );
+        let ignored = ignored(text);
+        assert_eq!(
+            ignored
+                .iter()
+                .map(|i| i.target.as_str())
+                .collect::<Vec<_>>(),
+            ["@AgentContract.md", "@x.md"]
+        );
+        assert_eq!(&text[ignored[0].line.clone()], "@@AgentContract.md");
+        assert_eq!(&text[ignored[1].target_bytes.clone()], "@x.md");
+        assert_eq!(
+            ignored_message(&ignored[0].target),
+            "Not an import: Claude Code ignores `@@AgentContract.md`. Write `@./@AgentContract.md`."
+        );
+        // Expansion never reads an ignored target.
+        let store = Mock {
+            files: [("/vault/@AgentContract.md".into(), "rules".into())].into(),
+            reads: RefCell::new(vec![]),
+        };
+        let nodes = expand(
+            &store,
+            Path::new("/vault"),
+            Path::new("/vault/AGENTS.md"),
+            "@@AgentContract.md\n",
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(nodes.is_empty());
+        assert!(store.reads.borrow().is_empty());
     }
     #[test]
     fn nested_context_cycle_and_escape_never_read_outside() {

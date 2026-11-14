@@ -3304,6 +3304,18 @@ fn live_blocks(
                 cx,
             );
         }
+        // An ignored `@@name` directive block (#2939) is text plus a hint.
+        if this.read(cx).agent_document.is_some() {
+            if let [ignored] = okilum_core::agent_imports::ignored(source).as_slice() {
+                if ignored.line == (0..source.trim_end_matches(['\r', '\n']).len()) {
+                    return reader_document_decorations::render_ignored(
+                        div().child(source.trim_end().to_owned()).into_any_element(),
+                        &ignored.target,
+                        cx,
+                    );
+                }
+            }
+        }
         let table_range = block.source.start.0..block.source.end.0;
         let grid = {
             let reader = this.read(cx);

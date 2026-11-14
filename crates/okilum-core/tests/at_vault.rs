@@ -205,14 +205,39 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
             .iter()
             .map(|import| import.target.as_str())
             .collect::<Vec<_>>(),
-        ["@AgentContract.md", "./@AgentContract.md"]
+        ["./@AgentContract.md"],
+        "#2939: Claude Code ignores @@name; only @./@name imports"
+    );
+    assert_eq!(
+        agent_imports::ignored("@@AgentContract.md\n@./@AgentContract.md\n")
+            .iter()
+            .map(|import| import.target.as_str())
+            .collect::<Vec<_>>(),
+        ["@AgentContract.md"]
     );
     let rules = agent_rules::discover(root.path(), &root.path().join("Area"));
     assert!(rules
         .layers
         .iter()
         .any(|layer| layer.path == Path::new("@AgentContract.md") && layer.source.is_some()));
-    assert!(rules.diagnostics.is_empty(), "{:?}", rules.diagnostics);
+    // Fixture AGENTS.md: line 1 `@@AgentContract.md`, line 2 `@./@AgentContract.md`.
+    let imported_from: Vec<_> = rules
+        .layers
+        .iter()
+        .filter_map(|layer| match &layer.provenance {
+            agent_rules::Provenance::Import { from, line } => Some((from.clone(), *line)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        imported_from,
+        [(Path::new("AGENTS.md").to_path_buf(), 2)],
+        "the ignored line adds no Rules layer"
+    );
+    assert_eq!(
+        rules.diagnostics,
+        ["AGENTS.md:1: Not an import: Claude Code ignores `@@AgentContract.md`. Write `@./@AgentContract.md`."]
+    );
 }
 
 #[test]

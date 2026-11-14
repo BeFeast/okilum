@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 struct Directive {
     target: String,
     occurrence: usize,
+    /// `@@name` (#2939): shown as text with a hint, never a link or expansion.
+    ignored: bool,
 }
 #[derive(Clone)]
 struct DecoratedParagraph {
@@ -34,6 +36,9 @@ pub(super) fn install(
                 .directives
                 .iter()
                 .map(|directive| {
+                    if directive.ignored {
+                        return None;
+                    }
                     let this = entity.as_ref()?.read(cx);
                     let current = this.agent_document.as_ref()?;
                     let origin = source
@@ -50,6 +55,13 @@ pub(super) fn install(
                     window,
                     cx,
                 ));
+                let directive = &data.directives[index];
+                if directive.ignored {
+                    let label =
+                        node.render_part(&format!("directive-{index}"), fragment_style, window, cx);
+                    column = column.child(render_ignored(label, &directive.target, cx));
+                    continue;
+                }
                 let link_color = brand::palette(cx).link;
                 let label = node.render_part(
                     &format!("directive-{index}"),
@@ -102,31 +114,40 @@ fn parse(
         cx.source(),
         okilum_core::agent_imports::Limits::default().imports,
     );
-    let imports: Vec<_> = all
+    let ignored = okilum_core::agent_imports::ignored_bounded(
+        cx.source(),
+        okilum_core::agent_imports::Limits::default().imports,
+    );
+    let within = |import: &&okilum_core::agent_imports::Import| {
+        base <= import.target_bytes.start && import.target_bytes.end <= base + source.len()
+    };
+    let mut imports: Vec<_> = all
         .iter()
-        .filter(|import| {
-            base <= import.target_bytes.start && import.target_bytes.end <= base + source.len()
-        })
+        .filter(within)
+        .map(|import| (import, false))
+        .chain(ignored.iter().filter(within).map(|import| (import, true)))
         .collect();
     if imports.is_empty() {
         return None;
     }
+    imports.sort_by_key(|(import, _)| import.line.start);
     let directives = imports
         .iter()
-        .map(|import| Directive {
+        .map(|(import, ignored)| Directive {
             target: import.target.clone(),
             occurrence: all
                 .iter()
                 .take_while(|other| other.line.start < import.line.start)
                 .filter(|other| other.target == import.target)
                 .count(),
+            ignored: *ignored,
         })
         .collect();
     let mut result = MarkdownNode::new("agent-imports", DecoratedParagraph { directives })
         .text(source.to_owned())
         .markdown(source.to_owned());
     let mut cursor = 0;
-    for (index, import) in imports.iter().enumerate() {
+    for (index, (import, _)) in imports.iter().enumerate() {
         let start = import.line.start.saturating_sub(base);
         let end = import.line.end - base;
         result = result
@@ -206,6 +227,23 @@ pub(super) fn prepare_imported_documents(
     }
     visit(vault, root, nodes, &mut documents);
     documents
+}
+
+/// An `@@name` line (#2939): plain text, never a link or disclosure, with the
+/// hint that Claude Code ignores it and how to write the import instead.
+pub(super) fn render_ignored(label: AnyElement, target: &str, cx: &App) -> AnyElement {
+    let selector = format!("agent-ignored-{target}");
+    v_flex()
+        .w_full()
+        .child(label)
+        .child(
+            div()
+                .debug_selector(move || selector.clone())
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(okilum_core::agent_imports::ignored_message(target)),
+        )
+        .into_any_element()
 }
 
 pub(super) fn render_line(
