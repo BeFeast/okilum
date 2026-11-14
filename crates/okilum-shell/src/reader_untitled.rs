@@ -879,7 +879,7 @@ mod tests {
         let mut saved = text.to_owned();
         let created = copy_attachments(&folder, &destination, &found, &mut saved).unwrap();
         let renamed = destination.join("@Assets/Images/Pasted image 1 1.png");
-        assert_eq!(created, [renamed.clone()]);
+        assert_eq!(created, std::slice::from_ref(&renamed));
         assert_eq!(std::fs::read(&renamed).unwrap(), b"draft image");
         assert_eq!(
             std::fs::read(destination.join(image)).unwrap(),
