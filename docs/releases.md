@@ -81,10 +81,17 @@ A cache saved on such a ref is never visible to the next one, so
 (only when its exact entry is missing) and saves a `Swatinem/rust-cache` entry
 on `main`; producers restore it and never save. It holds registry/git
 dependencies only: workspace and vendored path crates always compile from the
-producer's checkout. The distribution smoke and disposable-key signing checks
-of a pushed beta run in `appimage-acceptance` after the `appimage` job
-completes, so the bridge hands off bytes as soon as the beta gate (`Verify
-AppImage package`) has passed; a failed check still fails the run visibly. Mac and Windows
+producer's checkout. After a new entry is saved, the same workflow deletes every
+other `v0-rust-beta-appimage-v1-Linux-*` entry, so the beta cache occupies one
+entry (~1 GiB) of the 10 GiB quota.
+
+The Ubuntu/Fedora smoke and disposable-key signing checks stay the beta gate
+(idunn installs every beta automatically). For a pushed beta they run in
+`appimage-acceptance` after the `appimage` job, while the bridge already takes
+the bytes; `appimage-reuse` then waits for that job (`appimage_handoff.py
+await-acceptance`, 15 min budget) before `appimage-publication` may dispatch,
+and the publisher refuses a handoff whose `appimage-reuse` job did not succeed.
+A failed or missing check never reaches the feed. Mac and Windows
 build the pushed product source with their existing delivery tooling.
 
 Push runs carry Forgejo's native statuses on their own commit, named

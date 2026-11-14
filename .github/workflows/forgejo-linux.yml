@@ -170,10 +170,10 @@ jobs:
           sha256sum -c SHA256SUMS
           chmod +x Okilum-x86_64.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./Okilum-x86_64.AppImage --help
-      # A pushed beta ref runs these two checks in appimage-acceptance instead:
-      # the Forgejo bridge hands off bytes once this job completes, and the beta
-      # gate is "Verify AppImage package" (appimage_artifact.SMOKE), as it was for
-      # main-push producers. PR proxies, dispatches and nightly keep them here.
+      # A pushed beta ref runs these two checks in appimage-acceptance instead, so
+      # the Forgejo bridge can take the bytes once this job completes. They stay
+      # the beta gate: publication waits for them (appimage_handoff.acceptance).
+      # PR proxies, dispatches and nightly keep them here.
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
         if: (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6') && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-'))
         run: |
@@ -204,9 +204,10 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  # Same two checks on the same uploaded bytes for a pushed beta ref, after the
-  # appimage job has completed and the Forgejo bridge can already hand them off.
-  # A failure here fails this run visibly; it is evidence, not the beta gate.
+  # Same two checks on the same uploaded bytes for a pushed beta ref, while the
+  # Forgejo bridge already takes them. Beta gate: Forgejo publishes only after
+  # this job succeeded (appimage_handoff.py await-acceptance). Job and step names
+  # are part of that contract.
   appimage-acceptance:
     needs: appimage
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')

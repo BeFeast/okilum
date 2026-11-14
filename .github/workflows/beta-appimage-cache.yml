@@ -19,6 +19,8 @@ jobs:
   seed:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    outputs:
+      built: ${{ steps.cargo-cache.outputs.cache-hit != 'true' }}
     # Must match forgejo-linux.yml `appimage` exactly: rust-cache hashes these
     # variables into its key, and Cargo fingerprints depend on them.
     env:
@@ -46,3 +48,33 @@ jobs:
       - name: Build the beta AppImage graph to fill the cache
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         run: bash scripts/appimage/build.sh
+
+  # Keep exactly one beta entry (~1 GiB) in the 10 GiB repo quota, so a lock
+  # change never leaves superseded copies that push out other lanes' caches
+  # (agent-checks' agent-v1-Linux). Runs after the seed job, i.e. after its
+  # post step saved the new entry; producers fall back to the newest one anyway.
+  prune:
+    needs: seed
+    if: needs.seed.outputs.built == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded beta AppImage cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREFIX: v0-rust-beta-appimage-v1-Linux-
+        run: |
+          set -euo pipefail
+          keep=$(gh api "repos/$GH_REPO/actions/caches?key=$PREFIX&ref=refs/heads/main&sort=created_at&direction=desc&per_page=1" \
+            --jq '.actions_caches[0].id // empty')
+          if [ -z "$keep" ]; then echo 'No main beta cache entry; nothing pruned'; exit 0; fi
+          echo "Keeping beta cache entry $keep"
+          gh api --paginate "repos/$GH_REPO/actions/caches?key=$PREFIX&per_page=100" \
+            --jq ".actions_caches[] | select(.id != $keep) | \"\\(.id) \\(.key) \\(.ref)\"" |
+          while read -r id key ref; do
+            gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" >/dev/null
+            echo "Deleted superseded $key ($ref)"
+          done

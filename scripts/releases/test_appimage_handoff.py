@@ -87,6 +87,110 @@ class IndependentAcceptance(unittest.TestCase):
             key.assert_not_called()
 
 
+class AcceptanceGate(unittest.TestCase):
+    """Ubuntu/Fedora smoke and disposable-key signing block beta publication."""
+
+    def evidence(self, in_job=False, acceptance=('completed', 'success')):
+        receipt, _, _, _ = evidence()
+        run, jobs = receipt['run'], copy.deepcopy(receipt['jobs'])
+        run = {**run, 'head_branch': 'forgejo-linux-pr/hourly-' + SOURCE}
+        checks = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
+                  for name in handoff.ACCEPTANCE_STEPS]
+        if in_job:
+            jobs[0]['steps'] += checks
+        elif acceptance:
+            status, conclusion = acceptance
+            jobs.append({'id': 5, 'name': handoff.ACCEPTANCE_JOB, 'run_id': run['id'], 'head_sha': SOURCE,
+                         'status': status, 'conclusion': conclusion,
+                         'steps': checks if conclusion == 'success' else checks[:1]})
+        return run, jobs
+
+    def test_separate_or_in_job_checks_pass_and_failures_never_publish(self):
+        for in_job in (False, True):
+            handoff.acceptance(*self.evidence(in_job=in_job), SOURCE)
+        for outcome in [('completed', 'failure'), ('completed', 'cancelled'), ('completed', 'skipped')]:
+            with self.subTest(outcome=outcome), self.assertRaises(ValueError) as caught:
+                handoff.acceptance(*self.evidence(acceptance=outcome), SOURCE)
+            self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
+        # A successful job whose checks did not both run is not acceptance.
+        run, jobs = self.evidence()
+        jobs[-1]['steps'] = jobs[-1]['steps'][:1]
+        with self.assertRaises(ValueError):
+            handoff.acceptance(run, jobs, SOURCE)
+
+    def test_running_or_absent_acceptance_waits_but_completed_absence_fails(self):
+        for outcome in [('queued', None), ('in_progress', None)]:
+            with self.subTest(outcome=outcome), self.assertRaises(handoff.ReuseUnavailable):
+                handoff.acceptance(*self.evidence(acceptance=outcome), SOURCE)
+        run, jobs = self.evidence(acceptance=None)
+        with self.assertRaises(handoff.ReuseUnavailable):
+            handoff.acceptance({**run, 'status': 'in_progress', 'conclusion': None}, jobs, SOURCE)
+        with self.assertRaises(ValueError) as caught:
+            handoff.acceptance(run, jobs, SOURCE)
+        self.assertNotIsInstance(caught.exception, handoff.ReuseUnavailable)
+        run, jobs = self.evidence()
+        jobs[-1]['run_id'] = 99
+        with self.assertRaises(ValueError):
+            handoff.acceptance(run, jobs, SOURCE)
+
+    def test_await_polls_until_success_and_refuses_failure_or_new_identity(self):
+        import json
+        run, pending = self.evidence(acceptance=('in_progress', None))
+        _, done = self.evidence()
+        _, failed = self.evidence(acceptance=('completed', 'failure'))
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'acceptance.json').write_text(json.dumps({'run': run, 'jobs': pending}))
+            def api_for(*job_lists, current=run):
+                api = Mock(); lists = iter(job_lists)
+                api.request.side_effect = lambda path: (
+                    {'jobs': next(lists)} if '/jobs?' in path else current)
+                return api
+            sleeps = []
+            with redirect_stdout(io.StringIO()):
+                handoff.await_acceptance(api_for(pending, done), directory, 600, sleep=sleeps.append)
+            self.assertEqual(len(sleeps), 1)
+            with self.assertRaises(ValueError):
+                handoff.await_acceptance(api_for(failed), directory, 600, sleep=sleeps.append)
+            with self.assertRaises(ValueError):
+                handoff.await_acceptance(api_for(done, current={**run, 'run_attempt': 2}),
+                                         directory, 600, sleep=sleeps.append)
+            clock = iter([0, 0, 0, 1000])  # start, deadline check, sleep length, expired check
+            with self.assertRaises(ValueError):
+                handoff.await_acceptance(api_for(pending, pending), directory, 600,
+                                         clock=lambda: next(clock), sleep=sleeps.append)
+
+    def test_publisher_refuses_a_handoff_from_an_unsuccessful_reuse_job(self):
+        run = {'id': 7, 'workflow_id': 'linux-release.yml', 'prettyref': 'main',
+               'is_fork_pull_request': False, 'trigger_event': 'push',
+               'commit_sha': SOURCE, 'index_in_repo': 123, 'status': 'running'}
+        item = {'id': 9, 'name': 'appimage-publication', 'expired': False, 'run_id': 7}
+        with patch.object(handoff.publisher.arch, 'SigningKey') as key:
+            for jobs in [[], [{'name': 'appimage-reuse', 'status': 'failure'}],
+                         [{'name': 'appimage-reuse', 'status': 'running'}]]:
+                client = Mock()
+                client.call.side_effect = [run, [item], jobs]
+                with self.subTest(jobs=jobs), self.assertRaises(ValueError):
+                    handoff.publish(client, 7)
+            key.assert_not_called()
+
+    def test_workflow_step_names_match_the_gate(self):
+        import yaml
+        root = Path(__file__).resolve().parents[2]
+        producer = yaml.safe_load((root / '.github/workflows/forgejo-linux.yml').read_text())
+        for job in ('appimage', handoff.ACCEPTANCE_JOB):
+            names = {step.get('name') for step in producer['jobs'][job]['steps']}
+            self.assertLessEqual(set(handoff.ACCEPTANCE_STEPS), names, job)
+        release = yaml.safe_load((root / '.forgejo/workflows/linux-release.yml').read_text())
+        steps = release['jobs']['appimage-reuse']['steps']
+        runs = [step.get('run', '') for step in steps]
+        upload = next(i for i, step in enumerate(steps) if 'upload-artifact' in str(step.get('uses', '')))
+        wait = next(i for i, r in enumerate(runs) if 'appimage_handoff.py await-acceptance' in r)
+        self.assertGreater(wait, upload)  # bytes move in parallel; publication still waits
+        self.assertEqual(steps[wait]['if'], "steps.reuse.outputs.accepted == 'true'")
+        self.assertIn('needs.appimage-reuse.result == \'success\'', release['jobs']['appimage-publication']['if'])
+
+
 class ReuseOutcomes(unittest.TestCase):
     def test_hourly_idle_runs_do_not_make_the_original_producer_ambiguous(self):
         receipt, data, _, _ = evidence()

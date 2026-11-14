@@ -99,6 +99,68 @@ def accepted(run, jobs, source):
         raise ReuseUnavailable('not-an-original-hourly-producer')
 
 
+# Beta gate (manager 14.11: idunn installs every beta on Oleg's desktop, so a
+# broken AppImage must never reach the feed). A pushed beta runs these two
+# checks in appimage-acceptance after the appimage job, so the bridge can take
+# the bytes meanwhile; dispatches, PR proxies and older producers ran them in
+# the appimage job itself. Either way publication waits for both to pass.
+ACCEPTANCE_JOB = 'appimage-acceptance'
+ACCEPTANCE_STEPS = ('Verify unchanged AppImage on clean Ubuntu and Fedora',
+                    'Verify signed AppImage installation with disposable CI key')
+
+
+def acceptance(run, jobs, source):
+    """Raise unless the producer's distribution smoke and signing checks passed."""
+    accepted(run, jobs, source)
+    def passed(job):
+        steps = job.get('steps')
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise ValueError('Malformed AppImage acceptance steps')
+        found = {step.get('name'): step for step in steps}
+        return all(found.get(name, {}).get('conclusion') == 'success' for name in ACCEPTANCE_STEPS)
+    if passed(next(job for job in jobs if job.get('name') == 'appimage')):
+        return
+    matches = [job for job in jobs if job.get('name') == ACCEPTANCE_JOB]
+    if len(matches) > 1:
+        raise ValueError('Ambiguous AppImage acceptance job')
+    if not matches:
+        if run['status'] != 'completed':
+            raise ReuseUnavailable('acceptance-not-started')
+        raise ValueError('No Ubuntu/Fedora smoke or signing evidence for this AppImage')
+    job = matches[0]
+    if job.get('run_id') != run['id'] or job.get('head_sha') != source:
+        raise ValueError('AppImage acceptance job identity mismatch')
+    execution_state(job, 'AppImage acceptance job', {'queued', 'in_progress', 'waiting', 'pending'})
+    if job['status'] != 'completed':
+        raise ReuseUnavailable('acceptance-not-completed')
+    if job['conclusion'] != 'success' or not passed(job):
+        raise ValueError('AppImage Ubuntu/Fedora smoke or signing check failed; not publishing')
+
+
+def await_acceptance(api, directory, wait_seconds, *, clock=time.monotonic, sleep=time.sleep):
+    """Block publication of the staged bytes until their producer's acceptance passed."""
+    receipt = json.loads((directory / 'acceptance.json').read_bytes())
+    original, source = receipt['run'], receipt['run']['head_sha']
+    deadline = clock() + wait_seconds
+    while True:
+        run = api.request(f"actions/runs/{original['id']}")
+        jobs = api.request(f"actions/runs/{original['id']}/attempts/1/jobs?per_page=100")
+        if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
+            raise ValueError('Incomplete GitHub job evidence')
+        for field in ('id', 'head_sha', 'path', 'head_branch', 'event', 'run_attempt', 'run_number'):
+            if run.get(field) != original.get(field):
+                raise ValueError('Producer identity changed after handoff')
+        try:
+            acceptance(run, jobs['jobs'], source)
+        except ReuseUnavailable as error:
+            if clock() >= deadline:
+                raise ValueError('AppImage acceptance did not finish within its budget') from error
+            sleep(min(15, max(0, deadline - clock())))
+            continue
+        print(f'APPIMAGE_ACCEPTED source={source} run={original["id"]}: Ubuntu/Fedora smoke and signing passed')
+        return
+
+
 def unpack(directory, destination):
     receipt = json.loads((directory / 'acceptance.json').read_bytes())
     source = receipt['run']['head_sha']
@@ -208,6 +270,12 @@ def publish(client, run_id):
                and item.get('expired') is False and item.get('run_id') == run_id]
     if len(matches) != 1:
         raise ValueError('Missing or ambiguous appimage-publication artifact')
+    # appimage-reuse succeeds only after the producer's acceptance passed
+    # (await_acceptance); a handoff from a failed reuse never publishes.
+    reuse = [job for job in client.call('GET', f'/actions/runs/{run_id}/jobs')
+             if isinstance(job, dict) and job.get('name') == 'appimage-reuse']
+    if len(reuse) != 1 or reuse[0].get('status') != 'success':
+        raise ValueError('AppImage handoff lacks a successful appimage-reuse acceptance wait')
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         data = client.call('GET', f'/actions/artifacts/{matches[0]["id"]}/zip', raw=True)
@@ -229,7 +297,7 @@ def publish(client, run_id):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['stage', 'dispatch', 'publish'])
+    parser.add_argument('command', choices=['stage', 'await-acceptance', 'dispatch', 'publish'])
     parser.add_argument('--source')
     parser.add_argument('--directory', type=Path)
     parser.add_argument('--run', type=int)
@@ -260,6 +328,10 @@ def main():
                 time.sleep(min(20, max(0, deadline - time.monotonic())))
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'accepted={str(accepted_bytes).lower()}\n')
+    elif args.command == 'await-acceptance':
+        if args.directory is None or not 0 < args.wait_seconds <= 1800:
+            parser.error('await-acceptance requires --directory and 0 < --wait-seconds <= 1800')
+        await_acceptance(artifact.transport.GitHub(), args.directory, args.wait_seconds)
     elif args.command == 'dispatch':
         if os.environ.get('GITHUB_REF') != 'refs/heads/main':
             raise ValueError('Dispatch requires main')

@@ -160,8 +160,8 @@ jobs:
     # Frozen or failed Arch never holds the AppImage beta of the same push.
     if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
-    # Mirror wait (10m) + bounded producer wait (90m) + setup.
-    timeout-minutes: 105
+    # Mirror wait (10m) + bounded producer wait (90m) + acceptance wait (15m) + setup.
+    timeout-minutes: 120
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -190,6 +190,17 @@ jobs:
           name: appimage-publication
           path: dist/appimage-publication/
           retention-days: 7
+      # Beta gate: the bytes above were taken while the producer's Ubuntu/Fedora
+      # smoke and disposable-key signing checks still ran. Publication (needs
+      # this job's success) waits for both; a failure never reaches the feed.
+      - name: Wait for the producer's Ubuntu/Fedora smoke and signing checks
+        if: steps.reuse.outputs.accepted == 'true'
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+        run: python3 scripts/releases/appimage_handoff.py await-acceptance --directory dist/appimage-publication --wait-seconds 900
 
   appimage-publication:
     needs: [select, appimage-reuse]

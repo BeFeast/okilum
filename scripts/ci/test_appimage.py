@@ -123,6 +123,18 @@ class AppImageTests(unittest.TestCase):
         self.assertEqual(build[0]['if'], "steps.cargo-cache.outputs.cache-hit != 'true'")
         self.assertFalse(any('upload-artifact' in str(s.get('uses', '')) for s in seed['steps']))
         self.assertNotIn('${{ secrets.', (ROOT / '.github/workflows/beta-appimage-cache.yml').read_text())
+        # Exactly one beta entry stays in the 10 GiB quota: prune runs after the save
+        # (job boundary), only when the seed built, only on main, with no secrets.
+        prune = seeder['jobs']['prune']
+        self.assertEqual(prune['needs'], 'seed')
+        self.assertEqual(prune['if'], "needs.seed.outputs.built == 'true' && github.ref == 'refs/heads/main'")
+        self.assertEqual(seed['outputs']['built'], "${{ steps.cargo-cache.outputs.cache-hit != 'true' }}")
+        self.assertEqual(prune['permissions'], {'actions': 'write'})
+        script = prune['steps'][0]['run']
+        self.assertEqual(prune['steps'][0]['env']['PREFIX'], 'v0-rust-beta-appimage-v1-Linux-')
+        self.assertIn('ref=refs/heads/main&sort=created_at&direction=desc&per_page=1', script)
+        self.assertIn('select(.id != $keep)', script)
+        self.assertIn('exit 0', script.split('select(')[0])  # no main entry: delete nothing
         # The old main-only actions/cache step never ran on hourly refs.
         self.assertFalse(any(str(s.get('uses', '')).startswith('actions/cache') for s in appimage['steps']))
 
