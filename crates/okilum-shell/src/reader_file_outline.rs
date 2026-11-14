@@ -1,7 +1,7 @@
 //! File structure in the existing right panel; no Reader/sidebar state or hooks.
 use super::super::*;
 use gpui_component::input::{EditorState, InputEvent};
-use reader_code_file::contents::ContentsSource;
+use reader_code_file::contents::{ContentsSource, Whereabouts};
 use reader_code_file::document::Document;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -36,6 +36,16 @@ struct Snapshot {
     groups: Arc<GroupRows>,
     /// The marked row: the node where you are, or its nearest listed ancestor.
     current: Option<usize>,
+    /// The last sample of the viewer; a new file or view starts a new one.
+    seen: Option<Whereabouts>,
+    /// The caret (or Tree selection) leads until the view is scrolled.
+    follow_caret: bool,
+    /// A node a caret move named: its path opens once and its row scrolls
+    /// into view when listed. `true` once the path was opened.
+    reveal: Option<(usize, bool)>,
+    /// Children walked on the UI thread by «where you are» samples.
+    #[cfg(test)]
+    ui_child_steps: usize,
     generation: u64,
     task: Option<Task<()>>,
     reading: Option<Task<()>>,
@@ -258,7 +268,19 @@ impl View {
 
     fn sync_current(&mut self, cx: &mut Context<Self>) {
         if self.snapshot.active {
+            #[cfg(test)]
+            let doc = self.snapshot.doc.clone();
+            #[cfg(test)]
+            let before = doc
+                .as_ref()
+                .map(|doc| doc.child_steps.load(std::sync::atomic::Ordering::Relaxed));
             let current = self.snapshot_current(cx);
+            // The sample is synchronous: a worker cannot run inside it.
+            #[cfg(test)]
+            if let (Some(doc), Some(before)) = (doc, before) {
+                self.snapshot.ui_child_steps +=
+                    doc.child_steps.load(std::sync::atomic::Ordering::Relaxed) - before;
+            }
             if self.snapshot.current != current {
                 self.snapshot.current = current;
                 cx.notify();
@@ -348,6 +370,9 @@ impl View {
             self.snapshot.positions = Arc::default();
             self.snapshot.groups = Arc::default();
             self.snapshot.current = None;
+            self.snapshot.seen = None;
+            self.snapshot.follow_caret = false;
+            self.snapshot.reveal = None;
             self.snapshot.task = None;
             self.snapshot.reading = None;
             self.snapshot.state = SnapshotState::Absent;
@@ -410,20 +435,74 @@ impl View {
         }
     }
 
-    /// The listed row for the viewer's top node: the node itself, or the
-    /// nearest ancestor shown (a closed ancestor carries the mark), or the
-    /// closed group that holds it.
-    fn snapshot_current(&self, cx: &App) -> Option<usize> {
-        let code = self.code.as_ref()?;
-        let doc = self.snapshot.doc.as_ref()?;
+    /// The marked row (#2814 2s-1). After a caret move, a Find hit or a Tree
+    /// selection it is that node: its path opens and its row scrolls into
+    /// view. After plain scrolling it is the node at the top of the view, and
+    /// nothing opens. A node not listed marks its nearest listed ancestor or
+    /// the closed group that holds it.
+    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {
+        let code = self.code.clone()?;
+        let doc = self.snapshot.doc.clone()?;
         let raw = code.read(cx).document_raw_for_contents()?;
         // The viewer holds a newer parse whose rows are still being built:
         // the mark waits for them (the swap syncs it) instead of remapping
         // every viewport sample through both documents.
-        if !Arc::ptr_eq(&raw, doc) {
+        if !Arc::ptr_eq(&raw, &doc) {
             return self.snapshot.current;
         }
-        let mut at = Some(code.read(cx).contents_top_node(cx)?);
+        let now = code.read(cx).contents_whereabouts(cx)?;
+        match self.snapshot.seen.replace(now) {
+            // A view switch is not a caret move, nor a new page whose caret
+            // is still where loading the page put it (the position scrubber):
+            // the top of the view leads. A Find hit or a Contents jump on
+            // another page places the caret inside it.
+            Some(before)
+                if before.view != now.view
+                    || (before.page != now.page
+                        && now.caret == Some((now.page, 0))
+                        && before.jumps == now.jumps) =>
+            {
+                self.snapshot.follow_caret = false;
+                self.snapshot.reveal = None;
+            }
+            // Selection wins over scroll when both changed in one sample.
+            Some(before)
+                if (before.caret != now.caret || before.jumps != now.jumps)
+                    && now.caret_node.is_some() =>
+            {
+                self.snapshot.follow_caret = true;
+                self.snapshot.reveal = now.caret_node.map(|node| (node, false));
+            }
+            // Scrolling is a top change between two settled samples. A jump,
+            // a caret-follow or an end-of-text clamp lands its scroll in the
+            // layout after the caret move: that change belongs to the move.
+            Some(before) if before.top != now.top && before.settled && now.settled => {
+                self.snapshot.follow_caret = false;
+                self.snapshot.reveal = None;
+            }
+            _ => {}
+        }
+        let node = self
+            .snapshot
+            .follow_caret
+            .then_some(now.caret_node)
+            .flatten()
+            .or(now.top_node)?;
+        if let Some((target, opened)) = self.snapshot.reveal {
+            if target != node {
+                self.snapshot.reveal = None;
+            } else if let Some(&row) = self.snapshot.positions.get(&node) {
+                self.snapshot.reveal = None;
+                self.list.scroll_to_reveal_item(row);
+                return Some(row);
+            } else if !opened {
+                // The worker opens the path and lists the rows; the swap
+                // syncs again and scrolls the row into view.
+                self.snapshot.reveal = Some((node, true));
+                self.rebuild_rows_revealing(Some(node), cx);
+            }
+        }
+        let mut at = Some(node);
         while let Some(index) = at {
             if let Some(&row) = self.snapshot.positions.get(&index) {
                 return Some(row);
@@ -455,6 +534,13 @@ impl View {
     /// Visible rows on a worker; the list keeps showing the previous rows
     /// until the new ones arrive.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_rows_revealing(None, cx);
+    }
+
+    /// `reveal`: a node whose ancestors and groups the worker opens first, so
+    /// a path through a container of any size costs the UI thread nothing.
+    /// The opened state comes back with the rows.
+    fn rebuild_rows_revealing(&mut self, reveal: Option<usize>, cx: &mut Context<Self>) {
         let Some(doc) = self
             .snapshot
             .pending
@@ -464,13 +550,16 @@ impl View {
             return;
         };
         let used = doc.clone();
-        let expansion = self.expansion().clone();
+        let mut expansion = self.expansion().clone();
         self.snapshot.generation += 1;
         let generation = self.snapshot.generation;
         self.snapshot.task = Some(cx.spawn(async move |this, cx| {
-            let (rows, positions, groups) = cx
+            let (rows, positions, groups, expansion) = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(node) = reveal {
+                        tree::open_path(&doc, node, &mut expansion);
+                    }
                     let rows = tree::visible_rows(&doc, &expansion);
                     let mut positions = HashMap::new();
                     let mut groups = GroupRows::new();
@@ -496,7 +585,7 @@ impl View {
                     for list in groups.values_mut() {
                         list.sort_by_key(|&(first, _, _)| first);
                     }
-                    (rows, positions, groups)
+                    (rows, positions, groups, reveal.map(|_| expansion))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -514,16 +603,22 @@ impl View {
                     this.snapshot.pending = None;
                 }
                 this.snapshot.doc = Some(used);
+                // No toggle ran since (it would have bumped the generation):
+                // the opened path replaces the state it was computed from.
+                if let Some(expansion) = expansion {
+                    *this.expansion() = expansion;
+                }
                 this.snapshot.rows = Arc::new(rows);
                 this.snapshot.positions = Arc::new(positions);
                 this.snapshot.groups = Arc::new(groups);
-                this.sync_current(cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
                 this.list.scroll_to(ListOffset {
                     item_ix: top.item_ix.min(this.snapshot.rows.len().saturating_sub(1)),
                     offset_in_item: top.offset_in_item,
                 });
+                // After the list keeps its place: a revealed row scrolls into view.
+                this.sync_current(cx);
                 cx.notify();
             });
         }));

@@ -211,6 +211,9 @@ pub(crate) struct CodePreview {
     provisional_interacted: std::rc::Rc<std::cell::Cell<bool>>,
     provisional_subscription: Option<Subscription>,
     editor_find: Option<Entity<reader_find_field::editor::EditorTarget>>,
+    /// Contents jumps so far (#2814 9b): a repeated jump to the same caret
+    /// is still a caret move.
+    contents_jumps: u64,
     case_sensitive: std::rc::Rc<std::cell::Cell<bool>>,
     match_rows: std::collections::HashMap<usize, std::ops::Range<usize>>,
     match_pattern: Option<regex::Regex>,
@@ -447,6 +450,7 @@ impl CodePreview {
             provisional_interacted: Default::default(),
             provisional_subscription: None,
             editor_find: None,
+            contents_jumps: 0,
             case_sensitive: std::rc::Rc::new(std::cell::Cell::new(
                 reader_ui_state::find_case_sensitive(cx),
             )),

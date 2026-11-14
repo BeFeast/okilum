@@ -2,6 +2,25 @@
 //! whole-file tree it already holds, and navigation in the active view.
 use super::*;
 
+/// One sample of «where you are» (#2814 9b). A changed `caret` or `jumps` is
+/// a caret move, a Find hit, a Tree selection or a Contents jump; a changed
+/// `top` between two settled samples is scrolling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Whereabouts {
+    pub view: View,
+    pub page: usize,
+    /// `(page, offset in the page)` in Raw and Formatted, `(0, row)` for the
+    /// Tree selection: the same local offset on another page is another caret.
+    pub caret: Option<(usize, usize)>,
+    pub jumps: u64,
+    pub caret_node: Option<usize>,
+    pub top: usize,
+    pub top_node: Option<usize>,
+    /// The view's scroll has landed: no jump, caret-follow or end-of-text
+    /// clamp is waiting for the next layout.
+    pub settled: bool,
+}
+
 /// Contents for the current file, in the order the panel checks.
 #[derive(Clone)]
 pub(crate) enum ContentsSource {
@@ -23,6 +42,18 @@ impl CodePreview {
     #[cfg(test)]
     pub(crate) fn tree_selection_for_tests(&self) -> Option<usize> {
         self.structure.selected
+    }
+
+    /// The position scrubber's page jump, and the page count.
+    #[cfg(test)]
+    pub(crate) fn show_page_for_tests(
+        &mut self,
+        page: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        self.show_page(page, window, cx);
+        self.document.as_ref().map_or(0, |doc| doc.pages.len())
     }
 
     /// JSON, YAML, TOML and XML (#2814 9a, 9c). `.jsonc`, Rust and Python
@@ -55,35 +86,61 @@ impl CodePreview {
         }
     }
 
-    /// The node «where you are» (#2814): the Tree selection, or in Raw and
-    /// Formatted the innermost node at the top line of the view. A raw-document
-    /// index (Formatted has the same preorder); O(log n) per sample.
-    pub(crate) fn contents_top_node(&self, cx: &App) -> Option<usize> {
+    /// What «where you are» samples after each paint (#2814 9b): the caret and
+    /// the top of the view, each with the raw-document node it names. In Raw
+    /// and Formatted the caret is the cursor and the node the innermost one
+    /// holding it; in Tree it is the selected row, which a Find hit also sets.
+    /// Formatted has the same preorder as the raw document. O(log n).
+    pub(crate) fn contents_whereabouts(&self, cx: &App) -> Option<Whereabouts> {
         let raw = self.raw_document.as_ref()?;
         let active = self.document.as_ref()?;
         if active.structure.len() != raw.structure.len() {
             return None;
         }
-        let index = match self.view {
-            View::Tree => self.structure.selected?,
+        let node = |index: Option<usize>| index.filter(|&i| i > 0 && i < raw.structure.len());
+        match self.view {
+            View::Tree => {
+                let top = self.structure.scroll.logical_scroll_top_index();
+                Some(Whereabouts {
+                    view: View::Tree,
+                    page: 0,
+                    caret: self.structure.selected.map(|row| (0, row)),
+                    jumps: self.contents_jumps,
+                    caret_node: node(self.structure.selected),
+                    top,
+                    top_node: node(self.structure.visible.get(top).copied()),
+                    // The uniform list reports a requested item as its top at once.
+                    settled: true,
+                })
+            }
             View::Raw | View::Formatted => {
                 use gpui_component::RopeExt as _;
                 let input = self.input()?;
                 let input = input.read(cx);
+                let start = active.pages.get(self.page)?.start;
                 let line = input.top_visible_line()?;
-                let local = input.text().line_start_offset(line);
-                let mut at = active.pages.get(self.page)?.start + local;
+                let mut top = start + input.text().line_start_offset(line);
                 // The line's indentation belongs to the parent; its first
                 // character names the node on that line.
-                at += active.text[at..]
+                top += active.text[top..]
                     .bytes()
                     .take_while(|b| *b == b' ' || *b == b'\t')
                     .count();
-                active.row_at(&(at..at))?
+                let cursor = input.cursor();
+                let caret = start + cursor;
+                Some(Whereabouts {
+                    view: self.view,
+                    page: self.page,
+                    caret: Some((self.page, cursor)),
+                    jumps: self.contents_jumps,
+                    caret_node: node(active.row_at(&(caret..caret))),
+                    top: line,
+                    top_node: node(active.row_at(&(top..top))),
+                    settled: input.scroll_settled(),
+                })
             }
-            View::Table => return None,
-        };
-        (index > 0).then_some(index)
+            View::Table => None,
+        }
     }
 
     /// Go to a raw-document node in the active view; never switch views.
@@ -114,6 +171,7 @@ impl CodePreview {
         if index >= raw.structure.len() || active.structure.len() != raw.structure.len() {
             return;
         }
+        self.contents_jumps += 1;
         match self.view {
             View::Tree => {
                 self.structure.reveal_node(index, &active);

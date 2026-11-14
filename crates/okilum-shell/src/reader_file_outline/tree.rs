@@ -160,6 +160,59 @@ fn keyed_children(doc: &Document, parent: usize, parent_key: &str) -> Vec<(usize
         .collect()
 }
 
+/// Children per group for a range of `count` children, or 0 for no groups.
+fn group_size(count: usize) -> usize {
+    if count > SECOND_GROUP {
+        SECOND_GROUP
+    } else if count > GROUP {
+        GROUP
+    } else {
+        0
+    }
+}
+
+/// Open every ancestor of `node` and the groups that hold it, by the keys
+/// `visible_rows` gives them, so the node is listed (#2814 9b). The node
+/// itself keeps its state. Walks the siblings on the path once.
+pub(super) fn open_path(doc: &Document, node: usize, expansion: &mut Expansion) {
+    let mut path = vec![node];
+    let mut at = doc.parent(node);
+    while let Some(index) = at.filter(|&i| i > 0) {
+        path.push(index);
+        at = doc.parent(index);
+    }
+    let mut parent = 0;
+    let mut parent_key: Arc<str> = "".into();
+    for (depth, &target) in path.iter().rev().enumerate() {
+        let children = keyed_children(doc, parent, &parent_key);
+        let Some(ordinal) = children.iter().position(|(child, _)| *child == target) else {
+            return;
+        };
+        let grouped = group_size(children.len()) > 0;
+        let (mut from, mut to) = (0, children.len());
+        loop {
+            let size = group_size(to - from);
+            if size == 0 {
+                break;
+            }
+            let start = from + (ordinal - from) / size * size;
+            let end = (start + size).min(to);
+            expansion.set(
+                format!("{parent_key}{RANGE}{start}-{}", end - 1),
+                true,
+                false,
+            );
+            (from, to) = (start, end);
+        }
+        let key = children[ordinal].1.clone();
+        if depth + 1 < path.len() {
+            expansion.set(key.to_string(), true, !grouped && default_open(doc, target));
+        }
+        parent = target;
+        parent_key = key;
+    }
+}
+
 /// Rows a user sees, top-down. Only open nodes contribute their children;
 /// more than 100 children come in groups of 100 (and groups of 10,000 above
 /// 10,000), so one click adds at most 100 rows.
@@ -217,14 +270,7 @@ pub(super) fn visible_rows(doc: &Document, expansion: &Expansion) -> Vec<Row> {
                 depth,
                 grouped,
             } => {
-                let count = to - from;
-                let size = if count > SECOND_GROUP {
-                    SECOND_GROUP
-                } else if count > GROUP {
-                    GROUP
-                } else {
-                    0
-                };
+                let size = group_size(to - from);
                 if size == 0 {
                     for (child, key) in children[from..to].iter().rev() {
                         stack.push(Work::Node {

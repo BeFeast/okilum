@@ -723,10 +723,7 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
     let text: String = (0..250).map(|i| format!("k{i:03}: {i}\n")).collect();
     let (reader, visual, _root) = reader_with(cx, &[("keys.yaml", text.as_str())], "keys.yaml");
     let view = outline(&reader, visual);
-    let (k050, k150) = (
-        key_index(&view, visual, "k050"),
-        key_index(&view, visual, "k150"),
-    );
+    let k050 = key_index(&view, visual, "k050");
     view.read_with(visual, |v, _| {
         assert!(
             v.snapshot
@@ -736,11 +733,14 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
             "positive: 250 top-level keys list only groups"
         )
     });
-    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k050) else {
+    // Plain scrolling: the closed group holding the top node carries the
+    // mark and nothing opens (a caret move would open the path).
+    let code = code(&reader, visual);
+    let tree::Row::Group { first, last, .. } = scrolled_to(&view, &code, visual, 50) else {
         panic!("the closed group holding k050 carries the mark")
     };
     assert_eq!((first, last), (0, 99));
-    let tree::Row::Group { first, last, .. } = where_you_are(&view, visual, k150) else {
+    let tree::Row::Group { first, last, .. } = scrolled_to(&view, &code, visual, 150) else {
         panic!("the closed group holding k150 carries the mark")
     };
     assert_eq!((first, last), (100, 199));
@@ -748,7 +748,7 @@ fn contents2814_where_you_are_inside_a_closed_group_marks_the_group(cx: &mut Tes
     let group = view.read_with(visual, |v, _| v.snapshot.rows[0].clone());
     view.update(visual, |v, cx| v.toggle_snapshot_row(&group, cx));
     settle(visual);
-    let tree::Row::Node { index, .. } = where_you_are(&view, visual, k050) else {
+    let tree::Row::Node { index, .. } = scrolled_to(&view, &code, visual, 50) else {
         panic!("k050 is listed once its group is open")
     };
     assert_eq!(index, k050);
@@ -761,10 +761,11 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
     let (reader, visual, _root) = reader_with(cx, &[("big.json", text.as_str())], "big.json");
     let view = outline(&reader, visual);
     let near_end = key_index(&view, visual, "k19990");
-    let marked = where_you_are(&view, visual, near_end);
+    let clicked = where_you_are(&view, visual, near_end);
     assert!(
-        matches!(marked, tree::Row::Group { .. }),
-        "positive: the mark sits on the group near the end"
+        matches!(clicked, tree::Row::Node { index, .. } if index == near_end),
+        "positive: the click opened the groups and marks the node near the end, \
+         though the jump's scroll lands a frame later (clamped at the end)"
     );
     // The viewer now holds a newer parse than the shown rows (same text, a
     // separate document): exactly the state while new rows are built.
@@ -797,4 +798,372 @@ fn contents2814_a_newer_parse_costs_viewport_samples_no_child_walk(cx: &mut Test
             "the mark waits for the new rows"
         )
     });
+}
+
+fn paint(visual: &mut VisualTestContext) {
+    visual.update(|w, cx| w.draw(cx).clear(cx));
+    settle(visual);
+}
+
+fn marked(view: &Entity<View>, visual: &VisualTestContext) -> tree::Row {
+    view.read_with(visual, |v, _| {
+        let row = v.snapshot.current.expect("a marked row");
+        v.snapshot.rows[row].clone()
+    })
+}
+
+fn marked_key(view: &Entity<View>, visual: &VisualTestContext) -> String {
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        let row = v.snapshot.current.expect("a marked row");
+        match &v.snapshot.rows[row] {
+            tree::Row::Node { index, .. } => doc.key_text(*index).unwrap_or("").to_owned(),
+            tree::Row::Group { .. } => "<group>".to_owned(),
+        }
+    })
+}
+
+/// Scroll the viewer's text so `line` is on top; the caret does not move.
+fn scrolled_to(
+    view: &Entity<View>,
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &mut VisualTestContext,
+    line: usize,
+) -> tree::Row {
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| input.scroll_line_to_top(line, cx));
+    paint(visual);
+    marked(view, visual)
+}
+
+fn caret_at(
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &mut VisualTestContext,
+    at: usize,
+) {
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
+    paint(visual);
+}
+
+fn listed(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> bool {
+    view.read_with(visual, |v, _| {
+        shown(v)
+            .iter()
+            .any(|row| row.trim().starts_with(&format!("{key} ")))
+    })
+}
+
+/// Lines: 1-30 `a00`-`a29`, 31 `big` (31 children, so it starts closed),
+/// 32-61 `c00`-`c29`, 62 `target`, 64-123 `p00`-`p59`. 92 top-level keys:
+/// no groups at the top.
+fn caret_fixture() -> String {
+    let mut text = String::from("{\n");
+    for i in 0..30 {
+        text += &format!("  \"a{i:02}\": {i},\n");
+    }
+    text += "  \"big\": {\n";
+    for i in 0..30 {
+        text += &format!("    \"c{i:02}\": {i},\n");
+    }
+    text += "    \"target\": 99\n  },\n";
+    for i in 0..60 {
+        text += &format!("  \"p{i:02}\": {i},\n");
+    }
+    text += "  \"tail\": 0\n}\n";
+    text
+}
+
+fn node_start(view: &Entity<View>, visual: &VisualTestContext, key: &str) -> usize {
+    view.read_with(visual, |v, _| {
+        let doc = v.snapshot.doc.clone().unwrap();
+        let index = (0..doc.structure.len())
+            .find(|&i| doc.key_text(i) == Some(key))
+            .unwrap();
+        doc.structure[index].range.start
+    })
+}
+
+#[gpui::test]
+fn contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("caret.json", text.as_str())], "caret.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    assert!(
+        !listed(&view, visual, "target"),
+        "positive: big starts closed"
+    );
+    // Scrolling: the closed ancestor carries the mark; nothing opens.
+    scrolled_to(&view, &code, visual, 62);
+    assert_eq!(
+        marked_key(&view, visual),
+        "big",
+        "scrolled into big: big carries the mark"
+    );
+    assert!(
+        !listed(&view, visual, "target"),
+        "scrolling never opens rows"
+    );
+    // A caret move: the path opens and the node itself is marked.
+    let target = node_start(&view, visual, "target");
+    caret_at(&code, visual, target);
+    assert!(listed(&view, visual, "target"), "the caret opened big");
+    assert_eq!(marked_key(&view, visual), "target");
+    view.read_with(visual, |v, _| {
+        let row = v.snapshot.current.unwrap();
+        // In pixels: the whole row lies inside the viewport.
+        let top = v.list.logical_scroll_top();
+        let height = v.list.viewport_bounds().size.height.as_f32();
+        let row_height = OUTLINE_ROW_HEIGHT;
+        let viewport_top = top.item_ix as f32 * row_height + top.offset_in_item.as_f32();
+        let (row_top, row_bottom) = (row as f32 * row_height, (row + 1) as f32 * row_height);
+        assert!(
+            row > 40,
+            "positive: the row starts below a first screen of rows ({row})"
+        );
+        assert!(
+            viewport_top <= row_top && row_bottom <= viewport_top + height + 0.5,
+            "the row is on screen: rows {row_top}..{row_bottom} in {viewport_top}..{}",
+            viewport_top + height
+        );
+    });
+    // Scrolling again: the top node leads; opened rows stay open.
+    scrolled_to(&view, &code, visual, 69);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p05",
+        "the top of the view after scrolling"
+    );
+    assert!(
+        listed(&view, visual, "target"),
+        "scrolling never closes rows either"
+    );
+    // Selection wins over scroll when both change in one step.
+    let c05 = node_start(&view, visual, "c05");
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| {
+        input.set_selected_range(c05..c05, cx);
+        input.scroll_line_to_top(90, cx);
+    });
+    paint(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "c05",
+        "selection wins over scroll"
+    );
+}
+
+#[gpui::test]
+fn contents2814_find_hits_and_tree_selection_become_where_you_are(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("find.json", text.as_str())], "find.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let find = |visual: &mut VisualTestContext, query: &str| {
+        let query = query.to_owned();
+        let code = code.clone();
+        visual.update(move |w, cx| {
+            let target = code.read(cx).find_target(code.clone(), cx);
+            target.set_query(&query, w, cx);
+        });
+        settle(visual);
+        paint(visual);
+    };
+    // Raw: the Find hit becomes the current row and its path opens.
+    find(visual, "target");
+    assert!(listed(&view, visual, "target"), "the Find hit opened big");
+    assert_eq!(marked_key(&view, visual), "target");
+    // Tree: close big in Contents, then a Find hit selects a Tree row.
+    let big = view.read_with(visual, |v, _| {
+        find_row(&v.snapshot.doc.clone().unwrap(), &v.snapshot.rows, "big")
+    });
+    view.update(visual, |v, cx| v.toggle_snapshot_row(&big, cx));
+    settle(visual);
+    assert!(!listed(&view, visual, "c07"), "positive: big closed again");
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Tree, w, cx));
+    settle(visual);
+    paint(visual);
+    find(visual, "c07");
+    assert!(listed(&view, visual, "c07"), "the Tree Find hit opened big");
+    assert_eq!(marked_key(&view, visual), "c07");
+    // A click in Contents selects the Tree row, and the mark follows it.
+    let c12 = key_index(&view, visual, "c12");
+    view.update_in(visual, |v, w, cx| v.jump_snapshot(c12, w, cx));
+    settle(visual);
+    paint(visual);
+    code.read_with(visual, |p, _| {
+        assert_eq!(p.tree_selection_for_tests(), Some(c12))
+    });
+    assert_eq!(marked_key(&view, visual), "c12");
+}
+
+#[gpui::test]
+fn contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move(
+    cx: &mut TestAppContext,
+) {
+    // One line over 64 KB: Raw shows it in pages.
+    let keys: Vec<String> = (0..20_000).map(|i| format!("\"k{i:05}\":{i}")).collect();
+    let text = format!("{{{}}}", keys.join(","));
+    let (reader, visual, _root) = reader_with(cx, &[("line.json", text.as_str())], "line.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Raw, w, cx));
+    settle(visual);
+    paint(visual);
+    // A click on a row whose node is on the last page places the caret there.
+    let near_end = key_index(&view, visual, "k19990");
+    assert!(
+        matches!(where_you_are(&view, visual, near_end), tree::Row::Node { index, .. } if index == near_end),
+        "a caret placed on another page is a caret move"
+    );
+    // The position scrubber loads page 1 with the caret at its start.
+    let pages = code.update_in(visual, |p, w, cx| p.show_page_for_tests(1, w, cx));
+    assert!(pages > 2, "positive: the fixture is paged ({pages})");
+    paint(visual);
+    let tree::Row::Group { first, .. } = marked(&view, visual) else {
+        panic!("page 1's first node sits in the closed first group: nothing opened")
+    };
+    assert_eq!(first, 0);
+}
+
+/// Frames without moving the clock: a caret move's own scroll lands, and a
+/// scroll right after it happens inside any time window.
+fn paint_now(visual: &mut VisualTestContext) {
+    for _ in 0..3 {
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        visual.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn contents2814_scrolling_right_after_a_caret_move_follows_the_top(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("soon.json", text.as_str())], "soon.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint_now(visual);
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    let a10 = node_start(&view, visual, "a10");
+    input.update(visual, |input, cx| input.set_selected_range(a10..a10, cx));
+    paint_now(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "a10",
+        "positive: the caret leads"
+    );
+    // The user scrolls at once, with no time passing.
+    input.update(visual, |input, cx| input.scroll_line_to_top(100, cx));
+    paint_now(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p36",
+        "a scroll right after a caret move is scrolling"
+    );
+}
+
+#[gpui::test]
+fn contents2814_a_repeated_jump_after_scrolling_away_marks_the_node_again(cx: &mut TestAppContext) {
+    let text = caret_fixture();
+    let (reader, visual, _root) = reader_with(cx, &[("again.json", text.as_str())], "again.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    // Near the end the jump's scroll is clamped: the top line is not p58's.
+    let p58 = key_index(&view, visual, "p58");
+    where_you_are(&view, visual, p58);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p58",
+        "positive: the jump marks p58"
+    );
+    scrolled_to(&view, &code, visual, 69);
+    assert_eq!(marked_key(&view, visual), "p05", "positive: scrolled away");
+    // The same jump again leaves the cursor where it already was.
+    where_you_are(&view, visual, p58);
+    assert_eq!(
+        marked_key(&view, visual),
+        "p58",
+        "a repeated jump is a caret move"
+    );
+}
+
+#[gpui::test]
+fn contents2814_find_hits_at_the_same_local_offset_on_adjacent_pages(cx: &mut TestAppContext) {
+    // 16 bytes per member after `{`: node i starts at 1 + 16i, so nodes 2050
+    // and 4098 sit at the same offset within pages 1 and 2 (32 KiB pages).
+    let keys: Vec<String> = (0..20_000)
+        .map(|i| format!("\"k{i:06}\":{}", 10_000 + i))
+        .collect();
+    let text = format!("{{{}}}", keys.join(","));
+    let (reader, visual, _root) = reader_with(cx, &[("pages.json", text.as_str())], "pages.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Raw, w, cx));
+    settle(visual);
+    paint(visual);
+    let (first, second) = (
+        node_start(&view, visual, "k002050"),
+        node_start(&view, visual, "k004098"),
+    );
+    assert_eq!(
+        (first / 32_768, second / 32_768, first % 32_768),
+        (1, 2, second % 32_768),
+        "positive: the same local offset on adjacent pages"
+    );
+    let find = |visual: &mut VisualTestContext, query: &str| {
+        let query = query.to_owned();
+        let code = code.clone();
+        visual.update(move |w, cx| {
+            let target = code.read(cx).find_target(code.clone(), cx);
+            target.set_query(&query, w, cx);
+        });
+        settle(visual);
+        paint(visual);
+    };
+    find(visual, "k002050");
+    assert_eq!(
+        marked_key(&view, visual),
+        "k002050",
+        "positive: the first hit"
+    );
+    find(visual, "k004098");
+    assert_eq!(
+        marked_key(&view, visual),
+        "k004098",
+        "the hit on the next page is a caret move"
+    );
+}
+
+#[gpui::test]
+fn contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_walk(
+    cx: &mut TestAppContext,
+) {
+    let keys: Vec<String> = (0..50_000)
+        .map(|i| format!("    \"k{i:05}\": {i}"))
+        .collect();
+    let text = format!("{{\n  \"big\": {{\n{}\n  }}\n}}\n", keys.join(",\n"));
+    let (reader, visual, _root) = reader_with(cx, &[("huge.json", text.as_str())], "huge.json");
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let start = node_start(&view, visual, "k49990");
+    view.update(visual, |v, _| v.snapshot.ui_child_steps = 0);
+    let input = code.read_with(visual, |p, _| p.input().unwrap());
+    input.update(visual, |input, cx| {
+        input.set_selected_range(start..start, cx)
+    });
+    paint(visual);
+    let steps = view.read_with(visual, |v, _| v.snapshot.ui_child_steps);
+    assert_eq!(
+        steps, 0,
+        "«where you are» samples walked {steps} children on the UI thread"
+    );
+    assert!(
+        listed(&view, visual, "k49990"),
+        "the worker opened the path"
+    );
+    assert_eq!(marked_key(&view, visual), "k49990");
 }

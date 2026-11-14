@@ -1,0 +1,52 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index ff394faf..6fe35ede 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -3183,6 +3183,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             state.set_input_bounds(input_bounds, cx);
+             state.last_selected_range = Some(selected_range);
+             state.scroll_size = prepaint.scroll_size;
++            // The offset this layout drew (#2814): the caret-follow or clamp
++            // below may move the handle, and the next layout draws that.
++            state.layout_scroll_y =
++                Some(state.deferred_scroll_offset.unwrap_or(state.scroll_handle.offset()).y);
+             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+             state.deferred_scroll_offset = None;
+             state.typewriter_last_scroll = Some(state.scroll_handle.offset().y);
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 41c399af..45de5e46 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -543,6 +543,8 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(crate) scroll_handle: ScrollHandle,
+     /// The deferred scroll offset to apply on next layout.
+     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
++    /// The vertical offset the last painted layout drew (#2814 Contents).
++    pub(super) layout_scroll_y: Option<Pixels>,
+     /// A buffer line to scroll to the top of the viewport at the next layout.
+     pub(super) pending_top_line: Option<usize>,
+     /// Typewriter mode: every caret move or edit scrolls the caret row to the
+@@ -972,6 +974,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             editor_paddings: Edges::default(),
+             text_gutter: px(0.),
+             deferred_scroll_offset: None,
++            layout_scroll_y: None,
+             pending_top_line: None,
+             typewriter: false,
+             typewriter_paused: false,
+@@ -3515,6 +3518,15 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.last_layout.as_ref().and_then(|l| l.visible_buffer_lines.first().copied())
+     }
+ 
++    /// Whether the last painted layout drew the current scroll offset, with
++    /// no requested top line waiting (#2814). A jump, a caret-follow or an
++    /// end-of-text clamp moves the offset after a layout and lands in the
++    /// next one; until then `top_visible_line` is not where the view goes.
++    pub fn scroll_settled(&self) -> bool {
++        self.pending_top_line.is_none()
++            && self.layout_scroll_y == Some(self.scroll_handle.offset().y)
++    }
++
+     /// Scroll so that buffer line `line` is at the top of the viewport, at the
+     /// next layout (#1296: entering the editor keeps the Reader's place).
+     pub fn scroll_line_to_top(&mut self, line: usize, cx: &mut Context<Self>) {

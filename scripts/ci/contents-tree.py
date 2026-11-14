@@ -60,9 +60,21 @@ CONTROLS = [
  ('hide-linked-backlinks', 'linked2885_a_linked_data_file_keeps_linked_from'),
  ('json-only-contents', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('no-current-mark', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
- ('indent-current', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
+ ('indent-current', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
  ('remap-every-sample', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
  ('groups-unmarked', 'contents2814_where_you_are_inside_a_closed_group_marks_the_group'),
+ ('caret-never-leads', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
+ ('scroll-opens', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
+ ('no-path-open', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
+ ('scroll-wins', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),
+ ('tree-selection-ignored', 'contents2814_find_hits_and_tree_selection_become_where_you_are'),
+ ('scroll-before-landed', 'contents2814_a_newer_parse_costs_viewport_samples_no_child_walk'),
+ ('caret-sticks', 'contents2814_scrolling_right_after_a_caret_move_follows_the_top'),
+ ('jump-gen-ignored', 'contents2814_a_repeated_jump_after_scrolling_away_marks_the_node_again'),
+ ('local-caret', 'contents2814_find_hits_at_the_same_local_offset_on_adjacent_pages'),
+ ('reveal-on-ui', 'contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_walk'),
+ ('page-jump-is-caret', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
+ ('page-caret-ignored', 'contents2814_a_page_jump_is_scrolling_and_a_click_on_another_page_is_a_caret_move'),
 ]
 TESTS = ['contents2814_', 'linked2885_']
 CONTROL_FN = """#[cfg(test)]
@@ -82,9 +94,16 @@ try:
     edit(tree, 'default_open: !grouped && default_open(doc, index),', 'default_open: (!grouped || crate::contents2814_control("group-children-open")) && default_open(doc, index),')
     edit(tree, '    if doc.key_text(first_index).is_some() {', '    let first_index = if crate::contents2814_control("labels-walk-children") { doc.children(doc.parent(first_index).unwrap()).nth(first).unwrap() } else { first_index };\n    if doc.key_text(first_index).is_some() {')
     view = 'reader_file_outline.rs'
-    edit(view, '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n', '    fn snapshot_current(&self, cx: &App) -> Option<usize> {\n        if crate::contents2814_control("no-current-mark") {\n            return None;\n        }\n')
-    edit(view, '        if !Arc::ptr_eq(&raw, doc) {\n            return self.snapshot.current;\n        }\n        let mut at = Some(code.read(cx).contents_top_node(cx)?);', '        let mut node = code.read(cx).contents_top_node(cx)?;\n        if !Arc::ptr_eq(&raw, doc) {\n            if !crate::contents2814_control("remap-every-sample") {\n                return self.snapshot.current;\n            }\n            node = raw.node_in(node, doc)?;\n        }\n        let mut at = Some(node);')
+    edit(view, '    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {\n', '    fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {\n        if crate::contents2814_control("no-current-mark") {\n            return None;\n        }\n')
+    edit(view, '        if !Arc::ptr_eq(&raw, &doc) {\n            return self.snapshot.current;\n        }\n', '        if !Arc::ptr_eq(&raw, &doc) {\n            if crate::contents2814_control("remap-every-sample") {\n                let node = code.read(cx).contents_whereabouts(cx).and_then(|w| w.top_node)?;\n                raw.node_in(node, &doc)?;\n            }\n            return self.snapshot.current;\n        }\n')
     edit(view, '        let groups = self.snapshot.groups.get(&parent)?;', '        if crate::contents2814_control("groups-unmarked") {\n            return None;\n        }\n        let groups = self.snapshot.groups.get(&parent)?;')
+    edit(view, '                self.snapshot.follow_caret = true;\n', '                self.snapshot.follow_caret = !crate::contents2814_control("caret-never-leads");\n')
+    edit(view, '                self.snapshot.reveal = None;\n            }\n            _ => {}', '                self.snapshot.reveal = if crate::contents2814_control("scroll-opens") { now.top_node.map(|node| (node, false)) } else { None };\n            }\n            _ => {}')
+    edit(view, '                        tree::open_path(&doc, node, &mut expansion);', '                        if !crate::contents2814_control("no-path-open") {\n                            tree::open_path(&doc, node, &mut expansion);\n                        }')
+    edit(view, '                    && now.caret_node.is_some() =>\n', '                    && now.caret_node.is_some()\n                    && (before.top == now.top || !crate::contents2814_control("scroll-wins")) =>\n')
+    edit(view, '                        && now.caret == Some((now.page, 0))\n                        && before.jumps == now.jumps) =>', '                        && (crate::contents2814_control("page-caret-ignored") || now.caret == Some((now.page, 0)) && !crate::contents2814_control("page-jump-is-caret"))\n                        && (before.jumps == now.jumps || crate::contents2814_control("page-caret-ignored"))) =>')
+    edit(view, 'Some(before) if before.top != now.top && before.settled && now.settled => {', 'Some(before) if before.top != now.top && (crate::contents2814_control("scroll-before-landed") || before.settled && now.settled) && (!crate::contents2814_control("caret-sticks") || !self.snapshot.follow_caret) => {')
+    edit(view, '                self.rebuild_rows_revealing(Some(node), cx);', '                if crate::contents2814_control("reveal-on-ui") {\n                    tree::open_path(&doc, node, self.expansion());\n                }\n                self.rebuild_rows_revealing(Some(node), cx);')
     edit(view, 'cx.background_executor().timer(READING_DELAY).await;', 'if !crate::contents2814_control("reading-immediate") {\n                                cx.background_executor().timer(READING_DELAY).await;\n                            }')
     edit(view, 'let expansions = std::mem::take(&mut self.snapshot.expansions);', 'let expansions = if crate::contents2814_control("forget-on-close") { Default::default() } else { std::mem::take(&mut self.snapshot.expansions) };')
     edit(view, '                    self.snapshot.pending = Some(doc);', '                    if crate::contents2814_control("swap-doc-early") {\n                        self.snapshot.doc = Some(doc.clone());\n                    }\n                    self.snapshot.pending = Some(doc);')
@@ -92,6 +111,9 @@ try:
     edit('reader_right_panel.rs', 'let service = service_file(reader) && reader.backlinks.is_empty();', 'let service = service_file(reader) && (reader.backlinks.is_empty() || crate::contents2814_control("hide-linked-backlinks"));')
     edit('reader_right_panel.rs', '    reader.file_preview.as_ref().is_some_and(|preview| {', '    !crate::contents2814_control("linked-from-everywhere") && reader.file_preview.as_ref().is_some_and(|preview| {')
     code = 'reader_code_file/contents.rs'
+    edit(code, '                    caret: self.structure.selected.map(|row| (0, row)),', '                    caret: self.structure.selected.map(|row| (0, row)).filter(|_| !crate::contents2814_control("tree-selection-ignored")),')
+    edit(code, '                    caret: Some((self.page, cursor)),', '                    caret: Some((if crate::contents2814_control("local-caret") { 0 } else { self.page }, cursor)),')
+    edit(code, '        self.contents_jumps += 1;', '        if !crate::contents2814_control("jump-gen-ignored") {\n            self.contents_jumps += 1;\n        }')
     edit(code, '            || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))', '            || (!crate::contents2814_control("json-only-contents") && matches!(language(&self.rel), Some("yaml" | "toml" | "xml")))')
     edit(code, ".take_while(|b| *b == b' ' || *b == b'\\t')", ".take_while(|b| !crate::contents2814_control(\"indent-current\") && (*b == b' ' || *b == b'\\t'))")
     edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
