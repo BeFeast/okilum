@@ -723,6 +723,20 @@ class SprintQuitTests(unittest.TestCase):
         self.assertLess(script.index('keep_one_registration\nrestart_old_sync_helper'), script.index('set_stage launch'))
         self.assertLess(restart, script.index('open "$app"\nrestore_on_failure=0'))
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS renamex_np')
+    def test_native_mac_vendor_setup_swaps_directories_atomically(self):
+        # The Sprint's vendor stage runs scripts/velopack-setup.py on the Mac.
+        spec = importlib.util.spec_from_file_location('velopack_setup', ROOT / 'scripts/velopack-setup.py')
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / 'first', Path(directory) / 'second'
+            for path, text in ((first, '1'), (second, '2')):
+                path.mkdir()
+                (path / 'f').write_text(text)
+            setup.exchange(first, second)
+            self.assertEqual(((first / 'f').read_text(), (second / 'f').read_text()), ('2', '1'))
+
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps/ioreg semantics')
     def test_native_mac_finds_and_stops_only_the_exact_bundle_executable(self):
         def alive(pid):
