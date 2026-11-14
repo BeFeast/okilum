@@ -126,8 +126,13 @@ fn issue2957_maximize_chord_twice_in_formatted_json_restores_panels_and_keeps_sh
     click_document(&fixture, visual);
 
     press(visual, crate::MAXIMIZE_NOTE_KEY);
-    fixture.reader.read_with(visual, |r, _| {
+    fixture.reader.update_in(visual, |r, window, cx| {
         assert!(r.panels.maximized(), "first press maximizes");
+        let code = r.file_preview.as_ref().unwrap().code.clone().unwrap();
+        assert!(
+            code.read(cx).contains_focus(window, cx),
+            "focus stays in the JSON viewer, so its keyboard scrolling and selection keep working"
+        );
     });
     assert!(!visible(&fixture, visual, Panel::Notes));
     assert!(!visible(&fixture, visual, Panel::Backlinks));
@@ -242,5 +247,82 @@ fn issue2957_right_panel_chord_and_backdrop_in_formatted_json_overlay(cx: &mut T
     assert!(
         visible(&fixture, visual, Panel::Backlinks),
         "the chord works after a backdrop dismissal"
+    );
+}
+
+/// No note selected: the main area draws the empty vault page, not the note's
+/// TextView, so focus must go to the Reader itself.
+#[gpui::test]
+fn issue2957_maximize_and_right_panel_chords_twice_with_no_note_selected(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Fresh");
+    let state = temp.path().join("state");
+    std::fs::create_dir(&root).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        bind_keys(cx);
+        reader_ui_state::install(&state, cx);
+    });
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    session_directory: Some(state.clone()),
+                    index_dir: Some(temp.path().join("index")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(entity.clone());
+        Root::new(entity, window, cx)
+    });
+    visual.simulate_resize(size(px(1366.), px(768.)));
+    settle(visual);
+    let fixture = Fixture {
+        reader: reader.unwrap(),
+        _temp: temp,
+    };
+    fixture.reader.update_in(visual, |r, window, cx| {
+        assert!(r.selected_file().is_empty(), "no note is selected");
+        r.panels.open(Panel::Notes);
+        r.panels.open(Panel::Backlinks);
+        // Where a click on the empty page puts focus: the Reader's own handle.
+        r.focus_handle.focus(window, cx);
+        cx.notify();
+    });
+    settle(visual);
+    assert!(
+        visual.debug_bounds("reader-empty-vault").is_some(),
+        "positive control: the empty vault page is drawn"
+    );
+    assert!(visible(&fixture, visual, Panel::Notes));
+    assert!(visible(&fixture, visual, Panel::Backlinks));
+
+    press(visual, crate::MAXIMIZE_NOTE_KEY);
+    fixture.reader.read_with(visual, |r, _| {
+        assert!(r.panels.maximized(), "first press maximizes");
+    });
+    press(visual, crate::MAXIMIZE_NOTE_KEY);
+    fixture.reader.read_with(visual, |r, _| {
+        assert!(
+            !r.panels.maximized(),
+            "second press restores without a click"
+        );
+    });
+    assert!(visible(&fixture, visual, Panel::Backlinks));
+
+    press(visual, BACKLINKS_KEY);
+    assert!(
+        !visible(&fixture, visual, Panel::Backlinks),
+        "first press hides"
+    );
+    press(visual, BACKLINKS_KEY);
+    assert!(
+        visible(&fixture, visual, Panel::Backlinks),
+        "second press shows the panel again without a click"
     );
 }

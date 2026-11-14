@@ -1540,6 +1540,14 @@ impl HarView {
 }
 
 impl HarView {
+    /// Focus is on the request list, the details or the find field in the
+    /// last drawn frame (#2957).
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.list_focus.contains_focused(window, cx)
+            || self.detail_focus.contains_focused(window, cx)
+            || gpui::Focusable::focus_handle(self.filter.read(cx), cx).contains_focused(window, cx)
+    }
+
     /// Drops any copy in flight: its result never reaches the clipboard.
     fn set_filters(&mut self, change: impl FnOnce(&mut Filters), cx: &mut Context<Self>) {
         change(&mut self.filters);

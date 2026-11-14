@@ -3343,14 +3343,22 @@ impl Reader {
 
     /// Keyboard focus goes to the document as it is drawn (#2957): the editor
     /// while editing, the file viewer while a file preview replaces the note,
-    /// otherwise the note. A file preview does not draw the note's TextView,
-    /// so focusing it would leave key dispatch at the window root, outside
-    /// every Reader context, until a click.
+    /// otherwise the note. A file preview, the empty vault page, a timeline
+    /// version or a tree Quick Look does not draw the note's TextView, so
+    /// focusing it would leave key dispatch at the window root, outside every
+    /// Reader context, until a click; the last three take the Reader's handle.
     pub(crate) fn focus_document(&self, window: &mut Window, cx: &mut App) {
-        if let Some(editing) = &self.editing {
+        if self.main_area_without_document() {
+            // Nothing that owns focus is drawn there; the Reader's handle
+            // keeps its key contexts in the dispatch path.
+            self.focus_handle.focus(window, cx);
+        } else if let Some(editing) = &self.editing {
             editing.input().focus_handle(cx).focus(window, cx);
         } else if let Some(preview) = &self.file_preview {
-            preview.focus(&self.focus_handle, window, cx);
+            let find = self
+                .viewer_find_target(cx)
+                .map(|target| gpui::Focusable::focus_handle(target.input.read(cx), cx));
+            preview.focus(&self.focus_handle, find, window, cx);
         } else {
             self.content
                 .read(cx)
@@ -3358,6 +3366,20 @@ impl Reader {
                 .clone()
                 .focus(window, cx);
         }
+    }
+
+    /// `render_main` draws a tree Quick Look, a timeline version or the empty
+    /// vault instead of the note, its editor or a file viewer.
+    fn main_area_without_document(&self) -> bool {
+        self.tree_quick_look_shown() || self.timeline_preview_shown() || self.empty_vault_shown()
+    }
+
+    fn empty_vault_shown(&self) -> bool {
+        self.selected_file().is_empty()
+            && !self
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.active && !load.published)
     }
 
     fn select_panel_note(
@@ -5741,12 +5763,7 @@ impl Reader {
         if let Some(preview) = self.render_timeline_preview(window, cx) {
             return preview;
         }
-        if self.selected_file().is_empty()
-            && !self
-                .loading
-                .as_ref()
-                .is_some_and(|load| load.active && !load.published)
-        {
+        if self.empty_vault_shown() {
             return self.render_empty_vault(cx);
         }
         if let Some(preview) = &self.file_preview {

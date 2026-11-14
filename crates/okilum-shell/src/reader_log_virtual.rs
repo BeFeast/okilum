@@ -123,6 +123,27 @@ pub(crate) struct Panel {
     load: Option<Task<()>>,
 }
 impl Panel {
+    /// Focus is in one of the definition fields or in the loaded log view in
+    /// the last drawn frame (#2957).
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        [
+            &self.path,
+            &self.name,
+            &self.glob,
+            &self.query,
+            &self.rotation,
+            &self.seconds,
+            &self.from,
+            &self.to,
+        ]
+        .into_iter()
+        .any(|input| gpui::Focusable::focus_handle(input.read(cx), cx).contains_focused(window, cx))
+            || self
+                .view
+                .as_ref()
+                .is_some_and(|view| view.read(cx).focus_handle().contains_focused(window, cx))
+    }
+
     fn new(vault: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = |placeholder: &'static str, cx: &mut Context<Self>, window: &mut Window| {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))

@@ -50,6 +50,18 @@ impl Session {
 impl Reader {
     /// Read-only center surface; the document, editor and navigation stay owned
     /// by their existing controllers. macOS retains its native Quick Look panel.
+    /// `render_tree_quick_look` draws a preview in place of the document.
+    pub(super) fn tree_quick_look_shown(&self) -> bool {
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            self.tree_preview.preview.is_some()
+        }
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            false
+        }
+    }
+
     pub(super) fn render_tree_quick_look(&self) -> Option<AnyElement> {
         #[cfg(any(not(target_os = "macos"), test))]
         {
