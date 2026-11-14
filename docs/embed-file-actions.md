@@ -13,7 +13,10 @@ size and image dimensions when available. A changed note or draft rejects a
 pending result. Code examples and oversized source documents remain excluded.
 Hover never fetches remote images or materializes iCloud placeholders. Native
 editor hover is installed only in Source, since LSP overlays disable editor
-projection; Live uses the rendered embed tooltips. Source popup transitions
+projection; Live uses the rendered embed tooltips. The exception is an agent
+file with language marks: marks already keep Live on raw source coordinates,
+so Live installs the same hover and a marked term shows its Latin form (#2953).
+Source popup transitions
 refresh the Reader overlay host without making ordinary typing redraw Reader.
 
 Live Preview adds a small muted vault-path caption under each rendered local

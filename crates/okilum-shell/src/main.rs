@@ -7678,6 +7678,8 @@ impl Reader {
                 });
             }
         }
+        // Marked terms hover in Live as in Source (#2953).
+        self.sync_live_language_hover(cx);
     }
 
     /// The vault's language policy changed on disk: re-read it for the open

@@ -1,5 +1,6 @@
 //! #1593: inline language marks and term hover in the source editor, and a
-//! policy-only change refreshing them without a source edit.
+//! policy-only change refreshing them without a source edit. #2953: the same
+//! hover in Live Preview.
 use super::*;
 use ::core::prelude::v1::test;
 
@@ -136,6 +137,156 @@ fn issue1593_marks_hover_and_policy_refresh_without_a_source_edit(cx: &mut TestA
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(marked, Some(2), "marks follow the new policy");
+    assert_eq!(
+        std::fs::read_to_string(root.join("project/AGENTS.md")).unwrap(),
+        SOURCE
+    );
+}
+
+/// Drive the UI until the editor shows `count` language marks.
+fn settle_marks(reader: &Entity<Reader>, visual: &mut VisualTestContext, count: usize) -> bool {
+    for _ in 0..300 {
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let marked = reader.read_with(visual, |r, cx| {
+            r.agent_language_marks
+                .as_ref()
+                .map_or(0, |marks| marks.collection.get_ranges(cx).len())
+        });
+        if marked == count {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// Run the editor's installed hover to completion; `None` when nothing shows.
+fn hover_text(
+    visual: &mut VisualTestContext,
+    input: &Entity<gpui_component::input::EditorState>,
+    text: &gpui_component::input::Rope,
+    offset: usize,
+) -> Option<String> {
+    let provider = input
+        .read_with(visual, |input, _| input.lsp().hover_provider.clone())
+        .expect("Live installs the native hover over marked terms");
+    let result = Rc::new(std::cell::RefCell::new(None));
+    let output = result.clone();
+    visual.update(|window, cx| {
+        let task = provider.hover(text, offset, window, cx);
+        cx.spawn(async move |_| {
+            *output.borrow_mut() = Some(task.await.unwrap());
+        })
+        .detach();
+    });
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(500));
+    visual.run_until_parked();
+    let hover = result.borrow_mut().take().expect("hover task ran")?;
+    let lsp_types::HoverContents::Markup(markup) = hover.contents else {
+        panic!("plain text hover");
+    };
+    Some(markup.value)
+}
+
+#[gpui::test]
+fn issue2953_live_preview_hover_shows_the_latin_form(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("vault");
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    std::fs::create_dir_all(root.join("@Schema")).unwrap();
+    std::fs::write(root.join("project/AGENTS.md"), SOURCE).unwrap();
+    std::fs::write(root.join("@Schema/language.yaml"), POLICY).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        bind_keys(cx);
+        cx.set_reduce_motion(true);
+    });
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("project/AGENTS.md".into()),
+                    session_directory: Some(directory.path().join("state")),
+                    index_dir: Some(directory.path().join("index")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        entity = Some(reader.clone());
+        Root::new(reader, window, cx)
+    });
+    let reader = entity.unwrap();
+    visual.simulate_resize(size(px(1400.), px(960.)));
+    reader.update_in(visual, |r, window, cx| r.open_live_preview(window, cx));
+    // Marks published while Live is open install the hover.
+    assert!(
+        settle_marks(&reader, visual, 1),
+        "positive control: the term is marked in Live Preview"
+    );
+    let input = reader.read_with(visual, |r, _| r.source_input().unwrap());
+    let text = input.read_with(visual, |input, _| input.text().clone());
+    let term = SOURCE.find("Воркер").unwrap();
+    let hover = hover_text(visual, &input, &text, term + 2).expect("term hover in Live");
+    assert!(hover.contains("Latin form: worker"), "{hover}");
+    // An unmarked word and text other than the checked one show nothing.
+    let unmarked = SOURCE.find("мержит").unwrap() + 2;
+    assert_eq!(hover_text(visual, &input, &text, unmarked), None);
+    let stale = gpui_component::input::Rope::from(SOURCE.replace("# Rules", "# Rulez").as_str());
+    assert_eq!(hover_text(visual, &input, &stale, term + 2), None);
+
+    // The real pointer reaches the hover over the marked term in Live.
+    let point = input.read_with(visual, |input, _| {
+        input
+            .range_to_bounds(&(term..term + "Воркер".len()))
+            .expect("marked term has native bounds")
+            .center()
+    });
+    visual.simulate_mouse_move(point, None, Modifiers::default());
+    visual.run_until_parked();
+    visual.executor().advance_clock(Duration::from_millis(500));
+    visual.run_until_parked();
+    for _ in 0..3 {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.run_until_parked();
+    }
+    input.read_with(visual, |input, _| {
+        assert!(input.hover_popover().is_some(), "Live shows the term hover")
+    });
+
+    // Without marks Live keeps its projection: no native hover is installed.
+    std::fs::write(
+        root.join("@Schema/language.yaml"),
+        "backlog:\n  - pattern: 'absent'\n    good: present\n",
+    )
+    .unwrap();
+    reader.update(visual, |r, cx| r.agent_language_policy_changed(cx));
+    assert!(
+        settle_marks(&reader, visual, 0),
+        "a policy without matches clears the marks"
+    );
+    input.read_with(visual, |input, _| {
+        assert!(
+            input.lsp().hover_provider.is_none(),
+            "unmarked Live has no hover"
+        );
+        assert!(input.hover_popover().is_none(), "no stale term popover");
+    });
+    // Leaving and re-entering Live with marks installs it on the toggle path.
+    std::fs::write(root.join("@Schema/language.yaml"), POLICY).unwrap();
+    reader.update(visual, |r, cx| r.agent_language_policy_changed(cx));
+    assert!(settle_marks(&reader, visual, 1), "marks return");
+    reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+    reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+    visual.run_until_parked();
+    let hover = hover_text(visual, &input, &text, term + 2).expect("term hover after re-entry");
+    assert!(hover.contains("Latin form: worker"), "{hover}");
     assert_eq!(
         std::fs::read_to_string(root.join("project/AGENTS.md")).unwrap(),
         SOURCE
