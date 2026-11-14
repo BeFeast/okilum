@@ -1522,6 +1522,13 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         // A killed process holds no editor lock: release this one's too.
         drop(reader);
         visual.run_until_parked();
+        // The draft had a pasted image, which lives below the draft folder
+        // until Save, and an embed of it.
+        let folder = draft.parent().unwrap().to_path_buf();
+        let image = Path::new("@Assets/Images/Pasted image 1.png");
+        std::fs::create_dir_all(folder.join(image).parent().unwrap()).unwrap();
+        std::fs::write(folder.join(image), b"pasted").unwrap();
+        std::fs::write(&draft, "Shopping list\nmilk\n![[Pasted image 1.png]]\n").unwrap();
 
         // Restart on the original file.
         let (reader, visual) = open_single(cx, &docs.join("Start.md"), &session);
@@ -1568,17 +1575,6 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         visual.simulate_keystrokes("enter");
         settle(visual, &reader, "the draft is back on screen", |r, _| {
             r.current_draft().is_some() && r.note_source.contains("milk")
-        });
-
-        // A pasted image lives below the draft folder until Save.
-        let folder = draft.parent().unwrap().to_path_buf();
-        let image = Path::new("@Assets/Images/Pasted image 1.png");
-        std::fs::create_dir_all(folder.join(image).parent().unwrap()).unwrap();
-        std::fs::write(folder.join(image), b"pasted").unwrap();
-        let embedded = "Shopping list\nmilk\n![[Pasted image 1.png]]\n";
-        std::fs::write(&draft, embedded).unwrap();
-        settle(visual, &reader, "the embed is on screen", |r, _| {
-            r.note_source.contains("Pasted image")
         });
 
         // Save: the dialog starts in the folder the draft came from.
