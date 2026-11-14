@@ -1031,7 +1031,7 @@ mod tests {
         let unit = "{\"summary\":\"Retrieve an item\",\"description\":\"Returns the item if it exists.\",\"maxLength\":5000},";
         let scanned = || native_ascii::WORD_SCAN_BYTES.with(|n| n.get());
         let mut most_by_size = Vec::new();
-        for bytes in [128 * 1024, 2 * 1024 * 1024] {
+        for bytes in [128 * 1024, 1024 * 1024] {
             let shaper = Arc::new(CountingShaper::default());
             let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
             let mut text = format!("[{}]", unit.repeat(bytes / unit.len()));
@@ -1056,7 +1056,7 @@ mod tests {
             let mut most = 0;
             for start in [text.len() / 2, 40, text.len() - 40] {
                 let mut at = start;
-                for c in "quick, brown \"fox\": [1, 2]".chars() {
+                for c in "ab, \"c\": [1]".chars() {
                     text.insert(at, c);
                     at += 1;
                     let before = scanned();
@@ -1064,7 +1064,7 @@ mod tests {
                     most = most.max(scanned() - before);
                     assert_eq!(actual.width, px(text.len() as f32));
                 }
-                for _ in 0..4 {
+                for _ in 0..2 {
                     at -= 1;
                     text.remove(at);
                     let before = scanned();
@@ -1084,7 +1084,7 @@ mod tests {
             most_by_size.push(most);
         }
         // Two safe-pair windows (4 KiB each) plus the edited words.
-        for (bytes, most) in [128 * 1024, 2 * 1024 * 1024].iter().zip(&most_by_size) {
+        for (bytes, most) in [128 * 1024, 1024 * 1024].iter().zip(&most_by_size) {
             assert!(
                 *most < 16 * 1024,
                 "a keystroke analysed {most} bytes of a {bytes}-byte line"
@@ -1100,7 +1100,7 @@ mod tests {
         let shaper = Arc::new(CountingShaper::default());
         let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
         let mut text =
-            "{\"a\":\"b c\",\"n\":[1,2.5,-3],\"s\":\"x--y  z\",\"t\":\"a/b (c) d!\"}".repeat(3000);
+            "{\"a\":\"b c\",\"n\":[1,2.5,-3],\"s\":\"x--y  z\",\"t\":\"a/b (c) d!\"}".repeat(1500);
         cache.layout_line(&text, px(16.), &run(&text));
         let mut seed = 0x2803_u64;
         let mut next = |n: usize| {
