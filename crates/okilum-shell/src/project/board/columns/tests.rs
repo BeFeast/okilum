@@ -174,10 +174,12 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     loaded(&board, visual);
     board.update_in(visual, |board, window, cx| board.focus.focus(window, cx));
     visual.run_until_parked();
-    // Nine header controls precede the empty-stage controls. Compact Board
-    // presents Working, Checks and Ready before the named Queue control.
+    // Ten header controls (the filter bar's nine and Board help, #2949)
+    // precede the empty-stage controls. Compact Board presents Working,
+    // Checks and Ready before the named Queue control.
+    assert!(visual.debug_bounds("board-help").is_some());
     assert!(visual.debug_bounds("board-lane-Queue").is_none());
-    for _ in 0..13 {
+    for _ in 0..14 {
         visual.simulate_keystrokes("tab");
     }
     let keystroke = gpui::Keystroke::parse("enter").unwrap();
