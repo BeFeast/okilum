@@ -718,6 +718,8 @@ pub(crate) fn file_menu() -> Menu {
         name: "File".into(),
         disabled: false,
         items: vec![
+            MenuItem::action("New Untitled File", super::NewUntitled),
+            MenuItem::action("Recent Files…", super::ShowRecentFiles),
             MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("New Vault…", NewVault),

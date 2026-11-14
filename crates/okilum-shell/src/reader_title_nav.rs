@@ -109,6 +109,8 @@ pub(super) struct Entry {
     pub location: Option<String>,
     pub age: Option<String>,
     pub folder: bool,
+    /// An untitled draft that was never saved (#1528).
+    pub unsaved: bool,
 }
 
 /// `path` is `folder` or lies inside it; an empty folder is the whole vault.
@@ -216,6 +218,7 @@ impl Reader {
             location: location(path, &folder),
             age,
             folder: self.tree.is_directory(path),
+            unsaved: false,
         };
         match menu {
             Menu::Recent => self
@@ -346,7 +349,15 @@ impl Reader {
         let compact = available < COMPACT_BELOW;
         let mut row = header_controls();
         if self.single_file {
-            return row;
+            // Files opened on their own have no project or pins, but Recent
+            // lists every file opened that way and the unsaved drafts (#1528).
+            return row.child(self.render_title_menu_button(
+                Menu::Recent,
+                "Recent",
+                brand::READER_CLOCK_ICON,
+                compact,
+                cx,
+            ));
         }
         // Each control is built in its own frame (#2825).
         if reader_features::enabled(reader_features::Feature::Agents, cx) {

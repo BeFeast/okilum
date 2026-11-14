@@ -252,8 +252,7 @@ impl Gallery {
                     {
                         break;
                     }
-                    let source_root = root.clone();
-                    let source_relative = relative.clone();
+                    let (source_root, source_relative) = locate(&root, &relative);
                     let result = cx
                         .background_executor()
                         .spawn(async move { load_cached(&source_root, &source_relative, cached) })
@@ -475,8 +474,27 @@ impl Render for Gallery {
                             .when(matches!(&self.previews[index], Preview::Markdown(prepared) if prepared.partial), |card| {
                                 card.child(div().text_xs().text_color(palette.text_muted).child("Partial preview"))
                             })
-                            .child(div().text_sm().truncate().child(entry.label.clone()))
-                            .child(div().text_xs().truncate().child(entry.path.clone()))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .min_w_0()
+                                    .child(div().flex_1().min_w_0().text_sm().truncate().child(entry.label.clone()))
+                                    .when(entry.unsaved, |row| {
+                                        row.child(
+                                            div()
+                                                .debug_selector(move || format!("recent-gallery-unsaved-{index}"))
+                                                .flex_none()
+                                                .px_1()
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(palette.border)
+                                                .text_xs()
+                                                .text_color(palette.text_muted)
+                                                .child("Unsaved"),
+                                        )
+                                    }),
+                            )
+                            .child(div().text_xs().truncate().child(folder_line(entry)))
                             .when_some(entry.age.clone(), |card, age| {
                                 card.child(div().text_xs().child(age))
                             })
@@ -492,6 +510,39 @@ impl Render for Gallery {
                             }))
                     })),
             )
+    }
+}
+
+/// Where a card's file is read from. Drafts and files opened on their own
+/// (#1528) are listed by absolute path: their folder is the root, so the same
+/// contained reads apply. Vault cards stay relative to the vault root.
+fn locate(root: &Path, path: &str) -> (PathBuf, String) {
+    let file = Path::new(path);
+    match (file.is_absolute(), file.parent(), file.file_name()) {
+        (true, Some(parent), Some(name)) => {
+            (parent.to_path_buf(), name.to_string_lossy().into_owned())
+        }
+        _ => (root.to_path_buf(), path.to_owned()),
+    }
+}
+
+/// The card's folder line: the vault-relative path, or for an absolute path
+/// its folder with the home folder shortened to «~».
+fn folder_line(entry: &reader_title_nav::Entry) -> String {
+    let file = Path::new(&entry.path);
+    if entry.unsaved {
+        return "Unsaved draft".into();
+    }
+    if !file.is_absolute() {
+        return entry.path.clone();
+    }
+    let parent = file.parent().unwrap_or(file);
+    match reader_untitled::home()
+        .and_then(|home| parent.strip_prefix(home).ok().map(Path::to_path_buf))
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => parent.display().to_string(),
     }
 }
 
@@ -1089,6 +1140,7 @@ mod tests {
             location: None,
             age: None,
             folder: false,
+            unsaved: false,
         }];
         let gallery = cx.new(|cx| Gallery::new(fixture.path().into(), entries, cx));
         cx.run_until_parked();

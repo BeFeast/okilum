@@ -130,7 +130,7 @@ fn save_icon() -> Icon {
 
 /// Reuse the guarded, native create-only writer: complete synced bytes, real
 /// directories and no destination replacement, including a raced symlink.
-fn save_new_copy(path: &Path, contents: &str) -> anyhow::Result<()> {
+pub(super) fn save_new_copy(path: &Path, contents: &str) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Missing destination folder"))?;
