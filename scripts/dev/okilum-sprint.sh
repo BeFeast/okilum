@@ -439,22 +439,34 @@ sprint_bundle_tool() {
 # SIGTERM takes the same quit path as the menu (reader_recovery.rs). Edits are
 # journaled 300 ms after typing stops and autosaved within 2 s; after 60 s
 # without input SIGKILL loses nothing that the recovery drafts do not restore.
-# If the user stays active, nothing is signalled: the Sprint exits with
-# SPRINT_DEFERRED and the next delivery tick retries.
+# So after any Quit reply the Sprint first waits up to 60 s for Okilum to
+# exit by itself. If the user stays active, nothing is signalled: the Sprint
+# exits with SPRINT_DEFERRED and the next delivery tick retries.
 SPRINT_DEFERRED=75
-QUIT_WAIT=${OKILUM_SPRINT_QUIT_WAIT:-15}
+QUIT_WAIT=${OKILUM_SPRINT_QUIT_WAIT:-60}
 IDLE_WAIT=${OKILUM_SPRINT_IDLE_WAIT:-120}
 IDLE_NEEDED=${OKILUM_SPRINT_IDLE_NEEDED:-60}
 TERM_GRACE=${OKILUM_SPRINT_TERM_GRACE:-15}
-installed_app_pids() {
-    # Only this user's process of exactly $app (macOS ps prints the full
-    # executable path): never a QA or staged copy, the Sync helper in the same
-    # bundle, or another user's session.
-    local executable="$app/Contents/MacOS/okilum" uid pid owner command
+SYNC_HELPER=okilum-sync-supervisor
+SYNC_HELPER_LABEL=com.befeast.okilum.sync
+SYNC_HELPER_WAIT=${OKILUM_SPRINT_SYNC_HELPER_WAIT:-15}
+# "pid start-time" of this user's processes running exactly
+# $app/Contents/MacOS/$1 (macOS ps prints the full executable path): never a QA
+# or staged copy, another executable of the bundle, or another user's session.
+bundle_processes() {
+    local executable="$app/Contents/MacOS/$1" uid pid owner day month date time year command
     uid=$(id -u)
-    while read -r pid owner command; do
-        if [[ $owner == "$uid" && $command == "$executable" ]]; then printf '%s\n' "$pid"; fi
-    done < <(ps -axo pid=,uid=,comm= 2>/dev/null || true)
+    while read -r pid owner day month date time year command; do
+        if [[ $owner == "$uid" && $command == "$executable" ]]; then
+            printf '%s %s %s %s %s %s\n' "$pid" "$day" "$month" "$date" "$time" "$year"
+        fi
+    done < <(ps -axo pid=,uid=,lstart=,comm= 2>/dev/null || true)
+}
+installed_app_pids() {
+    local pid rest
+    while read -r pid rest; do
+        if [[ -n $pid ]]; then printf '%s\n' "$pid"; fi
+    done < <(bundle_processes okilum)
 }
 installed_app_running() { [[ -n $(installed_app_pids) ]]; }
 user_idle_seconds() {
@@ -514,6 +526,53 @@ stop_installed_app() {
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
     wait_for_app_exit 5
+}
+# The Sync helper is a launchd agent (SMAppService, KeepAlive on failure) that
+# survives the app: after a bundle replacement it keeps running the replaced
+# binary (14.11: one running since 13.11 15:56). Snapshot this user's helper of
+# the installed bundle BEFORE the replacement; afterwards SIGTERM exactly those
+# processes (same pid and start time). Its TERM handler flushes and exits for
+# a restart (reader_settings_sync/health.rs restarts it the same way), and
+# launchd starts it again from the new bundle. Never SIGKILL: that orphans its
+# Sync runtime, which the helper lease then refuses.
+restart_old_sync_helper() {
+    local old=$1 current pid start alive attempt
+    if [[ -z $old ]]; then echo 'Sync helper: none ran from the replaced bundle.'; return 0; fi
+    current=$(bundle_processes "$SYNC_HELPER")
+    alive=
+    while read -r pid start; do
+        if [[ -n $pid ]] && grep -qxF "$pid $start" <<< "$current"; then alive="$alive $pid"; fi
+    done <<< "$old"
+    if [[ -n $alive ]]; then
+        printf 'Sync helper (pid%s) still runs the replaced binary; SIGTERM so launchd restarts it from the new bundle.\n' "$alive"
+        # shellcheck disable=SC2086 # one word per pid
+        kill -TERM $alive 2>/dev/null || true
+        for ((attempt=0; attempt<SYNC_HELPER_WAIT; attempt++)); do
+            current=$(bundle_processes "$SYNC_HELPER")
+            alive=
+            while read -r pid start; do
+                if [[ -n $pid ]] && grep -qxF "$pid $start" <<< "$current"; then alive="$alive $pid"; fi
+            done <<< "$old"
+            [[ -n $alive ]] || break
+            sleep 1
+        done
+        if [[ -n $alive ]]; then
+            printf 'Sync helper (pid%s) did not exit after %ss; left running (SIGKILL would orphan its runtime).\n' \
+                "$alive" "$SYNC_HELPER_WAIT"
+            return 0
+        fi
+    fi
+    # Start it now rather than after launchd's 30 s throttle; a running or
+    # unregistered service makes this a no-op. launchctl can hang: bounded.
+    launchctl kickstart "gui/$(id -u)/$SYNC_HELPER_LABEL" >/dev/null 2>&1 &
+    pid=$!
+    for ((attempt=0; attempt<5; attempt++)); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    echo 'Sync helper: old process stopped; launchd starts it from the new bundle.'
 }
 sprint_exit() {
     result=$?
@@ -739,6 +798,7 @@ fi
 backup="$root/$STAGE_DIR/previous-Okilum.app"
 rm -rf "$backup"
 # A moved bundle keeps its LaunchServices record: unregister the backup at once.
+old_sync_helper=$(bundle_processes "$SYNC_HELPER")
 if [[ -e $app ]]; then mv "$app" "$backup"; unregister "$backup"; fi
 restore_on_failure=1
 ditto "$bundle_stage" "$app"
@@ -747,6 +807,7 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --verify --deep --strict -v "$app"
 unregister "$bundle_stage" "$backup"
 keep_one_registration
+restart_old_sync_helper "$old_sync_helper"
 set_stage launch
 open "$app"
 restore_on_failure=0

@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -493,13 +494,20 @@ sleep() {
     if [[ -f $state/exit_after_sleeps ]]; then
         local n=$(( $(cat "$state/exit_after_sleeps") + 1 ))
         echo "$n" > "$state/exit_after_sleeps"
-        if (( n >= 3 )); then drop_app; fi
+        if (( n >= ${MOCK_EXIT_AFTER:-3} )); then drop_app; fi
     fi
 }
 kill() {
-    echo "$1 ${*:2}" >> "$state/calls"
-    if [[ $MOCK_STOPS_ON == *"${1#-}"* ]]; then drop_app; fi
+    # kill -0 / plain kill only reach the bounded launchctl job; report it gone.
+    [[ $1 == -* && $1 != -0 ]] || return 1
+    local signal=$1 pid; shift
+    grep -q "^$1 " "$state/processes" || return 0
+    echo "$signal $*" >> "$state/calls"
+    if [[ $MOCK_STOPS_ON == *"${signal#-}"* ]]; then
+        for pid in "$@"; do grep -v "^$pid " "$state/processes" > "$state/p" || true; mv "$state/p" "$state/processes"; done
+    fi
 }
+launchctl() { echo "launchctl $*" >> "$state/calls"; }
 '''
 
 
@@ -511,19 +519,21 @@ def quit_block():
 class SprintQuitTests(unittest.TestCase):
     '''The installed app is stopped despite a -128 Quit reply, only while the
     user is idle >= 60 s, and only /Applications/Okilum.app of this user (14.11).'''
-    APP = '501 UID /Applications/Okilum.app/Contents/MacOS/okilum\n'
-    HELPER = '502 UID /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
-    QA_COPY = '503 UID /Users/qa/Okilum QA/Okilum.app/Contents/MacOS/okilum\n'
-    STAGED = '504 UID /Users/o/Developer/worktrees/okilum/sprint/staging.noindex/Okilum.app/Contents/MacOS/okilum\n'
-    OTHER_USER = '505 0 /Applications/Okilum.app/Contents/MacOS/okilum\n'
+    START = 'Fri Nov 13 15:56:48 2026'
+    APP = '501 UID Sat Nov 14 08:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum\n'
+    HELPER = '502 UID Fri Nov 13 15:56:48 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+    QA_COPY = '503 UID Sat Nov 14 08:00:00 2026 /Users/qa/Okilum QA/Okilum.app/Contents/MacOS/okilum\n'
+    STAGED = '504 UID Sat Nov 14 08:00:00 2026 /Users/o/Developer/worktrees/okilum/sprint/staging.noindex/Okilum.app/Contents/MacOS/okilum\n'
+    OTHER_USER = '505 0 Sat Nov 14 08:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum\n'
 
-    def run_stop(self, processes, quit='ignore', idle='120', stops_on=''):
+    def run_stop(self, processes, quit='ignore', idle='120', stops_on='', exit_after=3, call='stop_installed_app'):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             (state / 'processes').write_text(processes)
-            env = dict(os.environ, MOCK_STATE=str(state), MOCK_QUIT=quit, MOCK_IDLE=idle, MOCK_STOPS_ON=stops_on)
+            env = dict(os.environ, MOCK_STATE=str(state), MOCK_QUIT=quit, MOCK_IDLE=idle, MOCK_STOPS_ON=stops_on,
+                       MOCK_EXIT_AFTER=str(exit_after))
             command = ('set -Eeuo pipefail\n' + QUIT_MOCKS + quit_block() +
-                       '\nstatus=0; stop_installed_app || status=$?; echo RESULT=$status\n')
+                       '\nstatus=0; ' + call + ' || status=$?; echo RESULT=$status\n')
             result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True, timeout=30)
             read = lambda name: (state / name).read_text().split('\n') if (state / name).exists() else []
             return (result, [c for c in read('calls') if c], [s for s in read('sleeps') if s],
@@ -531,6 +541,68 @@ class SprintQuitTests(unittest.TestCase):
 
     def signals(self, calls):
         return [c for c in calls if c.startswith('-')]
+
+    def test_cancelled_quit_that_exits_by_itself_after_20_s_gets_no_signal(self):
+        # Brain thread 14.11: -128, then Okilum exits by itself 20 s later.
+        result, calls, sleeps, processes, _ = self.run_stop(
+            self.APP + self.HELPER, quit='cancel-then-exit', exit_after=20, stops_on='TERM KILL')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('User canceled. (-128)', result.stdout)
+        self.assertEqual(self.signals(calls), [])
+        self.assertEqual(sleeps, ['1'] * 20)
+        self.assertEqual(processes, self.HELPER)
+
+    def test_quit_wait_for_self_exit_is_60_seconds(self):
+        result, calls, sleeps, _, _ = self.run_stop(self.APP, quit='cancel', stops_on='TERM')
+        self.assertEqual(sleeps.count('1'), 60)
+        self.assertEqual(self.signals(calls), ['-TERM 501'])
+
+    def restart_helper(self, processes, snapshot, stops_on='TERM'):
+        return self.run_stop(processes, stops_on=stops_on,
+                             call='restart_old_sync_helper ' + shlex.quote(snapshot))
+
+    def test_old_sync_helper_is_terminated_after_replacement_and_kickstarted(self):
+        snapshot = '502 ' + self.START
+        result, calls, _, processes, _ = self.restart_helper(self.HELPER + self.QA_COPY, snapshot)
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(self.signals(calls), ['-TERM 502'])
+        self.assertTrue(any(c.startswith('launchctl kickstart gui/') and c.endswith('/com.befeast.okilum.sync')
+                            for c in calls), calls)
+        self.assertEqual(processes, self.QA_COPY)
+
+    def test_new_helper_with_another_pid_or_start_time_is_left_alone(self):
+        new_pid = '602 UID Sat Nov 14 10:40:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+        reused = '502 UID Sat Nov 14 10:40:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+        for running in (new_pid, reused):
+            with self.subTest(running=running):
+                result, calls, _, processes, _ = self.restart_helper(running, '502 ' + self.START)
+                self.assertIn('RESULT=0', result.stdout, result.stderr)
+                self.assertEqual(self.signals(calls), [])
+                self.assertEqual(processes, running)
+
+    def test_helper_that_ignores_sigterm_is_never_killed(self):
+        result, calls, sleeps, processes, _ = self.restart_helper(self.HELPER, '502 ' + self.START, stops_on='')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertIn('left running', result.stdout)
+        self.assertEqual(self.signals(calls), ['-TERM 502'])
+        self.assertEqual(processes, self.HELPER)
+
+    def test_helper_of_another_user_or_bundle_is_not_snapshotted(self):
+        others = ('702 0 Fri Nov 13 15:56:48 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
+                  '703 UID Fri Nov 13 15:56:48 2026 /Users/qa/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n')
+        result, _, _, _, _ = self.run_stop(self.HELPER + others, call='bundle_processes okilum-sync-supervisor')
+        self.assertEqual(result.stdout.splitlines()[0], '502 ' + self.START)
+        self.assertEqual(len(result.stdout.splitlines()), 2)  # + RESULT line
+
+    def test_sprint_snapshots_the_helper_before_replacement_and_restarts_it_before_launch(self):
+        script = SCRIPT.read_text()
+        snapshot = script.index('old_sync_helper=$(bundle_processes "$SYNC_HELPER")')
+        self.assertLess(script.index('stopped=0; stop_installed_app || stopped=$?'), snapshot)
+        self.assertLess(snapshot, script.index('mv "$app" "$backup"'))
+        restart = script.index('restart_old_sync_helper "$old_sync_helper"')
+        self.assertLess(script.index('ditto "$bundle_stage" "$app"'), restart)
+        self.assertLess(restart, script.index('set_stage launch'))
+        self.assertLess(restart, script.index('open "$app"'))
 
     def test_cancelled_quit_that_exits_by_itself_is_not_a_failure(self):
         result, calls, _, processes, _ = self.run_stop(self.APP + self.HELPER, quit='cancel-then-exit', idle='0')
@@ -656,11 +728,55 @@ class SprintQuitTests(unittest.TestCase):
                     if alive(pid):
                         os.kill(pid, 9)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps semantics')
+    def test_native_mac_restarts_only_the_snapshotted_sync_helper(self):
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        def start(executable):
+            # Orphaned to launchd, which reaps it: no zombie left in ps.
+            started = subprocess.run(['/bin/bash', '-c', '"$0" 120 >/dev/null 2>&1 & echo $!', str(executable)],
+                                     check=True, capture_output=True, text=True)
+            return int(started.stdout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / 'Okilum.app'
+            helper = app / 'Contents/MacOS/okilum-sync-supervisor'
+            helper.parent.mkdir(parents=True)
+            # copy, not copy2: /bin/sleep carries SIP flags that chflags refuses.
+            shutil.copy('/bin/sleep', helper)
+            old = start(helper)
+            pids = [old]
+            try:
+                block = quit_block()
+                snapshot = subprocess.run(['/bin/bash', '-c', 'set -Eeuo pipefail\napp="$1"\n' + block +
+                                           '\nbundle_processes okilum-sync-supervisor', 'native', str(app)],
+                                          check=True, capture_output=True, text=True).stdout
+                self.assertRegex(snapshot, rf'^{old} \w{{3}} \w{{3}} +\d+ \d\d:\d\d:\d\d \d{{4}}\n$')
+                new = start(helper)  # e.g. launchd already started the new bundle's helper
+                pids.append(new)
+                env = dict(os.environ, OKILUM_SPRINT_SYNC_HELPER_WAIT='5')
+                result = subprocess.run(['/bin/bash', '-c', 'set -Eeuo pipefail\napp="$1"\n' + block +
+                                         '\nrestart_old_sync_helper "$2"; echo RESULT=$?', 'native', str(app), snapshot],
+                                        env=env, capture_output=True, text=True, timeout=60)
+                self.assertIn('RESULT=0', result.stdout, result.stderr)
+                self.assertIn(f'(pid {old})', result.stdout)
+                self.assertFalse(alive(old))
+                self.assertTrue(alive(new), 'a helper started after the snapshot is not signalled')
+            finally:
+                for pid in pids:
+                    if alive(pid):
+                        os.kill(pid, 9)
+
     def test_install_step_calls_stop_before_replacing_the_bundle(self):
         script = SCRIPT.read_text()
         stop = script.index('stopped=0; stop_installed_app || stopped=$?')
         self.assertLess(stop, script.index('mv "$app" "$backup"'))
-        self.assertLess(script.index('ditto "$bundle_stage" "$app"'), script.index('keep_one_registration\nset_stage launch'))
+        self.assertLess(script.index('ditto "$bundle_stage" "$app"'), script.index('keep_one_registration\nrestart_old_sync_helper'))
         self.assertLess(script.index('set_stage launch'), script.index('open "$app"'))
 
 
