@@ -100,10 +100,10 @@ def accepted(run, jobs, source):
 
 
 # Beta gate (manager 14.11: idunn installs every beta on Oleg's desktop, so a
-# broken AppImage must never reach the feed). A pushed beta runs these two
-# checks in appimage-acceptance after the appimage job, so the bridge can take
-# the bytes meanwhile; dispatches, PR proxies and older producers ran them in
-# the appimage job itself. Either way publication waits for both to pass.
+# broken AppImage must never reach the feed). The producer runs these two
+# checks in its appimage job; producers from #2934 until the single-job layout
+# ran them in a separate appimage-acceptance job. Either way publication waits
+# for both to pass.
 ACCEPTANCE_JOB = 'appimage-acceptance'
 ACCEPTANCE_STEPS = ('Verify unchanged AppImage on clean Ubuntu and Fedora',
                     'Verify signed AppImage installation with disposable CI key')

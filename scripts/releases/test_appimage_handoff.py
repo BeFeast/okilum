@@ -178,9 +178,11 @@ class AcceptanceGate(unittest.TestCase):
         import yaml
         root = Path(__file__).resolve().parents[2]
         producer = yaml.safe_load((root / '.github/workflows/forgejo-linux.yml').read_text())
-        for job in ('appimage', handoff.ACCEPTANCE_JOB):
-            names = {step.get('name') for step in producer['jobs'][job]['steps']}
-            self.assertLessEqual(set(handoff.ACCEPTANCE_STEPS), names, job)
+        # The checks run in the producer job; a separate acceptance job (older
+        # producers) is still honoured by acceptance().
+        names = {step.get('name') for step in producer['jobs']['appimage']['steps']}
+        self.assertLessEqual(set(handoff.ACCEPTANCE_STEPS), names)
+        self.assertNotIn(handoff.ACCEPTANCE_JOB, producer['jobs'])
         release = yaml.safe_load((root / '.forgejo/workflows/linux-release.yml').read_text())
         steps = release['jobs']['appimage-reuse']['steps']
         runs = [step.get('run', '') for step in steps]
