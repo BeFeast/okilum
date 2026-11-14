@@ -207,6 +207,7 @@ mod reader_remote_markdown;
 mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
+mod reader_ssh_askpass;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
@@ -8904,6 +8905,12 @@ OPTIONS:
 ";
 
 fn main() {
+    // OpenSSH runs this binary as SSH_ASKPASS for a remote Markdown link
+    // (#1610): forward the prompt to the running app and exit before any
+    // app, updater or GUI initialization.
+    if let Some(code) = okilum_core::ssh_askpass::helper_entry() {
+        std::process::exit(code);
+    }
     #[cfg(feature = "data-view-native-harness")]
     if reader_viewer_native::entry() {
         return;

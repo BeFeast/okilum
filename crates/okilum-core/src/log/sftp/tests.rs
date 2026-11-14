@@ -132,7 +132,8 @@ fn history_limit_is_explicit_and_no_more_network_reads_occur() {
 fn urls_are_not_shell_commands_and_never_include_credentials() {
     let target = Target::parse("sftp://home_alias/var/log/a%20b%3B%24%28id%29.log").unwrap();
     assert_eq!(target.path, b"/var/log/a b;$(id).log");
-    let command = target.command();
+    let (command, askpass) = target.command(&Default::default());
+    assert!(askpass.is_none());
     assert_eq!(command.get_program(), "ssh");
     let args = command
         .get_args()
@@ -158,6 +159,121 @@ fn urls_are_not_shell_commands_and_never_include_credentials() {
     ] {
         assert!(Target::parse(url).is_err(), "{url}");
     }
+}
+
+#[test]
+fn markdown_targets_pass_user_and_port_as_separate_ssh_arguments() {
+    let target = Target::parse_login("sftp://oleg@build-box:2222/srv/a.md").unwrap();
+    assert!(target.interactive);
+    let (command, _askpass) = target.command(&Default::default());
+    let args = command
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    let tail = args.len() - 4;
+    assert_eq!(args[tail..], ["-s", "--", "build-box", "sftp"]);
+    assert!(args.windows(2).any(|a| a == ["-l", "oleg"]));
+    assert!(args.windows(2).any(|a| a == ["-p", "2222"]));
+    for url in [
+        "sftp://user:pw@host/x",
+        "sftp://-oProxyCommand=x@host/x",
+        "sftp://user@host:99999/x",
+        "sftp://user@host:-1/x",
+    ] {
+        assert!(Target::parse_login(url).is_err(), "{url}");
+    }
+    // Log following stays alias-only and non-interactive.
+    assert!(
+        !Target::parse("sftp://alias/var/log/a.log")
+            .unwrap()
+            .interactive
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_askpass_bridge_lets_only_markdown_targets_ask() {
+    crate::ssh_askpass::install("/opt/okilum/okilum".into(), |request| request.answer(None))
+        .unwrap();
+    let clock = Arc::new(Clock::default());
+    let (markdown, askpass) = Target::parse_login("sftp://alias/notes/a.md")
+        .unwrap()
+        .command(&clock);
+    let askpass = askpass.expect("markdown targets register an askpass session");
+    let args = markdown
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(args.contains(&"-oBatchMode=no"));
+    assert!(args.contains(&"-oStrictHostKeyChecking=ask"));
+    let env = markdown
+        .get_envs()
+        .map(|(k, v)| (k.to_str().unwrap(), v.map(|v| v.to_str().unwrap())))
+        .collect::<Vec<_>>();
+    assert!(env.contains(&("SSH_ASKPASS", Some("/opt/okilum/okilum"))));
+    assert!(env.contains(&("SSH_ASKPASS_REQUIRE", Some("force"))));
+    assert!(env
+        .iter()
+        .any(|(k, v)| *k == crate::ssh_askpass::SOCKET_ENV && v.is_some()));
+    assert!(env.contains(&(crate::ssh_askpass::SESSION_ENV, Some(askpass.id()))));
+    // Log following: no session, so neither prompts nor paused deadlines.
+    let (log, session) = Target::parse("sftp://alias/var/log/a.log")
+        .unwrap()
+        .command(&clock);
+    assert!(session.is_none());
+    let args = log
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(args.contains(&"-oBatchMode=yes"));
+    assert_eq!(log.get_envs().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cancel_aborts_a_waiting_request_and_kills_the_process() {
+    // Stands in for ssh waiting on authentication: never answers.
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let input = child.stdin.take().unwrap();
+    let (_sender, output) = mpsc::sync_channel(1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let clock = Arc::new(Clock::default());
+    let askpass = crate::ssh_askpass::session_for_test(clock.clone());
+    let mut session = Session {
+        child,
+        input,
+        output,
+        id: 0,
+        handle: Vec::new(),
+        clock: Some(clock),
+        cancel: Some(cancel.clone()),
+        _askpass: Some(askpass),
+    };
+    let stopper = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.store(true, Ordering::Release);
+        })
+    };
+    let started = std::time::Instant::now();
+    let error = session.exchange(&[1, 0, 0, 0, 3]).unwrap_err();
+    stopper.join().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "not the 15 s deadline"
+    );
+    drop(session);
+    // The child is reaped: the pid no longer exists.
+    let alive = std::path::Path::new(&format!("/proc/{pid}")).exists();
+    assert!(!alive || !cfg!(target_os = "linux"));
 }
 
 #[test]

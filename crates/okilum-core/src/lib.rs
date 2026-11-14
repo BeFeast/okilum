@@ -77,6 +77,7 @@ pub mod source_history;
 pub mod source_projection;
 #[cfg(any(unix, windows))]
 mod source_state;
+pub mod ssh_askpass;
 pub mod syncthing_ignore;
 pub mod task_edit;
 pub mod tasks;

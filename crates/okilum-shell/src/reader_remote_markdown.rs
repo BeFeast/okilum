@@ -58,17 +58,28 @@ impl Controller {
     /// child is spawned. Parent receives replies asynchronously, then notifies UI.
     pub(crate) fn open(&mut self, url: &str) -> io::Result<async_channel::Receiver<Reply>> {
         let source = Source::parse(url)?;
-        Ok(self.start(source, OpenSsh::default()))
+        // Stop/close sets this flag: a request waiting on authentication is
+        // aborted, ssh is killed and its askpass dialog closes (#1610).
+        Ok(self.start_with(source, OpenSsh::cancellable))
     }
+    #[cfg(test)]
     fn start(
         &mut self,
         source: Source,
         transport: impl Transport + Send + 'static,
     ) -> async_channel::Receiver<Reply> {
+        self.start_with(source, |_| transport)
+    }
+    fn start_with<T: Transport + Send + 'static>(
+        &mut self,
+        source: Source,
+        transport: impl FnOnce(Arc<AtomicBool>) -> T,
+    ) -> async_channel::Receiver<Reply> {
         self.cancel();
         let generation = self.generation;
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = Some(cancel.clone());
+        let transport = transport(cancel.clone());
         self.state = State::Loading {
             target: source.url().into(),
         };
@@ -250,6 +261,8 @@ mod view {
 
     pub(crate) fn show(url: &str, cx: &mut App) -> io::Result<()> {
         let target = location(url)?;
+        // OpenSSH may need a passphrase, password or host trust (#1610).
+        crate::reader_ssh_askpass::ensure(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
                 size(px(900.), px(700.)),

@@ -20,13 +20,14 @@ pub struct Source {
     target: Target,
 }
 impl Source {
-    /// Reuse the transport's safe host-alias grammar. Userinfo, ports and auth
-    /// prompts remain unsupported; configure those through an SSH host alias.
+    /// `ssh://[user@]host[:port]/path.md`; the host may be an SSH config
+    /// alias. A URL password is refused: OpenSSH asks through the app when it
+    /// needs a passphrase, password or unknown-host trust.
     pub fn parse(url: &str) -> io::Result<Self> {
         let rest = url
             .strip_prefix("ssh://")
             .ok_or_else(|| invalid("Expected ssh://host/path"))?;
-        let target = Target::parse(&format!("sftp://{rest}"))?;
+        let target = Target::parse_login(&format!("sftp://{rest}"))?;
         if !rest
             .split_once('/')
             .is_some_and(|(_, path)| path.to_ascii_lowercase().ends_with(".md"))
@@ -143,13 +144,15 @@ fn read_until(
     cancelled: impl Fn() -> bool,
     deadline: Instant,
 ) -> io::Result<String> {
+    // Pauses only while this transport's own connection waits in a dialog.
+    let deadline = crate::ssh_askpass::Deadline::at(deadline, transport.prompt_clock());
     let check = || {
         if cancelled() {
             Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Remote read cancelled",
             ))
-        } else if Instant::now() >= deadline {
+        } else if deadline.expired() {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Remote read deadline",
@@ -267,13 +270,27 @@ mod tests {
     fn target_and_source_relative_links_keep_remote_authority() {
         for url in [
             "ssh://-oProxyCommand=x/a.md",
-            "ssh://user@host/a.md",
-            "ssh://host:22/a.md",
+            "ssh://user:password@host/a.md",
+            "ssh://-l@host/a.md",
+            "ssh://user@-host/a.md",
+            "ssh://@host/a.md",
+            "ssh://host:/a.md",
+            "ssh://host:0/a.md",
+            "ssh://host:65536/a.md",
+            "ssh://host:22x/a.md",
             "ssh://host/a.md?x",
             "ssh://host/a%00.md",
         ] {
             assert!(Source::parse(url).is_err(), "{url}");
         }
+        // #1610: ssh://[user@]host[:port]/path, host may be a config alias.
+        let login = Source::parse("ssh://oleg@build-box:2222/srv/notes/a.md").unwrap();
+        assert_eq!(
+            login.resolve("../b.md").unwrap().0.url(),
+            "ssh://oleg@build-box:2222/srv/b.md"
+        );
+        assert!(Source::parse("ssh://user@host/a.md").is_ok());
+        assert!(Source::parse("ssh://host:22/a.md").is_ok());
         assert_eq!(
             source().resolve("../other.md#Heading").unwrap().0.url(),
             "ssh://alias/other.md"

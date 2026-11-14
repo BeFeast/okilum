@@ -7,7 +7,6 @@ use std::{
     io::{self, BufRead, Read, Write},
     process::{Command, Stdio},
     sync::LazyLock,
-    time::Instant,
 };
 
 pub const UNSUPPORTED: &str =
@@ -142,14 +141,16 @@ pub fn save(
     attempt: &Attempt,
     cancelled: impl Fn() -> bool,
 ) -> io::Result<Outcome> {
-    run(
-        source
-            .target
-            .guarded_markdown_save_command(COMMAND.as_str()),
-        source,
-        attempt,
-        cancelled,
-    )
+    let clock = std::sync::Arc::new(crate::ssh_askpass::Clock::default());
+    // The askpass session lives until `run` returns, i.e. past the child's
+    // kill on cancel/deadline: its dialog closes and no stale prompt remains.
+    let (command, askpass) = source
+        .target
+        .guarded_markdown_save_command(COMMAND.as_str(), &clock);
+    let clock = askpass.as_ref().map(|_| clock);
+    let outcome = run_with(command, clock, source, attempt, cancelled);
+    drop(askpass);
+    outcome
 }
 struct Process(std::process::Child);
 impl Drop for Process {
@@ -158,8 +159,18 @@ impl Drop for Process {
         let _ = self.0.wait();
     }
 }
+#[cfg(all(test, target_os = "linux"))]
 fn run(
+    command: Command,
+    source: &Source,
+    attempt: &Attempt,
+    cancelled: impl Fn() -> bool,
+) -> io::Result<Outcome> {
+    run_with(command, None, source, attempt, cancelled)
+}
+fn run_with(
     mut command: Command,
+    clock: Option<std::sync::Arc<crate::ssh_askpass::Clock>>,
     source: &Source,
     attempt: &Attempt,
     cancelled: impl Fn() -> bool,
@@ -210,12 +221,12 @@ fn run(
         let _ = errors.by_ref().take(8192).read_to_end(&mut bytes);
         bytes
     });
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = crate::ssh_askpass::Deadline::after(DEADLINE, clock);
     let status = loop {
         if let Some(status) = process.0.try_wait()? {
             break status;
         }
-        if cancelled() || Instant::now() >= deadline {
+        if cancelled() || deadline.expired() {
             let _ = process.0.kill();
             let _ = process.0.wait();
             return Err(io::Error::new(io::ErrorKind::TimedOut, "Remote save was interrupted. Changes are kept locally; Retry checks the remote version first"));

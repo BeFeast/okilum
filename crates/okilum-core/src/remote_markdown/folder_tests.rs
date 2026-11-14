@@ -159,8 +159,12 @@ fn folder1610_parent_and_encoded_child_preserve_exact_alias_and_path() {
         source.url(),
         "ssh://same_alias/a/b/same%20name%23%3F%24%28id%29.md"
     );
+    // #1610: user and port from the link stay part of the authority.
+    let login = Folder::parse("ssh://user@alias:2222/a/b/").unwrap();
+    assert_eq!(login.parent().unwrap().url(), "ssh://user@alias:2222/a/");
     for invalid in [
-        "ssh://user@alias/a/",
+        "ssh://user:password@alias/a/",
+        "ssh://alias:0/a/",
         "ssh://alias/a/?q",
         "ssh://alias/a/#heading",
         "ssh://alias/../../",

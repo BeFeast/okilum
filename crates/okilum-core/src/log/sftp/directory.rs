@@ -17,6 +17,10 @@ pub trait DirectoryTransport {
     fn open_directory(&mut self, target: &Target) -> io::Result<()>;
     fn read_directory(&mut self) -> io::Result<Option<Vec<Entry>>>;
     fn disconnect_directory(&mut self);
+    /// See [`Transport::prompt_clock`].
+    fn directory_prompt_clock(&self) -> Option<Arc<Clock>> {
+        None
+    }
 }
 fn status(mut body: &[u8]) -> io::Result<u32> {
     let code = take_u32(&mut body)?;
@@ -113,29 +117,7 @@ impl DirectoryTransport for OpenSsh {
         self.disconnect();
         // Reuse Target's fixed read-only subsystem arguments, packet framing,
         // response-ID checks and Session teardown. No remote shell command.
-        let mut child = target
-            .command()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let input = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let (sender, output) = mpsc::sync_channel(1);
-        std::thread::spawn(move || loop {
-            let result = packet(&mut stdout);
-            let failed = result.is_err();
-            if sender.send(result).is_err() || failed {
-                break;
-            }
-        });
-        let mut session = Session {
-            child,
-            input,
-            output,
-            id: 0,
-            handle: Vec::new(),
-        };
+        let mut session = self.spawn(target)?;
         let version = session.exchange(&[1, 0, 0, 0, 3])?;
         if version.len() < 5 || version[0] != 2 || version[1..5] != 3u32.to_be_bytes() {
             return Err(invalid("SFTP v3 required"));
@@ -170,6 +152,9 @@ impl DirectoryTransport for OpenSsh {
     }
     fn disconnect_directory(&mut self) {
         self.disconnect();
+    }
+    fn directory_prompt_clock(&self) -> Option<Arc<Clock>> {
+        self.prompt_clock()
     }
 }
 
