@@ -369,7 +369,15 @@ impl Needle {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Stats {
     pub requests: usize,
+    /// Bytes on the wire of the requests whose wire size is known (#2932:
+    /// never the decoded size in its place).
     pub transferred: i64,
+    /// Requests with no known wire size.
+    pub wire_unknown: usize,
+    /// Decoded response bytes (`content.size`) where known.
+    pub content: i64,
+    /// Requests with no known decoded size.
+    pub content_unknown: usize,
     pub errors: usize,
     pub first_ms: Option<f64>,
     pub last_end_ms: Option<f64>,
@@ -378,9 +386,14 @@ pub(crate) struct Stats {
 impl Stats {
     pub(crate) fn add(&mut self, entry: &Entry) {
         self.requests += 1;
-        self.transferred = self
-            .transferred
-            .saturating_add(shown_size(entry).unwrap_or(0).max(0));
+        match entry.transferred {
+            Some(bytes) => self.transferred = self.transferred.saturating_add(bytes.max(0)),
+            None => self.wire_unknown += 1,
+        }
+        match entry.size {
+            Some(bytes) => self.content = self.content.saturating_add(bytes.max(0)),
+            None => self.content_unknown += 1,
+        }
         if entry.failed() {
             self.errors += 1;
         }
@@ -391,9 +404,31 @@ impl Stats {
         }
     }
 
+    /// Bytes on the wire: «≥» while some requests' sizes are unknown, `None`
+    /// when no request's size is known.
+    pub(crate) fn transferred_label(&self) -> Option<String> {
+        at_least(self.transferred, self.wire_unknown, self.requests)
+    }
+
+    /// Decoded response bytes, worded like [`Stats::transferred_label`].
+    pub(crate) fn content_label(&self) -> Option<String> {
+        at_least(self.content, self.content_unknown, self.requests)
+    }
+
     /// From the first request's start to the last request's end.
     pub(crate) fn span_ms(&self) -> Option<f64> {
         Some(self.last_end_ms? - self.first_ms?)
+    }
+}
+
+/// A byte total over `requests`, `unknown` of which have no size.
+fn at_least(bytes: i64, unknown: usize, requests: usize) -> Option<String> {
+    if unknown >= requests {
+        None
+    } else if unknown > 0 {
+        Some(format!("≥ {}", self::bytes(bytes)))
+    } else {
+        Some(self::bytes(bytes))
     }
 }
 

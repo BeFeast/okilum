@@ -56,7 +56,8 @@ pub struct Entry {
     pub resource_type: Box<str>,
     /// Decoded response size (`content.size`), when known.
     pub size: Option<i64>,
-    /// Bytes on the wire: `_transferSize`, or headers + body sizes.
+    /// Bytes on the wire: `_transferSize`, or headers + body sizes; unknown
+    /// when neither `_transferSize` nor the body size is known.
     pub transferred: Option<i64>,
     /// Total time in milliseconds (`entry.time`).
     pub time: Option<f64>,
@@ -495,9 +496,11 @@ fn index_entry<R: Read>(s: &mut Scanner<R>, entry: &mut Entry) -> Step {
                 }
                 _ => s.skip_value(),
             })?;
+            // An unknown body (`bodySize: -1`) leaves the wire size unknown:
+            // the headers alone are not what was transferred (#2932).
             entry.transferred = transfer.or(match (headers, body) {
-                (None, None) => None,
-                (h, b) => h.unwrap_or(0).checked_add(b.unwrap_or(0)),
+                (_, None) => None,
+                (h, Some(b)) => h.unwrap_or(0).checked_add(b),
             });
             Ok(())
         }

@@ -581,10 +581,11 @@ impl HarView {
         } else {
             format!("{} requests", model::count(total))
         });
-        parts.push(format!(
-            "{} transferred",
-            model::bytes(self.stats.transferred)
-        ));
+        // Wire bytes only; a decoded size never stands in for them (#2932).
+        parts.push(match self.stats.transferred_label() {
+            Some(bytes) => format!("{bytes} transferred"),
+            None => "transfer size unknown".to_owned(),
+        });
         if let Some(span) = self.stats.span_ms() {
             parts.push(model::millis(span));
         }

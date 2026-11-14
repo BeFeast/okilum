@@ -1206,6 +1206,7 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     for id in [
         "har-overview-requests",
         "har-overview-transferred",
+        "har-overview-content",
         "har-overview-errors",
         "har-overview-creator",
         "har-overview-status-2xx",
@@ -1250,6 +1251,31 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
         ""
     );
     assert_eq!(rows(&har, visual), [0, 1, 2]);
+
+    // Values copy like the details pane's: one line's value, or all of it.
+    let requests = har.read_with(visual, |har, _| {
+        overview::lines(har)
+            .iter()
+            .position(|line| matches!(line, overview::Line::Fact { id: "requests", .. }))
+            .unwrap()
+    });
+    visual
+        .update(|window, cx| overview::copy(&har, requests, overview::CopyWhat::Value, window, cx));
+    assert_eq!(clipboard_text(visual).as_deref(), Some("3"));
+    visual
+        .update(|window, cx| overview::copy(&har, requests, overview::CopyWhat::Pair, window, cx));
+    assert_eq!(clipboard_text(visual).as_deref(), Some("Requests: 3"));
+    visual.update(|window, cx| {
+        overview::copy(&har, requests, overview::CopyWhat::Overview, window, cx)
+    });
+    let all = clipboard_text(visual).unwrap_or_default();
+    for wanted in [
+        "Requests: 3\n",
+        "Errors: 2\n",
+        "\nDomains\n  api.example.test: ",
+    ] {
+        assert!(all.contains(wanted), "{wanted:?} in {all}");
+    }
 
     // A request row selects that request and opens its details.
     click(visual, "har-overview-slowest-2");

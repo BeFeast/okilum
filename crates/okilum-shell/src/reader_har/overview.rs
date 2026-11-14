@@ -204,6 +204,284 @@ pub(crate) fn request_name(entry: &Entry) -> String {
     }
 }
 
+/// One line of the Overview, as drawn and as copied: the panel, its copy
+/// menu and «Copy overview» all read the same lines.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Line {
+    Fact {
+        id: &'static str,
+        label: &'static str,
+        value: String,
+        /// Said under the value, e.g. how many sizes are unknown.
+        note: Option<String>,
+        danger: bool,
+    },
+    Heading(&'static str),
+    Type(Kind, Tally),
+    Status(StatusClass, usize),
+    Host(usize, Box<str>, Tally),
+    MoreHosts {
+        hosts: usize,
+        requests: usize,
+    },
+    /// A request under Slowest or Largest: its list, request and figure.
+    Request(&'static str, usize, String),
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{} {}", model::count(n), if n == 1 { one } else { many })
+}
+
+/// «N of M unknown» for a total some requests have no size for.
+fn unknown_note(unknown: usize, requests: usize) -> Option<String> {
+    (unknown > 0 && unknown < requests).then(|| {
+        format!(
+            "{} of {} unknown",
+            model::count(unknown),
+            model::count(requests)
+        )
+    })
+}
+
+/// The Overview's lines, in panel order.
+pub(crate) fn lines(view: &HarView) -> Vec<Line> {
+    let creator = view.outcome().and_then(|o| o.creator.clone());
+    lines_of(&view.stats, &view.overview, creator)
+}
+
+pub(crate) fn lines_of(stats: &Stats, overview: &Overview, creator: Option<String>) -> Vec<Line> {
+    let fact = |id, label, value: String, note, danger| Line::Fact {
+        id,
+        label,
+        value,
+        note,
+        danger,
+    };
+    let mut lines = vec![fact(
+        "requests",
+        "Requests",
+        model::count(stats.requests),
+        None,
+        false,
+    )];
+    // Wire bytes and decoded bytes are different numbers; neither stands in
+    // for the other, and a partial total says it is one (#2932).
+    lines.push(fact(
+        "transferred",
+        "Transferred",
+        stats
+            .transferred_label()
+            .unwrap_or_else(|| "Unknown".into()),
+        unknown_note(stats.wire_unknown, stats.requests),
+        false,
+    ));
+    lines.push(fact(
+        "content",
+        "Content size",
+        stats.content_label().unwrap_or_else(|| "Unknown".into()),
+        unknown_note(stats.content_unknown, stats.requests),
+        false,
+    ));
+    if let Some(span) = stats.span_ms() {
+        lines.push(fact(
+            "duration",
+            "Duration",
+            model::millis(span),
+            None,
+            false,
+        ));
+    }
+    lines.push(fact(
+        "errors",
+        "Errors",
+        model::count(stats.errors),
+        None,
+        stats.errors > 0,
+    ));
+    if let Some(creator) = creator {
+        lines.push(fact("creator", "Created by", creator, None, false));
+    }
+    let kinds: Vec<_> = Kind::ALL
+        .into_iter()
+        .zip(overview.kinds)
+        .filter(|(_, tally)| tally.requests > 0)
+        .map(|(kind, tally)| Line::Type(kind, tally))
+        .collect();
+    if !kinds.is_empty() {
+        lines.push(Line::Heading("Types"));
+        lines.extend(kinds);
+    }
+    let statuses: Vec<_> = StatusClass::ALL
+        .into_iter()
+        .zip(overview.statuses)
+        .filter(|(_, n)| *n > 0)
+        .map(|(class, n)| Line::Status(class, n))
+        .collect();
+    if !statuses.is_empty() {
+        lines.push(Line::Heading("Status"));
+        lines.extend(statuses);
+    }
+    if !overview.top_hosts.is_empty() {
+        lines.push(Line::Heading("Domains"));
+        for (position, (host, tally)) in overview.top_hosts.iter().enumerate() {
+            lines.push(Line::Host(position, host.clone(), *tally));
+        }
+        let (hosts, requests) = overview.more_hosts();
+        if hosts > 0 {
+            lines.push(Line::MoreHosts { hosts, requests });
+        }
+    }
+    if !overview.slowest.is_empty() {
+        lines.push(Line::Heading("Slowest"));
+        for &(index, ms) in &overview.slowest {
+            lines.push(Line::Request("slowest", index, model::millis(ms)));
+        }
+    }
+    if !overview.largest.is_empty() {
+        lines.push(Line::Heading("Largest"));
+        for &(index, bytes) in &overview.largest {
+            lines.push(Line::Request("largest", index, model::bytes(bytes)));
+        }
+    }
+    lines
+}
+
+/// A line's name and value as copied (Copy value, Copy name, Copy name:
+/// value); `None` for headings.
+pub(crate) fn pair(entries: &Entries, line: &Line) -> Option<(String, String)> {
+    let figures = |tally: &Tally| {
+        format!(
+            "{} · {}",
+            plural(tally.requests, "request", "requests"),
+            model::bytes(tally.bytes)
+        )
+    };
+    Some(match line {
+        Line::Fact {
+            label, value, note, ..
+        } => (
+            (*label).to_owned(),
+            match note {
+                Some(note) => format!("{value} ({note})"),
+                None => value.clone(),
+            },
+        ),
+        Line::Heading(_) => return None,
+        Line::Type(kind, tally) => (kind.label().to_owned(), figures(tally)),
+        Line::Status(class, n) => (class.label().to_owned(), plural(*n, "request", "requests")),
+        Line::Host(_, host, tally) => (host.to_string(), figures(tally)),
+        Line::MoreHosts { hosts, requests } => (
+            format!("{} more", plural(*hosts, "host", "hosts")),
+            plural(*requests, "request", "requests"),
+        ),
+        Line::Request(_, index, value) => {
+            let entry = entries.get(*index)?;
+            (format!("{} {}", entry.method, entry.url), value.clone())
+        }
+    })
+}
+
+/// The whole Overview as plain text (Copy overview).
+pub(crate) fn text(lines: &[Line], entries: &Entries) -> String {
+    let mut out = String::new();
+    for line in lines {
+        match line {
+            Line::Heading(title) => {
+                out.push('\n');
+                out.push_str(title);
+                out.push('\n');
+            }
+            Line::Fact { .. } => {
+                if let Some((name, value)) = pair(entries, line) {
+                    out.push_str(&format!("{name}: {value}\n"));
+                }
+            }
+            _ => {
+                if let Some((name, value)) = pair(entries, line) {
+                    out.push_str(&format!("  {name}: {value}\n"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Puts `text` on the clipboard, as the details pane's copies do.
+fn copy_text(text: String, window: &mut Window, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    reader_toast::transient("Copied", window, cx);
+}
+
+/// What a row's context menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyWhat {
+    Value,
+    Name,
+    Pair,
+    Overview,
+}
+
+/// Copies line `line` (by its position in [`lines`]) or the whole Overview.
+pub(crate) fn copy(
+    viewer: &Entity<HarView>,
+    line: usize,
+    what: CopyWhat,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = viewer.read(cx);
+    let text = match what {
+        CopyWhat::Overview => Some(text(&lines(view), &view.entries)),
+        _ => lines(view)
+            .get(line)
+            .and_then(|line| pair(&view.entries, line))
+            .map(|(name, value)| match what {
+                CopyWhat::Value => value,
+                CopyWhat::Name => name,
+                _ => format!("{name}: {value}"),
+            }),
+    };
+    if let Some(text) = text {
+        copy_text(text, window, cx);
+    }
+}
+
+/// The copy menu of line `line`: its value, name and pair, or for a request
+/// the list row's copies (URL, cURL, response body), then the whole Overview.
+fn copy_menu(
+    viewer: &Entity<HarView>,
+    line: usize,
+    request: Option<usize>,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    let viewer = viewer.downgrade();
+    move |mut menu: PopupMenu, _, _| {
+        let item = |menu: PopupMenu, label: &'static str, what: CopyWhat| {
+            let viewer = viewer.clone();
+            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                if let Some(viewer) = viewer.upgrade() {
+                    copy(&viewer, line, what, window, cx);
+                }
+            }))
+        };
+        if let Some(index) = request {
+            for what in RequestCopy::all() {
+                let viewer = viewer.clone();
+                menu = menu.item(PopupMenuItem::new(what.label()).on_click(
+                    move |_, window, cx| {
+                        let _ = viewer
+                            .update(cx, |this, cx| this.copy_request(index, what, window, cx));
+                    },
+                ));
+            }
+        } else {
+            menu = item(menu, "Copy value", CopyWhat::Value);
+            menu = item(menu, "Copy name", CopyWhat::Name);
+            menu = item(menu, "Copy name: value", CopyWhat::Pair);
+        }
+        item(menu.separator(), "Copy overview", CopyWhat::Overview)
+    }
+}
+
 /// The Overview under the panel's heading. `None` while there is nothing to
 /// sum up (no request read yet, or a file with no requests).
 pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
@@ -213,8 +491,9 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
     }
     let p = brand::palette(cx);
     let faint = brand::reader_palette(cx).text_faint;
-    let overview = &view.overview;
     let total = view.stats.requests.max(1) as f32;
+    let active_host = active_host(view, cx);
+    let hover = brand::reader_palette(cx).hover;
     let mut body = v_flex()
         .id("har-overview")
         .debug_selector(|| "har-overview".into())
@@ -222,140 +501,110 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .pb_3();
-
-    // Capture: the totals.
-    let fact = |id: &'static str, label: &'static str, value: String, tone: Option<Hsla>| {
-        h_flex()
-            .debug_selector(move || format!("har-overview-{id}"))
-            .flex_none()
-            .h(px(22.))
-            .items_center()
-            .gap_2()
-            .pl(px(16.))
-            .pr_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(p.text_muted)
-                    .child(label),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .text_color(tone.unwrap_or(p.text))
-                    .child(value),
-            )
-    };
-    body = body
         .pt_1()
-        .child(fact(
-            "requests",
-            "Requests",
-            model::count(view.stats.requests),
-            None,
-        ))
-        .child(fact(
-            "transferred",
-            "Transferred",
-            model::bytes(view.stats.transferred),
-            None,
-        ))
-        .when_some(view.stats.span_ms(), |body, span| {
-            body.child(fact("duration", "Duration", model::millis(span), None))
-        })
-        .child(fact(
-            "errors",
-            "Errors",
-            model::count(view.stats.errors),
-            (view.stats.errors > 0).then_some(p.danger),
-        ))
-        .when_some(
-            view.outcome().and_then(|o| o.creator.clone()),
-            |body, creator| body.child(fact("creator", "Created by", creator, None)),
-        );
-
-    let heading = |label: &'static str| {
-        div()
-            .flex_none()
-            .px_4()
-            .pt_3()
-            .pb_1()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(faint)
-            .child(label)
-    };
-
-    // Types: toggles the Type filter.
-    let kinds: Vec<_> = Kind::ALL
-        .into_iter()
-        .zip(overview.kinds)
-        .filter(|(_, tally)| tally.requests > 0)
-        .collect();
-    if !kinds.is_empty() {
-        body = body.child(heading("Types"));
-        for (kind, tally) in kinds {
-            let active = view.filters.kind == Some(kind);
-            let target = viewer.clone();
-            body = body.child(
-                row(
-                    SharedString::from(format!("har-overview-type-{}", kind.label())),
-                    RowLabel::plain(kind.label().to_owned()),
-                    Some(tally.requests as f32 / total),
-                    &[count(tally.requests), size(tally.bytes)],
-                    active,
-                    cx,
-                )
-                .on_click(move |_, window, cx| {
-                    act(&target, window, cx, |this, _, cx| {
-                        this.set_filters(
-                            |f| {
-                                f.kind = if f.kind == Some(kind) {
-                                    None
-                                } else {
-                                    Some(kind)
-                                }
-                            },
-                            cx,
+        .pb_3();
+    for (position, line) in lines(view).into_iter().enumerate() {
+        let target = viewer.clone();
+        let element: AnyElement = match line {
+            Line::Heading(title) => div()
+                .flex_none()
+                .px_4()
+                .pt_3()
+                .pb_1()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(faint)
+                .child(title)
+                .into_any_element(),
+            Line::Fact {
+                id,
+                label,
+                value,
+                note,
+                danger,
+            } => v_flex()
+                .id(SharedString::from(format!("har-overview-{id}")))
+                .debug_selector(move || format!("har-overview-{id}"))
+                .flex_none()
+                .py(px(3.))
+                .pl(px(16.))
+                .pr_3()
+                .hover(move |row| row.bg(hover))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(p.text_muted)
+                                .child(label),
                         )
-                    })
-                }),
-            );
-        }
-    }
-
-    // Status: toggles the Status filter.
-    let statuses: Vec<_> = StatusClass::ALL
-        .into_iter()
-        .zip(overview.statuses)
-        .filter(|(_, n)| *n > 0)
-        .collect();
-    if !statuses.is_empty() {
-        body = body.child(heading("Status"));
-        for (class, n) in statuses {
-            let active = view.filters.status == Some(class);
-            let error = matches!(
-                class,
-                StatusClass::ClientError | StatusClass::ServerError | StatusClass::Failed
-            );
-            let target = viewer.clone();
-            let mut label = RowLabel::plain(class.label().to_owned());
-            if error {
-                label.tone = Some(p.danger);
-            }
-            body = body.child(
+                        .child(
+                            div()
+                                .flex_none()
+                                .min_w_0()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_color(if danger { p.danger } else { p.text })
+                                .child(value),
+                        ),
+                )
+                .when_some(note, |row, note| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("har-overview-{id}-note"))
+                            .w_full()
+                            .text_xs()
+                            .text_align(TextAlign::Right)
+                            .text_color(p.text_muted)
+                            .child(note),
+                    )
+                })
+                .context_menu(copy_menu(viewer, position, None))
+                .into_any_element(),
+            // Types: toggles the Type filter.
+            Line::Type(kind, tally) => row(
+                SharedString::from(format!("har-overview-type-{}", kind.label())),
+                RowLabel::plain(kind.label().to_owned()),
+                Some(tally.requests as f32 / total),
+                &[count(tally.requests), size(tally.bytes)],
+                view.filters.kind == Some(kind),
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                act(&target, window, cx, |this, _, cx| {
+                    this.set_filters(
+                        |f| {
+                            f.kind = if f.kind == Some(kind) {
+                                None
+                            } else {
+                                Some(kind)
+                            }
+                        },
+                        cx,
+                    )
+                })
+            })
+            .context_menu(copy_menu(viewer, position, None))
+            .into_any_element(),
+            // Status: toggles the Status filter.
+            Line::Status(class, n) => {
+                let mut label = RowLabel::plain(class.label().to_owned());
+                if matches!(
+                    class,
+                    StatusClass::ClientError | StatusClass::ServerError | StatusClass::Failed
+                ) {
+                    label.tone = Some(p.danger);
+                }
                 row(
                     SharedString::from(format!("har-overview-status-{}", class.label())),
                     label,
                     Some(n as f32 / total),
                     &[count(n)],
-                    active,
+                    view.filters.status == Some(class),
                     cx,
                 )
                 .on_click(move |_, window, cx| {
@@ -371,24 +620,18 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                             cx,
                         )
                     })
-                }),
-            );
-        }
-    }
-
-    // Domains: a host goes into Find (and comes out again).
-    if !overview.top_hosts.is_empty() {
-        let active_host = active_host(view, cx);
-        body = body.child(heading("Domains"));
-        for (position, (host, tally)) in overview.top_hosts.iter().enumerate() {
-            let active = active_host == Some(position);
-            let target = viewer.clone();
-            let text: SharedString = host.to_string().into();
-            let mut label = RowLabel::plain(text.to_string());
-            label.tooltip = Some(text.clone());
-            body = body.child(
+                })
+                .context_menu(copy_menu(viewer, position, None))
+                .into_any_element()
+            }
+            // Domains: a host goes into Find (and comes out again).
+            Line::Host(index, host, tally) => {
+                let active = active_host == Some(index);
+                let text: SharedString = host.to_string().into();
+                let mut label = RowLabel::plain(text.to_string());
+                label.tooltip = Some(text.clone());
                 row(
-                    SharedString::from(format!("har-overview-host-{position}")),
+                    SharedString::from(format!("har-overview-host-{index}")),
                     label,
                     Some(tally.requests as f32 / total),
                     &[count(tally.requests), size(tally.bytes)],
@@ -404,50 +647,37 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                         this.refresh(cx);
                         cx.notify();
                     })
-                }),
-            );
-        }
-        let (hosts, requests) = overview.more_hosts();
-        if hosts > 0 {
-            body = body.child(
-                div()
-                    .debug_selector(|| "har-overview-more-hosts".into())
-                    .flex_none()
-                    .pl(px(16.))
-                    .pr_3()
-                    .py_1()
-                    .text_color(p.text_muted)
-                    .child(format!(
-                        "{} more {} · {} {}",
-                        model::count(hosts),
-                        if hosts == 1 { "host" } else { "hosts" },
-                        model::count(requests),
-                        if requests == 1 { "request" } else { "requests" }
-                    )),
-            );
-        }
-    }
-
-    // Slowest and Largest: a click selects the request.
-    let requests = |title: &'static str, id: &'static str, items: Vec<(usize, String)>| {
-        let mut section = v_flex().flex_none();
-        if items.is_empty() {
-            return section;
-        }
-        section = section.child(heading(title));
-        for (index, value) in items {
-            let Some(entry) = view.entries.get(index) else {
-                continue;
-            };
-            let target = viewer.clone();
-            let mut label = RowLabel::plain(request_name(entry));
-            label.tooltip = Some(format!("{} {}", entry.method, entry.url).into());
-            if entry.failed() {
-                label.tone = Some(p.danger);
+                })
+                .context_menu(copy_menu(viewer, position, None))
+                .into_any_element()
             }
-            section = section.child(
+            Line::MoreHosts { hosts, requests } => div()
+                .id("har-overview-more-hosts")
+                .debug_selector(|| "har-overview-more-hosts".into())
+                .flex_none()
+                .pl(px(16.))
+                .pr_3()
+                .py_1()
+                .text_color(p.text_muted)
+                .child(format!(
+                    "{} more · {}",
+                    plural(hosts, "host", "hosts"),
+                    plural(requests, "request", "requests")
+                ))
+                .context_menu(copy_menu(viewer, position, None))
+                .into_any_element(),
+            // Slowest and Largest: a click selects the request.
+            Line::Request(list, index, value) => {
+                let Some(entry) = view.entries.get(index) else {
+                    continue;
+                };
+                let mut label = RowLabel::plain(request_name(entry));
+                label.tooltip = Some(format!("{} {}", entry.method, entry.url).into());
+                if entry.failed() {
+                    label.tone = Some(p.danger);
+                }
                 row(
-                    SharedString::from(format!("har-overview-{id}-{index}")),
+                    SharedString::from(format!("har-overview-{list}-{index}")),
                     label,
                     None,
                     &[value_cell(value)],
@@ -456,30 +686,13 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                 )
                 .on_click(move |_, window, cx| {
                     act(&target, window, cx, |this, _, cx| this.reveal(index, cx))
-                }),
-            );
-        }
-        section
-    };
-    body = body
-        .child(requests(
-            "Slowest",
-            "slowest",
-            overview
-                .slowest
-                .iter()
-                .map(|&(index, ms)| (index, model::millis(ms)))
-                .collect(),
-        ))
-        .child(requests(
-            "Largest",
-            "largest",
-            overview
-                .largest
-                .iter()
-                .map(|&(index, bytes)| (index, model::bytes(bytes)))
-                .collect(),
-        ));
+                })
+                .context_menu(copy_menu(viewer, position, Some(index)))
+                .into_any_element()
+            }
+        };
+        body = body.child(element);
+    }
     Some(body.into_any_element())
 }
 
@@ -693,5 +906,187 @@ mod tests {
         let (hosts, requests) = overview.more_hosts();
         assert_eq!(hosts, HOSTS_KEPT - HOSTS_SHOWN + 1);
         assert_eq!(requests, HOSTS_KEPT + 3 - HOSTS_SHOWN);
+    }
+
+    /// Indexes `har` with the real HAR reader and tallies it as the view does.
+    fn tally(har: &str) -> (Stats, Overview, Entries, Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.har");
+        std::fs::write(&path, har).unwrap();
+        let mut list = Vec::new();
+        let outcome = okilum_core::har::index_file(
+            &path,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |batch| list.extend(batch.entries),
+        )
+        .unwrap();
+        assert_eq!(outcome.problem, None);
+        let (mut stats, mut overview, mut entries) =
+            (Stats::default(), Overview::default(), Entries::default());
+        for (index, entry) in list.iter().enumerate() {
+            stats.add(entry);
+            overview.add(index, entry);
+        }
+        overview.finish();
+        entries.push(list);
+        (stats, overview, entries, outcome.creator)
+    }
+
+    fn fact(lines: &[Line], wanted: &str) -> (String, Option<String>) {
+        lines
+            .iter()
+            .find_map(|line| match line {
+                Line::Fact {
+                    id, value, note, ..
+                } if *id == wanted => Some((value.clone(), note.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{wanted} line"))
+    }
+
+    /// Sol review of #2932: «Transferred» counts wire bytes only. A request
+    /// whose wire size is unknown is never counted with its decoded size;
+    /// the total says it is partial and by how many requests.
+    #[test]
+    fn review2932_wire_and_content_sizes_stay_apart() {
+        let response = |sizes: &str, content: i64| {
+            format!(
+                r#"{{"startedDateTime":"2026-11-14T10:00:00.000Z","time":10,"request":{{"method":"GET","url":"https://a.test/r","headers":[]}},"response":{{"status":200,"headers":[],{sizes},"content":{{"size":{content},"mimeType":"text/plain"}}}}}}"#
+            )
+        };
+        let entries = [
+            // Compressed: 300 bytes on the wire for 1000 decoded.
+            response(
+                r#""headersSize":-1,"bodySize":-1,"_transferSize":300"#,
+                1000,
+            ),
+            // Unknown: no wire size at all; 1 MB decoded must not count.
+            response(r#""headersSize":-1,"bodySize":-1"#, 1_000_000),
+            // From the cache: zero bytes on the wire is a known size.
+            response(r#""headersSize":-1,"bodySize":-1,"_transferSize":0"#, 5000),
+            // Headers without a body size: still unknown, not 200 bytes.
+            response(r#""headersSize":200,"bodySize":-1"#, 50),
+            // Header and body sizes, no `_transferSize`.
+            response(r#""headersSize":100,"bodySize":400"#, 900),
+        ];
+        let har = format!(
+            r#"{{"log":{{"version":"1.2","creator":{{"name":"t","version":"1"}},"entries":[{}]}}}}"#,
+            entries.join(",")
+        );
+        let (stats, overview, list, creator) = tally(&har);
+        assert_eq!(stats.requests, 5);
+        assert_eq!((stats.transferred, stats.wire_unknown), (800, 2));
+        assert_eq!((stats.content, stats.content_unknown), (1_006_950, 0));
+        assert_eq!(stats.transferred_label().as_deref(), Some("≥ 800 B"));
+        assert_eq!(stats.content_label().as_deref(), Some("1.0 MB"));
+        let lines = lines_of(&stats, &overview, creator);
+        assert_eq!(
+            fact(&lines, "transferred"),
+            ("≥ 800 B".into(), Some("2 of 5 unknown".into()))
+        );
+        assert_eq!(fact(&lines, "content"), ("1.0 MB".into(), None));
+        let copied = text(&lines, &list);
+        assert!(
+            copied.contains("Transferred: ≥ 800 B (2 of 5 unknown)\n"),
+            "{copied}"
+        );
+        assert!(copied.contains("Content size: 1.0 MB\n"), "{copied}");
+
+        // No wire size anywhere: unknown, never zero or the decoded size.
+        let har = format!(
+            r#"{{"log":{{"entries":[{}]}}}}"#,
+            response(r#""headersSize":-1,"bodySize":-1"#, 4096)
+        );
+        let (stats, overview, _, creator) = tally(&har);
+        assert_eq!(stats.transferred_label(), None);
+        let lines = lines_of(&stats, &overview, creator);
+        assert_eq!(fact(&lines, "transferred"), ("Unknown".into(), None));
+        assert_eq!(fact(&lines, "content"), ("4.1 KB".into(), None));
+    }
+
+    /// Every drawn line has a copyable name and value, and Copy overview
+    /// holds them all, sections included.
+    #[test]
+    fn review2932_overview_lines_copy_as_text() {
+        let har = r#"{"log":{"creator":{"name":"WebInspector","version":"537.36"},"entries":[
+            {"startedDateTime":"2026-11-14T10:00:00.000Z","time":40,"request":{"method":"GET","url":"https://a.test/app.js","headers":[]},"response":{"status":200,"headers":[],"_transferSize":300,"content":{"size":1000,"mimeType":"application/javascript"}}},
+            {"startedDateTime":"2026-11-14T10:00:00.100Z","time":90,"request":{"method":"POST","url":"https://b.test/api?x=1","headers":[]},"response":{"status":404,"headers":[],"_transferSize":120,"content":{"size":20,"mimeType":"application/json"}},"_resourceType":"fetch"}
+        ]}}"#;
+        let (stats, overview, list, creator) = tally(har);
+        let lines = lines_of(&stats, &overview, creator);
+        for line in &lines {
+            assert_eq!(
+                pair(&list, line).is_some(),
+                !matches!(line, Line::Heading(_)),
+                "{line:?}"
+            );
+        }
+        let script = lines
+            .iter()
+            .find(|l| matches!(l, Line::Type(Kind::Script, _)))
+            .unwrap();
+        assert_eq!(
+            pair(&list, script),
+            Some(("Script".into(), "1 request · 300 B".into()))
+        );
+        let slowest = lines
+            .iter()
+            .find(|l| matches!(l, Line::Request("slowest", 1, _)))
+            .unwrap();
+        assert_eq!(
+            pair(&list, slowest),
+            Some(("POST https://b.test/api?x=1".into(), "90 ms".into()))
+        );
+        let copied = text(&lines, &list);
+        for wanted in [
+            "Requests: 2\n",
+            "Transferred: 420 B\n",
+            "Errors: 1\n",
+            "Created by: WebInspector 537.36\n",
+            "\nTypes\n  Fetch/XHR: 1 request · 120 B\n  Script: 1 request · 300 B\n",
+            "\nStatus\n  2xx: 1 request\n  4xx: 1 request\n",
+            "\nDomains\n",
+            "  a.test: 1 request · 300 B\n",
+            "\nSlowest\n  POST https://b.test/api?x=1: 90 ms\n",
+        ] {
+            assert!(copied.contains(wanted), "{wanted:?} in {copied}");
+        }
+    }
+
+    /// The tally costs a few array updates per request plus one host sort per
+    /// applied batch set: a 200 000-request capture over 10 000 hosts, sorted
+    /// every 1 000 requests, stays far below a frame budget per batch.
+    #[test]
+    fn review2932_tallying_a_large_capture_is_cheap() {
+        let entries: Vec<Entry> = (0..okilum_core::har::MAX_ENTRIES)
+            .map(|i| {
+                entry(
+                    &format!("https://h{}.test/r/{i}", i % HOSTS_KEPT),
+                    Some(200),
+                    Some((i % 997) as f64),
+                    (i % 4093) as i64,
+                )
+            })
+            .collect();
+        let mut overview = Overview::default();
+        let started = std::time::Instant::now();
+        let mut slowest_batch = std::time::Duration::ZERO;
+        for (batch, chunk) in entries.chunks(1000).enumerate() {
+            let at = std::time::Instant::now();
+            for (offset, entry) in chunk.iter().enumerate() {
+                overview.add(batch * 1000 + offset, entry);
+            }
+            overview.finish();
+            slowest_batch = slowest_batch.max(at.elapsed());
+        }
+        let total = started.elapsed();
+        println!("review2932 tally: {total:?} total, slowest batch {slowest_batch:?}");
+        assert_eq!(overview.top_hosts.len(), HOSTS_SHOWN);
+        assert_eq!(overview.slowest.len(), TOP);
+        // Generous for unoptimised test builds on shared runners.
+        assert!(
+            slowest_batch < std::time::Duration::from_millis(250),
+            "{slowest_batch:?}"
+        );
     }
 }
