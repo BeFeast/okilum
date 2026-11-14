@@ -387,8 +387,13 @@ fn folder1610_existing_ssh_entrypoint_routes_folder_or_document_before_any_worke
     assert!(
         matches!(location("ssh://same_alias/notes/a.md#Part%20One").unwrap(),Location::Document(source,Some(heading)) if source.url()=="ssh://same_alias/notes/a.md" && heading=="Part One")
     );
+    // #1610: user and port from the link are part of the authority.
+    assert!(matches!(
+        location("ssh://user@same_alias:2222/notes/").unwrap(),
+        Location::Folder(_)
+    ));
     for invalid in [
-        "ssh://user@same_alias/notes/",
+        "ssh://user:password@same_alias/notes/",
         "ssh://same_alias/notes/#heading",
         "ssh://same_alias/notes/?query",
     ] {

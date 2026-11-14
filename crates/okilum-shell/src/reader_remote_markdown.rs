@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn mocked_worker_publishes_source_and_cancel_rejects_stale_completion() {
         let mut controller = Controller::default();
-        assert!(controller.open("ssh://user@host/note.md").is_err());
+        assert!(controller.open("ssh://user:password@host/note.md").is_err());
         assert!(matches!(controller.state, State::Idle));
         let receiver = controller.start(
             Source::parse("ssh://alias/notes/start.md").unwrap(),
@@ -1016,8 +1016,10 @@ mod tests {
         let (source, heading) = destination("ssh://alias/a.md#Part%20One").unwrap();
         assert_eq!(source.url(), "ssh://alias/a.md");
         assert_eq!(heading.as_deref(), Some("Part One"));
+        let (source, _) = destination("ssh://user@alias:2222/a.md").unwrap();
+        assert_eq!(source.url(), "ssh://user@alias:2222/a.md");
         for invalid in [
-            "ssh://user@alias/a.md",
+            "ssh://user:password@alias/a.md",
             "ssh://alias/a.md#",
             "ssh://alias/a.md#%20",
             "ssh://alias/a.md?x",
