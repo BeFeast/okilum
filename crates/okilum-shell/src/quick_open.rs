@@ -691,17 +691,11 @@ impl Reader {
         cx.notify();
     }
 
-    /// Focus returns to the open note, or to the Reader when none is shown.
+    /// Focus returns to the document as drawn (`focus_document`): the editor
+    /// while editing, the file viewer, the note, or the Reader when none is
+    /// shown.
     pub(super) fn restore_document_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_file().is_empty() || self.file_preview.is_some() {
-            self.focus_handle.focus(window, cx);
-        } else {
-            self.content
-                .read(cx)
-                .focus_handle()
-                .clone()
-                .focus(window, cx);
-        }
+        self.focus_document(window, cx);
     }
 
     pub(super) fn refresh_quick_open(&mut self, cx: &mut Context<Self>) {

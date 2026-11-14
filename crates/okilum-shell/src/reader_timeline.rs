@@ -539,6 +539,12 @@ impl Reader {
             .into_any_element()
     }
 
+    /// `render_timeline_preview` draws a version in place of the document.
+    pub(super) fn timeline_preview_shown(&self) -> bool {
+        self.active_timeline()
+            .is_some_and(|t| t.selected.is_some_and(|ix| ix < t.versions.len()))
+    }
+
     pub(super) fn render_timeline_preview(
         &self,
         window: &mut Window,

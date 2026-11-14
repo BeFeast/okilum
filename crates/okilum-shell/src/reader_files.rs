@@ -256,6 +256,24 @@ impl FilePreview {
     }
 }
 
+impl FilePreview {
+    /// Moves keyboard focus to the shown viewer (#2957): a log takes it in its
+    /// own view, as on opening; every other viewer gives it to `reader`, the
+    /// Reader's own handle, which the viewer's element tracks and which
+    /// carries the Reader key contexts. Callers decide whether focus moves at
+    /// all; Maximize and a panel hide leave drawn focus alone.
+    pub(crate) fn focus(&self, reader: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if let Some(log) = self.log.as_ref().filter(|_| self.unavailable.is_none()) {
+            let focus = log.read(cx).focus_handle().clone();
+            if !focus.contains_focused(window, cx) {
+                focus.focus(window, cx);
+            }
+            return;
+        }
+        reader.focus(window, cx);
+    }
+}
+
 impl Reader {
     /// An outside-vault link offers an explicit action without loading the file
     /// into the vault or launching anything as a side effect of link activation.

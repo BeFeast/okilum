@@ -1295,3 +1295,77 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     assert_eq!(rows(&har, visual), [1]);
     assert!(measured_bounds(visual, "har-list").is_some());
 }
+
+/// #2957: Maximize note and the right-panel chord keep focus in the request
+/// list a click put it in, so arrow keys still step requests and the same
+/// chord works again without another click.
+#[gpui::test]
+fn issue2957_maximize_and_panel_hide_keep_har_list_focus(cx: &mut TestAppContext) {
+    let text = sample();
+    let (reader, visual, _temp) = open(cx, &[("capture.har", &text)], "capture.har");
+    let har = har(&reader, visual);
+    visual.simulate_resize(size(px(1440.), px(900.)));
+    reader.update(visual, |r, cx| {
+        r.panels.open(reader_layout::Panel::Notes);
+        r.panels.open(reader_layout::Panel::Backlinks);
+        cx.notify();
+    });
+    draw(visual);
+    assert_eq!(
+        rows(&har, visual),
+        vec![0, 1, 2],
+        "positive control: indexed"
+    );
+    let row = measured_bounds(visual, "har-row-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    draw(visual);
+    let list_focused = |visual: &mut VisualTestContext| {
+        har.update_in(visual, |har, window, cx| har.contains_focus(window, cx))
+    };
+    assert_eq!(har.read_with(visual, |har, _| har.selected), Some(0));
+    assert!(
+        list_focused(visual),
+        "positive control: the click focused the list"
+    );
+    let maximized =
+        |visual: &mut VisualTestContext| reader.read_with(visual, |r, _| r.panels.maximized());
+
+    visual.simulate_keystrokes(crate::MAXIMIZE_NOTE_KEY);
+    draw(visual);
+    assert!(maximized(visual), "first press maximizes");
+    assert!(
+        list_focused(visual),
+        "Maximize keeps the request list focused"
+    );
+    visual.simulate_keystrokes("down");
+    draw(visual);
+    assert_eq!(
+        har.read_with(visual, |har, _| har.selected),
+        Some(1),
+        "arrow keys step requests right after Maximize"
+    );
+    visual.simulate_keystrokes(crate::MAXIMIZE_NOTE_KEY);
+    draw(visual);
+    assert!(!maximized(visual), "second press restores");
+    assert!(list_focused(visual));
+
+    let backlinks = |visual: &mut VisualTestContext| {
+        reader.read_with(visual, |r, _| {
+            r.panels.visible(
+                reader_layout::Panel::Backlinks,
+                f32::from(r.body_bounds.size.width),
+            )
+        })
+    };
+    assert!(backlinks(visual));
+    visual.simulate_keystrokes(BACKLINKS_KEY);
+    draw(visual);
+    assert!(!backlinks(visual), "the right-panel chord hides the panel");
+    assert!(
+        list_focused(visual),
+        "a panel hide keeps the request list focused"
+    );
+    visual.simulate_keystrokes("down");
+    draw(visual);
+    assert_eq!(har.read_with(visual, |har, _| har.selected), Some(2));
+}
