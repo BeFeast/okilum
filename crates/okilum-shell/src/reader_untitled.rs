@@ -15,8 +15,8 @@ const DIRECTORY: &str = "untitled";
 /// The one document of a draft folder.
 pub(super) const FILE: &str = "Untitled.md";
 const META: &str = "draft.json";
-/// Written when Save put the text elsewhere; the folder is removed later,
-/// once no window can still be showing it.
+/// Written when Save put the text and attachments elsewhere: a manifest of
+/// exactly what was saved. It counts only while it still matches the folder.
 const SAVED: &str = "saved";
 /// How long a saved draft folder stays before it is removed.
 const SAVED_LIFETIME: u64 = 600;
@@ -24,8 +24,8 @@ const SAVED_LIFETIME: u64 = 600;
 const LISTED: usize = 40;
 /// An empty draft nobody typed into is removed after a day.
 const EMPTY_DRAFT_LIFETIME: u64 = 86_400;
-/// Bytes read for a draft's label.
-const LABEL_BYTES: u64 = 4096;
+/// A draft folder with more files than this is never classified, only kept.
+const MAX_ATTACHMENTS: usize = 512;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct Meta {
@@ -34,6 +34,32 @@ struct Meta {
     origin: Option<PathBuf>,
     #[serde(default)]
     created: u64,
+}
+
+/// One attachment of a draft: its path below the draft folder, size and digest.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Attachment {
+    pub relative: PathBuf,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// What Save put elsewhere. The draft is retired only while its current text
+/// and attachments are exactly these: newer edits from any window revive it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Manifest {
+    text_sha256: String,
+    attachments: Vec<Attachment>,
+}
+
+/// What a draft holds right now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Content {
+    /// The newest text: the recovery journal when it is ahead of the file
+    /// (a crash before the first autosave), else the file.
+    Text(String),
+    /// The file or its recovery data cannot be read: keep, never classify.
+    Unknown,
 }
 
 /// One unsaved draft, as Recent lists it.
@@ -57,10 +83,20 @@ fn drafts_directory(session: &Path) -> PathBuf {
     session.join(DIRECTORY)
 }
 
+/// The editor's recovery journals, as `Reader::open_source` uses them.
+fn recovery_directory(session: &Path) -> PathBuf {
+    session.join("editor-drafts")
+}
+
 fn seconds(time: std::time::SystemTime) -> u64 {
     time.duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default()
+}
+
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(bytes))
 }
 
 /// Create an empty draft and return its file. The folder and its metadata are
@@ -69,7 +105,7 @@ fn seconds(time: std::time::SystemTime) -> u64 {
 pub(super) fn create(session: &Path, origin: Option<&Path>) -> anyhow::Result<PathBuf> {
     let parent = drafts_directory(session);
     std::fs::create_dir_all(&parent)?;
-    collect_empty(&parent, reader_sidebar::now());
+    collect(session, reader_sidebar::now());
     let directory = parent.join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir(&directory)?;
     let meta = Meta {
@@ -78,18 +114,8 @@ pub(super) fn create(session: &Path, origin: Option<&Path>) -> anyhow::Result<Pa
             .map(Path::to_path_buf),
         created: reader_sidebar::now(),
     };
-    let write = |name: &str, bytes: &[u8]| -> anyhow::Result<()> {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(directory.join(name))?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
-    };
-    write(META, &serde_json::to_vec(&meta)?)?;
-    write(FILE, b"")?;
+    write_new(&directory.join(META), &serde_json::to_vec(&meta)?)?;
+    write_new(&directory.join(FILE), b"")?;
     #[cfg(unix)]
     {
         std::fs::File::open(&directory)?.sync_all()?;
@@ -98,30 +124,128 @@ pub(super) fn create(session: &Path, origin: Option<&Path>) -> anyhow::Result<Pa
     Ok(directory.join(FILE))
 }
 
-/// Remove drafts that stayed empty for a day (a New nobody typed into) and
-/// saved drafts whose window has long moved on to the saved file.
-fn collect_empty(parent: &Path, now: u64) {
-    let Ok(entries) = std::fs::read_dir(parent) else {
+/// Create `path` (never replace it) with `bytes`, synced.
+fn write_new(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// The draft's newest text, consulting recovery before the file.
+pub(super) fn content(session: &Path, folder: &Path) -> Content {
+    let file = folder.join(FILE);
+    match okilum_core::file_editor::FileEditor::unsaved_draft_text(
+        &file,
+        &recovery_directory(session),
+    ) {
+        Ok(Some(text)) => return Content::Text(text),
+        Ok(None) => {}
+        Err(_) => return Content::Unknown,
+    }
+    match std::fs::read_to_string(&file) {
+        Ok(text) => Content::Text(text),
+        Err(_) => Content::Unknown,
+    }
+}
+
+/// Every file of the draft folder except its own bookkeeping and hidden
+/// top-level temporaries: pasted images and files. `None` when the folder cannot be read completely.
+pub(super) fn attachments(folder: &Path) -> Option<Vec<Attachment>> {
+    let mut found = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(folder.join(&relative)).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            let child = relative.join(&name);
+            let kind = entry.file_type().ok()?;
+            // Okilum's own bookkeeping and hidden temporaries at the top.
+            if relative.as_os_str().is_empty()
+                && ([FILE, META, SAVED].iter().any(|own| name == *own)
+                    || name.to_string_lossy().starts_with('.'))
+            {
+                continue;
+            }
+            if kind.is_dir() {
+                pending.push(child);
+            } else {
+                let bytes = std::fs::read(folder.join(&child)).ok()?;
+                found.push(Attachment {
+                    relative: child,
+                    size: bytes.len() as u64,
+                    sha256: digest(&bytes),
+                });
+            }
+            if found.len() + pending.len() > MAX_ATTACHMENTS {
+                return None;
+            }
+        }
+    }
+    found.sort();
+    Some(found)
+}
+
+/// Whether an editor in any window still holds the draft. Unknown counts as live.
+pub(super) fn live(session: &Path, folder: &Path) -> bool {
+    okilum_core::file_editor::FileEditor::editor_active(
+        &folder.join(FILE),
+        &recovery_directory(session),
+    )
+    .unwrap_or(true)
+}
+
+/// The draft was saved elsewhere and has not changed since: its manifest
+/// still matches its text (recovery included) and its attachments.
+fn retired(session: &Path, folder: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(folder.join(SAVED)) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) else {
+        return false;
+    };
+    let Content::Text(text) = content(session, folder) else {
+        return false;
+    };
+    digest(text.as_bytes()) == manifest.text_sha256
+        && attachments(folder).as_ref() == Some(&manifest.attachments)
+}
+
+/// Nothing was ever put in the draft: no text, no recovery, no attachment.
+fn untouched(session: &Path, folder: &Path) -> bool {
+    content(session, folder) == Content::Text(String::new())
+        && attachments(folder).is_some_and(|found| found.is_empty())
+}
+
+/// Remove what can no longer hold anything unsaved: a draft retired for ten
+/// minutes, or one left untouched for a day. A live editor, recovery data,
+/// text, attachments or anything unreadable keeps the folder.
+fn collect(session: &Path, now: u64) {
+    let Ok(entries) = std::fs::read_dir(drafts_directory(session)) else {
         return;
     };
     for entry in entries.flatten().take(256) {
-        let directory = entry.path();
-        if let Ok(saved) = std::fs::symlink_metadata(directory.join(SAVED)) {
-            let at = saved.modified().map(seconds).unwrap_or(now);
-            if now.saturating_sub(at) > SAVED_LIFETIME {
-                let _ = std::fs::remove_dir_all(&directory);
-            }
+        let folder = entry.path();
+        if !folder.is_dir() || live(session, &folder) {
             continue;
         }
-        let Ok(metadata) = std::fs::symlink_metadata(directory.join(FILE)) else {
-            continue;
+        let age = |name: &str| {
+            std::fs::symlink_metadata(folder.join(name))
+                .and_then(|m| m.modified())
+                .map(|t| now.saturating_sub(seconds(t)))
+                .ok()
         };
-        let modified = metadata.modified().map(seconds).unwrap_or(now);
-        if metadata.is_file()
-            && metadata.len() == 0
-            && now.saturating_sub(modified) > EMPTY_DRAFT_LIFETIME
-        {
-            let _ = std::fs::remove_dir_all(&directory);
+        let expired = if folder.join(SAVED).exists() {
+            age(SAVED).is_some_and(|age| age > SAVED_LIFETIME) && retired(session, &folder)
+        } else {
+            age(FILE).is_some_and(|age| age > EMPTY_DRAFT_LIFETIME) && untouched(session, &folder)
+        };
+        if expired {
+            let _ = std::fs::remove_dir_all(&folder);
         }
     }
 }
@@ -172,7 +296,8 @@ pub(super) fn suggested_name(text: &str) -> String {
     format!("{}.md", if stem.is_empty() { "Untitled" } else { stem })
 }
 
-/// Unsaved drafts with text, newest first, bounded.
+/// Drafts holding anything unsaved, newest first, bounded: text in the file
+/// or only in recovery, or attachments. Retired drafts are left out.
 pub(super) fn list(session: &Path) -> Vec<Listed> {
     let Ok(entries) = std::fs::read_dir(drafts_directory(session)) else {
         return Vec::new();
@@ -181,23 +306,18 @@ pub(super) fn list(session: &Path) -> Vec<Listed> {
         .flatten()
         .take(256)
         .filter_map(|entry| {
-            if entry.path().join(SAVED).exists() {
-                return None;
-            }
-            let file = entry.path().join(FILE);
+            let folder = entry.path();
+            let file = folder.join(FILE);
             let metadata = std::fs::symlink_metadata(&file).ok()?;
-            if !metadata.is_file() || metadata.len() == 0 {
+            if !metadata.is_file() || retired(session, &folder) || untouched(session, &folder) {
                 return None;
             }
-            let mut head = Vec::new();
-            use std::io::Read as _;
-            std::fs::File::open(&file)
-                .ok()?
-                .take(LABEL_BYTES)
-                .read_to_end(&mut head)
-                .ok()?;
+            let text = match content(session, &folder) {
+                Content::Text(text) => text,
+                Content::Unknown => String::new(),
+            };
             Some(Listed {
-                label: label(&String::from_utf8_lossy(&head)).unwrap_or_else(|| "Untitled".into()),
+                label: label(&text).unwrap_or_else(|| "Untitled".into()),
                 modified: metadata.modified().map(seconds).unwrap_or_default(),
                 file,
             })
@@ -208,14 +328,117 @@ pub(super) fn list(session: &Path) -> Vec<Listed> {
     listed
 }
 
-/// Mark a draft saved: Recent stops listing it and a later New removes its
-/// folder. Removing it at once could race the window still showing it.
-/// Only a draft folder of this session is touched.
-pub(super) fn mark_saved(session: &Path, folder: &Path) -> anyhow::Result<()> {
+/// Copy the draft's attachments next to the saved file, keeping their paths
+/// below it so `![[name]]` and relative links resolve the same way. An
+/// existing different file is never replaced: the copy gets a free name and
+/// `text` is rewritten to it. Each copy is verified by digest. On failure
+/// every file this call created is removed again. Returns the created files.
+pub(super) fn copy_attachments(
+    folder: &Path,
+    destination: &Path,
+    found: &[Attachment],
+    text: &mut String,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut created = Vec::new();
+    let result = (|| -> anyhow::Result<()> {
+        for attachment in found {
+            anyhow::ensure!(
+                attachment
+                    .relative
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "Unexpected attachment path"
+            );
+            let bytes = std::fs::read(folder.join(&attachment.relative))?;
+            anyhow::ensure!(
+                digest(&bytes) == attachment.sha256,
+                "An attachment changed while saving"
+            );
+            let mut target = destination.join(&attachment.relative);
+            let parent = target
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Attachment has no folder"))?
+                .to_path_buf();
+            std::fs::create_dir_all(&parent)?;
+            if std::fs::read(&target).is_ok_and(|existing| existing == bytes) {
+                continue;
+            }
+            let name = |path: &Path| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            };
+            let original = name(&target);
+            let stem = target
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let extension = target
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let mut n = 1;
+            loop {
+                match write_new(&target, &bytes) {
+                    Ok(()) => break,
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+                            && n < 1000 =>
+                    {
+                        target = parent.join(format!("{stem} {n}{extension}"));
+                        n += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            created.push(target.clone());
+            anyhow::ensure!(
+                std::fs::read(&target)? == bytes,
+                "An attachment copy could not be verified"
+            );
+            let renamed = name(&target);
+            if renamed != original {
+                *text = text.replace(&original, &renamed);
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(created),
+        Err(error) => {
+            for path in &created {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Retire a saved draft: only when no editor holds it and its current text and
+/// attachments are exactly what was saved. Otherwise it stays an unsaved draft
+/// in Recent; nothing is removed here. Only a draft folder of this session.
+pub(super) fn retire(
+    session: &Path,
+    folder: &Path,
+    saved_text: &str,
+    saved_attachments: &[Attachment],
+) -> anyhow::Result<bool> {
     let folder = draft_folder(session, folder)
         .ok_or_else(|| anyhow::anyhow!("Not an untitled draft of this session"))?;
-    std::fs::write(folder.join(SAVED), b"")?;
-    Ok(())
+    if live(session, &folder)
+        || content(session, &folder) != Content::Text(saved_text.to_owned())
+        || attachments(&folder).as_deref() != Some(saved_attachments)
+    {
+        return Ok(false);
+    }
+    let manifest = Manifest {
+        text_sha256: digest(saved_text.as_bytes()),
+        attachments: saved_attachments.to_vec(),
+    };
+    std::fs::write(folder.join(SAVED), serde_json::to_vec(&manifest)?)?;
+    Ok(true)
 }
 
 impl Reader {
@@ -335,19 +558,43 @@ impl Reader {
         }
     }
 
+    /// Another window of this app shows the same draft.
+    fn draft_open_elsewhere(&self, folder: &Path, cx: &Context<Self>) -> bool {
+        reader_open::root_open_elsewhere(folder, cx.entity_id(), cx)
+    }
+
     /// Save on an untitled draft: choose its name and folder (proposed: the
-    /// folder it was created from), write it there without overwriting
-    /// anything, show the saved file in this window and drop the draft.
+    /// folder it was created from), write it and its attachments there
+    /// without overwriting anything, show the saved file in this window and
+    /// retire the draft once nothing in it is newer than what was saved.
     pub(super) fn save_draft_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(folder), Some(session)) = (self.current_draft(), self.session_directory.clone())
         else {
             return;
         };
-        let draft_file = folder.join(FILE);
-        let contents = self
-            .source_text(cx)
-            .or_else(|| std::fs::read_to_string(&draft_file).ok())
-            .unwrap_or_default();
+        if self.draft_open_elsewhere(&folder, cx) {
+            reader_toast::error(
+                "This draft is also open in another window. Close it there, then Save here.",
+                window,
+                cx,
+            );
+            return;
+        }
+        // The newest text: this editor, else recovery ahead of the file.
+        let contents = match self.source_text(cx) {
+            Some(text) => text,
+            None => match content(&session, &folder) {
+                Content::Text(text) => text,
+                Content::Unknown => {
+                    reader_toast::error(
+                        "This draft couldn’t be read completely, so it was not saved. It is kept.",
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+            },
+        };
         let directory = origin(&folder)
             .or_else(|| {
                 home().map(|home| {
@@ -375,21 +622,63 @@ impl Reader {
                 if this.vault_root != root || this.current_draft().is_none() {
                     return;
                 }
-                // Text typed while the picker was open is saved too.
-                let contents = this.source_text(cx).unwrap_or(contents);
-                if let Err(error) = reader_deleted_note::save_new_copy(&path, &contents) {
-                    diagnostic_error!("Could not save the untitled draft: {error:#}");
+                if this.draft_open_elsewhere(&folder, cx) {
                     reader_toast::error(
-                        "The file couldn’t be saved there. Choose a new filename; existing files are never overwritten.",
+                        "This draft is also open in another window. Close it there, then Save here.",
                         window,
                         cx,
                     );
                     return;
                 }
-                // Its text is saved: the draft's editor has nothing left to protect.
+                // Text typed while the picker was open is saved too.
+                let mut contents = this.source_text(cx).unwrap_or(contents);
+                let fail = |error: anyhow::Error, window: &mut Window, cx: &mut Context<Reader>| {
+                    diagnostic_error!("Could not save the untitled draft: {error:#}");
+                    reader_toast::error(
+                        "The file couldn’t be saved there. Choose a new filename; existing files are never overwritten. The draft is kept.",
+                        window,
+                        cx,
+                    );
+                };
+                let Some(found) = attachments(&folder) else {
+                    fail(anyhow::anyhow!("draft attachments unreadable"), window, cx);
+                    return;
+                };
+                let Some(destination) = path.parent().map(Path::to_path_buf) else {
+                    return;
+                };
+                let created = match copy_attachments(&folder, &destination, &found, &mut contents)
+                {
+                    Ok(created) => created,
+                    Err(error) => return fail(error, window, cx),
+                };
+                if let Err(error) = reader_deleted_note::save_new_copy(&path, &contents) {
+                    for file in &created {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    return fail(error, window, cx);
+                }
+                // Its text is saved: the draft's editor has nothing left to
+                // protect. The draft file gets the same text, so the manifest
+                // below can prove nothing in the draft is newer.
                 this.source_saved_elsewhere(cx);
                 this.remember_source_mode();
                 this.editing = None;
+                let original = this
+                    .source_text(cx)
+                    .or_else(|| match content(&session, &folder) {
+                        Content::Text(text) => Some(text),
+                        Content::Unknown => None,
+                    });
+                let draft_text = contents.clone();
+                if original.as_deref() != Some(draft_text.as_str()) {
+                    let temporary = folder.join(format!(".{FILE}.{}", uuid::Uuid::new_v4()));
+                    let replaced = write_new(&temporary, draft_text.as_bytes())
+                        .and_then(|()| Ok(std::fs::rename(&temporary, folder.join(FILE))?));
+                    if replaced.is_err() {
+                        let _ = std::fs::remove_file(&temporary);
+                    }
+                }
                 this.start_loading(
                     Opts {
                         open_path: Some(path.clone()),
@@ -404,17 +693,40 @@ impl Reader {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 reader_toast::transient(format!("Saved as «{label}»"), window, cx);
-                let directory = this.session_directory.clone();
-                cx.background_executor()
-                    .spawn(async move {
-                        if let Err(error) = mark_saved(&session, &folder) {
-                            diagnostic_error!("Could not retire the saved draft: {error:#}");
+                let history = this.session_directory.clone();
+                // The editor lock is released once its last journal write is
+                // done; retire only then, and only if nothing changed.
+                cx.spawn(async move |_, cx| {
+                    for _ in 0..50 {
+                        let (session, folder, text, found) =
+                            (session.clone(), folder.clone(), draft_text.clone(), found.clone());
+                        let outcome = cx
+                            .background_executor()
+                            .spawn(async move { retire(&session, &folder, &text, &found) })
+                            .await;
+                        match outcome {
+                            Ok(true) => {
+                                if let Some(history) = &history {
+                                    let _ = reader_history::ReadingHistory::forget_root(
+                                        history, &folder,
+                                    );
+                                }
+                                return;
+                            }
+                            Ok(false) => {
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(100))
+                                    .await
+                            }
+                            Err(error) => {
+                                diagnostic_error!("Could not retire the saved draft: {error:#}");
+                                return;
+                            }
                         }
-                        if let Some(directory) = directory {
-                            let _ = reader_history::ReadingHistory::forget_root(&directory, &folder);
-                        }
-                    })
-                    .detach();
+                    }
+                    diagnostic_error!("The saved draft changed or stayed open; it is kept");
+                })
+                .detach();
                 cx.notify();
             });
         })
@@ -427,6 +739,10 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui::{size, TestAppContext, VisualTestContext};
+
+    use okilum_core::file_editor::FileEditor;
+
+    const LATER: u64 = EMPTY_DRAFT_LIFETIME * 2;
 
     #[test]
     fn draft_is_durable_listed_and_keeps_its_origin() {
@@ -443,20 +759,26 @@ mod tests {
             origin_folder.canonicalize().unwrap()
         );
         assert!(draft_folder(&session, folder).is_some());
-        // An empty draft is not listed: nothing to protect yet.
+        // An untouched draft is not listed: nothing to protect yet.
         assert!(list(&session).is_empty());
-        std::fs::write(&file, "# Shopping list\n\nmilk\n").unwrap();
+        let text = "# Shopping list\n\nmilk\n";
+        std::fs::write(&file, text).unwrap();
         let listed = list(&session);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].label, "Shopping list");
         assert_eq!(listed[0].file, file);
-        mark_saved(&session, folder).unwrap();
+        assert!(!retire(&session, folder, "other text", &[]).unwrap());
+        assert_eq!(
+            list(&session).len(),
+            1,
+            "a mismatching Save retires nothing"
+        );
+        assert!(retire(&session, folder, text, &[]).unwrap());
         assert!(list(&session).is_empty(), "a saved draft leaves Recent");
-        let parent = drafts_directory(&session);
-        collect_empty(&parent, reader_sidebar::now());
+        collect(&session, reader_sidebar::now());
         assert!(folder.exists(), "the window may still show it for a while");
-        collect_empty(&parent, reader_sidebar::now() + SAVED_LIFETIME + 60);
-        assert!(!folder.exists(), "a saved draft folder is removed later");
+        collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
+        assert!(!folder.exists(), "a retired draft folder is removed later");
     }
 
     #[test]
@@ -469,7 +791,7 @@ mod tests {
         create(&session, None).unwrap();
         assert!(draft_folder(&session, &other).is_none());
         assert!(draft_folder(&session, &session.join(DIRECTORY)).is_none());
-        assert!(mark_saved(&session, &other).is_err());
+        assert!(retire(&session, &other, "keep", &[]).is_err());
         assert!(!other.join(SAVED).exists());
         assert!(
             other.join(FILE).is_file(),
@@ -478,18 +800,140 @@ mod tests {
     }
 
     #[test]
-    fn empty_drafts_expire_but_typed_ones_stay() {
+    fn untouched_drafts_expire_but_typed_ones_stay() {
         let temp = tempfile::tempdir().unwrap();
         let session = temp.path().join("state");
         let empty = create(&session, None).unwrap();
         let typed = create(&session, None).unwrap();
         std::fs::write(&typed, "words").unwrap();
-        let parent = drafts_directory(&session);
-        collect_empty(&parent, reader_sidebar::now());
+        collect(&session, reader_sidebar::now());
         assert!(empty.exists(), "a fresh empty draft may still be on screen");
-        collect_empty(&parent, reader_sidebar::now() + EMPTY_DRAFT_LIFETIME + 60);
-        assert!(!empty.exists(), "an empty draft is collected after a day");
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(
+            !empty.exists(),
+            "an untouched draft is collected after a day"
+        );
         assert!(typed.exists(), "a draft with text is never collected");
+    }
+
+    /// Review P1-1: a crash after the recovery journal was written but before
+    /// the first autosave leaves `Untitled.md` empty. Recovery holds the text:
+    /// Recent lists the draft under it, Save would use it, cleanup keeps it.
+    #[test]
+    fn crash_before_first_autosave_keeps_the_draft_from_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("state");
+        let file = create(&session, None).unwrap();
+        let folder = file.parent().unwrap().to_path_buf();
+        {
+            let mut editor = FileEditor::open(&file, &recovery_directory(&session)).unwrap();
+            editor
+                .queue_text("Before autosave\nmilk\n".into())
+                .persist()
+                .unwrap();
+            // Crash: the editor goes away without saving the file.
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "",
+            "never autosaved"
+        );
+        assert_eq!(
+            content(&session, &folder),
+            Content::Text("Before autosave\nmilk\n".into())
+        );
+        let listed = list(&session);
+        assert_eq!(listed.len(), 1, "Recent lists the recovered draft");
+        assert_eq!(listed[0].label, "Before autosave");
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(file.exists(), "recovery data keeps the draft folder");
+    }
+
+    /// Review P1-2: pasted images live below the draft folder. Save copies
+    /// them beside the saved file (verified, never over a different file,
+    /// links rewritten to a renamed copy); attachments alone keep a draft.
+    #[test]
+    fn attachments_are_carried_to_the_saved_file_and_keep_the_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("state");
+        let file = create(&session, None).unwrap();
+        let folder = file.parent().unwrap().to_path_buf();
+        let image = Path::new("@Assets/Images/Pasted image 1.png");
+        std::fs::create_dir_all(folder.join(image).parent().unwrap()).unwrap();
+        std::fs::write(folder.join(image), b"draft image").unwrap();
+        assert_eq!(
+            list(&session).len(),
+            1,
+            "an attachment alone is unsaved work"
+        );
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(folder.join(image).exists(), "cleanup keeps attachments");
+
+        let text = "![[Pasted image 1.png]]\n";
+        std::fs::write(&file, text).unwrap();
+        let destination = temp.path().join("docs");
+        std::fs::create_dir_all(destination.join(image).parent().unwrap()).unwrap();
+        std::fs::write(destination.join(image), b"someone else's image").unwrap();
+        let found = attachments(&folder).unwrap();
+        assert_eq!(found.len(), 1);
+        let mut saved = text.to_owned();
+        let created = copy_attachments(&folder, &destination, &found, &mut saved).unwrap();
+        let renamed = destination.join("@Assets/Images/Pasted image 1 1.png");
+        assert_eq!(created, [renamed.clone()]);
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"draft image");
+        assert_eq!(
+            std::fs::read(destination.join(image)).unwrap(),
+            b"someone else's image",
+            "an existing different file is never replaced"
+        );
+        assert_eq!(saved, "![[Pasted image 1 1.png]]\n");
+
+        // An attachment added after Save was prepared keeps the draft.
+        std::fs::write(folder.join("@Assets/Images/late.png"), b"late").unwrap();
+        assert!(!retire(&session, &folder, text, &found).unwrap());
+        assert_eq!(list(&session).len(), 1);
+        std::fs::remove_file(folder.join("@Assets/Images/late.png")).unwrap();
+        assert!(retire(&session, &folder, text, &found).unwrap());
+        collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
+        assert!(
+            !folder.exists(),
+            "removed only once everything was carried over"
+        );
+    }
+
+    /// Review P1-3: Save in one window must not retire a draft another window
+    /// still edits, and newer edits after Save revive it; cleanup keeps it.
+    #[test]
+    fn a_live_editor_or_newer_edits_keep_a_saved_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("state");
+        let file = create(&session, None).unwrap();
+        let folder = file.parent().unwrap().to_path_buf();
+        std::fs::write(&file, "v1").unwrap();
+        let mut other = FileEditor::open(&file, &recovery_directory(&session)).unwrap();
+        assert!(
+            live(&session, &folder),
+            "positive control: the lock is seen"
+        );
+        assert!(
+            !retire(&session, &folder, "v1", &[]).unwrap(),
+            "another window still edits it"
+        );
+        drop(other);
+        assert!(!live(&session, &folder));
+        assert!(retire(&session, &folder, "v1", &[]).unwrap());
+        // The other window comes back and keeps typing after that Save.
+        other = FileEditor::open(&file, &recovery_directory(&session)).unwrap();
+        collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
+        assert!(file.exists(), "a live editor keeps the folder");
+        other.queue_text("v2".into()).persist().unwrap();
+        drop(other);
+        assert_eq!(list(&session).len(), 1, "newer edits revive the draft");
+        collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
+        assert!(file.exists(), "newer recovery text keeps the folder");
+        std::fs::write(&file, "v3").unwrap();
+        collect(&session, reader_sidebar::now() + LATER);
+        assert!(file.exists(), "a newer file keeps the folder");
     }
 
     /// Real time for the watcher and writers, test time for the Reader's
@@ -602,6 +1046,9 @@ mod tests {
         // Kill: the window goes away without Save or any question.
         reader.update_in(visual, |_, window, _| window.remove_window());
         visual.run_until_parked();
+        // A killed process holds no editor lock: release this one's too.
+        drop(reader);
+        visual.run_until_parked();
 
         // Restart on the original file.
         let (reader, visual) = open_single(cx, &docs.join("Start.md"), &session);
@@ -650,6 +1097,12 @@ mod tests {
             r.current_draft().is_some() && r.note_source.contains("milk")
         });
 
+        // A pasted image lives below the draft folder until Save.
+        let folder = draft.parent().unwrap().to_path_buf();
+        let image = Path::new("@Assets/Images/Pasted image 1.png");
+        std::fs::create_dir_all(folder.join(image).parent().unwrap()).unwrap();
+        std::fs::write(folder.join(image), b"pasted").unwrap();
+
         // Save: the dialog starts in the folder the draft came from.
         reader.update_in(visual, |r, window, cx| {
             r.focus_handle.focus(window, cx);
@@ -677,9 +1130,18 @@ mod tests {
             std::fs::read_to_string(&saved).unwrap(),
             "Shopping list\nmilk"
         );
+        assert_eq!(
+            std::fs::read(docs.join(image)).unwrap(),
+            b"pasted",
+            "the attachment travels with the saved file"
+        );
         settle(visual, &reader, "the saved draft leaves Recent", |_, _| {
             list(&session).is_empty()
         });
+        collect(&session, reader_sidebar::now());
+        assert!(folder.join(image).exists(), "kept for a while after Save");
+        collect(&session, reader_sidebar::now() + SAVED_LIFETIME + 60);
+        assert!(!folder.exists(), "removed once retired and expired");
         reader.read_with(visual, |r, _| assert!(r.single_file));
     }
 
