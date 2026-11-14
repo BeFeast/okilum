@@ -85,10 +85,10 @@ impl TablePreview {
         self.select(Cell { row, column }, false, window, cx);
     }
     #[cfg(test)]
+    /// Through the stored choice, which the grid reads on every render.
     pub(crate) fn set_header_for_tests(&mut self, on: bool, cx: &mut Context<Self>) {
-        if self.header != on {
-            self.toggle_header(cx);
-        }
+        self.header = !on;
+        self.toggle_header(cx);
     }
     #[cfg(test)]
     pub(crate) fn selection_for_tests(&self) -> Option<(usize, usize)> {

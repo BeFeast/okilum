@@ -1603,3 +1603,86 @@ fn contents2814_a_json_array_lists_columns_only_in_table(cx: &mut TestAppContext
     settle(visual);
     assert_eq!(columns(&view, visual), ["id", "amount"]);
 }
+
+/// Resident memory in bytes (Linux), for the budget receipt.
+fn resident_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
+
+/// An OpenAPI-shaped document of about `target` bytes: «paths» with 414
+/// keys, «components.schemas» filled up to the size.
+fn openapi_fixture(target: usize) -> String {
+    let mut out = String::from("{\"openapi\":\"3.0.0\",\"paths\":{");
+    for i in 0..414 {
+        if i > 0 {
+            out.push(',');
+        }
+        out += &format!(
+            "\"/v1/resource{i}/{{id}}\":{{\"get\":{{\"summary\":\"Get {i}\",\"parameters\":[{{\"name\":\"id\",\"in\":\"path\"}}],\"responses\":{{\"200\":{{\"description\":\"ok\"}}}}}}}}"
+        );
+    }
+    out += "},\"components\":{\"schemas\":{";
+    let mut i = 0;
+    while out.len() < target {
+        if i > 0 {
+            out.push(',');
+        }
+        out += &format!(
+            "\"Schema{i}\":{{\"type\":\"object\",\"properties\":{{\"id\":{{\"type\":\"string\"}},\"amount\":{{\"type\":\"integer\"}},\"note\":{{\"type\":\"string\",\"description\":\"{}\"}}}}}}",
+            "x".repeat(i % 200)
+        );
+        i += 1;
+    }
+    out += "}}}";
+    out
+}
+
+/// #2814 budgets, measured in a release build:
+/// `cargo test --release ... contents2814_budget_numbers -- --ignored --nocapture`.
+#[test]
+#[ignore = "a release-build measurement; prints the budget receipt"]
+fn contents2814_budget_numbers() {
+    crate::source_presentation::code_languages::install();
+    for (label, target) in [("3.4MB", 3_400_000), ("32MiB", 32 * 1024 * 1024)] {
+        let text = openapi_fixture(target);
+        let bytes = text.len();
+        let started = std::time::Instant::now();
+        let doc = Arc::new(Document::for_file(text, "json", true));
+        let tree_ms = started.elapsed().as_secs_f64() * 1000.;
+        let before = resident_bytes();
+        let started = std::time::Instant::now();
+        let rows = tree::visible_rows(&doc, &tree::Expansion::default());
+        let rows_ms = started.elapsed().as_secs_f64() * 1000.;
+        let after = resident_bytes();
+        let rows_mb = match (before, after) {
+            (Some(b), Some(a)) => a.saturating_sub(b) as f64 / 1_048_576.,
+            _ => f64::NAN,
+        };
+        // Offset-to-row lookups spread over the whole text.
+        let mut worst = 0f64;
+        let mut total = 0f64;
+        let samples = 2_000;
+        for k in 0..samples {
+            let at = (k * 7_919 * 104_729) % bytes;
+            let started = std::time::Instant::now();
+            std::hint::black_box(doc.row_at(&(at..at)));
+            let ms = started.elapsed().as_secs_f64() * 1000.;
+            worst = worst.max(ms);
+            total += ms;
+        }
+        println!(
+            "CONTENTS2814_BUDGET {label} bytes={bytes} nodes={} tree_ms={tree_ms:.1} first_rows_ms={rows_ms:.2} rows={} rows_resident_mb={rows_mb:.2} lookup_avg_ms={:.4} lookup_max_ms={worst:.4}",
+            doc.structure.len(),
+            rows.len(),
+            total / samples as f64,
+        );
+        assert!(rows_ms <= 500., "{label}: first rows {rows_ms} ms");
+        assert!(worst <= 1., "{label}: offset lookup {worst} ms");
+        assert!(
+            rows_mb.is_nan() || rows_mb <= 10.,
+            "{label}: rows {rows_mb} MB"
+        );
+    }
+}
