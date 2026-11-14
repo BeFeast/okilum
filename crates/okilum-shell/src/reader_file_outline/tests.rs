@@ -491,19 +491,22 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
     });
     let root = tempfile::tempdir().unwrap();
     let session = tempfile::tempdir().unwrap();
+    // #2814: YAML, TOML, XML and JSON read Contents from the edit buffer
+    // too; the private outline stays the Source editor's for Rust and
+    // Python, exercised here with the same shape.
     let source = format!(
-        "first:\n  child: true\n{}second:\n  value: true\n{}",
+        "class First:\n    def child(self): pass\n{}class Second:\n    def value(self): pass\n{}",
         "# padding\n".repeat(100),
         "# tail\n".repeat(100)
     );
-    std::fs::write(root.path().join("config.yaml"), &source).unwrap();
+    std::fs::write(root.path().join("config.py"), &source).unwrap();
     let mut reader = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut reader = Reader::new(
                 Opts {
                     vault: Some(root.path().to_path_buf()),
-                    note: Some("config.yaml".into()),
+                    note: Some("config.py".into()),
                     session_directory: Some(session.path().to_path_buf()),
                     index_dir: Some(root.path().join(".index")),
                     ..Default::default()
@@ -541,9 +544,6 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
             .clone()
             .unwrap()
     });
-    // #2814 9c: in Read, YAML Contents reads the viewer's tree (covered by
-    // `contents2814_yaml_toml_xml_rows_states_and_where_you_are`); the private
-    // outline remains the Source editor's, exercised here.
     reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx)
     });
@@ -607,7 +607,7 @@ fn cached_panel_tracks_preview_and_source_without_changing_selection(cx: &mut Te
     settle(visual);
     outline.read_with(visual, |view, _| assert_eq!(view.current, Some(0)));
     assert_eq!(
-        std::fs::read_to_string(root.path().join("config.yaml")).unwrap(),
+        std::fs::read_to_string(root.path().join("config.py")).unwrap(),
         source
     );
 }

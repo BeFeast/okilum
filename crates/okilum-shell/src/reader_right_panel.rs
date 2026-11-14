@@ -50,9 +50,29 @@ pub(super) fn render_file(
         .flex_none()
         .text_size(px(brand::READER_CHROME_FONT_SIZE))
         .when(contents || service, |panel| {
+            // Editing text that does not parse: the rows are of the last valid
+            // text. The heading says so; nothing is inserted above the list.
+            let stale = outline.read(cx).last_valid_tooltip();
             panel.child(
                 section("icons/list.svg", "Contents".into())
-                    .debug_selector(|| "file-contents-heading".into()),
+                    .debug_selector(|| "file-contents-heading".into())
+                    .when_some(stale, |heading, tooltip| {
+                        heading.child(
+                            h_flex()
+                                .id("file-contents-last-valid")
+                                .debug_selector(|| "file-contents-last-valid".into())
+                                .ml_auto()
+                                .gap_1()
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(p.warning)
+                                .child(Icon::new(IconName::TriangleAlert).xsmall())
+                                .child("Last valid text")
+                                .tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                        .build(window, cx)
+                                }),
+                        )
+                    }),
             )
         })
         .when(contents, |panel| panel.child(outline))

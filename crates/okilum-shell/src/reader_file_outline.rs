@@ -7,10 +7,20 @@ use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
 };
+#[path = "reader_file_outline/edit.rs"]
+mod edit;
 #[path = "reader_file_outline/parse.rs"]
 mod parse;
 #[path = "reader_file_outline/tree.rs"]
 pub(crate) mod tree;
+
+/// Release a whole tree (or its rows) on a worker: dropping one walks every
+/// node, which is file-sized work the UI thread must not do (#2814).
+fn retire<T: Send + 'static>(value: T, cx: &App) {
+    cx.background_executor()
+        .spawn(async move { drop(value) })
+        .detach();
+}
 
 /// «Reading structure…» appears only when reading takes longer than this.
 const READING_DELAY: Duration = Duration::from_millis(300);
@@ -43,6 +53,8 @@ struct Snapshot {
     /// A node a caret move named: its path opens once and its row scrolls
     /// into view when listed. `true` once the path was opened.
     reveal: Option<(usize, bool)>,
+    /// The edit buffer the rows come from while the file is edited.
+    edit: Option<edit::EditSource>,
     /// Children walked on the UI thread by «where you are» samples.
     #[cfg(test)]
     ui_child_steps: usize,
@@ -109,6 +121,20 @@ impl View {
             .file_preview
             .as_ref()
             .and_then(|file| file.code.clone());
+        // Edit mode of a data file: rows from the edit buffer's last valid text.
+        if let Some((input, language)) = reader
+            .source_input()
+            .zip(Self::edit_contents_language(reader))
+        {
+            let chrome = (language == "json")
+                .then(|| reader.file_editor_parse())
+                .flatten();
+            let file = reader.selected_file().to_owned();
+            view.update(cx, |this, cx| {
+                this.bind_edit(input, chrome, language, file, cx)
+            });
+            return;
+        }
         // Read mode of a JSON file: rows come from the viewer's own tree.
         if let Some(code) = code.clone().filter(|_| reader.source_input().is_none()) {
             let source = code.read(cx).contents_source();
@@ -298,6 +324,18 @@ impl View {
         }
     }
 
+    /// While the edited text does not parse: the heading's tooltip, with
+    /// the error line. The rows are of the last valid text.
+    pub(super) fn last_valid_tooltip(&self) -> Option<String> {
+        let (line, message) = self.snapshot.edit.as_ref()?.stale.as_ref()?;
+        self.snapshot.doc.as_ref()?;
+        Some(if message.is_empty() {
+            format!("The text does not parse at line {line}. Contents shows the last valid text.")
+        } else {
+            format!("Line {line}: {message}. Contents shows the last valid text.")
+        })
+    }
+
     pub(super) fn has_entries(&self) -> bool {
         if self.snapshot.active {
             return match self.snapshot.state {
@@ -328,6 +366,12 @@ impl View {
         if !self.snapshot.active || self.code.as_ref() != Some(&code) {
             // Leave the private-parser path and watch the viewer cheaply: a
             // notify only compares the snapshot it already has.
+            if self.snapshot.edit.take().is_some() {
+                // Back from editing: the viewer's caret is not the editor's.
+                self.snapshot.seen = None;
+                self.snapshot.follow_caret = false;
+                self.snapshot.reveal = None;
+            }
             self.input_observers.clear();
             self.input = None;
             self.task = None;
@@ -364,11 +408,16 @@ impl View {
             // A new file starts from nothing: no rows, no pending rebuild and
             // no «Reading structure…» timer of the previous file.
             self.snapshot.file = file;
-            self.snapshot.doc = None;
-            self.snapshot.pending = None;
-            self.snapshot.rows = Arc::default();
-            self.snapshot.positions = Arc::default();
-            self.snapshot.groups = Arc::default();
+            retire(
+                (
+                    self.snapshot.doc.take(),
+                    self.snapshot.pending.take(),
+                    std::mem::take(&mut self.snapshot.rows),
+                    std::mem::take(&mut self.snapshot.positions),
+                    std::mem::take(&mut self.snapshot.groups),
+                ),
+                cx,
+            );
             self.snapshot.current = None;
             self.snapshot.seen = None;
             self.snapshot.follow_caret = false;
@@ -390,7 +439,7 @@ impl View {
                     .or(self.snapshot.doc.as_ref());
                 if newest.is_none_or(|old| !Arc::ptr_eq(old, &doc)) {
                     // The shown rows keep their document until the new rows land.
-                    self.snapshot.pending = Some(doc);
+                    retire(self.snapshot.pending.replace(doc), cx);
                     self.rebuild_rows(cx);
                 }
             }
@@ -414,19 +463,29 @@ impl View {
             ContentsSource::Invalid(reason) => {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Invalid(reason);
-                self.snapshot.doc = None;
-                self.snapshot.pending = None;
+                retire(
+                    (
+                        self.snapshot.doc.take(),
+                        self.snapshot.pending.take(),
+                        std::mem::take(&mut self.snapshot.rows),
+                    ),
+                    cx,
+                );
                 self.snapshot.task = None;
-                self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
             ContentsSource::Absent => {
                 self.snapshot.reading = None;
                 self.snapshot.state = SnapshotState::Absent;
-                self.snapshot.doc = None;
-                self.snapshot.pending = None;
+                retire(
+                    (
+                        self.snapshot.doc.take(),
+                        self.snapshot.pending.take(),
+                        std::mem::take(&mut self.snapshot.rows),
+                    ),
+                    cx,
+                );
                 self.snapshot.task = None;
-                self.snapshot.rows = Arc::default();
                 self.list.reset(0);
             }
         }
@@ -441,16 +500,23 @@ impl View {
     /// nothing opens. A node not listed marks its nearest listed ancestor or
     /// the closed group that holds it.
     fn snapshot_current(&mut self, cx: &mut Context<Self>) -> Option<usize> {
-        let code = self.code.clone()?;
         let doc = self.snapshot.doc.clone()?;
-        let raw = code.read(cx).document_raw_for_contents()?;
-        // The viewer holds a newer parse whose rows are still being built:
-        // the mark waits for them (the swap syncs it) instead of remapping
-        // every viewport sample through both documents.
-        if !Arc::ptr_eq(&raw, &doc) {
-            return self.snapshot.current;
-        }
-        let now = code.read(cx).contents_whereabouts(cx)?;
+        let now = if self.snapshot.edit.is_some() {
+            match self.edit_whereabouts(&doc, cx) {
+                Some(now) => now,
+                None => return self.snapshot.current,
+            }
+        } else {
+            let code = self.code.clone()?;
+            let raw = code.read(cx).document_raw_for_contents()?;
+            // The viewer holds a newer parse whose rows are still being built:
+            // the mark waits for them (the swap syncs it) instead of remapping
+            // every viewport sample through both documents.
+            if !Arc::ptr_eq(&raw, &doc) {
+                return self.snapshot.current;
+            }
+            code.read(cx).contents_whereabouts(cx)?
+        };
         match self.snapshot.seen.replace(now) {
             // A view switch is not a caret move, nor a new page whose caret
             // is still where loading the page put it (the position scrubber):
@@ -602,15 +668,19 @@ impl View {
                 {
                     this.snapshot.pending = None;
                 }
-                this.snapshot.doc = Some(used);
+                let old_doc = this.snapshot.doc.replace(used);
                 // No toggle ran since (it would have bumped the generation):
                 // the opened path replaces the state it was computed from.
                 if let Some(expansion) = expansion {
                     *this.expansion() = expansion;
                 }
-                this.snapshot.rows = Arc::new(rows);
-                this.snapshot.positions = Arc::new(positions);
-                this.snapshot.groups = Arc::new(groups);
+                let old = (
+                    old_doc,
+                    std::mem::replace(&mut this.snapshot.rows, Arc::new(rows)),
+                    std::mem::replace(&mut this.snapshot.positions, Arc::new(positions)),
+                    std::mem::replace(&mut this.snapshot.groups, Arc::new(groups)),
+                );
+                retire(old, cx);
                 this.list
                     .reset_with_uniform_height(this.snapshot.rows.len(), px(OUTLINE_ROW_HEIGHT));
                 this.list.scroll_to(ListOffset {
@@ -631,6 +701,10 @@ impl View {
     }
 
     fn jump_snapshot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.snapshot.edit.is_some() {
+            self.jump_edit(index, window, cx);
+            return;
+        }
         // The row's index belongs to the document of the shown rows.
         if let (Some(code), Some(rows)) = (self.code.clone(), self.snapshot.doc.clone()) {
             code.update(cx, |code, cx| {

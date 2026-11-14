@@ -1167,3 +1167,280 @@ fn contents2814_a_reveal_through_a_huge_container_costs_the_ui_thread_no_child_w
     );
     assert_eq!(marked_key(&view, visual), "k49990");
 }
+
+/// A Reader with a session directory, which Edit needs.
+fn editable_reader_with<'a>(
+    cx: &'a mut TestAppContext,
+    files: &[(&str, &str)],
+    open: &str,
+) -> (
+    Entity<Reader>,
+    &'a mut VisualTestContext,
+    [tempfile::TempDir; 2],
+) {
+    cx.update(|cx| {
+        crate::test_init(cx);
+        bind_keys(cx);
+    });
+    let root = tempfile::tempdir().unwrap();
+    let session = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        std::fs::write(root.path().join(name), text).unwrap();
+    }
+    let open = open.to_owned();
+    let path = root.path().to_path_buf();
+    let session_path = session.path().to_path_buf();
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut reader = Reader::new(
+                Opts {
+                    vault: Some(path.clone()),
+                    note: Some(open.clone()),
+                    session_directory: Some(session_path.clone()),
+                    index_dir: Some(session_path.join(".index")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            reader.panels.open(reader_layout::Panel::Backlinks);
+            reader
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1400.), px(800.)));
+    settle(visual);
+    (reader.unwrap(), visual, [root, session])
+}
+
+fn edit_mode(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Entity<EditorState> {
+    reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+    settle(visual);
+    paint(visual);
+    reader.read_with(visual, |r, _| r.source_input().expect("Edit mode"))
+}
+
+fn type_at(
+    input: &Entity<EditorState>,
+    visual: &mut VisualTestContext,
+    range: std::ops::Range<usize>,
+    text: &str,
+) {
+    let text = text.to_owned();
+    input.update_in(visual, |i, w, cx| {
+        i.replace_source_range(range, &text, w, cx)
+    });
+    settle(visual);
+    paint(visual);
+}
+
+fn editor_text(input: &Entity<EditorState>, visual: &VisualTestContext) -> String {
+    input.read_with(visual, |i, _| i.text().to_string())
+}
+
+#[gpui::test]
+fn contents2814_edit_follows_each_parse_keeps_open_rows_and_the_last_valid_text(
+    cx: &mut TestAppContext,
+) {
+    let big: Vec<String> = (0..30).map(|i| format!("\"b{i:02}\":{i}")).collect();
+    let source = format!("{{\n\"big\":{{{}}},\n\"z\":2\n}}\n", big.join(","));
+    let (reader, visual, _dirs) =
+        editable_reader_with(cx, &[("edit.json", source.as_str())], "edit.json");
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.snapshot.edit.is_some(),
+            "positive: Contents reads the edit buffer"
+        );
+        assert_eq!(shown(v), ["big 30 keys", "z 2"]);
+    });
+    // Open «big» in Contents; the next parses keep it open.
+    let big_row = view.read_with(visual, |v, _| {
+        find_row(&v.snapshot.doc.clone().unwrap(), &v.snapshot.rows, "big")
+    });
+    view.update(visual, |v, cx| v.toggle_snapshot_row(&big_row, cx));
+    settle(visual);
+    assert!(listed(&view, visual, "b07"), "positive: big opened");
+    // A successful parse adds the typed key; open rows stay open.
+    type_at(&input, visual, 2..2, "\"new\":0,\n");
+    view.read_with(visual, |v, _| {
+        let rows = shown(v);
+        assert_eq!(rows[0], "new 0", "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.trim() == "b07 7"),
+            "open rows kept: {rows:?}"
+        );
+        assert!(v.last_valid_tooltip().is_none());
+    });
+    assert!(visual.debug_bounds("file-contents-last-valid").is_none());
+    // Where you are follows the editor's caret.
+    let z = editor_text(&input, visual).find("\"z\"").unwrap();
+    input.update(visual, |i, cx| i.set_selected_range(z..z, cx));
+    paint(visual);
+    assert_eq!(
+        marked_key(&view, visual),
+        "z",
+        "the edit caret marks its node"
+    );
+    // A trailing comma: the rows stay, the heading says «Last valid text»
+    // with the error line in its tooltip.
+    let text = editor_text(&input, visual);
+    let end = text.rfind('}').unwrap();
+    type_at(&input, visual, end..end, ",");
+    view.read_with(visual, |v, _| {
+        assert_eq!(shown(v)[0], "new 0", "the last valid rows stay");
+        let tip = v.last_valid_tooltip().expect("stale heading");
+        assert!(tip.starts_with("Line 5"), "{tip}");
+    });
+    assert!(
+        visual.debug_bounds("file-contents-last-valid").is_some(),
+        "the warning is drawn in the heading"
+    );
+    // More edits above «z» while the text is still invalid: a click on «z»
+    // lands on «z» in the current text, not at its old offset.
+    type_at(&input, visual, 0..0, "\n\n\n");
+    type_at(&input, visual, 2..2, "  ");
+    let z = key_index(&view, visual, "z");
+    view.update_in(visual, |v, w, cx| v.jump_snapshot(z, w, cx));
+    settle(visual);
+    let text = editor_text(&input, visual);
+    let expected = text.find("\"z\"").unwrap();
+    input.read_with(visual, |i, _| {
+        assert_eq!(
+            i.selected_range(),
+            expected..expected,
+            "mapped through the edits"
+        )
+    });
+    // Valid again: the warning goes and the rows follow.
+    let text = editor_text(&input, visual);
+    let comma = text.rfind(",}").unwrap();
+    type_at(&input, visual, comma..comma + 1, "");
+    view.read_with(visual, |v, _| assert!(v.last_valid_tooltip().is_none()));
+    assert!(visual.debug_bounds("file-contents-last-valid").is_none());
+}
+
+#[gpui::test]
+fn contents2814_edit_yaml_is_stale_while_invalid_and_toml_keeps_tolerant_rows(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _dirs) = editable_reader_with(
+        cx,
+        &[
+            (
+                "compose.yml",
+                "services:\n  web:\n    image: x\nvolumes: {}\n",
+            ),
+            ("Cargo.toml", "[package]\nname = \"a\"\n\n[deps]\nb = 1\n"),
+        ],
+        "compose.yml",
+    );
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    view.read_with(visual, |v, _| assert_eq!(shown(v)[0], "services 1 key"));
+    type_at(&input, visual, 0..0, "top: 1\n");
+    view.read_with(visual, |v, _| {
+        assert_eq!(shown(v)[0], "top 1", "the buffer's parse");
+        assert!(v.last_valid_tooltip().is_none());
+    });
+    type_at(&input, visual, 0..0, "bad: [1, 2\n");
+    view.read_with(visual, |v, _| {
+        assert_eq!(shown(v)[0], "top 1", "the last valid rows stay");
+        assert!(
+            v.last_valid_tooltip().is_some(),
+            "YAML has a strict verdict"
+        );
+    });
+    reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
+    settle(visual);
+    reader.update_in(visual, |r, w, cx| r.open_note("Cargo.toml", None, w, cx));
+    settle(visual);
+    let input = edit_mode(&reader, visual);
+    type_at(&input, visual, 0..0, "[broken\n");
+    view.read_with(visual, |v, _| {
+        assert!(v.last_valid_tooltip().is_none(), "TOML has no verdict");
+        assert!(
+            shown(v).iter().any(|r| r.starts_with("package")),
+            "{:?}",
+            shown(v)
+        );
+    });
+}
+
+#[test]
+fn contents2814_offsets_map_through_line_edits() {
+    let old = "a\nb\nkey: 1\nc\n";
+    let new = "x\ny\na\nb\n  key: 1\nc\n";
+    let key = old.find("key").unwrap();
+    // The line with «key» changed (indented): the start of its replacement.
+    assert_eq!(edit::map_offset(old, new, key), new.find("  key").unwrap());
+    let c = old.find('c').unwrap();
+    assert_eq!(
+        edit::map_offset(old, new, c),
+        new.find('c').unwrap(),
+        "unchanged line keeps its column"
+    );
+    assert_eq!(edit::map_offset(old, old, 3), 3);
+}
+
+#[gpui::test]
+fn contents2814_edit_reload_with_other_content_refreshes_contents_and_clears_the_warning(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, dirs) =
+        editable_reader_with(cx, &[("reload.yml", "first: 1\nsecond: 2\n")], "reload.yml");
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    type_at(&input, visual, 0..0, "bad: [1, 2\n");
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.last_valid_tooltip().is_some(),
+            "positive: stale before Reload"
+        );
+        assert_eq!(shown(v)[0], "first 1");
+    });
+    // Reload replaces the buffer with `set_value`, which emits no Change.
+    std::fs::write(dirs[0].path().join("reload.yml"), "reloaded: 3\n").unwrap();
+    reader.update_in(visual, |r, w, cx| r.resolve_source(true, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        editor_text(&input, visual),
+        "reloaded: 3\n",
+        "positive: reloaded"
+    );
+    view.read_with(visual, |v, _| {
+        assert_eq!(
+            shown(v),
+            ["reloaded 3"],
+            "Contents follows the reloaded text"
+        );
+        assert!(v.last_valid_tooltip().is_none(), "the warning is cleared");
+    });
+    assert!(visual.debug_bounds("file-contents-last-valid").is_none());
+}
+
+#[gpui::test]
+fn contents2814_edit_never_releases_a_tree_on_the_ui_thread(cx: &mut TestAppContext) {
+    let (reader, visual, _dirs) =
+        editable_reader_with(cx, &[("drops.yml", "first: 1\nsecond: 2\n")], "drops.yml");
+    let view = outline(&reader, visual);
+    let input = edit_mode(&reader, visual);
+    let counts = reader_code_file::document::drop_probe::install(visual.executor());
+    // A replaced tree, an invalid tree, and a replaced tree again.
+    type_at(&input, visual, 0..0, "top: 0\n");
+    type_at(&input, visual, 0..0, "bad: [1, 2\n");
+    view.read_with(visual, |v, _| assert!(v.last_valid_tooltip().is_some()));
+    type_at(&input, visual, 0..11, "");
+    view.read_with(visual, |v, _| assert_eq!(shown(v)[0], "top 0"));
+    let counts = counts.borrow();
+    assert!(
+        counts.background >= 3,
+        "positive: trees were released ({} on a worker)",
+        counts.background
+    );
+    assert_eq!(counts.foreground, 0, "trees released on the UI thread");
+}
