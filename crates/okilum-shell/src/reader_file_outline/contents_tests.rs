@@ -1676,7 +1676,7 @@ fn contents2814_budget_numbers() {
             worst = worst.max(ms);
             total += ms;
         }
-        println!(
+        diagnostic_println!(
             "CONTENTS2814_BUDGET {label} bytes={bytes} nodes={} tree_ms={tree_ms:.1} first_rows_ms={rows_ms:.2} rows={} rows_resident_mb={rows_mb:.2} lookup_avg_ms={:.4} lookup_max_ms={worst:.4}",
             doc.structure.len(),
             rows.len(),
