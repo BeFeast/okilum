@@ -32,6 +32,10 @@ and to `app_footprint::roots()` (or the OS-specific removal) before updating it.
 - **Inside vaults:** `.okilum-save-*` / `.okilum-create-*` transient files may
   remain after a crash. They are part of the vault and are never deleted
   automatically.
+- **Saved untitled files:** a new untitled file is saved where the user picks;
+  the suggested folder is `~/Documents` (or home). These are user files, outside
+  the app's owned data, and uninstall keeps them. Unsaved untitled drafts live
+  under the state directory and are removed with it.
 - **Sync destinations:** folders selected or created in the native directory
   dialog are user vaults, outside the app's owned data. The picker does not
   compute a separate home-based destination root; uninstall keeps these vaults.
