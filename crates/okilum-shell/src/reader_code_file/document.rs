@@ -42,7 +42,7 @@ pub(crate) struct Document {
     pub child_steps: std::sync::atomic::AtomicUsize,
     /// Counts a drop on the foreground of a probing test (#2814).
     #[cfg(test)]
-    pub drop_probe: drop_probe::Probe,
+    pub _drop_probe: drop_probe::Probe,
     pub foldable: bool,
     pub structure: Vec<StructureRow>,
 }
@@ -314,7 +314,7 @@ impl Document {
             #[cfg(test)]
             child_steps: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
-            drop_probe: drop_probe::Probe,
+            _drop_probe: drop_probe::Probe,
             foldable,
             structure,
         }
