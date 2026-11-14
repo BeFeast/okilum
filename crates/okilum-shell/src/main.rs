@@ -3383,17 +3383,23 @@ impl Reader {
     /// reach the Reader along the focused element's dispatch path or from a
     /// click inside it, so drawn focus outside the Reader does not occur here.
     ///
-    /// The vault search entry is the exception: the header always draws it,
-    /// but it is the Notes panel's entry point (opening Notes focuses it), so
-    /// once Notes is hidden it hands focus to the document, as a resize that
-    /// hides Notes already does.
+    /// Two drawn holders are not a place the user is working in, and hand
+    /// focus to the document as before #2957:
+    /// - the Reader's own handle, which only stands in for the document
+    ///   (opening a right panel or closing Find puts focus there);
+    ///   `focus_document` keeps it where the Reader handle is the document's
+    ///   focus (a file viewer, the empty vault page);
+    /// - the vault search entry once Notes is hidden: the header always draws
+    ///   it, but it is the Notes panel's entry point (opening Notes focuses
+    ///   it), as a resize that hides Notes already treats it.
     fn focus_after_layout_change(&mut self, window: &mut Window, cx: &mut App) {
+        let reader_stand_in = self.focus_handle.is_focused(window);
         let search_without_notes = self.sidebar_search_focus.is_focused(window)
             && !self.panels.visible(
                 reader_layout::Panel::Notes,
                 f32::from(self.body_bounds.size.width),
             );
-        if focus_drawn_in_reader(window) && !search_without_notes {
+        if focus_drawn_in_reader(window) && !reader_stand_in && !search_without_notes {
             self.refocus_if_lost = true;
         } else {
             self.refocus_if_lost = false;
