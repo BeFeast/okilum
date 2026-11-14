@@ -47,7 +47,7 @@ fn xml2912_single_line_pom_is_indented_one_element_per_line() {
 }
 
 fn validation_after(text: &str) -> Option<Result<(), Invalid>> {
-    xml_validation_controlled(text, &Control::default())
+    xml_validation_controlled(text, &Control::default()).map(|r| r.expect("no budget refusal"))
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn xml2912_formatting_is_idempotent() {
     for source in [
         POM_LINE.to_string(),
         format!("{POM_LINE}\r\n").replace("><", ">\r\n<"),
-        "<a>\n\n\n<b/>\n\n<c>t</c><d><e/></d></a>\n".into(),
+        "<r>\n\n\n<x/>\n\n<c>t</c><d><e/></d></r>\n".into(),
         "<r><p>Mixed <b>bold</b> text</p><pre xml:space=\"preserve\">  <x/>  </pre></r>".into(),
     ] {
         let first = match format("xml", &source) {
@@ -101,7 +101,7 @@ fn xml2912_already_formatted_file_round_trips_bytes() {
 #[test]
 fn xml2912_markup_is_copied_byte_for_byte() {
     let doctype = "<!DOCTYPE note [\n  <!ENTITY co \"Example > Inc\">\n  <!-- a [bracket] -->\n]>";
-    let comment = "<!--  keep   <b>this</b> -- spacing  -->";
+    let comment = "<!--  keep   <b>this</b> - spacing  -->";
     let pi = "<?xml-stylesheet type=\"text/xsl\" href=\"s.xsl\"?>";
     let tag = "<note  z='1'   a=\"2\"\n      m=\"&amp;&#x41;&co;\">";
     let cdata = "<![CDATA[ if (a < b && c) { } ]]>";
@@ -142,10 +142,10 @@ fn xml2912_mixed_content_and_preserved_space_are_untouched() {
     );
     // A mixed root is copied whole: nothing to re-indent.
     assert_eq!(unchanged(para), "Already formatted.");
-    // xml:space="default" or another value does not freeze the subtree.
+    // xml:space="default" does not freeze the subtree.
     assert_eq!(
-        changed("<a xml:space=\"default\"><b/></a>"),
-        "<a xml:space=\"default\">\n  <b/>\n</a>"
+        changed("<r xml:space=\"default\"><x/></r>"),
+        "<r xml:space=\"default\">\n  <x/>\n</r>"
     );
 }
 
@@ -201,27 +201,27 @@ fn xml2912_invalid_xml_is_unchanged_with_the_validate_position() {
 
 #[test]
 fn xml2912_line_endings_bom_and_indent_unit_follow_the_source_and_editor() {
-    let crlf = changed("\u{feff}<a><b>x</b></a>\r\n");
-    assert_eq!(crlf, "\u{feff}<a>\r\n  <b>x</b>\r\n</a>\r\n");
+    let crlf = changed("\u{feff}<r><x>v</x></r>\r\n");
+    assert_eq!(crlf, "\u{feff}<r>\r\n  <x>v</x>\r\n</r>\r\n");
     // A single-line body inherits the owning document's newline.
     assert_eq!(
-        format_with_line_ending("xml", "<a><b/></a>", LineEnding::Crlf),
-        Formatted::Changed("<a>\r\n  <b/>\r\n</a>".into())
+        format_with_line_ending("xml", "<r><x/></r>", LineEnding::Crlf),
+        Formatted::Changed("<r>\r\n  <x/>\r\n</r>".into())
     );
     assert_eq!(
-        unchanged("<a>\r\n<b/>\n</a>"),
+        unchanged("<r>\r\n<x/>\n</r>"),
         "Mixed line endings; source unchanged."
     );
     assert_eq!(
         format_indented(
             "xml",
-            "<a><b><c/></b></a>",
+            "<r><x><c/></x></r>",
             LineEnding::Lf,
             "\t",
             &Control::default()
         ),
         Some(Formatted::Changed(
-            "<a>\n\t<b>\n\t\t<c/>\n\t</b>\n</a>".into()
+            "<r>\n\t<x>\n\t\t<c/>\n\t</x>\n</r>".into()
         ))
     );
 }
@@ -229,12 +229,12 @@ fn xml2912_line_endings_bom_and_indent_unit_follow_the_source_and_editor() {
 #[test]
 fn xml2912_blank_lines_before_children_survive_once() {
     assert_eq!(
-        changed("\n\n<a>\n\n\n  <b/>\n\n\n\n  <c/>\n\n</a>\n\n"),
-        "<a>\n\n  <b/>\n\n  <c/>\n</a>\n"
+        changed("\n\n<r>\n\n\n  <x/>\n\n\n\n  <c/>\n\n</r>\n\n"),
+        "<r>\n\n  <x/>\n\n  <c/>\n</r>\n"
     );
     assert_eq!(
-        changed("<?xml version=\"1.0\"?>\n\n<!-- c -->\n<a><b/></a>"),
-        "<?xml version=\"1.0\"?>\n\n<!-- c -->\n<a>\n  <b/>\n</a>"
+        changed("<?xml version=\"1.0\"?>\n\n<!-- c -->\n<r><x/></r>"),
+        "<?xml version=\"1.0\"?>\n\n<!-- c -->\n<r>\n  <x/>\n</r>"
     );
 }
 
@@ -274,9 +274,9 @@ fn xml2912_large_input_formats_linearly_and_cancels_without_a_result() {
 
 #[test]
 fn xml2912_output_and_input_limits_refuse_without_invalid_claims() {
-    // 20 000 nested levels: a 140 KB input whose indentation would exceed
-    // the 64 MiB output ceiling.
-    let deep = format!("{}{}", "<a>".repeat(20_000), "</a>".repeat(20_000));
+    // 9 000 nested levels, under the depth budget: a 63 KB input whose
+    // indentation would exceed the 64 MiB output ceiling.
+    let deep = format!("{}{}", "<x>".repeat(9_000), "</x>".repeat(9_000));
     let reason = unchanged(&deep);
     assert!(reason.contains("results up to 64 MiB"), "{reason}");
     assert!(!reason.to_lowercase().contains("invalid"));
@@ -296,4 +296,156 @@ fn xml2912_many_attributes_are_checked_for_duplicates_linearly() {
     let duplicate = format!("<r{attributes} a49999=\"x\"/>");
     let error = validation_after(&duplicate).unwrap().unwrap_err();
     assert!(error.message.contains("duplicate attribute a49999"));
+}
+
+/// Review 1: whitespace between `<b>a</b><i>b</i>` would turn «ab» into
+/// «a b». Elements of prose vocabularies are re-indented only where every
+/// boundary already holds whitespace; data vocabularies stay element-only.
+#[test]
+fn xml2912_prose_elements_never_gain_whitespace_between_children() {
+    for source in [
+        "<p><b>a</b><i>b</i></p>",
+        "<p> <b>a</b><i>b</i> </p>",
+        "<para xmlns=\"http://docbook.org/ns/docbook\"><emphasis>a</emphasis><link>b</link></para>",
+        "<TEI xmlns=\"http://www.tei-c.org/ns/1.0\"><hi>a</hi><hi>b</hi></TEI>",
+        "<ph><b>a</b><i>b</i></ph>",
+    ] {
+        assert_eq!(unchanged(source), "Already formatted.", "{source}");
+    }
+    // The paragraph keeps its bytes while its element-only parents indent.
+    assert_eq!(
+        changed("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p><b>a</b><i>b</i></p><ul><li><em>x</em><b>y</b></li></ul></body></html>"),
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n  <body>\n    <p><b>a</b><i>b</i></p>\n    <ul>\n      <li><em>x</em><b>y</b></li>\n    </ul>\n  </body>\n</html>"
+    );
+    assert_eq!(
+        changed("<r xmlns:h=\"http://www.w3.org/1999/xhtml\"><h:p><h:b>a</h:b><h:i>b</h:i></h:p><n>1</n></r>"),
+        "<r xmlns:h=\"http://www.w3.org/1999/xhtml\">\n  <h:p><h:b>a</h:b><h:i>b</h:i></h:p>\n  <n>1</n>\n</r>"
+    );
+    // Proven element-only: every boundary already has whitespace.
+    assert_eq!(
+        changed("<p> <b>a</b>   <i>b</i>\n</p>"),
+        "<p>\n  <b>a</b>\n  <i>b</i>\n</p>"
+    );
+    // Data in a namespace whose names collide with prose names still indents.
+    assert_eq!(
+        changed("<feed xmlns=\"http://www.w3.org/2005/Atom\"><entry><title>t</title><id>1</id></entry></feed>"),
+        "<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <entry>\n    <title>t</title>\n    <id>1</id>\n  </entry>\n</feed>"
+    );
+    assert_eq!(
+        changed("<config><server><host>h</host><port>1</port></server></config>"),
+        "<config>\n  <server>\n    <host>h</host>\n    <port>1</port>\n  </server>\n</config>"
+    );
+}
+
+/// Review 2: `xml:space` is resolved before comparing; whatever does not
+/// resolve to `default` freezes the subtree, and `default` inside a
+/// preserved subtree keeps it frozen.
+#[test]
+fn xml2912_resolved_xml_space_freezes_the_subtree() {
+    for source in [
+        "<r xml:space=\"pre&#115;erve\"><x/></r>",
+        "<r xml:space=\"pre&#x73;erve\"><x/></r>",
+        "<r xml:space=\" preserve\t\"><x/></r>",
+        "<r xml:space=\"Preserve\"><x/></r>",
+        "<!DOCTYPE r [<!ENTITY p \"preserve\">]>\n<r xml:space=\"&p;\"><x/></r>",
+        "<r xml:space=\"preserve\"><k xml:space=\"default\"><x/></k></r>",
+    ] {
+        assert_eq!(unchanged(source), "Already formatted.", "{source}");
+    }
+    assert_eq!(
+        changed("<r xml:space=\" de&#102;ault \"><x/></r>"),
+        "<r xml:space=\" de&#102;ault \">\n  <x/>\n</r>"
+    );
+}
+
+/// Review 3: references to illegal characters, undeclared entities, `--` in
+/// comments and control characters are errors at every size.
+#[test]
+fn xml2912_illegal_references_comments_and_characters_are_invalid() {
+    for (source, line, column) in [
+        ("<r>&#0;</r>", 1, 4),
+        ("<r>&#x110000;</r>", 1, 4),
+        ("<r>&#xD800;</r>", 1, 4),
+        ("<r>&nope;</r>", 1, 4),
+        ("<r a=\"&nope;\"/>", 1, 7),
+        ("<r><!-- a--b --></r>", 1, 10),
+        ("<r><!-- a ---></r>", 1, 11),
+        ("<r>\u{1}</r>", 1, 4),
+        ("<r>\u{FFFE}</r>", 1, 4),
+        ("<!DOCTYPE r [<!-- a--b -->]><r/>", 1, 20),
+    ] {
+        assert_eq!(
+            unchanged(source),
+            xml_invalid_notice(line, column),
+            "{source:?}"
+        );
+        let error = validation_after(source).unwrap().unwrap_err();
+        assert_eq!((error.line, error.column), (line, column), "{source:?}");
+    }
+    // Above the old grammar budget too.
+    let big = format!("<r>{}<!-- a--b --></r>", "<x/>".repeat(80_000));
+    assert!(big.len() > 256 * 1024);
+    assert!(unchanged(&big).starts_with("XML is invalid at 1:"));
+    // Declared, external or parameter-entity-declared entities are fine and
+    // never expanded.
+    for (source, expected) in [
+        (
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r><k>&e;</k><y/></r>",
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r>\n  <k>&e;</k>\n  <y/>\n</r>",
+        ),
+        (
+            "<!DOCTYPE r SYSTEM \"r.dtd\">\n<r><k>&ext;</k><y/></r>",
+            "<!DOCTYPE r SYSTEM \"r.dtd\">\n<r>\n  <k>&ext;</k>\n  <y/>\n</r>",
+        ),
+        (
+            "<!DOCTYPE r [%defs;]>\n<r><k>&ext;</k><y/></r>",
+            "<!DOCTYPE r [%defs;]>\n<r>\n  <k>&ext;</k>\n  <y/>\n</r>",
+        ),
+    ] {
+        assert_eq!(changed(source), expected);
+    }
+}
+
+/// Review 4: valid XML a highlighting grammar may reject formats.
+#[test]
+fn xml2912_valid_xml_outside_the_grammar_formats() {
+    assert_eq!(
+        changed("<?p before?><r><x/></r>"),
+        "<?p before?>\n<r>\n  <x/>\n</r>"
+    );
+    assert_eq!(
+        changed("<r имя=\"x\"><x/></r>"),
+        "<r имя=\"x\">\n  <x/>\n</r>"
+    );
+    assert_eq!(validation_after("<?p before?><r имя=\"x\"/>"), Some(Ok(())));
+}
+
+/// Review 5: nesting is bounded before frames for millions of levels are
+/// allocated, with a budget message, not a verdict.
+#[test]
+fn xml2912_nesting_depth_is_bounded() {
+    let over = format!(
+        "{}{}",
+        "<x>".repeat(super::MAX_DEPTH + 1),
+        "</x>".repeat(super::MAX_DEPTH + 1)
+    );
+    let reason = unchanged(&over);
+    assert!(reason.contains("nesting up to 10000 levels"), "{reason}");
+    assert!(!reason.to_lowercase().contains("invalid"));
+    let deep = format!("{}{}", "<x>".repeat(9_000_000), "</x>".repeat(9_000_000));
+    assert!(deep.len() <= MAX_BYTES);
+    let started = std::time::Instant::now();
+    assert!(unchanged(&deep).contains("nesting up to 10000 levels"));
+    match xml_validation_controlled(&deep, &Control::default()) {
+        Some(Err(reason)) => assert!(reason.starts_with("Validate supports XML nesting")),
+        other => panic!("{other:?}"),
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    // Positive control: the deepest allowed document is accepted.
+    let at = format!(
+        "{}{}",
+        "<x>".repeat(super::MAX_DEPTH),
+        "</x>".repeat(super::MAX_DEPTH)
+    );
+    assert_eq!(validation_after(&at), Some(Ok(())));
 }

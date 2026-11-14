@@ -75,11 +75,19 @@ pub fn json_validation_controlled(
 }
 
 /// XML well-formedness (#2912): matched tags, one root, quoted and unique
-/// attributes, references, no text outside the root. Streaming, no tree and
-/// no entity expansion. `None` means cancellation.
-pub fn xml_validation_controlled(source: &str, control: &Control) -> Option<Result<(), Invalid>> {
+/// attributes, legal characters and references, declared entities, comments
+/// without `--`, no text outside the root. Streaming, no tree and no entity
+/// expansion; the authority for XML Format and Validate. `None` means
+/// cancellation; `Err` a size or nesting budget, never a verdict.
+pub fn xml_validation_controlled(
+    source: &str,
+    control: &Control,
+) -> Option<Result<Result<(), Invalid>, String>> {
     if control.cancelled() {
         return None;
+    }
+    if source.len() > MAX_BYTES {
+        return Some(Err(size_notice("Validate", source.len())));
     }
     xml::validation(source, &|| control.cancelled())
 }

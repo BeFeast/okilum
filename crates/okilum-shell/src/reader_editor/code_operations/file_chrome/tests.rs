@@ -1650,3 +1650,39 @@ fn xml2912_corpus_files_keep_tokens_and_reformat_idempotently() {
         );
     }
 }
+
+/// #2912 review: the highlighting grammar no longer vetoes valid XML.
+/// A processing instruction before the root, a non-ASCII attribute name and
+/// an internal-subset entity whose replacement holds markup validate and
+/// format; the well-formedness check is the authority for both.
+#[gpui::test]
+fn xml2912_grammar_never_vetoes_valid_xml(cx: &mut TestAppContext) {
+    for (name, source, expected) in [
+        (
+            "pi.xml",
+            "<?p before?><r><x/></r>\n",
+            "<?p before?>\n<r>\n  <x/>\n</r>\n",
+        ),
+        (
+            "names.xml",
+            "<r имя=\"x\"><x/></r>\n",
+            "<r имя=\"x\">\n  <x/>\n</r>\n",
+        ),
+        (
+            "entity.xml",
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r><k>&e;</k><y/></r>\n",
+            "<!DOCTYPE r [<!ENTITY e \"<b>x</b>\">]>\n<r>\n  <k>&e;</k>\n  <y/>\n</r>\n",
+        ),
+    ] {
+        let (reader, _file, input, visual, _temp) = open(cx, name, source);
+        reader.update_in(visual, |r, w, cx| r.code_operation(Action::Validate, w, cx));
+        frame(visual);
+        let bottom = drawn(&input).1;
+        assert!(
+            bottom.contains("No syntax problems found"),
+            "{name}: {bottom}"
+        );
+        click(visual, "file-format");
+        assert_eq!(text(&input, visual), expected, "{name}");
+    }
+}

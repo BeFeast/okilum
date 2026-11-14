@@ -182,23 +182,19 @@ fn validation_with_control(language: &str, source: &str, control: &model::Contro
     grammar_validation(language, source, control)
 }
 
-/// XML (#2912): the grammar's syntax check within its budget, then the
-/// streaming well-formedness check Format relies on, at any size up to the
-/// shared limit. Format refuses exactly what this reports as a syntax error.
+/// XML (#2912): the streaming well-formedness check is the authority, at
+/// any size up to the shared limit; the highlighting grammar only colours and
+/// never vetoes valid XML. Format refuses exactly what this reports as a
+/// syntax error.
 fn xml_validation(source: &str, control: &model::Control) -> String {
-    if source.len() <= 256 * 1024 {
-        let grammar = grammar_validation("xml", source, control);
-        if grammar.starts_with("Syntax error") || control.cancelled() {
-            return grammar;
-        }
-    }
     match model::xml_validation_controlled(source, control) {
         None => "Operation cancelled.".into(),
-        Some(Err(e)) => format!(
+        Some(Err(reason)) => reason,
+        Some(Ok(Err(e))) => format!(
             "Syntax error (xml) · {}:{} · {}",
             e.line, e.column, e.message
         ),
-        Some(Ok(())) => "Syntax checked (xml); semantic validation is not available.".into(),
+        Some(Ok(Ok(()))) => "Syntax checked (xml); semantic validation is not available.".into(),
     }
 }
 
@@ -1562,13 +1558,13 @@ mod tests {
     /// as one Undo step; the note around it is untouched.
     #[gpui::test]
     fn xml2912_xml_fence_formats_in_place_as_one_undo_step(cx: &mut TestAppContext) {
-        let original = "Before\n```xml\n<a><b>{x} &amp; y</b><!-- c --><d/></a>\n```\nAfter\n";
+        let original = "Before\n```xml\n<r><k>{x} &amp; y</k><!-- c --><d/></r>\n```\nAfter\n";
         let (f, visual) = open(cx, original);
         click(visual, "source-code-format");
         f.reader.read_with(visual, |_, cx| {
             assert_eq!(
                 value(&f, cx),
-                "Before\n```xml\n<a>\n  <b>{x} &amp; y</b>\n  <!-- c -->\n  <d/>\n</a>\n```\nAfter\n"
+                "Before\n```xml\n<r>\n  <k>{x} &amp; y</k>\n  <!-- c -->\n  <d/>\n</r>\n```\nAfter\n"
             );
         });
         visual.dispatch_action(Undo);

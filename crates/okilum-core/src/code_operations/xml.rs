@@ -1,40 +1,56 @@
 //! XML Format code (#2912). A streaming two-pass pretty-printer over the
 //! original bytes: no tree, no entity expansion, no DTD processing.
 //!
-//! The first pass checks well-formedness (matched tags, one root, quoted and
-//! unique attributes, references, no text outside the root) and decides, for
-//! every element in document order, whether its content may be re-indented.
-//! The second pass copies tokens byte for byte and changes only the
-//! whitespace between them:
+//! The first pass checks well-formedness: matched tags, one root, quoted and
+//! unique attributes, legal characters, character references to legal
+//! characters, entity references that are predefined or declared in the
+//! internal subset, comments without `--`, no text outside the root, and at
+//! most [`MAX_DEPTH`] nesting levels. It is the authority for Format and for
+//! Validate; the highlighting grammar only colours. The pass also decides,
+//! for every element in document order, whether its content may be
+//! re-indented. The second pass copies tokens byte for byte and changes only
+//! the whitespace between them.
 //!
-//! - an element whose content is only child elements, comments or processing
-//!   instructions separated by whitespace gets one child per line, indented
-//!   one level deeper;
-//! - every other element is copied verbatim from its start tag to its end
-//!   tag: text-only leaves, mixed content (text next to elements, as in
-//!   XHTML or DocBook), CDATA and `xml:space="preserve"` subtrees;
-//! - start and end tags are copied as written, so attributes keep their
-//!   order, quotes and spacing; comments, CDATA, processing instructions,
-//!   the declaration and DOCTYPE are copied as written;
-//! - one blank line before a child survives where the source had one;
-//! - the final newline, a byte order mark and the newline style stay as the
-//!   source had them.
+//! An element's content is re-indented, one child per line one level deeper,
+//! only when that cannot change its text:
 //!
-//! Whitespace-only text between elements is treated as insignificant, as
-//! every XML pretty-printer does; an element that relies on it without any
-//! other text of its own is the one documented limit.
+//! - it has child elements, comments or processing instructions and no
+//!   other character content (no non-whitespace text, no CDATA, no entity or
+//!   character reference);
+//! - it is not under `xml:space` other than `default` (the value is resolved
+//!   first; a value that cannot be resolved counts as `preserve`), and a
+//!   `default` inside a preserved subtree keeps the subtree frozen;
+//! - if its vocabulary gives it mixed content — XHTML, DocBook, TEI, SVG text
+//!   elements, and in no namespace the HTML, DocBook and DITA names that
+//!   carry prose (`p`, `b`, `i`, `li`, `para`, `emphasis`, `ph`, …) — every
+//!   boundary between its tags and children must already hold whitespace.
+//!   `<p><b>a</b><i>b</i></p>` reads «ab», so it stays byte for byte;
+//! - data vocabularies (a Maven POM, Atom, configuration files) are
+//!   element-only, so a one-line file gets indented.
+//!
+//! Every other element is copied verbatim from its start tag to its end tag.
+//! Start and end tags are copied as written, so attributes keep their order,
+//! quotes and spacing; comments, CDATA, processing instructions, the
+//! declaration and DOCTYPE are copied as written. One blank line before a
+//! child survives; the final newline, a byte order mark and the newline
+//! style stay as the source had them.
 
 use super::{Formatted, Invalid, LineEnding, MAX_OUTPUT_BYTES};
+use std::collections::HashSet;
 use std::ops::Range;
 
 /// Cancellation is polled at least this often while scanning.
 const CHECK_EVERY: usize = 16 * 1024;
 /// Duplicate attributes are found by a linear scan up to this many.
 const LINEAR_ATTRIBUTES: usize = 32;
+/// Open elements kept as scratch: deeper input is refused before it can
+/// allocate frames for millions of levels.
+pub const MAX_DEPTH: usize = 10_000;
 
 pub(super) enum Failure {
     Invalid(Invalid),
     Limit,
+    Depth,
     Cancelled,
 }
 
@@ -57,14 +73,184 @@ struct Token {
     name: Range<usize>,
 }
 
+/// The namespace an element belongs to, as far as layout is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vocabulary {
+    None,
+    Html,
+    DocBook,
+    Tei,
+    Svg,
+    Data,
+}
+
+impl Vocabulary {
+    fn of(uri: Option<&str>) -> Self {
+        match uri {
+            Some("") => Self::None,
+            Some("http://www.w3.org/1999/xhtml") => Self::Html,
+            Some("http://docbook.org/ns/docbook") => Self::DocBook,
+            Some("http://www.tei-c.org/ns/1.0") => Self::Tei,
+            Some("http://www.w3.org/2000/svg") => Self::Svg,
+            _ => Self::Data,
+        }
+    }
+
+    /// Whether whitespace between this element's children may be text.
+    fn mixed(self, local: &str) -> bool {
+        let named = |names: &[&str]| names.iter().any(|n| n.eq_ignore_ascii_case(local));
+        match self {
+            Self::None => named(HTML_PROSE) || named(DOCBOOK_PROSE) || named(DITA_PROSE),
+            Self::Html => named(HTML_PROSE),
+            Self::DocBook => named(DOCBOOK_PROSE),
+            Self::Tei => true,
+            Self::Svg => named(&["text", "tspan", "textPath", "a", "title", "desc"]),
+            Self::Data => false,
+        }
+    }
+}
+
+const HTML_PROSE: &[&str] = &[
+    "a",
+    "abbr",
+    "address",
+    "b",
+    "bdi",
+    "bdo",
+    "big",
+    "blockquote",
+    "button",
+    "caption",
+    "cite",
+    "code",
+    "dd",
+    "del",
+    "dfn",
+    "div",
+    "dt",
+    "em",
+    "figcaption",
+    "font",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "mark",
+    "p",
+    "pre",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "td",
+    "th",
+    "title",
+    "tt",
+    "u",
+    "var",
+];
+
+const DOCBOOK_PROSE: &[&str] = &[
+    "abbrev",
+    "acronym",
+    "address",
+    "application",
+    "attribution",
+    "citation",
+    "citetitle",
+    "classname",
+    "command",
+    "computeroutput",
+    "email",
+    "emphasis",
+    "entry",
+    "filename",
+    "firstterm",
+    "foreignphrase",
+    "function",
+    "glossterm",
+    "guilabel",
+    "guimenu",
+    "keycap",
+    "lineannotation",
+    "link",
+    "literal",
+    "literallayout",
+    "markup",
+    "member",
+    "methodname",
+    "option",
+    "para",
+    "parameter",
+    "phrase",
+    "programlisting",
+    "quote",
+    "remark",
+    "replaceable",
+    "screen",
+    "simpara",
+    "subscript",
+    "subtitle",
+    "superscript",
+    "systemitem",
+    "tag",
+    "term",
+    "title",
+    "ulink",
+    "uri",
+    "userinput",
+    "varname",
+    "wordasword",
+];
+
+const DITA_PROSE: &[&str] = &[
+    "apiname",
+    "cmd",
+    "codeph",
+    "filepath",
+    "info",
+    "keyword",
+    "menucascade",
+    "parmname",
+    "ph",
+    "shortdesc",
+    "systemoutput",
+    "tm",
+    "uicontrol",
+    "wintitle",
+    "xref",
+];
+
 struct Lexer<'a> {
     text: &'a str,
     bytes: &'a [u8],
     at: usize,
     next_check: usize,
     cancelled: &'a dyn Fn() -> bool,
-    attributes: Vec<Range<usize>>,
-    seen: std::collections::HashSet<&'a str>,
+    /// The last start tag's attributes: name and value (inside the quotes).
+    attributes: Vec<(Range<usize>, Range<usize>)>,
+    seen: HashSet<&'a str>,
+    /// General entities the internal subset declares.
+    entities: HashSet<&'a str>,
+    /// An external subset or a parameter entity reference may declare more.
+    open_entities: bool,
 }
 
 fn space(b: u8) -> bool {
@@ -78,6 +264,19 @@ fn name_start(b: u8) -> bool {
 fn name_char(b: u8) -> bool {
     name_start(b) || b.is_ascii_digit() || matches!(b, b'-' | b'.')
 }
+
+/// XML 1.0 `Char`.
+fn legal(c: u32) -> bool {
+    matches!(c, 0x9 | 0xA | 0xD | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
+}
+
+const PREDEFINED: [(&str, char); 5] = [
+    ("lt", '<'),
+    ("gt", '>'),
+    ("amp", '&'),
+    ("apos", '\''),
+    ("quot", '"'),
+];
 
 /// Line and byte column, both 1-based, as Validate and Go to error use them.
 fn position(text: &str, at: usize) -> (usize, usize) {
@@ -104,6 +303,8 @@ impl<'a> Lexer<'a> {
             cancelled,
             attributes: Vec::new(),
             seen: Default::default(),
+            entities: Default::default(),
+            open_entities: false,
         }
     }
 
@@ -147,9 +348,31 @@ impl<'a> Lexer<'a> {
         at
     }
 
-    fn token(&mut self, kind: Kind, span: Range<usize>, name: Range<usize>) -> Option<Token> {
+    /// C0 controls other than tab, newline and return, and U+FFFE/U+FFFF,
+    /// are not XML characters anywhere in a document.
+    fn characters(&self, span: &Range<usize>) -> Result<(), Failure> {
+        let bytes = &self.bytes[span.clone()];
+        let control = bytes
+            .iter()
+            .position(|b| *b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r'));
+        let noncharacter = bytes
+            .windows(3)
+            .position(|w| w[0] == 0xEF && w[1] == 0xBF && matches!(w[2], 0xBE | 0xBF));
+        match control.into_iter().chain(noncharacter).min() {
+            Some(at) => Err(self.invalid(span.start + at, "character not allowed in XML")),
+            None => Ok(()),
+        }
+    }
+
+    fn token(
+        &mut self,
+        kind: Kind,
+        span: Range<usize>,
+        name: Range<usize>,
+    ) -> Result<Option<Token>, Failure> {
+        self.characters(&span)?;
         self.at = span.end;
-        Some(Token { kind, span, name })
+        Ok(Some(Token { kind, span, name }))
     }
 
     fn next(&mut self) -> Result<Option<Token>, Failure> {
@@ -171,16 +394,14 @@ impl<'a> Lexer<'a> {
             return self.instruction(start);
         }
         if rest.starts_with(b"<!--") {
-            let end = self
-                .find(start + 4, "-->")
-                .ok_or_else(|| self.invalid(start, "comment is not closed"))?;
-            return Ok(self.token(Kind::Comment, start..end + 3, 0..0));
+            let end = self.comment(start)?;
+            return self.token(Kind::Comment, start..end, 0..0);
         }
         if rest.starts_with(b"<![CDATA[") {
             let end = self
                 .find(start + 9, "]]>")
                 .ok_or_else(|| self.invalid(start, "CDATA section is not closed"))?;
-            return Ok(self.token(Kind::Cdata, start..end + 3, 0..0));
+            return self.token(Kind::Cdata, start..end + 3, 0..0);
         }
         if rest.starts_with(b"<!DOCTYPE") {
             return self.doctype(start);
@@ -192,6 +413,21 @@ impl<'a> Lexer<'a> {
             return self.end_tag(start);
         }
         self.start_tag(start)
+    }
+
+    /// The end of the comment at `start`; `--` may not occur inside it.
+    fn comment(&self, start: usize) -> Result<usize, Failure> {
+        let body = start + 4;
+        let close = self
+            .find(body, "-->")
+            .ok_or_else(|| self.invalid(start, "comment is not closed"))?;
+        if let Some(at) = self.find_in(body, close, "--") {
+            return Err(self.invalid(at, "'--' is not allowed inside a comment"));
+        }
+        if close > body && self.bytes[close - 1] == b'-' {
+            return Err(self.invalid(close - 1, "a comment may not end with '--->'"));
+        }
+        Ok(close + 3)
     }
 
     fn text_run(&mut self, start: usize) -> Result<Option<Token>, Failure> {
@@ -209,45 +445,99 @@ impl<'a> Lexer<'a> {
         } else {
             0
         };
-        Ok(self.token(Kind::Text { blank, newlines }, start..end, 0..0))
+        self.token(Kind::Text { blank, newlines }, start..end, 0..0)
     }
 
-    /// Every `&` in `start..end` starts `&name;`, `&#digits;` or `&#xhex;`.
+    /// The reference starting with `&` at `at`, ending before `end`: its end
+    /// (after `;`) and what it stands for — a character, a predefined
+    /// entity's character, or `None` for a declared entity.
+    fn reference(&self, at: usize, end: usize) -> Result<(usize, Option<char>), Failure> {
+        let malformed = || {
+            self.invalid(
+                at,
+                "'&' must start an entity or character reference; write &amp; for a literal '&'",
+            )
+        };
+        let mut i = at + 1;
+        if self.bytes.get(i) == Some(&b'#') {
+            i += 1;
+            let hex = self.bytes.get(i) == Some(&b'x');
+            i += usize::from(hex);
+            let digits = i;
+            let mut value: u32 = 0;
+            while i < end {
+                let digit = match (hex, self.bytes[i]) {
+                    (true, b) if b.is_ascii_hexdigit() => (b as char).to_digit(16),
+                    (false, b) if b.is_ascii_digit() => (b as char).to_digit(10),
+                    _ => break,
+                };
+                let radix = if hex { 16 } else { 10 };
+                value = value
+                    .saturating_mul(radix)
+                    .saturating_add(digit.unwrap_or(0));
+                i += 1;
+            }
+            if i == digits || i >= end || self.bytes[i] != b';' {
+                return Err(malformed());
+            }
+            let ch = char::from_u32(value).filter(|c| legal(*c as u32));
+            let Some(ch) = ch else {
+                return Err(
+                    self.invalid(at, "character reference to a character not allowed in XML")
+                );
+            };
+            return Ok((i + 1, Some(ch)));
+        }
+        let name = i..self.name_end(i).min(end);
+        if name.is_empty() || name.end >= end || self.bytes[name.end] != b';' {
+            return Err(malformed());
+        }
+        let key = &self.text[name.clone()];
+        if let Some((_, ch)) = PREDEFINED.iter().find(|(n, _)| *n == key) {
+            return Ok((name.end + 1, Some(*ch)));
+        }
+        if !self.entities.contains(key) && !self.open_entities {
+            return Err(self.invalid(at, format!("entity &{}; is not declared", shown(key))));
+        }
+        Ok((name.end + 1, None))
+    }
+
+    /// Every `&` in `start..end` starts a well-formed reference.
     fn references(&self, start: usize, end: usize) -> Result<(), Failure> {
         let mut from = start;
         while let Some(at) = self.find_in(from, end, "&") {
-            let mut i = at + 1;
-            let valid = if self.bytes.get(i) == Some(&b'#') {
-                i += 1;
-                let hex = self.bytes.get(i) == Some(&b'x');
-                if hex {
-                    i += 1;
-                }
-                let digits = i;
-                while i < end
-                    && (if hex {
-                        self.bytes[i].is_ascii_hexdigit()
-                    } else {
-                        self.bytes[i].is_ascii_digit()
-                    })
-                {
-                    i += 1;
-                }
-                i > digits
-            } else {
-                let name = i;
-                i = self.name_end(i).min(end);
-                i > name
-            };
-            if !valid || i >= end || self.bytes[i] != b';' {
-                return Err(self.invalid(
-                    at,
-                    "'&' must start an entity or character reference; write &amp; for a literal '&'",
-                ));
-            }
-            from = i + 1;
+            from = self.reference(at, end)?.0;
         }
         Ok(())
+    }
+
+    /// An attribute value as a processor sees it for a tokenized type:
+    /// references resolved, whitespace collapsed. `None` when it needs a
+    /// declared entity this formatter does not expand.
+    fn resolved(&self, value: Range<usize>) -> Option<String> {
+        let mut out = String::new();
+        let mut at = value.start;
+        while at < value.end {
+            if self.bytes[at] == b'&' {
+                let (end, ch) = self.reference(at, value.end).ok()?;
+                out.push(ch?);
+                at = end;
+                continue;
+            }
+            let ch = self.text[at..value.end].chars().next()?;
+            out.push(if matches!(ch, '\t' | '\n' | '\r') {
+                ' '
+            } else {
+                ch
+            });
+            at += ch.len_utf8();
+        }
+        Some(
+            out.split(' ')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
 
     fn instruction(&mut self, start: usize) -> Result<Option<Token>, Failure> {
@@ -273,9 +563,12 @@ impl<'a> Lexer<'a> {
         } else {
             Kind::Instruction
         };
-        Ok(self.token(kind, start..end + 2, target))
+        self.token(kind, start..end + 2, target)
     }
 
+    /// DOCTYPE: copied as written. Its internal subset is scanned for
+    /// general entity declarations; an external subset or a parameter entity
+    /// reference leaves undeclared entities possible.
     fn doctype(&mut self, start: usize) -> Result<Option<Token>, Failure> {
         let unclosed = |lexer: &Self| lexer.invalid(start, "DOCTYPE is not closed");
         let mut at = start + "<!DOCTYPE".len();
@@ -287,23 +580,42 @@ impl<'a> Lexer<'a> {
             let Some(&b) = self.bytes.get(at) else {
                 return Err(unclosed(self));
             };
+            let rest = &self.bytes[at..];
             match b {
                 b'"' | b'\'' => {
                     let quote = if b == b'"' { "\"" } else { "'" };
                     at = self.find(at + 1, quote).ok_or_else(|| unclosed(self))? + 1;
                     continue;
                 }
+                b'S' | b'P'
+                    if !subset && (rest.starts_with(b"SYSTEM") || rest.starts_with(b"PUBLIC")) =>
+                {
+                    self.open_entities = true;
+                }
                 b'[' if !subset => subset = true,
                 b']' if subset => subset = false,
-                b'<' if subset && self.bytes[at..].starts_with(b"<!--") => {
-                    at = self.find(at + 4, "-->").ok_or_else(|| unclosed(self))? + 3;
+                b'%' if subset && self.bytes.get(at + 1).is_some_and(|b| name_start(*b)) => {
+                    self.open_entities = true;
+                }
+                b'<' if subset && rest.starts_with(b"<!--") => {
+                    at = self.comment(at)?;
                     continue;
                 }
-                b'<' if subset && self.bytes[at..].starts_with(b"<?") => {
+                b'<' if subset && rest.starts_with(b"<?") => {
                     at = self.find(at + 2, "?>").ok_or_else(|| unclosed(self))? + 2;
                     continue;
                 }
-                b'>' if !subset => return Ok(self.token(Kind::Doctype, start..at + 1, 0..0)),
+                b'<' if subset && rest.starts_with(b"<!ENTITY") => {
+                    at = self.skip_space(at + "<!ENTITY".len());
+                    if self.bytes.get(at) != Some(&b'%') {
+                        let name = at..self.name_end(at);
+                        let text = self.text;
+                        self.entities.insert(&text[name.clone()]);
+                        at = name.end.max(at + 1);
+                    }
+                    continue;
+                }
+                b'>' if !subset => return self.token(Kind::Doctype, start..at + 1, 0..0),
                 _ => {}
             }
             at += 1;
@@ -319,7 +631,7 @@ impl<'a> Lexer<'a> {
         if self.bytes.get(at) != Some(&b'>') {
             return Err(self.invalid(at, "expected '>' to close the tag"));
         }
-        Ok(self.token(Kind::End, start..at + 1, name))
+        self.token(Kind::End, start..at + 1, name)
     }
 
     fn start_tag(&mut self, start: usize) -> Result<Option<Token>, Failure> {
@@ -363,13 +675,14 @@ impl<'a> Lexer<'a> {
                 Some(b'\'') => "'",
                 _ => return Err(self.invalid(at, "attribute values must be quoted")),
             };
-            let value_end = self
-                .find(at + 1, quote)
-                .ok_or_else(|| self.invalid(at, "attribute value is not closed"))?;
-            if let Some(lt) = self.find_in(at + 1, value_end, "<") {
+            let value = at + 1
+                ..self
+                    .find(at + 1, quote)
+                    .ok_or_else(|| self.invalid(at, "attribute value is not closed"))?;
+            if let Some(lt) = self.find_in(value.start, value.end, "<") {
                 return Err(self.invalid(lt, "'<' is not allowed in an attribute value"));
             }
-            self.references(at + 1, value_end)?;
+            self.references(value.start, value.end)?;
             let text = self.text;
             let key = &text[attribute.clone()];
             if self.duplicate(key) {
@@ -378,30 +691,31 @@ impl<'a> Lexer<'a> {
                     format!("duplicate attribute {}", shown(key)),
                 ));
             }
-            if key == "xml:space" && &text[at + 1..value_end] == "preserve" {
+            // Only a value that resolves to `default` re-enables layout.
+            if key == "xml:space" && self.resolved(value.clone()).as_deref() != Some("default") {
                 preserve = true;
             }
-            self.attributes.push(attribute);
-            at = value_end + 1;
+            at = value.end + 1;
+            self.attributes.push((attribute, value));
         };
-        Ok(self.token(Kind::Start { empty, preserve }, start..at, name))
+        self.token(Kind::Start { empty, preserve }, start..at, name)
     }
 
     fn duplicate(&mut self, key: &'a str) -> bool {
         let text = self.text;
         if self.attributes.len() < LINEAR_ATTRIBUTES {
-            return self.attributes.iter().any(|a| &text[a.clone()] == key);
+            return self.attributes.iter().any(|(a, _)| &text[a.clone()] == key);
         }
         if self.seen.is_empty() {
             self.seen
-                .extend(self.attributes.iter().map(|a| &text[a.clone()]));
+                .extend(self.attributes.iter().map(|(a, _)| &text[a.clone()]));
         }
         !self.seen.insert(key)
     }
 }
 
 /// Pass one: well-formedness, and for every element in document order
-/// whether its content is re-indented (only markup and whitespace inside).
+/// whether its content is re-indented (see the module rules).
 pub(super) fn check(text: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<bool>, Failure> {
     struct Frame {
         name: Range<usize>,
@@ -410,9 +724,26 @@ pub(super) fn check(text: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<bool
         markup: bool,
         text: bool,
         preserve: bool,
+        mixed: bool,
+        /// Some boundary between this element's tags and children had no
+        /// whitespace; the last boundary seen had whitespace.
+        adjacent: bool,
+        spaced: bool,
+        /// The default namespace for children and the prefix bindings
+        /// in force before this element's own.
+        default: Vocabulary,
+        bindings: usize,
+    }
+    impl Frame {
+        fn child(&mut self) {
+            self.markup = true;
+            self.adjacent |= !self.spaced;
+            self.spaced = false;
+        }
     }
     let mut lexer = Lexer::new(text, cancelled);
     let mut stack: Vec<Frame> = Vec::new();
+    let mut bindings: Vec<(&str, Vocabulary)> = Vec::new();
     let mut flags = Vec::new();
     let (mut root, mut closed, mut doctype) = (false, false, false);
     while let Some(token) = lexer.next()? {
@@ -429,7 +760,7 @@ pub(super) fn check(text: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<bool
             }
             Kind::Instruction | Kind::Comment => {
                 if let Some(frame) = stack.last_mut() {
-                    frame.markup = true;
+                    frame.child();
                 }
             }
             Kind::Cdata => match stack.last_mut() {
@@ -445,32 +776,70 @@ pub(super) fn check(text: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<bool
                     return Err(lexer.invalid(at, "text is not allowed outside the root element"));
                 }
             },
-            Kind::Text { blank: true, .. } => {}
+            Kind::Text { blank: true, .. } => {
+                if let Some(frame) = stack.last_mut() {
+                    frame.spaced = true;
+                }
+            }
             Kind::Start { empty, preserve } => {
                 match stack.last_mut() {
-                    Some(frame) => frame.markup = true,
+                    Some(frame) => frame.child(),
                     None if closed => {
                         return Err(lexer.invalid(at, "a document has only one root element"))
                     }
                     None => root = true,
                 }
+                if stack.len() >= MAX_DEPTH {
+                    return Err(Failure::Depth);
+                }
+                // Namespaces: this tag's declarations apply to itself.
+                let before = bindings.len();
+                let mut default = stack.last().map_or(Vocabulary::None, |f| f.default);
+                for (name, value) in &lexer.attributes {
+                    let name = &text[name.clone()];
+                    let uri = lexer.resolved(value.clone());
+                    if name == "xmlns" {
+                        default = Vocabulary::of(uri.as_deref());
+                    } else if let Some(prefix) = name.strip_prefix("xmlns:") {
+                        bindings.push((prefix, Vocabulary::of(uri.as_deref())));
+                    }
+                }
+                let tag = &text[token.name.clone()];
+                let (vocabulary, local) = match tag.split_once(':') {
+                    Some((prefix, local)) => (
+                        bindings
+                            .iter()
+                            .rev()
+                            .find(|(p, _)| *p == prefix)
+                            .map_or(Vocabulary::Data, |(_, v)| *v),
+                        local,
+                    ),
+                    None => (default, tag),
+                };
                 let index = flags.len();
                 flags.push(false);
-                if !empty {
-                    stack.push(Frame {
-                        name: token.name,
-                        start: at,
-                        index,
-                        markup: false,
-                        text: false,
-                        preserve,
-                    });
-                } else if stack.is_empty() {
-                    closed = true;
+                if empty {
+                    bindings.truncate(before);
+                    closed |= stack.is_empty();
+                    continue;
                 }
+                let preserve = preserve || stack.last().is_some_and(|f| f.preserve);
+                stack.push(Frame {
+                    name: token.name,
+                    start: at,
+                    index,
+                    markup: false,
+                    text: false,
+                    preserve,
+                    mixed: vocabulary.mixed(local),
+                    adjacent: false,
+                    spaced: false,
+                    default,
+                    bindings: before,
+                });
             }
             Kind::End => {
-                let Some(frame) = stack.pop() else {
+                let Some(mut frame) = stack.pop() else {
                     return Err(lexer.invalid(at, "closing tag without an open element"));
                 };
                 if text[frame.name.clone()] != text[token.name.clone()] {
@@ -483,7 +852,12 @@ pub(super) fn check(text: &str, cancelled: &dyn Fn() -> bool) -> Result<Vec<bool
                         ),
                     ));
                 }
-                flags[frame.index] = !frame.preserve && frame.markup && !frame.text;
+                frame.adjacent |= !frame.spaced;
+                bindings.truncate(frame.bindings);
+                flags[frame.index] = !frame.preserve
+                    && frame.markup
+                    && !frame.text
+                    && (!frame.mixed || !frame.adjacent);
                 closed = stack.is_empty();
             }
         }
@@ -519,7 +893,7 @@ impl Out {
     }
 }
 
-/// Pass two: copy every token, re-indenting the markup-only elements.
+/// Pass two: copy every token, re-indenting the elements pass one allowed.
 fn emit(
     text: &str,
     flags: &[bool],
@@ -624,6 +998,10 @@ pub fn invalid_notice(line: usize, column: usize) -> String {
     )
 }
 
+fn depth_notice(action: &str, bytes: usize) -> String {
+    format!("{action} supports XML nesting up to {MAX_DEPTH} levels; this file is {bytes} bytes.")
+}
+
 pub(super) fn format(
     source: &str,
     ending: LineEnding,
@@ -654,6 +1032,7 @@ pub(super) fn format(
         Err(Failure::Invalid(error)) => {
             Formatted::Unchanged(invalid_notice(error.line, error.column))
         }
+        Err(Failure::Depth) => Formatted::Unchanged(depth_notice("Format", source.len())),
         Err(Failure::Limit) => Formatted::Unchanged(format!(
             "Format supports results up to 64 MiB; this file is {} bytes.",
             source.len()
@@ -663,15 +1042,17 @@ pub(super) fn format(
     })
 }
 
-/// Well-formedness only; `None` means cancelled.
+/// Well-formedness only. `None` means cancelled; `Err` a budget refusal
+/// that is no verdict on the XML.
 pub(super) fn validation(
     source: &str,
     cancelled: &dyn Fn() -> bool,
-) -> Option<Result<(), Invalid>> {
+) -> Option<Result<Result<(), Invalid>, String>> {
     let text = source.strip_prefix('\u{feff}').unwrap_or(source);
     match check(text, cancelled) {
-        Ok(_) | Err(Failure::Limit) => Some(Ok(())),
-        Err(Failure::Invalid(error)) => Some(Err(error)),
+        Ok(_) | Err(Failure::Limit) => Some(Ok(Ok(()))),
+        Err(Failure::Invalid(error)) => Some(Ok(Err(error))),
+        Err(Failure::Depth) => Some(Err(depth_notice("Validate", source.len()))),
         Err(Failure::Cancelled) => None,
     }
 }
