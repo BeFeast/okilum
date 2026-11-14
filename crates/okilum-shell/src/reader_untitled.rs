@@ -631,7 +631,20 @@ mod tests {
             visual.debug_bounds("recent-gallery-unsaved-0").is_some(),
             "the draft's card carries the Unsaved badge"
         );
-        // Enter opens the selected (first) card: the draft.
+        // The gallery opened on the file on screen; the draft card arrived
+        // from the background read before it, and selection stayed put.
+        reader.read_with(visual, |r, cx| {
+            let start = docs.join("Start.md").to_string_lossy().into_owned();
+            assert_eq!(r.recent_switcher.gallery_selection(cx), Some(start));
+        });
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.recent_switcher.gallery_selection(cx).as_deref(),
+                Some(draft_path.as_str())
+            );
+        });
         visual.simulate_keystrokes("enter");
         settle(visual, &reader, "the draft is back on screen", |r, _| {
             r.current_draft().is_some() && r.note_source.contains("milk")
