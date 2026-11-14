@@ -1,0 +1,148 @@
+# Native functional controls only; no release/install/signing authority.
+name: updater-helper-compat
+on:
+  push:
+    paths:
+      - 'scripts/velopack/**'
+      - 'scripts/velopack-setup.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'crates/okilum-shell/src/updater/**'
+      - 'crates/okilum-http/tests/*helper*'
+      - 'crates/okilum-http/tests/zip_compat.rs'
+      - 'scripts/ci/updater-helper-controls.py'
+      - 'scripts/ci/updater-ready-guard.py'
+      - '.github/workflows/updater-helper-compat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: updater-helper-compat-${{ github.sha }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: storage-compat-zip-v1
+          cache-on-failure: true
+      - name: Verify exact source and vendor
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run native helper recovery, admission, metadata and revert controls
+        shell: bash
+        run: python scripts/ci/updater-helper-controls.py
+      - name: Apply real checksum-verified historical Full and Delta packages
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-historical-update.py
+          exit $LASTEXITCODE
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-helper-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  ready-guard:
+    needs: icon
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: updater-ready-guard-v1
+          cache-on-failure: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-helper-icon
+          path: target/windows-dist
+      - name: Verify exact source and vendor
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run Okilum Ready guard with its compiled revert control
+        shell: bash
+        run: |
+          export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          python scripts/ci/updater-ready-guard.py
+  vm-binary:
+    # Static-CRT native recovery test binary for the Windows QA VM power-cut
+    # evidence (driven externally). Never installed or signed.
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C target-feature=+crt-static'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: updater-helper-vm-binary-v1
+          cache-on-failure: true
+      - name: Build recovery test binary
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          exe=$(cargo test --locked -p okilum-http --features updates --test windows_helper_recovery --no-run --message-format=json \
+            | python -c "import sys,json; print([m['executable'] for m in map(json.loads, sys.stdin) if m.get('executable')][-1])")
+          mkdir -p target/vm-binary
+          cp "$exe" target/vm-binary/windows_helper_recovery.exe
+          sha256sum target/vm-binary/windows_helper_recovery.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helper-recovery-vm-binary
+          path: target/vm-binary/windows_helper_recovery.exe
+          if-no-files-found: error
+          retention-days: 7

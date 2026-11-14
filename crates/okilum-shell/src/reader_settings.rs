@@ -1919,7 +1919,10 @@ impl Settings {
                         .into_any_element()
                 } else {
                     let _ = window;
-                    let message = if cfg!(target_os = "linux") {
+                    let repair = updater::repair_needed();
+                    let message = if repair.is_some() {
+                        "Updates are paused: Okilum's update helper needs repair. Every recovery file was kept and Okilum retries automatically. Choose Retry now, or reinstall Okilum from Releases if this persists."
+                    } else if cfg!(target_os = "linux") {
                         "Updates are managed by your system package manager."
                     } else if cfg!(target_os = "windows") {
                         "Download a new Windows ZIP from Releases to update."
@@ -1928,8 +1931,31 @@ impl Settings {
                     };
                     content
                         .child(message)
+                        .when_some(repair.clone(), |content, detail| {
+                            content.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.text_muted)
+                                    .child(format!("Diagnostic: {detail}")),
+                            )
+                        })
                         .child(
                             h_flex().flex_wrap().gap_2()
+                                .when(repair.is_some(), |row| {
+                                    row.child(
+                                        Button::new("settings-repair-updates")
+                                            .debug_selector(|| "settings-repair-updates".into())
+                                            .flex_none()
+                                            .icon(IconName::RotateCw)
+                                            .label("Retry now")
+                                            .ghost()
+                                            .tooltip("Retry repairing the update helper")
+                                            .on_click(|_, _, cx| {
+                                                updater::retry_repair();
+                                                cx.refresh_windows();
+                                            }),
+                                    )
+                                })
                                 .when(cfg!(target_os = "linux"), |row| {
                                     row.child(
                                         Button::new("settings-linux-channels")

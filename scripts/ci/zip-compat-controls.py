@@ -8,10 +8,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-# Main 718d23d8b799bd50569ba0b8ff40e784afb4ed0c. Changing the updater is a separate PR.
-MAIN_MANIFEST_SHA256 = "df75037cdc98ab2d568a3cf4940c82fd0ffb9fb9bb7107193da8b2f3be31fc0f"
-MAIN_PATCH_SHA256 = "b43f52b39928715e53a8bf7dc8afb13dfbd9a1fedadb0d07ff49a254994b03d7"
-MAIN_TREE_SHA256 = "9dbbe586d66712c914fc7017d1f0f82fba63f81b9227ac0eb198e388ec646ba8"
+# Vendored Velopack as reviewed in PR 2855 (helper publication/recovery). Any further
+# updater change must update these pins in its own reviewed PR.
+MAIN_MANIFEST_SHA256 = "dd97d6dfd34c4a15f6205ea77edb92b8ccd1a29111bf48e7ec510814565aff05"
+MAIN_PATCH_SHA256 = "d304d4a255a9b31e8aaae559ee5e877619bea879b7861948c41a15793ddaebdb"
+MAIN_TREE_SHA256 = "5c4fe1ec68cb39db29fceef5fe1e9a05305a81550a3f697a1ffeda39693ebede"
 COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "--lib"]
 
 
@@ -30,7 +31,7 @@ def main():
     owners = {packages[n["id"]]["name"] for n in metadata["resolve"]["nodes"]
               if any(d["pkg"] == zip_ids["8.6.0"] for d in n["deps"])}
     assert owners == {"velopack"}, owners
-    print("ZIP_SPLIT_GRAPH_PASS zip8=Velopack-only zip9=Reader vendor=main-byte-identical", flush=True)
+    print("ZIP_SPLIT_GRAPH_PASS zip8=Velopack-only zip9=Reader vendor=pinned-byte-identical", flush=True)
     source = ROOT / "crates/okilum-core/src/archive.rs"
     original = source.read_bytes()
     cases = [

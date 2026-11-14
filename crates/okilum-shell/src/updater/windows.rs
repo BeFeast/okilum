@@ -6,7 +6,19 @@ use std::sync::{
 };
 use velopack::{UpdateCheck, UpdateManager, UpdateOptions};
 
-static AVAILABLE: OnceLock<bool> = OnceLock::new();
+/// How this copy can update. Not cached once and for all: a helper that needs
+/// repair is re-evaluated in this session (#2855 review).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Install {
+    Installed,
+    Portable,
+    /// Update.exe is missing or unusable while its recovery files remain.
+    /// Carries a path-free diagnostic.
+    Repair(String),
+}
+static INSTALL: Mutex<Option<(Install, std::time::Instant)>> = Mutex::new(None);
+static REPAIRING: AtomicBool = AtomicBool::new(false);
+const REPAIR_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 static BETA: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static READY: OnceLock<Mutex<super::ready::Ready>> = OnceLock::new();
@@ -88,6 +100,7 @@ fn restart_verified(cx: &mut gpui::App) {
                 "The downloaded update is no longer available. Check for updates again."
             )
         })?;
+        prepared_status(&manager, asset)?;
         let id = identity(asset);
         {
             let mut state = state().lock().unwrap();
@@ -118,12 +131,15 @@ fn restart_verified(cx: &mut gpui::App) {
                 }
                 RestartStep::ProtectEditors => crate::reader_update_restart::protect_editors(cx)?,
                 RestartStep::PersistState => crate::reader_ui_state::prepare_for_restart(cx)?,
-                RestartStep::ArmUpdater => manager.wait_exit_then_apply_updates(
-                    asset,
-                    false,
-                    true,
-                    std::mem::take(&mut restart_args),
-                )?,
+                RestartStep::ArmUpdater => arm_verified(&manager, asset, || {
+                    manager.wait_exit_then_apply_updates(
+                        asset,
+                        false,
+                        true,
+                        std::mem::take(&mut restart_args),
+                    )?;
+                    Ok(())
+                })?,
                 RestartStep::Quit => {
                     super::restart_feedback::record(
                         "accepted",
@@ -155,16 +171,14 @@ fn verified_path() -> Option<std::path::PathBuf> {
         .map(|root| root.join(VERIFIED))
 }
 
-fn packages_dir() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.parent()?.join("packages"))
-}
-
 /// SHA256 of the downloaded package file, upper-case hex like the feed's.
-/// Velopack's local pending asset leaves `SHA256` empty, so it is read here.
-fn package_sha256(asset: &velopack::VelopackAsset) -> Option<String> {
+/// Velopack's local pending asset leaves `SHA256` empty, so it is read here,
+/// from the directory the package was downloaded to: `<root>\packages`, or the
+/// per-user fallback when the install root is not writable.
+fn package_sha256(manager: &UpdateManager, asset: &velopack::VelopackAsset) -> Option<String> {
     use sha2::{Digest, Sha256};
-    let mut file = std::fs::File::open(packages_dir()?.join(&asset.FileName)).ok()?;
+    let packages = manager.get_packages_dir();
+    let mut file = std::fs::File::open(packages.join(&asset.FileName)).ok()?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).ok()?;
     Some(
@@ -199,10 +213,8 @@ fn forget_verified() {
 }
 
 /// Deletes a downloaded package the current channel does not offer (#1318).
-fn discard(asset: &velopack::VelopackAsset) {
-    if let Some(packages) = packages_dir() {
-        let _ = std::fs::remove_file(packages.join(&asset.FileName));
-    }
+fn discard(manager: &UpdateManager, asset: &velopack::VelopackAsset) {
+    let _ = std::fs::remove_file(manager.get_packages_dir().join(&asset.FileName));
     forget_verified();
 }
 
@@ -251,18 +263,170 @@ fn manager_with_token(
     )
 }
 
+/// A portable copy has no helper transaction. A helper that cannot be located
+/// while its recovery files remain needs repair, which is not "Portable".
+fn classify(portable: Option<bool>, helper: Option<&str>) -> Install {
+    match (portable, helper) {
+        (Some(true), _) | (None, None) => Install::Portable,
+        (Some(false), None) => Install::Installed,
+        // Installed but the helper is missing or its transaction is unresolved:
+        // updating cannot work, so say so instead of "Installed" or "Portable".
+        (Some(false), Some(detail)) | (None, Some(detail)) => Install::Repair(detail.to_owned()),
+    }
+}
+
+/// Where Update.exe can live: the install root (per-user installs) and the
+/// per-user fallback Velopack uses when the root is not writable.
+fn helper_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_owned()))
+    {
+        candidates.push(root.join("Update.exe"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let fallback = std::path::PathBuf::from(local)
+            .join("BeFeast.Okilum")
+            .join("Update.exe");
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+/// An installed (not portable) layout: `<root>\current\okilum.exe` next to its
+/// `sq.version` manifest.
+fn installed_layout(exe: &std::path::Path) -> bool {
+    exe.parent().is_some_and(|current| {
+        current
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("current"))
+            && current.join("sq.version").is_file()
+    })
+}
+
+/// When the installation cannot be located and no helper has recovery files:
+/// an installed layout lost its helper (repair), a portable copy has none.
+fn missing_helper_detail(installed_layout: bool) -> Option<&'static str> {
+    installed_layout.then_some("update helper missing; reinstall Okilum to restore updates")
+}
+
+/// Every cached state is re-evaluated in the background after this long, so a
+/// later unrecoverable helper failure is not hidden behind "Installed".
+fn refresh_due(_state: &Install, elapsed: std::time::Duration) -> bool {
+    elapsed >= REPAIR_RETRY
+}
+
+/// Locating the installation already ran helper recovery. A located install
+/// still reports a helper that is missing or unresolved; when locating fails,
+/// any candidate with recovery files gets one more attempt and keeps its error.
+fn evaluate(beta: bool) -> Install {
+    if let Ok(manager) = manager_for(beta) {
+        let portable = manager.get_is_portable();
+        let helper = if portable {
+            None
+        } else {
+            manager.update_helper_state()
+        };
+        return classify(Some(portable), helper.as_deref());
+    }
+    for helper in helper_candidates() {
+        let Some(pending) = velopack::helper_replace::inspect(&helper) else {
+            continue;
+        };
+        let detail = match velopack::helper_replace::recover(&helper) {
+            Ok(()) => match manager_for(beta) {
+                Ok(manager) => {
+                    let portable = manager.get_is_portable();
+                    let helper = (!portable).then(|| manager.update_helper_state()).flatten();
+                    return classify(Some(portable), helper.as_deref());
+                }
+                Err(_) => format!("{pending}; the update helper could not be located"),
+            },
+            Err(error) => format!("{pending}; last error: {error}"),
+        };
+        return classify(None, Some(&detail));
+    }
+    let layout = std::env::current_exe()
+        .map(|exe| installed_layout(&exe))
+        .unwrap_or(false);
+    classify(None, missing_helper_detail(layout))
+}
+
+fn install() -> Install {
+    let mut cached = INSTALL.lock().unwrap();
+    if let Some((state, since)) = cached.as_ref() {
+        if refresh_due(state, since.elapsed()) {
+            retry_repair_in_background();
+        }
+        return state.clone();
+    }
+    let saved = crate::reader_history::state_directory()
+        .ok()
+        .and_then(|root| std::fs::read_to_string(root.join("windows-update-channel")).ok());
+    let beta = super::windows_feed::follows_beta(saved.as_deref());
+    BETA.store(beta, Ordering::Relaxed);
+    let state = evaluate(beta);
+    *cached = Some((state.clone(), std::time::Instant::now()));
+    state
+}
+
+fn retry_repair_in_background() {
+    if REPAIRING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| {
+        retry_repair();
+        REPAIRING.store(false, Ordering::Release);
+    });
+}
+
+/// Settings "Retry now": the same evaluation on a worker thread (recovery hashes
+/// files and may wait for the helper lock); `then` runs if updating is
+/// available again. Returns at once; a retry already running is not repeated.
+pub(super) fn retry_repair_then(then: fn()) -> Option<std::thread::JoinHandle<bool>> {
+    if REPAIRING.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    Some(std::thread::spawn(move || {
+        let installed = retry_repair();
+        REPAIRING.store(false, Ordering::Release);
+        if installed {
+            then();
+        }
+        installed
+    }))
+}
+
+/// Re-run helper recovery now. Returns whether updating is available again.
+pub(super) fn retry_repair() -> bool {
+    let state = evaluate(BETA.load(Ordering::Relaxed));
+    let installed = state == Install::Installed;
+    if let Install::Repair(detail) = &state {
+        crate::reader_diagnostics::network_failure(
+            "Windows update helper",
+            &anyhow::anyhow!("needs repair: {detail}"),
+        );
+    }
+    *INSTALL.lock().unwrap() = Some((state, std::time::Instant::now()));
+    installed
+}
+
+/// Path-free reason why updating is paused, when the helper needs repair.
+pub(super) fn repair_needed() -> Option<String> {
+    match install() {
+        Install::Repair(detail) => Some(detail),
+        _ => None,
+    }
+}
+
 /// Whether this copy is installed and which channel it follows. Read on first
 /// use, so the diagnostic line written before `start` already says how Okilum
 /// was installed (#1273).
 fn settings() -> bool {
-    *AVAILABLE.get_or_init(|| {
-        let saved = crate::reader_history::state_directory()
-            .ok()
-            .and_then(|root| std::fs::read_to_string(root.join("windows-update-channel")).ok());
-        let beta = super::windows_feed::follows_beta(saved.as_deref());
-        BETA.store(beta, Ordering::Relaxed);
-        manager_for(beta).is_ok_and(|m| !m.get_is_portable())
-    })
+    install() == Install::Installed
 }
 
 pub(super) fn start() {
@@ -327,7 +491,7 @@ pub(super) fn check(download: bool) -> bool {
             if cancelled {
                 if let Ok(manager) = manager() {
                     if let Some(asset) = manager.get_update_pending_restart() {
-                        discard(&asset);
+                        discard(&manager, &asset);
                     }
                 }
                 state().lock().unwrap().observe(None);
@@ -350,6 +514,9 @@ pub(super) fn check(download: bool) -> bool {
                 }
                 Err(error) => {
                     crate::reader_diagnostics::network_failure("Windows update", &error);
+                    // A failure may come from the helper: re-evaluate now rather
+                    // than keep a cached "Installed".
+                    retry_repair_in_background();
                     let reason = format!(
                         "{}. Your current version is unchanged.",
                         error
@@ -376,6 +543,48 @@ pub(super) fn check(download: bool) -> bool {
     true
 }
 
+/// Creating Ready requires a live package/helper byte match, independent of
+/// feed receipts and cached package presence. Restart repeats this admission.
+fn prepared_status(
+    manager: &UpdateManager,
+    asset: &velopack::VelopackAsset,
+) -> anyhow::Result<super::status::CheckStatus> {
+    anyhow::ensure!(
+        manager.is_update_helper_prepared(asset)?,
+        "The update helper is not prepared for this package. Check for updates again."
+    );
+    Ok(super::status::CheckStatus::Ready)
+}
+
+/// Verify and launch under the helper's cross-process transaction lock: no
+/// other Okilum process can replace Update.exe between this re-verification
+/// and the launch. The running helper keeps its image afterwards.
+fn arm_verified(
+    manager: &UpdateManager,
+    asset: &velopack::VelopackAsset,
+    launch: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let _helper = manager.lock_update_helper().map_err(|error| {
+        anyhow::anyhow!(
+            "Another Okilum window is preparing an update. Try Restart now again in a moment ({error})"
+        )
+    })?;
+    reverify(manager, asset)?;
+    launch()
+}
+
+/// The pending package is still this asset and the helper still matches it.
+fn reverify(manager: &UpdateManager, asset: &velopack::VelopackAsset) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        manager
+            .get_update_pending_restart()
+            .is_some_and(|pending| identity(&pending) == identity(asset)),
+        "The downloaded update changed. Check for updates again."
+    );
+    prepared_status(manager, asset)?;
+    Ok(())
+}
+
 fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStatus> {
     use super::status::CheckStatus;
     let manager = manager()?;
@@ -385,7 +594,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
             if let Some(asset) = pending.as_ref() {
-                let sha256 = package_sha256(asset).ok_or_else(|| {
+                let sha256 = package_sha256(&manager, asset).ok_or_else(|| {
                     anyhow::anyhow!(
                         "The downloaded update could not be read. Okilum will try again later"
                     )
@@ -402,9 +611,10 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                     )
                     .map_err(anyhow::Error::msg)?
                 {
+                    let ready = prepared_status(&manager, asset)?;
                     record_verified(&sha256, offered);
                     state().lock().unwrap().observe(Some(identity(asset)));
-                    return Ok(CheckStatus::Ready);
+                    return Ok(ready);
                 }
             }
             let replacing = pending.is_some();
@@ -415,7 +625,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
             use super::status;
             if !download {
                 if let Some(asset) = pending.as_ref() {
-                    discard(asset);
+                    discard(&manager, asset);
                     super::restart_feedback::offer(format!(
                         "An update ({}) is available. Download it to update.",
                         update.TargetFullRelease.Version
@@ -457,7 +667,14 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 }),
                 "The verified download does not match the selected update. Check for updates again."
             );
-            if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
+            let ready = prepared_status(
+                &manager,
+                pending.as_ref().expect("pending identity checked above"),
+            )?;
+            if let Some(sha256) = pending
+                .as_ref()
+                .and_then(|asset| package_sha256(&manager, asset))
+            {
                 record_verified(&sha256, &update.TargetFullRelease);
             }
             state()
@@ -468,11 +685,11 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
-            Ok(CheckStatus::Ready)
+            Ok(ready)
         }
         UpdateCheck::NoUpdateAvailable => {
             if let Some(asset) = pending.as_ref() {
-                discard(asset);
+                discard(&manager, asset);
                 state().lock().unwrap().observe(None);
                 super::restart_feedback::offer(
                     "The update offer changed. No newer update is currently available.",
@@ -482,7 +699,7 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
         }
         UpdateCheck::RemoteIsEmpty => {
             if let Some(asset) = pending.as_ref() {
-                discard(asset);
+                discard(&manager, asset);
                 state().lock().unwrap().observe(None);
                 super::restart_feedback::offer(
                     "No release has been published on the selected channel yet.",
@@ -505,6 +722,231 @@ fn message(text: &str) {
             text.as_ptr(),
             title.as_ptr(),
             windows_sys::Win32::UI::WindowsAndMessaging::MB_OK,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        io::{Cursor, Write},
+        path::{Path, PathBuf},
+        sync::mpsc::Sender,
+    };
+    use velopack::{
+        bundle::Manifest, locator::VelopackLocatorConfig, sources::UpdateSource, VelopackAsset,
+        VelopackAssetFeed,
+    };
+
+    struct Source;
+    impl UpdateSource for Source {
+        fn get_release_feed(
+            &self,
+            _: &str,
+            _: &Manifest,
+            _: &str,
+        ) -> Result<VelopackAssetFeed, velopack::Error> {
+            unreachable!()
+        }
+        fn download_release_entry(
+            &self,
+            _: &VelopackAsset,
+            _: &Path,
+            _: Option<Sender<i16>>,
+        ) -> Result<(), velopack::Error> {
+            unreachable!("cached retry must prepare the existing package")
+        }
+    }
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        helper: PathBuf,
+        asset: VelopackAsset,
+        manager: UpdateManager,
+    }
+    /// An installed copy at 1.0.0 with a cached 2.0.0 package and a stale helper.
+    fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        let packages = root.path().join("packages");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(&packages).unwrap();
+        let manifest = current.join("sq.version");
+        fs::write(&manifest, "<package><metadata><id>ReadyFixture</id><version>1.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>").unwrap();
+        let helper = root.path().join("Update.exe");
+        fs::write(&helper, b"stale helper").unwrap();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "ReadyFixture.nuspec",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(b"<package><metadata><id>ReadyFixture</id><version>2.0.0</version><title>Fixture</title><authors>QA</authors><description>Test</description><mainExe>okilum.exe</mainExe></metadata></package>").unwrap();
+        zip.start_file(
+            "lib/app/Squirrel.exe",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(b"prepared helper").unwrap();
+        let asset = VelopackAsset {
+            PackageId: "ReadyFixture".into(),
+            Version: "2.0.0".into(),
+            Type: "Full".into(),
+            FileName: "ReadyFixture-2.0.0-full.nupkg".into(),
+            ..Default::default()
+        };
+        fs::write(
+            packages.join(&asset.FileName),
+            zip.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        let manager = UpdateManager::new(
+            Source,
+            None,
+            Some(VelopackLocatorConfig {
+                RootAppDir: root.path().to_owned(),
+                UpdateExePath: helper.clone(),
+                PackagesDir: packages,
+                ManifestPath: manifest,
+                CurrentBinaryDir: current,
+                IsPortable: true,
+            }),
+        )
+        .unwrap();
+        Fixture {
+            _root: root,
+            helper,
+            asset,
+            manager,
+        }
+    }
+    fn prepare(f: &Fixture) {
+        f.manager
+            .download_updates(
+                &velopack::UpdateInfo {
+                    TargetFullRelease: f.asset.clone(),
+                    BaseRelease: None,
+                    DeltasToTarget: vec![],
+                    IsDowngrade: false,
+                },
+                None,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn ready_requires_helper_bytes_for_this_package() {
+        let f = fixture();
+        assert!(
+            prepared_status(&f.manager, &f.asset).is_err(),
+            "stale helper must not be Ready"
+        );
+        prepare(&f);
+        assert_eq!(
+            prepared_status(&f.manager, &f.asset).unwrap(),
+            super::super::status::CheckStatus::Ready
+        );
+        fs::write(&f.helper, b"prepared helpeX").unwrap();
+        assert!(
+            prepared_status(&f.manager, &f.asset).is_err(),
+            "same-size changed helper must not be Ready"
+        );
+    }
+
+    #[test]
+    fn helper_launch_is_locked_and_reverified_across_processes() {
+        let f = fixture();
+        prepare(&f);
+        let pending = f.manager.get_update_pending_restart().unwrap();
+        // Another process holds the helper transaction: no launch.
+        let held = velopack::helper_replace::lock(&f.helper).unwrap();
+        let mut launched = 0;
+        assert!(
+            arm_verified(&f.manager, &pending, || {
+                launched += 1;
+                Ok(())
+            })
+            .is_err(),
+            "launch must wait for the helper lock"
+        );
+        assert_eq!(launched, 0, "helper launched without the helper lock");
+        drop(held);
+        // Another process replaced the helper after the earlier verification.
+        fs::write(&f.helper, b"prepared helpeX").unwrap();
+        assert!(
+            arm_verified(&f.manager, &pending, || {
+                launched += 1;
+                Ok(())
+            })
+            .is_err(),
+            "launch must re-verify the helper under the lock"
+        );
+        assert_eq!(launched, 0, "changed helper was launched");
+        prepare(&f);
+        arm_verified(&f.manager, &pending, || {
+            launched += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(launched, 1);
+    }
+
+    #[test]
+    fn package_hash_reads_the_directory_the_package_was_downloaded_to() {
+        use sha2::{Digest, Sha256};
+        let f = fixture();
+        let bytes = fs::read(f.manager.get_packages_dir().join(&f.asset.FileName)).unwrap();
+        let expected: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        assert_eq!(
+            package_sha256(&f.manager, &f.asset),
+            Some(expected),
+            "package must be hashed where it was downloaded"
+        );
+    }
+
+    #[test]
+    fn missing_helper_in_an_installed_layout_and_stale_installed_state_reach_repair() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        fs::create_dir(&current).unwrap();
+        fs::write(current.join("sq.version"), "<package/>").unwrap();
+        assert!(installed_layout(&current.join("okilum.exe")));
+        assert!(!installed_layout(&root.path().join("okilum.exe")));
+        assert!(
+            missing_helper_detail(true).is_some(),
+            "installed layout without a helper must not be Portable"
+        );
+        assert_eq!(missing_helper_detail(false), None);
+        assert!(
+            refresh_due(&Install::Installed, REPAIR_RETRY),
+            "a cached Installed state must be re-evaluated"
+        );
+        assert!(!refresh_due(&Install::Installed, std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn helper_needing_repair_is_not_reported_as_portable() {
+        assert_eq!(classify(Some(false), None), Install::Installed);
+        assert_eq!(classify(Some(true), None), Install::Portable);
+        assert_eq!(classify(None, None), Install::Portable);
+        let detail = "update helper missing; recovery files kept: staged copy; last error: IO error: sharing violation";
+        assert_eq!(
+            classify(None, Some(detail)),
+            Install::Repair(detail.into()),
+            "a helper needing repair must not be called Portable"
+        );
+        // A located machine install whose fallback helper is unresolved.
+        assert_eq!(
+            classify(Some(false), Some(detail)),
+            Install::Repair(detail.into()),
+            "an installed copy whose helper needs repair must not be called Installed"
         );
     }
 }

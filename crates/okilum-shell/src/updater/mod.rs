@@ -281,6 +281,22 @@ pub(crate) fn available() -> bool {
     false
 }
 
+/// Windows: why updating is paused because the update helper needs repair.
+/// Path-free; shown in Settings instead of calling the install "Portable".
+pub(crate) fn repair_needed() -> Option<String> {
+    #[cfg(windows)]
+    return windows::repair_needed();
+    #[cfg(not(windows))]
+    None
+}
+
+/// Windows: retry helper recovery off the UI thread; check for updates if it
+/// succeeded.
+pub(crate) fn retry_repair() {
+    #[cfg(windows)]
+    windows::retry_repair_then(check);
+}
+
 /// Windows, before `VelopackApp::run`: whether a pending package may be applied
 /// at this start (#1318).
 #[cfg(windows)]
@@ -321,7 +337,9 @@ pub(crate) fn channel() -> &'static str {
         "Stable"
     };
     #[cfg(target_os = "windows")]
-    return if !windows::available() {
+    return if windows::repair_needed().is_some() {
+        "Needs repair"
+    } else if !windows::available() {
         "Portable"
     } else if windows::beta() {
         "Beta"
