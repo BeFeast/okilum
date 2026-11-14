@@ -699,9 +699,9 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(data['on']['push'], {'branches': ['main']})
             self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
             prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
-            # Linux push runs start at once in their own group (no queue behind the
-            # previous merge); Mac and Windows still queue FIFO and coalesce.
-            group = ("${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}" if platform == 'linux'
+            # Linux and Windows push runs start at once in their own group (no queue
+            # behind the previous merge); Mac still queues FIFO and coalesces.
+            group = ("${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}" if platform in ('linux', 'windows')
                      else "${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
             self.assertEqual(data['concurrency']['group'], prefix + '-beta-' + group)
             self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')

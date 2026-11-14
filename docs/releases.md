@@ -46,13 +46,14 @@ skip is a pushed commit that already is that platform's beta (the actual feed
 head, not an archive catalog).
 
 A running beta always finishes (manager 13.11: merges faster than a build kept
-cancelling the Linux beta, so none was published for hours). Linux push runs
-each have their own group (`linux-beta-<commit sha>`; Forgejo has no run id yet
-when it evaluates the group), so a merge starts its beta at
-once instead of queueing behind the previous merge's whole run (14.11: queueing
-added up to 23 minutes); release-publish still serializes feed writes and files
-an older build that finishes after a newer one as archive-only. Mac and Windows
-push runs share the concurrency group `<platform>-beta-main` without
+cancelling the Linux beta, so none was published for hours). Linux and Windows
+push runs each have their own group (`linux-beta-<commit sha>`,
+`windows-beta-<commit sha>`; Forgejo has no run id yet when it evaluates the
+group), so a merge starts its beta at once instead of queueing behind the
+previous merge's whole run (14.11: queueing added up to 23 minutes on Linux and
+25 on Windows); release-publish still serializes feed writes and never publishes
+an older build over a newer one. Mac push runs share the concurrency group
+`macos-beta-main` without
 `cancel-in-progress`: a newer push waits for the running one. When a queued push run starts and main
 has moved on, its select step skips (`hourly_beta.push_select` reads main's tip;
 the newer push's own run builds it). If the tip cannot be read, the run builds as

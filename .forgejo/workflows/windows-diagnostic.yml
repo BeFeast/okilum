@@ -28,11 +28,16 @@ on:
 # stale push run skips in select.
 # Manual, pinned, archive and re-sign dispatches keep their own groups and finish.
 concurrency:
-  group: windows-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
-  # A running beta always finishes (manager 13.11). Forgejo queues this group
-  # FIFO and never replaces a pending run, so the push run that starts cancels
-  # older queued push runs and keeps the newest (hourly_beta.coalesce_queued_pushes);
-  # a stale push run that starts anyway skips in select because main moved on.
+  # Every push run has its own group, keyed by its commit (as linux-release, #2944):
+  # a merge starts its beta at once instead of queueing behind the previous
+  # merge's whole run (measured 14.11: #27610 waited 25 min behind #27566).
+  # github.run_id is empty when Forgejo evaluates this block; github.sha is set.
+  # A running beta always finishes (manager 13.11): nothing cancels it. A push
+  # run that starts after main moved on skips in select, and release-publish
+  # serializes feed writes and never publishes an older build over a newer one.
+  # Pinned retries share the push group of their source; other dispatches keep
+  # their previous (shared) group and always finish.
+  group: windows-beta-${{ github.event_name == 'push' && github.sha || inputs.hourly_source || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -65,7 +70,9 @@ jobs:
     # (.github/workflows/forgejo-windows-release.yml `windows-beta`, #2927); this
     # bridge waiter compiles nothing. Okilum left baldr's ubuntu-latest runner
     # (Oleg 14.11). The Forgejo build number 5000 + run_number travels in the
-    # dispatch, so the package, the artifacts below and publication are unchanged.
+    # dispatch. A main beta hands publication a receipt for the verified hosted
+    # artifact (windows-handoff); release-publish downloads and re-verifies those
+    # exact bytes instead of a ~450 MB Forgejo upload (5.5 min, measured 14.11).
     runs-on: bridge
     # Within the primary bridge runner's 60 min ceiling (docs/fast-runner.md).
     timeout-minutes: 60
@@ -75,9 +82,12 @@ jobs:
       # Orchestration always comes from this workflow commit (github.sha); only
       # the product source is pinned. An explicit older main commit (#1040) or a
       # pinned retry predates the hosted handoff, so it is never checked out here.
+      # The workflow commit is pushed to a write-once GitHub ref. GitHub already
+      # has its history except the newest commits, so a bounded depth is enough;
+      # fetch-depth 0 fetched every branch and tag (1.5 min, measured 14.11).
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 200
           persist-credentials: false
 
       # Main builds are signed on the windows-signer runner once OKILUM_WINDOWS_SIGN_BACKEND
@@ -123,7 +133,7 @@ jobs:
           test "$tooling" = "$GITHUB_SHA"
           python3 scripts/releases/windows_handoff.py run --source "$PRODUCT_SOURCE" --tooling "$tooling" \
             --build "$((5000 + GITHUB_RUN_NUMBER))" --signed "$SIGNED" --archive "$ARCHIVE" \
-            --directory target --budget 3180
+            --directory target --receipt target/windows-handoff/windows-handoff.json --budget 3180
 
       - name: Hand the unsigned payload to the signer
         if: steps.signing.outputs.on == 'true'
@@ -133,20 +143,24 @@ jobs:
           path: target/windows-dist/
           retention-days: 1
 
+      # A branch or pull-request build (QA, never published) is staged by the
+      # waiter and kept here as before.
       - name: Upload unsigned installer for Windows QA
-        if: steps.signing.outputs.on != 'true'
+        if: steps.signing.outputs.on != 'true' && (github.ref != 'refs/heads/main' || github.event_name == 'pull_request')
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
           name: okilum-windows-velopack
           path: target/windows-release/*
           retention-days: 30
 
-      - name: Stage portable archive for publication
+      # A main beta: the receipt names the accepted GitHub run, attempt, artifact
+      # id and sha256 digest; release-publish fetches and re-verifies those bytes.
+      - name: Hand the verified hosted artifact to publication
         if: steps.signing.outputs.on != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
-          name: windows-portable
-          path: target/windows-dist/okilum-*-x86_64.zip
+          name: windows-handoff
+          path: target/windows-handoff/windows-handoff.json
           retention-days: 7
 
       - name: Dispatch protected publication

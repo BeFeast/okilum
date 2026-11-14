@@ -25,7 +25,14 @@ signs and packs).
     windows_handoff.py previous --directory DIR             (GitHub, public-feed delta base)
     windows_handoff.py record --output FILE                 (GitHub, artifact identity)
     windows_handoff.py run --source SHA --tooling SHA --build N --signed BOOL --archive BOOL \
-        --directory target --budget S                       (Forgejo bridge waiter)
+        --directory target --receipt FILE --budget S        (Forgejo bridge waiter)
+
+A main beta does not copy the artifact through Forgejo: the waiter writes a
+receipt (GitHub run, attempt, artifact id, sha256 digest and the build identity)
+and release-publish calls fetch_published(), which re-verifies the run, its
+attempt's jobs, the artifact binding and digest, and the identity inside the
+bytes before anything is published. The signer payload and branch/PR QA builds
+are still staged by the waiter.
 """
 import argparse
 import hashlib
@@ -56,6 +63,10 @@ MODES = ('pack', 'delta', 'payload')
 PREFIX = 'forgejo-windows-beta-src'
 # The hosted job's 45 min ceiling + 2 min, so GitHub's own deadline fires first.
 RUN_TIMEOUT = 47 * 60
+# Status polls of the one hosted run; a random 30-60 s delay cost up to a
+# minute after the build finished (measured 14.11).
+POLL_SECONDS = 15
+RECEIPT_SCHEMA = 1
 SHA = re.compile(r'[0-9a-f]{40}')
 POSITIVE = re.compile(r'[1-9][0-9]*')
 INVOCATION = re.compile(r'[0-9a-f]{32}')
@@ -151,6 +162,11 @@ def branch_for(build, source, run_id, attempt, invocation):
     return f'{PREFIX}/{build}-{source}-{run_id}-{attempt}-{invocation}'
 
 
+def main_beta(env):
+    """A main build that release-publish publishes (not a branch or PR QA build)."""
+    return env.get('GITHUB_REF') == 'refs/heads/main' and env.get('GITHUB_EVENT_NAME') != 'pull_request'
+
+
 def mode_for(signed, archive, env):
     """The former `release` job's step conditions, decided before the hosted build.
 
@@ -160,7 +176,7 @@ def mode_for(signed, archive, env):
     """
     if signed:
         return 'payload'
-    if env.get('GITHUB_REF') == 'refs/heads/main' and env.get('GITHUB_EVENT_NAME') != 'pull_request' and not archive:
+    if main_beta(env) and not archive:
         return 'delta'
     return 'pack'
 
@@ -225,7 +241,7 @@ def wait(api, branch, tooling, mode, *, clock=time.monotonic, sleep=time.sleep, 
             if run:
                 cancel(api, run, log)
             raise ValueError('Hosted Windows beta did not finish within the bridge budget')
-        sleep(transport.poll_delay())
+        sleep(POLL_SECONDS)
 
 
 def safe_name(name):
@@ -258,13 +274,14 @@ def unpack(data, digest, expected, directory):
         recorded = json.loads(archive.read(HANDOFF))
         if recorded != expected:
             raise ValueError(f'Hosted Windows artifact names another build: {recorded}')
-        required = {'windows-dist/okilum.exe', 'windows-dist/okilum-sync-supervisor.exe',
-                    f'windows-dist/okilum-{version}-x86_64.zip'}
+        required = {f'windows-dist/okilum-{version}-x86_64.zip'}
         release = {name for name in names if paths[name].parts[0] == 'windows-release'}
         if mode == 'payload':
             if release:
                 raise ValueError('A signer payload must not carry an unsigned package')
+            required |= {'windows-dist/okilum.exe', 'windows-dist/okilum-sync-supervisor.exe'}
         else:
+            # A packed beta carries the release and the portable ZIP only.
             required |= {f'windows-release/{SOURCE_FILE}', 'windows-release/releases.beta.json',
                          'windows-release/BeFeast.Okilum-beta-Setup.exe',
                          f'windows-release/BeFeast.Okilum-{version}-beta-full.nupkg'}
@@ -286,7 +303,8 @@ def unpack(data, digest, expected, directory):
     return sorted(name for name in names if name != HANDOFF)
 
 
-def stage(api, run, expected, directory, fetch):
+def select_artifact(api, run, expected):
+    """The one artifact uploaded by the accepted attempt, with a sha256 digest."""
     items = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")
     if items.get('total_count', len(items.get('artifacts', []))) != len(items.get('artifacts', [])):
         raise ValueError('Incomplete hosted artifact inventory')
@@ -300,7 +318,75 @@ def stage(api, run, expected, directory, fetch):
     if (item.get('expired') or origin.get('id') != run['id'] or origin.get('head_sha') != expected['tooling']
             or not item.get('created_at') or item['created_at'] < run['run_started_at']):
         raise ValueError('Hosted Windows artifact does not belong to the accepted run attempt')
-    return unpack(fetch(item['id']), item.get('digest'), expected, directory)
+    if type(item.get('id')) is not int or not re.fullmatch(r'sha256:[0-9a-f]{64}', item.get('digest') or ''):
+        raise ValueError('Hosted Windows artifact has no id or sha256 digest')
+    return item
+
+
+def stage(api, run, expected, directory, fetch):
+    item = select_artifact(api, run, expected)
+    return unpack(fetch(item['id']), item['digest'], expected, directory)
+
+
+def receipt(run, item, branch, expected):
+    """What publication needs to fetch and re-verify the exact accepted bytes."""
+    return {'schema': RECEIPT_SCHEMA, 'github_run_id': run['id'], 'github_run_attempt': run['run_attempt'],
+            'branch': branch, 'artifact_id': item['id'], 'digest': item['digest'], **expected}
+
+
+def check_receipt(data, run_id, build):
+    """A main-beta receipt of this Forgejo run and build; anything else fails closed."""
+    if not isinstance(data, dict) or data.get('schema') != RECEIPT_SCHEMA:
+        raise ValueError('Unknown Windows handoff receipt')
+    keys = {'schema', 'github_run_id', 'github_run_attempt', 'branch', 'artifact_id', 'digest',
+            'source', 'tooling', 'build', 'mode', 'producer', 'attempt', 'invocation'}
+    if set(data) != keys:
+        raise ValueError('Malformed Windows handoff receipt')
+    for name in ('github_run_id', 'github_run_attempt', 'artifact_id', 'build'):
+        if type(data[name]) is not int or data[name] < 1:
+            raise ValueError(f'Malformed receipt {name}')
+    if (not SHA.fullmatch(str(data['source'])) or not SHA.fullmatch(str(data['tooling']))
+            or not INVOCATION.fullmatch(str(data['invocation']))
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(data['digest']))
+            or not POSITIVE.fullmatch(str(data['attempt']))):
+        raise ValueError('Malformed Windows handoff receipt identity')
+    # Bound to the run publication was dispatched for: the waiter of that run made it.
+    if data['producer'] != str(run_id) or data['build'] != build:
+        raise ValueError('Windows handoff receipt belongs to another run or build')
+    if data['mode'] not in ('pack', 'delta'):
+        raise ValueError('Only a packed beta is published from a receipt')
+    if data['branch'] != branch_for(data['build'], data['source'], data['producer'], data['attempt'],
+                                    data['invocation']):
+        raise ValueError('Windows handoff receipt names another ref')
+    return {name: data[name] for name in ('source', 'tooling', 'build', 'mode', 'producer', 'attempt', 'invocation')}
+
+
+def fetch_published(data, run_id, build, root, *, api=None, fetch=None, sleep=time.sleep):
+    """Publication side: re-verify the accepted hosted run and artifact, then lay out
+    `windows/` (the Velopack release) and `portable/` (the portable ZIP) under root."""
+    expected = check_receipt(data, run_id, build)
+    api = api or transport.GitHub()
+    read = lambda path: transport.hosted_request(api, path, sleep=sleep)
+    run = read(f"actions/runs/{data['github_run_id']}")
+    if (run.get('id') != data['github_run_id'] or run.get('path') != WORKFLOW
+            or run.get('event') != 'workflow_dispatch' or run.get('head_branch') != data['branch']
+            or run.get('head_sha') != expected['tooling'] or run.get('run_attempt') != data['github_run_attempt']):
+        raise ValueError('Hosted Windows run differs from the handoff receipt')
+    accepted_run(api, run, expected['mode'], read)
+    item = select_artifact(api, run, expected)
+    if item['id'] != data['artifact_id'] or item['digest'] != data['digest']:
+        raise ValueError('Hosted Windows artifact differs from the handoff receipt')
+    fetch = fetch or (lambda artifact_id: artifact.download(api.token, artifact_id))
+    staging = Path(root) / 'hosted'
+    unpack(fetch(item['id']), item['digest'], expected, staging)
+    release = staging / 'windows-release'
+    portable = sorted((staging / 'windows-dist').glob(f"okilum-0.1.{build}-x86_64.zip"))
+    if len(portable) != 1:
+        raise ValueError('Hosted Windows artifact lacks the portable ZIP')
+    (Path(root) / 'portable').mkdir(parents=True, exist_ok=True)
+    portable[0].replace(Path(root) / 'portable' / portable[0].name)
+    release.replace(Path(root) / 'windows')
+    return expected['source']
 
 
 def run(args, env=os.environ, *, api=None, fetch=None, push=None, clock=time.monotonic,
@@ -336,8 +422,19 @@ def run(args, env=os.environ, *, api=None, fetch=None, push=None, clock=time.mon
         hosted = wait(api, branch, args.tooling, mode, clock=clock, sleep=sleep, deadline=deadline)
         if hosted is None:
             return 1
+        item = select_artifact(api, hosted, expected)
+        if mode != 'payload' and main_beta(env):
+            # Publication fetches and re-verifies these exact bytes (identity,
+            # sha256, attempt) itself; no ~450 MB copy through Forgejo.
+            path = Path(args.receipt)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(receipt(hosted, item, branch, expected)))
+            print(f"Accepted hosted Windows build {args.build} ({mode}) from {args.source}: artifact "
+                  f"{item['id']} {item['digest']}, {hosted.get('html_url')}", flush=True)
+            return 0
+        # The signer's payload, or a QA build kept as a Forgejo artifact.
         fetch = fetch or (lambda artifact_id: artifact.download(api.token, artifact_id))
-        staged = stage(api, hosted, expected, args.directory, fetch)
+        staged = unpack(fetch(item['id']), item['digest'], expected, args.directory)
         print(f'Staged hosted Windows build {args.build} ({mode}) from {args.source}: '
               f'{len(staged)} files, {hosted.get("html_url")}', flush=True)
         return 0
@@ -367,6 +464,7 @@ def main(argv=None):
     build.add_argument('--signed', choices=('true', 'false'), required=True)
     build.add_argument('--archive', choices=('true', 'false'), required=True)
     build.add_argument('--directory', required=True)
+    build.add_argument('--receipt', required=True)
     build.add_argument('--budget', type=int, required=True)
     args = parser.parse_args(argv)
     try:
