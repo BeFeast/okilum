@@ -573,6 +573,48 @@ class Delivery(unittest.TestCase):
         self.assertEqual((self.image.read_bytes(), self.launches, self.signals), (self.payload, [], []))
         self.assertIn('Okilum was not open, not started', self.log())
 
+    def absent(self):
+        self.settings.assume_absent = True
+
+        def no_idle_watch(*_):
+            raise AssertionError('idleness must not be measured when the user is assumed absent')
+        self.patch('IdleWatch', no_idle_watch)
+
+    def test_assumed_absent_user_closes_without_idle_wait(self):
+        # Oleg 14.11: on idunn agents' synthetic input keeps Wayland "active".
+        self.open_window()
+        self.absent()
+        kernel = self.real_quit()
+        self.assertEqual(self.deliver(), 'installed 7760')
+        self.assertEqual(kernel.sent, [(51058, signal.SIGTERM)])
+        self.assertEqual(self.image.read_bytes(), self.payload)
+        self.assertEqual(len(self.launches), 1)
+        self.assertIn('user assumed absent (OKILUM_DELIVER_ASSUME_USER_ABSENT)', self.log())
+        self.assertRegex(self.log(), r'installed build 7760 .* no idle wait \(user assumed absent\) · quit TERM')
+
+    def test_assumed_absent_still_never_kills_and_stays_identity_bound(self):
+        self.open_window()
+        self.absent()
+        kernel = self.real_quit(on_term='ignore')
+        self.settings.term_wait = 0.2
+        self.assertEqual(self.deliver(), 'Okilum did not quit')
+        self.assertEqual(kernel.sent, [(51058, signal.SIGTERM)])
+        self.assertEqual((self.image.read_bytes(), self.launches), (self.old, []))
+        restore(self)
+        self.patches = {}
+        self.patch('IdleWatch', lambda *_: (_ for _ in ()).throw(AssertionError('no idle watch')))
+        self.patch('launch', self.fake_launch)
+        self.patch('unit_active', lambda unit: True)
+        kernel = Kernel(self, self.proc, on_open=lambda pid: self.proc.state(pid, 'S', start=999))
+        self.assertEqual(self.deliver(), 'Okilum changed')
+        self.assertEqual((kernel.sent, self.image.read_bytes()), ([], self.old))
+
+    def test_assume_absent_is_off_by_default_and_parsed(self):
+        self.assertFalse(D.Settings({'HOME': '/h'}).assume_absent)
+        for value, expected in (('1', True), ('true', True), ('yes', True), ('0', False), ('', False)):
+            self.assertEqual(D.Settings({'HOME': '/h', 'OKILUM_DELIVER_ASSUME_USER_ABSENT': value}).assume_absent,
+                             expected, value)
+
     def test_active_user_waits_and_logs_once(self):
         self.open_window()
         self.idle_result = False
@@ -785,6 +827,11 @@ class Log(unittest.TestCase):
 
 
 class Units(unittest.TestCase):
+    def test_idunn_drop_in_assumes_the_user_absent(self):
+        drop_in = (ROOT / 'scripts/dev/systemd/okilum-beta-deliver.service.d/assume-user-absent.conf').read_text()
+        self.assertIn('[Service]\nEnvironment=OKILUM_DELIVER_ASSUME_USER_ABSENT=1', drop_in)
+        self.assertNotIn('ASSUME_USER_ABSENT', (ROOT / 'scripts/dev/systemd/okilum-beta-deliver.service').read_text())
+
     def test_units_run_the_installed_script_in_the_session(self):
         service = (ROOT / 'scripts/dev/systemd/okilum-beta-deliver.service').read_text()
         timer = (ROOT / 'scripts/dev/systemd/okilum-beta-deliver.timer').read_text()
