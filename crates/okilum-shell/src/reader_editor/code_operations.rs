@@ -2,6 +2,7 @@
 //! gain write authority; every accepted edit uses the normal source Undo/save.
 use super::*;
 pub(super) mod file_chrome;
+mod source_edits;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use okilum_core::code_operations as model;
 use std::{
@@ -141,6 +142,8 @@ struct Scope {
 struct Preview {
     target: Target,
     proposed: String,
+    /// `proposed` as exact replacements of `target.text` (#2804).
+    edits: Vec<(Range<usize>, String)>,
     explanation: String,
     validation: String,
     before: Entity<EditorState>,
@@ -152,6 +155,35 @@ enum Action {
     Validate,
     Format,
     Repair,
+}
+
+/// Apply a worker's exact replacements of `target` as one Undo step. Bytes
+/// between them are never rewritten; the selection follows them (#2804).
+fn apply_source_edits(
+    state: &mut EditorState,
+    target: &Target,
+    edits: Vec<(Range<usize>, String)>,
+    markdown: bool,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) -> bool {
+    // A Live Preview note recomposes its whole projection once per native
+    // edit; there one replacement of the changed span is cheaper (#2804).
+    let mut edits =
+        if markdown && state.text().len() <= gpui_component::input::projection::MAX_SOURCE_BYTES {
+            source_edits::merged(&target.text, edits)
+        } else {
+            edits
+        };
+    let base = target.range.start;
+    for (range, _) in &mut edits {
+        *range = base + range.start..base + range.end;
+    }
+    let shifted = edits;
+    let selected = state.selected_range();
+    let selection = source_edits::map_offset(&shifted, selected.start)
+        ..source_edits::map_offset(&shifted, selected.end);
+    state.replace_source_edits(&shifted, selection, window, cx)
 }
 
 #[cfg(test)]
@@ -598,6 +630,9 @@ impl Reader {
                 let mut format = None;
                 let mut repair = None;
                 let mut proposed_validation = None;
+                // The exact bytes that change (#2804), computed here so the
+                // UI applies, and Undo restores, only those ranges.
+                let mut edits = None;
                 match action {
                     Action::Validate => {
                         status = Some(validation_with_control(
@@ -637,7 +672,12 @@ impl Reader {
                                     &target.language,
                                     text,
                                     &worker_control,
-                                ))
+                                ));
+                                edits = Some(source_edits::source_edits(
+                                    &target.text,
+                                    text,
+                                    &worker_control,
+                                )?);
                             }
                             model::Formatted::Unchanged(reason)
                                 if reason == "Already formatted."
@@ -670,6 +710,11 @@ impl Reader {
                             // and the complete strict-JSON proposal on this worker.
                             status = Some("Repair proposal ready.".into());
                             proposed_validation = Some("Valid strict JSON".into());
+                            edits = Some(source_edits::source_edits(
+                                &target.text,
+                                &repair.proposed,
+                                &worker_control,
+                            )?);
                         }
                         repair = Some(result);
                     }
@@ -677,7 +722,7 @@ impl Reader {
                 if worker_control.cancelled() {
                     return None;
                 }
-                Some((target, status, format, repair, proposed_validation))
+                Some((target, status, format, repair, proposed_validation, edits))
             })();
             if let Some(trace) = &worker_trace {
                 trace.event("code_operation_worker", serde_json::json!({"action":action.name(), "bytes":bytes, "duration_ms":worker_started.elapsed().as_secs_f64()*1000., "cancelled":worker_control.cancelled(), "thread":format!("{:?}", std::thread::current().id())}));
@@ -706,7 +751,7 @@ impl Reader {
                     editing.operations.notice = Some("Source changed; run the operation again. No result applied.".into());
                     this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                 }
-                let Some((target, status, format, repair, proposed_validation)) = result else {
+                let Some((target, status, format, repair, proposed_validation, mut edits)) = result else {
                     editing.operations.notice = Some(if input.read(cx).source_stamp() != snapshot_stamp { "Source changed; run the operation again. No result applied." } else { "Operation cancelled." }.into());
                     this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                 };
@@ -717,11 +762,13 @@ impl Reader {
                 let mut status_range = target.range.clone();
                 match format {
                     Some(model::Formatted::Changed(text)) => {
-                        if !editing.markdown {
+                        let markdown = editing.markdown;
+                        if !markdown {
                             this.retire_large_plain_preview(input.read(cx).text().len() - target.range.len() + text.len());
                         }
+                        let edits = edits.take().expect("prepared format edits");
                         input.update(cx, |state, cx| {
-                            state.replace_source_range(target.range.clone(), text.as_str(), window, cx);
+                            apply_source_edits(state, &target, edits, markdown, window, cx);
                             state.focus(window, cx);
                         });
                         status_range.end = status_range.start + text.len();
@@ -743,7 +790,8 @@ impl Reader {
                             if target.text.len() > PREVIEW_BYTES || repair.proposed.len() > PREVIEW_BYTES {
                                 explanation.push_str(" Preview shows the first 64 KiB of each version; Apply uses the complete result.");
                             }
-                            editing.operations.preview = Some(Preview { target, proposed: repair.proposed, explanation,
+                            editing.operations.preview = Some(Preview { target, proposed: repair.proposed,
+                                edits: edits.take().expect("prepared repair edits"), explanation,
                                 validation: proposed_validation.expect("prepared repair validation"), before, after });
                         }
                     }
@@ -789,6 +837,7 @@ impl Reader {
         }
         let preview = editing.operations.preview.take().unwrap();
         let input = editing.input.clone();
+        let markdown = editing.markdown;
         let status = preview.validation;
         if !editing.markdown {
             self.retire_large_plain_preview(
@@ -796,7 +845,7 @@ impl Reader {
             );
         }
         input.update(cx, |state, cx| {
-            state.replace_source_range(preview.target.range, preview.proposed.as_str(), window, cx)
+            apply_source_edits(state, &preview.target, preview.edits, markdown, window, cx)
         });
         let editing = self.editing.as_mut().unwrap();
         editing.operations.status = Some((
