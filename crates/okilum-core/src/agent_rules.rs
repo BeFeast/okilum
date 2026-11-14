@@ -8,6 +8,9 @@ use std::{
 
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_LAYERS: usize = 256;
+/// Claude Code memory files whose presence in a folder of the chain switches
+/// off its AGENTS.md fallback (#2970), most specific path first.
+const CLAUDE_MEMORY_FILES: [&str; 3] = [".claude/CLAUDE.md", "CLAUDE.md", "CLAUDE.local.md"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Provenance {
@@ -55,22 +58,31 @@ impl Layer {
 pub struct RuleStack {
     pub layers: Vec<Layer>,
     pub diagnostics: Vec<String>,
-    /// Vault-relative `CLAUDE.md` files in the vault-to-project folder chain,
-    /// outermost first (#2970). Claude Code reads `AGENTS.md` only when no
-    /// `CLAUDE.md` exists in the working directory or any ancestor, so each
+    /// Vault-relative Claude Code memory files (`CLAUDE.md`,
+    /// `.claude/CLAUDE.md`, `CLAUDE.local.md`) in the vault-to-project folder
+    /// chain, outermost first (#2970). Claude Code reads `AGENTS.md` only when
+    /// none of them exists in the working directory or any ancestor, so each
     /// entry switches that fallback off for Claude Code.
     pub claude_md: Vec<PathBuf>,
 }
 
 impl RuleStack {
-    /// One warning per `CLAUDE.md` in the folder chain, paired with the file
-    /// it names so the Rules tab can open it (#2970).
+    /// One warning per Claude Code memory file in the folder chain, paired
+    /// with the file it names so the Rules tab can open it (#2970).
     pub fn agents_fallback_warnings(&self) -> Vec<(PathBuf, String)> {
         self.claude_md
             .iter()
             .map(|path| {
-                let folder = path
-                    .parent()
+                // `.claude/CLAUDE.md` belongs to the folder that holds `.claude`.
+                let (name, folder) =
+                    match CLAUDE_MEMORY_FILES.iter().find(|name| path.ends_with(name)) {
+                        Some(name) => (
+                            *name,
+                            path.ancestors().nth(Path::new(name).components().count()),
+                        ),
+                        None => ("CLAUDE.md", path.parent()),
+                    };
+                let folder = folder
                     .filter(|folder| !folder.as_os_str().is_empty())
                     .map_or_else(
                         || "the vault root".to_owned(),
@@ -78,7 +90,7 @@ impl RuleStack {
                     );
                 (
                     path.clone(),
-                    format!("CLAUDE.md in {folder} switches off AGENTS.md for Claude Code"),
+                    format!("{name} in {folder} switches off AGENTS.md for Claude Code"),
                 )
             })
             .collect()
@@ -239,16 +251,19 @@ pub fn discover(vault: &Path, project: &Path) -> RuleStack {
                 ),
             }
         }
+        // Recorded apart from layers: the fallback warning (#2970) depends
+        // only on a memory file existing, not on room for its layer.
+        for name in ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"] {
+            let path = relative.join(name);
+            if fs::symlink_metadata(root.join(&path)).is_ok() {
+                stack.claude_md.push(path);
+            }
+        }
         for name in ["CLAUDE.md", "GEMINI.md", "CONTEXT.md", "ANTIGRAVITY.md"] {
             if !crate::quick_open::is_agent_file(name) {
                 continue;
             }
             let path = relative.join(name);
-            // Recorded before the layer limit: the fallback warning (#2970)
-            // depends only on the file existing, not on room for its layer.
-            if name == "CLAUDE.md" && fs::symlink_metadata(root.join(&path)).is_ok() {
-                stack.claude_md.push(path.clone());
-            }
             if stack.layers.len() >= MAX_LAYERS {
                 stack
                     .diagnostics
@@ -1025,27 +1040,59 @@ mod claude_fallback_tests {
             .is_empty());
         fs::write(root.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
         fs::write(root.join("Dev/App/CLAUDE.md"), "Claude only\n").unwrap();
+        // The other two memory files also switch the fallback off, each alone
+        // in its own folder so the warning names that exact file.
+        fs::create_dir_all(root.join("Dev/.claude")).unwrap();
+        fs::write(root.join("Dev/.claude/CLAUDE.md"), "Project memory\n").unwrap();
+        fs::write(root.join("Dev/App/sub/CLAUDE.local.md"), "Local memory\n").unwrap();
         let stack = super::discover(root, &root.join("Dev/App/sub"));
         assert_eq!(
             stack.claude_md,
             [
                 PathBuf::from("CLAUDE.md"),
-                PathBuf::from("Dev/App/CLAUDE.md")
+                PathBuf::from("Dev/.claude/CLAUDE.md"),
+                PathBuf::from("Dev/App/CLAUDE.md"),
+                PathBuf::from("Dev/App/sub/CLAUDE.local.md"),
             ]
         );
+        let line = |path: &str, text: &str| (PathBuf::from(path), text.to_owned());
         assert_eq!(
             stack.agents_fallback_warnings(),
             [
-                (
-                    PathBuf::from("CLAUDE.md"),
-                    "CLAUDE.md in the vault root switches off AGENTS.md for Claude Code".to_owned()
+                line(
+                    "CLAUDE.md",
+                    "CLAUDE.md in the vault root switches off AGENTS.md for Claude Code"
                 ),
-                (
-                    PathBuf::from("Dev/App/CLAUDE.md"),
-                    "CLAUDE.md in Dev/App switches off AGENTS.md for Claude Code".to_owned()
+                line(
+                    "Dev/.claude/CLAUDE.md",
+                    ".claude/CLAUDE.md in Dev switches off AGENTS.md for Claude Code"
+                ),
+                line(
+                    "Dev/App/CLAUDE.md",
+                    "CLAUDE.md in Dev/App switches off AGENTS.md for Claude Code"
+                ),
+                line(
+                    "Dev/App/sub/CLAUDE.local.md",
+                    "CLAUDE.local.md in Dev/App/sub switches off AGENTS.md for Claude Code"
                 ),
             ]
         );
+        // Each variant alone is enough (no CLAUDE.md anywhere in the chain).
+        for path in ["CLAUDE.md", "Dev/App/CLAUDE.md"] {
+            fs::remove_file(root.join(path)).unwrap();
+        }
+        fs::remove_file(root.join("Dev/App/sub/CLAUDE.local.md")).unwrap();
+        assert_eq!(
+            super::discover(root, &root.join("Dev/App/sub")).claude_md,
+            [PathBuf::from("Dev/.claude/CLAUDE.md")]
+        );
+        fs::remove_file(root.join("Dev/.claude/CLAUDE.md")).unwrap();
+        fs::write(root.join("Dev/App/sub/CLAUDE.local.md"), "Local memory\n").unwrap();
+        assert_eq!(
+            super::discover(root, &root.join("Dev/App/sub")).claude_md,
+            [PathBuf::from("Dev/App/sub/CLAUDE.local.md")]
+        );
+        fs::write(root.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
         assert_eq!(
             fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
             "@AGENTS.md\n"
