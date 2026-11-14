@@ -568,6 +568,27 @@ class Delivery(unittest.TestCase):
         self.assertEqual(len(self.launches), 1)
         self.assertEqual(json.loads((self.settings.own_state / 'last-check.json').read_text())['installed'], 7760)
 
+    def test_install_never_writes_into_the_running_inode(self):
+        # 14.11 13:41: a QA instance on idunn, running from the managed AppImage
+        # through its FUSE runtime, died with SIGBUS. Delivery is safe for such
+        # processes only while it never writes into the file they run.
+        self.open_window()
+        held = os.open(self.image, os.O_RDONLY)          # what the AppImage runtime holds
+        try:
+            before = os.fstat(held)
+            self.assertEqual(self.deliver(), 'installed 7760')
+            after = os.fstat(held)
+            self.assertEqual((after.st_ino, after.st_size, after.st_mtime_ns),
+                             (before.st_ino, before.st_size, before.st_mtime_ns))
+            self.assertGreaterEqual(after.st_nlink, 1)   # still linked as previous.AppImage
+            self.assertEqual(os.pread(held, len(self.old), 0), self.old)
+            self.assertNotEqual(os.stat(self.image).st_ino, before.st_ino)
+            for stage in self.stages():                  # pruning only unlinks
+                shutil.rmtree(stage)
+            self.assertEqual(os.pread(held, len(self.old), 0), self.old)
+        finally:
+            os.close(held)
+
     def test_closed_app_is_installed_but_not_started(self):
         self.assertEqual(self.deliver(), 'installed 7760')
         self.assertEqual((self.image.read_bytes(), self.launches, self.signals), (self.payload, [], []))
