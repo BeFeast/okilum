@@ -1080,7 +1080,7 @@ mod tests {
             slowest_batch = slowest_batch.max(at.elapsed());
         }
         let total = started.elapsed();
-        println!("review2932 tally: {total:?} total, slowest batch {slowest_batch:?}");
+        diagnostic_println!("review2932 tally: {total:?} total, slowest batch {slowest_batch:?}");
         assert_eq!(overview.top_hosts.len(), HOSTS_SHOWN);
         assert_eq!(overview.slowest.len(), TOP);
         // Generous for unoptimised test builds on shared runners.
