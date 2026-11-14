@@ -1810,6 +1810,9 @@ fn one_row_header_keeps_tabs_menu_open_and_draft_by_keyboard_at_every_width(
     }
 
     cx.update(crate::test_init);
+    // The desktop t3code:// handler is registered, as on a set-up computer;
+    // without it macOS falls back to the web URL (hosted Mac runners).
+    cx.update(|cx| cx.set_global(super::desktop::TestHandler(true)));
     let temp = tempfile::tempdir().unwrap();
     let gateway = Arc::new(fixture::Fake::default());
     let mut entity = None;
