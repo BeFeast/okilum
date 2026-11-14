@@ -460,9 +460,12 @@ const FOCUS_MODE_KEY: &str = "f8";
 const TYPEWRITER_MODE_KEY: &str = "f9";
 
 /// The six Ctrl+Alt+letter defaults that predate the toolbar series. On
-/// Windows Ctrl+Alt is AltGr on many layouts and would take printable keys,
-/// so there they add Shift (the Paste as Titled Link precedent); macOS
-/// (⌥⌘) and Linux (Ctrl+Alt) keep them (Oleg, 2026-11-14).
+/// Windows Ctrl+Alt is AltGr, and AltGr (with or without Shift) types
+/// characters on many layouts, so there they use Alt+Shift, which has no
+/// Ctrl and is not AltGr (Oleg, 2026-11-14: «без Ctrl+Alt»). F and V are
+/// taken by Format and Validate in File Edit, so Maximize uses Alt+Shift+Enter
+/// and Paste as Titled Link Alt+Shift+L (link). macOS (⌥⌘) and Linux
+/// (Ctrl+Alt) keep them.
 const fn legacy_alt_key(elsewhere: &'static str, windows: &'static str) -> &'static str {
     if cfg!(windows) {
         windows
@@ -470,16 +473,15 @@ const fn legacy_alt_key(elsewhere: &'static str, windows: &'static str) -> &'sta
         elsewhere
     }
 }
-pub(crate) const COPY_WITH_FORMATTING_KEY: &str =
-    legacy_alt_key("secondary-alt-c", "ctrl-alt-shift-c");
-const TOGGLE_PROJECT_KEY: &str = legacy_alt_key("secondary-alt-p", "ctrl-alt-shift-p");
-const OPEN_BLOCK_EXTERNALLY_KEY: &str = legacy_alt_key("secondary-alt-e", "ctrl-alt-shift-e");
-const PASTE_AS_TITLED_LINK_KEY: &str = legacy_alt_key("secondary-alt-v", "ctrl-alt-shift-v");
-pub(crate) const MAXIMIZE_NOTE_KEY: &str = legacy_alt_key("secondary-alt-f", "ctrl-alt-shift-f");
+pub(crate) const COPY_WITH_FORMATTING_KEY: &str = legacy_alt_key("secondary-alt-c", "alt-shift-c");
+const TOGGLE_PROJECT_KEY: &str = legacy_alt_key("secondary-alt-p", "alt-shift-p");
+const OPEN_BLOCK_EXTERNALLY_KEY: &str = legacy_alt_key("secondary-alt-e", "alt-shift-e");
+const PASTE_AS_TITLED_LINK_KEY: &str = legacy_alt_key("secondary-alt-v", "alt-shift-l");
+pub(crate) const MAXIMIZE_NOTE_KEY: &str = legacy_alt_key("secondary-alt-f", "alt-shift-enter");
 
-/// ⌥⌘W / Ctrl+Alt+W (Ctrl+Alt+Shift+W on Windows): normal (reading width) or
+/// ⌥⌘W / Ctrl+Alt+W (Alt+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
-const NOTE_WIDTH_KEY: &str = legacy_alt_key("secondary-alt-w", "ctrl-alt-shift-w");
+const NOTE_WIDTH_KEY: &str = legacy_alt_key("secondary-alt-w", "alt-shift-w");
 
 /// One app-wide, remembered toggle; every window follows it.
 pub(crate) fn toggle_note_width(cx: &mut App) {

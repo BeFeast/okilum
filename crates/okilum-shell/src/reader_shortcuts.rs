@@ -750,8 +750,9 @@ mod tests {
     fn altgr2813_no_default_uses_ctrl_alt_letter(cx: &mut TestAppContext) {
         // AltGr arrives as Ctrl+Alt on Windows layouts that type characters
         // with it, so a Ctrl+Alt+letter default would steal printable keys.
-        // On Windows no default may use it: the six older ones add Shift
-        // there (Oleg, 2026-11-14). macOS (⌥⌘) and Linux keep these six,
+        // AltGr+Shift types characters too, so on Windows no default may use
+        // Ctrl+Alt+letter with or without Shift: the six older ones use
+        // Alt+Shift there (Oleg, 2026-11-14). macOS (⌥⌘) and Linux keep these six,
         // which predate the toolbar series (#2813 asks for no *new* ones).
         const EXISTING: [&str; 6] = [
             "reader_read_menu::CopyWithFormatting ctrl-alt-c",
@@ -770,8 +771,9 @@ mod tests {
                     let m = stroke.modifiers();
                     let letter = stroke.key().len() == 1
                         && stroke.key().chars().all(|c| c.is_ascii_alphabetic());
-                    // Ctrl+Alt+Shift is the AltGr-safe form.
-                    (m.control && m.alt && !m.shift && letter)
+                    // Shift does not make it AltGr-safe on Windows; elsewhere
+                    // the six older chords are plain Ctrl+Alt+letter.
+                    (m.control && m.alt && letter && (cfg!(windows) || !m.shift))
                         .then(|| format!("{} ctrl-alt-{}", binding.action().name(), stroke.key()))
                 })
             })
