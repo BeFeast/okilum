@@ -4,7 +4,8 @@
 //! split by type, status and host, and the slowest and largest requests.
 //!
 //! Type and status rows toggle the list's header filters, a host row puts
-//! the host into Find, a request row selects that request. Everything is
+//! the host into Find, a request row selects that request; from Source each
+//! of them goes back to the request list. Everything is
 //! tallied while the index delivers batches, so drawing the panel never
 //! walks the requests. Nothing here writes capture content anywhere but the
 //! panel.
@@ -84,8 +85,12 @@ impl Overview {
 
     /// After a set of batches: orders the hosts once, not on every draw.
     pub(crate) fn finish(&mut self) {
-        let mut hosts: Vec<(&Box<str>, &Tally)> = self.hosts.iter().collect();
-        let order = |a: &(&Box<str>, &Tally), b: &(&Box<str>, &Tally)| {
+        let mut hosts: Vec<(&str, Tally)> = self
+            .hosts
+            .iter()
+            .map(|(host, tally)| (host.as_ref(), *tally))
+            .collect();
+        let order = |a: &(&str, Tally), b: &(&str, Tally)| {
             b.1.requests
                 .cmp(&a.1.requests)
                 .then(b.1.bytes.cmp(&a.1.bytes))
@@ -98,7 +103,7 @@ impl Overview {
         hosts.sort_unstable_by(order);
         self.top_hosts = hosts
             .into_iter()
-            .map(|(host, tally)| (host.clone(), *tally))
+            .map(|(host, tally)| (Box::from(host), tally))
             .collect();
         self.revision = self.revision.wrapping_add(1);
     }
@@ -170,6 +175,19 @@ fn active_host(view: &HarView, cx: &App) -> Option<usize> {
         .top_hosts
         .iter()
         .position(|(host, _)| host.eq_ignore_ascii_case(text))
+}
+
+/// A panel row acts on the request list: from Source, it comes back first.
+fn act(
+    viewer: &Entity<HarView>,
+    window: &mut Window,
+    cx: &mut App,
+    action: impl FnOnce(&mut HarView, &mut Window, &mut Context<HarView>),
+) {
+    viewer.update(cx, |this, cx| action(this, window, cx));
+    if let Some(reader) = viewer.read(cx).reader.upgrade() {
+        reader.update(cx, |reader, cx| reader.show_har_source(false, window, cx));
+    }
 }
 
 /// The last path segment without its query, or the path, or the host.
@@ -294,8 +312,8 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                     active,
                     cx,
                 )
-                .on_click(move |_, _, cx| {
-                    target.update(cx, |this, cx| {
+                .on_click(move |_, window, cx| {
+                    act(&target, window, cx, |this, _, cx| {
                         this.set_filters(
                             |f| {
                                 f.kind = if f.kind == Some(kind) {
@@ -340,8 +358,8 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                     active,
                     cx,
                 )
-                .on_click(move |_, _, cx| {
-                    target.update(cx, |this, cx| {
+                .on_click(move |_, window, cx| {
+                    act(&target, window, cx, |this, _, cx| {
                         this.set_filters(
                             |f| {
                                 f.status = if f.status == Some(class) {
@@ -379,7 +397,7 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                 )
                 .on_click(move |_, window, cx| {
                     let text = text.clone();
-                    target.update(cx, |this, cx| {
+                    act(&target, window, cx, |this, window, cx| {
                         let value = if active { "".into() } else { text };
                         this.filter
                             .update(cx, |input, cx| input.set_value(value, window, cx));
@@ -436,7 +454,9 @@ pub(crate) fn render(viewer: &Entity<HarView>, cx: &App) -> Option<AnyElement> {
                     view.selected == Some(index),
                     cx,
                 )
-                .on_click(move |_, _, cx| target.update(cx, |this, cx| this.reveal(index, cx))),
+                .on_click(move |_, window, cx| {
+                    act(&target, window, cx, |this, _, cx| this.reveal(index, cx))
+                }),
             );
         }
         section

@@ -1181,9 +1181,9 @@ fn review2904_save_as_refuses_the_capture_itself(cx: &mut TestAppContext) {
     assert!(same_file(&capture_path, &capture_path) && !same_file(&capture_path, &other));
 }
 
-/// #2932: in Requests the right panel sums up the capture instead of an
-/// empty Contents. Its rows drive the list's Status filter, Find and the
-/// selection; Source keeps the JSON viewer's Contents.
+/// #2932: the right panel sums up the capture instead of an empty Contents.
+/// Its rows drive the list's Status filter, Find and the selection; in
+/// Source the Overview stays, and a row brings the request list back.
 #[gpui::test]
 fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     let text = sample();
@@ -1255,8 +1255,17 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     click(visual, "har-overview-slowest-2");
     assert_eq!(har.read_with(visual, |har, _| har.selected), Some(2));
 
-    // Source shows the JSON viewer, whose Contents comes back.
+    // Source keeps the Overview; a row there goes back to the requests.
     click(visual, "har-view-source");
-    assert!(measured_bounds(visual, "har-overview-heading").is_none());
-    assert!(measured_bounds(visual, "file-contents-heading").is_some());
+    reader.read_with(visual, |reader, _| {
+        assert!(reader.file_preview.as_ref().unwrap().code.is_some())
+    });
+    assert!(measured_bounds(visual, "har-overview-heading").is_some());
+    assert!(measured_bounds(visual, "file-contents-heading").is_none());
+    click(visual, "har-overview-status-4xx");
+    reader.read_with(visual, |reader, _| {
+        assert!(reader.file_preview.as_ref().unwrap().code.is_none())
+    });
+    assert_eq!(rows(&har, visual), [1]);
+    assert!(measured_bounds(visual, "har-list").is_some());
 }

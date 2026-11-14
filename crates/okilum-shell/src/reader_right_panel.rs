@@ -35,12 +35,12 @@ pub(super) fn render_file(
     // when a note actually links the file; Contents uses the room otherwise.
     // Notes and documents always keep it.
     let service = service_file(reader) && reader.backlinks.is_empty();
-    // A HAR file's request list: its Overview takes the place of Contents,
-    // which has nothing to list there (#2932). Source keeps the JSON Contents.
+    // A HAR file: its Overview takes the place of Contents, which has
+    // nothing to list in either view (#2932; Source has no JSON Contents for
+    // HAR, `contents_format`).
     let har = reader
         .file_preview
         .as_ref()
-        .filter(|preview| preview.code.is_none())
         .and_then(|preview| preview.har.clone());
     let contents = har.is_none() && outline.read(cx).has_entries();
     let separator = || {
