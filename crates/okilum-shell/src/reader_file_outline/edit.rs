@@ -73,6 +73,8 @@ impl View {
         self.language = None;
         self.code = None;
         self.code_observer = None;
+        // The column list belongs to the viewer's Table, which Edit hides.
+        self.snapshot.columns = None;
         self.snapshot.active = true;
         self.snapshot.seen = None;
         self.snapshot.follow_caret = false;

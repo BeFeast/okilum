@@ -251,7 +251,7 @@ fn shown(view: &View) -> Vec<String> {
 }
 
 #[gpui::test]
-fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
+fn contents2814_json_rows_states_and_table_columns(cx: &mut TestAppContext) {
     let long = format!(
         "{{\"head\":\"{}\",\"tail\":{{\"x\":1}}}}",
         "x".repeat(300_000)
@@ -275,7 +275,7 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
     for (file, expect) in [
         ("big.json", Some("rows")),
         ("bad.json", Some("invalid")),
-        ("array.json", None),
+        ("array.json", Some("columns")),
         ("plain.txt", None),
     ] {
         reader.update_in(visual, |r, w, cx| r.open_note(file, None, w, cx));
@@ -297,6 +297,12 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
                     )
                 });
             }
+            Some("columns") => {
+                // A JSON array opens in Table: Contents lists its columns (9d).
+                paint(visual);
+                assert_eq!(columns(&view, visual), ["a"], "{file}");
+                view.read_with(visual, |v, _| assert!(v.has_entries(), "{file}"));
+            }
             Some(_) => {
                 assert!(
                     visual.debug_bounds("file-contents-heading").is_some(),
@@ -311,7 +317,7 @@ fn contents2814_json_rows_states_and_absent_table(cx: &mut TestAppContext) {
                 assert!(visual.debug_bounds("file-outline-state").is_some());
             }
             None => {
-                // No rows (Table view, or no structure): only the heading and
+                // No structure: only the heading and
                 // its empty line remain; data files have no «Linked from» (#2885).
                 view.read_with(visual, |v, _| assert!(!v.has_entries(), "{file}"));
                 assert!(visual.debug_bounds("file-outline-list").is_none(), "{file}");
@@ -1443,4 +1449,340 @@ fn contents2814_edit_never_releases_a_tree_on_the_ui_thread(cx: &mut TestAppCont
         counts.background
     );
     assert_eq!(counts.foreground, 0, "trees released on the UI thread");
+}
+
+fn columns(view: &Entity<View>, visual: &VisualTestContext) -> Vec<String> {
+    view.read_with(visual, |v, _| {
+        v.snapshot
+            .columns
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.names.iter().map(|n| n.0.clone()).collect())
+    })
+}
+
+fn column_tooltips(view: &Entity<View>, visual: &VisualTestContext) -> Vec<String> {
+    view.read_with(visual, |v, _| {
+        v.snapshot
+            .columns
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.names.iter().map(|n| n.1.clone()).collect())
+    })
+}
+
+fn column_mark(view: &Entity<View>, visual: &VisualTestContext) -> Option<usize> {
+    view.read_with(visual, |v, _| v.snapshot.columns.as_ref()?.current)
+}
+
+fn table(
+    code: &Entity<reader_code_file::CodePreview>,
+    visual: &VisualTestContext,
+) -> Entity<reader_delimited::TablePreview> {
+    code.read_with(visual, |p, _| p.table_view().expect("a table"))
+}
+
+#[gpui::test]
+fn contents2814_csv_and_tsv_list_their_columns_and_follow_the_selected_cell(
+    cx: &mut TestAppContext,
+) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[
+            (
+                "charges.csv",
+                "id,amount,currency,status\n1,10,EUR,paid\n2,20,USD,open\n",
+            ),
+            ("people.tsv", "name\tage\nAda\t36\n"),
+        ],
+        "charges.csv",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    code.read_with(visual, |p, _| assert_eq!(p.active_view(), CodeView::Table));
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount", "currency", "status"]
+    );
+    assert_eq!(column_mark(&view, visual), None, "nothing selected yet");
+    assert!(
+        visual.debug_bounds("file-outline-columns").is_some(),
+        "the column list is drawn"
+    );
+    let table = table(&code, visual);
+    table.update_in(visual, |t, w, cx| t.select_for_tests(2, 1, w, cx));
+    settle(visual);
+    assert_eq!(
+        column_mark(&view, visual),
+        Some(1),
+        "the selected cell's column"
+    );
+    // A click: the selection moves into that column, same row.
+    view.update_in(visual, |v, w, cx| v.jump_column(3, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), Some((2, 3)))
+    });
+    assert_eq!(column_mark(&view, visual), Some(3));
+    reader.update_in(visual, |r, w, cx| r.open_note("people.tsv", None, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(columns(&view, visual), ["name", "age"]);
+}
+
+#[gpui::test]
+fn contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column(
+    cx: &mut TestAppContext,
+) {
+    let row = |r: usize| {
+        (0..256)
+            .map(|c| format!("r{r}c{c}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let text = format!("{}\n{}\n{}\n", row(0), row(1), row(2));
+    let (reader, visual, dirs) =
+        editable_reader_with(cx, &[("wide.csv", text.as_str())], "wide.csv");
+    // The header choice lives in the UI state, which the grid reads on render.
+    let state = dirs[1].path().join("state");
+    visual.update(|_, cx| reader_ui_state::install(&state, cx));
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let table = table(&code, visual);
+    table.update(visual, |t, cx| t.set_header_for_tests(false, cx));
+    settle(visual);
+    paint(visual);
+    let names = columns(&view, visual);
+    assert_eq!(names.len(), 256);
+    assert_eq!(
+        (names[0].as_str(), names[255].as_str()),
+        ("Column 1", "Column 256")
+    );
+    table.update_in(visual, |t, w, cx| t.select_for_tests(1, 0, w, cx));
+    settle(visual);
+    let (before, _) = table.read_with(visual, |t, _| t.horizontal_for_tests());
+    view.update_in(visual, |v, w, cx| v.jump_column(200, w, cx));
+    settle(visual);
+    paint(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(
+            t.selection_for_tests(),
+            Some((1, 200)),
+            "same row, new column"
+        );
+        let (offset, width) = t.horizontal_for_tests();
+        assert!(
+            offset > before,
+            "the grid scrolled sideways ({before} → {offset})"
+        );
+        let (left, right) = (48. + 200. * 200., 48. + 201. * 200.);
+        assert!(
+            offset <= left && right <= offset + width.max(200.) + 0.5,
+            "column 200 is on screen: {left}..{right} in {offset}..{}",
+            offset + width
+        );
+    });
+    assert_eq!(column_mark(&view, visual), Some(200));
+}
+
+#[gpui::test]
+fn contents2814_a_json_array_lists_columns_only_in_table(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[(
+            "charges.json",
+            "[{\"id\":1,\"amount\":10},{\"id\":2,\"amount\":20}]",
+        )],
+        "charges.json",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount"],
+        "Table lists columns"
+    );
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Tree, w, cx));
+    settle(visual);
+    paint(visual);
+    view.read_with(visual, |v, _| {
+        assert!(v.snapshot.columns.is_none(), "Tree lists keys and items");
+        assert_eq!(shown(v)[0], "0 2 keys");
+    });
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    assert_eq!(columns(&view, visual), ["id", "amount"]);
+}
+
+/// Resident memory in bytes (Linux), for the budget receipt.
+fn resident_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
+
+/// An OpenAPI-shaped document of about `target` bytes: «paths» with 414
+/// keys, «components.schemas» filled up to the size.
+fn openapi_fixture(target: usize) -> String {
+    let mut out = String::from("{\"openapi\":\"3.0.0\",\"paths\":{");
+    for i in 0..414 {
+        if i > 0 {
+            out.push(',');
+        }
+        out += &format!(
+            "\"/v1/resource{i}/{{id}}\":{{\"get\":{{\"summary\":\"Get {i}\",\"parameters\":[{{\"name\":\"id\",\"in\":\"path\"}}],\"responses\":{{\"200\":{{\"description\":\"ok\"}}}}}}}}"
+        );
+    }
+    out += "},\"components\":{\"schemas\":{";
+    let mut i = 0;
+    while out.len() < target {
+        if i > 0 {
+            out.push(',');
+        }
+        out += &format!(
+            "\"Schema{i}\":{{\"type\":\"object\",\"properties\":{{\"id\":{{\"type\":\"string\"}},\"amount\":{{\"type\":\"integer\"}},\"note\":{{\"type\":\"string\",\"description\":\"{}\"}}}}}}",
+            "x".repeat(i % 200)
+        );
+        i += 1;
+    }
+    out += "}}}";
+    out
+}
+
+/// #2814 budgets, measured in a release build:
+/// `cargo test --release ... contents2814_budget_numbers -- --ignored --nocapture`.
+#[test]
+#[ignore = "a release-build measurement; prints the budget receipt"]
+fn contents2814_budget_numbers() {
+    crate::source_presentation::code_languages::install();
+    for (label, target) in [("3.4MB", 3_400_000), ("32MiB", 32 * 1024 * 1024)] {
+        let text = openapi_fixture(target);
+        let bytes = text.len();
+        let started = std::time::Instant::now();
+        let doc = Arc::new(Document::for_file(text, "json", true));
+        let tree_ms = started.elapsed().as_secs_f64() * 1000.;
+        let before = resident_bytes();
+        let started = std::time::Instant::now();
+        let rows = tree::visible_rows(&doc, &tree::Expansion::default());
+        let rows_ms = started.elapsed().as_secs_f64() * 1000.;
+        let after = resident_bytes();
+        let rows_mb = match (before, after) {
+            (Some(b), Some(a)) => a.saturating_sub(b) as f64 / 1_048_576.,
+            _ => f64::NAN,
+        };
+        // Offset-to-row lookups spread over the whole text.
+        let mut worst = 0f64;
+        let mut total = 0f64;
+        let samples = 2_000;
+        for k in 0..samples {
+            let at = (k * 7_919 * 104_729) % bytes;
+            let started = std::time::Instant::now();
+            std::hint::black_box(doc.row_at(&(at..at)));
+            let ms = started.elapsed().as_secs_f64() * 1000.;
+            worst = worst.max(ms);
+            total += ms;
+        }
+        diagnostic_println!(
+            "CONTENTS2814_BUDGET {label} bytes={bytes} nodes={} tree_ms={tree_ms:.1} first_rows_ms={rows_ms:.2} rows={} rows_resident_mb={rows_mb:.2} lookup_avg_ms={:.4} lookup_max_ms={worst:.4}",
+            doc.structure.len(),
+            rows.len(),
+            total / samples as f64,
+        );
+        assert!(rows_ms <= 500., "{label}: first rows {rows_ms} ms");
+        assert!(worst <= 1., "{label}: offset lookup {worst} ms");
+        assert!(
+            rows_mb.is_nan() || rows_mb <= 10.,
+            "{label}: rows {rows_mb} MB"
+        );
+    }
+}
+
+#[gpui::test]
+fn contents2814_entering_edit_drops_the_column_list(cx: &mut TestAppContext) {
+    let (reader, visual, _dirs) = editable_reader_with(
+        cx,
+        &[("rows.json", "[{\"id\":1,\"amount\":10}]\n")],
+        "rows.json",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    code.update_in(visual, |p, w, cx| p.set_view(CodeView::Table, w, cx));
+    settle(visual);
+    paint(visual);
+    assert_eq!(
+        columns(&view, visual),
+        ["id", "amount"],
+        "positive: Table columns"
+    );
+    edit_mode(&reader, visual);
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.snapshot.columns.is_none(),
+            "Edit shows the buffer's outline"
+        );
+        assert!(v.snapshot.edit.is_some());
+        assert_eq!(shown(v)[0], "0 2 keys");
+    });
+}
+
+#[gpui::test]
+fn contents2814_a_column_click_after_a_find_with_no_rows_selects_nothing(cx: &mut TestAppContext) {
+    let (reader, visual, _root) = reader_with(
+        cx,
+        &[("find.csv", "id,amount,status\n1,10,paid\n2,20,open\n")],
+        "find.csv",
+    );
+    let view = outline(&reader, visual);
+    let code = code(&reader, visual);
+    paint(visual);
+    let table = table(&code, visual);
+    visual.update(|w, cx| {
+        let target = code.read(cx).find_target(code.clone(), cx);
+        target.set_query("no such value", w, cx);
+    });
+    settle(visual);
+    paint(visual);
+    view.update_in(visual, |v, w, cx| v.jump_column(2, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), None, "no row to select")
+    });
+    assert_eq!(column_mark(&view, visual), None, "nothing is marked");
+    // Positive control: with rows shown, the same click selects.
+    visual.update(|w, cx| {
+        let target = code.read(cx).find_target(code.clone(), cx);
+        target.set_query("", w, cx);
+    });
+    settle(visual);
+    paint(visual);
+    view.update_in(visual, |v, w, cx| v.jump_column(2, w, cx));
+    settle(visual);
+    table.read_with(visual, |t, _| {
+        assert_eq!(t.selection_for_tests(), Some((1, 2)))
+    });
+}
+
+#[gpui::test]
+fn contents2814_long_headers_sharing_a_prefix_keep_full_names_in_the_tooltip(
+    cx: &mut TestAppContext,
+) {
+    let prefix = "a".repeat(170);
+    let text = format!("{prefix}X,{prefix}Y\n1,2\n");
+    let (reader, visual, _root) = reader_with(cx, &[("long.csv", text.as_str())], "long.csv");
+    let view = outline(&reader, visual);
+    paint(visual);
+    let labels = columns(&view, visual);
+    assert_eq!(labels.len(), 2);
+    assert_eq!(
+        labels[0], labels[1],
+        "positive: the cut labels look the same"
+    );
+    assert_eq!(
+        column_tooltips(&view, visual),
+        [format!("{prefix}X"), format!("{prefix}Y")],
+        "the tooltips keep the full names"
+    );
 }
