@@ -4,7 +4,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     Disableable as _,
 };
-use okilum_core::agent_skills::{self, Availability, Freshness, Inventory, Snapshot};
+use okilum_core::agent_skills::{self, Availability, Freshness, Inventory, Provider, Snapshot};
 use std::path::PathBuf;
 
 /// Render the session inventory. The owner runs RefreshRequest::discover off the
@@ -50,6 +50,7 @@ pub(super) fn render<R: Clone + Eq>(
                 .child(message),
         )
         .child("Local discovery only. Remote agent loading is unknown.")
+        .child(".agents/skills: Codex and other agents. .claude/skills: Claude Code.")
         .child(
             Button::new("refresh-project-skills")
                 .debug_selector(|| "refresh-project-skills".into())
@@ -79,7 +80,10 @@ pub(super) fn render<R: Clone + Eq>(
         let status = match &skill.availability {
             Availability::Available => "Available from project scope".to_owned(),
             Availability::Disabled => "Disabled".to_owned(),
-            Availability::Duplicate => "Duplicate name; no skill selected".to_owned(),
+            Availability::Duplicate => format!(
+                "Duplicate name in {}; no skill selected",
+                skill.provider.folder()
+            ),
             Availability::Unavailable(reason) => format!("Unavailable: {reason}"),
         };
         let status = if historical {
@@ -87,38 +91,69 @@ pub(super) fn render<R: Clone + Eq>(
         } else {
             status
         };
-        let source = skill.source.display().to_string();
-        let root = root.clone();
-        let skill_for_open = skill.clone();
-        let on_open = on_open.clone();
-        section = section.child(
-            div()
-                .debug_selector(move || format!("project-skill-{index}"))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(skill.name.clone())
-                .child(skill.description.clone())
-                .child(status)
-                .child(source)
-                .child(
-                    Button::new(("open-project-skill", index))
-                        .debug_selector(move || format!("open-project-skill-{index}"))
-                        .ghost()
-                        .label("Open SKILL.md")
-                        .on_click(move |_, window, cx| {
-                            on_open(
-                                root.as_ref()
-                                    .ok_or_else(|| "No project selected".to_owned())
-                                    .and_then(|root| {
-                                        agent_skills::open_source(root, &skill_for_open)
-                                    }),
-                                window,
-                                cx,
-                            );
-                        }),
-                ),
-        );
+        let mut row = div()
+            .debug_selector(move || format!("project-skill-{index}"))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(skill.name.clone())
+            .child(skill.description.clone())
+            .child(status);
+        if let Some(command) = &skill.claude_command {
+            row = row.child(
+                div()
+                    .debug_selector(move || format!("project-skill-{index}-claude-command"))
+                    .child(format!("Claude Code runs it as {command}")),
+            );
+        }
+        if skill.paired.as_ref().is_some_and(|paired| paired.differs) {
+            row = row.child(
+                div()
+                    .debug_selector(move || format!("project-skill-{index}-differs"))
+                    .child("The .agents and .claude copies of SKILL.md differ"),
+            );
+        }
+        // One line and one Open action per exact source (#2938).
+        for (source_index, (provider, source)) in skill.sources().enumerate() {
+            let label = format!(
+                "{} ({}: {})",
+                source.display(),
+                provider.folder(),
+                provider.readers()
+            );
+            let root = root.clone();
+            let source = source.to_path_buf();
+            let on_open = on_open.clone();
+            let selector = if source_index == 0 {
+                format!("open-project-skill-{index}")
+            } else {
+                format!("open-project-skill-{index}-{source_index}")
+            };
+            row = row.child(
+                div()
+                    .debug_selector(move || format!("project-skill-{index}-source-{source_index}"))
+                    .child(label),
+            );
+            row = row.child(
+                Button::new((
+                    "open-project-skill",
+                    index * Provider::ALL.len() + source_index,
+                ))
+                .debug_selector(move || selector.clone())
+                .ghost()
+                .label(format!("Open {} SKILL.md", provider.folder()))
+                .on_click(move |_, window, cx| {
+                    on_open(
+                        root.as_ref()
+                            .ok_or_else(|| "No project selected".to_owned())
+                            .and_then(|root| agent_skills::open_source(root, &source)),
+                        window,
+                        cx,
+                    );
+                }),
+            );
+        }
+        section = section.child(row);
     }
     section
 }
