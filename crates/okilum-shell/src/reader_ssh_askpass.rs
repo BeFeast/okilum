@@ -198,3 +198,82 @@ impl Render for Prompt {
             )
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn open(
+        prompt: &str,
+        kind: Kind,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Prompt>,
+        &mut VisualTestContext,
+        std::sync::mpsc::Receiver<Option<String>>,
+    ) {
+        let (request, reply) = Request::detached(prompt, kind);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let prompt = cx.new(|cx| Prompt::new(request, window, cx));
+            entity = Some(prompt.clone());
+            Root::new(prompt, window, cx)
+        });
+        visual.run_until_parked();
+        (entity.unwrap(), visual, reply)
+    }
+
+    #[gpui::test]
+    fn passphrase_is_answered_masked_and_only_once(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (prompt, visual, reply) = open(
+            "Enter passphrase for key '/home/u/.ssh/id_ed25519': ",
+            Kind::Secret,
+            cx,
+        );
+        prompt.update_in(visual, |prompt, window, cx| {
+            let input = prompt.input.clone().expect("secret prompts have an input");
+            assert!(input.read(cx).presentation().is_masked());
+            input.update(cx, |input, cx| input.set_value("hunter2", window, cx));
+            prompt.submit(window, cx);
+        });
+        assert_eq!(reply.try_recv().unwrap().as_deref(), Some("hunter2"));
+        assert!(reply.try_recv().is_err(), "answered once");
+    }
+
+    #[gpui::test]
+    fn unknown_host_trust_answers_yes_and_cancel_answers_nothing(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (prompt, visual, reply) = open(
+            "The authenticity of host 'box (10.0.0.1)' can't be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            Kind::Confirm,
+            cx,
+        );
+        prompt.update_in(visual, |prompt, window, cx| {
+            assert!(prompt.input.is_none());
+            assert_eq!(prompt.lines.len(), 2);
+            prompt.submit(window, cx);
+        });
+        assert_eq!(reply.try_recv().unwrap().as_deref(), Some("yes"));
+
+        let (prompt, visual, reply) = open("u@box's password: ", Kind::Secret, cx);
+        prompt.update_in(visual, |prompt, window, _| prompt.answer(None, window));
+        assert_eq!(reply.try_recv().unwrap(), None);
+    }
+
+    #[gpui::test]
+    fn closing_the_window_cancels(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (prompt, visual, reply) = open("Verification code: ", Kind::Secret, cx);
+        drop(prompt);
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+        assert_eq!(
+            reply
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            None
+        );
+    }
+}

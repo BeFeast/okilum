@@ -147,6 +147,21 @@ mod unix {
             }
         }
     }
+    impl Request {
+        /// A request not backed by OpenSSH, for UI tests.
+        #[doc(hidden)]
+        pub fn detached(prompt: &str, kind: Kind) -> (Self, mpsc::Receiver<Option<String>>) {
+            let (sender, receiver) = mpsc::channel();
+            (
+                Self {
+                    prompt: prompt.into(),
+                    kind,
+                    reply: Some(sender),
+                },
+                receiver,
+            )
+        }
+    }
     impl Drop for Request {
         fn drop(&mut self) {
             if let Some(reply) = self.reply.take() {
