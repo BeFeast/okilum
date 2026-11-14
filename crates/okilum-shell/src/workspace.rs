@@ -1197,7 +1197,8 @@ impl Render for Workspace {
                                 this.show_surface(false, cx);
                                 if let Some(reader) = &this.reader {
                                     reader.update(cx, |reader, cx| {
-                                        reader.focus_document(window, cx);
+                                        let focus = reader.content.read(cx).focus_handle().clone();
+                                        focus.focus(window, cx);
                                     });
                                 }
                             })),
