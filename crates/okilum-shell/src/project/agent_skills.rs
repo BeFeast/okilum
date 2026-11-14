@@ -4,8 +4,38 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     Disableable as _,
 };
-use okilum_core::agent_skills::{self, Availability, Freshness, Inventory, Snapshot};
+use okilum_core::agent_skills::{self, Availability, Freshness, Inventory, Skill, Snapshot};
 use std::path::PathBuf;
+
+/// Which agents load this row's folder (#2938).
+fn provider_line(skill: &Skill) -> String {
+    format!(
+        "{} ({})",
+        skill.provider.folder(),
+        skill.provider.audience()
+    )
+}
+
+/// Same-name copies under the other provider, with a byte-wise comparison.
+fn counterpart_line(skill: &Skill) -> Option<String> {
+    let notes: Vec<String> = skill
+        .counterparts
+        .iter()
+        .map(|other| {
+            format!(
+                "Also in {}: {} ({})",
+                other.provider.folder(),
+                other.source.display(),
+                if other.identical {
+                    "identical SKILL.md"
+                } else {
+                    "SKILL.md differs"
+                }
+            )
+        })
+        .collect();
+    (!notes.is_empty()).then(|| notes.join("; "))
+}
 
 /// Render the session inventory. The owner runs RefreshRequest::discover off the
 /// UI thread and calls finish_refresh on completion, then notifies the view.
@@ -88,6 +118,8 @@ pub(super) fn render<R: Clone + Eq>(
             status
         };
         let source = skill.source.display().to_string();
+        let provider = provider_line(skill);
+        let counterpart = counterpart_line(skill);
         let root = root.clone();
         let skill_for_open = skill.clone();
         let on_open = on_open.clone();
@@ -100,6 +132,18 @@ pub(super) fn render<R: Clone + Eq>(
                 .child(skill.name.clone())
                 .child(skill.description.clone())
                 .child(status)
+                .child(
+                    div()
+                        .debug_selector(move || format!("project-skill-provider-{index}"))
+                        .child(provider),
+                )
+                .when_some(counterpart, |row, counterpart| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("project-skill-counterpart-{index}"))
+                            .child(counterpart),
+                    )
+                })
                 .child(source)
                 .child(
                     Button::new(("open-project-skill", index))

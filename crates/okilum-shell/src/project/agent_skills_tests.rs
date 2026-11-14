@@ -371,3 +371,107 @@ async fn skills_1591_stale_open_refuses_rebind_and_fresh_reload_opens_exact_sour
         assert!(view.gateway.is_none());
     });
 }
+
+#[test]
+fn skills_2938_rows_name_their_provider_and_note_differing_copies() {
+    use okilum_core::agent_skills::{Counterpart, Provider, Skill};
+    let mut skill = Skill {
+        source: "p/.claude/skills/card/SKILL.md".into(),
+        provider: Provider::Claude,
+        name: "card".into(),
+        description: String::new(),
+        availability: Availability::Available,
+        counterparts: Vec::new(),
+    };
+    assert_eq!(provider_line(&skill), ".claude (Claude Code)");
+    assert_eq!(counterpart_line(&skill), None);
+    skill.counterparts.push(Counterpart {
+        source: "p/.agents/skills/card/SKILL.md".into(),
+        provider: Provider::Agents,
+        identical: false,
+    });
+    assert_eq!(
+        counterpart_line(&skill).unwrap(),
+        "Also in .agents: p/.agents/skills/card/SKILL.md (SKILL.md differs)"
+    );
+    skill.counterparts[0].identical = true;
+    assert!(counterpart_line(&skill)
+        .unwrap()
+        .ends_with("(identical SKILL.md)"));
+    skill.provider = Provider::Agents;
+    assert_eq!(provider_line(&skill), ".agents (Codex and other agents)");
+}
+
+#[gpui::test]
+async fn skills_2938_claude_skill_change_refreshes_list_and_opens_exact_source(
+    cx: &mut TestAppContext,
+) {
+    let state = tempfile::tempdir().unwrap();
+    let (_reader, project, visual) = mount(cx, state.path());
+    visual.condition(&project, |view, _| is_fresh(view)).await;
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-skill-1").is_none(),
+        "positive control: only the .agents copy before the change"
+    );
+    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = opened.clone();
+    let _subscription = project.update_in(visual, |_, window, cx| {
+        cx.subscribe_in(
+            &project,
+            window,
+            move |_, _, event: &ProjectSkillOpen, _, _| {
+                capture.lock().unwrap().push(event.0.clone())
+            },
+        )
+    });
+    let root = state.path().join("vault");
+    let claude = "p/.claude/skills/card/SKILL.md";
+    std::fs::create_dir_all(root.join(claude).parent().unwrap()).unwrap();
+    std::fs::write(
+        root.join(claude),
+        "---\nname: alpha\ndescription: Local fixture\n---\nClaude Code body\n",
+    )
+    .unwrap();
+    // The watcher batch for a `.claude/skills` write drives the same refresh
+    // as an `.agents/skills` write.
+    project.update_in(visual, |view, _, cx| {
+        view.resources_changed(
+            &okilum_core::Changes {
+                changed: [claude.to_owned()].into(),
+                ..Default::default()
+            },
+            cx,
+        );
+    });
+    visual
+        .condition(&project, |view, _| {
+            is_fresh(view) && view.skills.snapshot().unwrap().skills.len() == 2
+        })
+        .await;
+    visual.run_until_parked();
+    project.read_with(visual, |view, _| {
+        let skills = &view.skills.snapshot().unwrap().skills;
+        assert_eq!(skills[1].source, PathBuf::from(claude));
+        assert_eq!(
+            skills[1].provider,
+            okilum_core::agent_skills::Provider::Claude
+        );
+        assert!(skills
+            .iter()
+            .all(|skill| skill.availability == Availability::Available));
+        assert!(!skills[0].counterparts[0].identical);
+    });
+    for selector in [
+        "project-skill-provider-0",
+        "project-skill-provider-1",
+        "project-skill-counterpart-0",
+        "project-skill-counterpart-1",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    let open = visual.debug_bounds("open-project-skill-1").unwrap();
+    visual.simulate_click(open.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*opened.lock().unwrap(), vec![PathBuf::from(claude)]);
+}

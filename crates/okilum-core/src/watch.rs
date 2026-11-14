@@ -672,6 +672,32 @@ mod topology_tests {
     }
 
     #[test]
+    fn provider_skill_sources_reach_the_skills_refresh() {
+        // #2938: the project Skills list reloads on any reported source change;
+        // both provider folders must be reported, not filtered as service data.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let (mut watcher, tx) = controlled_watcher(&root);
+        let sources = ["p/.agents/skills/x/SKILL.md", "p/.claude/skills/x/SKILL.md"];
+        for source in sources {
+            let path = root.join(source);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "---\nname: x\n---\n").unwrap();
+            tx.send(write_event(path)).unwrap();
+        }
+        assert!(watcher.poll().is_none());
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        let changes = watcher.poll().expect("skill writes form a batch");
+        assert_eq!(
+            changes.changed,
+            sources
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
     fn ignored_events_do_not_postpone_an_already_quiet_note() {
         let temp = tempfile::tempdir().unwrap();
         let note = temp.path().join("a.md");
