@@ -103,6 +103,7 @@ class Settings:
         self.start_wait = float(env.get('OKILUM_DELIVER_START_SECONDS', '90'))
         self.lock_wait = float(env.get('OKILUM_DELIVER_LOCK_SECONDS', '60'))
         self.max_failures = int(env.get('OKILUM_DELIVER_MAX_FAILURES', '2'))
+        self.log_bytes = int(env.get('OKILUM_DELIVER_LOG_BYTES', str(1 << 20)))
         self.gpgv = env.get('OKILUM_DELIVER_GPGV', 'gpgv')
         self.wayland = wayland_socket(env)
 
@@ -126,12 +127,24 @@ def clock(moment):
 
 
 def log_line(settings, text):
-    """One action per line, local time with offset (the manager reads it)."""
+    """One action per line, local time with offset (the manager reads it).
+    A line equal to the previous one is not written again (a refusal repeats
+    on every timer run), and the log is rotated past settings.log_bytes,
+    keeping one old file (`okilum-deliver.log.1`)."""
     line = f'{now().isoformat(timespec="seconds")} {text}'
     print(line, flush=True)
     settings.log.parent.mkdir(parents=True, exist_ok=True)
+    settings.own_state.mkdir(parents=True, exist_ok=True)
+    last = settings.own_state / 'last-log-line'
+    with contextlib.suppress(OSError):
+        if last.read_text() == text:
+            return
+    with contextlib.suppress(FileNotFoundError):
+        if settings.log.stat().st_size + len(line) + 1 > settings.log_bytes:
+            os.replace(settings.log, settings.log.with_name(settings.log.name + '.1'))
     with open(settings.log, 'a') as out:
         out.write(line + '\n')
+    last.write_text(text)
 
 
 # ------------------------------------------------------------ verification
@@ -353,8 +366,9 @@ def gui_processes(proc, lock):
                     if os.readlink(base / 'fd' / fd).split(' (deleted)')[0] == lock:
                         holds = True
                         break
-            if holds:
-                found.append({'pid': int(name), 'start': process_stat(proc, name)[1], 'exe': exe,
+            state, start = process_stat(proc, name)
+            if holds and state not in ('Z', 'X'):
+                found.append({'pid': int(name), 'start': start, 'exe': exe,
                               'appimage': environment(proc, name).get('APPIMAGE')})
         except (OSError, ValueError, IndexError):
             continue
@@ -420,15 +434,25 @@ def quit_app(proc, lock, image, watch, term_wait, monotonic=time.monotonic):
     is cleared only by a safe shutdown), so a window that does not quit within
     the grace keeps running and the next timer run tries again.
 
+    A window that cannot be pinned (it exited or was restarted between the scan
+    and the pidfd) triggers a fresh scan: if any window is running that is not
+    pinned, nothing is signalled and the run is deferred.
+
     Returns 'TERM' (every window exited), 'closed' (none left to quit),
-    'user active' (input before the signal, nothing sent) or 'still running'."""
+    'changed' (a window restarted under us, nothing sent), 'user active'
+    (input before the signal, nothing sent) or 'still running'."""
     fresh = [w for w in gui_processes(proc, lock) if w['appimage'] == str(image)]
-    pinned = []
+    pinned, identities = [], set()
     try:
         for window in fresh:
             fd = pin(proc, window)
             if fd is not None:
                 pinned.append(fd)
+                identities.add((window['pid'], window['start']))
+        if len(pinned) < len(fresh):
+            again = [w for w in gui_processes(proc, lock) if w['appimage'] == str(image)]
+            if any((w['pid'], w['start']) not in identities for w in again):
+                return 'changed'
         if not pinned:
             return 'closed'
         try:
@@ -647,15 +671,26 @@ def install_locks(image, seconds):
     helper, only the update lock is held while the new build starts, because
     an ordinary launch takes the install lock and blocks on it (#2455 path)."""
     deadline = time.monotonic() + seconds
-    install = take_lock(image.parent / '.install-lock', 0o644, deadline)
-    held = [install]
+    while True:
+        install = take_lock(image.parent / '.install-lock', 0o644, deadline)
+        try:
+            # Never wait for the update lock while holding the install lock: the
+            # APPLY helper holds the update lock until the new GUI has started,
+            # and an ordinary GUI start takes the install lock (a cycle).
+            update = take_lock(image.parent / f'.{image.name}.update-lock', 0o600, time.monotonic(), private=True)
+            break
+        except Refused as error:
+            os.close(install)
+            if 'holds its lock' not in str(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.5)
+    held = [install, update]
 
     def release_install():
         if install in held:
             held.remove(install)
             os.close(install)
     try:
-        held.append(take_lock(image.parent / f'.{image.name}.update-lock', 0o600, deadline, private=True))
         yield release_install
     finally:
         for fd in held:
@@ -897,6 +932,9 @@ def deliver(settings, proc='/proc'):
         if quit_how == 'user active':
             note_once(settings, f'resumed-{build}', f'build {build} waits: input arrived just before quitting; nothing sent')
             return 'user active'
+        if quit_how == 'changed':
+            note_once(settings, f'changed-{build}', f'build {build} waits: Okilum restarted while it was being quit; nothing sent')
+            return 'Okilum changed'
         if quit_how == 'still running':
             note_once(settings, f'noquit-{build}', f'build {build} waits: Okilum did not quit {settings.term_wait:.0f} s'
                       ' after SIGTERM (a dialog?); left running, never killed')
@@ -905,7 +943,7 @@ def deliver(settings, proc='/proc'):
             windows = []
         idle_wait = int(time.monotonic() - idle_started)
     try:
-        return install(settings, release, payload, windows, published, seen, idle_wait, quit_how)
+        return install(settings, release, payload, windows, published, seen, idle_wait, quit_how, proc, lock)
     except BaseException:
         # Okilum was quit for this install: never leave the user without it.
         if windows and not gui_processes(proc, lock):
@@ -914,8 +952,9 @@ def deliver(settings, proc='/proc'):
         raise
 
 
-def install(settings, release, payload, windows, published, seen, idle_wait, quit_how):
+def install(settings, release, payload, windows, published, seen, idle_wait, quit_how, proc='/proc', lock=None):
     build = release['build']
+    lock = lock or str(settings.app_state / INSTANCE_LOCK)
     summary = (f'build {build} source {release["source"][:9]} · beta published {clock(published)}'
                f' · seen {clock(seen)} · idle wait {idle_wait}s · quit {quit_how}')
     restored, newer = False, None
@@ -923,8 +962,13 @@ def install(settings, release, payload, windows, published, seen, idle_wait, qui
         # Under both locks: an in-app update made while this run waited is never
         # replaced by an older or equal build.
         current = installed_build(settings.image, release)
+        running = [w for w in gui_processes(proc, lock) if w['appimage'] == str(settings.image)]
         if current is not None and current >= build:
             newer = current
+        elif running:
+            # Opened (or restarted) after the quit: installing now would leave it on
+            # the old build with nobody to reopen it. The next idle quit takes it.
+            pass
         else:
             stage, previous_build = apply(settings, release, payload)
             release_install()
@@ -951,6 +995,10 @@ def install(settings, release, payload, windows, published, seen, idle_wait, qui
                          f' {settings.start_wait:.0f} s; it keeps running, previous copy in {stage}')
                 return 'unconfirmed'
             restored = roll_back(settings, release, stage, previous_build)
+    if newer is None and running:
+        note_once(settings, f'reopened-{build}', f'build {build} waits: Okilum (pid {running[0]["pid"]}) is running'
+                  ' again; not installed under it')
+        return 'Okilum running'
     if newer is not None:
         reopened = f', reopened (unit {launch(settings.image)})' if windows else ''
         log_line(settings, f'build {build} not installed: build {newer} is already installed{reopened}')

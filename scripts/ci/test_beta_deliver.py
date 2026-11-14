@@ -357,10 +357,16 @@ class Quit(unittest.TestCase):
         self.proc.add(57, '/tmp/.mount_y/usr/bin/okilum', self.lock, self.IMAGE, start=900)
         self.assertEqual((self.quit(), kernel.sent), ('TERM', [(57, signal.SIGTERM)]))
 
-    def test_pid_reused_between_scan_and_pidfd_is_not_signalled(self):
+    def test_window_restarted_between_scan_and_pidfd_defers(self):
+        # Re-review P1 (ea19f7d8): a rejected identity was taken as «closed», so
+        # the install went ahead under a GUI that kept running.
         kernel = Kernel(self, self.proc, on_open=lambda pid: self.proc.state(pid, 'S', start=999))
-        self.assertEqual((self.quit(), kernel.sent), ('closed', []))
+        self.assertEqual((self.quit(), kernel.sent), ('changed', []))
         self.assertEqual(kernel.pinned, {})
+
+    def test_window_that_exited_between_scan_and_pidfd_is_closed(self):
+        kernel = Kernel(self, self.proc, on_open=lambda pid: self.proc.state(pid, 'Z'))
+        self.assertEqual((self.quit(), kernel.sent), ('closed', []))
 
     def test_zombie_is_not_the_window(self):
         window = self.windows()[0]
@@ -591,7 +597,7 @@ class Delivery(unittest.TestCase):
         self.open_window()
         self.app_confirms, self.app_runs = True, True
         self.assertEqual(self.deliver(), 'installed 7761')
-        self.assertEqual(sorted(p.name for p in self.settings.own_state.glob('*-*')), ['last-check.json'])
+        self.assertEqual(sorted(p.name for p in self.settings.own_state.glob('*-*')), ['last-check.json', 'last-log-line'])
 
     def test_unconfirmed_start_keeps_the_new_build(self):
         self.open_window()
@@ -672,6 +678,21 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.deliver(), 'up to date (7761)')
         self.assertEqual((self.signals, self.launches, self.image.read_bytes()), ([], [], b'in-app 7761'))
 
+    def test_restart_during_the_quit_installs_nothing(self):
+        self.open_window()
+        self.real_quit(on_open=lambda pid: self.proc.state(pid, 'S', start=999))
+        self.assertEqual(self.deliver(), 'Okilum changed')
+        self.assertEqual((self.image.read_bytes(), self.launches), (self.old, []))
+        self.assertIn('Okilum restarted while it was being quit; nothing sent', self.log())
+
+    def test_window_reopened_after_the_quit_is_not_installed_under(self):
+        self.open_window()
+        self.on_quit = lambda: self.proc.add(61000, '/tmp/z/usr/bin/okilum',
+                                             str(self.settings.app_state / D.INSTANCE_LOCK), str(self.image), start=5)
+        self.assertEqual(self.deliver(), 'Okilum running')
+        self.assertEqual((self.image.read_bytes(), self.launches), (self.old, []))
+        self.assertIn('is running again; not installed under it', self.log())
+
     def test_held_updater_lock_is_respected(self):
         import fcntl
         self.settings.lock_wait = 0.5
@@ -699,6 +720,68 @@ class Delivery(unittest.TestCase):
             made.append(stage)
         D.prune_stages(parent)
         self.assertEqual(sorted(self.stages()), sorted([made[1], made[3]]))
+
+
+class Locks(unittest.TestCase):
+    """Re-review P2 (ea19f7d8): holding .install-lock while waiting for the update
+    lock deadlocks with APPLY, which holds the update lock until the new GUI has
+    started, and that start takes .install-lock."""
+
+    def test_no_cycle_with_the_apply_helper(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory, 'Okilum.AppImage')
+            image.write_bytes(b'x')
+            update = os.open(Path(directory, '.Okilum.AppImage.update-lock'), os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(update, fcntl.LOCK_EX)
+            started = threading.Event()
+
+            def apply_helper():
+                # The GUI APPLY waits for: it needs .install-lock, then APPLY ends.
+                install = os.open(Path(directory, '.install-lock'), os.O_RDWR | os.O_CREAT, 0o644)
+                try:
+                    time.sleep(0.3)                      # the script takes .install-lock first
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            fcntl.flock(install, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            started.set()
+                            break
+                        except BlockingIOError:
+                            time.sleep(0.05)
+                finally:
+                    os.close(install)
+                    os.close(update)
+            helper = threading.Thread(target=apply_helper)
+            helper.start()
+            try:
+                with D.install_locks(image, 4):          # ea19f7d8: Refused after 4 s
+                    pass
+            finally:
+                helper.join()
+            self.assertTrue(started.is_set())
+
+
+class Log(unittest.TestCase):
+    def test_repeated_lines_once_and_rotation(self):
+        # Re-review P2 (ea19f7d8): the same refusal was appended on every tick.
+        with tempfile.TemporaryDirectory() as home, contextlib.redirect_stdout(open(os.devnull, 'w')) as quiet, quiet:
+            settings = D.Settings({'HOME': home, 'OKILUM_DELIVER_LOG_BYTES': '400'})
+            for _ in range(3):
+                D.log_line(settings, 'refused: an Okilum install or update holds its lock')
+            self.assertEqual(settings.log.read_text().count('refused:'), 1)
+            D.log_line(settings, 'installed build 7761')
+            D.log_line(settings, 'refused: an Okilum install or update holds its lock')
+            self.assertEqual(settings.log.read_text().count('refused:'), 2)
+            for index in range(20):
+                D.log_line(settings, f'installed build {7800 + index} · ' + 'x' * 40)
+            old = settings.log.with_name('okilum-deliver.log.1')
+            self.assertTrue(old.is_file())
+            self.assertLessEqual(settings.log.stat().st_size, 400)
+            self.assertLessEqual(old.stat().st_size, 400)
+            self.assertEqual(sorted(p.name for p in settings.log.parent.glob('okilum-deliver.log*')),
+                             ['okilum-deliver.log', 'okilum-deliver.log.1'])
+            self.assertIn('installed build 7819', settings.log.read_text())
 
 
 class Units(unittest.TestCase):
