@@ -698,11 +698,11 @@ impl Reader {
                 // done; retire only then, and only if nothing changed.
                 cx.spawn(async move |_, cx| {
                     for _ in 0..50 {
-                        let (session, folder, text, found) =
+                        let (at_session, at_folder, text, found) =
                             (session.clone(), folder.clone(), draft_text.clone(), found.clone());
                         let outcome = cx
                             .background_executor()
-                            .spawn(async move { retire(&session, &folder, &text, &found) })
+                            .spawn(async move { retire(&at_session, &at_folder, &text, &found) })
                             .await;
                         match outcome {
                             Ok(true) => {
