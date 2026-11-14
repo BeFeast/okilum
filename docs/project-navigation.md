@@ -38,7 +38,7 @@ Background updates of the retained note do not leave Board; an explicit note
 selection does. Pending note preparation from before project selection cannot
 replace the newly selected project surface. Switching
 A to B keeps that original snapshot. Leaving from the window header restores it.
-Ctrl+Alt+P (Cmd+Alt+P on macOS) opens Projects or leaves the active project.
+Ctrl+Alt+P (Cmd+Alt+P on macOS, Ctrl+Shift+P on Windows) opens Projects or leaves the active project.
 Switching vaults invalidates pending discovery/activation work and the snapshot.
 
 On macOS, the independent manager panel uses a child WKWebView and the public T3

@@ -137,6 +137,24 @@ Reset table sort, Open in DuckDB, Load more rows and Go to table error. Copy
 selected table cells keeps Ctrl+C (Cmd+C on Mac) inside the grid. YAML, TOML and
 XML use the same Alt+1…4 / Control+1…4 view keys and Tree keys (#2813). No new
 default uses Ctrl+Alt+letter, which AltGr layouts produce for printable keys.
+On Windows no default contains Ctrl+Alt (AltGr there, which types characters
+with or without Shift) or is Alt+Shift+key (the input-language switch). Those
+defaults use Ctrl+Shift there:
+
+| Action | macOS | Linux | Windows |
+|---|---|---|---|
+| Copy as Rich Text | ⌥⌘C | Ctrl+Alt+C | Ctrl+Shift+H |
+| Note width | ⌥⌘W | Ctrl+Alt+W | Ctrl+Shift+W |
+| Projects | ⌥⌘P | Ctrl+Alt+P | Ctrl+Shift+P |
+| Open code block externally | ⌥⌘E | Ctrl+Alt+E | Ctrl+Shift+D |
+| Paste as Titled Link | ⌥⌘V | Ctrl+Alt+V | Ctrl+Shift+K |
+| Maximize note | ⌥⌘F | Ctrl+Alt+F | Ctrl+Shift+Enter |
+| Right panel (Contents / Linked from) | ⌥⌘\\ | Ctrl+Alt+\\ | Ctrl+Shift+Y |
+| Paragraph | ⌥⌘0 | Ctrl+Alt+0 | Ctrl+Shift+T |
+
+The Windows column also avoids Ctrl+Shift+B and Ctrl+Shift+F, which
+Microsoft Pinyin takes for its emoji panel and its Simplified/Traditional
+switch.
 
 The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The
@@ -148,13 +166,13 @@ File Edit adds these defaults to the live shortcut catalog and Format split
 menu. They also work with focus in the header Find field. Markdown fenced-code
 controls keep their existing host and bindings.
 
-| Action | Linux / Windows | macOS |
-|---|---|---|
-| Format code | Shift+Alt+F | Shift+Option+F |
-| Validate code | Shift+Alt+V | Shift+Option+V |
-| Repair code… | Shift+Alt+R | Shift+Option+R |
+| Action | Linux | Windows | macOS |
+|---|---|---|---|
+| Format code | Shift+Alt+F | Ctrl+Shift+G | Shift+Option+F |
+| Validate code | Shift+Alt+V | Ctrl+Shift+J | Shift+Option+V |
+| Repair code… | Shift+Alt+R | Ctrl+Shift+R | Shift+Option+R |
 
 Repair from a code/data read view enters Edit before opening its lower preview.
-The OS may consume Alt+Shift for keyboard-layout switching before Okilum receives
-the chord; Settings can rebind each command. Actual layout behavior must be
-recorded during installed-beta platform verification, separately from GPUI tests.
+Windows switches the input language on Alt+Shift, so it uses Ctrl+Shift there.
+On Linux a desktop may also consume Alt+Shift for layout switching; Settings can
+rebind each command.

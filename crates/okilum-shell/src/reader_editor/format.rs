@@ -66,8 +66,9 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-4", Heading4, keys),
         KeyBinding::new("secondary-5", Heading5, keys),
         KeyBinding::new("secondary-6", Heading6, keys),
-        // Cmd/Ctrl+0 resets the text zoom, as in browsers (#1652).
-        KeyBinding::new("secondary-alt-0", Paragraph, keys),
+        // Cmd/Ctrl+0 resets the text zoom, as in browsers (#1652). Windows
+        // takes Ctrl+Shift+T (text): Ctrl+Alt is AltGr there.
+        KeyBinding::new(crate::PARAGRAPH_KEY, Paragraph, keys),
     ]);
 }
 
@@ -1445,7 +1446,7 @@ mod key_tests {
         assert_eq!(shown(&note, visual), "# Title|\n\nbody");
         keys(visual, "secondary-6");
         assert_eq!(shown(&note, visual), "###### Title|\n\nbody");
-        keys(visual, "secondary-alt-0");
+        keys(visual, crate::PARAGRAPH_KEY);
         assert_eq!(shown(&note, visual), "Title|\n\nbody");
         undo(visual);
         assert_eq!(shown(&note, visual), "###### Title|\n\nbody", "one step");

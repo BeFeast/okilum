@@ -46,6 +46,20 @@ CONTROLS = [
  ('ctrl-alt-letter', 'altgr2813_no_default_uses_ctrl_alt_letter'),
  ('labels-after-overflow', 'labels2813_fold_actions_carry_labels_and_yield_first'),
 ]
+# Each injects one default chord that only the Windows rule refuses (Oleg,
+# 2026-11-14): an alphabetic-only Ctrl+Alt filter lets all four through.
+WINDOWS_CHORDS = [
+ ('ctrl-alt-digit', 'ctrl-alt-0'),
+ ('ctrl-alt-punctuation', 'ctrl-alt-\\'),
+ ('ctrl-alt-shift', 'ctrl-alt-shift-k'),
+ ('alt-shift', 'alt-shift-k'),
+]
+if sys.platform == 'win32':
+    CONTROLS += [(control, 'altgr2813_no_default_uses_ctrl_alt_letter') for control, _ in WINDOWS_CHORDS]
+INJECTED = [('ctrl-alt-letter', 'ctrl-alt-k')] + WINDOWS_CHORDS
+INJECT = ''.join('\n    #[cfg(test)]\n    if crate::close2813_control("%s") {\n'
+                 '        cx.bind_keys([KeyBinding::new("%s", reader_code_file::FoldAll, None)]);\n    }'
+                 % (control, chord.replace('\\', '\\\\')) for control, chord in INJECTED)
 TESTS = ['labels2813_', 'altgr2813_']
 CONTROL_FN = '''#[cfg(test)]
 fn close2813_control(name: &str) -> bool {
@@ -56,7 +70,7 @@ try:
     edit('main.rs', 'fn main() {', CONTROL_FN)
     edit('reader_code_file/toolbar.rs', '                action.labelled = true;\n                if let Availability::Disabled(reason) = &folding {',
          '                action.labelled = !crate::close2813_control("fold-unlabelled");\n                if let Availability::Disabled(reason) = &folding {')
-    edit('main.rs', 'fn bind_keys(cx: &mut App) {', 'fn bind_keys(cx: &mut App) {\n    #[cfg(test)]\n    if crate::close2813_control("ctrl-alt-letter") {\n        cx.bind_keys([KeyBinding::new("ctrl-alt-k", reader_code_file::FoldAll, None)]);\n    }')
+    edit('main.rs', 'fn bind_keys(cx: &mut App) {', 'fn bind_keys(cx: &mut App) {' + INJECT)
     edit('reader_viewer_chrome.rs', '                step.priority = self.collapse_priority;', '                step.priority = if crate::close2813_control("labels-after-overflow") { 60_000 } else { self.collapse_priority };')
     edit('reader_viewer_chrome/overflow.rs', '            steps.push(OverflowStep {\n                priority: 0,\n                width: minimum,', '            steps.push(OverflowStep {\n                priority: if crate::close2813_control("labels-after-overflow") { 60_000 } else { 0 },\n                width: minimum,')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))

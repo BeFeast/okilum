@@ -746,12 +746,90 @@ mod tests {
         }
     }
 
+    /// The chord a default may not use, spelled out, or `None` when it is
+    /// allowed. On Windows (Oleg, 2026-11-14) Ctrl+Alt is AltGr, which types
+    /// characters with any key and with or without Shift, and Alt+Shift
+    /// switches the input language. Elsewhere only Ctrl+Alt+letter is refused
+    /// (#2813). `windows` is a parameter so both rules are tested on every OS.
+    fn altgr_conflict(windows: bool, m: &gpui::Modifiers, key: &str) -> Option<String> {
+        if windows {
+            let ctrl_alt = m.control && m.alt;
+            let alt_shift = m.alt && m.shift && !m.control && !m.platform;
+            return (ctrl_alt || alt_shift).then(|| {
+                let parts = [
+                    (m.control, "ctrl-"),
+                    (m.alt, "alt-"),
+                    (m.shift, "shift-"),
+                    (m.platform, "win-"),
+                ];
+                let held: String = parts
+                    .iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, s)| *s)
+                    .collect();
+                format!("{held}{key}")
+            });
+        }
+        let letter = key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic());
+        (m.control && m.alt && !m.shift && letter).then(|| format!("ctrl-alt-{key}"))
+    }
+
+    #[test]
+    fn altgr2813_windows_rule_refuses_every_altgr_and_language_switch_chord() {
+        let refused = |windows: bool, source: &str| {
+            let stroke = gpui::Keystroke::parse(source).unwrap();
+            altgr_conflict(windows, &stroke.modifiers, &stroke.key).is_some()
+        };
+        // Negative controls: an alphabetic-only Ctrl+Alt filter lets every
+        // chord after the first through on Windows.
+        for chord in [
+            "ctrl-alt-k",
+            "ctrl-alt-0",
+            "ctrl-alt-\\",
+            "ctrl-alt-shift-k",
+            "ctrl-alt-shift-0",
+            "alt-shift-f",
+            "alt-shift-1",
+        ] {
+            assert!(refused(true, chord), "Windows must refuse {chord}");
+        }
+        if !cfg!(target_os = "macos") {
+            // `secondary` is Ctrl off macOS: the old Paragraph default.
+            assert!(refused(true, "secondary-alt-0"));
+        }
+        // Positive controls: the Windows replacements and ordinary chords.
+        for chord in [
+            "ctrl-shift-y",
+            "ctrl-shift-t",
+            "ctrl-shift-enter",
+            "ctrl-shift-\\",
+            "ctrl-\\",
+            "alt-1",
+            "shift-f10",
+        ] {
+            assert!(!refused(true, chord), "Windows must allow {chord}");
+        }
+        // macOS and Linux keep their Ctrl+Alt digit/punctuation and Alt+Shift
+        // defaults; only a new Ctrl+Alt+letter is refused there.
+        assert!(refused(false, "ctrl-alt-k"));
+        for chord in [
+            "ctrl-alt-0",
+            "ctrl-alt-\\",
+            "ctrl-alt-shift-k",
+            "alt-shift-f",
+        ] {
+            assert!(!refused(false, chord), "macOS/Linux must allow {chord}");
+        }
+    }
+
     #[gpui::test]
     fn altgr2813_no_default_uses_ctrl_alt_letter(cx: &mut TestAppContext) {
         // AltGr arrives as Ctrl+Alt on Windows layouts that type characters
-        // with it, so a Ctrl+Alt+letter default would steal printable keys.
-        // Defaults that predate the toolbar series (#2813 asks for no *new*
-        // ones). They stay rebindable; AltGr users can change them in Settings.
+        // with it (with or without Shift, on letters, digits and punctuation),
+        // and Alt+Shift switches the input language there. So on Windows no
+        // default may contain Ctrl+Alt, nor be Alt+Shift+key (Oleg,
+        // 2026-11-14). macOS (⌥⌘) and Linux keep these six Ctrl+Alt+letter
+        // chords, which predate the toolbar series (#2813 asks for no *new* ones).
         const EXISTING: [&str; 6] = [
             "reader_read_menu::CopyWithFormatting ctrl-alt-c",
             "okilum::ToggleNoteWidth ctrl-alt-w",
@@ -766,19 +844,36 @@ mod tests {
             .bindings()
             .flat_map(|binding| {
                 binding.keystrokes().iter().filter_map(move |stroke| {
-                    let m = stroke.modifiers();
-                    let letter = stroke.key().len() == 1
-                        && stroke.key().chars().all(|c| c.is_ascii_alphabetic());
-                    (m.control && m.alt && letter)
-                        .then(|| format!("{} ctrl-alt-{}", binding.action().name(), stroke.key()))
+                    altgr_conflict(cfg!(windows), stroke.modifiers(), stroke.key())
+                        .map(|chord| format!("{} {chord}", binding.action().name()))
                 })
             })
-            .filter(|found| !EXISTING.contains(&found.as_str()))
+            .filter(|found| cfg!(windows) || !EXISTING.contains(&found.as_str()))
             .collect();
         assert!(
             offenders.is_empty(),
-            "Ctrl+Alt+letter defaults: {offenders:?}"
+            "AltGr / input-language defaults: {offenders:?}"
         );
+        // Moved, not dropped: each keeps a default on every OS.
+        let moved = [
+            crate::ToggleBacklinks::name_for_type(),
+            crate::reader_editor::format::Paragraph::name_for_type(),
+            crate::reader_editor::FormatCode::name_for_type(),
+            crate::reader_editor::ValidateCode::name_for_type(),
+            crate::reader_editor::RepairCode::name_for_type(),
+        ];
+        for action in EXISTING
+            .iter()
+            .map(|existing| existing.split(' ').next().unwrap())
+            .chain(moved)
+        {
+            assert!(
+                keymap
+                    .bindings()
+                    .any(|binding| binding.action().name() == action),
+                "{action} lost its default"
+            );
+        }
     }
 
     #[gpui::test]
@@ -831,7 +926,7 @@ mod tests {
         );
         assert_eq!(
             row("Copy as Rich Text").keys,
-            [Os::CURRENT.shortcut("secondary-alt-c")]
+            [Os::CURRENT.shortcut(crate::COPY_WITH_FORMATTING_KEY)]
         );
         let paste = keys_for(
             &keymap,
