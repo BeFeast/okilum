@@ -143,7 +143,7 @@ try:
     edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
     edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
     edit(code, '        self.table.clone().filter(|_| self.view == View::Table)', '        self.table.clone().filter(|_| self.view == View::Table && !crate::contents2814_control("table-no-columns"))')
-    edit(view, '            (None, Some(_)) => {\n                self.snapshot.columns = None;', '            (None, Some(_)) if !crate::contents2814_control("columns-stay") => {\n                self.snapshot.columns = None;')
+    edit(view, '            (None, Some(_)) => {\n                self.snapshot.columns = None;', '            (None, Some(_)) => {\n                if crate::contents2814_control("columns-stay") {\n                    return;\n                }\n                self.snapshot.columns = None;')
     dl = 'reader_delimited/chrome.rs'
     edit(dl, '        self.end.map(|cell| cell.column)\n    }', '        self.end.map(|cell| cell.column).filter(|_| !crate::contents2814_control("columns-no-mark"))\n    }')
     edit(dl, '            .map_or(usize::from(self.header), |cell| cell.row);', '            .map_or(usize::from(self.header), |cell| cell.row);\n        let row = if crate::contents2814_control("column-jump-row") { usize::from(self.header) } else { row };')

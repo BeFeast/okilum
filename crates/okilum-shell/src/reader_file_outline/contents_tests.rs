@@ -1536,7 +1536,7 @@ fn contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column(
     let code = code(&reader, visual);
     paint(visual);
     let table = table(&code, visual);
-    table.update(visual, |t, cx| t.toggle_header_for_tests(cx));
+    table.update(visual, |t, cx| t.set_header_for_tests(false, cx));
     settle(visual);
     paint(visual);
     let names = columns(&view, visual);

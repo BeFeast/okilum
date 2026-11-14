@@ -85,8 +85,10 @@ impl TablePreview {
         self.select(Cell { row, column }, false, window, cx);
     }
     #[cfg(test)]
-    pub(crate) fn toggle_header_for_tests(&mut self, cx: &mut Context<Self>) {
-        self.toggle_header(cx);
+    pub(crate) fn set_header_for_tests(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.header != on {
+            self.toggle_header(cx);
+        }
     }
     #[cfg(test)]
     pub(crate) fn selection_for_tests(&self) -> Option<(usize, usize)> {
