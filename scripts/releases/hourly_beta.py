@@ -117,8 +117,6 @@ def candidate(tip, platform, descriptor, expected=''):
 
 
 SUPERSEDE_DEPTH = 200
-# Platforms whose beta is built once a day, not by a run per main push (Oleg 13.11).
-DAILY_PLATFORMS = frozenset({'macos'})
 # Wall-clock budget for the push superseded check, well inside the 3-minute
 # select job (review of #2890): slow but successful responses must not exhaust it.
 SUPERSEDE_BUDGET_SECONDS = 60
@@ -298,14 +296,6 @@ def select(event, source, platform, env, descriptor):
         raise ValueError('Invalid newest main identity')
     pinned = env.get('HOURLY_SOURCE', '')
     selected = candidate(tip, platform, descriptor, pinned)
-    if selected is None and pinned and pinned != tip and platform in DAILY_PLATFORMS:
-        # No push run builds the newer tip on a daily platform (Oleg 13.11): a pin
-        # superseded between the daily selection and this run must hand over to
-        # the newest main, never end the day without a beta.
-        if candidate(tip, platform, descriptor) == tip:
-            api('/actions/workflows/' + WORKFLOWS[platform] + '/dispatches', 'POST',
-                {'ref': 'main', 'inputs': {'hourly_source': tip}})
-            return False, source, f'Newest main {tip} superseded {pinned}; dispatched {tip}'
     if selected is None:
         return False, source, (f'Newest main {tip} superseded {pinned}' if pinned and pinned != tip
                                else f'Newest main {tip} is already the beta')

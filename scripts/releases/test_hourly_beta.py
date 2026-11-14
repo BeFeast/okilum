@@ -205,58 +205,16 @@ class Admission(unittest.TestCase):
         self.assertFalse(self.writes())
         self.assertFalse(self.status_reads())
 
-    def test_daily_mac_run_dispatches_newest_main_and_builds_nothing_itself(self):
-        # Oleg 13.11: macos-release runs once a day. The scheduled run only selects;
-        # a dispatch pinned to the newest main builds, so its shipping-status reports
-        # the (workflow_dispatch) contexts the 09:00 Stable promotion reads.
-        build, source, reason = self.select('macos', event='schedule')
-        self.assertFalse(build)
-        self.assertIn('Dispatched newest main', reason)
-        self.assertEqual(self.writes(), [('/actions/workflows/macos-release.yml/dispatches',
-                                          {'ref': 'main', 'inputs': {'hourly_source': SOURCE}})])
-        # Newest main already is the Mac beta: no dispatch, no build.
-        self.calls.clear()
-        self.descriptor.return_value = dict(source=SOURCE, platform='macos')
-        self.assertFalse(self.select('macos', event='schedule')[0])
-        self.assertFalse(self.writes())
-        self.assertFalse(self.status_reads())
-
     def test_older_pin_is_superseded_by_newest_main_on_every_platform(self):
         # #2589 (04.11): an old certified source shipped hours after main moved.
         newer = 'c' * 40
         self.tip = newer
         self.parents[newer] = SOURCE
-        # Push platforms: the newer push's own run builds the tip, so the pin just ends.
-        for platform in set(hourly.WORKFLOWS) - hourly.DAILY_PLATFORMS:
+        for platform in hourly.WORKFLOWS:
             build, _, reason = self.select(platform, HOURLY_SOURCE=SOURCE)
             self.assertFalse(build)
             self.assertIn('superseded', reason)
             self.assertEqual(self.select(platform, HOURLY_SOURCE=newer)[:2], (True, newer))
-        self.assertFalse(self.writes())
-        self.assertFalse(self.status_reads())
-
-    def test_daily_mac_pin_superseded_before_it_runs_hands_over_to_the_newest_main(self):
-        # Review of #2894: the 05:00 run selects A; main moves to B before the
-        # pinned dispatch selects. With no push run for Mac, dropping A would leave
-        # the day without a Mac beta. The pin re-dispatches the newest main instead.
-        a, b = SOURCE, 'c' * 40
-        build, _, _ = self.select('macos', event='schedule')
-        self.assertFalse(build)
-        self.assertEqual(self.writes()[-1][1]['inputs']['hourly_source'], a)
-        self.tip, self.parents[b] = b, a
-        self.calls.clear()
-        build, _, reason = self.select('macos', HOURLY_SOURCE=a)
-        self.assertFalse(build)
-        self.assertIn('dispatched ' + b, reason)
-        self.assertEqual(self.writes(), [('/actions/workflows/macos-release.yml/dispatches',
-                                          {'ref': 'main', 'inputs': {'hourly_source': b}})])
-        # The hand-over run builds B.
-        self.calls.clear()
-        self.assertEqual(self.select('macos', HOURLY_SOURCE=b)[:2], (True, b))
-        self.assertFalse(self.writes())
-        # B already is the Mac beta (e.g. a manual run published it): nothing more.
-        self.descriptor.return_value = dict(source=b, platform='macos')
-        self.assertEqual(self.select('macos', HOURLY_SOURCE=a)[0], False)
         self.assertFalse(self.writes())
         self.assertFalse(self.status_reads())
 
@@ -266,11 +224,7 @@ class Admission(unittest.TestCase):
         self.parents[newer] = SOURCE
         self.descriptor.return_value = dict(source=OLD, platform='macos')
         self.assertEqual(self.select()[:2], (True, newer))
-        # A superseded Mac pin hands over to the newest main (daily platform, #2894).
         self.assertFalse(self.select(HOURLY_SOURCE=SOURCE)[0])
-        self.assertEqual(self.writes(), [('/actions/workflows/macos-release.yml/dispatches',
-                                          {'ref': 'main', 'inputs': {'hourly_source': newer}})])
-        self.calls.clear()
         self.descriptor.return_value = dict(source=newer, platform='macos')
         self.assertFalse(self.select()[0])
         self.assertFalse(self.select(HOURLY_SOURCE=SOURCE)[0])
@@ -740,19 +694,13 @@ class WorkflowContract(unittest.TestCase):
     def test_beta_producers_run_on_main_push_and_a_running_beta_finishes(self):
         # Oleg 05.11: beta on every main push, no cron, no certification.
         # Manager 13.11: a newer push never cancels a running beta.
-        # Oleg 13.11: the hosted Mac beta runs once a day from the newest main instead.
         for platform, workflow in hourly.WORKFLOWS.items():
             data = self.load('.forgejo/workflows/' + workflow)
-            if platform == 'macos':
-                self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
-                self.assertEqual(data['on']['schedule'], [{'cron': '0 5 * * *'}])
-                self.assertEqual(data['concurrency']['group'], "macos-beta-${{ github.event_name == 'schedule' "
-                                 "&& 'daily' || inputs.hourly_source || github.run_id }}")
-            else:
-                self.assertEqual(data['on']['push'], {'branches': ['main']})
-                self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
-                self.assertEqual(data['concurrency']['group'], platform + "-beta-${{ github.event_name == 'push' "
-                                 "&& 'main' || inputs.hourly_source || github.run_id }}")
+            self.assertEqual(data['on']['push'], {'branches': ['main']})
+            self.assertEqual(set(data['on']), {'push', 'workflow_dispatch'})
+            prefix = {'linux': 'linux', 'macos': 'macos', 'windows': 'windows'}[platform]
+            self.assertEqual(data['concurrency']['group'], prefix + "-beta-${{ github.event_name == 'push' && 'main' "
+                             "|| inputs.hourly_source || github.run_id }}")
             self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
             report = data['jobs']['shipping-status']
             self.assertIn("github.event_name == 'workflow_dispatch'", report['if'])
@@ -800,9 +748,7 @@ class WorkflowContract(unittest.TestCase):
         mac = self.load('.forgejo/workflows/macos-release.yml')
         self.assertTrue(mac['jobs']['release']['if'].startswith('false'))
         hosted = mac['jobs']['hosted-artifact']
-        # The daily run only dispatches a pinned run; every Mac build is a dispatch.
-        self.assertIn("github.event_name == 'workflow_dispatch'", hosted['if'])
-        self.assertNotIn("'push'", hosted['if'])
+        self.assertIn("github.event_name == 'push'", hosted['if'])
         self.assertTrue(any(step.get('run') == 'python3 scripts/releases/publication.py dispatch macos'
                             for step in hosted['steps']))
 

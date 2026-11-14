@@ -1,16 +1,10 @@
-# Hosted Mac beta once a day from the newest main (Oleg 13.11; replaces the
-# 05.11 beta on every main push), plus manual dispatch. No certification gate;
-# hosted shipping only, corporate M4 CI stays disabled. Oleg's own Mac gets
-# hourly local Sprint builds. 05:00 UTC = 07:00 Israel in winter, 08:00 in
-# summer. A typical build publishes before the 09:00 Stable promotion, but that
-# is not guaranteed (summer leaves 60 min; the hosted bridge allows 115 min plus
-# queueing). If today's Mac beta is not published by 09:00, Stable promotes the
-# previous published Mac beta, which stays eligible.
+# Beta on every main push for the exact pushed commit (Oleg 05.11; no cron, no
+# certification gate); hosted shipping only, corporate M4 CI stays disabled.
 name: macos-release
 
 on:
-  schedule:
-    - cron: '0 5 * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       hourly_source:
@@ -34,13 +28,15 @@ on:
         required: false
         default: ''
 
-# The daily run only selects: hourly_beta.select dispatches a run pinned to the
-# newest main (hourly_source) unless that commit already is the Mac beta, and
-# that dispatch builds. If main moved before the pinned run starts, it hands
-# over to the newest main instead of ending without a beta. Manual, pinned and preview dispatches keep their own
-# groups and always finish.
+# A newer main push never cancels a running beta of an older commit; a queued
+# stale push run skips in select (the hosted signing run keeps its own group).
+# Manual, pinned and preview dispatches keep their own groups and always finish.
 concurrency:
-  group: macos-beta-${{ github.event_name == 'schedule' && 'daily' || inputs.hourly_source || github.run_id }}
+  group: macos-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
+  # A running beta always finishes (manager 13.11). Forgejo queues this group
+  # FIFO and never replaces a pending run, so the push run that starts cancels
+  # older queued push runs and keeps the newest (hourly_beta.coalesce_queued_pushes);
+  # a stale push run that starts anyway skips in select because main moved on.
   cancel-in-progress: false
 
 jobs:
@@ -235,7 +231,7 @@ jobs:
 
   hosted-artifact:
     needs: select
-    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && github.event_name == 'workflow_dispatch'
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: bridge
     # Mirror wait (10m) + bounded hosted shipping wait (100m) + setup.
     timeout-minutes: 115
@@ -294,8 +290,7 @@ jobs:
 
   shipping-status:
     needs: [select, release, hosted-artifact]
-    # Every Mac build is a dispatch (the daily run dispatches a pinned one): report
-    # `macos-release / <job> (workflow_dispatch)` on the beta source for Stable.
+    # Push runs get native `macos-release / <job> (push)` statuses on their own commit.
     if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: bridge
     timeout-minutes: 2
