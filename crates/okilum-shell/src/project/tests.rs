@@ -1738,7 +1738,7 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
             .debug_bounds("project-chat-header")
             .expect("workspace owns one header");
         assert_eq!(header.top(), panel.top());
-        assert_eq!(header.left(), panel.left());
+        assert_eq!(header.right(), panel.right());
         let open_inline = assert_one_row_header(visual, width);
         if width == 560. {
             assert!(open_inline, "Open in T3 stays a header action at 560px");
@@ -1754,9 +1754,7 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
             ("project-section-label-Skills", ProjectSection::Skills),
             ("project-section-label-Chat", ProjectSection::Manager),
         ] {
-            let tab = visual.debug_bounds(selector).expect("visible section tab");
-            visual.simulate_click(tab.center(), Modifiers::default());
-            visual.run_until_parked();
+            choose_section_by_pointer(visual, selector);
             reader.read_with(visual, |reader, cx| {
                 assert!(reader.project.as_ref().unwrap().read(cx).section == section);
             });
@@ -1771,13 +1769,14 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
                     .is_none(),
                 "Manager identity must not be repeated by section navigation after selecting {selector}"
             );
+            let picker = visual.debug_bounds("project-section-picker").is_some();
             for selector in [
                 "project-section-label-Chat",
                 "project-section-label-Rules",
                 "project-section-label-Skills",
             ] {
                 assert!(
-                    visual.debug_bounds(selector).is_some(),
+                    picker || visual.debug_bounds(selector).is_some(),
                     "visible {selector}"
                 );
             }
@@ -1846,38 +1845,60 @@ fn one_row_header_keeps_tabs_menu_open_and_draft_by_keyboard_at_every_width(
         visual.run_until_parked();
         let open_inline = assert_one_row_header(visual, width);
 
-        // Tab order runs through the row: Chat, Rules, Skills, then the menu.
+        // Tab order runs through the row: the sections, then the menu.
         // Nothing precedes the header in this window, so the first stop is
-        // the Chat tab; selecting Rules proves the order started there.
-        visual.update(|window, cx| window.blur(cx));
-        focus_next(visual, 2);
-        press(visual, "enter");
-        assert!(
-            section(visual) == ProjectSection::Rules,
-            "Enter on the second header stop selects Rules at {width}px"
-        );
-        focus_next(visual, 1);
-        press(visual, "space");
-        assert!(
-            section(visual) == ProjectSection::Skills,
-            "Space on the third header stop selects Skills at {width}px"
-        );
-        visual.update(|window, cx| {
-            window.focus_prev(cx);
-            window.focus_prev(cx);
-        });
-        press(visual, "enter");
-        assert!(
-            section(visual) == ProjectSection::Manager,
-            "Enter on the first header stop returns to Chat at {width}px"
-        );
+        // the first section control; reaching Rules proves the order.
+        let picker = visual.debug_bounds("project-section-picker").is_some();
+        if picker {
+            // The narrowest row: one section button whose menu lists Chat,
+            // Rules and Skills.
+            for (downs, expected) in [
+                ("down down enter", ProjectSection::Rules),
+                ("down down down enter", ProjectSection::Skills),
+                ("down enter", ProjectSection::Manager),
+            ] {
+                visual.update(|window, cx| window.blur(cx));
+                focus_next(visual, 1);
+                press(visual, "enter");
+                visual.simulate_keystrokes(downs);
+                visual.run_until_parked();
+                assert!(
+                    section(visual) == expected,
+                    "the keyboard-opened section menu selects with {downs} at {width}px"
+                );
+            }
+        } else {
+            visual.update(|window, cx| window.blur(cx));
+            focus_next(visual, 2);
+            press(visual, "enter");
+            assert!(
+                section(visual) == ProjectSection::Rules,
+                "Enter on the second header stop selects Rules at {width}px"
+            );
+            focus_next(visual, 1);
+            press(visual, "space");
+            assert!(
+                section(visual) == ProjectSection::Skills,
+                "Space on the third header stop selects Skills at {width}px"
+            );
+            visual.update(|window, cx| {
+                window.focus_prev(cx);
+                window.focus_prev(cx);
+            });
+            press(visual, "enter");
+            assert!(
+                section(visual) == ProjectSection::Manager,
+                "Enter on the first header stop returns to Chat at {width}px"
+            );
+        }
         visual.update(|window, _| window.refresh());
         visual.run_until_parked();
         assert_one_row_header(visual, width);
 
-        // The fourth stop is the Manager menu. A narrow row moves Open in T3
-        // into it as the first item; otherwise Details is reachable there.
-        focus_next(visual, 3);
+        // The stop after the sections is the Manager menu. A narrow row moves
+        // Open in T3 into it as the first item; otherwise Details is there.
+        visual.update(|window, cx| window.blur(cx));
+        focus_next(visual, if picker { 2 } else { 4 });
         press(visual, "enter");
         if open_inline {
             // The native Manager has Rotation policy before Details.
@@ -2001,12 +2022,17 @@ fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
     let header = visual
         .debug_bounds("project-chat-header")
         .expect("one Manager header row");
-    assert_eq!(header.size.width, px(width), "header spans the panel");
+    // A mounted panel may draw a 1 px edge border beside the header.
+    assert!(
+        (header.size.width - px(width)).abs() <= px(1.),
+        "header spans the panel at {width}px: {header:?}"
+    );
     assert_eq!(header.size.height, px(40.), "one compact row at {width}px");
     let mut present = Vec::new();
     let mut previous = header.left();
     for selector in [
         "project-manager-title",
+        "project-section-picker",
         "project-section-label-Chat",
         "project-section-label-Rules",
         "project-section-label-Skills",
@@ -2034,14 +2060,25 @@ fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
         present.push((selector, bounds));
     }
     let shown = |selector: &str| present.iter().any(|(name, _)| *name == selector);
-    for required in [
+    let tabs = [
         "project-section-label-Chat",
         "project-section-label-Rules",
         "project-section-label-Skills",
-        "project-connection-menu",
-    ] {
-        assert!(shown(required), "{required} is visible at {width}px");
+    ];
+    if shown("project-section-picker") {
+        assert!(
+            tabs.iter().all(|tab| !shown(tab)),
+            "the section menu replaces the tabs at {width}px"
+        );
+    } else {
+        for tab in tabs {
+            assert!(shown(tab), "{tab} is visible at {width}px");
+        }
     }
+    assert!(
+        shown("project-connection-menu"),
+        "the Manager menu is visible at {width}px"
+    );
     assert!(
         shown("project-chat-status") != shown("project-chat-status-dot"),
         "connection status is shown exactly once, as a label or its dot, at {width}px"
@@ -2049,6 +2086,7 @@ fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
     if width >= 560. {
         for selector in [
             "project-manager-title",
+            "project-section-label-Chat",
             "project-chat-status",
             "project-open-t3",
         ] {
@@ -2074,4 +2112,27 @@ fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
         "section content starts directly below the single header row at {width}px"
     );
     shown("project-open-t3")
+}
+
+/// Selects a section through whatever the one-row header shows: its tab, or
+/// the narrowest row's section menu (Chat, Rules, Skills in that order).
+fn choose_section_by_pointer(visual: &mut VisualTestContext, tab: &'static str) {
+    if let Some(picker) = visual.debug_bounds("project-section-picker") {
+        let downs = match tab {
+            "project-section-label-Chat" => "down enter",
+            "project-section-label-Rules" => "down down enter",
+            "project-section-label-Skills" => "down down down enter",
+            other => panic!("unknown section {other}"),
+        };
+        visual.simulate_click(picker.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes(downs);
+    } else {
+        let bounds = visual.debug_bounds(tab).expect("visible section tab");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+    }
+    visual.run_until_parked();
+    // The cached chrome redraws on notify; refresh so selectors are current.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
 }

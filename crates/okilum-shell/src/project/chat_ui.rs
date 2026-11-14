@@ -14,13 +14,14 @@ impl ProjectView {
         // #2748: identity, section navigation, status and actions share one
         // row. Candidates run from fullest to most compact: the status label
         // collapses to its dot, then the title goes, then Open in T3 moves
-        // into the Manager menu, then the tabs shrink. The first candidate
-        // whose natural width fits the panel is painted.
+        // into the Manager menu, then the tabs shrink and finally become one
+        // section menu button. The first candidate whose natural width fits
+        // the panel is painted.
         let candidates = HEADER_CANDIDATES
             .iter()
             .map(|candidate| {
                 (
-                    self.header_navigation(candidate.title, candidate.compact_tabs, cx),
+                    self.header_navigation(candidate.title, candidate.tabs, cx),
                     self.header_actions(
                         &status,
                         candidate.status_label,
@@ -34,31 +35,62 @@ impl ProjectView {
         fit_header(candidates, brand::palette(cx).border_subtle)
     }
 
-    fn header_navigation(&self, title: bool, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        let mut tabs = h_flex()
-            .id("project-sections")
-            .flex_none()
-            .items_center()
-            .map(|tabs| {
-                if compact {
-                    tabs.gap_0p5()
-                } else {
-                    tabs.gap_1()
-                }
-            });
-        for (id, label, section) in [
+    fn header_navigation(&self, title: bool, tabs: Tabs, cx: &mut Context<Self>) -> AnyElement {
+        const SECTIONS: [(&str, &str, ProjectSection); 3] = [
             ("project-section-manager", "Chat", ProjectSection::Manager),
             ("project-section-rules", "Rules", ProjectSection::Rules),
             ("project-section-skills", "Skills", ProjectSection::Skills),
-        ] {
-            let tab = Button::new(id)
-                .debug_selector(move || format!("project-section-label-{label}"))
+        ];
+        let tabs = if tabs == Tabs::Picker {
+            // The narrowest row names the current section and lists all
+            // three in a menu: one button instead of three.
+            use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+            let current = SECTIONS
+                .iter()
+                .find(|(_, _, section)| *section == self.section)
+                .map_or("Chat", |(_, label, _)| *label);
+            let owner = cx.entity().downgrade();
+            let selected = self.section;
+            Button::new("project-section-picker")
+                .debug_selector(|| "project-section-picker".into())
                 .ghost()
-                .label(label)
-                .selected(self.section == section)
-                .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx)));
-            tabs = tabs.child(if compact { tab.xsmall() } else { tab.small() });
-        }
+                .small()
+                .label(current)
+                .dropdown_caret(true)
+                .tooltip("Section")
+                .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
+                    for (_, label, section) in SECTIONS {
+                        let owner = owner.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(section == selected)
+                                .on_click(move |_, _, cx| {
+                                    let _ = owner
+                                        .update(cx, |this, cx| this.select_section(section, cx));
+                                }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element()
+        } else {
+            let compact = tabs == Tabs::Compact;
+            let mut row = h_flex()
+                .id("project-sections")
+                .flex_none()
+                .items_center()
+                .map(|row| if compact { row.gap_0p5() } else { row.gap_1() });
+            for (id, label, section) in SECTIONS {
+                let tab = Button::new(id)
+                    .debug_selector(move || format!("project-section-label-{label}"))
+                    .ghost()
+                    .label(label)
+                    .selected(self.section == section)
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx)));
+                row = row.child(if compact { tab.xsmall() } else { tab.small() });
+            }
+            row.into_any_element()
+        };
         h_flex()
             .flex_none()
             .items_center()
@@ -180,44 +212,42 @@ impl ProjectView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tabs {
+    Regular,
+    Compact,
+    /// One button naming the current section; its menu lists all three.
+    Picker,
+}
+
 struct HeaderCandidate {
     title: bool,
-    compact_tabs: bool,
+    tabs: Tabs,
     status_label: bool,
     open_inline: bool,
 }
 
-const HEADER_CANDIDATES: [HeaderCandidate; 5] = [
+const fn candidate(
+    title: bool,
+    tabs: Tabs,
+    status_label: bool,
+    open_inline: bool,
+) -> HeaderCandidate {
     HeaderCandidate {
-        title: true,
-        compact_tabs: false,
-        status_label: true,
-        open_inline: true,
-    },
-    HeaderCandidate {
-        title: true,
-        compact_tabs: false,
-        status_label: false,
-        open_inline: true,
-    },
-    HeaderCandidate {
-        title: false,
-        compact_tabs: false,
-        status_label: false,
-        open_inline: true,
-    },
-    HeaderCandidate {
-        title: false,
-        compact_tabs: false,
-        status_label: false,
-        open_inline: false,
-    },
-    HeaderCandidate {
-        title: false,
-        compact_tabs: true,
-        status_label: false,
-        open_inline: false,
-    },
+        title,
+        tabs,
+        status_label,
+        open_inline,
+    }
+}
+
+const HEADER_CANDIDATES: [HeaderCandidate; 6] = [
+    candidate(true, Tabs::Regular, true, true),
+    candidate(true, Tabs::Regular, false, true),
+    candidate(false, Tabs::Regular, false, true),
+    candidate(false, Tabs::Regular, false, false),
+    candidate(false, Tabs::Compact, false, false),
+    candidate(false, Tabs::Picker, false, false),
 ];
 
 /// Lays out each candidate's navigation and actions at their natural widths

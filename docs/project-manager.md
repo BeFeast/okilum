@@ -378,7 +378,7 @@ plans preserve all Markdown, and todo lists retain every step and its status.
 
 ### Manager visual composition (2026-11-01)
 
-The mounted panel names its identity **Manager** once. Section navigation uses **Chat**, **Rules** and **Skills**; the conversation tab must not repeat the identity heading (#2463). Identity, section tabs, status, options and Open in T3 share one 40 px header row above every section (#2748). When the panel is too narrow for all of them, the row degrades in a fixed order: the status label collapses to its colored dot (label on hover), the Manager title is dropped, Open in T3 moves to the top of the options menu, and the tabs shrink. Tabs, the status dot and the options menu are always visible, nothing overlaps or clips down to the minimum panel width, and the tabs and actions stay in keyboard tab order.
+The mounted panel names its identity **Manager** once. Section navigation uses **Chat**, **Rules** and **Skills**; the conversation tab must not repeat the identity heading (#2463). Identity, section tabs, status, options and Open in T3 share one 40 px header row above every section (#2748). When the panel is too narrow for all of them, the row degrades in a fixed order: the status label collapses to its colored dot (label on hover), the Manager title is dropped, Open in T3 moves to the top of the options menu, the tabs shrink, and at the narrowest the three tabs become one button naming the current section whose menu lists Chat, Rules and Skills. Section navigation, the status dot and the options menu are always visible, nothing overlaps or clips down to the minimum panel width, and the tabs and actions stay in keyboard tab order.
 
 ### Local instruction Rules (#1590)
 
