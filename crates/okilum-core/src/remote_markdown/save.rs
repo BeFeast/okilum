@@ -7,7 +7,6 @@ use std::{
     io::{self, BufRead, Read, Write},
     process::{Command, Stdio},
     sync::LazyLock,
-    time::Instant,
 };
 
 pub const UNSUPPORTED: &str =
@@ -210,12 +209,12 @@ fn run(
         let _ = errors.by_ref().take(8192).read_to_end(&mut bytes);
         bytes
     });
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = crate::ssh_askpass::Deadline::after(DEADLINE);
     let status = loop {
         if let Some(status) = process.0.try_wait()? {
             break status;
         }
-        if cancelled() || Instant::now() >= deadline {
+        if cancelled() || deadline.expired() {
             let _ = process.0.kill();
             let _ = process.0.wait();
             return Err(io::Error::new(io::ErrorKind::TimedOut, "Remote save was interrupted. Changes are kept locally; Retry checks the remote version first"));

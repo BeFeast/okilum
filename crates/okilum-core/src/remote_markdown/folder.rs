@@ -2,7 +2,7 @@
 use super::{Source, DEADLINE};
 pub use crate::log::sftp::directory::{Entry, Kind};
 use crate::log::sftp::{directory::DirectoryTransport, Target};
-use std::{collections::HashSet, io, time::Instant};
+use std::{collections::HashSet, io};
 pub const ENTRY_LIMIT: usize = 1000;
 pub const NAME_BYTES_LIMIT: usize = 256 * 1024;
 pub const PAGE_LIMIT: usize = 128;
@@ -16,7 +16,7 @@ impl Folder {
         let rest = url
             .strip_prefix("ssh://")
             .ok_or_else(|| invalid("Expected ssh://alias/folder/"))?;
-        let target = Target::parse(&format!("sftp://{rest}"))?;
+        let target = Target::parse_login(&format!("sftp://{rest}"))?;
         let host = rest.split_once('/').unwrap().0;
         let mut parts = Vec::new();
         for part in target.remote_path().split(|b| *b == b'/') {
@@ -37,7 +37,10 @@ impl Folder {
         }
         let url = format!("ssh://{host}{}", encode(&path));
         Ok(Self {
-            target: Target::parse(&format!("sftp://{}", url.strip_prefix("ssh://").unwrap()))?,
+            target: Target::parse_login(&format!(
+                "sftp://{}",
+                url.strip_prefix("ssh://").unwrap()
+            ))?,
             url,
         })
     }
@@ -149,14 +152,14 @@ pub fn list(
     transport: &mut impl DirectoryTransport,
     cancelled: impl Fn() -> bool,
 ) -> io::Result<Listing> {
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = crate::ssh_askpass::Deadline::after(DEADLINE);
     let check = || {
         if cancelled() {
             Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Remote folder listing cancelled",
             ))
-        } else if Instant::now() >= deadline {
+        } else if deadline.expired() {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Remote folder listing timed out",

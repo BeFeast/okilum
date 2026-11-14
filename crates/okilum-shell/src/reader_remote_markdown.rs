@@ -250,6 +250,8 @@ mod view {
 
     pub(crate) fn show(url: &str, cx: &mut App) -> io::Result<()> {
         let target = location(url)?;
+        // OpenSSH may need a passphrase, password or host trust (#1610).
+        crate::reader_ssh_askpass::ensure(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
                 size(px(900.), px(700.)),

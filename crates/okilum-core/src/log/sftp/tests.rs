@@ -161,6 +161,69 @@ fn urls_are_not_shell_commands_and_never_include_credentials() {
 }
 
 #[test]
+fn markdown_targets_pass_user_and_port_as_separate_ssh_arguments() {
+    let target = Target::parse_login("sftp://oleg@build-box:2222/srv/a.md").unwrap();
+    assert!(target.interactive);
+    let command = target.command();
+    let args = command
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    let tail = args.len() - 4;
+    assert_eq!(args[tail..], ["-s", "--", "build-box", "sftp"]);
+    assert!(args.windows(2).any(|a| a == ["-l", "oleg"]));
+    assert!(args.windows(2).any(|a| a == ["-p", "2222"]));
+    for url in [
+        "sftp://user:pw@host/x",
+        "sftp://-oProxyCommand=x@host/x",
+        "sftp://user@host:99999/x",
+        "sftp://user@host:-1/x",
+    ] {
+        assert!(Target::parse_login(url).is_err(), "{url}");
+    }
+    // Log following stays alias-only and non-interactive.
+    assert!(
+        !Target::parse("sftp://alias/var/log/a.log")
+            .unwrap()
+            .interactive
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_askpass_bridge_lets_only_markdown_targets_ask() {
+    crate::ssh_askpass::install("/opt/okilum/okilum".into(), |request| request.answer(None))
+        .unwrap();
+    let markdown = Target::parse_login("sftp://alias/notes/a.md")
+        .unwrap()
+        .command();
+    let args = markdown
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(args.contains(&"-oBatchMode=no"));
+    assert!(args.contains(&"-oStrictHostKeyChecking=ask"));
+    let env = markdown
+        .get_envs()
+        .map(|(k, v)| (k.to_str().unwrap(), v.map(|v| v.to_str().unwrap())))
+        .collect::<Vec<_>>();
+    assert!(env.contains(&("SSH_ASKPASS", Some("/opt/okilum/okilum"))));
+    assert!(env.contains(&("SSH_ASKPASS_REQUIRE", Some("force"))));
+    assert!(env
+        .iter()
+        .any(|(k, v)| *k == crate::ssh_askpass::SOCKET_ENV && v.is_some()));
+    let log = Target::parse("sftp://alias/var/log/a.log")
+        .unwrap()
+        .command();
+    let args = log
+        .get_args()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(args.contains(&"-oBatchMode=yes"));
+    assert_eq!(log.get_envs().count(), 0);
+}
+
+#[test]
 fn packet_framing_is_bounded_and_rejects_truncated_responses() {
     assert_eq!(
         packet(&mut [0, 0, 0, 2, 103, 7].as_slice()).unwrap(),

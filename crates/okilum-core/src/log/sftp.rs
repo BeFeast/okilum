@@ -18,16 +18,68 @@ pub const HISTORY_LIMIT: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     host: String,
+    user: Option<String>,
+    port: Option<u16>,
     path: Vec<u8>,
+    /// Remote Markdown (#1610) lets OpenSSH ask for a passphrase, password or
+    /// unknown-host trust through the app's askpass bridge. Log following
+    /// reconnects on every poll and stays non-interactive.
+    interactive: bool,
 }
 impl Target {
     /// Accept an SSH config alias and absolute path. Authentication stays in
     /// OpenSSH/ssh-agent; passwords, URL userinfo and URL options are rejected.
     pub fn parse(url: &str) -> io::Result<Self> {
-        let (host, path) = url
+        let mut target = Self::parse_login(url)?;
+        target.interactive = false;
+        if target.user.is_some() || target.port.is_some() {
+            return Err(invalid(
+                "Use an SSH config host alias without credentials or URL options",
+            ));
+        }
+        Ok(target)
+    }
+    /// `sftp://[user@]host[:port]/path` for explicit remote Markdown links.
+    /// The host may be an SSH config alias; a URL password is always refused.
+    /// The resulting commands may ask through the askpass bridge.
+    pub fn parse_login(url: &str) -> io::Result<Self> {
+        let (authority, path) = url
             .strip_prefix("sftp://")
             .and_then(|rest| rest.split_once('/'))
             .ok_or_else(|| invalid("Expected sftp://host/path"))?;
+        let refused = || {
+            invalid(
+                "Use an SSH config host alias or user@host:port, without a password or URL options",
+            )
+        };
+        let (user, host) = match authority.rsplit_once('@') {
+            Some((user, host)) => {
+                if user.is_empty()
+                    || user.len() > 64
+                    || user.starts_with('-')
+                    || !user
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+                {
+                    return Err(refused());
+                }
+                (Some(user.to_owned()), host)
+            }
+            None => (None, authority),
+        };
+        let (host, port) = match host.split_once(':') {
+            Some((host, port)) => {
+                let port = (!port.is_empty()
+                    && port.len() <= 5
+                    && port.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| port.parse::<u16>().ok())
+                .flatten()
+                .filter(|port| *port != 0)
+                .ok_or_else(refused)?;
+                (host, Some(port))
+            }
+            None => (host, None),
+        };
         if path.len() > 4096
             || host.len() > 253
             || host.is_empty()
@@ -37,9 +89,7 @@ impl Target {
             || host.starts_with('-')
             || path.contains(['?', '#'])
         {
-            return Err(invalid(
-                "Use an SSH config host alias without credentials or URL options",
-            ));
+            return Err(refused());
         }
         let mut decoded = vec![b'/'];
         let mut bytes = path.bytes();
@@ -63,7 +113,10 @@ impl Target {
         }
         Ok(Self {
             host: host.into(),
+            user,
+            port,
             path: decoded,
+            interactive: true,
         })
     }
     fn command(&self) -> Command {
@@ -83,14 +136,26 @@ impl Target {
     }
     fn ssh_command(&self) -> Command {
         let mut command = Command::new("ssh");
+        command.arg("-T");
+        // Without the askpass bridge OpenSSH must never wait for an answer.
+        // With it, agent/keys still go first; only OpenSSH's own questions
+        // reach the app, and a changed host key is still refused.
+        if self.interactive && crate::ssh_askpass::configure(&mut command) {
+            command.args(["-oBatchMode=no", "-oStrictHostKeyChecking=ask"]);
+        } else {
+            command.args(["-oBatchMode=yes", "-oStrictHostKeyChecking=yes"]);
+        }
         command.args([
-            "-T",
-            "-oBatchMode=yes",
-            "-oStrictHostKeyChecking=yes",
             "-oConnectTimeout=10",
             "-oServerAliveInterval=5",
             "-oServerAliveCountMax=2",
         ]);
+        if let Some(user) = &self.user {
+            command.args(["-l", user]);
+        }
+        if let Some(port) = self.port {
+            command.args(["-p", &port.to_string()]);
+        }
         command
     }
 }
@@ -162,9 +227,24 @@ impl Session {
             .write_all(&(payload.len() as u32).to_be_bytes())?;
         self.input.write_all(payload)?;
         self.input.flush()?;
-        self.output
-            .recv_timeout(Duration::from_secs(15))
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SFTP response deadline"))?
+        // The first response waits for authentication; time spent in an
+        // askpass dialog does not count against the response deadline.
+        let deadline = crate::ssh_askpass::Deadline::after(Duration::from_secs(15));
+        loop {
+            match self
+                .output
+                .recv_timeout(deadline.remaining().min(Duration::from_millis(250)))
+            {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) if !deadline.expired() => continue,
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "SFTP response deadline",
+                    ))
+                }
+            }
+        }
     }
     fn request(&mut self, kind: u8, payload: &[u8]) -> io::Result<(u8, Vec<u8>)> {
         self.id = self
