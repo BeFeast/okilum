@@ -193,6 +193,20 @@ impl Structure {
     }
 }
 
+/// The source line to keep at the top after a batch fold or unfold (#2958):
+/// the previous top line while it stays visible, otherwise the header of the
+/// outermost fold that now hides it. A fold row also stands for its closing
+/// line, so a top line on the root's closing `}` keeps the whole folded
+/// document in view instead of that single line.
+fn batch_fold_anchor(top: usize, folded: &[gpui_component::input::FoldRange]) -> usize {
+    folded
+        .iter()
+        .filter(|fold| fold.start_line < top && top <= fold.end_line)
+        .map(|fold| fold.start_line)
+        .min()
+        .unwrap_or(top)
+}
+
 impl CodePreview {
     pub(super) fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
         self.provisional_interacted.set(true);
@@ -204,7 +218,20 @@ impl CodePreview {
                 self.structure.all(folded, doc);
             }
         } else if let Some(input) = self.input() {
-            input.update(cx, |s, cx| s.set_all_folded(folded, cx));
+            input.update(cx, |s, cx| {
+                let top = s.top_visible_line();
+                s.set_all_folded(folded, cx);
+                // #2958: the pixel scroll offset belongs to the old rows. Kept
+                // as is, Fold all leaves it past the end of the much shorter
+                // folded text: the next frame lays out no visible row, and the
+                // editor's own clamp after paint cannot schedule a repaint.
+                // Re-anchor on the source line instead; the editor resolves
+                // the request against the new rows before it picks the lines
+                // of that same frame.
+                if let Some(top) = top {
+                    s.scroll_line_to_top(batch_fold_anchor(top, s.folded_ranges()), cx);
+                }
+            });
         }
         cx.notify();
     }
