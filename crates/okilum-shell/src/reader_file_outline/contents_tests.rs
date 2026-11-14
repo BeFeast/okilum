@@ -1531,9 +1531,11 @@ fn contents2814_a_wide_table_without_a_header_scrolls_sideways_to_the_column(
             .join(",")
     };
     let text = format!("{}\n{}\n{}\n", row(0), row(1), row(2));
-    // The header choice is stored in the session state.
-    let (reader, visual, _dirs) =
+    let (reader, visual, dirs) =
         editable_reader_with(cx, &[("wide.csv", text.as_str())], "wide.csv");
+    // The header choice lives in the UI state, which the grid reads on render.
+    let state = dirs[1].path().join("state");
+    visual.update(|_, cx| reader_ui_state::install(&state, cx));
     let view = outline(&reader, visual);
     let code = code(&reader, visual);
     paint(visual);
