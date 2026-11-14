@@ -24,12 +24,19 @@ so any label outside ALLOWED fails until it is reviewed.
 `runs-on` is checked after resolving what it can evaluate to: plain labels,
 lists, `{labels: ...}` objects, `${{ }}` expressions (only operands that can be
 the result count; `x == 'y'` and the left side of `&&` are conditions) and
-`matrix.*` references (expanded with include/exclude). Anything the guard
-cannot resolve statically (`inputs.*`, `vars.*`, function calls, ...) is a
-violation unless UNRESOLVED_EXCEPTIONS names it with a reason.
+`matrix.*` references (expanded with include/exclude). Job-level `uses:` is
+followed into local reusable workflows with the caller's `with:` values;
+external callees need an EXTERNAL_CALLEE_EXCEPTIONS entry. Labels compare
+case-insensitively.
+
+The guard fails closed: a value it cannot resolve (`inputs.*`, `vars.*`,
+function calls, ...) is a violation unless UNRESOLVED_EXCEPTIONS names it with
+a reason, and text mixed with an expression, a `${{` it cannot parse, a
+comparison used as a label, or any runner `group` is always a violation.
 """
 import itertools
 import re
+from collections import namedtuple
 import unittest
 from pathlib import Path
 
@@ -72,20 +79,38 @@ GITHUB_UNRESOLVED_EXCEPTIONS = {
 HINT = ('use a GitHub-hosted lane through a `bridge` waiter '
         '(scripts/ci/github-pr.py); baldr and idunn are not Okilum runners (Oleg 14.11)')
 
-UNRESOLVED = '${{ '
+# External reusable workflows, each reviewed: (workflow, job, uses) -> reason. None today.
+EXTERNAL_CALLEE_EXCEPTIONS = {}
+GITHUB_DENIED = {'self-hosted', 'ci-interactive'}
+
+# A resolved label is a plain str; everything else is a Marker, never a label.
+Marker = namedtuple('Marker', 'kind text')
 
 
 def unresolved(text):
-    """Marker for a value the guard cannot evaluate; never a real label."""
-    return f'{UNRESOLVED}{text} }}}}'
+    """A value the guard cannot evaluate; allowed only through UNRESOLVED_EXCEPTIONS."""
+    return Marker('unresolved', text)
+
+
+def invalid(text):
+    """A runs-on form the guard refuses outright; no allowlist applies."""
+    return Marker('invalid', text)
+
+
+def external(uses):
+    """A reusable workflow outside this repository."""
+    return Marker('callee', uses)
 
 
 def is_unresolved(label):
-    return label.startswith(UNRESOLVED)
+    return isinstance(label, Marker) and label.kind == 'unresolved'
 
 
-def expression_of(label):
-    return label[len(UNRESOLVED):-3]
+def render(label):
+    if not isinstance(label, Marker):
+        return label
+    return {'unresolved': f'${{{{ {label.text} }}}}', 'invalid': label.text,
+            'callee': f'uses: {label.text}'}[label.kind]
 
 
 # --- GitHub/Forgejo expression subset -------------------------------------
@@ -265,58 +290,62 @@ def matrix_values(path, combos):
     return found
 
 
+
+
 # --- labels ----------------------------------------------------------------
 
-def expression_values(text, combos):
+def expression_values(text, combos, inputs=None):
     try:
         outcomes = Parser(text).parse()
     except ExpressionError:
-        return {unresolved(text.strip())}
+        return {invalid(f'unparseable runs-on expression {text.strip()!r}')}
     found = set()
     for kind, value in outcomes:
         if kind == 'lit':
             found.add(value.strip())
         elif kind == 'ref' and value.startswith('matrix.'):
             found |= matrix_values(value, combos)
+        elif kind == 'ref' and value.startswith('inputs.') and inputs is not None \
+                and value[len('inputs.'):] in inputs:
+            found |= inputs[value[len('inputs.'):]]
+        elif kind == 'bool':
+            found.add(invalid(f'runs-on expression {text.strip()!r} yields a boolean'))
         else:
-            found.add(unresolved(value if kind != 'bool' else text.strip()))
+            found.add(unresolved(value))
     return found
 
 
-def string_labels(value, combos):
-    parts = re.split(r'\$\{\{(.*?)\}\}', value)
-    if len(parts) == 1:
+WHOLE_EXPRESSION = re.compile(r'\s*\$\{\{(.*)\}\}\s*', re.S)
+
+
+def string_labels(value, combos, inputs=None):
+    if '${{' not in value and '}}' not in value:
         return {value.strip()}
-    if len(parts) == 3 and not parts[0].strip() and not parts[2].strip():
-        return expression_values(parts[1], combos)
-    # Text mixed with expressions: every combination of resolved pieces.
-    options = []
-    for index, part in enumerate(parts):
-        options.append({part} if index % 2 == 0 else expression_values(part, combos))
-    found = set()
-    for pieces in itertools.product(*options):
-        bad = [p for p in pieces if is_unresolved(p)]
-        found |= set(bad) if bad else {''.join(pieces).strip()}
-    return found
+    match = WHOLE_EXPRESSION.fullmatch(value)
+    if not match or '${{' in match.group(1) or '}}' in match.group(1):
+        # Literal text next to an expression, or a brace the guard cannot pair.
+        return {invalid(f'runs-on {value.strip()!r} mixes text with an expression')}
+    return expression_values(match.group(1), combos, inputs)
 
 
-def labels(runs_on, matrix=None):
-    """Every label a runs-on value can resolve to; unresolved parts as `${{ ... }}` markers."""
+def labels(runs_on, matrix=None, inputs=None):
+    """Every label a runs-on value can resolve to; anything else as a Marker."""
     combos = matrix_combinations(matrix)
     if isinstance(runs_on, dict):
         found = set()
-        if 'group' in runs_on:
-            found |= {f'group:{g}' for g in labels(runs_on['group'], matrix)}
+        if set(runs_on) - {'labels'}:
+            # Okilum uses no runner groups; a group can route anywhere.
+            found.add(invalid(f'runs-on keys {sorted(map(str, runs_on))}: only `labels` is allowed'))
         if 'labels' in runs_on:
-            found |= labels(runs_on['labels'], matrix)
-        return found or {unresolved('runs-on object without labels')}
+            found |= labels(runs_on['labels'], matrix, inputs)
+        return found or {invalid('runs-on object without labels')}
     values = runs_on if isinstance(runs_on, list) else [runs_on]
     found = set()
     for value in values:
         if isinstance(value, (dict, list)):
-            found.add(unresolved(f'nested runs-on {value!r}'))
+            found.add(invalid(f'nested runs-on {value!r}'))
             continue
-        found |= string_labels(str(value), combos)
+        found |= string_labels(str(value), combos, inputs)
     return found
 
 
@@ -324,61 +353,141 @@ def workflow_files(directory):
     return sorted({p for pattern in WORKFLOW_GLOBS for p in directory.glob(pattern)})
 
 
-def job_labels(job):
+def load(path):
+    return yaml.safe_load(path.read_text()) or {}
+
+
+def triggers(workflow):
+    on = workflow.get('on', workflow.get(True))
+    if isinstance(on, dict):
+        return set(map(str, on))
+    return set(map(str, on)) if isinstance(on, list) else {str(on)}
+
+
+def call_input_specs(workflow):
+    on = workflow.get('on', workflow.get(True))
+    call = on.get('workflow_call') if isinstance(on, dict) else None
+    specs = call.get('inputs') if isinstance(call, dict) else None
+    return specs if isinstance(specs, dict) else {}
+
+
+def job_matrix(job):
     strategy = job.get('strategy')
     if strategy is None:
-        matrix = None
-    elif isinstance(strategy, dict):
-        matrix = strategy.get('matrix')
-    else:
-        matrix = unresolved('dynamic strategy')  # not a dict: matrix refs stay unresolved
-    return labels(job['runs-on'], matrix)
+        return None
+    if isinstance(strategy, dict):
+        return strategy.get('matrix')
+    return '${{ dynamic strategy }}'  # not a dict: matrix references stay unresolved
 
 
-def violations(directory=FORGEJO, exceptions=EXCEPTIONS, unresolved_exceptions=UNRESOLVED_EXCEPTIONS):
-    problems, used, used_unresolved = [], set(), set()
+MAX_CALL_DEPTH = 4
+
+
+def job_labels(root, path, name, job, inputs=None, seen=(), via=''):
+    """[(where, label)] for every runner this job can use, following local `uses:`."""
+    where = f'{via}{path.name} {name}'
+    if not isinstance(job, dict):
+        return []
+    if 'uses' in job:
+        return call_labels(root, path, job, inputs, seen + (path,), where)
+    if 'runs-on' not in job:
+        return []
+    return [(where, label) for label in labels(job['runs-on'], job_matrix(job), inputs)]
+
+
+def call_labels(root, path, job, inputs, seen, where):
+    uses = str(job['uses']).strip()
+    if not uses.startswith('./'):
+        return [(where, external(uses))]
+    target = (root / uses[2:]).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        return [(where, invalid(f'reusable workflow {uses} is not a file in this repository'))]
+    if target in seen or len(seen) > MAX_CALL_DEPTH:
+        return [(where, invalid(f'reusable workflow {uses} recurses or nests too deep'))]
+    callee = load(target)
+    combos = matrix_combinations(job_matrix(job))
+    passed = {}
+    for key, spec in call_input_specs(callee).items():
+        if isinstance(spec, dict) and 'default' in spec:
+            passed[str(key)] = string_labels(str(spec['default']), [], None)
+    for key, value in (job.get('with') or {}).items():
+        passed[str(key)] = string_labels(str(value), combos, inputs)
+    found = []
+    for name, callee_job in (callee.get('jobs') or {}).items():
+        found += job_labels(root, target, name, callee_job, passed, seen, f'{where} -> ')
+    return found
+
+
+def workflow_labels(directory, root=None):
+    """(workflow, job, where, label) for every runner a scheduled job can use."""
+    root = root or directory.parent.parent
     for path in workflow_files(directory):
-        workflow = yaml.safe_load(path.read_text()) or {}
+        workflow = load(path)
+        if triggers(workflow) == {'workflow_call'}:
+            continue  # checked through each caller, with the caller's inputs
         for name, job in (workflow.get('jobs') or {}).items():
-            if not isinstance(job, dict) or 'runs-on' not in job:
-                continue
-            for label in sorted(job_labels(job)):
-                if is_unresolved(label):
-                    key = (path.name, name, expression_of(label))
-                    if unresolved_exceptions.get(key):
-                        used_unresolved.add(key)
-                    else:
-                        problems.append(f'{path.name} {name}: runs-on `{label}` cannot be checked '
-                                        f'statically; use a literal label or add a reviewed '
-                                        f'UNRESOLVED_EXCEPTIONS entry; {HINT}')
-                    continue
-                if exceptions.get((path.name, name)) == label:
-                    used.add((path.name, name))
-                    continue
-                if label in FORBIDDEN:
-                    problems.append(f'{path.name} {name}: `{label}` can land on baldr/idunn; {HINT}')
-                elif label not in ALLOWED:
-                    problems.append(f'{path.name} {name}: unreviewed runner label `{label}`; {HINT}')
-    stale = sorted(set(exceptions) - used)
-    problems += [f'{file} {job}: exception no longer needed; remove it' for file, job in stale]
-    stale = sorted(set(unresolved_exceptions) - used_unresolved)
-    problems += [f'{file} {job}: unresolved exception `{expr}` no longer needed; remove it'
-                 for file, job, expr in stale]
+            for where, label in job_labels(root, path, name, job):
+                yield path.name, str(name), where, label
+
+
+def violations(directory=FORGEJO, exceptions=EXCEPTIONS, unresolved_exceptions=UNRESOLVED_EXCEPTIONS,
+               callee_exceptions=EXTERNAL_CALLEE_EXCEPTIONS, root=None, github=False):
+    """Forgejo: every label must be ALLOWED. GitHub (`github=True`): no homelab label."""
+    forbidden = {label.casefold() for label in FORBIDDEN}
+    allowed = {label.casefold() for label in ALLOWED}
+    problems, used, used_unresolved, used_callees = [], set(), set(), set()
+    for file, name, where, label in sorted(workflow_labels(directory, root), key=str):
+        if isinstance(label, Marker):
+            table, seen = {'unresolved': (unresolved_exceptions, used_unresolved),
+                           'callee': (callee_exceptions, used_callees)}.get(label.kind, ({}, set()))
+            key = (file, name, label.text)
+            if label.kind == 'invalid':
+                problems.append(f'{where}: {label.text}; use literal runner labels; {HINT}')
+            elif str(table.get(key, '')).strip():
+                seen.add(key)
+            else:
+                problems.append(f'{where}: runs-on `{render(label)}` cannot be checked statically; '
+                                f'use a literal label (or a reviewed exception entry); {HINT}')
+            continue
+        folded = label.casefold()
+        if str(exceptions.get((file, name), '')).casefold() == folded:
+            used.add((file, name))
+        elif github:
+            if folded in forbidden | allowed | {d.casefold() for d in GITHUB_DENIED}:
+                problems.append(f'{where}: GitHub job targets homelab runner label `{label}`; {HINT}')
+        elif folded in forbidden:
+            problems.append(f'{where}: `{label}` can land on baldr/idunn; {HINT}')
+        elif folded not in allowed:
+            problems.append(f'{where}: unreviewed runner label `{label}`; {HINT}')
+    problems += [f'{file} {job}: exception no longer needed; remove it'
+                 for file, job in sorted(set(exceptions) - used)]
+    problems += [f'{file} {job}: exception `{text}` no longer needed; remove it'
+                 for file, job, text in sorted((set(unresolved_exceptions) - used_unresolved)
+                                               | (set(callee_exceptions) - used_callees))]
     return problems
+
+
+def github_violations(directory=GITHUB, unresolved_exceptions=GITHUB_UNRESOLVED_EXCEPTIONS, root=None):
+    return violations(directory, exceptions={}, unresolved_exceptions=unresolved_exceptions,
+                      callee_exceptions={}, root=root, github=True)
 
 
 class RunnerLabels(unittest.TestCase):
     def test_no_okilum_job_can_land_on_baldr_or_idunn(self):
         self.assertEqual(violations(), [])
 
+    def test_github_workflows_never_target_homelab_runners(self):
+        self.assertEqual(github_violations(), [])
+
     def test_exceptions_are_only_the_two_beta_builders(self):
         self.assertEqual(set(EXCEPTIONS), {('linux-release.yml', 'release'),
                                            ('windows-diagnostic.yml', 'release')})
+        self.assertEqual(EXTERNAL_CALLEE_EXCEPTIONS, {})
         self.assertNotIn('ci-interactive', ALLOWED)
         self.assertFalse(ALLOWED & FORBIDDEN)
 
     def test_unresolved_exceptions_carry_a_reason(self):
-        for table in (UNRESOLVED_EXCEPTIONS, GITHUB_UNRESOLVED_EXCEPTIONS):
+        for table in (UNRESOLVED_EXCEPTIONS, GITHUB_UNRESOLVED_EXCEPTIONS, EXTERNAL_CALLEE_EXCEPTIONS):
             for key, reason in table.items():
                 with self.subTest(key=key):
                     self.assertEqual(len(key), 3)
@@ -390,6 +499,8 @@ class RunnerLabels(unittest.TestCase):
         self.assertEqual(labels("${{ github.event_name == 'pull_request' && 'light' || 'publish' }}"),
                          {'light', 'publish'})
         self.assertEqual(labels("${{ inputs.x && 'heavy' || 'light' }}"), {'heavy', 'light'})
+        self.assertEqual(labels("${{\n  github.event_name == 'push'\n  && 'heavy' || 'light'\n}}"),
+                         {'heavy', 'light'})
         self.assertEqual(labels(['bridge', 'heavy']), {'bridge', 'heavy'})
         self.assertEqual(labels({'labels': ['bridge', 'light']}), {'bridge', 'light'})
         self.assertEqual(labels({'labels': 'heavy'}), {'heavy'})
@@ -411,14 +522,34 @@ class RunnerLabels(unittest.TestCase):
         self.assertEqual(labels('${{ matrix.runner }}', '${{ fromJSON(inputs.matrix) }}'),
                          {unresolved('matrix.runner')})
 
-    def assert_one_violation(self, workflow, name='x.yml', expected='bridge'):
+    def check(self, files, expected, count=1, github=False, **tables):
+        """Write {repo-relative path: workflow} into a fresh repo and run the guard."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, name).write_text(yaml.safe_dump(workflow))
-            found = violations(Path(tmp), exceptions={}, unresolved_exceptions={})
-            self.assertEqual(len(found), 1, found)
-            self.assertIn(expected, found[0])
-            self.assertIn('bridge', found[0])
+            root = Path(tmp)
+            for relative, workflow in files.items():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(workflow if isinstance(workflow, str) else yaml.safe_dump(workflow))
+            directory = root / ('.github/workflows' if github else '.forgejo/workflows')
+            directory.mkdir(parents=True, exist_ok=True)
+            if github:
+                found = github_violations(directory, tables.get('unresolved_exceptions', {}), root)
+            else:
+                found = violations(directory, exceptions={}, root=root,
+                                   unresolved_exceptions=tables.get('unresolved_exceptions', {}),
+                                   callee_exceptions=tables.get('callee_exceptions', {}))
+            if 'no longer needed' not in expected:
+                found = [p for p in found if 'no longer needed' not in p]
+            self.assertEqual(len(found), count, found)
+            for problem in found:
+                self.assertIn(expected, problem)
+                if 'no longer needed' not in expected:
+                    self.assertIn('bridge', problem)
+            return found
+
+    def assert_one_violation(self, workflow, name='x.yml', expected='bridge', **tables):
+        self.check({f'.forgejo/workflows/{name}': workflow}, expected, **tables)
 
     def test_a_reintroduced_baldr_label_fails(self):
         for label in sorted(FORBIDDEN) + ['ci-interactive', "${{ inputs.x && 'heavy' || 'light' }}"]:
@@ -454,7 +585,7 @@ class RunnerLabels(unittest.TestCase):
     def test_unresolved_expressions_fail_unless_allowlisted(self):
         for runs_on in ('${{ inputs.runner }}', '${{ vars.RUNNER }}', '${{ github.event.inputs.runner }}',
                         '${{ fromJSON(inputs.runners) }}', '${{ matrix.runner }}',
-                        "${{ vars.RUNNER || 'light' }}", 'self-${{ inputs.kind }}'):
+                        "${{ vars.RUNNER || 'light' }}"):
             with self.subTest(runs_on=runs_on):
                 self.assert_one_violation({'jobs': {'build': {'runs-on': runs_on}}},
                                           expected='cannot be checked statically')
@@ -463,32 +594,82 @@ class RunnerLabels(unittest.TestCase):
                 {'jobs': {'build': {'runs-on': '${{ matrix.runner }}',
                                     'strategy': {'matrix': '${{ fromJSON(inputs.m) }}'}}}},
                 expected='cannot be checked statically')
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, 'x.yml').write_text(yaml.safe_dump(
-                {'jobs': {'build': {'runs-on': "${{ vars.RUNNER || 'light' }}"}}}))
-            self.assertEqual(violations(Path(tmp), exceptions={}, unresolved_exceptions={
-                ('x.yml', 'build', 'vars.RUNNER'): 'reviewed: variable only ever names `light`'}), [])
-            self.assertEqual(len(violations(Path(tmp), exceptions={}, unresolved_exceptions={
-                ('x.yml', 'build', 'vars.RUNNER'): 'reviewed: variable only ever names `light`',
-                ('x.yml', 'build', 'vars.OTHER'): 'reviewed: stale entry for a removed variable'})), 1)
+        reason = 'reviewed: variable only ever names `light`'
+        workflow = {'jobs': {'build': {'runs-on': "${{ vars.RUNNER || 'light' }}"}}}
+        self.assert_one_violation(workflow, count=0,
+                                  unresolved_exceptions={('x.yml', 'build', 'vars.RUNNER'): reason})
+        self.assert_one_violation(workflow, expected='no longer needed', unresolved_exceptions={
+            ('x.yml', 'build', 'vars.RUNNER'): reason,
+            ('x.yml', 'build', 'vars.OTHER'): 'reviewed: stale entry for a removed variable'})
 
-    def test_github_workflows_never_target_homelab_runners(self):
-        used = set()
-        for path in workflow_files(GITHUB):
-            workflow = yaml.safe_load(path.read_text()) or {}
-            for name, job in (workflow.get('jobs') or {}).items():
-                if not isinstance(job, dict) or 'runs-on' not in job:
-                    continue
-                for label in job_labels(job):
-                    with self.subTest(workflow=path.name, job=name, label=label):
-                        if is_unresolved(label):
-                            key = (path.name, name, expression_of(label))
-                            self.assertIn(key, GITHUB_UNRESOLVED_EXCEPTIONS)
-                            used.add(key)
-                            continue
-                        self.assertNotIn(label, FORBIDDEN | ALLOWED | {'self-hosted', 'ci-interactive'})
-        self.assertEqual(used, set(GITHUB_UNRESOLVED_EXCEPTIONS))
+    # Re-review of 787218c4: each case below passed that guard.
+    ALLOW_VAR = {'unresolved_exceptions': {('x.yml', 'build', 'vars.RUNNER'): 'reviewed: names `bridge` only'}}
+
+    def test_allowlisted_expression_does_not_hide_surrounding_text(self):
+        for runs_on in ("${{ '' && vars.RUNNER }}heavy", 'heavy${{ vars.RUNNER }}',
+                        "${{ vars.RUNNER }}\nheavy", "${{ vars.RUNNER }} ${{ 'heavy' }}"):
+            with self.subTest(runs_on=runs_on):
+                self.assert_one_violation({'jobs': {'build': {'runs-on': runs_on}}},
+                                          expected='mixes text with an expression', **self.ALLOW_VAR)
+
+    def test_reusable_workflows_are_followed(self):
+        callee = {'on': {'workflow_call': {'inputs': {'runner': {'type': 'string', 'default': 'bridge'}}}},
+                  'jobs': {'run': {'runs-on': '${{ inputs.runner }}'}}}
+        call = lambda uses, **extra: {'.forgejo/workflows/x.yml': {
+            'on': 'push', 'jobs': {'build': {'uses': uses, **extra}}}}
+        with self.subTest('local callee outside the scanned directory'):
+            self.check({**call('./.github/workflows/c.yml'),
+                        '.github/workflows/c.yml': {'jobs': {'run': {'runs-on': 'heavy'}}}}, '`heavy`')
+        with self.subTest('caller passes a baldr label'):
+            self.check({**call('./.forgejo/workflows/c.yml', **{'with': {'runner': 'heavy'}}),
+                        '.forgejo/workflows/c.yml': callee}, '`heavy`')
+        with self.subTest('caller passes a matrix of labels'):
+            self.check({**call('./.forgejo/workflows/c.yml', strategy={'matrix': {'r': ['bridge', 'docker']}},
+                               **{'with': {'runner': '${{ matrix.r }}'}}),
+                        '.forgejo/workflows/c.yml': callee}, '`docker`')
+        with self.subTest('callee default applies'):
+            self.check({**call('./.forgejo/workflows/c.yml'), '.forgejo/workflows/c.yml': callee}, '', count=0)
+        with self.subTest('missing callee'):
+            self.check(call('./.forgejo/workflows/missing.yml'), 'not a file in this repository')
+        with self.subTest('callee calls itself'):
+            self.check({**call('./.forgejo/workflows/c.yml'), '.forgejo/workflows/c.yml': {
+                'on': 'workflow_call', 'jobs': {'again': {'uses': './.forgejo/workflows/c.yml'}}}}, 'recurses')
+        with self.subTest('external callee'):
+            self.check(call('other/repo/.forgejo/workflows/build.yml@v1'),
+                       'uses: other/repo/.forgejo/workflows/build.yml@v1')
+        with self.subTest('external callee allowlisted'):
+            self.check(call('other/repo/.forgejo/workflows/build.yml@v1'), '', count=0, callee_exceptions={
+                ('x.yml', 'build', 'other/repo/.forgejo/workflows/build.yml@v1'): 'reviewed: runs on bridge'})
+
+    def test_runner_groups_are_rejected(self):
+        for github, fine in ((False, 'bridge'), (True, 'macos-15')):
+            for runs_on in ({'group': 'baldr', 'labels': [fine]}, {'group': 'baldr'},
+                            {'group': '${{ vars.RUNNER }}', 'labels': fine}):
+                with self.subTest(github=github, runs_on=runs_on):
+                    root = '.github' if github else '.forgejo'
+                    self.check({f'{root}/workflows/x.yml': {'jobs': {'build': {'runs-on': runs_on}}}},
+                               'only `labels` is allowed', github=github, **self.ALLOW_VAR)
+
+    def test_multiline_expressions_are_parsed(self):
+        for runs_on in ("${{ vars.RUNNER\n  || 'heavy' }}", "${{\n  vars.RUNNER ||\n  'heavy'\n}}"):
+            with self.subTest(runs_on=runs_on):
+                self.assert_one_violation({'jobs': {'build': {'runs-on': runs_on}}},
+                                          expected='can land on baldr/idunn', **self.ALLOW_VAR)
+        for runs_on in ("${{ 'light'", "light }}", "${{ vars.RUNNER ${{ 'x' }} }}"):
+            with self.subTest(runs_on=runs_on):
+                self.assert_one_violation({'jobs': {'build': {'runs-on': runs_on}}},
+                                          expected='mixes text with an expression', **self.ALLOW_VAR)
+
+    def test_labels_compare_case_insensitively(self):
+        for label in ('Heavy', 'UBUNTU-LATEST', 'Docker'):
+            with self.subTest(label=label):
+                self.assert_one_violation({'jobs': {'build': {'runs-on': label}}},
+                                          expected='can land on baldr/idunn')
+            for denied in (label, 'Bridge', 'Self-Hosted'):
+                with self.subTest(github=True, label=denied):
+                    self.check({'.github/workflows/x.yml': {'jobs': {'build': {'runs-on': denied}}}},
+                               'homelab runner label', github=True)
+        self.assert_one_violation({'jobs': {'build': {'runs-on': 'Bridge'}}}, count=0)
 
 
 if __name__ == '__main__':
