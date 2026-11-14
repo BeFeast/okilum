@@ -9,11 +9,14 @@ struct Fixture<'a> {
     root: PathBuf,
     _directory: tempfile::TempDir,
 }
+const SOURCE: &str = "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n";
 fn open<'a>(cx: &'a mut TestAppContext, note: &str) -> Fixture<'a> {
+    open_source(cx, note, SOURCE)
+}
+fn open_source<'a>(cx: &'a mut TestAppContext, note: &str, source: &str) -> Fixture<'a> {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("vault");
     std::fs::create_dir_all(root.join("project/imports")).unwrap();
-    let source = "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n";
     for path in ["project/AGENTS.md", "@AgentContract.md"] {
         std::fs::write(root.join(path), source).unwrap();
     }
@@ -268,4 +271,53 @@ fn issue1588_imported_task_queries_have_no_editing_authority(cx: &mut TestAppCon
     assert!(f.visual.debug_bounds("tasks-empty").is_none());
     assert!(f.visual.debug_bounds("tasks-unavailable").is_none());
     assert_eq!(std::fs::read_to_string(path).unwrap(), imported);
+}
+
+#[gpui::test]
+fn issue2939_at_at_line_is_a_hint_not_an_import(cx: &mut TestAppContext) {
+    let source = "# Agent instructions\n\n@@imports/rules.md\n\n@./imports/rules.md\n\n```text\n@@fenced.md\n```\n";
+    let mut f = open_source(cx, "project/AGENTS.md", source);
+    f.draw();
+    assert!(
+        f.visual
+            .debug_bounds("agent-line-./imports/rules.md")
+            .is_some(),
+        "positive control: @./ path stays a live import"
+    );
+    assert!(f
+        .visual
+        .debug_bounds("agent-ignored-@imports/rules.md")
+        .is_some());
+    for absent in [
+        "agent-line-@imports/rules.md",
+        "agent-disclosure-@imports/rules.md",
+        "agent-ignored-@fenced.md",
+        "agent-line-@fenced.md",
+    ] {
+        assert!(f.visual.debug_bounds(absent).is_none(), "{absent}");
+    }
+    let (links, ignored) = f.reader.read_with(f.visual, |r, _| {
+        let current = r.agent_document.as_ref().unwrap();
+        (
+            current
+                .imports
+                .links()
+                .iter()
+                .map(|link| link.import.target.clone())
+                .collect::<Vec<_>>(),
+            current.ignored_imports.clone(),
+        )
+    });
+    assert_eq!(links, ["./imports/rules.md"]);
+    assert_eq!(
+        ignored,
+        [(
+            3,
+            "Not an import: Claude Code ignores @@imports/rules.md. Write @./@imports/rules.md."
+                .to_owned()
+        )]
+    );
+    assert!(f
+        .reader
+        .update(f.visual, |r, cx| r.render_agent_document(cx).is_some()));
 }

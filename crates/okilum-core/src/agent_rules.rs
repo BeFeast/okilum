@@ -323,24 +323,33 @@ fn expand(
         read_source(root, &path)
     };
     let expand_imports = error.is_none();
+    let text = source.as_deref().unwrap_or_default();
+    let line_of = |import: &crate::agent_imports::Import| {
+        text[..import.line.start]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count()
+            + 1
+    };
     let imports: Vec<_> = if expand_imports {
-        let text = source.as_deref().unwrap_or_default();
         crate::agent_imports::parse_bounded(text, MAX_LAYERS + 1)
             .into_iter()
-            .map(|import| {
-                (
-                    text[..import.line.start]
-                        .bytes()
-                        .filter(|b| *b == b'\n')
-                        .count()
-                        + 1,
-                    import.target,
-                )
-            })
+            .map(|import| (line_of(&import), import.target))
             .collect()
     } else {
         vec![]
     };
+    if expand_imports {
+        // `@@name` gets no layer, bytes or tokens: Claude Code never loads it.
+        for ignored in crate::agent_imports::ignored_bounded(text, MAX_LAYERS) {
+            stack.diagnostics.push(format!(
+                "{}:{}: {}",
+                path.display(),
+                line_of(&ignored),
+                crate::agent_imports::ignored_hint(&ignored.target)
+            ));
+        }
+    }
     stack.layers.push(Layer {
         path: path.clone(),
         provenance,
@@ -595,7 +604,7 @@ mod tests {
         let root = temp.path();
         fs::create_dir(root.join("Project")).unwrap();
         let contract = "# Contract\nKeep canonical files unchanged.\n";
-        let agents = "@@AgentContract.md\n";
+        let agents = "@./@AgentContract.md\n";
         let project = "@../@AgentContract.md\nProject-specific guidance only.\n";
         fs::write(root.join("@AgentContract.md"), contract).unwrap();
         fs::write(root.join("AGENTS.md"), agents).unwrap();
@@ -635,6 +644,34 @@ mod tests {
             fs::read_to_string(root.join("@AgentContract.md")).unwrap(),
             contract
         );
+    }
+
+    #[test]
+    fn issue2939_at_at_line_is_a_diagnostic_not_a_layer() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let notes = "# Notes\nKeep canonical files unchanged.\n";
+        let agents = "# Root\n@@Notes.md\n```\n@@x\n```\n";
+        fs::write(root.join("@Notes.md"), notes).unwrap();
+        fs::write(root.join("AGENTS.md"), agents).unwrap();
+        let stack = discover(root, root);
+        assert_eq!(stack.layers.len(), 1, "{:?}", stack.layers);
+        assert_eq!(stack.layers[0].path, Path::new("AGENTS.md"));
+        assert_eq!(stack.total_bytes(), agents.len());
+        assert_eq!(
+            stack.approximate_tokens(),
+            agents.chars().count().div_ceil(4)
+        );
+        assert_eq!(
+            stack.diagnostics,
+            ["AGENTS.md:2: Not an import: Claude Code ignores @@Notes.md. Write @./@Notes.md."]
+        );
+        fs::write(root.join("AGENTS.md"), "@./@Notes.md\n").unwrap();
+        let stack = discover(root, root);
+        assert_eq!(stack.layers.len(), 2);
+        assert_eq!(stack.layers[1].path, Path::new("@Notes.md"));
+        assert_eq!(stack.layers[1].source.as_deref(), Some(notes));
+        assert!(stack.diagnostics.is_empty(), "{:?}", stack.diagnostics);
     }
 
     #[test]

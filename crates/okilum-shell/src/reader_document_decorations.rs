@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 struct Directive {
     target: String,
     occurrence: usize,
+    /// `@@name` is shown as text with this explanation, never as a link.
+    hint: Option<String>,
 }
 #[derive(Clone)]
 struct DecoratedParagraph {
@@ -34,6 +36,9 @@ pub(super) fn install(
                 .directives
                 .iter()
                 .map(|directive| {
+                    if directive.hint.is_some() {
+                        return None;
+                    }
                     let this = entity.as_ref()?.read(cx);
                     let current = this.agent_document.as_ref()?;
                     let origin = source
@@ -50,6 +55,28 @@ pub(super) fn install(
                     window,
                     cx,
                 ));
+                let directive = &data.directives[index];
+                if let Some(hint) = &directive.hint {
+                    let selector = format!("agent-ignored-{}", directive.target);
+                    column = column.child(
+                        v_flex()
+                            .w_full()
+                            .debug_selector(move || selector.clone())
+                            .child(node.render_part(
+                                &format!("directive-{index}"),
+                                fragment_style,
+                                window,
+                                cx,
+                            ))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().warning)
+                                    .child(hint.clone()),
+                            ),
+                    );
+                    continue;
+                }
                 let link_color = brand::palette(cx).link;
                 let label = node.render_part(
                     &format!("directive-{index}"),
@@ -98,35 +125,39 @@ fn parse(
     let base = node.position()?.start.offset;
     // The whole fragment proves fence/indent exclusion; parsing only the
     // paragraph could turn an indented or nested code example into a directive.
-    let all = okilum_core::agent_imports::parse_bounded(
-        cx.source(),
-        okilum_core::agent_imports::Limits::default().imports,
-    );
-    let imports: Vec<_> = all
+    let limit = okilum_core::agent_imports::Limits::default().imports;
+    let all = okilum_core::agent_imports::parse_bounded(cx.source(), limit);
+    let ignored = okilum_core::agent_imports::ignored_bounded(cx.source(), limit);
+    let inside = |import: &&okilum_core::agent_imports::Import| {
+        base <= import.target_bytes.start && import.target_bytes.end <= base + source.len()
+    };
+    let mut imports: Vec<_> = all
         .iter()
-        .filter(|import| {
-            base <= import.target_bytes.start && import.target_bytes.end <= base + source.len()
-        })
+        .filter(inside)
+        .map(|import| (import, false))
+        .chain(ignored.iter().filter(inside).map(|import| (import, true)))
         .collect();
     if imports.is_empty() {
         return None;
     }
+    imports.sort_by_key(|(import, _)| import.line.start);
     let directives = imports
         .iter()
-        .map(|import| Directive {
+        .map(|(import, ignored)| Directive {
             target: import.target.clone(),
             occurrence: all
                 .iter()
                 .take_while(|other| other.line.start < import.line.start)
                 .filter(|other| other.target == import.target)
                 .count(),
+            hint: ignored.then(|| okilum_core::agent_imports::ignored_hint(&import.target)),
         })
         .collect();
     let mut result = MarkdownNode::new("agent-imports", DecoratedParagraph { directives })
         .text(source.to_owned())
         .markdown(source.to_owned());
     let mut cursor = 0;
-    for (index, import) in imports.iter().enumerate() {
+    for (index, (import, _)) in imports.iter().enumerate() {
         let start = import.line.start.saturating_sub(base);
         let end = import.line.end - base;
         result = result

@@ -7490,6 +7490,8 @@ struct AgentDocument {
     inventory_source: Arc<Vault>,
     token: Arc<()>,
     imports: reader_agent_imports::LiveImportView,
+    /// `@@name` lines (1-based line, hint): Claude Code ignores them (#2939).
+    ignored_imports: Vec<(usize, String)>,
     expanded_lines: std::collections::BTreeSet<(PathBuf, usize)>,
     expand_all: bool,
     imported_documents: std::collections::BTreeMap<PathBuf, SharedString>,
@@ -7595,6 +7597,18 @@ impl Reader {
             })
             .map(|current| (current.expanded_lines.clone(), current.expand_all))
             .unwrap_or_default();
+        let ignored_imports = okilum_core::agent_imports::ignored_bounded(
+            &source,
+            okilum_core::agent_imports::Limits::default().imports,
+        )
+        .into_iter()
+        .map(|ignored| {
+            (
+                source[..ignored.line.start].matches('\n').count() + 1,
+                okilum_core::agent_imports::ignored_hint(&ignored.target),
+            )
+        })
+        .collect();
         self.agent_document = Some(AgentDocument {
             root: root.clone(),
             path: path.clone(),
@@ -7603,6 +7617,7 @@ impl Reader {
             inventory_source: self.vault.clone(),
             token: token.clone(),
             imports,
+            ignored_imports,
             expanded_lines,
             expand_all,
             imported_documents: Default::default(),
@@ -7851,6 +7866,14 @@ impl Reader {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_agent_import(token.clone(), captured_link.clone(), window, cx);
                     })),
+            );
+        }
+        for (index, (line, hint)) in current.ignored_imports.iter().enumerate() {
+            panel = panel.child(
+                div()
+                    .id(("agent-ignored-import", index))
+                    .text_color(cx.theme().warning)
+                    .child(format!("Line {line} · {hint}")),
             );
         }
         if let Some(error) = &current.language_error {

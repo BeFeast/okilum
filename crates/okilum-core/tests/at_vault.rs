@@ -199,20 +199,50 @@ fn windows_issue2821_projects_templates_and_agent_imports() {
     assert!(agent_imports::is_agent_document("@AgentContract.md"));
     assert!(!agent_imports::is_agent_document("Area/@AgentContract.md"));
     assert!(quick_open::FileFilter::Default.admits("@AgentContract.md"));
-    let imports = agent_imports::parse("@@AgentContract.md\n@./@AgentContract.md\n");
+    // #2939: Claude Code ignores `@@name`; only `@./@name` imports the contract.
+    let source = "@@AgentContract.md\n@./@AgentContract.md\n```\n@@x\n```\n";
+    let imports = agent_imports::parse(source);
     assert_eq!(
         imports
             .iter()
             .map(|import| import.target.as_str())
             .collect::<Vec<_>>(),
-        ["@AgentContract.md", "./@AgentContract.md"]
+        ["./@AgentContract.md"]
     );
+    let ignored = agent_imports::ignored_bounded(source, usize::MAX);
+    assert_eq!(
+        ignored
+            .iter()
+            .map(|import| import.target.as_str())
+            .collect::<Vec<_>>(),
+        ["@AgentContract.md"],
+        "fenced @@x is neither an import nor a hint"
+    );
+    assert!(agent_imports::parse("```\n@@x\n```\n").is_empty());
     let rules = agent_rules::discover(root.path(), &root.path().join("Area"));
     assert!(rules
         .layers
         .iter()
         .any(|layer| layer.path == Path::new("@AgentContract.md") && layer.source.is_some()));
-    assert!(rules.diagnostics.is_empty(), "{:?}", rules.diagnostics);
+    let imported: Vec<_> = rules
+        .layers
+        .iter()
+        .filter_map(|layer| match &layer.provenance {
+            agent_rules::Provenance::Import { from, line } => {
+                Some((from.as_path(), *line, layer.path.as_path()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        imported,
+        [(Path::new("AGENTS.md"), 2, Path::new("@AgentContract.md"))],
+        "line 1 (@@AgentContract.md) must not add a layer"
+    );
+    assert_eq!(
+        rules.diagnostics,
+        ["AGENTS.md:1: Not an import: Claude Code ignores @@AgentContract.md. Write @./@AgentContract.md."]
+    );
 }
 
 #[test]

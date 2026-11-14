@@ -19,12 +19,29 @@ pub struct Import {
 
 /// Recognize standalone @path lines, excluding fenced and indented code.
 /// Whitespace in a path is literal; shell quoting and interpolation are never evaluated.
+/// A line `@@name` is not an import: see [`ignored_bounded`].
 pub fn parse(source: &str) -> Vec<Import> {
     parse_bounded(source, usize::MAX)
 }
 
 /// Parse at most `max_imports` directives without allocating for the remainder.
 pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
+    directives(source, max_imports, false)
+}
+
+/// Standalone `@@name` lines, at most `max` of them. Claude Code imports a file
+/// whose name starts with `@` only through a path (`@./@name`), so it silently
+/// ignores these lines; `target` keeps the leading `@` of the file name.
+pub fn ignored_bounded(source: &str, max: usize) -> Vec<Import> {
+    directives(source, max, true)
+}
+
+/// User-facing explanation for an [`ignored_bounded`] directive.
+pub fn ignored_hint(target: &str) -> String {
+    format!("Not an import: Claude Code ignores @{target}. Write @./{target}.")
+}
+
+fn directives(source: &str, max_imports: usize, ignored: bool) -> Vec<Import> {
     let mut result = Vec::new();
     let mut offset = 0;
     let mut fence: Option<(u8, usize)> = None;
@@ -47,7 +64,10 @@ pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
             }
         } else if fence.is_none() && leading <= 3 && body.starts_with('@') {
             let target = body[1..].trim_end();
-            if !target.is_empty() && !target.chars().any(char::is_control) {
+            if !target.is_empty()
+                && !target.chars().any(char::is_control)
+                && target.starts_with('@') == ignored
+            {
                 let start = offset + leading + 1;
                 result.push(Import {
                     line: offset..offset + text.len(),
@@ -838,6 +858,43 @@ mod tests {
         assert_eq!(&text[imports[0].target_bytes.clone()], "child/日本.md");
         assert_eq!(&text[imports[0].line.clone()], "  @child/日本.md  ");
         assert_eq!(imports[1].target, "last");
+    }
+    #[test]
+    fn issue2939_at_at_lines_are_hints_not_imports() {
+        let text =
+            "@@AgentContract.md\n  @@x.md  \n@./@AgentContract.md\n```\n@@x\n```\n    @@code\n";
+        let imports = parse(text);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].target, "./@AgentContract.md");
+        let ignored = ignored_bounded(text, usize::MAX);
+        assert_eq!(
+            ignored
+                .iter()
+                .map(|i| i.target.as_str())
+                .collect::<Vec<_>>(),
+            ["@AgentContract.md", "@x.md"]
+        );
+        assert_eq!(&text[ignored[1].line.clone()], "  @@x.md  ");
+        assert_eq!(&text[ignored[1].target_bytes.clone()], "@x.md");
+        assert_eq!(ignored_bounded(text, 1).len(), 1);
+        assert_eq!(
+            ignored_hint(&ignored[0].target),
+            "Not an import: Claude Code ignores @@AgentContract.md. Write @./@AgentContract.md."
+        );
+        let store = Mock {
+            files: [("/vault/@AgentContract.md".into(), "rules".into())].into(),
+            reads: RefCell::new(vec![]),
+        };
+        let nodes = expand(
+            &store,
+            Path::new("/vault"),
+            Path::new("/vault/AGENTS.md"),
+            "@@AgentContract.md\n",
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(nodes.is_empty());
+        assert!(store.reads.borrow().is_empty());
     }
     #[test]
     fn nested_context_cycle_and_escape_never_read_outside() {
