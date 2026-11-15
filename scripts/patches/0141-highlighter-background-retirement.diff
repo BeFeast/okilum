@@ -1,18 +1,23 @@
 --- a/crates/component/src/highlighter/highlighter.rs
 +++ b/crates/component/src/highlighter/highlighter.rs
-@@ -68,6 +68,29 @@
+@@ -68,6 +68,34 @@
      pub(crate) ranges: Vec<tree_sitter::Range>,
      pub(crate) byte_range: Range<usize>,
      pub(crate) tree: Tree,
 +}
 +
-+/// Owned syntax data no longer reachable by painting or parser snapshots.
-+/// The caller retires this batch on a background executor, without cloning it.
-+#[derive(Default)]
++/// Replaced/rejected syntax owners; their nodes may still be shared by other
++/// trees. Variant field order retains each original path's destruction order.
 +#[must_use = "retire replaced syntax data on the background executor"]
-+pub(crate) struct RetiredSyntax {
-+    _tree: Option<Tree>,
-+    _injection_layers: Vec<InjectionLayer>,
++pub(crate) enum RetiredSyntax {
++    Replaced {
++        _tree: Option<Tree>,
++        _injection_layers: Vec<InjectionLayer>,
++    },
++    Rejected {
++        _injection_layers: Vec<InjectionLayer>,
++        _tree: Tree,
++    },
 +}
 +
 +#[cfg(test)]
@@ -30,7 +35,7 @@
  }
  
  /// Data needed to compute injection layers on a background thread.
-@@ -920,14 +943,22 @@
+@@ -920,14 +948,22 @@
          tree: Tree,
          text: &Rope,
          injection_layers: Vec<InjectionLayer>,
@@ -45,22 +50,22 @@
 -
 -        self.tree = Some(tree);
 -        self.injection_layers = injection_layers;
-+            return RetiredSyntax {
-+                _tree: Some(tree),
++            return RetiredSyntax::Rejected {
 +                _injection_layers: injection_layers,
++                _tree: tree,
 +            };
 +        }
 +
 +        // Publish both new owners before releasing any old data. Shared nodes
 +        // stay alive through their other tree handles (including parser reuse).
-+        RetiredSyntax {
++        RetiredSyntax::Replaced {
 +            _tree: self.tree.replace(tree),
 +            _injection_layers: std::mem::replace(&mut self.injection_layers, injection_layers),
 +        }
      }
  
      /// Parse injection layers after the main tree is updated.
-@@ -1356,7 +1387,7 @@
+@@ -1356,7 +1392,7 @@
          assert!(current.tree().is_none());
  
          FULL_SOURCE_COMPARISONS.with(|count| count.set(0));
@@ -69,7 +74,7 @@
          assert_eq!(current.tree().unwrap().root_node().range(), candidate.root_node().range());
          let spans = current.semantic_spans(&(0..64));
          assert!(!spans.is_empty(), "positive control: published JSON syntax is styled");
-@@ -1373,7 +1404,7 @@
+@@ -1373,7 +1409,7 @@
          let independent = Rope::from_str(&source.to_string());
          assert!(!ropey::extra::esoterica::ropes_are_instances(&source, &independent));
          current.tree = None;
@@ -78,7 +83,7 @@
          assert!(current.tree().is_some(), "equal independent source still publishes");
          assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 1,
              "unfired full-comparison control");
-@@ -1386,10 +1417,127 @@
+@@ -1386,10 +1422,137 @@
          changed.insert(at, "other");
          current.edit_tree(None, &changed);
          current.tree = None;
@@ -154,8 +159,13 @@
 +        let retired = current.apply_background_tree(tree, &text, injections);
 +        assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), 0,
 +            "foreground publication retired injection layers");
-+        assert_eq!(retired._tree.as_ref().unwrap().root_node().range(), pending_range);
-+        assert_eq!(retired._injection_layers.len(), old_layers);
++        match &retired {
++            RetiredSyntax::Replaced { _tree: Some(tree), _injection_layers: layers } => {
++                assert_eq!(tree.root_node().range(), pending_range);
++                assert_eq!(layers.len(), old_layers);
++            }
++            _ => panic!("accepted publication must return the replaced owners"),
++        }
 +        assert_eq!(current.tree().unwrap().root_node().range(), candidate_range);
 +        assert_eq!(current.semantic_spans(&(0..after.len())), expected_spans);
 +        assert_eq!(drop_on_worker(retired), old_layers,
@@ -195,8 +205,13 @@
 +        let retired = current.apply_background_tree(rejected_tree, &different, rejected_layers);
 +        assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), 0,
 +            "foreground rejection retired injection layers");
-+        assert_eq!(retired._tree.as_ref().unwrap().root_node().range(), rejected_range);
-+        assert_eq!(retired._injection_layers.len(), rejected_count);
++        match &retired {
++            RetiredSyntax::Rejected { _tree: tree, _injection_layers: layers } => {
++                assert_eq!(tree.root_node().range(), rejected_range);
++                assert_eq!(layers.len(), rejected_count);
++            }
++            _ => panic!("stale publication must return only the rejected owners"),
++        }
 +        assert_eq!(current.tree().unwrap().root_node().range(), current_range);
 +        assert_eq!(current.injection_layers.len(), layer_count);
 +        assert_eq!(current.semantic_spans(&(0..source.len())), spans);

@@ -22,6 +22,10 @@ parser reuse, add a size threshold, or claim the retained 64–67 ms phase is go
 | Rejected publication | Current tree, injections and text remain unchanged. Previously incoming arguments dropped on return on UI. They now become the cleanup batch instead. | The same cleanup path retires the rejected result. |
 | Following frame | Fold publication/notification stays at its original position. Painting queries the already-installed new tree/layers. No neutral-style frame or pending-coordinate relaxation is introduced. | Releasing old shared nodes cannot mutate the published tree; other Tree owners keep their own references. |
 
+The cleanup batch keeps the original per-path destruction order: replaced Tree
+before replaced layers; rejected argument layers before rejected Tree. The enum
+variants encode this through Rust field order, without running a destructor on UI.
+
 The Rust Tree clone copies the handle and retains the shared root. `Tree::edit`
 can copy/traverse affected subtrees. `Tree::drop` invokes `ts_tree_delete`, whose
 `ts_subtree_release` decrements shared references and walks/free nodes when their
