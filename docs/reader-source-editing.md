@@ -43,6 +43,10 @@ The retained layout is spliced in place; the copy handed to GPUI is the one
 whole-line copy per keystroke. Without a safe pair nearby the whole line is
 analysed as before. Tests check every spliced edit against the complete
 derivation, and a work count fails if analysis per keystroke grows with the line.
+Retained suffix glyph indices are updated on their first native-coordinate
+replay visit, avoiding a separate traversal of that suffix. The replay still
+performs the same ordered pen and word-width additions, and the complete layout
+copy handed to GPUI remains a size-dependent cost.
 Caret, selection and hit lookups on rows of 64 KiB or more of ASCII bisect the
 glyphs instead of scanning them from the start of the line; GPUI's answers are
 unchanged.

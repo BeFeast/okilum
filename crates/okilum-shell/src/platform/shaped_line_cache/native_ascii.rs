@@ -121,9 +121,16 @@ impl NativeAscii {
     }
 
     /// Applies a planned edit: `layout` holds the edited glyphs (positions
-    /// before the first changed word unchanged). Sets word ends, positions from
-    /// the planned word on, running widths and the line width, in place.
-    pub(super) fn apply_edit(&mut self, edit: Edit, layout: &mut LineLayout, middle: &Self) {
+    /// before the first changed word unchanged). Retained suffix indices still
+    /// refer to the old text; update them on their first replay visit. Sets word
+    /// ends, positions, running widths and the line width in native order.
+    pub(super) fn apply_edit(
+        &mut self,
+        edit: Edit,
+        layout: &mut LineLayout,
+        middle: &Self,
+        suffix: GlyphSuffix,
+    ) {
         match edit.ends {
             NewEnds::Splice(Splice {
                 shared,
@@ -145,18 +152,34 @@ impl NativeAscii {
         let width = self.widths[from];
         self.widths.truncate(from + 1);
         let start = self.boundaries[from];
+        debug_assert!(start <= suffix.new_start);
         let width = if let [run] = layout.runs.as_mut_slice() {
-            let at = run.glyphs.partition_point(|g| g.index < start);
+            // The replay starts before the unchanged suffix. Only this prefix
+            // already has final indices; shift each suffix index when replay
+            // first visits it, avoiding a separate whole-suffix memory pass.
+            let at = run.glyphs[..suffix.first].partition_point(|g| g.index < start);
+            let glyphs = run.glyphs[at..].iter_mut().enumerate().map(|(ix, glyph)| {
+                suffix.reindex(at + ix, glyph);
+                glyph
+            });
             replay(
                 &middle.advances,
                 &self.boundaries,
                 from,
                 (edit.pen, width),
-                run.glyphs[at..].iter_mut(),
+                glyphs,
                 &mut self.widths,
             )
         } else {
-            let glyphs = layout.runs.iter_mut().flat_map(|r| &mut r.glyphs);
+            let glyphs = layout
+                .runs
+                .iter_mut()
+                .flat_map(|r| &mut r.glyphs)
+                .enumerate()
+                .map(|(ix, glyph)| {
+                    suffix.reindex(ix, glyph);
+                    glyph
+                });
             replay(
                 &middle.advances,
                 &self.boundaries,
@@ -210,6 +233,21 @@ impl NativeAscii {
             + size_of_val(self.widths.as_slice())
             + size_of_val(self.advances.as_ref())
             + self.pairs.capacity() * (size_of::<([u8; 2], bool)>() + size_of::<usize>() * 2)
+    }
+}
+
+/// The retained suffix after the middle glyphs have been spliced in.
+pub(super) struct GlyphSuffix {
+    pub(super) first: usize,
+    pub(super) old_start: usize,
+    pub(super) new_start: usize,
+}
+
+impl GlyphSuffix {
+    fn reindex(&self, at: usize, glyph: &mut ShapedGlyph) {
+        if at >= self.first {
+            glyph.index = self.new_start + (glyph.index - self.old_start);
+        }
     }
 }
 
