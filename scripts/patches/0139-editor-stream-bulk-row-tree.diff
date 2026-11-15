@@ -1,0 +1,228 @@
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -374,107 +374,123 @@
+             .offset_to_point(range.start + new_text.len())
+             .row;
+
+-        let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
+         let wrap_width = self.wrap_width;
+-
+         let stream_unwrapped = wrap_width.is_none() && new_end_row.saturating_sub(new_start_row) >= 512;
+-        if stream_unwrapped {
+-            // No shaping or wrap boundaries are needed. A whole-file Format
+-            // can create hundreds of thousands of rows: seeking through the
+-            // rope separately for each row dominates apply and Undo. Walk its
+-            // chunks once, retaining CR and UTF-8 byte lengths exactly as
+-            // slice_line does. Small edits keep the original indexed path.
++        let new_lines = if stream_unwrapped {
++            // Walk chunks once and feed rows straight into the tree. A bulk
++            // Format must not also retain a document-sized Vec<LineItem>.
++            // Preserve CR and UTF-8 byte lengths exactly as slice_line does.
+             let start = changed_text.line_start_offset(new_start_row);
+             let end = changed_text.line_start_offset(new_end_row)
+                 + changed_text.slice_line(new_end_row).len();
+-            let mut len = 0;
+-            let mut append = |len| {
+-                new_lines.push(LineItem {
+-                    len,
+-                    indent: 0,
+-                    prefix_hang: px(0.),
+-                    wrapped_lines: smallvec::smallvec![0..len],
+-                })
+-            };
+-            for chunk in changed_text.slice(start..end).chunks() {
+-                let mut from = 0;
+-                for (at, _) in chunk.match_indices('\n') {
+-                    append(len + at - from);
+-                    len = 0;
+-                    from = at + 1;
++            let slice = changed_text.slice(start..end);
++            let mut chunks = slice.chunks();
++            let mut chunk = "";
++            let mut boundaries = chunk.match_indices('\n');
++            let mut from = 0;
++            let mut pending = 0;
++            let mut finished = false;
++            let lengths = std::iter::from_fn(move || {
++                if finished {
++                    return None;
+                 }
+-                len += chunk.len() - from;
+-            }
+-            append(len);
+-            debug_assert_eq!(new_lines.len(), new_end_row - new_start_row + 1);
+-        }
+-        let indexed_rows = if stream_unwrapped {
+-            new_start_row..new_start_row
+-        } else {
+-            new_start_row..new_end_row + 1
+-        };
+-        // line not contains `\n`.
+-        for row in indexed_rows {
+-            #[cfg(test)]
+-            SOURCE_ROW_LOOKUPS.with(|count| count.set(count.get() + 1));
+-            let line = changed_text.slice_line(row);
+-            let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
+-            let mut prev_boundary_ix = 0;
+-            let mut indent_chars = 0;
+-
+-            // If wrap_width is Pixels::MAX, skip wrapping to disable word wrap
+-            if let Some(wrap_width) = wrap_width {
+-                // Borrowed for lines within a single rope chunk.
+-                let line_str: Cow<str> = line.into();
+-                match self.wrapping_indent {
+-                    WrappingIndent::Same => {
+-                        // Here only have wrapped line, if there is no wrap meet, the `line_wraps`
+-                        // result will empty.
+-                        for boundary in wrap_line(&line_str, wrap_width) {
+-                            wrapped_lines.push(prev_boundary_ix..boundary.ix);
+-                            prev_boundary_ix = boundary.ix;
+-                            indent_chars = boundary.next_indent;
++                loop {
++                    if let Some((at, _)) = boundaries.next() {
++                        let len = pending + at - from;
++                        pending = 0;
++                        from = at + 1;
++                        return Some(len);
++                    }
++                    pending += chunk.len() - from;
++                    match chunks.next() {
++                        Some(next) => {
++                            chunk = next;
++                            boundaries = chunk.match_indices('\n');
++                            from = 0;
++                        }
++                        None => {
++                            // Even a trailing LF has a final source row.
++                            finished = true;
++                            return Some(std::mem::take(&mut pending));
+                         }
+                     }
+-                    WrappingIndent::None => {
+-                        // The first visual line keeps the line's leading indentation, so it is
+-                        // wrapped as is.
+-                        let boundaries = wrap_line(&line_str, wrap_width);
+-                        if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
+-                            wrapped_lines.push(prev_boundary_ix..first_ix);
+-                            prev_boundary_ix = first_ix;
+-
+-                            for boundary in wrap_line(&line_str[first_ix..], wrap_width) {
+-                                let ix = first_ix + boundary.ix;
+-                                wrapped_lines.push(prev_boundary_ix..ix);
+-                                prev_boundary_ix = ix;
++                }
++            });
++            let tree = SumTree::from_iter(lengths.map(|len| LineItem {
++                len,
++                indent: 0,
++                prefix_hang: px(0.),
++                wrapped_lines: smallvec::smallvec![0..len],
++            }), &());
++            debug_assert_eq!(tree.summary().buffer_rows, new_end_row - new_start_row + 1);
++            tree
++        } else {
++            let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
++            // line not contains `\n`.
++            for row in new_start_row..=new_end_row {
++                #[cfg(test)]
++                SOURCE_ROW_LOOKUPS.with(|count| count.set(count.get() + 1));
++                let line = changed_text.slice_line(row);
++                let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
++                let mut prev_boundary_ix = 0;
++                let mut indent_chars = 0;
++
++                // If wrap_width is Pixels::MAX, skip wrapping to disable word wrap
++                if let Some(wrap_width) = wrap_width {
++                    // Borrowed for lines within a single rope chunk.
++                    let line_str: Cow<str> = line.into();
++                    match self.wrapping_indent {
++                        WrappingIndent::Same => {
++                            // Here only have wrapped line, if there is no wrap meet, the `line_wraps`
++                            // result will empty.
++                            for boundary in wrap_line(&line_str, wrap_width) {
++                                wrapped_lines.push(prev_boundary_ix..boundary.ix);
++                                prev_boundary_ix = boundary.ix;
++                                indent_chars = boundary.next_indent;
++                            }
++                        }
++                        WrappingIndent::None => {
++                            // The first visual line keeps the line's leading indentation, so it is
++                            // wrapped as is.
++                            let boundaries = wrap_line(&line_str, wrap_width);
++                            if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
++                                wrapped_lines.push(prev_boundary_ix..first_ix);
++                                prev_boundary_ix = first_ix;
++
++                                for boundary in wrap_line(&line_str[first_ix..], wrap_width) {
++                                    let ix = first_ix + boundary.ix;
++                                    wrapped_lines.push(prev_boundary_ix..ix);
++                                    prev_boundary_ix = ix;
++                                }
+                             }
+                         }
+                     }
+                 }
++
++                // Reset of the line
++                if prev_boundary_ix < line.len() || prev_boundary_ix == 0 {
++                    wrapped_lines.push(prev_boundary_ix..line.len());
++                }
++
++                new_lines.push(LineItem {
++                    len: line.len(),
++                    indent: indent_chars,
++                    prefix_hang: px(0.),
++                    wrapped_lines,
++                });
+             }
+
+-            // Reset of the line
+-            if prev_boundary_ix < line.len() || prev_boundary_ix == 0 {
+-                wrapped_lines.push(prev_boundary_ix..line.len());
+-            }
+-
+-            new_lines.push(LineItem {
+-                len: line.len(),
+-                indent: indent_chars,
+-                prefix_hang: px(0.),
+-                wrapped_lines,
+-            });
+-        }
++            SumTree::from_iter(new_lines, &())
++        };
+
+         if self.lines.is_empty() {
+-            self.lines = SumTree::from_iter(new_lines, &());
++            self.lines = new_lines;
+         } else {
+             let mut cursor = self.lines.cursor::<BufferRows>(&());
+             let mut new_tree = cursor.slice(&BufferRows(start_row), Bias::Right);
+             // Skip the replaced rows
+             cursor.seek_forward(&BufferRows(end_row + 1), Bias::Right);
+-            new_tree.extend(new_lines, &());
++            new_tree.append(new_lines, &());
+             // Untouched rows after the edit
+             new_tree.append(cursor.suffix(), &());
+             drop(cursor);
+@@ -1505,6 +1521,21 @@
+         assert_eq!(lookups() - before, 0);
+         assert_rows(&wrapper);
+
++        // A sparse bulk span with one giant row must remain chunk based.
++        // Start/end inside different UTF-8 rows, not just at column zero.
++        let sparse = Rope::from(format!("שלום🙂prefix\n{}{}suffix🙂", "x\n".repeat(600), "z".repeat(1_500_000)));
++        let mut sparse_wrapper = TextWrapper::new(font.clone(), px(14.), None);
++        sparse_wrapper._update(&sparse, &(0..0), &sparse, &mut no_wrap);
++        assert_rows(&sparse_wrapper);
++        let range = "שלום".len()..sparse.len() - "🙂".len();
++        let replacement = Rope::from(format!("א🙂\r\n{}{}tail", "ב\n".repeat(513), "q".repeat(1_600_000)));
++        let mut changed = sparse.clone();
++        changed.replace(range.clone(), &replacement.to_string());
++        let before = lookups();
++        sparse_wrapper._update(&changed, &range, &replacement, &mut no_wrap);
++        assert_eq!(lookups() - before, 0);
++        assert_rows(&sparse_wrapper);
++
+         // Positive controls: the counter observes small edits and the full
+         // wrapped path; neither may be accidentally skipped by the bulk path.
+         let mut typed = restored.clone();
