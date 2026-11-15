@@ -1,0 +1,164 @@
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -11,6 +11,11 @@
+ use ropey::Rope;
+ use smallvec::SmallVec;
+ use sum_tree::{Bias, Dimensions, SumTree};
++
++#[cfg(test)]
++thread_local! {
++    static SOURCE_ROW_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
+
+ use crate::input::{
+     Point as TreeSitterPoint, RopeExt,
+@@ -372,8 +377,46 @@
+         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
+         let wrap_width = self.wrap_width;
+
++        let stream_unwrapped = wrap_width.is_none() && new_end_row.saturating_sub(new_start_row) >= 512;
++        if stream_unwrapped {
++            // No shaping or wrap boundaries are needed. A whole-file Format
++            // can create hundreds of thousands of rows: seeking through the
++            // rope separately for each row dominates apply and Undo. Walk its
++            // chunks once, retaining CR and UTF-8 byte lengths exactly as
++            // slice_line does. Small edits keep the original indexed path.
++            let start = changed_text.line_start_offset(new_start_row);
++            let end = changed_text.line_start_offset(new_end_row)
++                + changed_text.slice_line(new_end_row).len();
++            let mut len = 0;
++            let mut append = |len| {
++                new_lines.push(LineItem {
++                    len,
++                    indent: 0,
++                    prefix_hang: px(0.),
++                    wrapped_lines: smallvec::smallvec![0..len],
++                })
++            };
++            for chunk in changed_text.slice(start..end).chunks() {
++                let mut from = 0;
++                for (at, _) in chunk.match_indices('\n') {
++                    append(len + at - from);
++                    len = 0;
++                    from = at + 1;
++                }
++                len += chunk.len() - from;
++            }
++            append(len);
++            debug_assert_eq!(new_lines.len(), new_end_row - new_start_row + 1);
++        }
++        let indexed_rows = if stream_unwrapped {
++            new_start_row..new_start_row
++        } else {
++            new_start_row..new_end_row + 1
++        };
+         // line not contains `\n`.
+-        for row in new_start_row..=new_end_row {
++        for row in indexed_rows {
++            #[cfg(test)]
++            SOURCE_ROW_LOOKUPS.with(|count| count.set(count.get() + 1));
+             let line = changed_text.slice_line(row);
+             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
+             let mut prev_boundary_ix = 0;
+@@ -1388,6 +1431,101 @@
+     use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
+
+     #[test]
++    fn large2804_unwrapped_bulk_replacement_avoids_repeated_rope_seeks() {
++        let font = gpui::Font {
++            family: "Arial".into(),
++            weight: FontWeight::default(),
++            style: FontStyle::Normal,
++            features: FontFeatures::default(),
++            fallbacks: None,
++        };
++        let mut wrapper = TextWrapper::new(font.clone(), px(14.), None);
++        let original = Rope::from(format!(
++            "{}tail",
++            "שלום🙂\r\n\nrow\u{85}value\u{2028}\n".repeat(4096)
++        ));
++        let lookups = || SOURCE_ROW_LOOKUPS.with(|count| count.get());
++        let mut no_wrap = |_: &str, _: Pixels| panic!("unwrapped source must not shape rows");
++        let before = lookups();
++        wrapper._update(&original, &(0..0), &original, &mut no_wrap);
++        assert_eq!(
++            lookups() - before,
++            0,
++            "bulk source must stream rope chunks, not seek each row"
++        );
++
++        fn assert_rows(wrapper: &TextWrapper) {
++            assert_eq!(wrapper.lines_count(), wrapper.text.lines_len());
++            assert_eq!(wrapper.len(), wrapper.text.lines_len());
++            let mut longest = (0, 0);
++            for (row, item) in wrapper.iter_lines().enumerate() {
++                let len = wrapper.text.slice_line(row).len();
++                assert_eq!(item.len(), len, "row {row}");
++                assert_eq!(item.wrapped_lines.as_slice(), [0..len], "row {row}");
++                if len > longest.1 {
++                    longest = (row, len);
++                }
++            }
++            assert_eq!(wrapper.longest_row(), longest.0);
++            for row in [
++                0,
++                1,
++                512,
++                wrapper.lines_count() / 2,
++                wrapper.lines_count() - 1,
++            ] {
++                let start = wrapper.text.line_start_offset(row);
++                assert_eq!(wrapper.buffer_line_to_first_wrap_row(row), row);
++                assert_eq!(wrapper.wrap_row_to_buffer_line(row), row);
++                assert_eq!(wrapper.offset_to_display_point(start).row, row);
++                assert_eq!(
++                    wrapper.display_point_to_offset(WrapDisplayPoint::new(row, 0, 0)),
++                    start
++                );
++            }
++        }
++        assert_rows(&wrapper);
++
++        // A large interior replacement keeps the unaffected prefix/suffix,
++        // spans rope chunks, and ends on the first byte of an existing row.
++        let mut changed = original.clone();
++        let range = original.line_start_offset(111)..original.line_start_offset(7000);
++        let replacement = Rope::from(format!("{}\n", "mixed🙂\r\n\n".repeat(2048)));
++        changed.replace(range.clone(), &replacement.to_string());
++        let before = lookups();
++        wrapper._update(&changed, &range, &replacement, &mut no_wrap);
++        assert_eq!(lookups() - before, 0);
++        assert_rows(&wrapper);
++
++        // Whole-document Undo, including a final empty row, takes the same
++        // path and retains exact CR/LF and UTF-8 byte geometry.
++        let restored = Rope::from(format!("{}\n", original));
++        let before = lookups();
++        wrapper._update(&restored, &(0..changed.len()), &restored, &mut no_wrap);
++        assert_eq!(lookups() - before, 0);
++        assert_rows(&wrapper);
++
++        // Positive controls: the counter observes small edits and the full
++        // wrapped path; neither may be accidentally skipped by the bulk path.
++        let mut typed = restored.clone();
++        typed.replace(0..0, "x");
++        let before = lookups();
++        wrapper._update(&typed, &(0..0), &Rope::from("x"), &mut no_wrap);
++        assert_eq!(lookups() - before, 1);
++        assert_rows(&wrapper);
++        let mut wrapped = TextWrapper::new(font, px(14.), Some(px(400.)));
++        let before = lookups();
++        let mut wrapped_rows = 0;
++        wrapped._update(&typed, &(0..0), &typed, &mut |_, _| {
++            wrapped_rows += 1;
++            vec![]
++        });
++        assert_eq!(lookups() - before, typed.lines_len());
++        assert_eq!(wrapped_rows, typed.lines_len());
++        assert_rows(&wrapped);
++    }
++
++    #[test]
+     fn test_update() {
+         let font = gpui::Font {
+             family: "Arial".into(),
