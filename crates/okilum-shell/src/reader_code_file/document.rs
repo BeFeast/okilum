@@ -685,3 +685,42 @@ pub(crate) mod drop_probe {
         }
     }
 }
+
+impl Document {
+    /// Worker-only, bounded JSON Pointer projection in the existing preorder.
+    pub(super) fn json_pointers(&self) -> Vec<String> {
+        if self.format != Some("JSON") || self.text.len() > okilum_core::json_schema::DOCUMENT_BYTES
+        {
+            return Vec::new();
+        }
+        let mut bytes = 0usize;
+        let mut paths: Vec<String> = Vec::with_capacity(self.structure.len().min(100_000));
+        for row in &self.structure {
+            let parent = row
+                .parent
+                .and_then(|i| paths.get(i))
+                .map(String::as_str)
+                .unwrap_or_default();
+            let key = match &row.label {
+                json_tree::Label::Data { key: Some(key), .. } => serde_json::from_str::<String>(
+                    &self.text[key.start.saturating_sub(1)..key.end + 1],
+                )
+                .ok(),
+                json_tree::Label::Data {
+                    ordinal: Some(index),
+                    ..
+                } => Some(index.to_string()),
+                _ => None,
+            };
+            let path = key.map_or_else(String::new, |key| {
+                okilum_core::json_schema::pointer_child(parent, &key)
+            });
+            bytes += path.len();
+            if bytes > okilum_core::json_schema::DOCUMENT_BYTES || paths.len() >= 100_000 {
+                return Vec::new();
+            }
+            paths.push(path);
+        }
+        paths
+    }
+}

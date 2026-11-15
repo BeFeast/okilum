@@ -66,7 +66,7 @@ impl CodePreview {
     /// keep their private outline.
     fn contents_format(&self) -> bool {
         let rel = self.rel.to_ascii_lowercase();
-        (is_json(&self.rel) && !rel.ends_with(".har"))
+        ((is_json(&self.rel) || self.json_routed) && !rel.ends_with(".har"))
             || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))
     }
 

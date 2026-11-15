@@ -119,6 +119,8 @@ pub(crate) struct TablePreview {
     duckdb_override: Option<Option<PathBuf>>,
     own_header: bool,
     file_bytes: Option<u64>,
+    json_source: bool,
+    schema: Option<Arc<okilum_core::json_schema::Report>>,
     case_sensitive: bool,
     hits: Vec<Cell>,
     reveal_source: Option<Cell>,
@@ -137,6 +139,23 @@ pub(crate) struct TablePreview {
 }
 impl TablePreview {
     pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let json = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        Self::new_format(path, json, window, cx)
+    }
+    pub(crate) fn new_json(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_format(path, true, window, cx)
+    }
+    pub(crate) fn set_schema(&mut self, schema: Option<Arc<okilum_core::json_schema::Report>>) {
+        self.schema = schema;
+    }
+    fn new_format(
+        path: PathBuf,
+        json_source: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find in loaded rows"));
         cx.subscribe_in(
             &filter,
@@ -182,6 +201,8 @@ impl TablePreview {
             duckdb_override: None,
             own_header: true,
             file_bytes: None,
+            json_source,
+            schema: None,
             case_sensitive: reader_ui_state::find_case_sensitive(cx),
             hits: Vec::new(),
             reveal_source: None,
@@ -205,13 +226,11 @@ impl TablePreview {
         self.loading = true;
         self.error = None;
         let load_path = self.path.clone();
+        let json = self.json_source;
         let task = cx.background_executor().spawn(async move {
             std::fs::File::open(&load_path).and_then(|file| {
                 let bytes = file.metadata()?.len();
-                let result = if load_path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-                {
+                let result = if json {
                     Table::read_json(file, if all { EXPANDED_LIMITS } else { PREVIEW_LIMITS })
                 } else {
                     Table::read(
@@ -277,9 +296,7 @@ impl TablePreview {
         true
     }
     fn json(&self) -> bool {
-        self.path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        self.json_source
     }
     fn sort_column(&mut self, column: usize, cx: &mut Context<Self>) {
         self.sort = match self.sort {
@@ -368,6 +385,8 @@ impl TablePreview {
             .children(self.visible_columns.clone().map(|column| {
                 let cell = Cell { row, column };
                 let value = table.cell(source_row, column).to_owned();
+                let schema = self.schema.clone();
+                let column_name = table.cell(0, column).to_owned();
                 let text = if header && !self.header {
                     format!("Column {}", column + 1)
                 } else {
@@ -405,7 +424,22 @@ impl TablePreview {
                                 )
                             }),
                     )
-                    .hoverable_tooltip(move |window, cx| cell_tooltip(value.clone(), window, cx))
+                    .hoverable_tooltip(move |window, cx| {
+                        let tooltip = schema
+                            .as_ref()
+                            .map(|report| {
+                                format!(
+                                    "{value}\n\n{}",
+                                    report.table_explanation(
+                                        source_row.saturating_sub(1),
+                                        &column_name,
+                                        header
+                                    )
+                                )
+                            })
+                            .unwrap_or_else(|| value.clone());
+                        cell_tooltip(tooltip, window, cx)
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {

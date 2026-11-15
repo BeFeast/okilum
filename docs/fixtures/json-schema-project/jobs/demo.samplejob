@@ -1,0 +1,9 @@
+{
+  "name": "Synthetic export",
+  "steps": [
+    { "state": "queued", "attempts": 0, "unexplained": { "keep": true } },
+    { "state": "paused", "attempts": -1 },
+    { "attempts": 2 }
+  ],
+  "custom": "This value has no schema description."
+}

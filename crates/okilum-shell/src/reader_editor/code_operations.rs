@@ -478,9 +478,13 @@ impl Reader {
                 // source content would restore a second BOM on Undo.
                 usize::from(input.text().bytes().take(3).eq("\u{feff}".bytes())) * 3
                     ..input.text().len(),
-                file_language(self.selected_file()),
+                if self.selected_json_association(cx) {
+                    "json".into()
+                } else {
+                    file_language(self.selected_file())
+                },
                 None,
-                file_language_is_fixed(self.selected_file()),
+                self.selected_json_association(cx) || file_language_is_fixed(self.selected_file()),
             )
         };
         let language = editing

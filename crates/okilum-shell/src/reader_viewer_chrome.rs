@@ -897,11 +897,7 @@ impl Reader {
         cx: &App,
     ) -> HeaderLayout {
         let editing = self.editing.is_some();
-        let editable = self
-            .file_preview
-            .as_ref()
-            .is_some_and(|p| reader_delimited::editable(&p.rel))
-            && self.code_file_editable(cx);
+        let editable = self.file_is_source() && self.code_file_editable(cx);
         let width_applies = self
             .file_preview
             .as_ref()

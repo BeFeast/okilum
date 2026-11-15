@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthetic job",
+  "description": "A viewer fixture, unrelated to any actual project format.",
+  "type": "object",
+  "required": ["name", "owner", "steps"],
+  "properties": {
+    "name": { "type": "string", "title": "Job name", "description": "The declared display name of this synthetic job.", "minLength": 1 },
+    "owner": { "type": "string", "description": "The person responsible for this synthetic job." },
+    "steps": {
+      "type": "array",
+      "description": "Ordered synthetic processing steps.",
+      "items": { "$ref": "types.schema.json#/$defs/step" }
+    }
+  }
+}
