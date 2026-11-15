@@ -1,0 +1,17 @@
+{
+  "package": "gpui-pre",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre/gpui-pre-0.3.3.crate",
+  "archive_sha256": "f8b0f6f593153b6eb84c336ea7ccf12a1fca186f0db99af628e72f85048c1d7b",
+  "patches": [
+    {
+      "path": "../patches/gpui-pre/0001-copy-shaped-glyphs.diff",
+      "sha256": "6f8ecc5d66db1e5959b31de48438e396b2be43a59f4bc67de9d084a4c64f103e"
+    }
+  ],
+  "tree_sha256": "5f8b712d0fb68d21f2811a121f2d97a34412689ce15d3e172865707ee00d5275",
+  "generated_path": "vendor/gpui-pre-0.3.3",
+  "changed_files": [
+    "src/text_system/line_layout.rs"
+  ]
+}

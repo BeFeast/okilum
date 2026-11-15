@@ -1,0 +1,11 @@
+--- a/src/text_system/line_layout.rs
++++ b/src/text_system/line_layout.rs
+@@ -38,7 +38,7 @@
+ }
+ 
+ /// A single glyph, ready to paint.
+-#[derive(Clone, Debug)]
++#[derive(Clone, Copy, Debug)]
+ pub struct ShapedGlyph {
+     /// The ID for this glyph, as determined by the text system.
+     pub id: GlyphId,
