@@ -38,6 +38,15 @@ def verify(artifact, extracted):
     result = subprocess.run([str(extracted / 'usr/bin/gpgv'), '--version'], capture_output=True, text=True, env=loader_env)
     if result.returncode or 'gpgv' not in result.stdout:
         raise ValueError('Packaged signature verifier failed its positive control')
+    for tool in ('heif-convert', 'prlimit'):
+        result = subprocess.run(['ldd', str(extracted / 'usr/bin' / tool)],
+                                capture_output=True, text=True, env=loader_env)
+        require_loaded(result.stdout + result.stderr, result.returncode)
+    result = subprocess.run([sys.executable, str(Path(__file__).with_name('heic-control.py')),
+                             str(extracted)], capture_output=True, text=True, env=loader_env, timeout=120)
+    print(result.stdout + result.stderr)
+    if result.returncode:
+        raise ValueError('Packaged HEIC decoder failed its real pixel/transform controls')
     for path in ('okilum.desktop', 'okilum.svg', 'AppRun'):
         if not (extracted / path).exists():
             raise ValueError('Missing AppDir entry: ' + path)

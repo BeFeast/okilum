@@ -35,7 +35,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold file patchelf gpgv \
+            build-essential cmake pkg-config curl git mold file patchelf gpgv libheif-examples \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1
       - uses: Swatinem/rust-cache@v2

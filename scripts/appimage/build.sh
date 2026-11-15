@@ -88,6 +88,8 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 ./tools/linuxdeploy --appdir AppDir --executable "$binary" \
     --executable "$launch_binary" \
     --executable /usr/bin/gpgv \
+    --executable /usr/bin/heif-convert \
+    --executable /usr/bin/prlimit \
     --library "$(pkg-config --variable=libdir alsa)/libasound.so.2" \
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
@@ -95,12 +97,33 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # linuxdeploy excludes ALSA by default. The audio viewer links it at startup,
 # so force the loader library into the image; device configuration stays native.
 test -e AppDir/usr/lib/libasound.so.2
+# Ubuntu 22.04 libheif has a built-in HEVC decoder (no host plugin discovery).
+# Keep its CLI and codec libraries together, including on hosts without libheif.
+test -e AppDir/usr/lib/libheif.so.1
+test -e AppDir/usr/lib/libde265.so.0
+python3 ../../scripts/appimage/heic-control.py AppDir
 # A newer host's PipeWire/Pulse plugin may require newer ALSA symbols and a
 # different plugin directory. Prefer its matching host loader when available.
 rm -f AppDir/AppRun
 install -m755 ../../scripts/appimage/apprun.sh AppDir/AppRun
 if [[ $local_dev != 1 ]]; then
     install -Dm644 /usr/share/doc/libasound2/copyright AppDir/usr/share/licenses/alsa-lib/copyright
+    # Keep distribution copyright/source references and complete GPL/LGPL terms
+    # beside the separately executed decoder and its dynamically linked codecs.
+    test -s /usr/share/doc/libheif1/copyright
+    test -s /usr/share/doc/libde265-0/copyright
+    for notice in /usr/share/doc/libheif*/copyright /usr/share/doc/libde265*/copyright \
+        /usr/share/doc/libx265*/copyright /usr/share/doc/libaom*/copyright \
+        /usr/share/doc/libdav1d*/copyright /usr/share/doc/libjpeg*/copyright \
+        /usr/share/doc/libpng*/copyright /usr/share/doc/util-linux/copyright \
+        /usr/share/doc/libsmartcols*/copyright; do
+        [[ -f $notice ]] || continue
+        package=$(basename "$(dirname "$notice")")
+        install -Dm644 "$notice" "AppDir/usr/share/licenses/heif/$package/copyright"
+    done
+    for license in GPL-2 GPL-3 LGPL-2 LGPL-2.1 LGPL-3; do
+        install -Dm644 "/usr/share/common-licenses/$license" "AppDir/usr/share/licenses/heif/$license"
+    done
 fi
 python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
     2>&1 | tee evidence/elf-after-deploy.log
