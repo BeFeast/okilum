@@ -1298,7 +1298,7 @@ mod tests {
                             .iter()
                             .filter(|g| (start..end).contains(&g.index))
                             .map(|g| {
-                                let mut g = g.clone();
+                                let mut g = *g;
                                 g.index -= start;
                                 g.position.x -= origin;
                                 g
