@@ -4,6 +4,7 @@ use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod heic;
+mod json_associations;
 mod live;
 #[path = "reader_single_folder_watch.rs"]
 mod single_folder_watch;
@@ -576,6 +577,7 @@ impl Reader {
                 }
                 let log = preview.log.is_some();
                 self.file_preview = Some(preview);
+                self.resolve_json_viewer(tree_had_focus, window, cx);
                 // The notes linking here are this file's, never the last note's (#2885).
                 self.set_backlinks(self.vault.backlinks(rel), true);
                 self.find_open = false;

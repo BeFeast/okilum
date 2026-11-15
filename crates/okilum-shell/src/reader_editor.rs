@@ -801,10 +801,7 @@ impl Reader {
             self.toggle_timeline_source(window, cx);
             return;
         }
-        let plain_file = self
-            .file_preview
-            .as_ref()
-            .is_some_and(|p| reader_delimited::editable(&p.rel));
+        let plain_file = self.file_is_source();
         // A code file over the size cap stays in its read-only note (#998).
         if self.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
             return;
@@ -962,7 +959,7 @@ impl Reader {
         );
         // Code files keep their grammar, line numbers and wrap preference (#998).
         let code = plain_file
-            .then(|| crate::reader_code_file::language(self.selected_file()))
+            .then(|| self.selected_code_language(cx))
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
@@ -2477,10 +2474,7 @@ impl Reader {
         let Some(preview) = &self.file_preview else {
             return;
         };
-        if !self.ui_state.source_mode
-            || self.editing.is_some()
-            || !reader_delimited::editable(&preview.rel)
-        {
+        if !self.ui_state.source_mode || self.editing.is_some() || !self.file_is_source() {
             return;
         }
         if let Some(code) = preview.code.clone().filter(|code| code.read(cx).loading()) {

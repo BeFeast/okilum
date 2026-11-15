@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "type": "string", "title": "Processing state", "description": "The state declared by the synthetic producer.", "enum": ["queued", "done"] },
+        "attempts": { "type": "integer", "description": "Number of attempts recorded by the producer.", "minimum": 0 }
+      }
+    }
+  }
+}

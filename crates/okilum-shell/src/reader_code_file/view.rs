@@ -152,8 +152,8 @@ impl CodePreview {
                 "csv"
             });
         }
-        match language(&self.rel)? {
-            "json" if is_json(&self.rel) => Some(if self.table.is_some() {
+        match self.source_language() {
+            "json" if is_json(&self.rel) || self.json_routed => Some(if self.table.is_some() {
                 "json-array"
             } else {
                 "json"

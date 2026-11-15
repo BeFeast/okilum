@@ -10,36 +10,45 @@ impl CodePreview {
         self.state = State::Loading;
         let started = self.opened_at;
         let path = self.path.clone();
-        let json = is_json(&self.rel);
         let table_path = path.clone();
-        let language = language(&self.rel).unwrap_or("text");
+        let root = self.root.clone();
+        let association = self.association.take();
         let task = cx.background_executor().spawn(async move {
-            let bytes = std::fs::metadata(&path)?.len();
-            if bytes > MAX_BYTES {
-                return anyhow::Ok(Loaded::TooLarge(bytes));
-            }
-            Ok(
-                match String::from_utf8({
-                    use std::io::Read as _;
-                    let mut bytes = Vec::new();
-                    std::fs::File::open(&path)?
-                        .take(MAX_BYTES + 1)
-                        .read_to_end(&mut bytes)?;
-                    if bytes.len() as u64 > MAX_BYTES {
-                        return Ok(Loaded::TooLarge(bytes.len() as u64));
-                    }
-                    bytes
-                }) {
-                    Ok(text) => Loaded::Text(text),
-                    Err(_) => Loaded::Unsupported,
-                },
-            )
+            let association =
+                association.unwrap_or_else(|| okilum_core::json_schema::associate(&root, &path));
+            let loaded = (|| {
+                let bytes = std::fs::metadata(&path)?.len();
+                if bytes > MAX_BYTES {
+                    return anyhow::Ok(Loaded::TooLarge(bytes));
+                }
+                Ok(
+                    match String::from_utf8({
+                        use std::io::Read as _;
+                        let mut bytes = Vec::new();
+                        std::fs::File::open(&path)?
+                            .take(MAX_BYTES + 1)
+                            .read_to_end(&mut bytes)?;
+                        if bytes.len() as u64 > MAX_BYTES {
+                            return Ok(Loaded::TooLarge(bytes.len() as u64));
+                        }
+                        bytes
+                    }) {
+                        Ok(text) => Loaded::Text(text),
+                        Err(_) => Loaded::Unsupported,
+                    },
+                )
+            })();
+            (loaded, association)
         });
         crate::source_presentation::code_languages::install();
         // Each selection owns its own entity; a late read cannot reach a newer one.
         cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
+            let (result, association) = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                this.json_routed = association.as_ref().is_ok_and(|a| a.json);
+                this.association = Some(association);
+                let json = this.json_routed || is_json(&this.rel);
+                let language = this.source_language();
                 this.state = match result {
                     Ok(Loaded::Text(text)) => {
                         this.source_bytes = Some(text.len());
@@ -204,7 +213,8 @@ impl CodePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let language = language(&self.rel).unwrap_or("text");
+        let language = self.source_language();
+        let revision = self.document_revision;
         #[cfg(test)]
         let gate = self.preparation_gate.take();
         let task = cx.background_executor().spawn(async move {
@@ -229,6 +239,9 @@ impl CodePreview {
         cx.spawn_in(window, async move |this, cx| {
             let (raw, refusal) = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.document_revision != revision {
+                    return;
+                }
                 if json
                     && raw.semantic
                     && raw
@@ -238,7 +251,8 @@ impl CodePreview {
                         .starts_with('[')
                 {
                     let table = cx.new(|cx| {
-                        reader_delimited::TablePreview::new(table_path, window, cx).without_header()
+                        reader_delimited::TablePreview::new_json(table_path, window, cx)
+                            .without_header()
                     });
                     this.attach_table(table, window, cx);
                 }
@@ -253,6 +267,9 @@ impl CodePreview {
                 this.structure.reset(&raw);
                 this.raw_document = Some(raw.clone());
                 this.document = Some(raw);
+                if json {
+                    this.load_schema(false, window, cx);
+                }
                 if !this.read_active {
                     return;
                 }

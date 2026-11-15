@@ -63,6 +63,13 @@ separate. Source files are never modified by these viewers.
 worker sorting/filtering with explicit preview limits, and Open in DuckDB through
 an external CLI. No embedded engine, Parquet/.duckdb support or SQL input is added.
 
+**Local JSON Schema inspection (#2994):**
+[Project JSON associations and schema inspection](json-schema-viewer.md) adds
+explicit project viewer routing, a bounded local Draft 2020-12 subset, declared
+field explanations and separate schema violations over existing JSON views.
+Source bytes and explicit source editing/Undo are preserved; schema inspection
+is read-only, with no network discovery, generated forms or automatic repairs.
+
 **Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
 **Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.

@@ -14,6 +14,9 @@ mod find_review_tests;
 mod find_tests;
 mod loading;
 mod presentation;
+mod schema;
+#[cfg(test)]
+mod schema_tests;
 pub(crate) use presentation::PresentationState;
 #[cfg(test)]
 mod fold_all_scroll_tests;
@@ -194,6 +197,14 @@ pub(crate) struct CodePreview {
     encoding_reason: Option<String>,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
+    json_routed: bool,
+    schema_report: Option<Arc<okilum_core::json_schema::Report>>,
+    schema_rows: Arc<Vec<String>>,
+    schema_generation: u64,
+    schema_loading: bool,
+    #[cfg(test)]
+    schema_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    association: Option<Result<okilum_core::json_schema::Association, String>>,
     table: Option<Entity<reader_delimited::TablePreview>>,
     view: View,
     own_header: bool,
@@ -373,6 +384,17 @@ impl CodePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_associated(root, rel, path, None, window, cx)
+    }
+
+    pub(crate) fn new_associated(
+        root: PathBuf,
+        rel: String,
+        path: PathBuf,
+        association: Option<Result<okilum_core::json_schema::Association, String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let started = Instant::now();
         let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
         let find_subscription =
@@ -433,6 +455,17 @@ impl CodePreview {
             storage_reason: None,
             encoding_reason: None,
             json: None,
+            json_routed: association
+                .as_ref()
+                .and_then(|a| a.as_ref().ok())
+                .is_some_and(|a| a.json),
+            schema_report: None,
+            schema_rows: Arc::default(),
+            schema_generation: 0,
+            schema_loading: false,
+            #[cfg(test)]
+            schema_gate: None,
+            association,
             table: None,
             view: initial,
             own_header: true,
@@ -607,7 +640,7 @@ impl CodePreview {
             || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
             && self.encoding_reason.is_none()
-            && editable_format(&self.rel)
+            && (editable_format(&self.rel) || self.json_routed)
             // CSV/TSV edit through the existing source editor without the code
             // viewer's 4 MiB UI cap, exactly as before they shared this owner.
             && self
@@ -978,6 +1011,27 @@ impl Reader {
         self.file_preview.as_ref()?.code.as_ref()?.read(cx).input()
     }
 
+    pub(crate) fn file_is_source(&self) -> bool {
+        self.file_preview
+            .as_ref()
+            .is_some_and(|p| reader_delimited::editable(&p.rel) || p.code.is_some())
+    }
+
+    pub(crate) fn selected_json_association(&self, cx: &App) -> bool {
+        self.file_preview
+            .as_ref()
+            .and_then(|p| p.code.as_ref())
+            .is_some_and(|code| code.read(cx).json_routed)
+    }
+
+    pub(crate) fn selected_code_language(&self, cx: &App) -> Option<&'static str> {
+        self.file_preview
+            .as_ref()
+            .and_then(|p| p.code.as_ref())
+            .map(|code| code.read(cx).source_language())
+            .or_else(|| language(self.selected_file()))
+    }
+
     /// Code files open in the editor only within the size cap.
     pub(crate) fn code_file_editable(&self, cx: &App) -> bool {
         self.file_preview
@@ -995,7 +1049,7 @@ impl Reader {
             return;
         };
         let shown = preview.code.as_ref().and_then(|code| code.read(cx).input());
-        let edited = eligible(&preview.rel)
+        let edited = (eligible(&preview.rel) || preview.code.is_some())
             .then(|| self.source_input())
             .flatten();
         for input in shown.into_iter().chain(edited) {

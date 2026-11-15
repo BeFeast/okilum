@@ -499,12 +499,18 @@ impl CodePreview {
             .or_else(|| self.match_rows.get(&index));
         let label = hit.map_or_else(|| doc.row_label(index), |h| doc.row_hit_label(index, h));
         let highlights = self.row_highlights(index, &label, cx);
+        let schema = self.schema_rows.get(index).cloned();
         let entity = cx.entity();
         let menu = entity.clone();
         let show_actions = selected || self.structure.hovered == Some(index);
         let element = h_flex()
             .id(("data-structure-row", index))
             .debug_selector(move || format!("data-structure-row-{index}"))
+            .when_some(schema, |row, explanation| {
+                row.tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(explanation.clone()).build(window, cx)
+                })
+            })
             .w_full()
             .h(px(32.))
             .min_h(px(32.))

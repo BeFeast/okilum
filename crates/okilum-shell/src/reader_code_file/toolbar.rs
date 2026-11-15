@@ -83,6 +83,9 @@ impl CodePreview {
                 self.find_descriptor(entity.clone(), cx)
             });
         }
+        if let Some(schema) = self.schema_action(entity.clone()) {
+            chrome.actions.push(schema);
+        }
         let folding = self.fold_availability();
         if folding != Availability::Absent {
             for folded in [true, false] {
@@ -195,6 +198,12 @@ impl CodePreview {
             if let Some(table) = &self.table {
                 let mut table_chrome = table.read(cx).chrome(table.clone(), live, cx);
                 table_chrome.views = chrome.views;
+                table_chrome.actions.extend(
+                    chrome
+                        .actions
+                        .into_iter()
+                        .filter(|action| action.id == "code-schema"),
+                );
                 // Badges render beside the state slot; never drop the file's
                 // own state (the read-only lock) when the table has no warning.
                 if let Some(own) = chrome.state {

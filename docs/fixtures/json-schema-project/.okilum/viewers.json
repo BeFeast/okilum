@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "json": [{ "pattern": "jobs/*.samplejob" }],
+  "schemas": [
+    { "pattern": "jobs/*.samplejob", "schema": "schemas/general.schema.json" },
+    { "pattern": "jobs/demo.samplejob", "schema": "schemas/job.schema.json" }
+  ]
+}

@@ -445,7 +445,7 @@ impl Reader {
         if chrome.views.len() < 2 {
             chrome.views.clear();
         }
-        if crate::reader_code_file::language(self.selected_file()).is_some_and(|l| l != "text") {
+        if self.selected_code_language(cx).is_some_and(|l| l != "text") {
             for folded in [true, false] {
                 let action = if folded {
                     crate::reader_code_file::FoldAll.boxed_clone()
@@ -476,7 +476,9 @@ impl Reader {
                 chrome.actions.push(fold);
             }
         }
-        if !super::file_language_is_fixed(self.selected_file()) {
+        if !self.selected_json_association(cx)
+            && !super::file_language_is_fixed(self.selected_file())
+        {
             let mut language = ViewerAction::new(
                 "file-edit-language",
                 Icon::default().path("icons/code-xml.svg"),

@@ -36,6 +36,7 @@ pub mod folder_registration;
 pub mod goal_criteria;
 pub mod har;
 pub mod ir;
+pub mod json_schema;
 pub mod link_candidates;
 pub mod link_registration;
 #[cfg(any(unix, windows))]
