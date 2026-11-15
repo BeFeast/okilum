@@ -1,6 +1,6 @@
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
-@@ -374,107 +374,108 @@
+@@ -374,107 +374,123 @@
              .offset_to_point(range.start + new_text.len())
              .row;
 
@@ -37,7 +37,10 @@
 -                    len = 0;
 -                    from = at + 1;
 +            let slice = changed_text.slice(start..end);
-+            let mut pieces = slice.chunks().flat_map(|chunk| chunk.split_inclusive('\n'));
++            let mut chunks = slice.chunks();
++            let mut chunk = "";
++            let mut boundaries = chunk.match_indices('\n');
++            let mut from = 0;
 +            let mut pending = 0;
 +            let mut finished = false;
 +            let lengths = std::iter::from_fn(move || {
@@ -51,25 +54,7 @@
 -        }
 -        let indexed_rows = if stream_unwrapped {
 -            new_start_row..new_start_row
-+                for piece in pieces.by_ref() {
-+                    pending += piece.len();
-+                    if piece.ends_with('\n') {
-+                        return Some(std::mem::take(&mut pending) - 1);
-+                    }
-+                }
-+                // Even an empty slice or a trailing LF has a final source row.
-+                finished = true;
-+                Some(std::mem::take(&mut pending))
-+            });
-+            let tree = SumTree::from_iter(lengths.map(|len| LineItem {
-+                len,
-+                indent: 0,
-+                prefix_hang: px(0.),
-+                wrapped_lines: smallvec::smallvec![0..len],
-+            }), &());
-+            debug_assert_eq!(tree.summary().buffer_rows, new_end_row - new_start_row + 1);
-+            tree
-         } else {
+-        } else {
 -            new_start_row..new_end_row + 1
 -        };
 -        // line not contains `\n`.
@@ -93,6 +78,49 @@
 -                            wrapped_lines.push(prev_boundary_ix..boundary.ix);
 -                            prev_boundary_ix = boundary.ix;
 -                            indent_chars = boundary.next_indent;
++                loop {
++                    if let Some((at, _)) = boundaries.next() {
++                        let len = pending + at - from;
++                        pending = 0;
++                        from = at + 1;
++                        return Some(len);
++                    }
++                    pending += chunk.len() - from;
++                    match chunks.next() {
++                        Some(next) => {
++                            chunk = next;
++                            boundaries = chunk.match_indices('\n');
++                            from = 0;
++                        }
++                        None => {
++                            // Even a trailing LF has a final source row.
++                            finished = true;
++                            return Some(std::mem::take(&mut pending));
+                         }
+                     }
+-                    WrappingIndent::None => {
+-                        // The first visual line keeps the line's leading indentation, so it is
+-                        // wrapped as is.
+-                        let boundaries = wrap_line(&line_str, wrap_width);
+-                        if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
+-                            wrapped_lines.push(prev_boundary_ix..first_ix);
+-                            prev_boundary_ix = first_ix;
+-
+-                            for boundary in wrap_line(&line_str[first_ix..], wrap_width) {
+-                                let ix = first_ix + boundary.ix;
+-                                wrapped_lines.push(prev_boundary_ix..ix);
+-                                prev_boundary_ix = ix;
++                }
++            });
++            let tree = SumTree::from_iter(lengths.map(|len| LineItem {
++                len,
++                indent: 0,
++                prefix_hang: px(0.),
++                wrapped_lines: smallvec::smallvec![0..len],
++            }), &());
++            debug_assert_eq!(tree.summary().buffer_rows, new_end_row - new_start_row + 1);
++            tree
++        } else {
 +            let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
 +            // line not contains `\n`.
 +            for row in new_start_row..=new_end_row {
@@ -116,20 +144,7 @@
 +                                prev_boundary_ix = boundary.ix;
 +                                indent_chars = boundary.next_indent;
 +                            }
-                         }
--                    }
--                    WrappingIndent::None => {
--                        // The first visual line keeps the line's leading indentation, so it is
--                        // wrapped as is.
--                        let boundaries = wrap_line(&line_str, wrap_width);
--                        if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
--                            wrapped_lines.push(prev_boundary_ix..first_ix);
--                            prev_boundary_ix = first_ix;
--
--                            for boundary in wrap_line(&line_str[first_ix..], wrap_width) {
--                                let ix = first_ix + boundary.ix;
--                                wrapped_lines.push(prev_boundary_ix..ix);
--                                prev_boundary_ix = ix;
++                        }
 +                        WrappingIndent::None => {
 +                            // The first visual line keeps the line's leading indentation, so it is
 +                            // wrapped as is.
@@ -189,7 +204,7 @@
              // Untouched rows after the edit
              new_tree.append(cursor.suffix(), &());
              drop(cursor);
-@@ -1505,6 +1506,21 @@
+@@ -1505,6 +1521,21 @@
          assert_eq!(lookups() - before, 0);
          assert_rows(&wrapper);
 
