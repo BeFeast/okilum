@@ -1,0 +1,35 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1590,11 +1590,15 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) -> bool {
+-        let value = self.text.to_string();
++        // Bounds and UTF-8 boundaries are indexed by the rope. Grouped
++        // source edits must not flatten a multi-MB document just to check
++        // a few offsets, or again to clip the final selection.
++        let value = &self.text;
+         let mut end = 0;
+         for (range, _) in edits {
+             if range.start < end
+                 || range.start > range.end
++                || range.end > value.len()
+                 || !value.is_char_boundary(range.start)
+                 || !value.is_char_boundary(range.end)
+             {
+@@ -1629,14 +1633,7 @@
+         self.exact_replacement = false;
+         self.pending_selection_after = None;
+         self.undo_manager.end_group();
+-        let text = self.text.to_string();
+-        let clip = |offset: usize| {
+-            let mut offset = offset.min(text.len());
+-            while !text.is_char_boundary(offset) {
+-                offset -= 1;
+-            }
+-            offset
+-        };
++        let clip = |offset| self.text.clip_offset(offset, Bias::Left);
+         self.selected_range = (clip(after.start)..clip(after.end)).into();
+         self.selection_reversed = false;
+         self.update_preferred_column();
