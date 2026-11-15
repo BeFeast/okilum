@@ -59,6 +59,15 @@ fn focus(reader: &Entity<Reader>, visual: &mut VisualTestContext, path: &str) {
     });
 }
 
+fn teardown(reader: Entity<Reader>, visual: &mut VisualTestContext, directory: tempfile::TempDir) {
+    // A selected image owns a real filesystem watcher. Release the Reader and
+    // drain its task cancellation before deleting the watched fixture files.
+    drop(reader);
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    directory.close().unwrap();
+}
+
 #[gpui::test]
 fn issue2988_return_opens_focused_attachments_and_retains_note_folder_rename(
     cx: &mut TestAppContext,
@@ -160,6 +169,7 @@ fn issue2988_return_opens_focused_attachments_and_retains_note_folder_rename(
         std::fs::read_to_string(directory.path().join("vault/Start.md")).unwrap(),
         "# Start"
     );
+    teardown(reader, visual, directory);
 }
 
 #[gpui::test]
@@ -252,4 +262,5 @@ fn issue2988_system_quick_look_refusal_falls_back_and_arrows_preview_without_nav
             .unwrap()
         );
     }
+    teardown(reader, visual, directory);
 }
