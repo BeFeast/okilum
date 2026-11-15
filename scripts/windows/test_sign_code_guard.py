@@ -24,7 +24,7 @@ def page(*runs):
 
 
 class GuardTests(unittest.TestCase):
-    def run_helper(self, responses, allowlist=None):
+    def run_helper(self, responses, allowlist=None, otp='invalid-otp\n', login=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / '.config/forgejo').mkdir(parents=True)
@@ -69,8 +69,12 @@ print(json.dumps(response))
 ''')
             curl.chmod(0o755)
             ssh = root / 'ssh'
-            ssh.write_text('#!/bin/sh\necho UNEXPECTED-LOGIN >&2\nexit 92\n')
+            ssh.write_text('#!/bin/sh\nexit 0\n' if login else
+                           '#!/bin/sh\necho UNEXPECTED-LOGIN >&2\nexit 92\n')
             ssh.chmod(0o755)
+            sleep = root / 'sleep'
+            sleep.write_text('#!/bin/sh\nexit 0\n')
+            sleep.chmod(0o755)
             env = dict(os.environ, HOME=str(root), XDG_RUNTIME_DIR=str(root),
                        PATH=str(root) + os.pathsep + os.environ['PATH'])
             env.pop('OKILUM_SIGN_CANCEL_ALLOWLIST', None)
@@ -78,7 +82,7 @@ print(json.dumps(response))
                 env['OKILUM_SIGN_CANCEL_ALLOWLIST'] = json.dumps(allowlist)
             # Scheduling/startup watchdog only; guard timing uses the clock above.
             result = subprocess.run(['bash', str(HELPER), SHA, '14766'], env=env,
-                                    input='invalid-otp\n', text=True, capture_output=True, timeout=60)
+                                    input=otp, text=True, capture_output=True, timeout=60)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             self.assertNotIn('UNEXPECTED-LOGIN', result.stderr)
             return result, calls.splitlines()
@@ -97,6 +101,29 @@ print(json.dumps(response))
         self.assertEqual(result.returncode, 2)
         self.assertIn('code must be 6 digits', result.stdout)
         self.assertTrue(all(c.startswith('GET ') for c in calls))
+
+    def test_protected_input_without_newline_polls_exact_dispatch(self):
+        run = dict(id=456, index_in_repo=321, status='success', html_url='https://example.invalid/run/321')
+        result, calls = self.run_helper(
+            [page(), page(), dict(data='operator@example.invalid'), dict(id=456),
+             run, dict(build=14767)], otp='123456', login=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('published 0.1.14767', result.stdout)
+        self.assertEqual(sum('/dispatches' in c for c in calls), 1)
+        self.assertIn('GET https://git.oklabs.uk/api/v1/repos/BeFeast/okilum/actions/runs/456', calls)
+        self.assertFalse(any('/actions/runs?' in c and 'page=1' not in c for c in calls))
+        self.assertNotIn('123456', result.stdout + result.stderr)
+
+    def test_transient_status_and_descriptor_failures_do_not_redispatch(self):
+        run = dict(id=456, index_in_repo=321, status='success', html_url='https://example.invalid/run/321')
+        result, calls = self.run_helper(
+            [page(), page(), dict(data='operator@example.invalid'), dict(id=456),
+             'timeout', 'timeout', run, dict(build=14767)], otp='123456\n', login=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('status temporarily unavailable for run 456', result.stdout)
+        self.assertEqual(sum('/dispatches' in c for c in calls), 1)
+        self.assertEqual(sum(c.endswith('/actions/runs/456') for c in calls), 2)
+        self.assertNotIn('123456', result.stdout + result.stderr)
 
     def test_empty_allowlist_stops_on_active_run(self):
         self.assert_stopped([page(RUN)])

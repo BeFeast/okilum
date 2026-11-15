@@ -142,7 +142,13 @@ except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as
     sys.exit(1)
 CANCEL_GUARD
 
-if [ -t 0 ]; then read -rsp 'SimplySign code: ' code; echo; else read -r code; fi
+if [ -t 0 ]; then
+    read -rsp 'SimplySign code: ' code; echo
+else
+    # Protected-input files need not end in a newline.
+    code=""
+    read -r code || [ -n "$code" ]
+fi
 [[ "$code" =~ ^[0-9]{6}$ ]] || { say "the code must be 6 digits; nothing was sent"; exit 2; }
 email=$(api "$A/actions/variables/OKILUM_CERTUM_EMAIL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"])')
 [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "OKILUM_CERTUM_EMAIL is not a plain e-mail address" >&2; exit 1; }
@@ -161,20 +167,24 @@ fi
 unset code
 say "session open on the signer for 20 minutes; dry-sign of the test PE succeeded"
 
-since=$(date -u +%Y-%m-%dT%H:%M:%S)
-api -o /dev/null -X POST -d "{\"ref\":\"main\",\"inputs\":{\"source\":\"$SRC\",\"resign_build\":\"$BUILD\"}}" \
-    "$A/actions/workflows/windows-diagnostic.yml/dispatches"
+dispatch=$(api -X POST -d "{\"ref\":\"main\",\"return_run_info\":true,\"inputs\":{\"source\":\"$SRC\",\"resign_build\":\"$BUILD\"}}" \
+    "$A/actions/workflows/windows-diagnostic.yml/dispatches")
+run_id=$(printf '%s' "$dispatch" | python3 -c 'import json,sys; r=json.load(sys.stdin)["id"]; assert type(r) is int and r>0; print(r)')
 say "dispatched re-sign of $BUILD (source ${SRC:0:8})"
-desc() { curl -s -A curl "$CDN/releases/$SRC/windows.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])' 2>/dev/null; }
+desc() { curl -fsS --connect-timeout 5 --max-time 15 -A curl "$CDN/releases/$SRC/windows.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])' 2>/dev/null; }
 run=""
 for _ in $(seq 90); do   # Forgejo API and CDN only: nothing here touches the Certum session
     sleep 20
-    run=$(api "$A/actions/runs?limit=20" | python3 -c "
+    # Poll this dispatch directly. Forgejo 17's run-list endpoint without page=1
+    # loads the entire history even when limit=20 is supplied (#2977).
+    if ! run=$(api --connect-timeout 5 --max-time 15 "$A/actions/runs/$run_id" | python3 -c '
 import json,sys
-for x in json.load(sys.stdin)['workflow_runs']:
-    if x['workflow_id']=='windows-diagnostic.yml' and x['trigger_event']=='workflow_dispatch' and x['created']>='$since':
-        print(x['index_in_repo'], x['status'], x['html_url']); break")
-    b=$(desc)
+x=json.load(sys.stdin)
+print(x["index_in_repo"], x["status"], x["html_url"])'); then
+        say "status temporarily unavailable for run $run_id; continuing without another dispatch"
+        run=""
+    fi
+    b=$(desc) || b=""
     if [ -n "$b" ] && [ "$b" -gt "$BUILD" ]; then say "published 0.1.$b ($run)"; echo "$b"; exit 0; fi
     case "$run" in *" failure "*|*" cancelled "*) break ;; esac
 done
