@@ -1,46 +1,56 @@
 //! Tree-owned file preview. Ordinary activation retains its separate navigation behavior.
 use super::*;
 
-#[cfg(any(not(target_os = "macos"), test))]
 #[path = "reader_quick_look.rs"]
 mod readonly;
+
+#[cfg(test)]
+type NativePresenter = Rc<dyn Fn(&Path) -> anyhow::Result<bool>>;
 
 #[derive(Default)]
 pub(super) struct Session {
     active: bool,
-    #[cfg(any(not(target_os = "macos"), test))]
     preview: Option<(String, Entity<readonly::Preview>)>,
+    #[cfg(test)]
+    native_presenter: Option<NativePresenter>,
     #[cfg(all(target_os = "macos", not(test)))]
     panel: Option<native::Panel>,
 }
 impl Session {
-    // Only the native macOS Quick Look panel calls this.
-    #[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
-    fn show(&mut self, path: &Path) -> anyhow::Result<()> {
+    /// A failed system provider must not prevent keyboard-only browsing. Keep
+    /// the bounded reader preview for the rest of that browsing session.
+    fn show_native(&mut self, path: &Path) -> anyhow::Result<bool> {
+        if self.preview.is_some() {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if let Some(present) = &self.native_presenter {
+            return present(path);
+        }
         #[cfg(all(target_os = "macos", not(test)))]
         {
             if self.panel.is_none() {
                 self.panel = Some(native::Panel::new()?);
             }
             self.panel.as_ref().unwrap().show(path)?;
+            Ok(true)
         }
         #[cfg(any(not(target_os = "macos"), test))]
-        let _ = path;
-        self.active = true;
-        Ok(())
+        {
+            let _ = path;
+            Ok(false)
+        }
     }
     pub(super) fn is_open(&self) -> bool {
         #[cfg(all(target_os = "macos", not(test)))]
-        return self.active && self.panel.as_ref().is_some_and(native::Panel::is_open);
+        return self.active
+            && (self.preview.is_some() || self.panel.as_ref().is_some_and(native::Panel::is_open));
         #[cfg(any(not(target_os = "macos"), test))]
         self.active
     }
     pub(super) fn close(&mut self) {
         self.active = false;
-        #[cfg(any(not(target_os = "macos"), test))]
-        {
-            self.preview = None;
-        }
+        self.preview = None;
         #[cfg(all(target_os = "macos", not(test)))]
         {
             self.panel = None;
@@ -49,34 +59,21 @@ impl Session {
 }
 impl Reader {
     /// Read-only center surface; the document, editor and navigation stay owned
-    /// by their existing controllers. macOS retains its native Quick Look panel.
+    /// by their existing controllers. macOS prefers its native Quick Look panel
+    /// and uses this surface if the system cannot supply a controller.
     /// `render_tree_quick_look` draws a preview in place of the document.
     pub(super) fn tree_quick_look_shown(&self) -> bool {
-        #[cfg(any(not(target_os = "macos"), test))]
-        {
-            self.tree_preview.preview.is_some()
-        }
-        #[cfg(all(target_os = "macos", not(test)))]
-        {
-            false
-        }
+        self.tree_preview.preview.is_some()
     }
 
     pub(super) fn render_tree_quick_look(&self) -> Option<AnyElement> {
-        #[cfg(any(not(target_os = "macos"), test))]
-        {
-            self.tree_preview.preview.as_ref().map(|(_, preview)| {
-                div()
-                    .size_full()
-                    .min_h_0()
-                    .child(preview.clone())
-                    .into_any_element()
-            })
-        }
-        #[cfg(all(target_os = "macos", not(test)))]
-        {
-            None
-        }
+        self.tree_preview.preview.as_ref().map(|(_, preview)| {
+            div()
+                .size_full()
+                .min_h_0()
+                .child(preview.clone())
+                .into_any_element()
+        })
     }
 
     pub(super) fn toggle_tree_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -112,16 +109,26 @@ impl Reader {
         }
         let result = reader_files::checked_path(&self.vault_root, &row.path).and_then(|path| {
             anyhow::ensure!(path.is_file(), "Choose a file to preview");
-            #[cfg(all(target_os = "macos", not(test)))]
-            self.tree_preview.show(&path)?;
-            #[cfg(any(not(target_os = "macos"), test))]
-            {
+            let native = match self.tree_preview.show_native(&path) {
+                Ok(shown) => shown,
+                Err(error) => {
+                    diagnostic_error!(
+                        "System Quick Look unavailable; using reader preview: {error:#}"
+                    );
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    {
+                        self.tree_preview.panel = None;
+                    }
+                    false
+                }
+            };
+            if !native {
                 let root = self.vault_root.clone();
                 let rel = row.path.clone();
                 let preview = cx.new(|cx| readonly::Preview::new(root, rel, path, window, cx));
                 self.tree_preview.preview = Some((row.path.clone(), preview));
-                self.tree_preview.active = true;
             }
+            self.tree_preview.active = true;
             Ok(())
         });
         if let Err(error) = result {
@@ -176,6 +183,10 @@ mod native {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reader_tree_preview/keyboard_tests.rs"]
+mod keyboard_tests;
 
 #[cfg(test)]
 mod tests {

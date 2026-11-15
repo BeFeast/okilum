@@ -646,8 +646,9 @@ and verify every source is unchanged; inspect the actual system Trash.
 ### Inline rename and background application (#471)
 
 Rename / move focuses an input in the sidebar row, containing the vault-relative
-path. F2 or Enter on a selected note opens the same input; Space opens the note.
-Folder Enter still expands/collapses it. Enter submits a destination such as
+path. F2 or Enter on a selected note or folder opens the same input; Space opens
+the note or toggles the folder. Enter on an attachment opens its viewer (#2988),
+since attachment rename is not supported by this operation. Enter submits a destination such as
 `Projects/Meeting.md`; Escape cancels without writing. Existing destinations and
 paths outside the vault remain errors shown beside the input. The explicit
 New note from template action also uses the inline creation row.

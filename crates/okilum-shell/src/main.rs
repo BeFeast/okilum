@@ -455,6 +455,7 @@ actions!(
         TreeRight,
         TreeLeft,
         TreeOpen,
+        TreeReturn,
         TreeExpandSubtree,
         TreeCollapseSubtree,
         CollapseFolders,
@@ -843,7 +844,7 @@ fn bind_keys(cx: &mut App) {
         #[cfg(not(any(unix, windows)))]
         KeyBinding::new("enter", TreeOpen, Some("ReaderTree && !Input")),
         #[cfg(any(unix, windows))]
-        KeyBinding::new("enter", RenameTreeNote, Some("ReaderTree && !Input")),
+        KeyBinding::new("enter", TreeReturn, Some("ReaderTree && !Input")),
         KeyBinding::new("space", TreePreview, Some("ReaderTree && !Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-down", TreeOpen, Some(TREE_KEYS)),
@@ -4012,8 +4013,26 @@ impl Reader {
         cx.notify();
     }
 
+    fn tree_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Return retains inline rename for notes/folders. Attachments cannot
+        // be renamed here, so activate their viewer instead of refusing it.
+        let attachment = self.tree.selected_paths().len() <= 1
+            && self.tree.cursor_index().is_some_and(|index| {
+                self.tree.rows[index].kind == okilum_core::vault::EntryKind::Attachment
+            });
+        if attachment {
+            self.tree_key(TreeKey::Open, window, cx);
+        } else {
+            #[cfg(any(unix, windows))]
+            self.rename_tree_note(window, cx);
+            #[cfg(not(any(unix, windows)))]
+            self.tree_key(TreeKey::Open, window, cx);
+        }
+    }
+
     fn tree_key(&mut self, key: TreeKey, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.clear_selection();
+        let previous_cursor = self.tree.cursor.clone();
         let lazy_folder =
             if self.single_file && matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
                 self.tree.cursor_folder()
@@ -4039,7 +4058,7 @@ impl Reader {
                 }
             }
         }
-        if matches!(key, TreeKey::Down | TreeKey::Up) {
+        if key != TreeKey::Open && self.tree.cursor != previous_cursor {
             self.follow_tree_preview(window, cx);
         }
         if let Some(folder) = lazy_folder {
@@ -8649,6 +8668,7 @@ impl Reader {
             )
             .on_action(cx.listener(|this, _: &TreeLeft, w, cx| this.tree_key(TreeKey::Left, w, cx)))
             .on_action(cx.listener(|this, _: &TreeOpen, w, cx| this.tree_key(TreeKey::Open, w, cx)))
+            .on_action(cx.listener(|this, _: &TreeReturn, w, cx| this.tree_return(w, cx)))
             .on_action(cx.listener(|this, _: &TreeExpandSubtree, w, cx| {
                 this.tree_key(TreeKey::ExpandSubtree, w, cx)
             }))
