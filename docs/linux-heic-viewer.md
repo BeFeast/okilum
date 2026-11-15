@@ -17,6 +17,13 @@ GPUI patch. Ubuntu 22.04 libheif links its HEVC decoder directly, avoiding
 host codec/plugin discovery. Bundled sibling executables take precedence
 over PATH. The packaged tools have linuxdeploy's relative library paths.
 
+Ubuntu 24.04 hosted test jobs explicitly install `libheif-plugin-libde265`
+in addition to `libheif-examples`: their `--no-install-recommends` dependency
+installation otherwise omits the HEVC decoder. The real HEVC control caught
+this as `Unsupported codec` in initial fast run 43728820827; it remains a
+failing decoder result, not a skipped or weakened control. Ubuntu 22.04's
+AppImage producer and reader image retain their built-in decoder package set.
+
 The build requires bundled `libheif.so.1` and `libde265.so.0`, then executes
 real HEVC/pixel/transform controls through the staged binaries. The extracted
 artifact's dependency audit includes both executables and repeats those

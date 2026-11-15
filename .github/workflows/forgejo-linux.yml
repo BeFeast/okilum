@@ -39,7 +39,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv libheif-examples \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv libheif-examples libheif-plugin-libde265 \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
       - name: Verify pinned toolchain
