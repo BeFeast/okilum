@@ -11,12 +11,14 @@ exclude = ["vendor", "inbox"]
 comrak = { path = "vendor/comrak-0.47.0" }
 # Pinned upstream plus CREATE_NO_WINDOW for the delta-patch helper (#2607).
 velopack = { path = "vendor/velopack-1.2.161" }
-# Oleg 2026-11-12: DirectX atlas-upload exception; GPUI core stays pristine.
+# Oleg 2026-11-12: DirectX atlas-upload exception.
 gpui-pre-windows = { path = "vendor/gpui-pre-windows-0.3.3" }
 # Oleg 2026-11-13 (#2825): no tab-group query without tabbing; Metal library and
 # pipelines built off the first window. scripts/gpui-pre-apple-setup.py verifies both.
 gpui-pre-macos = { path = "vendor/gpui-pre-macos-0.3.3" }
 gpui-pre-apple = { path = "vendor/gpui-pre-apple-0.3.3" }
+# All glyph fields are value types: Copy enables bulk Vec cloning (#2803).
+gpui-pre = { path = "vendor/gpui-pre-0.3.3" }
 
 [workspace.dependencies]
 okilum-core = { path = "crates/okilum-core", default-features = false }

@@ -32,6 +32,7 @@ python3 "$ROOT/scripts/velopack-setup.py" "$@"
 python3 "$ROOT/scripts/gpui-pre-windows-setup.py" "$@"
 # Oleg 2026-11-13 (#2825): cold first-window macOS patches, checksum-pinned.
 python3 "$ROOT/scripts/gpui-pre-apple-setup.py" "$@"
+python3 "$ROOT/scripts/gpui-pre-setup.py" "$@"
 
 if [ ! -d "$VENDOR/.git" ]; then
     if [ "$verify_only" = 1 ]; then

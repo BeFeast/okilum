@@ -530,6 +530,27 @@ mod tests {
     }
 
     #[test]
+    fn edit2803_bulk_glyph_copy_preserves_geometry_and_independent_storage() {
+        fn bulk_copy<T: Copy>(values: &[T]) -> Vec<T> {
+            values.to_vec()
+        }
+        let (one, seven) = native_geometry_batches();
+        for source in [one, seven] {
+            let original = copy_layout(&source);
+            let mut copied = copy_layout(&source);
+            for (to, from) in copied.runs.iter_mut().zip(&source.runs) {
+                to.glyphs = bulk_copy(&from.glyphs);
+                assert_ne!(to.glyphs.as_ptr(), from.glyphs.as_ptr());
+            }
+            assert!(native_ascii::exact_geometry(&copied, &source));
+            copied.runs[0].glyphs[0].position.x += px(1.);
+            copied.runs[0].glyphs[0].index += 1;
+            assert!(!native_ascii::exact_geometry(&copied, &source));
+            assert!(native_ascii::exact_geometry(&source, &original));
+        }
+    }
+
+    #[test]
     fn edit2803_native_geometry_accepts_same_font_run_batches() {
         let (one, seven) = native_geometry_batches();
         assert_eq!((one.runs.len(), seven.runs.len()), (1, 7));
@@ -592,7 +613,7 @@ mod tests {
                 line.runs[3].glyphs.pop();
             }),
             ("duplicated glyph", |line| {
-                let glyph = line.runs[3].glyphs[0].clone();
+                let glyph = line.runs[3].glyphs[0];
                 line.runs[3].glyphs.insert(1, glyph);
             }),
         ];

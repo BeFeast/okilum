@@ -179,7 +179,7 @@ impl LargeLine {
             let glyphs = layout
                 .runs
                 .iter()
-                .flat_map(|r| r.glyphs.iter().cloned())
+                .flat_map(|r| r.glyphs.iter().copied())
                 .collect();
             layout.runs = vec![ShapedRun {
                 font_id: self.font,
@@ -195,7 +195,7 @@ impl LargeLine {
             .flat_map(|run| &run.glyphs)
             .map(|glyph| ShapedGlyph {
                 index: glyph.index + left,
-                ..glyph.clone()
+                ..*glyph
             })
             .collect();
         let count = inserted.len();
