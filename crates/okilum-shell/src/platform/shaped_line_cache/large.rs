@@ -204,11 +204,17 @@ impl LargeLine {
             glyphs.reserve_exact(grow + GLYPH_SLACK);
         }
         glyphs.splice(from..to, inserted).for_each(drop);
-        for glyph in &mut glyphs[from + count..] {
-            glyph.index = new_right + (glyph.index - right);
-        }
         layout.len = text.len();
-        Arc::make_mut(self.native.as_mut()?).apply_edit(edit, layout, &middle_native);
+        Arc::make_mut(self.native.as_mut()?).apply_edit(
+            edit,
+            layout,
+            &middle_native,
+            native_ascii::GlyphSuffix {
+                first: from + count,
+                old_start: right,
+                new_start: new_right,
+            },
+        );
         // Every test edit is checked against the complete derivation.
         #[cfg(test)]
         self.native.as_ref()?.assert_matches_full_replay(
