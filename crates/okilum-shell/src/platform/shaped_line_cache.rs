@@ -1061,6 +1061,9 @@ mod tests {
         // including ASCII controls and multi-byte Unicode. Candidate checking
         // operates on bytes, without slicing inside a UTF-8 character.
         for inserted in ["\t", "ש", "\u{7f}"] {
+            let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+            cache.layout_line(&text, px(16.), &run(&text));
+            assert!(cache.large.lock().unwrap().entries.back().unwrap().incremental);
             let mut changed = text.clone();
             changed.insert_str(changed.len() / 2, inserted);
             let before = cache.full_large_shapes.load(Ordering::Relaxed);
