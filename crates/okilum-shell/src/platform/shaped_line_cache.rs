@@ -317,7 +317,6 @@ impl PlatformTextSystem for ShapedLineCache {
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         let _timing = text_diagnostics::time(Work::LineLayout);
         if text.len() >= large::CACHE_MIN_TEXT {
-            let eligible = large::eligible(text, runs);
             let mut lines = self.large.lock().unwrap_or_else(|e| e.into_inner());
             if !text.is_ascii() {
                 lines.retire_incremental_for(text);
@@ -326,11 +325,7 @@ impl PlatformTextSystem for ShapedLineCache {
                 drop(lines);
                 return exact.copy_layout();
             }
-            let previous = if eligible {
-                lines.take_candidate(text, font_size, runs)
-            } else {
-                None
-            };
+            let previous = lines.take_candidate(text, font_size, runs);
             drop(lines);
             let reshaped = previous.and_then(|(previous, edit)| {
                 previous.reshape(text, font_size, runs, edit, self.shaper.as_ref())
@@ -1020,6 +1015,61 @@ mod tests {
                 "an unchanged large row must not reach the native shaper"
             );
             assert!(cache.large.lock().unwrap().bytes <= large::MAX_BYTES);
+        }
+    }
+
+    #[test]
+    fn edit2803_printability_classification_touches_only_changed_bytes() {
+        let shaper = Arc::new(CountingShaper::default());
+        let cache = ShapedLineCache::new(shaper.clone(), SHAPED_LINES_MAX_BYTES);
+        let mut text = "{\"name\":\"an item with a description\"},".repeat(8192);
+        let classified = || large::CLASSIFIED_BYTES.with(|count| count.get());
+        let before = classified();
+        cache.layout_line(&text, px(16.), &run(&text));
+        assert!(
+            classified() - before >= text.len(),
+            "positive control: admission classifies the complete source"
+        );
+        assert!(
+            cache
+                .large
+                .lock()
+                .unwrap()
+                .entries
+                .back()
+                .unwrap()
+                .incremental
+        );
+        let full_shapes = cache.full_large_shapes.load(Ordering::Relaxed);
+        for at in [0, text.len() / 2, text.len()] {
+            for replacement in ["typed words", "", "[,] "] {
+                let end = (at + 2).min(text.len());
+                text.replace_range(at..end, replacement);
+                let before = classified();
+                let actual = cache.layout_line(&text, px(16.), &run(&text));
+                let visited = classified() - before;
+                assert!(
+                    visited <= replacement.len(),
+                    "printability classifier visited {visited} bytes for a {}-byte edit in a {}-byte row",
+                    replacement.len(), text.len()
+                );
+                assert_eq!(actual.width, px(text.len() as f32));
+            }
+        }
+        assert_eq!(cache.full_large_shapes.load(Ordering::Relaxed), full_shapes);
+        // Invalid inserted bytes must still take the complete native path,
+        // including ASCII controls and multi-byte Unicode. Candidate checking
+        // operates on bytes, without slicing inside a UTF-8 character.
+        for inserted in ["\t", "ש", "\u{7f}"] {
+            let mut changed = text.clone();
+            changed.insert_str(changed.len() / 2, inserted);
+            let before = cache.full_large_shapes.load(Ordering::Relaxed);
+            let actual = cache.layout_line(&changed, px(16.), &run(&changed));
+            assert_eq!(cache.full_large_shapes.load(Ordering::Relaxed), before + 1);
+            assert!(same(
+                &actual,
+                &shaper.layout_line(&changed, px(16.), &run(&changed))
+            ));
         }
     }
 

@@ -47,6 +47,15 @@ Caret, selection and hit lookups on rows of 64 KiB or more of ASCII bisect the
 glyphs instead of scanning them from the start of the line; GPUI's answers are
 unchanged.
 
+Printable-ASCII admission also stays local after an edit: only inserted/replaced
+bytes are classified. The matching retained line already proves the unchanged
+prefix and suffix printable, so checking the entire row again is unnecessary.
+Font/run and size checks still apply before an incremental candidate is used;
+inserted control or Unicode bytes take the native path. A separate byte counter
+checks that classification work is bounded by the edit, with full admission as
+its positive control. The owned whole-line glyph copy and native coordinate
+replay remain size-dependent costs; this optimization does not remove them.
+
 Latency diagnostics observe a second frame callback after the mutation frame's
 draw, rate-limit detailed observations above 32 ms to one per second, and record
 periodic aggregates. They include process-wide Reader render counts and contain
