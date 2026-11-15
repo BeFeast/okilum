@@ -79,6 +79,54 @@ pub(super) fn start() {
         okilum_updater_start()
     }
 }
+/// #2931: Sparkle replaces the bundle in place while the launchd Sync helper
+/// keeps running its old image. Once this app runs, restart a helper that
+/// provably still runs a replaced image (see `restart_replaced_helper`), off
+/// the launch path. Failures are logged and never affect the app or updater.
+#[cfg(not(test))]
+pub(super) fn refresh_sync_helper() {
+    use okilum_sync_controller::sidecar::macos::replaced::{Kick, Outcome};
+    let spawned = std::thread::Builder::new()
+        .name("sync-helper-refresh".into())
+        .spawn(|| {
+            // Keep the cold launch free of launchd, process and signature reads.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            match crate::reader_settings_sync::restart_replaced_helper() {
+                Ok(Outcome::Restarted {
+                    old,
+                    signalled,
+                    kick,
+                }) => {
+                    log::warn!(
+                        "Sync helper pid {} (started {}) ran a replaced app image; {}",
+                        old.pid,
+                        old.started.0,
+                        if signalled {
+                            "sent SIGTERM so launchd restarts it from this bundle"
+                        } else {
+                            "it exited before SIGTERM"
+                        }
+                    );
+                    if kick != Kick::Started {
+                        log::warn!("Sync helper kickstart after update: {kick:?}; launchd restarts it by itself");
+                    }
+                }
+                Ok(Outcome::LeftRunning { old }) => log::warn!(
+                    "Sync helper pid {} still runs a replaced app image after SIGTERM; left running, no SIGKILL",
+                    old.pid
+                ),
+                Ok(Outcome::Unknown(reason)) => {
+                    log::warn!("Sync helper image after update not established; left running: {reason}")
+                }
+                Ok(Outcome::NotRunning | Outcome::Current) => {}
+                Err(error) => log::warn!("Sync helper refresh after update failed: {error:#}"),
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("Sync helper refresh after update not started: {error}");
+    }
+}
+
 pub(super) fn available() -> bool {
     unsafe { okilum_updater_available() }
 }

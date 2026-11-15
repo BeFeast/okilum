@@ -218,8 +218,17 @@ pub(super) fn repair_or_restart(controller: &Controller) -> anyhow::Result<()> {
     restart_managed()
 }
 
+/// The enabled account Sync binding, after the same checks every native
+/// restart needs: no isolated profile, no pending lifecycle operation, and this
+/// running app is the signed bundle the binding names.
 #[cfg(target_os = "macos")]
-pub(super) fn restart_managed() -> anyhow::Result<()> {
+struct Managed {
+    state: PathBuf,
+    binding: okilum_sync_controller::sidecar::Binding,
+}
+
+#[cfg(target_os = "macos")]
+fn verified_managed() -> anyhow::Result<Managed> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
         macos::{
@@ -263,21 +272,33 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
         NativeSignature,
     )?;
     bundle.verify(&binding)?;
-    // Older installed helpers have no SIGTERM cleanup. Stop only the
-    // authenticated account runtime before replacing that helper, so its
-    // surviving child cannot permanently block the new supervisor lease.
+    Ok(Managed { state, binding })
+}
+
+/// Older installed helpers have no SIGTERM cleanup. Stop only the
+/// authenticated account runtime before replacing that helper, so its
+/// surviving child cannot permanently block the new supervisor lease.
+#[cfg(target_os = "macos")]
+fn stop_managed_runtime(managed: &Managed) -> anyhow::Result<()> {
     if let Some(config) =
-        okilum_sync_controller::sidecar::discovery::managed_configuration_path(&state)?
+        okilum_sync_controller::sidecar::discovery::managed_configuration_path(&managed.state)?
     {
         let discovered = okilum_sync_controller::daemon::discover(&[config]);
         for candidate in discovered.candidates {
             candidate
                 .identity
                 .connect()?
-                .shutdown(&binding.device_identity)?;
+                .shutdown(&managed.binding.device_identity)?;
         }
     }
-    let target = format!("gui/{}/com.befeast.okilum.sync", binding.owner);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn restart_managed() -> anyhow::Result<()> {
+    let managed = verified_managed()?;
+    stop_managed_runtime(&managed)?;
+    let target = format!("gui/{}/com.befeast.okilum.sync", managed.binding.owner);
     // TERM lets the new helper flush its owned tree. -k would SIGKILL it and
     // leave an orphan runtime, which the lifetime lease correctly refuses.
     let stopped = bounded_request(
@@ -292,6 +313,43 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
         anyhow::ensure!(started != Some(false), "Sync helper restart request failed");
     }
     Ok(())
+}
+
+/// #2931: after an in-app update (Sparkle) or any other in-place replacement
+/// of this bundle, the launchd helper may still run the replaced bundle's
+/// image. Restart only that exact process, through the same SIGTERM path as
+/// `restart_managed`, so launchd starts the helper from this bundle. Reading
+/// only, unless the helper provably runs a replaced image.
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn restart_replaced_helper(
+) -> anyhow::Result<okilum_sync_controller::sidecar::macos::replaced::Outcome> {
+    use anyhow::Context as _;
+    use okilum_sync_controller::sidecar::macos::replaced::{
+        restart_replaced, Launchd, Outcome, EXIT_WAIT, HELPER_NAME,
+    };
+    if !managed_enabled() {
+        return Ok(Outcome::NotRunning);
+    }
+    let own = std::env::current_exe()?.canonicalize()?;
+    let current = own
+        .parent()
+        .context("app code directory unavailable")?
+        .join(HELPER_NAME);
+    let uid = rustix::process::geteuid().as_raw();
+    let mut launchd = Launchd {
+        uid,
+        current: current.clone(),
+    };
+    restart_replaced(&mut launchd, uid, EXIT_WAIT, || {
+        // Only now, with a provably replaced helper: the full lifecycle checks.
+        let managed = verified_managed()?;
+        anyhow::ensure!(
+            Path::new(&managed.binding.supervisor) == current
+                && managed.binding.owner == uid.to_string(),
+            "Sync binding names another helper"
+        );
+        stop_managed_runtime(&managed)
+    })
 }
 
 /// launchctl can hang after the service has already started. Bound only our

@@ -257,6 +257,8 @@ pub(crate) fn install(_cx: &mut App) {
     #[cfg(target_os = "macos")]
     {
         macos::start();
+        #[cfg(not(test))]
+        macos::refresh_sync_helper();
         _cx.on_action(|_: &AboutOkilum, cx| crate::about::show_from_menu(cx));
         // Explicit update entry overrides the remembered Settings pane (#1496).
         _cx.on_action(|_: &CheckForUpdates, cx| {

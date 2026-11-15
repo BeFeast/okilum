@@ -1580,3 +1580,5 @@ mod ignore_editor;
 
 #[path = "reader_settings_sync/health.rs"]
 mod health;
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) use health::restart_replaced_helper;
