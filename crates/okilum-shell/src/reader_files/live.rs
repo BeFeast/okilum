@@ -149,8 +149,8 @@ impl Reader {
         if let Some(cache) = &preview.image_cache {
             cache.update(cx, |cache, cx| cache.clear(window, cx));
         }
-        #[cfg(target_os = "macos")]
-        cx.remove_asset::<HeicImage>(&preview.path);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        cx.remove_asset::<heic::HeicImage>(&preview.path);
         match fresh {
             Ok(fresh) => {
                 preview.path = fresh.path;
@@ -417,6 +417,49 @@ mod native_tests {
             );
         });
         assert_eq!(std::fs::read(path).unwrap(), one);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[gpui::test]
+    fn issue2984_native_heic_preview_reports_errors_and_refreshes_assets(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.HEIF");
+        let first = include_bytes!("../../../okilum-core/tests/fixtures/viewers/images/still.heic");
+        let rotated =
+            include_bytes!("../../../okilum-core/tests/fixtures/viewers/images/rotated.heic");
+        std::fs::write(&path, first).unwrap();
+        let (reader, visual) = reader_window(cx, dir.path());
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("image.HEIF", window, cx)
+        });
+        settle(visual, &reader, |_, _, bounds| {
+            bounds
+                .get("reader-block-image")
+                .is_some_and(|b| (b.size.height - px(48.)).abs() < px(1.))
+        });
+        std::fs::write(&path, b"broken HEIC").unwrap();
+        settle(visual, &reader, |_, _, bounds| {
+            bounds.contains_key("reader-image-unreadable")
+        });
+        replace(dir.path(), "image.HEIF", rotated);
+        settle(visual, &reader, |_, _, bounds| {
+            !bounds.contains_key("reader-image-unreadable")
+                && bounds
+                    .get("reader-block-image")
+                    .is_some_and(|b| (b.size.height - px(64.)).abs() < px(1.))
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), rotated);
+        std::fs::remove_file(&path).unwrap();
+        settle(visual, &reader, |r, _, _| {
+            r.file_preview.as_ref().unwrap().unavailable.is_some()
+        });
+        std::fs::write(&path, first).unwrap();
+        settle(visual, &reader, |r, _, bounds| {
+            r.file_preview.as_ref().unwrap().unavailable.is_none()
+                && bounds
+                    .get("reader-block-image")
+                    .is_some_and(|b| (b.size.height - px(48.)).abs() < px(1.))
+        });
     }
 
     fn svg(width: usize, height: usize, color: &str) -> Vec<u8> {

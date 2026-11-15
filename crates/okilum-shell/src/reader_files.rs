@@ -2,6 +2,8 @@
 use super::*;
 use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod heic;
 mod live;
 #[path = "reader_single_folder_watch.rs"]
 mod single_folder_watch;
@@ -251,7 +253,8 @@ impl FilePreview {
             path,
             details: live::metadata_label(&ext, &meta),
             image: ["svg", "png", "jpg", "jpeg", "gif", "webp", "bmp"].contains(&ext.as_str())
-                || (cfg!(target_os = "macos") && ["heic", "heif"].contains(&ext.as_str())),
+                || (cfg!(any(target_os = "macos", target_os = "linux"))
+                    && ["heic", "heif"].contains(&ext.as_str())),
         })
     }
 }
@@ -874,52 +877,20 @@ fn file_edit_column(code: bool, header: AnyElement, source: AnyElement) -> AnyEl
         .into_any_element()
 }
 
-/// HEIC uses Apple's image decoder off the UI thread; the temporary PNG is
+/// HEIC uses a platform decoder off the UI thread; the temporary PNG is
 /// derived data and never lives beside the user's files.
 pub(crate) fn image_source(path: PathBuf) -> ImageSource {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     if path
         .extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif"))
     {
         return ImageSource::Custom(Arc::new(move |window, cx| {
-            window.use_asset::<HeicImage>(&path, cx)
+            window.use_asset::<heic::HeicImage>(&path, cx)
         }));
     }
     ImageSource::from(path)
-}
-
-#[cfg(target_os = "macos")]
-struct HeicImage;
-#[cfg(target_os = "macos")]
-impl Asset for HeicImage {
-    type Source = PathBuf;
-    type Output = Result<Arc<RenderImage>, ImageCacheError>;
-
-    fn load(
-        path: PathBuf,
-        cx: &mut App,
-    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let renderer = cx.svg_renderer();
-        cx.background_executor().spawn(async move {
-            let result = (|| -> anyhow::Result<Arc<RenderImage>> {
-                let directory = tempfile::tempdir()?;
-                let png = directory.path().join("preview.png");
-                let status = std::process::Command::new("/usr/bin/sips")
-                    .args(["-s", "format", "png"])
-                    .arg(path)
-                    .arg("--out")
-                    .arg(&png)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()?;
-                anyhow::ensure!(status.success(), "Cannot decode HEIC image");
-                Image::from_bytes(ImageFormat::Png, std::fs::read(png)?).to_image_data(renderer)
-            })();
-            result.map_err(Into::into)
-        })
-    }
 }
 
 /// What a failed preview tells the reader: the authored reason, or plain
@@ -974,6 +945,23 @@ mod preview_error_tests {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn issue2984_heic_and_heif_open_the_image_viewer_and_embed_decoder() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["photo.heic", "photo.HEIF"] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, b"dispatch checks only; not decoded here").unwrap();
+            let preview = FilePreview::load(directory.path(), name).unwrap();
+            assert!(preview.image, "HEIC must open the existing image viewer");
+            assert!(matches!(image_source(path), ImageSource::Custom(_)));
+        }
+        assert!(matches!(
+            image_source(directory.path().join("ordinary.png")),
+            ImageSource::Resource(_)
+        ));
+    }
 
     /// #1391: on Windows the checked path is verbatim (`\\?\C:\…`); «Copy absolute
     /// path» must copy the plain form, which still names the same file.

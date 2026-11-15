@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -44,10 +45,20 @@ class AppImageTests(unittest.TestCase):
                     stdout='gpgv 2.4; libc.so.6 => /lib/libc.so.6', stderr='', returncode=0)) as loader:
                 parent_environment = dict(os.environ)
                 verify.verify(artifact, extracted)
-                self.assertEqual(loader.call_count, 3)
+                self.assertEqual(loader.call_count, 6)
                 self.assertEqual(loader.call_args.kwargs['env']['LD_LIBRARY_PATH'],
                                  str(extracted / 'usr/lib'))
                 self.assertEqual(dict(os.environ), parent_environment)
+                for broken in ('heif-convert', 'prlimit', 'heic-control.py'):
+                    def result_for(command, **kwargs):
+                        failed = any(str(arg).endswith('/' + broken) for arg in command)
+                        return SimpleNamespace(stdout='gpgv 2.4',
+                                               stderr='libmissing.so => not found' if failed else '',
+                                               returncode=1 if failed else 0)
+                    loader.side_effect = result_for
+                    with self.subTest(broken=broken), self.assertRaises(ValueError):
+                        verify.verify(artifact, extracted)
+                loader.side_effect = None
                 loader.reset_mock()
                 source.write_text('b' * 40)
                 with self.assertRaisesRegex(ValueError, 'source identity'):
@@ -58,6 +69,29 @@ class AppImageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'checksum'):
                     verify.verify(artifact, extracted)
                 loader.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux child resource limits')
+    def test_decoder_limits_have_allocation_and_file_size_positive_controls(self):
+        allocation = 'bytearray(128 * 1024 * 1024)'
+        positive = subprocess.run([sys.executable, '-c', allocation], capture_output=True, timeout=10)
+        self.assertEqual(positive.returncode, 0, positive.stderr)
+        limited = subprocess.run(['/usr/bin/prlimit', '--as=67108864', '--',
+                                  sys.executable, '-c', allocation], capture_output=True, timeout=10)
+        self.assertNotEqual(limited.returncode, 0)
+        self.assertIn(b'MemoryError', limited.stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'output'
+            writer = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'x' * (2 * 1024 * 1024))"
+            positive = subprocess.run([sys.executable, '-c', writer, str(path)],
+                                      capture_output=True, timeout=10)
+            self.assertEqual(positive.returncode, 0, positive.stderr)
+            self.assertEqual(path.stat().st_size, 2 * 1024 * 1024)
+            path.unlink()
+            limited = subprocess.run(['/usr/bin/prlimit', '--fsize=1048576', '--',
+                                      sys.executable, '-c', writer, str(path)],
+                                     capture_output=True, timeout=10)
+            self.assertNotEqual(limited.returncode, 0)
+            self.assertLessEqual(path.stat().st_size, 1024 * 1024)
 
     def test_shipped_launch_clears_library_override_and_preserves_arguments_and_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
