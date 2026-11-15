@@ -90,6 +90,48 @@ def registered_copies(dump, bundle_id, keep):
     return copies
 
 
+FRONTMOST_IDENTITY = '''ObjC.import('AppKit');
+var app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+JSON.stringify({bundle: ObjC.unwrap(app.bundleIdentifier), pid: Number(app.processIdentifier)});
+'''
+
+
+def frontmost_identity():
+    # NSWorkspace reads app identity only: no AppleEvents, Accessibility,
+    # System Events, window contents, or activation of the observed app.
+    result = subprocess.run(['osascript', '-l', 'JavaScript', '-e', FRONTMOST_IDENTITY],
+                            check=True, capture_output=True, text=True, timeout=3)
+    identity = json.loads(result.stdout)
+    bundle, pid = identity['bundle'], identity['pid']
+    if not isinstance(bundle, str) or not bundle or type(pid) is not int or pid <= 0:
+        raise ValueError('unknown foreground application')
+    return bundle, pid
+
+
+def app_activity(bundle_id):
+    """Fresh app-use decision, not a system-wide idle requirement (Oleg 15.11)."""
+    try:
+        before = frontmost_identity()
+        idle = 0
+        if before[0] == bundle_id:
+            result = subprocess.run(['ioreg', '-c', 'IOHIDSystem'], check=True,
+                                    capture_output=True, text=True, timeout=3)
+            match = re.search(r'"HIDIdleTime"\s*=\s*(\d+)\s*$', result.stdout, re.M)
+            if not match:
+                raise ValueError('unknown input idle time')
+            idle = int(match[1]) // 1_000_000_000
+        after = frontmost_identity()
+        if after[0] != bundle_id:
+            return 'background 0'
+        # Returning to Okilum during the probe, or a different instance, must
+        # not inherit a stale idle sample. The next delivery tick can retry.
+        if before != after:
+            return 'unknown 0'
+        return f'foreground {idle}'
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return 'unknown 0'
+
+
 def redact(text):
     # Known secret environment values are removed even without a field label.
     for key, value in os.environ.items():
@@ -293,7 +335,11 @@ def main():
     parser.add_argument('--trim-target')
     parser.add_argument('--next-build', action='store_true', help='appcast on stdin')
     parser.add_argument('--registered-copies', nargs=2, metavar=('BUNDLE_ID', 'KEEP'), help='dump on stdin')
+    parser.add_argument('--app-activity', metavar='BUNDLE_ID')
     args = parser.parse_args()
+    if args.app_activity:
+        print(app_activity(args.app_activity))
+        return
     if args.trim_target:
         trim_target(args.trim_target)
         return
@@ -430,9 +476,9 @@ sprint_bundle_tool() {
 }
 # Close the installed app before its bundle is replaced (Oleg, 14.11), the same
 # way as the Linux beta delivery (scripts/dev/okilum-beta-deliver.py):
-# - nothing is sent, not even Quit, until the user has been idle >= 60 s;
-#   the idle time is read again right before each step and right before the
-#   replacement, and the last read decides;
+# - when Okilum is frontmost, nothing is sent, not even Quit, until input has
+#   been idle >= 60 s. Activity in other foreground apps does not block it
+#   (Oleg, 15.11). Unknown probes defer; recheck before each step/replacement;
 # - only the processes captured at the start are signalled, re-validated by
 #   pid + start time + exact executable path + uid right before each signal;
 # - no SIGKILL: Okilum shows no "everything is saved" state while it runs, so
@@ -454,6 +500,8 @@ SYNC_HELPER=okilum-sync-supervisor
 SYNC_HELPER_LABEL=com.befeast.okilum.sync
 SYNC_HELPER_WAIT=${OKILUM_SPRINT_SYNC_HELPER_WAIT:-15}
 CLOSED_BY_SPRINT=0
+APP_ACTIVITY=unknown
+APP_IDLE=0
 # "pid start-time" of this user's processes running exactly
 # $app/Contents/MacOS/$1 (macOS ps prints the full executable path): never a QA
 # or staged copy, another executable of the bundle, or another user's session.
@@ -482,10 +530,24 @@ identity_pids() {
     printf '%s\n' "${pids# }"
 }
 installed_app_pids() { identity_pids "$(bundle_processes okilum)"; }
-user_idle_seconds() {
-    local idle
-    idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {printf "%d\n", $NF / 1000000000; exit}' || true)
-    [[ $idle =~ ^[0-9]+$ ]] && printf '%s\n' "$idle" || echo 0
+read_app_activity() {
+    local snapshot extra
+    snapshot=$(python3 "$reporter" --app-activity "${SPRINT_BUNDLE_ID:-com.befeast.okilum}" 2>/dev/null) || snapshot=
+    APP_ACTIVITY=unknown APP_IDLE=0
+    read -r APP_ACTIVITY APP_IDLE extra <<< "$snapshot" || true
+    if [[ -n $extra || ! $APP_IDLE =~ ^[0-9]+$ ]]; then
+        APP_ACTIVITY=unknown APP_IDLE=0
+    fi
+    case $APP_ACTIVITY in
+        foreground|background) ;;
+        *) APP_ACTIVITY=unknown APP_IDLE=0 ;;
+    esac
+}
+app_is_idle() {
+    read_app_activity
+    [[ $APP_ACTIVITY == background ]] || {
+        [[ $APP_ACTIVITY == foreground ]] && ((APP_IDLE >= IDLE_NEEDED))
+    }
 }
 # Wait up to $3 s until none of the identities $1 of executable $2 is alive.
 wait_for_identities() {
@@ -498,23 +560,28 @@ wait_for_identities() {
 }
 # $1 = idle seconds of the read that decided, $2 = the step not taken.
 defer_for_user() {
-    printf 'Sprint deferred: user active (idle %ss < %ss); Okilum was not sent %s.\n' "$1" "$IDLE_NEEDED" "$2"
+    if [[ $APP_ACTIVITY == unknown ]]; then
+        printf 'Sprint deferred: foreground/activity probe unavailable; Okilum was not sent %s.\n' "$2"
+    else
+        printf 'Sprint deferred: Okilum active (idle %ss < %ss); Okilum was not sent %s.\n' "$1" "$IDLE_NEEDED" "$2"
+    fi
     return "$SPRINT_DEFERRED"
 }
 stop_installed_app() {
-    local captured live reply attempt idle
+    local captured live reply attempt
     captured=$(bundle_processes okilum)
     [[ -n $captured ]] || return 0
-    printf 'Okilum runs (pid %s); waiting up to %ss for %ss without keyboard or mouse input before closing it.\n' \
+    printf 'Okilum runs (pid %s); waiting up to %ss until it is not frontmost or input has been idle %ss.\n' \
         "$(identity_pids "$captured")" "$IDLE_WAIT" "$IDLE_NEEDED"
     for ((attempt=0; ; attempt+=5)); do
         [[ -n $(live_identities "$captured" okilum) ]] || { echo 'Okilum quit by itself.'; return 0; }
-        idle=$(user_idle_seconds)
-        ((idle >= IDLE_NEEDED)) && break
-        ((attempt < IDLE_WAIT)) || { defer_for_user "$idle" Quit; return; }
+        app_is_idle && break
+        if [[ $APP_ACTIVITY == unknown ]] || ((attempt >= IDLE_WAIT)); then
+            defer_for_user "$APP_IDLE" Quit; return
+        fi
         sleep 5
     done
-    printf 'User idle %ss: asking Okilum to quit.\n' "$idle"
+    printf 'Okilum activity: %s, idle %ss; asking Okilum to quit.\n' "$APP_ACTIVITY" "$APP_IDLE"
     CLOSED_BY_SPRINT=1
     # The path form targets this bundle, not a QA copy with the same bundle ID.
     if ! reply=$(osascript -e "if application \"$app\" is running then" \
@@ -524,13 +591,12 @@ stop_installed_app() {
     fi
     printf 'Waiting up to %ss for Okilum to quit by itself.\n' "$QUIT_WAIT"
     wait_for_identities "$captured" okilum "$QUIT_WAIT" && { echo 'Okilum quit.'; return 0; }
-    idle=$(user_idle_seconds)
-    ((idle >= IDLE_NEEDED)) || { defer_for_user "$idle" SIGTERM; return; }
+    app_is_idle || { defer_for_user "$APP_IDLE" SIGTERM; return; }
     # Re-validated immediately before the signal: a reused pid is never signalled.
     live=$(live_identities "$captured" okilum)
     [[ -n $live ]] || { echo 'Okilum quit.'; return 0; }
-    printf 'Okilum still runs after %ss; SIGTERM pid %s (user idle %ss): it saves and quits as from the menu.\n' \
-        "$QUIT_WAIT" "$(identity_pids "$live")" "$idle"
+    printf 'Okilum still runs after %ss; SIGTERM pid %s (activity %s, idle %ss): it saves and quits as from the menu.\n' \
+        "$QUIT_WAIT" "$(identity_pids "$live")" "$APP_ACTIVITY" "$APP_IDLE"
     # shellcheck disable=SC2046 # one word per pid
     kill -TERM $(identity_pids "$live") 2>/dev/null || true
     wait_for_identities "$live" okilum "$TERM_GRACE" && { echo 'Okilum quit after SIGTERM.'; return 0; }
@@ -539,21 +605,20 @@ stop_installed_app() {
     printf 'Sprint deferred: the next delivery tick retries.\n'
     return "$SPRINT_DEFERRED"
 }
-# Closes Okilum for the replacement. If the Sprint closed it, the idle time is
-# read once more right before the bundle is replaced; if the user came back
-# meanwhile, the installed Okilum is reopened unchanged and the Sprint defers.
+# Closes Okilum for the replacement. Recheck foreground app/activity right
+# before replacing the bundle. If blocked, reopen it only if Sprint closed it.
 # (Closed by the user before any Quit was sent: nothing to reopen.)
 close_for_replacement() {
-    local status=0 idle
+    local status=0
     CLOSED_BY_SPRINT=0
     stop_installed_app || status=$?
     ((status == 0)) || return "$status"
-    ((CLOSED_BY_SPRINT)) || return 0
-    idle=$(user_idle_seconds)
-    if ((idle < IDLE_NEEDED)); then
-        printf 'Sprint deferred: user active (idle %ss < %ss) right before the replacement; reopening the installed Okilum unchanged.\n' \
-            "$idle" "$IDLE_NEEDED"
-        open "$app" || true
+    if ! app_is_idle; then
+        defer_for_user "$APP_IDLE" replacement || true
+        if ((CLOSED_BY_SPRINT)); then
+            echo 'Blocked right before the replacement; reopening the installed Okilum unchanged.'
+            open "$app" || true
+        fi
         return "$SPRINT_DEFERRED"
     fi
 }
@@ -608,7 +673,7 @@ sprint_exit() {
     trap - EXIT INT TERM
     if (( result == SPRINT_DEFERRED )); then
         # Not a failure: no report; the next delivery tick retries.
-        printf '\nSprint DEFERRED at stage %s (exit %s): user active, app not replaced\n' "$stage" "$result" >&2
+        printf '\nSprint DEFERRED at stage %s (exit %s): app not ready for replacement\n' "$stage" "$result" >&2
         if [[ -n $bundle_stage ]]; then unregister "$bundle_stage" || true; fi
     elif (( result != 0 )); then
         # Visible even when the caller pipes into tee, which reports tee's status.

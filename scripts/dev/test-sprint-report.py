@@ -472,12 +472,82 @@ class SprintTargetTests(unittest.TestCase):
         self.assertLess(calls[1], script.index('unregister "$bundle_stage"\n# Target only'))
 
 
+class AppActivityTests(unittest.TestCase):
+    BUNDLE = 'com.befeast.okilum'
+
+    def identity(self, bundle=BUNDLE, pid=501):
+        return subprocess.CompletedProcess([], 0, json.dumps({'bundle': bundle, 'pid': pid}))
+
+    def idle(self, seconds):
+        return subprocess.CompletedProcess([], 0, f' | "HIDIdleTime" = {int(seconds * 1_000_000_000)}\n')
+
+    def test_other_foreground_apps_need_no_global_idle_probe(self):
+        with patch.object(MODULE['subprocess'], 'run', side_effect=[
+                self.identity('com.example.t3'), self.identity('com.example.browser')]) as run:
+            self.assertEqual(MODULE['app_activity'](self.BUNDLE), 'background 0')
+            self.assertEqual(run.call_count, 2)
+            for call in run.call_args_list:
+                self.assertEqual(call.args[0][:3], ['osascript', '-l', 'JavaScript'])
+                self.assertEqual(call.kwargs['timeout'], 3)
+        source = MODULE['FRONTMOST_IDENTITY']
+        self.assertIn('NSWorkspace.sharedWorkspace.frontmostApplication', source)
+        self.assertNotIn('Application(', source)
+        self.assertNotIn('System Events', source)
+        self.assertNotIn('windows', source)
+
+    def test_frontmost_okilum_reads_idle_and_checks_identity_again(self):
+        for seconds, expected in [(0, 0), (59.9, 59), (60, 60), (120, 120)]:
+            with self.subTest(seconds=seconds), patch.object(MODULE['subprocess'], 'run', side_effect=[
+                    self.identity(), self.idle(seconds), self.identity()]) as run:
+                self.assertEqual(MODULE['app_activity'](self.BUNDLE), f'foreground {expected}')
+                self.assertEqual(run.call_args_list[1].args[0], ['ioreg', '-c', 'IOHIDSystem'])
+
+    def test_switching_into_okilum_or_changing_its_pid_cannot_inherit_idle(self):
+        for replies in ([self.identity('com.example.t3'), self.identity()],
+                        [self.identity(), self.idle(120), self.identity(pid=601)]):
+            with self.subTest(replies=replies), patch.object(MODULE['subprocess'], 'run', side_effect=replies):
+                self.assertEqual(MODULE['app_activity'](self.BUNDLE), 'unknown 0')
+
+    def test_switching_out_of_okilum_allows_other_app_activity(self):
+        with patch.object(MODULE['subprocess'], 'run', side_effect=[
+                self.identity(), self.idle(0), self.identity('com.example.t3')]):
+            self.assertEqual(MODULE['app_activity'](self.BUNDLE), 'background 0')
+
+    def test_failed_or_unknown_probes_fail_safe(self):
+        bad = [subprocess.TimeoutExpired('osascript', 3), OSError('probe unavailable'),
+               subprocess.CalledProcessError(1, 'osascript'),
+               subprocess.CompletedProcess([], 0, 'not JSON'), self.identity(None),
+               self.identity(pid=0), self.identity(pid=True)]
+        for reply in bad:
+            with self.subTest(reply=reply), patch.object(MODULE['subprocess'], 'run', side_effect=[reply]):
+                self.assertEqual(MODULE['app_activity'](self.BUNDLE), 'unknown 0')
+        for replies in ([self.identity(), subprocess.TimeoutExpired('ioreg', 3)],
+                        [self.identity(), subprocess.CompletedProcess([], 0, 'missing idle')],
+                        [self.identity(), self.idle(120), subprocess.TimeoutExpired('osascript', 3)],
+                        [self.identity('com.example.t3'), subprocess.CompletedProcess([], 0, '{}')]):
+            with self.subTest(replies=replies), patch.object(MODULE['subprocess'], 'run', side_effect=replies):
+                self.assertEqual(MODULE['app_activity'](self.BUNDLE), 'unknown 0')
+
+
 QUIT_MOCKS = r'''
 state=$MOCK_STATE
 app=/Applications/Okilum.app
 ps() { sed "s/UID/$(id -u)/" "$state/processes"; }
 drop_pid() { grep -v "^$1 " "$state/processes" > "$state/p" || true; mv "$state/p" "$state/processes"; }
 osascript() {
+    if [[ $1 == -l && $2 == JavaScript ]]; then
+        local count=0 values=($MOCK_FOREGROUND)
+        [[ -f $state/probes ]] && count=$(cat "$state/probes")
+        echo $((count + 1)) > "$state/probes"
+        ((count < ${#values[@]})) || count=$((${#values[@]} - 1))
+        case ${values[count]} in
+            okilum) echo '{"bundle":"com.befeast.okilum","pid":501}' ;;
+            t3) echo '{"bundle":"com.example.t3","pid":801}' ;;
+            unknown) return 1 ;;
+            *) echo 'invalid JSON' ;;
+        esac
+        return
+    fi
     local script="$*"
     echo "$script" >> "$state/apple-events"
     if [[ $script == *'to quit'* ]]; then
@@ -544,8 +614,7 @@ def quit_block():
 
 
 class SprintQuitTests(unittest.TestCase):
-    '''Okilum is closed only while the user is idle >= 60 s, by identity-bound
-    signals, never SIGKILLed; the old Sync helper is restarted (14.11 reviews).'''
+    '''App-use protection, identity-bound signals, no SIGKILL and helper restart.'''
     START = 'Fri Nov 13 15:56:48 2026'
     APP = '501 UID Sat Nov 14 08:00:00 2026 /Applications/Okilum.app/Contents/MacOS/okilum\n'
     HELPER = '502 UID Fri Nov 13 15:56:48 2026 /Applications/Okilum.app/Contents/MacOS/okilum-sync-supervisor\n'
@@ -558,10 +627,18 @@ class SprintQuitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             (state / 'processes').write_text(processes)
+            (state / 'reporter.py').write_text(SOURCE)
+            tools = state / 'bin'
+            tools.mkdir()
+            for tool in ['osascript', 'ioreg']:
+                executable = tools / tool
+                executable.write_text('#!/bin/bash\n' + QUIT_MOCKS + '\n' + tool + ' "$@"\n')
+                executable.chmod(0o700)
             env = dict(os.environ, MOCK_STATE=str(state), MOCK_QUIT=quit, MOCK_IDLE=idle, MOCK_STOPS_ON=stops_on,
+                       MOCK_FOREGROUND='okilum', PATH=str(tools) + os.pathsep + os.environ['PATH'],
                        MOCK_EXIT_AFTER=str(mock.pop('exit_after', 3)), TMPDIR=str(state))
             env.update({'MOCK_' + key.upper(): str(value) for key, value in mock.items()})
-            command = ('set -Eeuo pipefail\n' + QUIT_MOCKS + quit_block() +
+            command = ('set -Eeuo pipefail\nreporter="$MOCK_STATE/reporter.py"\n' + QUIT_MOCKS + quit_block() +
                        '\nstatus=0; ' + call + ' || status=$?; echo RESULT=$status\n')
             result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True, timeout=60)
             read = lambda name: (state / name).read_text().split('\n') if (state / name).exists() else []
@@ -586,7 +663,7 @@ class SprintQuitTests(unittest.TestCase):
         result, calls, sleeps, _, _ = self.run_call(self.APP, quit='cancel-then-exit', idle='5 5 61', exit_after=2)
         self.assertIn('RESULT=0', result.stdout, result.stderr)
         self.assertEqual(sleeps[:2], ['5', '5'])
-        self.assertIn('User idle 61s: asking Okilum to quit', result.stdout)
+        self.assertIn('foreground, idle 61s; asking Okilum to quit', result.stdout)
         self.assertEqual(calls, ['quit'])
 
     def test_self_exit_after_quit_still_rechecks_idle_before_replacement(self):
@@ -609,7 +686,9 @@ class SprintQuitTests(unittest.TestCase):
         self.assertEqual(processes, self.HELPER)
 
     def test_app_closed_by_the_user_before_any_quit_is_not_reopened(self):
-        result, calls, _, _, events = self.run_call(self.APP, call='close_for_replacement', idle='0 0 0', exit_at=2)
+        result, calls, _, _, events = self.run_call(
+            self.APP, call='close_for_replacement', idle='0', exit_at=2,
+            foreground='okilum okilum okilum okilum t3 t3')
         self.assertIn('RESULT=0', result.stdout, result.stderr)
         self.assertIn('Okilum quit by itself', result.stdout)
         self.assertEqual(calls, [])
@@ -630,7 +709,44 @@ class SprintQuitTests(unittest.TestCase):
 
     def test_the_signal_logs_the_idle_read_that_allowed_it(self):
         result, _, _, _, _ = self.run_call(self.APP, idle='61 75', stops_on='TERM')
-        self.assertIn('SIGTERM pid 501 (user idle 75s)', result.stdout)
+        self.assertIn('SIGTERM pid 501 (activity foreground, idle 75s)', result.stdout)
+
+    def test_other_foreground_app_allows_quit_and_replacement_even_with_zero_global_idle(self):
+        result, calls, _, processes, _ = self.run_call(
+            self.APP, call='close_for_replacement', quit='cancel-then-exit', exit_after=2,
+            idle='0', foreground='t3')
+        self.assertIn('RESULT=0', result.stdout, result.stderr)
+        self.assertEqual(calls, ['quit'])
+        self.assertEqual(processes, '')
+        self.assertIn('activity: background', result.stdout)
+
+    def test_return_to_active_okilum_before_sigterm_blocks_signal(self):
+        result, calls, _, processes, _ = self.run_call(
+            self.APP, idle='0', foreground='t3 t3 okilum okilum', stops_on='TERM')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertEqual(calls, ['quit'])
+        self.assertEqual(processes, self.APP)
+
+    def test_return_to_active_okilum_before_replacement_reopens_old_bundle(self):
+        result, calls, _, _, _ = self.run_call(
+            self.APP, call='close_for_replacement', quit='cancel-then-exit', exit_after=2,
+            idle='0', foreground='t3 t3 okilum okilum')
+        self.assertIn('RESULT=75', result.stdout, result.stderr)
+        self.assertEqual(calls, ['quit', 'open /Applications/Okilum.app'])
+
+    def test_unknown_probe_at_each_boundary_defers_without_further_action(self):
+        cases = [dict(foreground='unknown', expected=[]),
+                 dict(foreground='t3 t3 unknown', expected=['quit']),
+                 dict(foreground='t3 t3 unknown', call='close_for_replacement',
+                      quit='cancel-then-exit', exit_after=2,
+                      expected=['quit', 'open /Applications/Okilum.app'])]
+        for case in cases:
+            expected = case.pop('expected')
+            with self.subTest(case=case):
+                result, calls, _, _, _ = self.run_call(self.APP, idle='0', **case)
+                self.assertIn('RESULT=75', result.stdout, result.stderr)
+                self.assertIn('probe unavailable', result.stdout)
+                self.assertEqual(calls, expected)
 
     # Finding 2: only captured identities, re-validated right before the signal.
     def test_a_pid_reused_during_the_quit_wait_is_never_signalled(self):
@@ -746,7 +862,7 @@ class SprintQuitTests(unittest.TestCase):
             setup.exchange(first, second)
             self.assertEqual(((first / 'f').read_text(), (second / 'f').read_text()), ('2', '1'))
 
-    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps/ioreg semantics')
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ps/AppleScript semantics')
     def test_native_mac_finds_and_stops_only_the_exact_bundle_executable(self):
         def alive(pid):
             try:
@@ -770,17 +886,17 @@ class SprintQuitTests(unittest.TestCase):
                 pids.append(int(started.stdout))
             target, helper, copy = pids
             try:
-                # IDLE_NEEDED=0: a hosted runner's HID idle time is not controllable.
+                # This native test isolates process identity. App-use decisions
+                # are covered above without depending on the runner's desktop.
                 env = dict(os.environ, OKILUM_SPRINT_QUIT_WAIT='1', OKILUM_SPRINT_IDLE_WAIT='0',
-                           OKILUM_SPRINT_IDLE_NEEDED='0', OKILUM_SPRINT_TERM_GRACE='5')
+                           OKILUM_SPRINT_TERM_GRACE='5')
                 command = ('set -Eeuo pipefail\napp="$1"\n' + quit_block() +
+                           '\nread_app_activity() { APP_ACTIVITY=background; APP_IDLE=0; }\n'
                            '\nprintf "pids=%s\\n" "$(installed_app_pids | tr "\\n" " ")"'
-                           '\nprintf "idle=%s\\n" "$(user_idle_seconds)"'
                            '\nstatus=0; stop_installed_app || status=$?; echo RESULT=$status\n')
                 result = subprocess.run(['/bin/bash', '-c', command, 'native', str(app)], env=env,
                                         capture_output=True, text=True, timeout=60)
                 self.assertIn(f'pids={target} \n', result.stdout, result.stderr)
-                self.assertRegex(result.stdout, r'idle=\d+\n')
                 self.assertIn('RESULT=0', result.stdout, result.stderr)
                 self.assertIn('SIGTERM', result.stdout)
                 self.assertFalse(alive(target))
