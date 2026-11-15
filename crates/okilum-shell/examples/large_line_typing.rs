@@ -6,6 +6,12 @@
 //! contain spaces, like the tester's file. Each size types the same words in
 //! the middle of the line; a size-independent median is the goal.
 #![allow(dead_code)]
+// Match the Linux desktop allocator: a fresh multi-MB glyph vector per key
+// makes allocator/page-reuse costs material to this benchmark.
+#[cfg(all(target_os = "linux", not(test)))]
+#[global_allocator]
+static NATIVE_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod brand {
     pub const SANS_FONT: &str = "Noto Sans";
 }
@@ -118,6 +124,8 @@ fn main() -> anyhow::Result<()> {
             "{}",
             serde_json::json!({
                 "bytes": text.len(), "glyphs": glyphs, "font_size": size,
+                "debug_assertions": cfg!(debug_assertions),
+                "allocator": if cfg!(target_os = "linux") { "mimalloc" } else { "system" },
                 "cold_full_shape_ms": cold_ms, "keys": layout_ms.len(),
                 "layout_line_median_ms": median(&mut layout_ms.clone()),
                 "layout_line_max_ms": layout_ms.iter().cloned().fold(0., f64::max),

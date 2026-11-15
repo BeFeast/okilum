@@ -25,10 +25,22 @@ pub(super) struct LargeLine {
 }
 
 pub(super) fn eligible(text: &str, runs: &[FontRun]) -> bool {
-    (MIN_TEXT..=MAX_TEXT).contains(&text.len())
-        && runs.len() == 1
-        && runs[0].len == text.len()
-        && text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+    eligible_shape(text, runs) && printable(text.as_bytes())
+}
+
+fn eligible_shape(text: &str, runs: &[FontRun]) -> bool {
+    (MIN_TEXT..=MAX_TEXT).contains(&text.len()) && runs.len() == 1 && runs[0].len == text.len()
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static CLASSIFIED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn printable(bytes: &[u8]) -> bool {
+    #[cfg(test)]
+    CLASSIFIED_BYTES.with(|count| count.set(count.get() + bytes.len()));
+    bytes.iter().all(|byte| (b' '..=b'~').contains(byte))
 }
 
 /// The bytes an entry accounts for.
@@ -275,6 +287,9 @@ impl LargeLines {
         size: Pixels,
         runs: &[FontRun],
     ) -> Option<(LargeLine, (usize, usize))> {
+        if !eligible_shape(text, runs) {
+            return None;
+        }
         let (at, edit) = self.entries.iter().enumerate().rev().find_map(|(at, e)| {
             if !e.incremental
                 || e.font_size != size
@@ -288,8 +303,12 @@ impl LargeLines {
             let new = text.as_bytes();
             let prefix = common_prefix(old, new);
             let suffix = common_suffix(&old[prefix..], &new[prefix..]);
-            (old.len().max(new.len()) - prefix - suffix <= MAX_RESHAPE)
-                .then_some((at, (prefix, suffix)))
+            // The retained entry already proved its unchanged bytes printable.
+            // Reclassifying a multi-MB row on every key is needless work;
+            // only the inserted/replaced bytes can change that contract.
+            (old.len().max(new.len()) - prefix - suffix <= MAX_RESHAPE
+                && printable(&new[prefix..new.len() - suffix]))
+            .then_some((at, (prefix, suffix)))
         })?;
         let entry = self.entries.remove(at)?;
         self.bytes -= entry.bytes;
