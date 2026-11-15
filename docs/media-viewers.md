@@ -13,6 +13,11 @@ selects two relative log sources without a clock-dependent time window. Open
 its definition and press **Start**; expect four interleaved records. These
 fixtures also seed the QA vault showcase. They contain no private data.
 
+Image file previews show the image and its type, size and modification time
+without the generic file icon and repeated extension above it (#2983). The
+generic file card remains the fallback for files without a dedicated viewer;
+unreadable images retain the image viewer's explicit error message.
+
 Delivery and native evidence are recorded in issues #2687 and #2689. A passing
 unit test or a merge does not by itself certify native beta behavior.
 

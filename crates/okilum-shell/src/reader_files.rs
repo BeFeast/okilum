@@ -811,24 +811,26 @@ impl Reader {
             .px_6()
             .pb_6()
             .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Icon::new(IconName::File).size(px(48.)))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                                preview
-                                    .path
-                                    .extension()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("FILE")
-                                    .to_uppercase(),
-                            ),
-                    ),
-            )
+            .when(!preview.image, |view| {
+                view.child(
+                    v_flex()
+                        .gap_1()
+                        .child(Icon::new(IconName::File).size(px(48.)))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    preview
+                                        .path
+                                        .extension()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("FILE")
+                                        .to_uppercase(),
+                                ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .text_color(cx.theme().muted_foreground)
