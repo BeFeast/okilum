@@ -309,7 +309,7 @@ pub mod native {
             .with_context(|| format!("current Sync helper unavailable: {}", path.display()))?;
         // `st_dev` is a 32-bit dev_t, as is the kernel's `vst_dev`.
         Ok(FileId {
-            device: metadata.dev() as u32 as u64,
+            device: u64::from(metadata.dev() as u32),
             inode: metadata.ino(),
         })
     }
@@ -343,23 +343,24 @@ pub mod native {
             ensure!(read == size, "process memory map entry incomplete");
             let stat = &info.vnode.vip_vi.vi_stat;
             if stat.vst_ino != 0 {
-                // libc splits `char vip_path[MAXPATHLEN]` into 32 rows of 32.
-                let bytes: Vec<u8> = info
-                    .vnode
-                    .vip_path
-                    .iter()
-                    .flatten()
-                    .take_while(|&&c| c != 0)
-                    .map(|&c| c as u8)
-                    .collect();
-                let name = std::str::from_utf8(&bytes)
+                // libc splits `char vip_path[MAXPATHLEN]` into 32 rows of 32;
+                // read it as the kernel wrote it, one byte per C char.
+                let raw = &info.vnode.vip_path;
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        raw.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(raw),
+                    )
+                };
+                let bytes = &raw[..raw.iter().position(|&c| c == 0).unwrap_or(raw.len())];
+                let name = std::str::from_utf8(bytes)
                     .ok()
                     .and_then(|path| path.rsplit('/').next())
                     .unwrap_or("")
                     .to_owned();
                 let mapping = Mapping {
                     file: FileId {
-                        device: stat.vst_dev as u32 as u64,
+                        device: u64::from(stat.vst_dev),
                         inode: stat.vst_ino,
                     },
                     unlinked: stat.vst_nlink == 0,
