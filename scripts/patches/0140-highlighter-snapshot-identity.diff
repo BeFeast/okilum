@@ -44,7 +44,7 @@
              return;
          }
  
-@@ -1322,6 +1341,55 @@
+@@ -1322,6 +1341,58 @@
      }
  
      #[test]
@@ -64,7 +64,10 @@
 +
 +        FULL_SOURCE_COMPARISONS.with(|count| count.set(0));
 +        current.apply_background_tree(candidate.clone(), &snapshot, Vec::new());
-+        assert_eq!(current.tree().unwrap().root_node().id(), candidate.root_node().id());
++        assert_eq!(current.tree().unwrap().root_node().range(), candidate.root_node().range());
++        let spans = current.semantic_spans(&(0..64));
++        assert!(!spans.is_empty(), "positive control: published JSON syntax is styled");
++        assert_eq!(spans, parsed.semantic_spans(&(0..64)));
 +        assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 0,
 +            "background publication compared the whole source");
 +        assert!(current.update(None, &snapshot, None));
