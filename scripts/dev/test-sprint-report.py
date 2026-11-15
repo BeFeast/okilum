@@ -221,6 +221,12 @@ exec cat
                 '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             # The pinned macOS first-window crates (#2825) are likewise independent.
             (scripts / 'gpui-pre-apple-setup.py').write_text('pass\n')
+            # Core glyph-value copying has its own pinned extraction too. This
+            # fixture exercises clone reset, so only record setup/verify calls.
+            (scripts / 'gpui-pre-setup.py').write_text(
+                'from pathlib import Path\nimport json, sys\n'
+                'with Path(__file__).with_name("core-calls.jsonl").open("a") as log:\n'
+                '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             def patch(value):
                 (patches / '0001.diff').write_text('--- a/crates/base/src/text/selection_adapter.rs\n+++ b/crates/base/src/text/selection_adapter.rs\n@@ -1 +1 @@\n-pristine\n+' + value + '\n')
             patch('branch A')
@@ -243,6 +249,9 @@ exec cat
                 [[], ['--verify'], [], ['--verify'], []])
             self.assertEqual(
                 [json.loads(line) for line in (scripts / 'atlas-calls.jsonl').read_text().splitlines()],
+                [[], ['--verify'], [], ['--verify'], []])
+            self.assertEqual(
+                [json.loads(line) for line in (scripts / 'core-calls.jsonl').read_text().splitlines()],
                 [[], ['--verify'], [], ['--verify'], []])
 
 
