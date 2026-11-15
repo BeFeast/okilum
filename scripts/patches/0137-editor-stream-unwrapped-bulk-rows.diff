@@ -9,13 +9,13 @@
 +thread_local! {
 +    static SOURCE_ROW_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 +}
- 
+
  use crate::input::{
      Point as TreeSitterPoint, RopeExt,
 @@ -372,8 +377,46 @@
          let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
          let wrap_width = self.wrap_width;
- 
+
 +        let stream_unwrapped = wrap_width.is_none() && new_end_row.saturating_sub(new_start_row) >= 512;
 +        if stream_unwrapped {
 +            // No shaping or wrap boundaries are needed. A whole-file Format
@@ -62,7 +62,7 @@
              let mut prev_boundary_ix = 0;
 @@ -1388,6 +1431,101 @@
      use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
- 
+
      #[test]
 +    fn large2804_unwrapped_bulk_replacement_avoids_repeated_rope_seeks() {
 +        let font = gpui::Font {
