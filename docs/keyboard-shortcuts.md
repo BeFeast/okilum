@@ -30,6 +30,33 @@ the file. Frontmatter and selections with boundaries inside fenced code are
 left unchanged, matching the other formatting commands' source guards.
 The `okilum::ToggleQuote` action uses the Editor context and can be rebound here.
 
+## Reader sidebar navigation (#2988)
+
+Reveal in Tree (Cmd+Shift+L on macOS, Ctrl+Shift+L on Linux/Windows) focuses
+the sidebar cursor at the open document, without a mouse.
+
+The Tree cursor (focus outline) and the open document are independent. Up/Down
+move the cursor without opening a document. Right expands a folder or enters its
+first child; Left collapses it or selects its parent. Arrow navigation replaces
+a multiple selection. These keys leave focus in the Tree.
+
+Space opens a read-only preview of an attachment. While that preview is open,
+Up/Down follow the cursor without adding document history or changing the open
+document. Space or Escape closes the preview and restores the document. macOS
+prefers native Quick Look; if the system cannot provide a controller, the bounded
+Reader preview takes over for that session. Its existing format/size limits and
+explicit unsupported/decode messages still apply. Space on a note opens it;
+Space on a folder expands/collapses it using ordinary folder activation.
+
+Enter opens an attachment in the Reader, including formats that only have a
+file card. Enter on a note/folder retains inline rename, as does F2; input fields
+own Enter, Space and arrow keys while renaming. Cmd+Down on macOS, Ctrl+Down on
+Linux/Windows, explicitly opens any selected row; for a folder this toggles it
+and opens its index when expanding. These actions never launch an external app.
+Ordinary activation leaves Tree focus available for the next key, except compact
+window layouts that dismiss the sidebar after choosing a document. Mouse click,
+double-click, modified selection and disclosure behavior remain the same.
+
 ## Open in terminal
 
 **Open in terminal (#2837):** Option+Command+T on macOS, Alt+Super+T on Linux
