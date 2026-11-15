@@ -787,3 +787,58 @@ fn large2804_grouped_edit_boundaries_do_not_copy_the_document(cx: &mut TestAppCo
         "unfired allocation control: {control:?}"
     );
 }
+
+/// Bulk row indexing feeds the tree without a contiguous LineItem buffer.
+/// The source/history strings are deliberately much smaller than that buffer.
+#[gpui::test]
+fn large2804_bulk_rows_do_not_allocate_a_contiguous_row_buffer(cx: &mut TestAppContext) {
+    use crate::reader_editor::work;
+
+    let original = format!("{{{}tail", "a\r\n".repeat(160_000));
+    let replacement = format!("{{{}end🙂", "ב\n".repeat(180_000));
+    let (f, visual) = open_file(cx, &original, "data.txt");
+    settle(visual);
+    // Both source strings are below 1 MiB. The former 180k-row Vec is
+    // several MiB; tree leaf/node allocations stay well below this bound.
+    const ALLOCATION_LIMIT: usize = 2 * 1024 * 1024;
+    assert!(original.len() < ALLOCATION_LIMIT / 2);
+    assert!(replacement.len() < ALLOCATION_LIMIT / 2);
+
+    work::reset();
+    f.input.update_in(visual, |input, window, cx| {
+        let _scope = work::scope();
+        input.replace_source_range(0..original.len(), &replacement, window, cx);
+    });
+    let applied = work::take();
+    assert!(
+        applied.largest < ALLOCATION_LIMIT,
+        "bulk apply allocated a contiguous row buffer: {applied:?}"
+    );
+    assert_eq!(value_of(&f, visual), replacement);
+    settle(visual);
+    work::reset();
+    {
+        let _scope = work::scope();
+        visual.dispatch_action(Undo);
+    }
+    let undone = work::take();
+    assert!(
+        undone.largest < ALLOCATION_LIMIT,
+        "bulk Undo allocated a contiguous row buffer: {undone:?}"
+    );
+    assert_eq!(value_of(&f, visual), original, "one byte-exact Undo");
+    visual.dispatch_action(Redo);
+    assert_eq!(value_of(&f, visual), replacement, "one byte-exact Redo");
+
+    // An actual contiguous allocation must be visible to the same meter.
+    work::reset();
+    let control = {
+        let _scope = work::scope();
+        std::hint::black_box(vec![0u8; ALLOCATION_LIMIT * 2])
+    };
+    let measured = work::take();
+    assert!(
+        measured.largest >= control.len(),
+        "unfired row-buffer allocation control: {measured:?}"
+    );
+}
