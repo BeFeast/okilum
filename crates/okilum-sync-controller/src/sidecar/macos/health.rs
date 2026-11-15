@@ -5,7 +5,7 @@
 //! Health must not confuse that lifecycle-readiness failure with a stopped job.
 use anyhow::{ensure, Result};
 
-const LABEL: &str = "com.befeast.okilum.sync";
+pub const LABEL: &str = "com.befeast.okilum.sync";
 
 /// Parse only top-level launchctl list fields, excluding nested arguments and
 /// dictionaries. LastExitStatus describes the previous run, not the current PID.
@@ -60,30 +60,37 @@ fn process_live(pid: u32) -> Result<bool> {
     Ok(info.pbi_status != 5)
 }
 
+/// launchd's current PID for the account helper job, or None when the job is
+/// absent or not running. Read-only.
+#[cfg(target_os = "macos")]
+pub fn account_helper_pid() -> Result<Option<u32>> {
+    listed_job_pid(std::time::Instant::now() + std::time::Duration::from_secs(2))
+}
+
+#[cfg(target_os = "macos")]
+fn listed_job_pid(deadline: std::time::Instant) -> Result<Option<u32>> {
+    use super::inventory::output_status;
+    let (status, bytes) = output_status(
+        std::process::Command::new("/bin/launchctl").args(["list", LABEL]),
+        deadline,
+        65536,
+    )?;
+    if status.code() == Some(113) {
+        return Ok(None);
+    }
+    ensure!(status.success(), "launchd observation failed: {status}");
+    listed_pid(std::str::from_utf8(&bytes)?)
+}
+
 #[cfg(target_os = "macos")]
 pub fn account_helper_running() -> Result<bool> {
-    use super::inventory::output_status;
-    use std::{
-        process::Command,
-        time::{Duration, Instant},
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let Some(pid) = listed_job_pid(deadline)? else {
+        return Ok(false);
     };
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let read = || -> Result<Option<u32>> {
-        let (status, bytes) = output_status(
-            Command::new("/bin/launchctl").args(["list", LABEL]),
-            deadline,
-            65536,
-        )?;
-        if status.code() == Some(113) {
-            return Ok(None);
-        }
-        ensure!(status.success(), "launchd observation failed: {status}");
-        listed_pid(std::str::from_utf8(&bytes)?)
-    };
-    let Some(pid) = read()? else { return Ok(false) };
     let live = process_live(pid)?;
     ensure!(
-        read()? == Some(pid),
+        listed_job_pid(deadline)? == Some(pid),
         "launchd generation changed during observation"
     );
     Ok(live)
