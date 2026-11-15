@@ -14,3 +14,4 @@ libfreetype-dev
 libxcb1-dev
 libasound2-dev
 libheif-examples
+libheif-plugin-libde265

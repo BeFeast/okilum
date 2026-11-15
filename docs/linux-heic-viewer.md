@@ -22,7 +22,11 @@ in addition to `libheif-examples`: their `--no-install-recommends` dependency
 installation otherwise omits the HEVC decoder. The real HEVC control caught
 this as `Unsupported codec` in initial fast run 43728820827; it remains a
 failing decoder result, not a skipped or weakened control. Ubuntu 22.04's
-AppImage producer and reader image retain their built-in decoder package set.
+AppImage producer and cache seeder retain their built-in decoder package set.
+The [retired reader CI image recipe](linux-ci-image.md) is based on
+`act-24.04`, not Ubuntu 22.04; its reference package list also explicitly
+includes `libheif-plugin-libde265`. This does not revive its removed workflow
+or change an active runner/image.
 
 The build requires bundled `libheif.so.1` and `libde265.so.0`, then executes
 real HEVC/pixel/transform controls through the staged binaries. The extracted
