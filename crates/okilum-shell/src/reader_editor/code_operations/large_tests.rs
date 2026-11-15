@@ -703,7 +703,8 @@ fn large2804_grouped_edit_boundaries_do_not_copy_the_document(cx: &mut TestAppCo
     use crate::reader_editor::work;
 
     let rows = "row\r\n".repeat(180_000);
-    let original = format!("{rows}שלום🙂{rows}tail");
+    // The shared file fixture places its initial caret at the first brace.
+    let original = format!("{rows}שלום🙂{rows}{{tail");
     let marker = rows.len();
     let (f, visual) = open_file(cx, &original, "data.txt");
     settle(visual);
@@ -754,7 +755,7 @@ fn large2804_grouped_edit_boundaries_do_not_copy_the_document(cx: &mut TestAppCo
         measured.largest < 128 * 1024,
         "grouped apply copied the source: {measured:?}"
     );
-    let expected = format!("ROW{}א🙂ל{rows}END", &rows[3..]);
+    let expected = format!("ROW{}א🙂ל{rows}{{END", &rows[3..]);
     assert_eq!(value_of(&f, visual), expected);
     f.input.read_with(visual, |input, _| {
         assert_eq!(input.selected_range(), marker + 2..marker + 6);
