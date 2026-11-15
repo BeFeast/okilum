@@ -63,7 +63,7 @@ def main():
         ("okilum-sync-controller", "--lib", "managed_launch::macos::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::isolation::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::health::tests::"),
-        # #2931: a helper still running a replaced bundle image gets one SIGTERM.
+        # #2931: only the helper captured before an update gets SIGTERM, after its runtime exited.
         ("okilum-sync-controller", "--lib", "sidecar::macos::replaced::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::bootstrap::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::authority::launch::tests::"),

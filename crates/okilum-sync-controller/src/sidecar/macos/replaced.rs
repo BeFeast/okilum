@@ -1,37 +1,54 @@
 //! Restart of an account Sync helper that still runs a replaced bundle's image
-//! (#2931). An in-place app update (Sparkle, a manual copy, the Sprint) swaps
-//! `Okilum.app` while the launchd agent keeps running the old executable.
+//! (#2931). Sparkle swaps `Okilum.app` in place while the launchd agent keeps
+//! running the old executable.
 //!
-//! The decision is evidence-based and never signals on uncertainty:
-//! - the process is launchd's current PID for the account helper job and
-//!   belongs to this user;
-//! - none of its file mappings is the current bundle's helper file (device and
-//!   inode), although every region was enumerated: a process started from the
-//!   current bundle always maps its own executable;
-//! - it maps an executable that is unlinked or named like the helper.
+//! Like the Sprint (#2925, `scripts/dev/okilum-sprint.sh`), the target is
+//! captured BEFORE the replacement and only that identity is acted on after it:
+//! - `capture`, run by the old app right before it hands the install to
+//!   Sparkle: launchd's current PID for the account helper job, owned by this
+//!   user, that maps exactly this bundle's `Contents/MacOS/okilum-sync-supervisor`
+//!   (device and inode). A helper of any other bundle is never captured.
+//! - `restart_captured`, run by the next app launch: the same PID, UID and start
+//!   time, no longer mapping the file now at that path (complete region walk).
 //!
-//! Only that exact process (PID, UID and start time, revalidated immediately
-//! before the signal) receives SIGTERM, the restart path of `restart_managed`:
-//! its handler flushes the owned Sync runtime and exits so launchd starts the
-//! helper from the new bundle. Never SIGKILL: an orphaned runtime is refused by
-//! the helper lease. A helper that does not exit in time is left running.
+//! The owned Sync runtime is stopped gracefully first and its exit confirmed
+//! within a bounded wait; the helper's own SIGTERM cleanup would SIGKILL a slow
+//! runtime. If it is still running, nothing is signalled and the next launch
+//! retries. Only then does the captured helper, revalidated immediately before
+//! the signal, receive SIGTERM (the restart path of `restart_managed`), so
+//! launchd starts it from the new bundle. Never SIGKILL: an orphaned runtime is
+//! refused by the helper lease. A helper that does not exit in time is left.
 use anyhow::{ensure, Result};
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 /// File name of the helper executable inside `Contents/MacOS`.
 pub const HELPER_NAME: &str = "okilum-sync-supervisor";
-/// How long the old helper gets to flush its runtime and exit after SIGTERM.
+/// How long the old helper gets to exit after SIGTERM.
 pub const EXIT_WAIT: Duration = Duration::from_secs(15);
+/// How long the runtime gets to finish a graceful shutdown before the restart
+/// is postponed to the next launch.
+pub const RUNTIME_WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(100);
 
 /// A live process, identified the way the Sprint does: PID, owner and start
 /// time together. A PID alone may be reused by an unrelated process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Process {
     pub pid: u32,
     pub uid: u32,
     /// Start time as seconds and microseconds.
     pub started: (u64, u64),
+}
+
+/// What the old app records before the update replaces its bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Snapshot {
+    /// The exact helper path inside the bundle that is about to be replaced.
+    pub executable: String,
+    pub helper: Process,
 }
 
 /// Device and inode of a file.
@@ -45,19 +62,15 @@ pub struct FileId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {
     pub file: FileId,
-    /// The file has no remaining directory entry (its bundle was deleted).
-    pub unlinked: bool,
-    /// Last path component as the kernel reports it; empty when unknown.
-    pub name: String,
 }
 
-/// Which helper image a process runs.
+/// Which file a process runs, relative to the helper file at the bundle path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Image {
-    /// It maps the current bundle's helper file.
+    /// It maps the file at the helper path.
     Current,
-    /// It provably runs another helper image.
-    Replaced,
+    /// Every region was read and none maps the file at the helper path.
+    Other,
     /// Not established; never acted upon.
     Unknown(String),
 }
@@ -65,18 +78,11 @@ pub enum Image {
 /// `complete` is true only when the region walk reached the end of the map.
 pub fn classify(mappings: &[Mapping], complete: bool, current: FileId) -> Image {
     if mappings.iter().any(|mapping| mapping.file == current) {
-        return Image::Current;
-    }
-    if !complete {
-        return Image::Unknown("process memory map was not fully enumerated".into());
-    }
-    if mappings
-        .iter()
-        .any(|mapping| mapping.unlinked || mapping.name == HELPER_NAME)
-    {
-        Image::Replaced
+        Image::Current
+    } else if complete {
+        Image::Other
     } else {
-        Image::Unknown("no replaced helper image is mapped".into())
+        Image::Unknown("process memory map was not fully enumerated".into())
     }
 }
 
@@ -90,16 +96,20 @@ pub enum Kick {
     TimedOut,
 }
 
+/// What `restart_captured` did. `Gone`, `Current` and `Restarted` settle the
+/// snapshot; every other outcome keeps it for the next launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// launchd runs no helper; it starts one from the current bundle.
-    NotRunning,
-    /// The helper already runs the current bundle's image.
+    /// The captured helper no longer exists; launchd runs the new bundle's.
+    Gone,
+    /// The captured helper still maps the file at its path: nothing replaced it.
     Current,
-    /// Not provably replaced, or its identity changed while it was inspected.
+    /// Not established, or its identity changed while it was inspected.
     Unknown(String),
+    /// The runtime did not finish its graceful shutdown within the wait.
+    RuntimeRunning { old: Process },
     /// The old helper is gone. `signalled` is false when it exited before the
-    /// signal (for example after `prepare` stopped its runtime).
+    /// signal (for example after its runtime stopped).
     Restarted {
         old: Process,
         signalled: bool,
@@ -109,12 +119,21 @@ pub enum Outcome {
     LeftRunning { old: Process },
 }
 
+impl Outcome {
+    pub fn settled(&self) -> bool {
+        matches!(self, Self::Gone | Self::Current | Self::Restarted { .. })
+    }
+}
+
 /// Native observations and effects. The production adapter is `Launchd`.
 pub trait HelperOs {
     /// launchd's current PID for the account helper job; None when none runs.
     fn launchd_pid(&mut self) -> Result<Option<u32>>;
     /// The live, non-zombie process with this PID; None when it is gone.
     fn process(&mut self, pid: u32) -> Result<Option<Process>>;
+    /// Live, non-zombie direct children of `pid`.
+    fn children(&mut self, pid: u32) -> Result<Vec<Process>>;
+    /// The process's image relative to the file at the bundle's helper path.
     fn image(&mut self, pid: u32) -> Result<Image>;
     /// SIGTERM to this PID. Implementations never send SIGKILL.
     fn terminate(&mut self, pid: u32) -> Result<()>;
@@ -122,46 +141,105 @@ pub trait HelperOs {
     fn sleep(&mut self, duration: Duration);
 }
 
-/// Restart the account helper only when it provably runs a replaced image.
-///
-/// `prepare` runs once the helper is classified as replaced and before any
-/// signal: the caller verifies the installed bundle and binding there and
-/// stops the authenticated runtime of a helper too old to clean up on SIGTERM.
-/// An error from `prepare` sends no signal.
-pub fn restart_replaced<O: HelperOs>(
-    os: &mut O,
-    uid: u32,
-    wait: Duration,
-    prepare: impl FnOnce() -> Result<()>,
-) -> Result<Outcome> {
+/// Before the bundle is replaced: launchd's helper, only when it runs exactly
+/// the helper file at this bundle's path. Read-only.
+pub fn capture<O: HelperOs>(os: &mut O, uid: u32) -> Result<Option<Process>> {
     let Some(pid) = os.launchd_pid()? else {
-        return Ok(Outcome::NotRunning);
+        return Ok(None);
     };
-    let Some(old) = os.process(pid)? else {
-        return Ok(Outcome::NotRunning);
+    let Some(helper) = os.process(pid)? else {
+        return Ok(None);
     };
     ensure!(
-        old.uid == uid,
+        helper.uid == uid,
         "Sync helper process belongs to another user"
     );
+    if os.image(pid)? != Image::Current {
+        return Ok(None);
+    }
+    // The image was read from this PID; it must still be launchd's same process.
+    if os.process(pid)? != Some(helper) || os.launchd_pid()? != Some(pid) {
+        return Ok(None);
+    }
+    Ok(Some(helper))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Waits {
+    pub runtime: Duration,
+    pub exit: Duration,
+}
+impl Default for Waits {
+    fn default() -> Self {
+        Self {
+            runtime: RUNTIME_WAIT,
+            exit: EXIT_WAIT,
+        }
+    }
+}
+
+fn any_alive<O: HelperOs>(os: &mut O, processes: &[Process]) -> Result<bool> {
+    for process in processes {
+        if os.process(process.pid)? == Some(*process) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// After the replacement: restart the captured helper `old` only.
+///
+/// `prepare` runs once `old` is still alive and no longer runs the file at its
+/// bundle path, before any effect: the caller verifies the installed bundle and
+/// binding there. `stop_runtime` asks the helper's runtime to shut down
+/// gracefully; its exit is then awaited for `waits.runtime`. An error from
+/// either sends no signal.
+pub fn restart_captured<O: HelperOs, S>(
+    os: &mut O,
+    uid: u32,
+    old: Process,
+    waits: Waits,
+    prepare: impl FnOnce() -> Result<S>,
+    stop_runtime: impl FnOnce(&S) -> Result<()>,
+) -> Result<Outcome> {
+    ensure!(
+        old.uid == uid,
+        "captured Sync helper belongs to another user"
+    );
+    let pid = old.pid;
+    if os.process(pid)? != Some(old) {
+        return Ok(Outcome::Gone);
+    }
     match os.image(pid)? {
         Image::Current => return Ok(Outcome::Current),
         Image::Unknown(reason) => return Ok(Outcome::Unknown(reason)),
-        Image::Replaced => {}
+        Image::Other => {}
     }
     // The image was read from this PID; it must still be the same process.
     if os.process(pid)? != Some(old) {
-        return Ok(Outcome::Unknown(
-            "Sync helper changed while it was inspected".into(),
-        ));
+        return Ok(Outcome::Gone);
     }
-    prepare()?;
+    let prepared = prepare()?;
+    let runtime = os.children(pid)?;
+    if !runtime.is_empty() {
+        stop_runtime(&prepared)?;
+        let deadline = Instant::now() + waits.runtime;
+        while any_alive(os, &runtime)? {
+            if Instant::now() >= deadline {
+                return Ok(Outcome::RuntimeRunning { old });
+            }
+            os.sleep(POLL);
+        }
+    }
     // Revalidated immediately before the signal: launchd's job, the same
-    // process and still the replaced image. A newer helper is never signalled.
+    // process, still not the bundle's file, no runtime left to interrupt.
     let signalled = if os.process(pid)? != Some(old) {
         false
-    } else if os.launchd_pid()? == Some(pid) && os.image(pid)? == Image::Replaced {
-        // The image read may race with an exit and PID reuse; check once more.
+    } else if os.launchd_pid()? == Some(pid)
+        && os.image(pid)? == Image::Other
+        && os.children(pid)?.is_empty()
+    {
+        // The reads above may race with an exit and PID reuse; check once more.
         if os.process(pid)? != Some(old) {
             false
         } else {
@@ -170,10 +248,10 @@ pub fn restart_replaced<O: HelperOs>(
         }
     } else {
         return Ok(Outcome::Unknown(
-            "Sync helper is no longer launchd's replaced helper; not signalled".into(),
+            "captured Sync helper changed before the signal; not signalled".into(),
         ));
     };
-    let deadline = Instant::now() + wait;
+    let deadline = Instant::now() + waits.exit;
     while os.process(pid)? == Some(old) {
         if Instant::now() >= deadline {
             return Ok(Outcome::LeftRunning { old });
@@ -189,7 +267,7 @@ pub fn restart_replaced<O: HelperOs>(
 }
 
 /// The production adapter: launchd's job `gui/<uid>/com.befeast.okilum.sync`
-/// and the current bundle's helper file.
+/// and the helper file at this bundle's path.
 #[cfg(target_os = "macos")]
 pub struct Launchd {
     pub uid: u32,
@@ -203,6 +281,9 @@ impl HelperOs for Launchd {
     }
     fn process(&mut self, pid: u32) -> Result<Option<Process>> {
         native::process(pid)
+    }
+    fn children(&mut self, pid: u32) -> Result<Vec<Process>> {
+        native::children(pid)
     }
     fn image(&mut self, pid: u32) -> Result<Image> {
         native::image(pid, &self.current)
@@ -272,7 +353,8 @@ pub mod native {
     const _: () = assert!(std::mem::size_of::<RegionInfo>() == 96);
     const _: () = assert!(std::mem::size_of::<RegionWithPath>() == 96 + 1176);
 
-    pub fn process(pid: u32) -> Result<Option<Process>> {
+    /// The live, non-zombie process and its parent PID.
+    fn observe(pid: u32) -> Result<Option<(Process, u32)>> {
         ensure!(pid > 0 && pid <= i32::MAX as u32, "invalid process ID");
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of_val(&info) as i32;
@@ -296,11 +378,49 @@ pub mod native {
         if info.pbi_pid != pid || info.pbi_status == ZOMBIE {
             return Ok(None);
         }
-        Ok(Some(Process {
-            pid,
-            uid: info.pbi_uid,
-            started: (info.pbi_start_tvsec, info.pbi_start_tvusec),
-        }))
+        Ok(Some((
+            Process {
+                pid,
+                uid: info.pbi_uid,
+                started: (info.pbi_start_tvsec, info.pbi_start_tvusec),
+            },
+            info.pbi_ppid,
+        )))
+    }
+
+    pub fn process(pid: u32) -> Result<Option<Process>> {
+        Ok(observe(pid)?.map(|(process, _)| process))
+    }
+
+    /// Live direct children of `pid`, each confirmed by its own parent PID.
+    pub fn children(pid: u32) -> Result<Vec<Process>> {
+        ensure!(pid > 0 && pid <= i32::MAX as u32, "invalid process ID");
+        let mut pids: Vec<libc::pid_t> = vec![0; 4096];
+        let capacity = std::mem::size_of_val(pids.as_slice()) as i32;
+        let count =
+            unsafe { libc::proc_listchildpids(pid as i32, pids.as_mut_ptr().cast(), capacity) };
+        if count < 0 {
+            bail!(
+                "child process listing unavailable: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        // libproc reports a PID count; reading at most the buffer is correct
+        // even if it reported bytes, since unused entries stay zero.
+        let listed = (count as usize).min(pids.len());
+        ensure!(listed < pids.len(), "child process listing incomplete");
+        let mut children = Vec::new();
+        for &child in &pids[..listed] {
+            if child <= 0 {
+                continue;
+            }
+            if let Some((process, parent)) = observe(child as u32)? {
+                if parent == pid && !children.contains(&process) {
+                    children.push(process);
+                }
+            }
+        }
+        Ok(children)
     }
 
     pub fn file_id(path: &Path) -> Result<FileId> {
@@ -343,28 +463,11 @@ pub mod native {
             ensure!(read == size, "process memory map entry incomplete");
             let stat = &info.vnode.vip_vi.vi_stat;
             if stat.vst_ino != 0 {
-                // libc splits `char vip_path[MAXPATHLEN]` into 32 rows of 32;
-                // read it as the kernel wrote it, one byte per C char.
-                let raw = &info.vnode.vip_path;
-                let raw = unsafe {
-                    std::slice::from_raw_parts(
-                        raw.as_ptr().cast::<u8>(),
-                        std::mem::size_of_val(raw),
-                    )
-                };
-                let bytes = &raw[..raw.iter().position(|&c| c == 0).unwrap_or(raw.len())];
-                let name = std::str::from_utf8(bytes)
-                    .ok()
-                    .and_then(|path| path.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_owned();
                 let mapping = Mapping {
                     file: FileId {
                         device: u64::from(stat.vst_dev),
                         inode: stat.vst_ino,
                     },
-                    unlinked: stat.vst_nlink == 0,
-                    name,
                 };
                 if !mappings.contains(&mapping) {
                     mappings.push(mapping);

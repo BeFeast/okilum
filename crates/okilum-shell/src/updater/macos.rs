@@ -80,9 +80,9 @@ pub(super) fn start() {
     }
 }
 /// #2931: Sparkle replaces the bundle in place while the launchd Sync helper
-/// keeps running its old image. Once this app runs, restart a helper that
-/// provably still runs a replaced image (see `restart_replaced_helper`), off
-/// the launch path. Failures are logged and never affect the app or updater.
+/// keeps running its old image. Once this app runs, restart the helper the
+/// previous app recorded before the update (see `restart_replaced_helper`),
+/// off the launch path. Failures are logged and never affect app or updater.
 #[cfg(not(test))]
 pub(super) fn refresh_sync_helper() {
     use okilum_sync_controller::sidecar::macos::replaced::{Kick, Outcome};
@@ -92,17 +92,17 @@ pub(super) fn refresh_sync_helper() {
             // Keep the cold launch free of launchd, process and signature reads.
             std::thread::sleep(std::time::Duration::from_secs(5));
             match crate::reader_settings_sync::restart_replaced_helper() {
-                Ok(Outcome::Restarted {
+                Ok(Some(Outcome::Restarted {
                     old,
                     signalled,
                     kick,
-                }) => {
+                })) => {
                     log::warn!(
-                        "Sync helper pid {} (started {}) ran a replaced app image; {}",
+                        "Sync helper pid {} (started {}) ran the replaced app; {}",
                         old.pid,
                         old.started.0,
                         if signalled {
-                            "sent SIGTERM so launchd restarts it from this bundle"
+                            "its runtime stopped, then SIGTERM so launchd restarts it from this bundle"
                         } else {
                             "it exited before SIGTERM"
                         }
@@ -111,14 +111,18 @@ pub(super) fn refresh_sync_helper() {
                         log::warn!("Sync helper kickstart after update: {kick:?}; launchd restarts it by itself");
                     }
                 }
-                Ok(Outcome::LeftRunning { old }) => log::warn!(
-                    "Sync helper pid {} still runs a replaced app image after SIGTERM; left running, no SIGKILL",
+                Ok(Some(Outcome::RuntimeRunning { old })) => log::warn!(
+                    "Sync helper pid {}: its runtime is still shutting down; helper not signalled, retried next launch",
                     old.pid
                 ),
-                Ok(Outcome::Unknown(reason)) => {
-                    log::warn!("Sync helper image after update not established; left running: {reason}")
+                Ok(Some(Outcome::LeftRunning { old })) => log::warn!(
+                    "Sync helper pid {} still runs the replaced app after SIGTERM; left running, no SIGKILL, retried next launch",
+                    old.pid
+                ),
+                Ok(Some(Outcome::Unknown(reason))) => {
+                    log::warn!("Sync helper after update left running, retried next launch: {reason}")
                 }
-                Ok(Outcome::NotRunning | Outcome::Current) => {}
+                Ok(Some(Outcome::Gone | Outcome::Current) | None) => {}
                 Err(error) => log::warn!("Sync helper refresh after update failed: {error:#}"),
             }
         });
@@ -184,6 +188,12 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
         cx,
         unsafe { okilum_updater_restart_relaunches() },
         || {
+            // #2931: record this bundle's running Sync helper before Sparkle
+            // replaces the bundle; the next launch restarts exactly that one.
+            #[cfg(not(test))]
+            if let Err(error) = crate::reader_settings_sync::capture_helper_before_update() {
+                log::warn!("Sync helper snapshot before update failed: {error:#}");
+            }
             anyhow::ensure!(
                 unsafe { okilum_updater_finish_restart() },
                 "The update is no longer ready. Check for updates again."

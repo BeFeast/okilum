@@ -315,41 +315,123 @@ pub(super) fn restart_managed() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// #2931: after an in-app update (Sparkle) or any other in-place replacement
-/// of this bundle, the launchd helper may still run the replaced bundle's
-/// image. Restart only that exact process, through the same SIGTERM path as
-/// `restart_managed`, so launchd starts the helper from this bundle. Reading
-/// only, unless the helper provably runs a replaced image.
+/// #2931: the helper identity the old app records right before Sparkle
+/// replaces its bundle, in app-owned state (removed with the state directory).
 #[cfg(all(target_os = "macos", not(test)))]
-pub(crate) fn restart_replaced_helper(
-) -> anyhow::Result<okilum_sync_controller::sidecar::macos::replaced::Outcome> {
+const HELPER_SNAPSHOT: &str = "sync-helper-before-update.json";
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn helper_snapshot_path() -> anyhow::Result<PathBuf> {
+    Ok(reader_history::state_directory()?.join(HELPER_SNAPSHOT))
+}
+
+/// This bundle's exact helper path.
+#[cfg(all(target_os = "macos", not(test)))]
+fn bundle_helper() -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
-    use okilum_sync_controller::sidecar::macos::replaced::{
-        restart_replaced, Launchd, Outcome, EXIT_WAIT, HELPER_NAME,
-    };
-    if !managed_enabled() {
-        return Ok(Outcome::NotRunning);
-    }
     let own = std::env::current_exe()?.canonicalize()?;
-    let current = own
+    Ok(own
         .parent()
         .context("app code directory unavailable")?
-        .join(HELPER_NAME);
+        .join(okilum_sync_controller::sidecar::macos::replaced::HELPER_NAME))
+}
+
+/// #2931, before the update: record launchd's account helper only when it runs
+/// exactly this bundle's helper file (PID, UID, start time and the path), the
+/// way the Sprint snapshots it before replacing the bundle. Read-only apart
+/// from the snapshot file; a helper of another bundle is never recorded.
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn capture_helper_before_update() -> anyhow::Result<bool> {
+    use okilum_sync_controller::sidecar::macos::replaced::{capture, Launchd, Snapshot};
+    let path = helper_snapshot_path()?;
+    if reader_history::isolated_state_directory().is_some() || !managed_enabled() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(false);
+    }
+    let executable = bundle_helper()?;
     let uid = rustix::process::geteuid().as_raw();
     let mut launchd = Launchd {
         uid,
-        current: current.clone(),
+        current: executable.clone(),
     };
-    restart_replaced(&mut launchd, uid, EXIT_WAIT, || {
-        // Only now, with a provably replaced helper: the full lifecycle checks.
-        let managed = verified_managed()?;
-        anyhow::ensure!(
-            Path::new(&managed.binding.supervisor) == current
-                && managed.binding.owner == uid.to_string(),
-            "Sync binding names another helper"
-        );
-        stop_managed_runtime(&managed)
-    })
+    let Some(helper) = capture(&mut launchd, uid)? else {
+        let _ = std::fs::remove_file(&path);
+        return Ok(false);
+    };
+    let snapshot = Snapshot {
+        executable: executable
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("helper path is not Unicode"))?
+            .to_owned(),
+        helper,
+    };
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&snapshot)?)?;
+    std::fs::rename(&temporary, &path)?;
+    Ok(true)
+}
+
+/// #2931, at the next launch: restart only the helper captured before the
+/// update, once it no longer runs the file at its bundle path. Its runtime is
+/// stopped gracefully and its exit confirmed first; then SIGTERM, the restart
+/// path of `restart_managed`, so launchd starts the helper from this bundle.
+/// A settled outcome removes the snapshot; anything else retries next launch.
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn restart_replaced_helper(
+) -> anyhow::Result<Option<okilum_sync_controller::sidecar::macos::replaced::Outcome>> {
+    use okilum_sync_controller::sidecar::macos::replaced::{
+        restart_captured, Launchd, Outcome, Snapshot, Waits,
+    };
+    if reader_history::isolated_state_directory().is_some() {
+        return Ok(None);
+    }
+    let path = helper_snapshot_path()?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let snapshot: Snapshot = match serde_json::from_slice(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            anyhow::bail!("unreadable Sync helper snapshot removed: {error}");
+        }
+    };
+    let executable = bundle_helper()?;
+    if Path::new(&snapshot.executable) != executable {
+        // Recorded by another copy of the app; that copy settles it.
+        return Ok(Some(Outcome::Unknown(
+            "the helper snapshot belongs to another app bundle".into(),
+        )));
+    }
+    let uid = rustix::process::geteuid().as_raw();
+    let mut launchd = Launchd {
+        uid,
+        current: executable.clone(),
+    };
+    let outcome = restart_captured(
+        &mut launchd,
+        uid,
+        snapshot.helper,
+        Waits::default(),
+        || {
+            // Only now, with the captured helper provably outdated: the full
+            // lifecycle and signed-bundle checks of `restart_managed`.
+            let managed = verified_managed()?;
+            anyhow::ensure!(
+                Path::new(&managed.binding.supervisor) == executable
+                    && managed.binding.owner == uid.to_string(),
+                "Sync binding names another helper"
+            );
+            Ok(managed)
+        },
+        stop_managed_runtime,
+    )?;
+    if outcome.settled() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(Some(outcome))
 }
 
 /// launchctl can hang after the service has already started. Bound only our
