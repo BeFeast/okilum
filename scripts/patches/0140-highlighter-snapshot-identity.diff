@@ -1,0 +1,105 @@
+--- a/crates/component/src/highlighter/highlighter.rs
++++ b/crates/component/src/highlighter/highlighter.rs
+@@ -330,6 +330,25 @@
+         self.start = summary.start;
+         self.end = summary.end;
+     }
++}
++
++// Ropey guarantees O(1) recognition of unmodified clones. Background parsing
++// receives exactly such a snapshot; comparing every byte again on publication
++// adds foreground work proportional to the document. Independently constructed
++// equal ropes still need the existing content comparison (identity alone is
++// deliberately not an equality contract).
++fn same_source_snapshot(current: &Rope, snapshot: &Rope) -> bool {
++    if ropey::extra::esoterica::ropes_are_instances(current, snapshot) {
++        return true;
++    }
++    #[cfg(test)]
++    FULL_SOURCE_COMPARISONS.with(|count| count.set(count.get() + 1));
++    current.eq(snapshot)
++}
++
++#[cfg(test)]
++thread_local! {
++    static FULL_SOURCE_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+ }
+ 
+ impl SyntaxHighlighter {
+@@ -532,7 +551,7 @@
+         text: &Rope,
+         timeout: Option<Duration>,
+     ) -> bool {
+-        if self.text.eq(text) {
++        if same_source_snapshot(&self.text, text) {
+             return true;
+         }
+ 
+@@ -903,7 +922,7 @@
+         injection_layers: Vec<InjectionLayer>,
+     ) {
+         // Only apply if the text still matches what was parsed.
+-        if !self.text.eq(text) {
++        if !same_source_snapshot(&self.text, text) {
+             return;
+         }
+ 
+@@ -1322,6 +1341,58 @@
+     }
+ 
+     #[test]
++    fn large2804_background_snapshot_publication_does_not_compare_the_document() {
++        let source = Rope::from_str(&format!(
++            "[{}null]\r\n",
++            "{\"name\":\"שלום🙂 e\u{301}\",\"value\":42},\r\n".repeat(60_000)
++        ));
++        assert!(source.len() > 2 * 1024 * 1024);
++        let mut parsed = SyntaxHighlighter::new("json");
++        assert!(parsed.update(None, &source, None));
++        let candidate = parsed.tree().expect("positive control: actual JSON parse").clone();
++        let snapshot = source.clone();
++        let mut current = SyntaxHighlighter::new("json");
++        current.edit_tree(None, &source);
++        assert!(current.tree().is_none());
++
++        FULL_SOURCE_COMPARISONS.with(|count| count.set(0));
++        current.apply_background_tree(candidate.clone(), &snapshot, Vec::new());
++        assert_eq!(current.tree().unwrap().root_node().range(), candidate.root_node().range());
++        let spans = current.semantic_spans(&(0..64));
++        assert!(!spans.is_empty(), "positive control: published JSON syntax is styled");
++        assert_eq!(spans, parsed.semantic_spans(&(0..64)));
++        assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 0,
++            "background publication compared the whole source");
++        assert!(current.update(None, &snapshot, None));
++        assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 0,
++            "unchanged cloned source compared the whole source");
++
++        // Positive control: a distinct equal rope must take the real content
++        // comparison and still publish. Rejecting all non-identical snapshots
++        // would change the highlighter's existing equality semantics.
++        let independent = Rope::from_str(&source.to_string());
++        assert!(!ropey::extra::esoterica::ropes_are_instances(&source, &independent));
++        current.tree = None;
++        current.apply_background_tree(candidate.clone(), &independent, Vec::new());
++        assert!(current.tree().is_some(), "equal independent source still publishes");
++        assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 1,
++            "unfired full-comparison control");
++
++        // A same-length mutation breaks clone identity and must retain the
++        // existing stale-result guard, including multi-byte source boundaries.
++        let mut changed = source.clone();
++        let at = source.to_string().find("value").unwrap();
++        changed.remove(at..at + 5);
++        changed.insert(at, "other");
++        current.edit_tree(None, &changed);
++        current.tree = None;
++        current.apply_background_tree(candidate, &snapshot, Vec::new());
++        assert!(current.tree().is_none(), "stale source cannot publish");
++        assert_eq!(current.text(), &changed);
++        assert_eq!(FULL_SOURCE_COMPARISONS.with(|count| count.get()), 2);
++    }
++
++    #[test]
+     fn test_plain_text_never_parses() {
+         // "text" has no grammar, the highlighter shouldn't parse.
+         let mut highlighter = SyntaxHighlighter::new("text");
