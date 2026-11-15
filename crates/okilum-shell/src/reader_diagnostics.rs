@@ -223,6 +223,8 @@ impl Trace {
 
 /// Test support (#2805): the logged events of one phase, in order.
 #[cfg(test)]
+// Its callers are Linux window-control tests (macos-sync lint, -D dead-code).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn logged(state: &Path, phase: &str) -> Vec<serde_json::Value> {
     std::fs::read_to_string(state.join(LOG_FILE))
         .unwrap_or_default()
@@ -235,6 +237,8 @@ pub(crate) fn logged(state: &Path, phase: &str) -> Vec<serde_json::Value> {
 /// Test support (#2805): log closes under a fresh trace and draw GNOME's
 /// client-side window controls, which test windows otherwise never show.
 #[cfg(test)]
+// Its callers are Linux window-control tests (macos-sync lint, -D dead-code).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn record_closes_with_drawn_controls(state: &Path, cx: &mut App) {
     let trace = Trace::new(Some(state.to_owned()), None);
     cx.set_global(LaunchTrace(trace.clone()));

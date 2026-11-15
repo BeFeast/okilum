@@ -2119,6 +2119,7 @@ fn assert_one_row_header(visual: &mut VisualTestContext, width: f32) -> bool {
 
 /// Selects a section through whatever the one-row header shows: its tab, or
 /// the narrowest row's section menu (Chat, Rules, Skills in that order).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn choose_section_by_pointer(visual: &mut VisualTestContext, tab: &'static str) {
     if let Some(picker) = visual.debug_bounds("project-section-picker") {
         let downs = match tab {
