@@ -695,3 +695,94 @@ fn value_of(f: &Fixture, visual: &mut VisualTestContext) -> String {
     f.input
         .read_with(visual, |input, _| input.value().to_string())
 }
+
+/// The allocator observes native preflight and selection clipping, including
+/// the old full-source String copies. Rejected groups must remain atomic.
+#[gpui::test]
+fn large2804_grouped_edit_boundaries_do_not_copy_the_document(cx: &mut TestAppContext) {
+    use crate::reader_editor::work;
+
+    let rows = "row\r\n".repeat(180_000);
+    let original = format!("{rows}שלום🙂{rows}tail");
+    let marker = rows.len();
+    let (f, visual) = open_file(cx, &original, "data.txt");
+    settle(visual);
+    let stamp = f.input.read_with(visual, |input, _| input.source_stamp());
+    // A valid first edit followed by an invalid UTF-8 boundary must not
+    // partially apply. The remaining cases cover EOF and selection bounds.
+    let invalid = [
+        (
+            vec![(0..3, "ROW".into()), (marker + 1..marker + 2, "x".into())],
+            0..0,
+        ),
+        (vec![(original.len()..original.len() + 1, "x".into())], 0..0),
+        (
+            vec![(0..3, "ROW".into())],
+            original.len() + 1..original.len() + 1,
+        ),
+        (Vec::new(), 0..0),
+    ];
+    for (edits, selection) in invalid {
+        work::reset();
+        f.input.update_in(visual, |input, window, cx| {
+            let _scope = work::scope();
+            assert!(!input.replace_source_edits(&edits, selection, window, cx));
+        });
+        let measured = work::take();
+        assert!(
+            measured.largest < 128 * 1024,
+            "preflight copied the source: {measured:?}"
+        );
+        f.input
+            .read_with(visual, |input, _| assert_eq!(input.source_stamp(), stamp));
+        assert_eq!(value_of(&f, visual), original);
+    }
+
+    let edits = vec![
+        (0..3, "ROW".into()),
+        (marker..marker + "שלום🙂".len(), "א🙂ל".into()),
+        (original.len() - 4..original.len(), "END".into()),
+    ];
+    work::reset();
+    f.input.update_in(visual, |input, window, cx| {
+        let _scope = work::scope();
+        // Start inside the inserted emoji: clip left, as before.
+        assert!(input.replace_source_edits(&edits, marker + 3..marker + 6, window, cx));
+    });
+    let measured = work::take();
+    assert!(
+        measured.largest < 128 * 1024,
+        "grouped apply copied the source: {measured:?}"
+    );
+    let expected = format!("ROW{}א🙂ל{rows}END", &rows[3..]);
+    assert_eq!(value_of(&f, visual), expected);
+    f.input.read_with(visual, |input, _| {
+        assert_eq!(input.selected_range(), marker + 2..marker + 6);
+    });
+    visual.dispatch_action(Undo);
+    assert_eq!(
+        value_of(&f, visual),
+        original,
+        "one Undo restores all three edits"
+    );
+    visual.dispatch_action(Redo);
+    assert_eq!(
+        value_of(&f, visual),
+        expected,
+        "one Redo restores the group"
+    );
+
+    // Positive control: the same thread-local allocator must see an actual
+    // full-source conversion; a disabled or unfired meter cannot pass.
+    work::reset();
+    let flat = f.input.read_with(visual, |input, _| {
+        let _scope = work::scope();
+        input.text().to_string()
+    });
+    let control = work::take();
+    assert_eq!(flat, expected);
+    assert!(
+        control.largest >= expected.len(),
+        "unfired allocation control: {control:?}"
+    );
+}
