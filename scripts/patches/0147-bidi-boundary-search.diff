@@ -1,0 +1,279 @@
+--- a/crates/base/src/input/bidi_geometry.rs
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -43,19 +43,11 @@
+ 
+ impl Cell {
+     pub(crate) fn leading(&self) -> Pixels {
+-        if self.rtl {
+-            self.right
+-        } else {
+-            self.left
+-        }
++        if self.rtl { self.right } else { self.left }
+     }
+ 
+     pub(crate) fn trailing(&self) -> Pixels {
+-        if self.rtl {
+-            self.left
+-        } else {
+-            self.right
+-        }
++        if self.rtl { self.left } else { self.right }
+     }
+ }
+ 
+@@ -100,11 +92,21 @@
+         for (n, &(start, left)) in visual.iter().enumerate() {
+             let right = visual.get(n + 1).map_or(line.width, |(_, x)| *x);
+             let end = starts[starts.binary_search(&start).unwrap() + 1];
+-            let graphemes: Vec<_> = boundaries
+-                .iter()
+-                .copied()
+-                .filter(|&i| start <= i && i <= end)
+-                .collect();
++            // Boundaries are sorted and unique. Borrow exactly the same inclusive
++            // range as the previous filter, without scanning/allocating per cluster.
++            #[cfg(test)]
++            boundary_work::cluster();
++            let first = boundaries.partition_point(|&i| {
++                #[cfg(test)]
++                boundary_work::comparison();
++                i < start
++            });
++            let last = boundaries.partition_point(|&i| {
++                #[cfg(test)]
++                boundary_work::comparison();
++                i <= end
++            });
++            let graphemes = &boundaries[first..last];
+             let rtl = bidi.levels[start].is_rtl();
+             let count = graphemes.len() - 1;
+             // A ligature cluster can span several graphemes. Equal subdivision is
+@@ -493,3 +495,227 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod boundary_work {
++    use std::cell::Cell;
++    thread_local! {
++        static WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
++    }
++    pub(super) fn cluster() {
++        WORK.with(|w| {
++            let (c, p) = w.get();
++            w.set((c + 1, p));
++        });
++    }
++    pub(super) fn comparison() {
++        WORK.with(|w| {
++            let (c, p) = w.get();
++            w.set((c, p + 1));
++        });
++    }
++    pub(super) fn take() -> (usize, usize) {
++        WORK.with(|w| w.replace((0, 0)))
++    }
++}
++
++#[cfg(test)]
++mod boundary_search_tests {
++    use super::*;
++    use ::core::prelude::v1::test;
++    use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun, point, px};
++
++    // Frozen old full-filter implementation: independent oracle for cells and
++    // all public geometry operations, not an alternate production path.
++    fn reference_from_layout(text: &str, line: &gpui::LineLayout) -> Geometry {
++        let bidi = BidiInfo::new(text, None);
++        let boundaries: Vec<_> = text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain([text.len()])
++            .collect();
++        // Neither source nor X ordering of platform glyph collections is guaranteed.
++        // Coalesce fallback glyphs/combining marks to their grapheme before sorting.
++        let mut clusters = BTreeMap::<usize, Pixels>::new();
++        for glyph in line.runs.iter().flat_map(|run| &run.glyphs) {
++            let slot = boundaries
++                .partition_point(|&i| i <= glyph.index)
++                .saturating_sub(1);
++            let start = boundaries[slot];
++            clusters
++                .entry(start)
++                .and_modify(|x| *x = (*x).min(glyph.position.x))
++                .or_insert(glyph.position.x);
++        }
++        let starts: Vec<_> = clusters.keys().copied().chain([text.len()]).collect();
++        let mut visual: Vec<_> = clusters.into_iter().collect();
++        visual.sort_by_key(|(_, x)| *x);
++        let mut cells = Vec::new();
++        for (n, &(start, left)) in visual.iter().enumerate() {
++            let right = visual.get(n + 1).map_or(line.width, |(_, x)| *x);
++            let end = starts[starts.binary_search(&start).unwrap() + 1];
++            let graphemes: Vec<_> = boundaries
++                .iter()
++                .copied()
++                .filter(|&i| start <= i && i <= end)
++                .collect();
++            let rtl = bidi.levels[start].is_rtl();
++            let count = graphemes.len() - 1;
++            // A ligature cluster can span several graphemes. Equal subdivision is
++            // provisional: native ligature caret evidence is required before shipping.
++            for (i, pair) in graphemes.windows(2).enumerate() {
++                let visual_i = if rtl { count - i - 1 } else { i };
++                let width = (right - left) / count as f32;
++                cells.push(Cell {
++                    source: pair[0]..pair[1],
++                    left: left + width * visual_i as f32,
++                    right: left + width * (visual_i + 1) as f32,
++                    rtl,
++                });
++            }
++        }
++        cells.sort_by_key(|cell| cell.left);
++        Geometry { cells }
++    }
++
++    // Supply platform-shaped cluster records directly: visual order, duplicate
++    // fallback/combining glyphs and multi-grapheme ligatures are all permitted.
++    fn layout(text: &str, ligatures: bool) -> LineLayout {
++        let starts: Vec<_> = text.grapheme_indices(true).map(|(i, _)| i).collect();
++        let mut glyphs = Vec::new();
++        for (n, &index) in starts.iter().enumerate() {
++            if ligatures && n % 3 != 0 {
++                continue;
++            }
++            let slot = if n % 2 == 0 {
++                n / 2
++            } else {
++                starts.len() - 1 - n / 2
++            };
++            let glyph = ShapedGlyph {
++                id: GlyphId(1),
++                position: point(px(slot as f32 * 10.), px(0.)),
++                index,
++                is_emoji: false,
++            };
++            glyphs.push(glyph);
++            // Distinct glyph at an interior codepoint in one grapheme, in a
++            // separate fallback run; from_layout must coalesce it as before.
++            if let Some((offset, _)) = text[index..starts.get(n + 1).copied().unwrap_or(text.len())]
++                .char_indices()
++                .nth(1)
++            {
++                glyphs.push(ShapedGlyph {
++                    index: index + offset,
++                    ..glyph
++                });
++            }
++        }
++        let second = glyphs.split_off(glyphs.len() / 2);
++        glyphs.reverse();
++        LineLayout {
++            width: px((starts.len() + 1) as f32 * 10.),
++            len: text.len(),
++            runs: vec![
++                ShapedRun {
++                    font_id: FontId(0),
++                    glyphs,
++                },
++                ShapedRun {
++                    font_id: FontId(1),
++                    glyphs: second,
++                },
++            ],
++            ..Default::default()
++        }
++    }
++
++    fn assert_geometry(actual: &Geometry, old: &Geometry, text: &str, layout: &LineLayout) {
++        assert_eq!(actual.cells.len(), old.cells.len());
++        for (a, b) in actual.cells.iter().zip(&old.cells) {
++            assert_eq!(
++                (&a.source, a.left, a.right, a.rtl),
++                (&b.source, b.left, b.right, b.rtl)
++            );
++        }
++        let boundaries: Vec<_> = text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain([text.len()])
++            .collect();
++        for &index in &boundaries {
++            for affinity in [Affinity::Before, Affinity::After] {
++                let caret = Caret { index, affinity };
++                assert_eq!(actual.position(caret), old.position(caret));
++                for right in [false, true] {
++                    assert_eq!(actual.step(caret, right), old.step(caret, right));
++                }
++            }
++            for &end in &boundaries {
++                assert_eq!(
++                    actual.selection(index.min(end)..index.max(end)),
++                    old.selection(index.min(end)..index.max(end))
++                );
++            }
++        }
++        for n in -2..=(f32::from(layout.width) * 2.) as i32 + 2 {
++            let x = px(n as f32 / 2.);
++            assert_eq!(actual.hit(x), old.hit(x));
++            assert_eq!(actual.edge_carets(x), old.edge_carets(x));
++            for &anchor in &boundaries {
++                assert_eq!(
++                    actual.hit_extending(x, anchor as isize),
++                    old.hit_extending(x, anchor as isize)
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn edit2803_boundary_search_preserves_full_filter_geometry() {
++        for text in [
++            "",
++            "a אב z",
++            "مرحبا abc",
++            "אב a\u{301} 👩\u{200d}💻 z",
++            "abc\tאב\r\n",
++            "\u{2067}אב\u{2069} xyz",
++            "office אב ffi",
++        ] {
++            for ligatures in [false, true] {
++                let line = layout(text, ligatures);
++                let old = reference_from_layout(text, &line);
++                let actual = Geometry::from_layout(text, &line);
++                assert_geometry(&actual, &old, text, &line);
++            }
++        }
++    }
++
++    #[test]
++    fn edit2803_boundary_search_work_is_logarithmic_per_cluster() {
++        let text = format!("{}שלום🙂", "x".repeat(4096));
++        let line = layout(&text, false);
++        boundary_work::take();
++        let geometry = Geometry::from_layout(&text, &line);
++        let (clusters, comparisons) = boundary_work::take();
++        let boundary_count = text.graphemes(true).count() + 1;
++        assert_eq!(clusters, boundary_count - 1, "real cluster loop must fire");
++        assert_eq!(
++            geometry.cells.len(),
++            clusters,
++            "complete geometry must be retained"
++        );
++        assert!(
++            comparisons >= clusters * 2,
++            "both actual searches must fire"
++        );
++        // slice::partition_point uses at most ceil(log2(N)) + 1 predicate
++        // calls. This is a source-work bound, not a wall-clock threshold.
++        let ceil_log2 = usize::BITS - (boundary_count - 1).leading_zeros();
++        let bound = clusters * 2 * (ceil_log2 as usize + 1);
++        assert!(
++            comparisons <= bound,
++            "boundary search visited {comparisons} entries for {clusters} clusters; bound {bound}"
++        );
++    }
++}
