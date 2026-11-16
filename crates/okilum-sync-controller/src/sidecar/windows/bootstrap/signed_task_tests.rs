@@ -119,6 +119,55 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         before.generation, resumed.generation,
         "package update restarted the retained native task"
     );
+    eprintln!("WINDOWS_TASK_PHASE helper refresh after update");
+    let store = store(&state)?;
+    let old = store
+        .begin(Instant::now() + Duration::from_secs(5))?
+        .current()?
+        .context("old helper journal missing")?
+        .binding()
+        .clone();
+    let selection = private::read(&state.join("runtime.json"))?;
+    let configuration = private::public_file(&state.join("config/config.xml"))?;
+    let installed_hash =
+        crate::managed_launch::digest(&super::super::preparation::Sources::installed()?.helper)?;
+    assert_ne!(
+        crate::managed_launch::digest(Path::new(&old.supervisor))?,
+        installed_hash,
+        "native helper update control must change the image"
+    );
+    super::super::preparation::tests::restage_crash_controls(
+        &state,
+        &super::super::preparation::Sources::installed()?,
+        &old,
+        &installed_hash,
+    )?;
+    assert!(super::super::restage::refresh_current_app()?);
+    let refreshed = observed(managed_source_identity(&state)?, &controller)?;
+    same_identity(&before, &refreshed);
+    assert_ne!(before.generation.id, refreshed.generation.id);
+    assert_eq!(selection, private::read(&state.join("runtime.json"))?);
+    assert_eq!(
+        configuration,
+        private::public_file(&state.join("config/config.xml"))?
+    );
+    let new = store
+        .begin(Instant::now() + Duration::from_secs(5))?
+        .current()?
+        .context("new helper journal missing")?
+        .binding()
+        .clone();
+    let mut expected = old.clone();
+    expected.supervisor = new.supervisor.clone();
+    assert_eq!(new, expected);
+    assert_eq!(
+        crate::managed_launch::digest(Path::new(&new.supervisor))?,
+        installed_hash
+    );
+    assert!(!Path::new(&old.supervisor).exists());
+    assert!(!state.join("restage.json").exists());
+    assert!(!super::super::restage::refresh_current_app()?);
+    eprintln!("WINDOWS_TASK_HELPER_RESTAGE_PASS: new signed helper/task, same identity/config/peers/runtime");
     eprintln!("WINDOWS_TASK_PHASE retained Disable");
     disable_current_app()?;
     eprintln!("WINDOWS_TASK_PHASE retained Disable complete");

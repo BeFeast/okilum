@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exercise the production signed native Task/Connect/Stop factory on an empty hosted account."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -102,13 +104,25 @@ def check(runtime, notices):
             cleanup_client = initial / 'okilum.exe'
             run(cleanup_client, 'initial', evidence, state, env)
             shutil.copytree(initial, updated)
+            # Model a new installed helper image, retaining the same executable
+            # code/protocol. Change the PE COFF timestamp BEFORE signing, then
+            # require a different hash; the production signer/guard stays active.
+            changed_helper = updated / 'okilum-sync-supervisor.exe'
+            image = bytearray(helper.read_bytes())
+            pe = struct.unpack_from('<I', image, 0x3c)[0]
+            timestamp = struct.unpack_from('<I', image, pe + 8)[0]
+            struct.pack_into('<I', image, pe + 8, (timestamp + 1) & 0xffffffff)
+            changed_helper.write_bytes(image)
+            subprocess.run([*powershell, '-Action', 'sign', '-Metadata', str(metadata), '-File', str(changed_helper)], check=True, timeout=90, stdin=subprocess.DEVNULL)
+            if hashlib.sha256(changed_helper.read_bytes()).digest() == hashlib.sha256((initial / 'okilum-sync-supervisor.exe').read_bytes()).digest():
+                raise RuntimeError('helper update control did not change the installed hash')
             cleanup_client = updated / 'okilum.exe'
             # The actual service must run its retained helper/runtime, outside
             # the old package. Removing this source is the update positive control.
             shutil.rmtree(initial)
             run(cleanup_client, 'resumed', evidence, state, env)
             cleanup_client = None
-            print('WINDOWS_SIGNED_TASK_UPDATE_PASS: signed production factory, retained pairing/identity, exact Job owner, captured Stop/exit and re-enable', flush=True)
+            print('WINDOWS_SIGNED_TASK_UPDATE_PASS: signed production factory, retained pairing/identity, exact Job owner, authenticated helper re-stage/rebind, captured Stop/exit and re-enable', flush=True)
         finally:
             if cleanup_client is not None and cleanup_client.exists():
                 try:
