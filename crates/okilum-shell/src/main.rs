@@ -7009,7 +7009,7 @@ impl Reader {
             }),
             reader_perf_probe::Step::Finish => {
                 if let Err(error) = probe.write_report(targets.len()) {
-                    eprintln!("{}: {error}", reader_perf_probe::ENV);
+                    diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
                 }
                 cx.quit();
             }
