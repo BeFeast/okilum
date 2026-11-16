@@ -79,7 +79,7 @@
                  let retired = highlighter
                      .borrow_mut()
                      .apply_background_tree(tree, &text_for_apply, injections);
-@@ -392,4 +433,116 @@
+@@ -392,4 +433,121 @@
          assert!(adapter.inner.borrow().tree().is_some());
          assert!(!adapter.inner.borrow().semantic_spans(&(0..128)).is_empty());
      }
@@ -121,14 +121,15 @@
 +        }));
 +        v.run_until_parked();
 +        scheduler.clock().advance(Duration::from_millis(151));
-+        // Admit the existing worker, then run only background. Its Task retains
-+        // the completed output; no proxy await, worker gate or extra Tree clone.
++        // A scheduler tick runs at most one task. Stop immediately after the
++        // real worker constructs its output and returns; no foreground tick can
++        // poll the completed Task before the next assertion/cancelling update.
++        // Other background tasks may be queued, so queue counts are not a
++        // trustworthy parse-admission signal.
 +        for _ in 0..2000 {
-+            if scheduler.pending_task_counts().1 != 0 { break; }
-+            assert!(scheduler.tick(), "production parse must be admitted");
++            if COMPLETED_PARSE_OUTPUT.with(|count| count.get().0) != 0 { break; }
++            assert!(scheduler.tick(), "production parser output must complete");
 +        }
-+        assert!(scheduler.pending_task_counts().1 != 0);
-+        while scheduler.tick_background_only() {}
 +        let (created, layers) = COMPLETED_PARSE_OUTPUT.with(|count| count.get());
 +        assert_eq!(created, 1, "actual parser output readiness must fire");
 +        assert!(layers >= 24);
@@ -171,6 +172,10 @@
 +        }
 +        v.run_until_parked();
 +        assert!(!adapter.is_pending());
++        if !cancel {
++            assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), old_layers,
++                "accepted publication must retire exactly its previous injection layers");
++        }
 +        assert_eq!(ABANDONED_PARSE_OUTPUTS.with(|count| count.get()), usize::from(cancel),
 +            "accepted output must be consumed rather than scheduled for abandonment cleanup");
 +        let mut fresh = SyntaxHighlighter::new("markdown");
