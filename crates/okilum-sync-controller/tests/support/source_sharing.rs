@@ -795,6 +795,9 @@ fn fixture_lifecycle_control() -> Result<()> {
     Ok(())
 }
 
+/// `$TMPDIR` file naming the zone the retention control ran in (#2567).
+const ZONE_EVIDENCE: &str = "issue2567-retention-zone";
+
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
@@ -982,7 +985,8 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
         Ok((stamp.into(), epoch.parse()?))
     };
     let zone = date(&["+%Z %z"])?;
-    println!("#2567 retention control timezone: {zone}");
+    // Evidence for the driver, outside libtest's interleaved `... ok` lines.
+    fs::write(std::env::temp_dir().join(ZONE_EVIDENCE), &zone)?;
     let ((old_stamp, old_epoch), (new_stamp, new_epoch)) = (stamp(31)?, stamp(29)?);
     let expired = archive.join(format!("trim~{old_stamp}.md"));
     let retained = archive.join(format!("trim~{new_stamp}.md"));

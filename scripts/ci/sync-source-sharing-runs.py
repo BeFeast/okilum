@@ -41,14 +41,21 @@ ZONE_TEST = "managed_history_2045_restore_retention_and_migration"
 ZONE = "Asia/Jerusalem"
 
 
-def zone_passed(exit_code, output):
+ZONE_EVIDENCE = "issue2567-retention-zone"
+
+
+def ran_in(work, *zones):
+    """The retention control records `date '+%Z %z'` in its own TMPDIR."""
+    evidence = work / ZONE_EVIDENCE
+    return evidence.is_file() and evidence.read_text().strip() in zones
+
+
+def zone_passed(exit_code, output, work):
     """The DST-zone trial ran exactly the retention test, in that zone."""
-    lines = output.splitlines()
     return (exit_code == 0
-            and f"test source_sharing::{ZONE_TEST} ... ok" in lines
+            and f"test source_sharing::{ZONE_TEST} ... ok" in output.splitlines()
             and "test result: ok. 1 passed;" in output
-            and ("#2567 retention control timezone: IST +0200" in output
-                 or "#2567 retention control timezone: IDT +0300" in output))
+            and ran_in(work, "IST +0200", "IDT +0300"))
 
 
 def main():
@@ -98,13 +105,14 @@ def run_trials(args, evidence, processes):
                         preexec_fn=lifecycle["parent_death_signal"](),
                     )
                 processes.append(process)
-                return process, log
-            process, log = launch(f"run-{number}", "UTC", [
+                return process, log, work
+            process, log, work = launch(f"run-{number}", "UTC", [
                 "source_sharing::", "--skip", "source_sharing::fixture_lifecycle_control"])
-            zone, zone_log = launch(f"run-{number}-zone", ZONE, [
+            zone, zone_log, zone_work = launch(f"run-{number}-zone", ZONE, [
                 f"source_sharing::{ZONE_TEST}", "--exact"])
             trial = {"run": number, "pid": process.pid, "started": time.time(), "log": str(log),
-                     "zone_pid": zone.pid, "zone_log": str(zone_log)}
+                     "work": str(work), "zone_pid": zone.pid, "zone_log": str(zone_log),
+                     "zone_work": str(zone_work)}
             batch.append((process, zone, trial))
         # Launch the entire batch before waiting: no shared Cargo build lock can
         # turn the requested concurrency into a sequence of isolated successes.
@@ -116,9 +124,10 @@ def run_trials(args, evidence, processes):
             zone_output = Path(trial["zone_log"]).read_text()
             passed = {name for name in TESTS if f"test source_sharing::{name} ... ok" in output.splitlines()}
             trial["passed"] = len(passed)
-            trial["zone_ok"] = zone_passed(trial["zone_exit"], zone_output)
+            trial["zone_ok"] = zone_passed(trial["zone_exit"], zone_output, Path(trial["zone_work"]))
             trial["ok"] = (trial["exit"] == 0 and passed == TESTS
-                           and f"test result: ok. {len(TESTS)} passed;" in output and trial["zone_ok"])
+                           and f"test result: ok. {len(TESTS)} passed;" in output
+                           and ran_in(Path(trial["work"]), "UTC +0000") and trial["zone_ok"])
             failed |= not trial["ok"]
             trials.append(trial)
             print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}; "
