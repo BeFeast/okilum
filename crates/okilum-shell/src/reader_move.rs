@@ -1239,8 +1239,11 @@ mod tests {
         for index in 0..23 {
             let folder = root.path().join(format!("Folder/Section {index}"));
             std::fs::create_dir_all(&folder).unwrap();
-            std::fs::write(folder.join("_index.md"), "[[Missing note]]\n[[Missing note]]")
-                .unwrap();
+            std::fs::write(
+                folder.join("_index.md"),
+                "[[Missing note]]\n[[Missing note]]",
+            )
+            .unwrap();
         }
         let preview = Preview::prepare(root.path(), "Folder", "Target/Folder").unwrap();
         assert!(preview.directory.is_some());
