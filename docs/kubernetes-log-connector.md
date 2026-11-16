@@ -4,8 +4,9 @@
 namespace/pod/container using the installed `kubectl` and its existing environment
 and kubeconfig. An optional context is passed to this invocation only; omission
 uses kubectl's current context. Nothing edits credentials, kubeconfig, contexts,
-pods or other cluster resources. There is no pod discovery or implicit container
-selection. Existing kubeconfig exec credential plugins remain kubectl's behavior.
+pods or other cluster resources. The fixed log request performs no pod discovery or implicit container
+selection. The separate [typed discovery adapter](kubernetes-discovery.md)
+exposes read-only resource facts for the next native workspace slice. Existing kubeconfig exec credential plugins remain kubectl's behavior.
 
 The only cluster command is `kubectl logs pod/<pod> --container=<container>`.
 Requests include an explicit namespace, tail count (0–100000), previous-instance
@@ -48,13 +49,12 @@ source, fake transport or headless layout tests.
 
 ## Offline verification
 
-The std-only module can be checked without building the application:
-
-```sh
-rustc --edition=2021 -C linker=/usr/bin/gcc --test \
-  crates/okilum-core/src/log/kubernetes.rs -o /tmp/okilum-kubernetes-tests
-/tmp/okilum-kubernetes-tests
-```
+The connector and discovery synthetic controls live in the core test suite.
+Use the committed-HEAD verification surfaces in [agent checks](agent-checks.md).
+The pre-merge `--fast` gate compiles test targets through clippy but runs no Rust
+test suites; report runtime regression execution separately. The connector now
+exposes the serde-backed discovery submodule and is no longer a standalone
+std-only rustc test target.
 
 Unix tests run a local synthetic process, passing the production argument vector.
 They cover exact bytes (including multiline and unfinished records), literal

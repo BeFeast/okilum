@@ -5,6 +5,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::time::Duration;
 
+/// Typed, bounded resource discovery; independent of the fixed log request.
+pub mod discovery;
+
 const CHUNK_BYTES: usize = 16 * 1024;
 const QUEUED_CHUNKS: usize = 16;
 
