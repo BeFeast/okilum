@@ -98,9 +98,6 @@ fn edit2803_incremental_launch_moves_project_copy_off_foreground(cx: &mut TestAp
         );
         measured
     });
-    eprintln!(
-        "edit2803 project clone positive={positive:?}; actual foreground launch={foreground:?}"
-    );
     assert!(foreground.bytes < positive.bytes,
         "incremental launch copied the whole Projects snapshot on foreground: launch={foreground:?}, actual clone={positive:?}");
     visual.run_until_parked();
