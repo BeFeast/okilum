@@ -1028,15 +1028,15 @@ fn file2811_real_refusals_and_syntax_verdicts_have_one_bottom_home(cx: &mut Test
             "mixed.json",
             "{\n\"a\":1\r\n}",
             Action::Format,
-            "Not formatted.",
-            "Mixed line endings",
+            "Mixed line endings;",
+            "source unchanged.",
         ),
         (
             "deep.json",
             deep.as_str(),
             Action::Format,
-            "Not formatted.",
-            "128 levels",
+            "Format supports JSON nesting up to 128 levels;",
+            "bytes.",
         ),
         (
             "unclosed.json",
@@ -1686,3 +1686,5 @@ fn xml2912_grammar_never_vetoes_valid_xml(cx: &mut TestAppContext) {
         assert_eq!(text(&input, visual), expected, "{name}");
     }
 }
+
+mod xml_large_tests;
