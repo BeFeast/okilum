@@ -1891,7 +1891,11 @@ fn index_link_path(
     if !note && Path::new(path).extension().is_none() {
         return;
     }
-    if !note || !paths.get(key).is_some_and(|file| file.to_lowercase() == key) {
+    let shadowed = note
+        && paths
+            .get(key)
+            .is_some_and(|file| file.to_lowercase() == key);
+    if !shadowed {
         paths.insert(key.to_owned(), path.to_owned());
     }
     let parts: Vec<_> = key.split('/').collect();
