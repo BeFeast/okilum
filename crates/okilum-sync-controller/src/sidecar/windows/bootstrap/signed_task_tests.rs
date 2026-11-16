@@ -128,7 +128,7 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         .binding()
         .clone();
     let selection = private::read(&state.join("runtime.json"))?;
-    let configuration = private::public_file(&state.join("config/config.xml"))?;
+    let configuration = private::public_file(&state.join("config").join("config.xml"))?;
     let installed_hash =
         crate::managed_launch::digest(&super::super::preparation::Sources::installed()?.helper)?;
     assert_ne!(
@@ -149,7 +149,7 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
     assert_eq!(selection, private::read(&state.join("runtime.json"))?);
     assert_eq!(
         configuration,
-        private::public_file(&state.join("config/config.xml"))?
+        private::public_file(&state.join("config").join("config.xml"))?
     );
     let new = store
         .begin(Instant::now() + Duration::from_secs(5))?
