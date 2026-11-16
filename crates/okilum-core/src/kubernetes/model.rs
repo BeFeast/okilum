@@ -209,6 +209,22 @@ impl Pod {
 
 // ---------- Workloads, networking, events, autoscaling ----------
 
+/// A workload's label selector, both parts. Requirements in `match_expressions`
+/// narrow `match_labels`; dropping them would over-match unrelated Pods.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Selector {
+    pub match_labels: BTreeMap<String, String>,
+    pub match_expressions: Vec<SelectorExpression>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectorExpression {
+    pub key: String,
+    /// `In`, `NotIn`, `Exists` or `DoesNotExist` as sent by the server.
+    pub operator: String,
+    pub values: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Namespace {
     pub meta: Meta,
@@ -219,7 +235,7 @@ pub struct Namespace {
 pub struct Deployment {
     pub meta: Meta,
     pub replicas: Option<i32>,
-    pub selector: BTreeMap<String, String>,
+    pub selector: Selector,
     pub observed_generation: Option<i64>,
     pub status_replicas: Option<i32>,
     pub ready: Option<i32>,
@@ -233,7 +249,7 @@ pub struct Deployment {
 pub struct ReplicaSet {
     pub meta: Meta,
     pub replicas: Option<i32>,
-    pub selector: BTreeMap<String, String>,
+    pub selector: Selector,
     pub observed_generation: Option<i64>,
     pub status_replicas: Option<i32>,
     pub ready: Option<i32>,
@@ -710,6 +726,32 @@ fn container(
 struct ApiSelector {
     #[serde(deserialize_with = "nullable")]
     match_labels: BTreeMap<String, String>,
+    #[serde(deserialize_with = "nullable")]
+    match_expressions: Vec<ApiSelectorExpression>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ApiSelectorExpression {
+    key: String,
+    operator: String,
+    #[serde(deserialize_with = "nullable")]
+    values: Vec<String>,
+}
+
+fn selector(api: ApiSelector) -> Selector {
+    Selector {
+        match_labels: api.match_labels,
+        match_expressions: api
+            .match_expressions
+            .into_iter()
+            .map(|e| SelectorExpression {
+                key: e.key,
+                operator: e.operator,
+                values: e.values,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -957,7 +999,7 @@ pub(crate) fn deployment(value: Value) -> Result<Deployment, String> {
     Ok(Deployment {
         meta: meta(api.metadata)?,
         replicas: api.spec.replicas,
-        selector: api.spec.selector.match_labels,
+        selector: selector(api.spec.selector),
         observed_generation: api.status.observed_generation,
         status_replicas: api.status.replicas,
         ready: api.status.ready_replicas,
@@ -975,7 +1017,7 @@ pub(crate) fn replica_set(value: Value) -> Result<ReplicaSet, String> {
         template_hash: meta.labels.get("pod-template-hash").cloned(),
         meta,
         replicas: api.spec.replicas,
-        selector: api.spec.selector.match_labels,
+        selector: selector(api.spec.selector),
         observed_generation: api.status.observed_generation,
         status_replicas: api.status.replicas,
         ready: api.status.ready_replicas,

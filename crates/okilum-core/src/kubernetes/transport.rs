@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 /// One kubectl resolution for every Kubernetes connector (defined next to the
 /// log connector, which predates this module). Nothing here rewrites PATH.
-pub use crate::log::kubernetes::{kubectl_command, KUBECTL};
+pub use crate::log::kubernetes::{kubectl_command, KubectlProgram, KUBECTL};
 
 pub const DEFAULT_MAX_STDOUT: usize = 16 * 1024 * 1024;
 pub const MAX_STDERR: usize = 16 * 1024;
@@ -72,8 +72,9 @@ pub enum Cleanup {
     /// Unix: the whole process group was killed while kubectl was still unreaped.
     /// A descendant that moved to another group or session is not reached.
     ProcessGroup,
-    /// Only the direct kubectl child was killed (Windows): credential-helper
-    /// descendants are not tracked.
+    /// Only the direct kubectl child was killed: always on Windows, and on Unix
+    /// when the process group could not be signalled. Credential-helper
+    /// descendants are not reached.
     DirectChildOnly,
 }
 
@@ -100,13 +101,17 @@ pub struct Kubectl {
 
 impl Default for Kubectl {
     fn default() -> Self {
-        Self {
-            command: Box::new(kubectl_command),
-        }
+        Self::with_program(KubectlProgram::default())
     }
 }
 
 impl Kubectl {
+    /// A configured kubectl executable and PATH, shared with the log connector.
+    pub fn with_program(program: KubectlProgram) -> Self {
+        Self {
+            command: Box::new(move || program.command()),
+        }
+    }
     /// A different program (a local synthetic fixture) receiving the same argv.
     pub fn with_command(command: impl Fn() -> Command + Send + Sync + 'static) -> Self {
         Self {
@@ -195,12 +200,13 @@ fn kill_tree(child: &mut Child) -> Cleanup {
     use rustix::process::{kill_process_group, Pid, Signal};
     let group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
     match group.map(|group| kill_process_group(group, Signal::KILL)) {
-        Some(Ok(())) | Some(Err(Errno::SRCH)) => {}
+        Some(Ok(())) | Some(Err(Errno::SRCH)) => Cleanup::ProcessGroup,
+        // The group could not be signalled: only the direct child is ended.
         _ => {
             let _ = child.kill();
+            Cleanup::DirectChildOnly
         }
     }
-    Cleanup::ProcessGroup
 }
 
 #[cfg(not(unix))]
@@ -376,6 +382,7 @@ fn pump(
     cancel: &Cancel,
     started: Instant,
 ) -> io::Result<Option<End>> {
+    use std::sync::mpsc::{self, RecvTimeoutError};
     enum Message {
         Out(Vec<u8>),
         Err(Vec<u8>),

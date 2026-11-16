@@ -18,7 +18,7 @@ mod transport;
 pub use classify::Failure;
 pub use collect::{
     log_request, Client, Completeness, List, ListQuery, Observation, Rejected, Resource, Slot,
-    Staleness, View, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, MAX_REJECTED,
+    Staleness, Ticket, View, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, MAX_REJECTED,
 };
 pub use discovery::{
     choose_namespace, valid_namespace, valid_object_name, Contexts, KubeContext, NamespaceChoice,
@@ -28,12 +28,12 @@ pub use identity::{Connection, Kind, ResourceId, Sameness, Source};
 pub use model::{
     Condition, Container, ContainerKind, Deployment, Endpoint, EndpointSlice, Event, Health,
     HorizontalPodAutoscaler, Meta, MetricFact, Namespace, ObjectRef, OwnerRef, Pod, Probe,
-    ProbeHandler, Probes, ReplicaSet, ResourceVersion, Resources, Service, ServicePort, SlicePort,
-    State,
+    ProbeHandler, Probes, ReplicaSet, ResourceVersion, Resources, Selector, SelectorExpression,
+    Service, ServicePort, SlicePort, State,
 };
 pub use transport::{
-    kubectl_command, Cancel, Cleanup, End, Kubectl, Limits, Raw, Transport, DEFAULT_MAX_STDOUT,
-    KUBECTL, MAX_STDERR,
+    kubectl_command, Cancel, Cleanup, End, Kubectl, KubectlProgram, Limits, Raw, Transport,
+    DEFAULT_MAX_STDOUT, KUBECTL, MAX_STDERR,
 };
 
 #[cfg(test)]

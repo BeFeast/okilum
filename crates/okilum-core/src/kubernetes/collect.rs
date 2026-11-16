@@ -20,6 +20,10 @@ pub trait Resource: Sized {
     const KIND: Kind;
     fn decode(value: Value) -> Result<Self, String>;
     fn meta(&self) -> &Meta;
+    /// For Events: the UID of the object the event is about.
+    fn involved_uid(&self) -> Option<&str> {
+        None
+    }
 }
 
 macro_rules! resource {
@@ -41,12 +45,24 @@ resource!(model::Deployment, Deployment, model::deployment);
 resource!(model::ReplicaSet, ReplicaSet, model::replica_set);
 resource!(model::Service, Service, model::service);
 resource!(model::EndpointSlice, EndpointSlice, model::endpoint_slice);
-resource!(model::Event, Event, model::event);
 resource!(
     model::HorizontalPodAutoscaler,
     HorizontalPodAutoscaler,
     model::hpa
 );
+
+impl Resource for model::Event {
+    const KIND: Kind = Kind::Event;
+    fn decode(value: Value) -> Result<Self, String> {
+        model::event(value)
+    }
+    fn meta(&self) -> &Meta {
+        &self.meta
+    }
+    fn involved_uid(&self) -> Option<&str> {
+        self.regarding.uid.as_deref()
+    }
+}
 
 /// A value plus where and when it was read. `observed_at` is taken when the
 /// response arrived; it is this source's freshness, not the cluster's clock.
@@ -111,6 +127,20 @@ pub struct ListQuery {
     pub limit: u32,
     /// Equality label selector (`matchLabels`), e.g. a Deployment's selector.
     pub labels: BTreeMap<String, String>,
+    /// Set-based requirements (`matchExpressions`), ANDed with `labels`.
+    pub expressions: Vec<model::SelectorExpression>,
+}
+
+impl ListQuery {
+    /// Exactly a workload's selector: labels and expressions, so related Pods
+    /// are not over-matched.
+    pub fn matching(selector: &model::Selector) -> Self {
+        Self {
+            labels: selector.match_labels.clone(),
+            expressions: selector.match_expressions.clone(),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for ListQuery {
@@ -118,6 +148,7 @@ impl Default for ListQuery {
         Self {
             limit: DEFAULT_LIST_LIMIT,
             labels: BTreeMap::new(),
+            expressions: Vec::new(),
         }
     }
 }
@@ -130,28 +161,57 @@ fn valid_label_part(s: &str, max: usize) -> bool {
         && s.bytes().last().is_none_or(|b| b.is_ascii_alphanumeric())
 }
 
-fn label_selector(labels: &BTreeMap<String, String>) -> Result<Option<String>, Failure> {
-    if labels.is_empty() {
-        return Ok(None);
-    }
+fn valid_label_key(key: &str) -> bool {
+    let (prefix, name) = match key.rsplit_once('/') {
+        Some((prefix, name)) => (Some(prefix), name),
+        None => (None, key),
+    };
+    !name.is_empty()
+        && valid_label_part(name, 63)
+        && prefix.is_none_or(|p| !p.is_empty() && valid_object_name(p))
+}
+
+fn label_selector(query: &ListQuery) -> Result<Option<String>, Failure> {
     let mut parts = Vec::new();
-    for (key, value) in labels {
-        let (prefix, name) = match key.rsplit_once('/') {
-            Some((prefix, name)) => (Some(prefix), name),
-            None => (None, key.as_str()),
-        };
-        let ok = !name.is_empty()
-            && valid_label_part(name, 63)
-            && prefix.is_none_or(|p| !p.is_empty() && valid_object_name(p))
-            && valid_label_part(value, 63);
-        if !ok {
+    for (key, value) in &query.labels {
+        if !valid_label_key(key) || !valid_label_part(value, 63) {
             return Err(Failure::invalid(format!(
                 "Invalid label selector {key}={value}"
             )));
         }
         parts.push(format!("{key}={value}"));
     }
-    Ok(Some(parts.join(",")))
+    for expression in &query.expressions {
+        let key = &expression.key;
+        let values = &expression.values;
+        let invalid = || Failure::invalid(format!("Unsupported selector requirement on {key:?}"));
+        if !valid_label_key(key) {
+            return Err(invalid());
+        }
+        let part = match expression.operator.as_str() {
+            "In" | "NotIn" => {
+                if values.is_empty()
+                    || !values
+                        .iter()
+                        .all(|v| !v.is_empty() && valid_label_part(v, 63))
+                {
+                    return Err(invalid());
+                }
+                let op = if expression.operator == "In" {
+                    "in"
+                } else {
+                    "notin"
+                };
+                format!("{key} {op} ({})", values.join(","))
+            }
+            "Exists" if values.is_empty() => key.clone(),
+            "DoesNotExist" if values.is_empty() => format!("!{key}"),
+            // Refuse rather than drop a requirement and over-match.
+            _ => return Err(invalid()),
+        };
+        parts.push(part);
+    }
+    Ok((!parts.is_empty()).then(|| parts.join(",")))
 }
 
 /// The fixed API path for a kind. Inputs are validated before this is called.
@@ -201,7 +261,50 @@ struct ApiListMeta {
     remaining_item_count: Option<u64>,
 }
 
-pub(crate) fn decode_list<R: Resource>(bytes: &[u8], limit: u32) -> Result<List<R>, Failure> {
+/// What every item of a response must be, beyond its kind.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Expect<'a> {
+    pub namespace: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub involved_uid: Option<&'a str>,
+}
+
+impl Expect<'_> {
+    fn check<R: Resource>(&self, item: &R) -> Result<(), String> {
+        let meta = item.meta();
+        if let Some(namespace) = self.namespace {
+            if meta.namespace.as_deref() != Some(namespace) {
+                return Err(format!(
+                    "namespace {:?} is not the requested {namespace:?}",
+                    meta.namespace
+                ));
+            }
+        }
+        if let Some(name) = self.name {
+            if meta.name != name {
+                return Err(format!(
+                    "name {:?} is not the requested {name:?}",
+                    meta.name
+                ));
+            }
+        }
+        if let Some(uid) = self.involved_uid {
+            if item.involved_uid() != Some(uid) {
+                return Err(format!(
+                    "event is about {:?}, not the requested object {uid:?}",
+                    item.involved_uid()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn decode_list<R: Resource>(
+    bytes: &[u8],
+    limit: u32,
+    expect: Expect<'_>,
+) -> Result<List<R>, Failure> {
     let api: ApiList = serde_json::from_slice(bytes).map_err(|e| Failure::Malformed {
         detail: format!("{} list: {e}", R::KIND.name()),
     })?;
@@ -227,7 +330,7 @@ pub(crate) fn decode_list<R: Resource>(bytes: &[u8], limit: u32) -> Result<List<
     }
     let (mut items, mut rejected, mut rejected_total) = (Vec::new(), Vec::new(), 0);
     for (index, value) in values.into_iter().enumerate() {
-        match R::decode(value) {
+        match R::decode(value).and_then(|item| expect.check(&item).map(|()| item)) {
             Ok(item) => items.push(item),
             Err(reason) => {
                 rejected_total += 1;
@@ -256,7 +359,7 @@ pub(crate) fn decode_list<R: Resource>(bytes: &[u8], limit: u32) -> Result<List<
     })
 }
 
-pub(crate) fn decode_object<R: Resource>(bytes: &[u8]) -> Result<R, Failure> {
+pub(crate) fn decode_object<R: Resource>(bytes: &[u8], expect: Expect<'_>) -> Result<R, Failure> {
     let value: Value = serde_json::from_slice(bytes).map_err(|e| Failure::Malformed {
         detail: format!("{}: {e}", R::KIND.name()),
     })?;
@@ -266,7 +369,9 @@ pub(crate) fn decode_object<R: Resource>(bytes: &[u8]) -> Result<R, Failure> {
             detail: format!("expected {}, got {kind:?}", R::KIND.name()),
         });
     }
-    R::decode(value).map_err(|detail| Failure::Malformed { detail })
+    R::decode(value)
+        .and_then(|item| expect.check(&item).map(|()| item))
+        .map_err(|detail| Failure::Malformed { detail })
 }
 
 /// The typed read adapter. Every call is independent, bounded and cancellable;
@@ -345,7 +450,7 @@ impl<T: Transport> Client<T> {
         query: &ListQuery,
         cancel: &Cancel,
     ) -> Result<Observation<List<model::Namespace>>, Failure> {
-        self.list_at(connection, None, query, &[], cancel)
+        self.list_at(connection, None, query, &[], None, cancel)
     }
 
     /// One bounded page of a namespaced kind.
@@ -361,7 +466,7 @@ impl<T: Transport> Client<T> {
                 "Use namespaces() for cluster-scoped kinds",
             ));
         }
-        self.list_at(connection, Some(namespace), query, &[], cancel)
+        self.list_at(connection, Some(namespace), query, &[], None, cancel)
     }
 
     /// Events whose `involvedObject.uid` is this object's UID, so events of an
@@ -397,6 +502,7 @@ impl<T: Transport> Client<T> {
             Some(namespace),
             query,
             &[("fieldSelector", selector)],
+            Some(&id.uid),
             cancel,
         )
     }
@@ -407,6 +513,7 @@ impl<T: Transport> Client<T> {
         namespace: Option<&str>,
         query: &ListQuery,
         extra: &[(&str, String)],
+        involved_uid: Option<&str>,
         cancel: &Cancel,
     ) -> Result<Observation<List<R>>, Failure> {
         if !(1..=MAX_LIST_LIMIT).contains(&query.limit) {
@@ -420,7 +527,7 @@ impl<T: Transport> Client<T> {
             }
         }
         let mut params = vec![("limit", query.limit.to_string())];
-        if let Some(selector) = label_selector(&query.labels)? {
+        if let Some(selector) = label_selector(query)? {
             params.push(("labelSelector", selector));
         }
         params.extend(extra.iter().cloned());
@@ -429,7 +536,15 @@ impl<T: Transport> Client<T> {
         Ok(Observation {
             source: Self::source(connection, namespace, R::KIND),
             observed_at,
-            value: decode_list(&bytes, query.limit)?,
+            value: decode_list(
+                &bytes,
+                query.limit,
+                Expect {
+                    namespace,
+                    name: None,
+                    involved_uid,
+                },
+            )?,
         })
     }
 
@@ -455,7 +570,14 @@ impl<T: Transport> Client<T> {
         Ok(Observation {
             source: Self::source(connection, namespace, R::KIND),
             observed_at,
-            value: decode_object(&bytes)?,
+            value: decode_object(
+                &bytes,
+                Expect {
+                    namespace,
+                    name: Some(name),
+                    involved_uid: None,
+                },
+            )?,
         })
     }
 }
@@ -528,14 +650,24 @@ pub enum View<'a, T> {
     },
 }
 
-/// The retained state of one `Source`. A failure keeps the previous value as
-/// stale instead of erasing it; a cancelled read changes nothing; a value from
-/// another source, or older than the one held, is refused.
+static READ_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Issued when a read of a slot's source starts. Tickets are a monotonic start
+/// sequence, independent of wall-clock adjustments and of completion order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ticket(u64);
+
+/// The retained state of one `Source`. Results apply in read-start order: a
+/// read that started before the last applied one is refused when it finishes
+/// late, so a slow older read can neither replace newer data nor mark it stale.
+/// A failure keeps the previous value as stale instead of erasing it; a
+/// cancelled read changes nothing; a value from another source is refused.
 #[derive(Clone, Debug)]
 pub struct Slot<T> {
     source: Source,
     latest: Option<Observation<T>>,
     failure: Option<(Failure, SystemTime)>,
+    applied: Option<Ticket>,
 }
 
 impl<T> Slot<T> {
@@ -544,6 +676,7 @@ impl<T> Slot<T> {
             source,
             latest: None,
             failure: None,
+            applied: None,
         }
     }
 
@@ -551,28 +684,34 @@ impl<T> Slot<T> {
         &self.source
     }
 
+    /// Take a ticket immediately before starting a read of this source.
+    pub fn begin(&self) -> Ticket {
+        Ticket(READ_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// Returns whether the result changed this slot.
-    pub fn record(&mut self, result: Result<Observation<T>, Failure>, at: SystemTime) -> bool {
+    pub fn record(
+        &mut self,
+        ticket: Ticket,
+        result: Result<Observation<T>, Failure>,
+        at: SystemTime,
+    ) -> bool {
+        if self.applied.is_some_and(|applied| applied >= ticket) {
+            return false;
+        }
         match result {
             Ok(observation) => {
-                if observation.source != self.source
-                    || self
-                        .latest
-                        .as_ref()
-                        .is_some_and(|held| observation.observed_at < held.observed_at)
-                {
+                if observation.source != self.source {
                     return false;
                 }
                 self.latest = Some(observation);
                 self.failure = None;
-                true
             }
-            Err(Failure::Cancelled) => false,
-            Err(failure) => {
-                self.failure = Some((failure, at));
-                true
-            }
+            Err(Failure::Cancelled) => return false,
+            Err(failure) => self.failure = Some((failure, at)),
         }
+        self.applied = Some(ticket);
+        true
     }
 
     pub fn view(&self, now: SystemTime, max_age: Duration) -> View<'_, T> {

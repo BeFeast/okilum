@@ -10,12 +10,36 @@ const QUEUED_CHUNKS: usize = 16;
 
 /// The program every Kubernetes connector runs, resolved by the OS against the
 /// PATH the application received. The typed read adapter (`crate::kubernetes`)
-/// uses this same function, so the two cannot pick different executables.
+/// uses the same `KubectlProgram`, so the two cannot pick different executables.
 /// Kept here so this module still builds on its own (docs/kubernetes-log-connector.md).
 pub const KUBECTL: &str = "kubectl";
 
+/// Which kubectl to run and, optionally, the PATH it and its kubeconfig exec
+/// credential plugins see. A GUI launch may lack the shell's PATH; a configured
+/// `search_path` reaches kubectl and every helper it starts. The default keeps
+/// the inherited environment unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KubectlProgram {
+    pub executable: Option<std::path::PathBuf>,
+    pub search_path: Option<std::ffi::OsString>,
+}
+
+impl KubectlProgram {
+    pub fn command(&self) -> Command {
+        let executable = self
+            .executable
+            .as_deref()
+            .unwrap_or(std::path::Path::new(KUBECTL));
+        let mut command = Command::new(executable);
+        if let Some(path) = &self.search_path {
+            command.env("PATH", path);
+        }
+        command
+    }
+}
+
 pub fn kubectl_command() -> Command {
-    Command::new(KUBECTL)
+    KubectlProgram::default().command()
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +107,12 @@ impl Request {
     /// Start only after the user explicitly selects the target. No discovery,
     /// credential creation, shell interpolation, retries or cluster mutations.
     pub fn open(&self) -> io::Result<Session> {
-        let mut command = kubectl_command();
+        self.open_with(&KubectlProgram::default())
+    }
+
+    /// `open` with a configured kubectl program (see `KubectlProgram`).
+    pub fn open_with(&self, program: &KubectlProgram) -> io::Result<Session> {
+        let mut command = program.command();
         command.args(self.args()?);
         Session::spawn(command)
     }

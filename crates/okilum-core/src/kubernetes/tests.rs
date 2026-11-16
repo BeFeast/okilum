@@ -143,6 +143,7 @@ fn reads_are_fixed_raw_gets_with_the_explicit_context() {
     let query = ListQuery {
         limit: 50,
         labels: BTreeMap::from([("app".into(), "checkout".into())]),
+        ..Default::default()
     };
     let listed = client
         .list::<Pod>(&connection("team/a"), "shop", &query, &Cancel::new())
@@ -574,7 +575,7 @@ fn decodes_workload_service_slice_and_hpa_facts() {
             ok(list(
                 "ReplicaSet",
                 vec![json!({
-                    "metadata": {"name": "checkout-7d9f", "uid": "rs-1", "resourceVersion": "11",
+                    "metadata": {"name": "checkout-7d9f", "namespace": "shop", "uid": "rs-1", "resourceVersion": "11",
                                  "labels": {"pod-template-hash": "7d9f"},
                                  "ownerReferences": [{"kind": "Deployment", "name": "checkout", "uid": "dep-1", "controller": true}]},
                     "spec": {"replicas": 3}, "status": {"replicas": 3, "readyReplicas": 2}
@@ -597,7 +598,7 @@ fn decodes_workload_service_slice_and_hpa_facts() {
             ok(list(
                 "EndpointSlice",
                 vec![json!({
-                    "metadata": {"name": "checkout-x1", "uid": "es-1", "resourceVersion": "13",
+                    "metadata": {"name": "checkout-x1", "namespace": "shop", "uid": "es-1", "resourceVersion": "13",
                                  "labels": {"kubernetes.io/service-name": "checkout"}},
                     "addressType": "IPv4",
                     "endpoints": [{"addresses": ["10.0.0.7"], "conditions": {"ready": false, "serving": false, "terminating": false},
@@ -631,7 +632,7 @@ fn decodes_workload_service_slice_and_hpa_facts() {
         (dep.replicas, dep.ready, dep.unavailable),
         (Some(3), Some(2), Some(1))
     );
-    assert_eq!(dep.selector["app"], "checkout");
+    assert_eq!(dep.selector.match_labels["app"], "checkout");
     let rs = client.list::<ReplicaSet>(&conn, "shop", &q, &c).unwrap();
     let rs = &rs.value.items[0];
     assert_eq!(rs.template_hash.as_deref(), Some("7d9f"));
@@ -889,13 +890,14 @@ fn failures_keep_the_last_value_as_stale_per_source() {
     let mut pods = Slot::new(first.source.clone());
     let mut events = Slot::<u32>::new(observation(t0, Kind::Event).source);
     assert_eq!(pods.view(t0, max_age), View::Unread);
-    assert!(pods.record(Ok(first.clone()), t0));
+    let before_failure = pods.begin();
+    assert!(pods.record(pods.begin(), Ok(first.clone()), t0));
     assert_eq!(pods.view(t0, max_age), View::Fresh(&first));
 
     let denied = Failure::Forbidden {
         detail: "events".into(),
     };
-    assert!(events.record(Err(denied.clone()), t0));
+    assert!(events.record(events.begin(), Err(denied.clone()), t0));
     assert!(matches!(events.view(t0, max_age), View::Failed { .. }));
     assert_eq!(
         pods.view(t0, max_age),
@@ -907,7 +909,7 @@ fn failures_keep_the_last_value_as_stale_per_source() {
     let expired = Failure::AuthExpired {
         detail: "token".into(),
     };
-    assert!(pods.record(Err(expired.clone()), t1));
+    assert!(pods.record(pods.begin(), Err(expired.clone()), t1));
     assert_eq!(
         pods.view(t1, max_age),
         View::Stale {
@@ -919,20 +921,20 @@ fn failures_keep_the_last_value_as_stale_per_source() {
         }
     );
     assert!(
-        !pods.record(Err(Failure::Cancelled), t1),
+        !pods.record(pods.begin(), Err(Failure::Cancelled), t1),
         "cancel changes nothing"
     );
     assert!(
-        !pods.record(Ok(observation(t0 - Duration::from_secs(1), Kind::Pod)), t1),
-        "older refused"
+        !pods.record(before_failure, Ok(observation(t1, Kind::Pod)), t1),
+        "a read started earlier is refused"
     );
     assert!(
-        !pods.record(Ok(observation(t1, Kind::Service)), t1),
+        !pods.record(pods.begin(), Ok(observation(t1, Kind::Service)), t1),
         "other source refused"
     );
 
     let second = observation(t1, Kind::Pod);
-    assert!(pods.record(Ok(second.clone()), t1));
+    assert!(pods.record(pods.begin(), Ok(second.clone()), t1));
     assert_eq!(pods.view(t1, max_age), View::Fresh(&second));
     let later = t1 + Duration::from_secs(61);
     assert!(matches!(
@@ -942,6 +944,35 @@ fn failures_keep_the_last_value_as_stale_per_source() {
             ..
         }
     ));
+}
+
+#[test]
+fn an_older_started_read_that_finishes_last_changes_nothing() {
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000);
+    let max_age = Duration::from_secs(60);
+    let mut slot = Slot::new(observation(t0, Kind::Pod).source);
+    let slow = slot.begin();
+    let fast = slot.begin();
+    // The newer read finishes first.
+    let newer = Observation {
+        value: 2,
+        ..observation(t0, Kind::Pod)
+    };
+    assert!(slot.record(fast, Ok(newer.clone()), t0));
+    // The older read finishes later, with a later wall-clock time: neither its
+    // value nor its failure may replace or stale the newer observation.
+    let late = t0 + Duration::from_secs(10);
+    assert!(!slot.record(slow, Ok(observation(late, Kind::Pod)), late));
+    let denied = Failure::Forbidden {
+        detail: "late".into(),
+    };
+    assert!(!slot.record(slow, Err(denied), late));
+    assert_eq!(slot.view(late, max_age), View::Fresh(&newer));
+    // A cancelled newer read does not block a later one.
+    let cancelled = slot.begin();
+    assert!(!slot.record(cancelled, Err(Failure::Cancelled), late));
+    let next = slot.begin();
+    assert!(slot.record(next, Ok(observation(late, Kind::Pod)), late));
 }
 
 // ---------- Real process transport (synthetic sh fixture) ----------
@@ -1278,4 +1309,191 @@ fn reads_leave_no_threads_or_pipes_behind_a_helper_holding_stderr() {
         "{threads} -> {threads_after} threads"
     );
     assert!(fds_after < fds + 20, "{fds} -> {fds_after} fds");
+}
+
+// ---------- Ported from #3015 (feat/kubernetes-discovery-3009, 1f2f6a5c2) ----------
+
+#[test]
+fn responses_must_be_the_object_and_namespace_that_were_asked_for() {
+    let mut elsewhere = pod_json("uid-other");
+    elsewhere["metadata"]["namespace"] = json!("billing");
+    let fake = Fake::new(vec![
+        pods_route(ok(list("Pod", vec![pod_json("uid-1"), elsewhere]))),
+        ("pods/checkout-7d9f-abcde", ok(pod_json("uid-1"))),
+        (
+            "events?",
+            ok(list(
+                "Event",
+                vec![
+                    json!({"metadata": {"name": "ok.1", "namespace": "shop", "uid": "ev-1", "resourceVersion": "5"},
+                           "involvedObject": {"kind": "Pod", "name": "checkout-7d9f-abcde", "uid": "uid-1"}}),
+                    json!({"metadata": {"name": "other.1", "namespace": "shop", "uid": "ev-2", "resourceVersion": "6"},
+                           "involvedObject": {"kind": "Pod", "name": "checkout-7d9f-abcde", "uid": "uid-old"}}),
+                ],
+            )),
+        ),
+    ]);
+    let client = Client::new(fake, Limits::default());
+    let (conn, cancel) = (connection("a"), Cancel::new());
+    // Inside a list, a mismatched item is rejected, not the whole list.
+    let pods = client
+        .list::<Pod>(&conn, "shop", &ListQuery::default(), &cancel)
+        .unwrap()
+        .value;
+    assert_eq!(pods.items.len(), 1);
+    assert_eq!(pods.rejected_total, 1);
+    assert!(pods.rejected[0].reason.contains("billing"));
+    assert!(!pods.is_complete());
+    // A get that returns a different object is malformed.
+    // Control: the requested object itself is accepted.
+    assert!(client
+        .get::<Pod>(&conn, "shop", "checkout-7d9f-abcde", &cancel)
+        .is_ok());
+    let fake = Fake::new(vec![("pods/checkout-other", ok(pod_json("uid-1")))]);
+    let other = Client::new(fake, Limits::default());
+    assert!(matches!(
+        other.get::<Pod>(&conn, "shop", "checkout-other", &cancel),
+        Err(Failure::Malformed { .. })
+    ));
+    let mut moved = pod_json("uid-1");
+    moved["metadata"]["namespace"] = json!("billing");
+    let fake = Fake::new(vec![("pods/checkout-7d9f-abcde", ok(moved))]);
+    assert!(matches!(
+        Client::new(fake, Limits::default()).get::<Pod>(
+            &conn,
+            "shop",
+            "checkout-7d9f-abcde",
+            &cancel
+        ),
+        Err(Failure::Malformed { .. })
+    ));
+    // Related events about another UID are rejected.
+    let id = client
+        .get::<Pod>(&conn, "shop", "checkout-7d9f-abcde", &cancel)
+        .unwrap()
+        .id();
+    let events = client
+        .related_events(&conn, &id, &ListQuery::default(), &cancel)
+        .unwrap()
+        .value;
+    assert_eq!(events.items.len(), 1);
+    assert_eq!(events.items[0].meta.uid, "ev-1");
+    assert_eq!(events.rejected_total, 1);
+}
+
+#[test]
+fn workload_selectors_keep_match_expressions_for_related_pods() {
+    let deployment = json!({
+        "kind": "Deployment",
+        "metadata": meta("checkout", "dep-1", "10"),
+        "spec": {"replicas": 2, "selector": {
+            "matchLabels": {"app": "checkout"},
+            "matchExpressions": [
+                {"key": "tier", "operator": "In", "values": ["api", "web"]},
+                {"key": "canary", "operator": "DoesNotExist"}
+            ]}},
+        "status": {}
+    });
+    let fake = Fake::new(vec![
+        ("deployments/checkout", ok(deployment)),
+        pods_route(ok(list("Pod", vec![]))),
+    ]);
+    let client = Client::new(fake, Limits::default());
+    let (conn, cancel) = (connection("a"), Cancel::new());
+    let dep = client
+        .get::<Deployment>(&conn, "shop", "checkout", &cancel)
+        .unwrap()
+        .value;
+    assert_eq!(
+        dep.selector.match_expressions,
+        [
+            SelectorExpression {
+                key: "tier".into(),
+                operator: "In".into(),
+                values: vec!["api".into(), "web".into()]
+            },
+            SelectorExpression {
+                key: "canary".into(),
+                operator: "DoesNotExist".into(),
+                values: vec![]
+            },
+        ]
+    );
+    client
+        .list::<Pod>(&conn, "shop", &ListQuery::matching(&dep.selector), &cancel)
+        .unwrap();
+    let call = client.transport_calls().pop().unwrap();
+    assert_eq!(
+        call.last().unwrap(),
+        "--raw=/api/v1/namespaces/shop/pods?limit=500&labelSelector=app%3Dcheckout%2Ctier+in+%28api%2Cweb%29%2C%21canary"
+    );
+    // An operator this adapter cannot express is refused, never dropped.
+    let mut unknown = dep.selector.clone();
+    unknown.match_expressions[0].operator = "Gt".into();
+    assert!(matches!(
+        client.list::<Pod>(&conn, "shop", &ListQuery::matching(&unknown), &cancel),
+        Err(Failure::InvalidRequest { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn gui_executable_and_path_reach_synthetic_credential_helper() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("synthetic-credential-helper");
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\nprintf '{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{\"resourceVersion\":\"1\"},\"items\":[]}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let executable = directory.path().join("synthetic kubectl");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\n[ \"$1\" = '--context=synthetic/team' ] || exit 9\nsynthetic-credential-helper\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let program = KubectlProgram {
+        executable: Some(executable.clone()),
+        search_path: Some(directory.path().as_os_str().into()),
+    };
+    let (conn, cancel) = (connection("synthetic/team"), Cancel::new());
+    let client = Client::new(Kubectl::with_program(program.clone()), Limits::default());
+    let result = client
+        .list::<Pod>(&conn, "shop", &ListQuery::default(), &cancel)
+        .unwrap();
+    assert!(result.value.is_empty());
+    // The log connector resolves the same program and PATH.
+    let request = crate::log::kubernetes::Request {
+        context: Some("synthetic/team".into()),
+        namespace: "shop".into(),
+        pod: "checkout-7d9f-abcde".into(),
+        container: "api".into(),
+        previous: false,
+        follow: false,
+        tail_lines: 10,
+    };
+    let mut session = request.open_with(&program).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        assert!(Instant::now() < deadline);
+        if let Some(crate::log::kubernetes::Event::Exited(status)) =
+            session.next(Duration::from_millis(20)).unwrap()
+        {
+            break status;
+        }
+    };
+    assert!(status.success());
+    // Negative control: without the helper's PATH the exact same child fails.
+    let negative = KubectlProgram {
+        executable: Some(executable),
+        search_path: Some("/nonexistent/synthetic-path".into()),
+    };
+    let client = Client::new(Kubectl::with_program(negative), Limits::default());
+    assert!(client
+        .list::<Pod>(&conn, "shop", &ListQuery::default(), &cancel)
+        .is_err());
 }
