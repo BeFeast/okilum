@@ -153,7 +153,7 @@ struct Harness<'a> {
     started: Rc<RefCell<Started>>,
 }
 
-fn open(cx: &mut TestAppContext, routes: Vec<(&'static str, Raw)>) -> Harness<'_> {
+fn open<'a>(cx: &'a mut TestAppContext, routes: Vec<(&'static str, Raw)>) -> Harness<'a> {
     cx.update(|cx| {
         crate::test_init(cx);
         reader_log::bind_keys(cx);
