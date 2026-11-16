@@ -52,13 +52,23 @@ directory sync is still unresolved recovery and does not expire. No per-note pru
 
 On Linux and macOS, **Note history** also reads the vault's default `.stversions`
 store. **Recover notes…** includes deleted Sync notes, previews their exact bytes
-and offers **Restore to original path**. Restore refuses an appearing destination,
+and offers **Restore to original path…**. Restore refuses an appearing destination,
 unsaved editors and unrelated draft journals. The original parent folder must
 still exist; **Save as recovered note…** offers another destination. Overwritten
 notes use the same revision-checked, recoverable byte transaction as Encoding
 Repair; the displaced current contents remain in durable application history.
 The reviewed byte revision is captured when a version is selected. An edit after
 that preview blocks Restore. Archives remain in `.stversions` after restoration.
+
+A Sync archive under a path that no longer exists may be the old path of a note
+renamed or moved on another computer: Syncthing archives that path exactly like
+a deletion, and a note's identity is its vault-relative path (PRD §4). Recover
+notes therefore never matches it to another note by identical bytes. The preview
+states both possibilities and the exact file Restore will create, and
+**Restore to original path…** writes nothing until that notice is confirmed: if
+the note was renamed, Restore makes a second, separate copy. Every guard is
+rechecked after confirmation, and exclusive creation still refuses a file that
+appears meanwhile (#2568).
 
 Discovery is read-only and descriptor-relative, rejects symlinks, and bounds each
 request to 10,000 entries, 100 versions and 16 MiB. Limits and unreadable entries
