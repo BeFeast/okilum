@@ -217,10 +217,7 @@ impl<D: StateDir> Store<D> {
             );
             let (current, cancelled) = {
                 let tx = self.begin(deadline)?;
-                let current = tx
-                    .current()?
-                    .context("Sync journal disappeared")?
-                    .clone();
+                let current = tx.current()?.context("Sync journal disappeared")?.clone();
                 let cancelled = self.plan()?.is_none_or(|plan| plan.cancelled);
                 (current, cancelled)
             };

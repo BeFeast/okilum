@@ -285,7 +285,10 @@ fn user_disable_identical_to_planned_step_is_still_respected() -> Result<()> {
     assert!(!host.0.borrow().running);
     let stopped = planned(&host, "stopped");
     let disabled = user_disable(&store, &host)?;
-    assert_eq!(disabled, stopped, "the collision this marker flag exists for");
+    assert_eq!(
+        disabled, stopped,
+        "the collision this marker flag exists for"
+    );
     assert!(!run(&store, &mut host)?);
     assert_eq!(current(&host), disabled);
     assert!(!store.helper_restage_pending()?);
