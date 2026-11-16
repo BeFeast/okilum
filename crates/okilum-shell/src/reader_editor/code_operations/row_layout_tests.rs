@@ -29,6 +29,11 @@ fn prepare(f: &tests::Fixture, v: &mut VisualTestContext) {
     });
     tests::settle(v);
     draw(v);
+    // The production syntax adapter debounces for 150 ms; establish its
+    // published styles before comparing cold and reused geometry.
+    v.executor().advance_clock(Duration::from_millis(151));
+    v.run_until_parked();
+    draw(v);
 }
 
 #[gpui::test]
@@ -130,7 +135,9 @@ fn edit2803_reused_row_geometry_matches_cold_layout_and_styles_invalidate(cx: &m
         // the viewport and scroll state used by this strict geometry oracle.
         for language in ["plain", "rust"] {
             f.input.update(v, |i, cx| i.set_highlighter(language, cx));
-            tests::settle(v);
+            draw(v);
+            v.executor().advance_clock(Duration::from_millis(151));
+            v.run_until_parked();
             draw(v);
         }
         let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
