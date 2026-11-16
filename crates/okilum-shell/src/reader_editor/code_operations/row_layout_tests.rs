@@ -120,26 +120,93 @@ fn geometry(
     })
 }
 
+// Exercise the real TextRun composition seam deterministically. Changing a
+// language name alone need not change effective styles (and is not a control).
+struct Tint {
+    language: SharedString,
+    color: gpui::Hsla,
+    styles_seen: Rc<std::cell::Cell<usize>>,
+}
+impl gpui_component::input::InputHighlighter for Tint {
+    fn language(&self) -> SharedString {
+        self.language.clone()
+    }
+    fn update(
+        &mut self,
+        _: Option<gpui_component::input::InputEdit>,
+        _: &ropey::Rope,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<EditorState>,
+    ) {
+    }
+    fn styles(
+        &self,
+        range: &Range<usize>,
+        _: &dyn gpui_component::input::HighlightStyleResolver,
+    ) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+        self.styles_seen.set(self.styles_seen.get() + 1);
+        vec![(
+            range.clone(),
+            gpui::HighlightStyle {
+                color: Some(self.color),
+                ..Default::default()
+            },
+        )]
+    }
+    fn fold_ranges(&self, _: &ropey::Rope) -> Vec<gpui_component::input::FoldRange> {
+        Vec::new()
+    }
+}
+fn tint(f: &tests::Fixture, v: &mut VisualTestContext, color: gpui::Hsla) {
+    let seen = Rc::new(std::cell::Cell::new(0));
+    let observed = seen.clone();
+    f.input.update(v, |i, cx| {
+        i.set_highlighter_factory(
+            Rc::new(move |language| {
+                Some(Box::new(Tint {
+                    language: language.to_owned().into(),
+                    color,
+                    styles_seen: observed.clone(),
+                }))
+            }),
+            cx,
+        );
+    });
+    draw(v);
+    assert!(seen.get() > 0, "actual style composition must fire");
+}
+
 #[gpui::test]
 fn edit2803_reused_row_geometry_matches_cold_layout_and_styles_invalidate(cx: &mut TestAppContext) {
     let original = source();
     let (f, v) = tests::open_file(cx, &original, "geometry.rs");
     prepare(&f, v);
+    let ink: gpui::Hsla = gpui::rgb(0x2233aa).into();
+    let alternate: gpui::Hsla = gpui::rgb(0xaa3322).into();
+    tint(&f, v, ink);
+    let before_edit = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    let short = original.rfind("short").unwrap();
+    f.input.update_in(v, |i, w, cx| {
+        i.replace_source_range(short..short, "!", w, cx)
+    });
+    draw(v);
+    let reused = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    assert!(
+        reused.source_row_cache_hits >= before_edit.source_row_cache_hits + 2,
+        "geometry oracle must start from actual reused rows"
+    );
+    let expected = format!("{}!{}", &original[..short], &original[short..]);
     for at in [
         original.find("שלום").unwrap() + 2,
         original.find("\tend").unwrap() + 1,
     ] {
         let warm = geometry(&f, v, at);
         let before = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
-        // A style/language round trip gives a cold Rust layout while keeping
-        // the viewport and scroll state used by this strict geometry oracle.
-        for language in ["plain", "rust"] {
-            f.input.update(v, |i, cx| i.set_highlighter(language, cx));
-            draw(v);
-            v.executor().advance_clock(Duration::from_millis(151));
-            v.run_until_parked();
-            draw(v);
-        }
+        // Effective color changes force cold decorated layouts, with the same
+        // font, viewport and scroll state as the actual reused-row snapshot.
+        tint(&f, v, alternate);
+        tint(&f, v, ink);
         let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
         assert!(after.source_row_materialized_bytes > before.source_row_materialized_bytes);
         assert_eq!(
@@ -161,5 +228,8 @@ fn edit2803_reused_row_geometry_matches_cold_layout_and_styles_invalidate(cx: &m
         after.source_row_materialized_bytes > before.source_row_materialized_bytes,
         "viewport changes must invalidate row layouts"
     );
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
+    v.dispatch_action(Undo);
+    v.run_until_parked();
     assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), original);
 }

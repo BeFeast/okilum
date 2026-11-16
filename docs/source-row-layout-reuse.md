@@ -45,13 +45,17 @@ Per-editor opt-in diagnostics require the changed-row path and actual byte
 materialization to fire, then assert that only the changed short row materializes
 and unchanged rows reuse layouts. Source, one Undo/Redo, canonical save and real
 Edit -> Read -> Edit reopening retain exact bytes. A separate fixture compares
-strict far-right caret/hit geometry to a cold style/language round trip at the
-same viewport; effective style changes must invalidate decorated layouts.
+strict far-right caret/hit geometry of actually reused rows to a cold effective-
+color round trip at the same viewport. A deterministic InputHighlighter uses the
+real TextRun composition seam and must fire its style callback; effective style
+changes must invalidate decorated layouts. A language-name-only control did not
+change effective styles and failed its fired-control assertion, so it is not
+counted as evidence.
 Viewport-size changes separately require fresh materialization. The initial
 resize-round-trip geometry oracle failed identically on main and candidate:
 TAB-row caret x changed 1274.5 -> 1290 px with identical source hit offsets.
 That oracle changed scroll state, so it was replaced by the same-viewport
-cold-style oracle, keeping exact absolute caret/hit equality without tolerance.
+cold-color oracle, keeping exact absolute caret/hit equality without tolerance.
 Both original FAILED controls are retained in the external evidence.
 
 The compiled old-production negative restores main's complete vendor stack,
