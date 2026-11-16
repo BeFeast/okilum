@@ -154,7 +154,7 @@
 +            gpui::div().size_full().child(self.0.clone())
 +        }
 +    }
-+    let text = "abc שלום🙂 e\u{301} ".repeat(140_000);
++    let text = "abc 0123456789 ".repeat(160_000);
 +    let mut input = None;
 +    let handle = cx.update(|cx| {
 +        cx.set_global(crate::theme::Theme::default());
