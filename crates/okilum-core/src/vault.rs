@@ -587,8 +587,8 @@ pub struct Vault {
     pub root: PathBuf,
     pub notes: Vec<Note>,
     pub entries: Vec<VaultEntry>,
-    /// Every segment-boundary suffix of a note's path (lowercased, without the
-    /// `.md`) -> the notes carrying that suffix.
+    /// Every segment-boundary suffix of a file path (lowercased, with `.md`
+    /// optional for notes) -> the files carrying that suffix.
     ///
     /// A wikilink is a suffix of a path: `[[alpha]]`, `[[notes/alpha]]` and
     /// `[[a/b/notes/alpha]]` are progressively more qualified names for the same
@@ -598,7 +598,7 @@ pub struct Vault {
     /// path-qualified link was reduced to its last segment before lookup, so
     /// `[[c/note]]` could resolve to a note with no `c/` anywhere in its path.
     suffix_map: HashMap<String, Vec<String>>,
-    /// lowercase full rel path without .md -> rel path
+    /// lowercase full rel file path (without .md for notes) -> rel path
     path_map: HashMap<String, String>,
     pub(crate) aliases: std::collections::BTreeMap<String, Vec<String>>,
     alias_map: HashMap<String, Vec<String>>,
@@ -855,6 +855,7 @@ impl Vault {
             if !entry.file_type().is_file() {
                 continue;
             }
+            index_link_path(&rel, &mut path_map, &mut suffix_map);
             let ext = path
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
@@ -873,19 +874,6 @@ impl Vault {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                let key = rel.to_lowercase();
-                let key = key.trim_end_matches(".md");
-                // Index every suffix, not just the stem: "a/b/note" is reachable
-                // as "note", "b/note" and "a/b/note", and each of those is a
-                // legitimate way to write the link.
-                let segments: Vec<&str> = key.split('/').collect();
-                for i in 0..segments.len() {
-                    suffix_map
-                        .entry(segments[i..].join("/"))
-                        .or_default()
-                        .push(rel.clone());
-                }
-                path_map.insert(key.to_string(), rel.clone());
                 if crate::vault_conventions::asset_content(&rel) {
                     let name = path
                         .file_name()
@@ -1006,16 +994,7 @@ impl Vault {
                         .into_owned(),
                 });
             }
-            let lower = path.to_lowercase();
-            let key = lower.trim_end_matches(".md");
-            self.path_map.insert(key.into(), path.into());
-            let parts: Vec<_> = key.split('/').collect();
-            for i in 0..parts.len() {
-                let values = self.suffix_map.entry(parts[i..].join("/")).or_default();
-                values.push(path.into());
-                values.sort();
-                values.dedup();
-            }
+            index_link_path(path, &mut self.path_map, &mut self.suffix_map);
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
         }
@@ -1030,11 +1009,17 @@ impl Vault {
     /// attachment with that name in path order.
     fn set_attachment_identity(&mut self, path: &str, present: bool) {
         let lower = path.to_lowercase();
+        self.path_map.retain(|_, value| value != path);
+        self.suffix_map.retain(|_, values| {
+            values.retain(|value| value != path);
+            !values.is_empty()
+        });
         self.entries.retain(|entry| entry.path != path);
         self.occupied_paths.remove(&lower);
         self.non_directory_paths.remove(&lower);
         self.symlink_paths.remove(&lower);
         if present {
+            index_link_path(path, &mut self.path_map, &mut self.suffix_map);
             self.occupied_paths.insert(lower);
             self.non_directory_paths.insert(path.to_lowercase());
             self.entries.push(VaultEntry {
@@ -1044,6 +1029,7 @@ impl Vault {
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
         }
         self.refresh_attachment_name(path);
+        self.rebuild_alias_map();
     }
 
     fn refresh_attachment_name(&mut self, path: &str) {
@@ -1082,7 +1068,7 @@ impl Vault {
         for incoming in retained.values_mut() {
             incoming.retain(|link| !selected.contains(&link.path));
         }
-        let identities: HashSet<_> = self.notes.iter().map(|note| &note.path).collect();
+        let identities: HashSet<_> = self.path_map.values().collect();
         retained.retain(|target, incoming| identities.contains(target) && !incoming.is_empty());
         let result = self.build_backlinks_selected(Some(selected), checkpoint, source);
         if result.is_ok() {
@@ -1125,17 +1111,7 @@ impl Vault {
             if service_path(Path::new(&path)) {
                 continue;
             }
-            let key = path.to_lowercase();
-            let key = key.trim_end_matches(".md");
-            let segments: Vec<_> = key.split('/').collect();
-            for i in 0..segments.len() {
-                vault
-                    .suffix_map
-                    .entry(segments[i..].join("/"))
-                    .or_default()
-                    .push(path.clone());
-            }
-            vault.path_map.insert(key.to_owned(), path.clone());
+            index_link_path(&path, &mut vault.path_map, &mut vault.suffix_map);
             vault.entries.push(VaultEntry {
                 path: path.clone(),
                 kind: if crate::vault_conventions::asset_content(&path) {
@@ -1787,6 +1763,7 @@ impl Vault {
         resolver: &Self,
         mut source: impl FnMut(&str) -> Option<Vec<GraphLink>>,
     ) -> Result<()> {
+        let indexed = crate::document_links::IndexedResolver::new(resolver);
         let mut map: HashMap<String, Vec<Backlink>> = HashMap::new();
         for (count, note) in self
             .notes
@@ -1812,10 +1789,18 @@ impl Vault {
                 let targets: Vec<(String, bool)> = match if wiki {
                     self.resolve_from(&target, &note.path)
                 } else {
-                    let resolved =
-                        crate::document_links::resolve(&target, false, resolver, &note.path);
+                    let file = Path::new(&crate::document_links::decode(
+                        target.split('#').next().unwrap_or(&target),
+                    ))
+                    .extension()
+                    .is_some_and(|ext| !ext.eq_ignore_ascii_case("md"));
+                    let resolved = if file {
+                        indexed.resolve(&target, false, &note.path)
+                    } else {
+                        crate::document_links::resolve(&target, false, resolver, &note.path)
+                    };
                     match resolved.status {
-                        "resolved" => Resolution::Resolved {
+                        "resolved" | "attachment" => Resolution::Resolved {
                             path: resolved.candidates[0].clone(),
                         },
                         "ambiguous" => Resolution::Ambiguous {
@@ -1888,6 +1873,34 @@ struct GraphLink {
     wiki: bool,
     context: String,
     property: Option<String>,
+}
+
+/// Notes omit their Markdown extension; all other file extensions stay part
+/// of their identity (#2905), so `[[data.json]]` names `data.json`. An exact
+/// file path wins over a note whose name only differs by `.md`
+/// (`data.json` over `data.json.md`). Files without an extension are not
+/// link targets: `Makefile` would otherwise shadow the note `Makefile.md`.
+fn index_link_path(
+    path: &str,
+    paths: &mut HashMap<String, String>,
+    suffixes: &mut HashMap<String, Vec<String>>,
+) {
+    let lower = path.to_lowercase();
+    let key = lower.trim_end_matches(".md");
+    let note = key != lower;
+    if !note && Path::new(path).extension().is_none() {
+        return;
+    }
+    if !note || !paths.get(key).is_some_and(|file| file.to_lowercase() == key) {
+        paths.insert(key.to_owned(), path.to_owned());
+    }
+    let parts: Vec<_> = key.split('/').collect();
+    for i in 0..parts.len() {
+        let values = suffixes.entry(parts[i..].join("/")).or_default();
+        if let Err(at) = values.binary_search_by(|value| value.as_str().cmp(path)) {
+            values.insert(at, path.to_owned());
+        }
+    }
 }
 
 fn graph_links(text: &str, resolver: &Vault, from: &str) -> Vec<GraphLink> {

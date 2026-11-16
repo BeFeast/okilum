@@ -9,7 +9,8 @@ use std::io::{Read, Write};
 use std::time::UNIX_EPOCH;
 
 // v3 adds alias identities and removes alias declarations from relationship edges.
-const SCHEMA: u32 = 4;
+// v5 resolves non-Markdown backlink targets; old derived graphs must be rebuilt.
+const SCHEMA: u32 = 5;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -426,6 +427,7 @@ fn cached_vault(
         .iter()
         .filter(|entry| entry.kind == EntryKind::Attachment)
     {
+        index_link_path(&entry.path, &mut vault.path_map, &mut vault.suffix_map);
         let path = Path::new(&entry.path);
         let name = path
             .file_name()

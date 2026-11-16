@@ -401,3 +401,22 @@ fn data_file_wikilinks_keep_relative_qualified_and_ambiguous_intent() {
     assert!(vault.backlinks("b/shared.json")[0].ambiguous);
     assert!(vault.backlinks("missing.json").is_empty());
 }
+
+#[test]
+fn data_file_identity_never_shadows_notes() {
+    let (_root, vault) = vault_with(
+        "data-file-shadow-2905",
+        &[
+            ("note.md", "[[Makefile]]\n[[data.json]]\n"),
+            ("Makefile.md", "# Make\n"),
+            ("Makefile", "all:\n"),
+            ("data.json", "{}"),
+            ("data.json.md", "# Data\n"),
+        ],
+    );
+    assert_eq!(vault.resolve("Makefile").path(), Some("Makefile.md"));
+    assert_eq!(vault.backlinks("Makefile.md").len(), 1);
+    assert!(vault.backlinks("Makefile").is_empty());
+    assert_eq!(vault.resolve("data.json").path(), Some("data.json"));
+    assert_eq!(vault.backlinks("data.json").len(), 1);
+}
