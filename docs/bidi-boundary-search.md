@@ -29,9 +29,11 @@ validated against native ligature carets by this patch.
 Two test-only counters observe the actual cluster loop and partition predicates.
 The 4,096-ASCII-grapheme + Hebrew/emoji test requires both counters to fire,
 complete geometry, and the calculated per-cluster work bound. A compiled
-old-production negative restores the full filter with predicate instrumentation;
-it must fail that bound. The differential oracle retains the old implementation
-for small mixed RTL/LTR, combining, emoji ZWJ, isolates, tabs/CRLF, fallback glyphs
+old-production negative was run outside the repository with the full filter and
+predicate instrumentation restored: 16,822,302 visits exceeded the 114,828 bound.
+That negative-control variant does not ship in the patch stack. The differential
+oracle retains the old implementation for small mixed RTL/LTR, combining, emoji
+ZWJ, isolates, tabs/CRLF, fallback glyphs
 and multi-grapheme clusters. It compares exact cells, caret positions, movement,
 selection, hit-testing and boundary ownership; no geometry tolerance is added.
 

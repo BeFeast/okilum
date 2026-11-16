@@ -1,28 +1,6 @@
 --- a/crates/base/src/input/bidi_geometry.rs
 +++ b/crates/base/src/input/bidi_geometry.rs
-@@ -43,19 +43,11 @@
- 
- impl Cell {
-     pub(crate) fn leading(&self) -> Pixels {
--        if self.rtl {
--            self.right
--        } else {
--            self.left
--        }
-+        if self.rtl { self.right } else { self.left }
-     }
- 
-     pub(crate) fn trailing(&self) -> Pixels {
--        if self.rtl {
--            self.left
--        } else {
--            self.right
--        }
-+        if self.rtl { self.left } else { self.right }
-     }
- }
- 
-@@ -100,11 +92,21 @@
+@@ -100,11 +100,21 @@
          for (n, &(start, left)) in visual.iter().enumerate() {
              let right = visual.get(n + 1).map_or(line.width, |(_, x)| *x);
              let end = starts[starts.binary_search(&start).unwrap() + 1];
@@ -49,7 +27,7 @@
              let rtl = bidi.levels[start].is_rtl();
              let count = graphemes.len() - 1;
              // A ligature cluster can span several graphemes. Equal subdivision is
-@@ -493,3 +495,227 @@
+@@ -493,3 +503,227 @@
          }
      }
  }
@@ -81,7 +59,7 @@
 +mod boundary_search_tests {
 +    use super::*;
 +    use ::core::prelude::v1::test;
-+    use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun, point, px};
++    use gpui::{point, px, FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun};
 +
 +    // Frozen old full-filter implementation: independent oracle for cells and
 +    // all public geometry operations, not an alternate production path.
