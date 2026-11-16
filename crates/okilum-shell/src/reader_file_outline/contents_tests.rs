@@ -565,32 +565,20 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn linked2885_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
+fn linked2905_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
     let (reader, visual, _root) = reader_with(
         cx,
         &[
-            ("note.md", "# Note\n\nSee data.json for the numbers.\n"),
+            ("note.md", "# Note\n\nSee [[data.json]] for the numbers.\n"),
             ("data.json", "{\"a\":1}"),
             ("other.json", "{\"b\":2}"),
         ],
         "data.json",
     );
-    // The vault's link graph resolves note targets only today, so a link to a
-    // JSON file is not in `Vault::backlinks`; the panel rule is exercised with
-    // the Reader's backlink state as the graph would set it.
-    reader.update(visual, |r, cx| {
-        r.set_backlinks(
-            vec![okilum_core::vault::Backlink {
-                path: "note.md".into(),
-                title: "Note".into(),
-                context: "See data.json for the numbers.".into(),
-                link: "data.json".into(),
-                ambiguous: false,
-                property: None,
-            }],
-            true,
-        );
-        cx.notify();
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.backlinks.len(), 1);
+        assert_eq!(r.backlinks[0].path, "note.md");
+        assert_eq!(r.backlinks[0].context, "See [[data.json]] for the numbers.");
     });
     settle(visual);
     assert!(visual.debug_bounds("file-contents-heading").is_some());

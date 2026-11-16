@@ -345,3 +345,59 @@ fn backlinks_are_uncapped_and_grouped_by_source_note() {
     let mid = bl.iter().find(|b| b.path == "m/mid.md").unwrap();
     assert_eq!(mid.context_plain(), "also T");
 }
+
+// #2905: data files are graph destinations, never note sources.
+#[test]
+fn data_file_wikilink_has_exactly_one_backlink() {
+    let (_root, vault) = vault_with(
+        "data-file-wiki-2905",
+        &[("note.md", "[[data.json]]\n"), ("data.json", "{}")],
+    );
+    assert_eq!(vault.resolve("data.json").path(), Some("data.json"));
+    let links = vault.backlinks("data.json");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].path, "note.md");
+    assert!(!links[0].ambiguous);
+    assert_eq!(vault.notes.len(), 1);
+}
+
+#[test]
+fn data_file_markdown_links_keep_relative_root_and_suffix_intent() {
+    let (_root, vault) = vault_with(
+        "data-file-markdown-2905",
+        &[
+            ("notes/start.md", "[local](data.json)\n[root](/data.json)\n[explicit](../a/shared.json)\n[ambiguous](shared.json)\n[space](../a/my%20data.json)\n[missing](missing.json)\n"),
+            ("data.json", "{}"),
+            ("notes/data.json", "{}"),
+            ("a/shared.json", "{}"),
+            ("b/shared.json", "{}"),
+            ("a/my data.json", "{}"),
+        ],
+    );
+    assert_eq!(vault.backlinks("notes/data.json")[0].link, "data.json");
+    assert_eq!(vault.backlinks("data.json")[0].link, "/data.json");
+    let shared = vault.backlinks("a/shared.json");
+    assert_eq!(shared.len(), 2);
+    assert!(!shared[0].ambiguous);
+    assert!(shared[1].ambiguous);
+    assert!(vault.backlinks("b/shared.json")[0].ambiguous);
+    assert_eq!(vault.backlinks("a/my data.json").len(), 1);
+    assert!(vault.backlinks("missing.json").is_empty());
+}
+
+#[test]
+fn data_file_wikilinks_keep_relative_qualified_and_ambiguous_intent() {
+    let (_root, vault) = vault_with(
+        "data-file-resolution-2905",
+        &[
+            ("notes/start.md", "[[data.json]]\n[[../a/shared.json]]\n[[shared.json]]\n[[a/shared.json]]\n[[missing.json]]\n"),
+            ("data.json", "{}"),
+            ("a/shared.json", "{}"),
+            ("b/shared.json", "{}"),
+        ],
+    );
+    assert_eq!(vault.backlinks("data.json").len(), 1);
+    assert_eq!(vault.backlinks("a/shared.json").len(), 3);
+    assert!(vault.backlinks("b/shared.json")[0].ambiguous);
+    assert!(vault.backlinks("missing.json").is_empty());
+}
