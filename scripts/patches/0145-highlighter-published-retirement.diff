@@ -1,0 +1,219 @@
+--- a/crates/component/src/highlighter/highlighter.rs
++++ b/crates/component/src/highlighter/highlighter.rs
+@@ -58,6 +58,8 @@
+     /// Parsed injection trees.
+     /// These are built once in update() and queried multiple times in match_styles().
+     injection_layers: Vec<InjectionLayer>,
++    /// The native adapter supplies its existing executor for final published data.
++    retirement_executor: Option<gpui::BackgroundExecutor>,
+ }
+ 
+ /// A parsed injection layer.
+@@ -74,6 +76,12 @@
+ /// trees. Variant field order retains each original path's destruction order.
+ #[must_use = "retire replaced syntax data on the background executor"]
+ pub(crate) enum RetiredSyntax {
++    Released {
++        _query: Option<Query>,
++        _injections_query: Option<Arc<Query>>,
++        _tree: Option<Tree>,
++        _injection_layers: Vec<InjectionLayer>,
++    },
+     Replaced {
+         _tree: Option<Tree>,
+         _injection_layers: Vec<InjectionLayer>,
+@@ -379,7 +387,54 @@
+     static FULL_SOURCE_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+ }
+ 
++impl Drop for SyntaxHighlighter {
++    fn drop(&mut self) {
++        let Some(executor) = self.retirement_executor.take() else {
++            return;
++        };
++        if self.query.is_none()
++            && self.injections_query.is_none()
++            && self.tree.is_none()
++            && self.injection_layers.is_empty()
++        {
++            return;
++        }
++        #[cfg(test)]
++        RELEASED_SYNTAX_SCHEDULED.with(|count| {
++            count.set((count.get().0 + 1, self.injection_layers.len()));
++        });
++        // Final ownership only: active pending coordinates and parser reuse
++        // never leave this object before Drop. Keep parser/source/UI lifetimes
++        // unchanged; this batch owns only existing Send syntax data.
++        let retired = RetiredSyntax::Released {
++            _query: self.query.take(),
++            _injections_query: self.injections_query.take(),
++            _tree: self.tree.take(),
++            _injection_layers: std::mem::take(&mut self.injection_layers),
++        };
++        executor
++            .spawn(async move {
++                drop(retired);
++                #[cfg(test)]
++                RELEASED_SYNTAX_COMPLETED.with(|count| count.set(count.get() + 1));
++            })
++            .detach();
++    }
++}
++
++#[cfg(test)]
++thread_local! {
++    pub(super) static RELEASED_SYNTAX_SCHEDULED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
++    pub(super) static RELEASED_SYNTAX_COMPLETED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
+ impl SyntaxHighlighter {
++    pub(crate) fn retire_on(&mut self, executor: &gpui::BackgroundExecutor) {
++        if self.retirement_executor.is_none() {
++            self.retirement_executor = Some(executor.clone());
++        }
++    }
++
+     /// Create a new SyntaxHighlighter for the given language.
+     pub fn new(lang: &str) -> Self {
+         match Self::build_for_language(&lang) {
+@@ -414,6 +469,7 @@
+             parser: Parser::new(),
+             tree: None,
+             injection_layers: Vec::new(),
++            retirement_executor: None,
+         }
+     }
+ 
+@@ -534,6 +590,7 @@
+             parser,
+             tree: None,
+             injection_layers: Vec::new(),
++            retirement_executor: None,
+         })
+     }
+ 
+--- a/crates/component/src/highlighter/input_adapter.rs
++++ b/crates/component/src/highlighter/input_adapter.rs
+@@ -120,6 +120,7 @@
+         let edit = edit.map(to_tree_sitter_edit);
+         let completed = {
+             let mut highlighter = self.inner.borrow_mut();
++            highlighter.retire_on(cx.background_executor());
+             if text.len() > SYNC_PARSE_MAX_BYTES {
+                 highlighter.edit_tree(edit, text);
+                 false
+@@ -550,4 +551,112 @@
+         completed_parse_output(cx, false);
+     }
+ 
+-}
++    fn published_release_on_reset(cx: &mut TestAppContext, queued: bool) {
++        use super::super::highlighter::{
++            INJECTION_LAYER_DROPS, RELEASED_SYNTAX_COMPLETED, RELEASED_SYNTAX_SCHEDULED,
++        };
++        cx.update(crate::init);
++        let v = cx.add_empty_window();
++        let scheduler = v.dispatcher.scheduler().clone();
++        let source = completed_output_source();
++        let changed = source.replace("owned_0", "after_reload_0");
++        let input = v.update(|window, cx| {
++            cx.new(|cx| {
++                let mut input = EditorState::new(window, cx).language("markdown");
++                input.ensure_highlighter_factory(input_highlighter_factory());
++                input.set_value(source.clone(), window, cx);
++                input.prepare_highlighting(window, cx);
++                input
++            })
++        });
++        v.run_until_parked();
++        assert!(!input.read_with(v, |input, _| input.highlighting_pending()));
++        if queued {
++            input.update_in(v, |input, window, cx| {
++                input.replace_source_range(0..0, "queued שלום🙂\r\n", window, cx);
++            });
++            v.run_until_parked();
++            assert!(
++                input.read_with(v, |input, _| input.highlighting_pending()),
++                "positive: a real debounced foreground continuation retains the highlighter"
++            );
++        }
++        RELEASED_SYNTAX_SCHEDULED.with(|count| count.set((0, 0)));
++        RELEASED_SYNTAX_COMPLETED.with(|count| count.set(0));
++        INJECTION_LAYER_DROPS.with(|count| count.set(0));
++        // The actual native API used by clean reload. It preserves the editor
++        // entity while replacing its source/history base and syntax adapter.
++        input.update_in(v, |input, window, cx| {
++            input.set_value(changed.clone(), window, cx);
++            input.prepare_highlighting(window, cx);
++        });
++        for _ in 0..2000 {
++            if RELEASED_SYNTAX_SCHEDULED.with(|count| count.get().0) == 1 {
++                break;
++            }
++            assert!(
++                scheduler.tick(),
++                "actual final highlighter owner must be released"
++            );
++        }
++        let (scheduled, layers) = RELEASED_SYNTAX_SCHEDULED.with(|count| count.get());
++        assert_eq!(
++            scheduled, 1,
++            "final release must schedule exactly one existing syntax payload"
++        );
++        assert!(
++            layers >= 24,
++            "real published Rust injection payload must fire"
++        );
++        assert_eq!(
++            INJECTION_LAYER_DROPS.with(|count| count.get()),
++            0,
++            "final published injection syntax was destroyed on the foreground release path"
++        );
++        assert_eq!(RELEASED_SYNTAX_COMPLETED.with(|count| count.get()), 0);
++        while scheduler.tick_background_only() {}
++        assert_eq!(
++            RELEASED_SYNTAX_COMPLETED.with(|count| count.get()),
++            1,
++            "retirement must actually complete, not only enqueue a future"
++        );
++        assert_eq!(
++            INJECTION_LAYER_DROPS.with(|count| count.get()),
++            layers,
++            "all old published layers must be destroyed in background cleanup"
++        );
++        v.run_until_parked();
++        assert_eq!(
++            input.read_with(v, |input, _| input.value().to_string()),
++            changed
++        );
++        assert!(
++            !input.read_with(v, |input, _| input.highlighting_pending()),
++            "old cancellation cannot keep the replacement highlighter pending"
++        );
++        let mut fresh = SyntaxHighlighter::new("markdown");
++        assert!(fresh.update(None, &Rope::from_str(&changed), None));
++        input.update(v, |input, cx| input.set_all_folded(true, cx));
++        assert_eq!(
++            input.read_with(v, |input, _| input.folded_ranges().to_vec()),
++            extract_fold_ranges(fresh.tree().unwrap()),
++            "cancelled old syntax cannot publish stale folds to the same editor entity"
++        );
++        // Same real destructor meter, deliberately fired locally as a positive.
++        INJECTION_LAYER_DROPS.with(|count| count.set(0));
++        drop(fresh);
++        assert!(INJECTION_LAYER_DROPS.with(|count| count.get()) >= 24);
++    }
++
++    #[gpui::test]
++    fn published2804_native_reset_retires_final_syntax_without_releasing_editor(
++        cx: &mut TestAppContext,
++    ) {
++        published_release_on_reset(cx, false);
++    }
++
++    #[gpui::test]
++    fn published2804_cancelled_continuation_retires_last_published_owner(cx: &mut TestAppContext) {
++        published_release_on_reset(cx, true);
++    }
++}
