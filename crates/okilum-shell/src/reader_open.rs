@@ -4225,7 +4225,7 @@ mod entry_tests {
         let window = cx.update(|cx| reader.read(cx).reader_window);
         let mut visual = gpui::VisualTestContext::from_window(window, cx);
         let (note, heading) = reader.update_in(&mut visual, |r, window, cx| {
-            r.copy_okilum_link(window, cx);
+            r.copy_document_link(window, cx);
             let note = cx.read_from_clipboard().unwrap().text().unwrap();
             r.copy_heading_link("Distant checkpoint".into(), window, cx);
             let heading = cx.read_from_clipboard().unwrap().text().unwrap();

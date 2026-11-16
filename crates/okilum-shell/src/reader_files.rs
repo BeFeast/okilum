@@ -476,16 +476,11 @@ impl Reader {
         LinkScope::of(self.single_file)
     }
 
-    /// «Copy Okilum link» for the file `file_action` would act on.
-    pub(crate) fn copy_okilum_link(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let rel = if self.tree_focus.is_focused(window) {
-            self.tree.cursor.as_deref().unwrap_or(self.selected_file())
-        } else {
-            self.selected_file()
-        };
+    /// The note ⋯ menu's «Copy Okilum link»: the open note or file.
+    pub(crate) fn copy_document_link(&self, window: &mut Window, cx: &mut Context<Self>) {
         copy_link_to_clipboard(
             &self.vault_root,
-            rel,
+            self.selected_file(),
             self.link_scope(),
             &Default::default(),
             window,
@@ -1665,7 +1660,7 @@ mod tests {
             );
             // #1049, #1414: the external link names the vault by its folder
             // and by the identity the Copy created.
-            reader.copy_okilum_link(window, cx);
+            reader.copy_document_link(window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
             assert!(
                 link.starts_with("okilum://v/vault/diagram.svg?vault_id="),

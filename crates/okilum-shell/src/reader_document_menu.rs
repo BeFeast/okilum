@@ -246,7 +246,6 @@ impl Reader {
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
-        let link_scope = self.link_scope();
         let mut row = h_flex()
             .id("document-header")
             .debug_selector(|| "document-header".into())
@@ -472,17 +471,11 @@ impl Reader {
                             }));
                     }
                     // #1439: a single-file view copies the file's own link.
-                    let (link_root, link_rel) = (root.clone(), rel.clone());
+                    let link_reader = reader.clone();
                     menu = menu.item(PopupMenuItem::new("Copy Okilum link").on_click(
                         move |_, window, cx| {
-                            reader_files::copy_link_to_clipboard(
-                                &link_root,
-                                &link_rel,
-                                link_scope,
-                                &Default::default(),
-                                window,
-                                cx,
-                            )
+                            let _ = link_reader
+                                .update(cx, |this, cx| this.copy_document_link(window, cx));
                         },
                     ));
                 } else {

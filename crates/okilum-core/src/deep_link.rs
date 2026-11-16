@@ -1181,7 +1181,7 @@ mod tests {
         // An idless namesake is not a fallback either.
         std::fs::remove_dir_all(namesake.join(".okilum")).unwrap();
         assert!(matches!(
-            resolve(&link, &[namesake.clone()], &is_file),
+            resolve(&link, std::slice::from_ref(&namesake), &is_file),
             Resolution::Unavailable(m) if m.contains("different identity")
         ));
         assert!(
@@ -1192,7 +1192,7 @@ mod tests {
         std::fs::write(namesake.join(FILE), &namesake_bytes).unwrap();
         // No such vault at all.
         assert!(matches!(
-            resolve(&link, &[other.clone()], &is_file),
+            resolve(&link, std::slice::from_ref(&other), &is_file),
             Resolution::Unavailable(m) if m.contains("not on this computer")
         ));
         // Two vaults with one identity: ambiguous, nothing is picked.
@@ -1203,7 +1203,7 @@ mod tests {
         // Broken metadata never matches and is never repaired.
         std::fs::write(second.join(FILE), "broken").unwrap();
         assert!(matches!(
-            resolve(&link, &[second.clone()], &is_file),
+            resolve(&link, std::slice::from_ref(&second), &is_file),
             Resolution::Unavailable(_)
         ));
         assert_eq!(
@@ -1214,7 +1214,7 @@ mod tests {
         // The legacy folder-name link keeps working and writes nothing.
         let legacy = parse("okilum://v/Brain/Plan.md").unwrap();
         assert!(matches!(
-            resolve(&legacy, &[second.clone()], &is_file),
+            resolve(&legacy, std::slice::from_ref(&second), &is_file),
             Resolution::Open { root, .. } if root == second
         ));
         assert_eq!(std::fs::read_to_string(second.join(FILE)).unwrap(), synced);

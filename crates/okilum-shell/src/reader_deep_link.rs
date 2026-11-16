@@ -438,7 +438,7 @@ mod tests {
             std::fs::write(&identity, "broken identity").unwrap();
             cx.write_to_clipboard(ClipboardItem::new_string("keep clipboard".into()));
             v.copy_heading_link("Plan".into(), window, cx);
-            v.copy_okilum_link(window, cx);
+            v.copy_document_link(window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().as_deref(),
                 Some("keep clipboard")
@@ -508,7 +508,7 @@ mod tests {
                 let mut copied = Vec::new();
                 let take =
                     |cx: &mut Context<Reader>| cx.read_from_clipboard().unwrap().text().unwrap();
-                v.copy_okilum_link(window, cx);
+                v.copy_document_link(window, cx);
                 copied.push(("note", take(cx)));
                 v.copy_heading_link("Distant checkpoint".into(), window, cx);
                 copied.push(("heading", take(cx)));
