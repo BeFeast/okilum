@@ -1,0 +1,171 @@
+--- a/crates/component/src/highlighter/input_adapter.rs
++++ b/crates/component/src/highlighter/input_adapter.rs
+@@ -97,9 +97,6 @@
+         let pending = self.pending.clone();
+         let highlighter = self.inner.clone();
+         let parse_task = self.parse_task.clone();
+-        let language = highlighter.borrow().language().clone();
+-        let old_tree = highlighter.borrow().tree().cloned();
+-        let injection_data = highlighter.borrow().injection_parse_data();
+         let text = text.clone();
+         let text_for_apply = text.clone();
+         let cancel = Arc::new(AtomicBool::new(false));
+@@ -117,6 +114,16 @@
+                 cx.background_executor().timer(PARSE_DEBOUNCE).await;
+             }
+ 
++            // Snapshot only a parse that survived debounce. Eager Tree clones
++            // keep nodes shared across the next foreground structural edit,
++            // forcing COW even when this task is cancelled before parsing.
++            // Dropping a Task schedules its future's destruction; it does not
++            // synchronously release those captures. This continuation runs on
++            // UI, so snapshotting cannot interleave with an input update; a
++            // superseded Task is closed and cannot reach this point.
++            let language = highlighter.borrow().language().clone();
++            let old_tree = highlighter.borrow().tree().cloned();
++            let injection_data = highlighter.borrow().injection_parse_data();
+             let parse_cancel = cancel.clone();
+             let result = cx
+                 .background_executor()
+@@ -248,3 +255,141 @@
+     ranges.dedup_by_key(|range| range.start_line);
+     ranges
+ }
++
++#[cfg(all(test, feature = "tree-sitter-languages"))]
++mod tests {
++    use super::*;
++    use gpui::{AppContext as _, TestAppContext};
++    use gpui_base::input::Point as BasePoint;
++
++    fn insertion(text: &mut Rope, inserted: &str) -> BaseInputEdit {
++        text.insert(0, inserted);
++        BaseInputEdit {
++            start_byte: 0,
++            old_end_byte: 0,
++            new_end_byte: inserted.len(),
++            start_position: BasePoint::new(0, 0),
++            old_end_position: BasePoint::new(0, 0),
++            new_end_position: BasePoint::new(
++                inserted.bytes().filter(|&b| b == b'\n').count(),
++                inserted.len() - inserted.rfind('\n').map_or(0, |at| at + 1),
++            ),
++        }
++    }
++
++    fn burst_ownership(cx: &mut TestAppContext, park_before_second: bool) {
++        cx.update(crate::init);
++        let executor = cx.executor();
++        let v = cx.add_empty_window();
++        let editor = v.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
++        for language in ["json", "markdown"] {
++            let source = if language == "json" {
++                format!("[\r\n{}null\r\n]\r\n",
++                    "{\"name\":\"שלום🙂 e\u{301}\",\"value\":42},\r\n".repeat(10_000))
++            } else {
++                let mut source = String::from("# שלום🙂 e\u{301}\r\n");
++                for i in 0..24 {
++                    source.push_str(&format!("```rust\r\nfn retained_{i}() {{}}\r\n```\r\n\r\n"));
++                }
++                source.push_str(&"paragraph שלום🙂 e\u{301}\r\n\r\n".repeat(12_000));
++                source
++            };
++            let mut text = Rope::from_str(&source);
++            assert!(text.len() > 256 * 1024, "exercise the real async-only branch");
++            let mut adapter = TreeSitterInputHighlighter::new(language);
++            assert!(adapter.inner.borrow_mut().update(None, &text, None));
++            let mut reference = SyntaxHighlighter::new(language);
++            assert!(reference.update(None, &text, None));
++            // A root Node::id is the address of TSTree's root slot, which
++            // stays stable even when its heap subtree is copied. The first
++            // child slot lives in the copied child array and observes COW.
++            let id = adapter.inner.borrow().tree().unwrap().root_node().child(0).unwrap().id();
++            for inserted in ["\r\n", " "] {
++                let edit = insertion(&mut text, inserted);
++                reference.edit_tree(Some(to_tree_sitter_edit(edit)), &text);
++                v.update(|window, cx| editor.update(cx, |_, cx| {
++                    adapter.update(Some(edit), &text, true, window, cx);
++                }));
++                let inner = adapter.inner.borrow();
++                assert_eq!(inner.tree().unwrap().root_node().child(0).unwrap().id(), id,
++                    "a queued/debounced parse snapshot forced foreground Tree COW");
++                assert_eq!(inner.tree().unwrap().root_node().range(),
++                    reference.tree().unwrap().root_node().range());
++                assert_eq!(extract_fold_ranges(inner.tree().unwrap()),
++                    extract_fold_ranges(reference.tree().unwrap()));
++                assert_eq!(inner.semantic_spans(&(0..4096)), reference.semantic_spans(&(0..4096)));
++                assert_eq!(inner.text(), &text);
++                assert!(adapter.is_pending());
++                drop(inner);
++                if park_before_second {
++                    v.run_until_parked();
++                    assert!(adapter.is_pending(), "positive control: debounce has not elapsed");
++                }
++            }
++
++            // A running parser really needs its immutable old-tree snapshot.
++            // Holding that same handle must fire the actual COW mechanism;
++            // child-slot identity is an ownership/work probe, not syntax identity.
++            let held = adapter.inner.borrow().tree().unwrap().clone();
++            let held_range = held.root_node().range();
++            let edit = insertion(&mut text, "\t");
++            reference.edit_tree(Some(to_tree_sitter_edit(edit)), &text);
++            v.update(|window, cx| editor.update(cx, |_, cx| {
++                adapter.update(Some(edit), &text, true, window, cx);
++            }));
++            assert_ne!(adapter.inner.borrow().tree().unwrap().root_node().child(0).unwrap().id(), id,
++                "unfired COW positive control: the retained Tree must force a copy");
++            assert_eq!(held.root_node().range(), held_range, "parser snapshot is immutable");
++            assert_eq!(adapter.inner.borrow().tree().unwrap().root_node().range(),
++                reference.tree().unwrap().root_node().range());
++            drop(held);
++
++            v.run_until_parked();
++            assert!(adapter.is_pending());
++            executor.advance_clock(Duration::from_millis(151));
++            v.run_until_parked();
++            assert!(!adapter.is_pending(), "positive control: surviving worker completed");
++            let mut fresh = SyntaxHighlighter::new(language);
++            assert!(fresh.update(None, &text, None));
++            let inner = adapter.inner.borrow();
++            assert_eq!(inner.text(), &text);
++            assert_eq!(inner.tree().unwrap().root_node().range(), fresh.tree().unwrap().root_node().range());
++            assert_eq!(inner.semantic_spans(&(0..4096)), fresh.semantic_spans(&(0..4096)));
++            assert_eq!(extract_fold_ranges(inner.tree().unwrap()), extract_fold_ranges(fresh.tree().unwrap()));
++            if language == "markdown" {
++                assert!(inner.injection_parse_data().unwrap().old_layers.len() >= 24,
++                    "positive control: worker rebuilt the real Rust injection layers");
++                assert!(inner.semantic_spans(&(0..4096)).iter().any(|(_, name)| name.as_ref() == "function"));
++            }
++        }
++    }
++
++    #[gpui::test]
++    fn large2804_queued_parse_does_not_force_next_edit_cow(cx: &mut TestAppContext) {
++        burst_ownership(cx, false);
++    }
++
++    #[gpui::test]
++    fn large2804_debounced_parse_does_not_force_next_edit_cow(cx: &mut TestAppContext) {
++        burst_ownership(cx, true);
++    }
++
++    #[gpui::test]
++    fn large2804_initial_parse_still_skips_debounce(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let v = cx.add_empty_window();
++        let mut adapter = TreeSitterInputHighlighter::new("json");
++        // Exercise the initial asynchronous parse with a pre-existing timeout
++        // policy: an actual large document, not a test-only threshold override.
++        let text = Rope::from_str(&format!("[{}null]", "{\"name\":\"שלום🙂\"},".repeat(20_000)));
++        assert!(text.len() > 256 * 1024);
++        let editor = v.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
++        v.update(|window, cx| editor.update(cx, |_, cx| {
++            adapter.update(None, &text, true, window, cx);
++        }));
++        v.run_until_parked();
++        assert!(!adapter.is_pending(), "initial worker must complete without clock advancement");
++        assert!(adapter.inner.borrow().tree().is_some());
++        assert!(!adapter.inner.borrow().semantic_spans(&(0..128)).is_empty());
++    }
++}
