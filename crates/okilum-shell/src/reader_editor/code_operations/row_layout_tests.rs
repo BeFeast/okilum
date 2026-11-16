@@ -126,13 +126,13 @@ fn edit2803_reused_row_geometry_matches_cold_layout_and_styles_invalidate(cx: &m
     ] {
         let warm = geometry(&f, v, at);
         let before = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
-        // A real viewport round trip gives a cold original-size layout without
-        // touching source, history or wrapping. Content width is part of the key.
-        let viewport = v.update(|w, _| w.viewport_size());
-        v.simulate_resize(gpui::size(viewport.width + px(80.), viewport.height));
-        draw(v);
-        v.simulate_resize(viewport);
-        draw(v);
+        // A style/language round trip gives a cold Rust layout while keeping
+        // the viewport and scroll state used by this strict geometry oracle.
+        for language in ["plain", "rust"] {
+            f.input.update(v, |i, cx| i.set_highlighter(language, cx));
+            tests::settle(v);
+            draw(v);
+        }
         let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
         assert!(after.source_row_materialized_bytes > before.source_row_materialized_bytes);
         assert_eq!(
@@ -141,13 +141,18 @@ fn edit2803_reused_row_geometry_matches_cold_layout_and_styles_invalidate(cx: &m
             "strict far-right caret and hit geometry"
         );
     }
+    // Resize is a separate admission control: a viewport round trip changes
+    // horizontal scroll state on main too, so it is not the geometry oracle.
     let before = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
-    f.input.update(v, |i, cx| i.set_highlighter("plain", cx));
+    let viewport = v.update(|w, _| w.viewport_size());
+    v.simulate_resize(gpui::size(viewport.width + px(80.), viewport.height));
+    draw(v);
+    v.simulate_resize(viewport);
     draw(v);
     let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
     assert!(
         after.source_row_materialized_bytes > before.source_row_materialized_bytes,
-        "changed effective styles must not reuse stale decorated glyphs"
+        "viewport changes must invalidate row layouts"
     );
     assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), original);
 }

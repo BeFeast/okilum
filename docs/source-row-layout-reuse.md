@@ -45,8 +45,14 @@ Per-editor opt-in diagnostics require the changed-row path and actual byte
 materialization to fire, then assert that only the changed short row materializes
 and unchanged rows reuse layouts. Source, one Undo/Redo, canonical save and real
 Edit -> Read -> Edit reopening retain exact bytes. A separate fixture compares
-strict far-right caret/hit geometry to a cold viewport-size round trip and
-requires effective style changes to invalidate decorated layouts.
+strict far-right caret/hit geometry to a cold style/language round trip at the
+same viewport; effective style changes must invalidate decorated layouts.
+Viewport-size changes separately require fresh materialization. The initial
+resize-round-trip geometry oracle failed identically on main and candidate:
+TAB-row caret x changed 1274.5 -> 1290 px with identical source hit offsets.
+That oracle changed scroll state, so it was replaced by the same-viewport
+cold-style oracle, keeping exact absolute caret/hit equality without tolerance.
+Both original FAILED controls are retained in the external evidence.
 
 The compiled old-production negative restores main's complete vendor stack,
 adding only the same observational diagnostic fields/materialization counter.
