@@ -4498,6 +4498,7 @@ impl Reader {
         let current = self.selected_file().to_owned();
         let current_menu = current.clone();
         let file_root = self.vault_root.clone();
+        let link_scope = self.link_scope();
         let title_reader = cx.entity().downgrade();
         let root = self.selected_title();
         let parent_menu = folders.clone();
@@ -4564,6 +4565,7 @@ impl Reader {
                                     menu,
                                     menu_root.clone(),
                                     menu_path.clone(),
+                                    link_scope,
                                     window,
                                     cx,
                                 )
@@ -4612,6 +4614,7 @@ impl Reader {
                             menu,
                             file_root.clone(),
                             current_menu.clone(),
+                            link_scope,
                             window,
                             cx,
                         )

@@ -86,6 +86,7 @@ pub mod tasks;
 pub mod tex;
 pub mod typed_view;
 pub mod vault;
+pub mod vault_link_identity;
 pub mod watch;
 pub mod workbench;
 

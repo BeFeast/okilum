@@ -1,12 +1,20 @@
-//! External `okilum:` links (#1049, docs/deep-links.md). Parsing only: no file
-//! system access, no resolution. Internal Reader URLs (`okilum://open/…` and
-//! friends) are rejected here so they can never navigate from outside.
+//! External `okilum:` links (#1049, #1414, docs/deep-links.md): parsing,
+//! building and read-only resolution. Internal Reader URLs (`okilum://open/…`
+//! and friends) are rejected here so they can never navigate from outside.
 
 /// Where a link points.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Address {
     /// Vault by folder name and a vault-relative path with `/` separators.
     Vault {
+        vault: String,
+        path: String,
+    },
+    /// A vault by its portable identity (`v/<vault>/<path>?vault_id=…`,
+    /// #1414). `vault` is only the folder name of the machine that copied it,
+    /// for messages; it is never a fallback.
+    VaultId {
+        id: String,
         vault: String,
         path: String,
     },
@@ -78,9 +86,43 @@ pub enum Resolution {
         roots: Vec<(std::path::PathBuf, Option<String>)>,
         position: Position,
     },
+    /// An existing file outside every known vault: it opens on its own as a
+    /// single-file view after the folder's first-use consent. Its folder never
+    /// becomes a vault (#1414, #1439).
+    SingleFile {
+        file: std::path::PathBuf,
+        position: Position,
+    },
     /// A clear, user-facing refusal.
     Unavailable(String),
 }
+
+/// Why a document's address cannot be copied as an `okilum:` link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotEncodable {
+    /// The path is not Unicode, or not one this link form can carry: a
+    /// replacement character would point at another file.
+    Path,
+    /// The link would be longer than [`MAX_LEN`].
+    TooLong,
+}
+
+impl NotEncodable {
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::Path => "This file\u{2019}s path cannot be written as an Okilum link, so nothing was copied.",
+            Self::TooLong => "The link to this place would be too long, so nothing was copied.",
+        }
+    }
+}
+
+impl std::fmt::Display for NotEncodable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for NotEncodable {}
 
 /// Match `link` against `known` vault roots (canonical paths). `exists`
 /// reports whether a path is a file; injectable for tests.
@@ -114,6 +156,41 @@ pub fn resolve(
         (!has_md && exists(&root.join(&md))).then_some(md)
     };
     match &link.address {
+        Address::VaultId { id, vault, path } => {
+            let mut roots: Vec<PathBuf> = Vec::new();
+            for root in known {
+                let here = crate::vault_link_identity::read(root).ok().flatten();
+                if here.as_deref() == Some(id.as_str()) && !roots.contains(root) {
+                    roots.push(root.clone());
+                }
+            }
+            // Exactly one vault with this identity; a namesake without it is
+            // never used (decision 26: refuse, select nothing, rewrite nothing).
+            match roots.len() {
+                1 => match pick(&roots[0], path) {
+                    Some(rel) => Resolution::Open {
+                        root: roots.remove(0),
+                        rel,
+                        position,
+                    },
+                    None => Resolution::Unavailable(format!(
+                        "\u{201c}{path}\u{201d} is not in vault \u{201c}{}\u{201d}.",
+                        name_of(&roots[0])
+                    )),
+                },
+                0 if known.iter().any(|root| same_name(&name_of(root), vault)) => {
+                    Resolution::Unavailable(format!(
+                        "This link belongs to a vault \u{201c}{vault}\u{201d} with a different identity, so no vault was opened. Wait until the vault\u{2019}s .okilum folder has synced, then copy the link again."
+                    ))
+                }
+                0 => Resolution::Unavailable(format!(
+                    "Vault \u{201c}{vault}\u{201d} is not on this computer."
+                )),
+                _ => Resolution::Unavailable(
+                    "Several vaults on this computer have this link\u{2019}s identity, so no vault was opened.".into(),
+                ),
+            }
+        }
         Address::Vault { vault, path } => {
             let mut roots: Vec<PathBuf> = Vec::new();
             for root in known {
@@ -149,7 +226,11 @@ pub fn resolve(
             }
         }
         Address::File(file) => {
-            let file = Path::new(file);
+            // The canonical spelling, so a plain `C:/…` matches the verbatim
+            // `\\?\C:\…` of a known root (#1391); a missing path stays as written.
+            let written = Path::new(file);
+            let file = crate::vault::canonical_root(written).unwrap_or_else(|_| written.into());
+            let file = file.as_path();
             // The deepest known vault that contains the file.
             let root = known
                 .iter()
@@ -170,9 +251,14 @@ pub fn resolve(
                     position,
                 },
                 Some(_) => Resolution::Unavailable("This file no longer exists.".into()),
-                None => Resolution::Unavailable(
-                    "This file is not in a vault you have opened in Okilum.".into(),
+                None if !file.is_absolute() => Resolution::Unavailable(
+                    "This file\u{2019}s path is not a path on this computer.".into(),
                 ),
+                None if exists(file) => Resolution::SingleFile {
+                    file: file.to_owned(),
+                    position,
+                },
+                None => Resolution::Unavailable("This file no longer exists.".into()),
             }
         }
         Address::Note(_) | Address::Task(_) | Address::Project(_) => {
@@ -210,7 +296,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
     if INTERNAL.contains(&kind) {
         return Err(Refused::Internal);
     }
-    let address = match kind {
+    let mut address = match kind {
         "v" => {
             let (vault, path) = target.split_once('/').ok_or(Refused::Malformed)?;
             let vault = decode_clean(vault)?;
@@ -221,7 +307,9 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
             Address::Vault { vault, path }
         }
         "file" => {
-            let path = decode_clean(target)?;
+            // A Windows verbatim path (`\\?\C:\…`, `\\?\UNC\server\…`) is its
+            // plain spelling (#1391); other verbatim forms stay and are refused.
+            let path = without_verbatim(decode_clean(target)?);
             // `C:/…` or `C:\…`; drive-relative `C:x` and a bare `C:` are not
             // absolute and are refused on every platform.
             let bytes = path.as_bytes();
@@ -252,16 +340,32 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
         _ => return Err(Refused::UnknownKind),
     };
     let mut position = Position::default();
+    let mut identity = None;
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         let number = || decode(value).parse::<u32>().ok().filter(|n| *n > 0);
         match key {
+            // Strict: an identity that is present but unreadable must never
+            // degrade into a folder-name link.
+            "vault_id" => {
+                let id =
+                    uuid::Uuid::parse_str(&decode_clean(value)?).map_err(|_| Refused::Malformed)?;
+                if identity.replace(id.to_string()).is_some() {
+                    return Err(Refused::Malformed);
+                }
+            }
             "line" => position.line = number(),
             "column" => position.column = number(),
             "page" => position.page = number(),
             // Forward compatible: unknown parameters are ignored.
             _ => {}
         }
+    }
+    if let Some(id) = identity {
+        address = match address {
+            Address::Vault { vault, path } => Address::VaultId { id, vault, path },
+            _ => return Err(Refused::Malformed),
+        };
     }
     if position.line.is_none() {
         position.column = None;
@@ -275,6 +379,19 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
     Ok(Link { address, position })
 }
 
+/// `\\?\C:\…` → `C:\…`, `\\?\UNC\server\share` → `//server/share`.
+fn without_verbatim(path: String) -> String {
+    if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", share.replace('\\', "/"));
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if matches!(rest.as_bytes(), [l, b':', b'\\' | b'/', ..] if l.is_ascii_alphabetic()) => {
+            rest.to_owned()
+        }
+        _ => path,
+    }
+}
+
 fn strip_scheme(link: &str) -> Option<&str> {
     let (scheme, rest) = link.split_once("://")?;
     scheme.eq_ignore_ascii_case("okilum").then_some(rest)
@@ -286,8 +403,19 @@ fn strip_scheme(link: &str) -> Option<&str> {
 /// `#heading` or `#^block` fragment. `parse` reads it back exactly.
 pub fn build(vault: &str, rel: &str, position: &Position) -> String {
     let path = rel.split('/').map(encode).collect::<Vec<_>>().join("/");
-    let mut link = format!("okilum://v/{}/{path}", encode(vault));
+    with_position(
+        format!("okilum://v/{}/{path}", encode(vault)),
+        None,
+        position,
+    )
+}
+
+/// The address, then `vault_id`, `line`/`column`/`page` and the fragment.
+fn with_position(mut link: String, id: Option<&str>, position: &Position) -> String {
     let mut query = Vec::new();
+    if let Some(id) = id {
+        query.push(format!("vault_id={}", encode(id)));
+    }
     if let Some(line) = position.line {
         query.push(format!("line={line}"));
         if let Some(column) = position.column {
@@ -309,6 +437,67 @@ pub fn build(vault: &str, rel: &str, position: &Position) -> String {
         link.push_str(&encode(block));
     }
     link
+}
+
+/// «Copy link» in a vault (#1414): the folder-name form plus the vault's
+/// portable identity, refused unless [`parse`] reads back exactly this vault,
+/// path and position. Older Okilum ignores `vault_id` and uses the folder name.
+pub fn build_vault_copy(
+    vault: &str,
+    id: &str,
+    rel: &str,
+    position: &Position,
+) -> Result<String, NotEncodable> {
+    let path = rel.split('/').map(encode).collect::<Vec<_>>().join("/");
+    let link = with_position(
+        format!("okilum://v/{}/{path}", encode(vault)),
+        Some(id),
+        position,
+    );
+    let expected = Address::VaultId {
+        id: id.to_owned(),
+        vault: vault.to_owned(),
+        path: rel.to_owned(),
+    };
+    exact(link, expected, position)
+}
+
+/// «Copy link» in a single-file view (#1439): `okilum://file/<absolute path>`,
+/// so the link reopens this file and never names its folder as a vault. The
+/// path is shown plain (no `\\?\`, #1391), `/`-separated; a path that is not
+/// Unicode or does not read back exactly is refused rather than approximated.
+pub fn build_file_copy(
+    path: &std::path::Path,
+    position: &Position,
+) -> Result<String, NotEncodable> {
+    let plain = crate::vault::plain_path(path);
+    let text = plain.to_str().ok_or(NotEncodable::Path)?;
+    if !plain.is_absolute() {
+        return Err(NotEncodable::Path);
+    }
+    #[cfg(windows)]
+    let text = &text.replace('\\', "/");
+    let encoded = text.split('/').map(encode).collect::<Vec<_>>().join("/");
+    let link = with_position(format!("okilum://file/{encoded}"), None, position);
+    exact(link, Address::File(text.to_owned()), position)
+}
+
+/// `link`, if it parses back to exactly `address` and `position`.
+fn exact(link: String, address: Address, position: &Position) -> Result<String, NotEncodable> {
+    if link.len() > MAX_LEN {
+        return Err(NotEncodable::TooLong);
+    }
+    let mut expected = position.clone();
+    if expected.line.is_none() {
+        expected.column = None;
+    }
+    if expected.heading.is_some() {
+        expected.block = None;
+    }
+    match parse(&link) {
+        Ok(back) if back.address == address && back.position == expected => Ok(link),
+        _ => Err(NotEncodable::Path),
+    }
 }
 
 /// RFC 3986 unreserved characters stay; everything else is `%XX` per UTF-8
@@ -655,9 +844,18 @@ mod tests {
             r("okilum://file//home/me/Notes/Sub/Vault/Deep.md", &known),
             Resolution::Open { root, rel, .. } if root == Path::new("/home/me/Notes/Sub/Vault") && rel == "Deep.md"
         ));
-        assert!(matches!(
+        // Outside every known vault: the file on its own (#1414), never a vault.
+        #[cfg(unix)]
+        assert_eq!(
             r("okilum://file//work/Notes/Plan.md", &known),
-            Resolution::Unavailable(m) if m.contains("not in a vault")
+            Resolution::SingleFile {
+                file: "/work/Notes/Plan.md".into(),
+                position: Position::default(),
+            }
+        );
+        assert!(matches!(
+            resolve(&parse("okilum://file//work/Notes/Plan.md").unwrap(), &known, &|_| false),
+            Resolution::Unavailable(m) if m.contains("no longer exists")
         ));
         // Reserved ids answer with the newer-Okilum message.
         assert!(
@@ -830,9 +1028,321 @@ mod tests {
         // Drive forms never resolve against Linux vault roots.
         let known = vec![std::path::PathBuf::from("/home/me/Notes")];
         let any = |_: &std::path::Path| true;
+        let drive = resolve(
+            &parse("okilum://file/C:/home/me/Notes/a.md").unwrap(),
+            &known,
+            &any,
+        );
+        assert!(!matches!(drive, Resolution::Open { .. }), "{drive:?}");
+        #[cfg(unix)]
+        assert!(
+            matches!(&drive, Resolution::Unavailable(m) if m.contains("not a path on this computer")),
+            "{drive:?}"
+        );
+    }
+
+    fn pos(line: Option<u32>, column: Option<u32>, heading: Option<&str>) -> Position {
+        Position {
+            line,
+            column,
+            heading: heading.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    /// Every Copy position: the note, a heading, the caret, a block.
+    fn copy_positions() -> Vec<Position> {
+        vec![
+            Position::default(),
+            pos(None, None, Some("Distant checkpoint & שלום #2")),
+            pos(Some(7), Some(3), None),
+            Position {
+                block: Some("abc-1".into()),
+                ..Default::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn vault_copy_links_carry_the_identity_and_read_back_exactly() {
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        for position in copy_positions() {
+            let link =
+                build_vault_copy("Obsidian Vault", id, "Projects/Plan #1 שלום.md", &position)
+                    .unwrap();
+            assert!(
+                link.starts_with("okilum://v/Obsidian%20Vault/Projects/"),
+                "{link}"
+            );
+            assert!(
+                link.contains("vault_id=0f8fad5b-d9cb-469f-a165-70867728950e"),
+                "{link}"
+            );
+            let back = parse(&link).unwrap();
+            assert_eq!(
+                back.address,
+                Address::VaultId {
+                    id: id.into(),
+                    vault: "Obsidian Vault".into(),
+                    path: "Projects/Plan #1 שלום.md".into(),
+                }
+            );
+            assert_eq!(back.position, position);
+        }
+        // Positive control: without the identity it is the legacy form.
         assert!(matches!(
-            resolve(&parse("okilum://file/C:/home/me/Notes/a.md").unwrap(), &known, &any),
-            Resolution::Unavailable(m) if m.contains("not in a vault")
+            parse(&build("Brain", "Plan.md", &Position::default()))
+                .unwrap()
+                .address,
+            Address::Vault { .. }
+        ));
+    }
+
+    #[test]
+    fn identity_parameters_are_strict() {
+        for suffix in [
+            "vault_id=bad",
+            "vault_id=",
+            "vault_id=00000000-0000-0000-0000-000000000001&vault_id=00000000-0000-0000-0000-000000000002",
+        ] {
+            assert_eq!(
+                parse(&format!("okilum://v/Brain/Plan.md?{suffix}")),
+                Err(Refused::Malformed),
+                "{suffix}"
+            );
+        }
+        assert_eq!(
+            parse("okilum://file//a/b.md?vault_id=00000000-0000-0000-0000-000000000001"),
+            Err(Refused::Malformed),
+            "an identity names a vault, never a file"
+        );
+        // Mixed case and braces normalize to the canonical spelling.
+        assert!(matches!(
+            parse("okilum://v/Brain/Plan.md?vault_id=0F8FAD5B-D9CB-469F-A165-70867728950E").unwrap().address,
+            Address::VaultId { id, .. } if id == "0f8fad5b-d9cb-469f-a165-70867728950e"
+        ));
+    }
+
+    #[test]
+    fn identity_links_open_across_folder_names_and_refuse_a_different_identity() {
+        use crate::vault_link_identity::{for_copy, FILE};
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("Obsidian Vault");
+        let second = temp.path().join("Brain");
+        for root in [&first, &second] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+        }
+        let id = for_copy(&first).unwrap();
+        // The synced metadata on the other machine, with a field from a newer Okilum.
+        std::fs::create_dir(second.join(".okilum")).unwrap();
+        let synced = format!(r#"{{"id":"{id}","future":{{"keep":true}}}}"#);
+        std::fs::write(second.join(FILE), &synced).unwrap();
+        let position = pos(Some(3), None, None);
+        let copied = build_vault_copy("Obsidian Vault", &id, "Plan.md", &position).unwrap();
+        let link = parse(&copied).unwrap();
+        let is_file = |p: &std::path::Path| p.is_file();
+        // The other machine's folder is named differently: the identity finds it.
+        for root in [&first, &second] {
+            assert_eq!(
+                resolve(&link, std::slice::from_ref(root), &is_file),
+                Resolution::Open {
+                    root: root.clone(),
+                    rel: "Plan.md".into(),
+                    position: position.clone(),
+                }
+            );
+        }
+        // Among unrelated vaults, only the one with the identity.
+        let other = temp.path().join("Other");
+        std::fs::create_dir(&other).unwrap();
+        assert!(matches!(
+            resolve(&link, &[other.clone(), second.clone()], &is_file),
+            Resolution::Open { root, .. } if root == second
+        ));
+        // A losing identity: a namesake with the note exists, still refused.
+        let namesake = temp.path().join("Obsidian Vault 2").join("Obsidian Vault");
+        std::fs::create_dir_all(&namesake).unwrap();
+        std::fs::write(namesake.join("Plan.md"), "# Plan").unwrap();
+        let losing = for_copy(&namesake).unwrap();
+        let namesake_bytes = std::fs::read(namesake.join(FILE)).unwrap();
+        assert_ne!(losing, id);
+        for known in [
+            vec![namesake.clone()],
+            vec![namesake.clone(), other.clone()],
+        ] {
+            match resolve(&link, &known, &is_file) {
+                Resolution::Unavailable(message) => {
+                    assert!(message.contains("different identity"), "{message}")
+                }
+                other => panic!("a different identity must be refused: {other:?}"),
+            }
+        }
+        // An idless namesake is not a fallback either.
+        std::fs::remove_dir_all(namesake.join(".okilum")).unwrap();
+        assert!(matches!(
+            resolve(&link, &[namesake.clone()], &is_file),
+            Resolution::Unavailable(m) if m.contains("different identity")
+        ));
+        assert!(
+            !namesake.join(".okilum").exists(),
+            "resolution never writes"
+        );
+        std::fs::create_dir(namesake.join(".okilum")).unwrap();
+        std::fs::write(namesake.join(FILE), &namesake_bytes).unwrap();
+        // No such vault at all.
+        assert!(matches!(
+            resolve(&link, &[other.clone()], &is_file),
+            Resolution::Unavailable(m) if m.contains("not on this computer")
+        ));
+        // Two vaults with one identity: ambiguous, nothing is picked.
+        assert!(matches!(
+            resolve(&link, &[first.clone(), second.clone()], &is_file),
+            Resolution::Unavailable(m) if m.contains("Several vaults")
+        ));
+        // Broken metadata never matches and is never repaired.
+        std::fs::write(second.join(FILE), "broken").unwrap();
+        assert!(matches!(
+            resolve(&link, &[second.clone()], &is_file),
+            Resolution::Unavailable(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(second.join(FILE)).unwrap(),
+            "broken"
+        );
+        std::fs::write(second.join(FILE), &synced).unwrap();
+        // The legacy folder-name link keeps working and writes nothing.
+        let legacy = parse("okilum://v/Brain/Plan.md").unwrap();
+        assert!(matches!(
+            resolve(&legacy, &[second.clone()], &is_file),
+            Resolution::Open { root, .. } if root == second
+        ));
+        assert_eq!(std::fs::read_to_string(second.join(FILE)).unwrap(), synced);
+        assert_eq!(std::fs::read(namesake.join(FILE)).unwrap(), namesake_bytes);
+    }
+
+    #[test]
+    fn file_copy_links_read_back_and_open_the_file_on_its_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("Outside # 100% שלום");
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("Landing & more.md");
+        std::fs::write(&file, "# Landing").unwrap();
+        let canonical = crate::vault::canonical_root(&file).unwrap();
+        for position in copy_positions() {
+            let link = build_file_copy(&canonical, &position).unwrap();
+            assert!(link.starts_with("okilum://file/"), "{link}");
+            let back = parse(&link).unwrap();
+            assert_eq!(back.position, position);
+            // Its folder is not a known vault: the file opens on its own.
+            assert_eq!(
+                resolve(&back, &[], &|p| p.is_file()),
+                Resolution::SingleFile {
+                    file: canonical.clone(),
+                    position: position.clone(),
+                }
+            );
+            // Inside a known vault it opens there, as before.
+            let root = crate::vault::canonical_root(temp.path()).unwrap();
+            assert!(matches!(
+                resolve(&back, &[root], &|p| p.is_file()),
+                Resolution::Open { rel, .. } if rel == "Outside # 100% שלום/Landing & more.md"
+            ));
+        }
+        // A relative path has no file link.
+        assert_eq!(
+            build_file_copy(std::path::Path::new("relative/a.md"), &Position::default()),
+            Err(NotEncodable::Path)
+        );
+        // Too long for a link: refused, not truncated.
+        let long = temp.path().join("x".repeat(MAX_LEN));
+        assert_eq!(
+            build_file_copy(&long, &Position::default()),
+            Err(NotEncodable::TooLong)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_unicode_is_refused_not_replaced() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/notes/caf\xe9.md"));
+        assert_eq!(
+            build_file_copy(raw, &Position::default()),
+            Err(NotEncodable::Path)
+        );
+        // The real file with a replacement character is a different name and
+        // stays copyable: the refusal above never points at it.
+        let sibling = std::path::Path::new("/notes/caf\u{fffd}.md");
+        let link = build_file_copy(sibling, &Position::default()).unwrap();
+        assert_eq!(
+            parse(&link).unwrap().address,
+            Address::File("/notes/caf\u{fffd}.md".into())
+        );
+        // A name with a line break cannot round-trip: refused.
+        assert_eq!(
+            build_file_copy(std::path::Path::new("/notes/a\nb.md"), &Position::default()),
+            Err(NotEncodable::Path)
+        );
+        assert_eq!(
+            build_vault_copy(
+                "Notes",
+                "0f8fad5b-d9cb-469f-a165-70867728950e",
+                "a\nb.md",
+                &Position::default()
+            ),
+            Err(NotEncodable::Path)
+        );
+    }
+
+    #[test]
+    fn verbatim_windows_file_links_are_their_plain_form() {
+        for (link, path) in [
+            (
+                "okilum://file/%5C%5C%3F%5CC:%5CUsers%5Cme%5Ca.md",
+                r"C:\Users\me\a.md",
+            ),
+            (
+                "okilum://file/%5C%5C%3F%5CUNC%5Cserver%5Cshare%5Ca.md",
+                "//server/share/a.md",
+            ),
+        ] {
+            assert_eq!(
+                parse(link).unwrap().address,
+                Address::File(path.into()),
+                "{link}"
+            );
+        }
+        // Other verbatim forms have no plain spelling and stay incomplete.
+        assert_eq!(
+            parse("okilum://file/%5C%5C%3F%5CVolume%7Bx%7D%5Ca.md"),
+            Err(Refused::Malformed)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_and_verbatim_file_links_match_the_same_windows_vault() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = crate::vault::canonical_root(temp.path()).unwrap();
+        let file = root.join("Plan.md");
+        std::fs::write(&file, "# Plan").unwrap();
+        let plain = crate::vault::display_path(&file);
+        let verbatim = file.to_string_lossy().into_owned();
+        assert!(verbatim.starts_with(r"\\?\"), "{verbatim}");
+        for path in [plain.replace('\\', "/"), plain, verbatim] {
+            let encoded = path.replace('\\', "%5C").replace('?', "%3F");
+            let link = parse(&format!("okilum://file/{encoded}")).unwrap();
+            assert!(
+                matches!(resolve(&link, &[root.clone()], &|p| p.is_file()), Resolution::Open { rel, .. } if rel == "Plan.md"),
+                "{path}"
+            );
+        }
+        // The copied link of a file outside the vault reads back to that file.
+        let link = build_file_copy(&file, &Position::default()).unwrap();
+        assert!(matches!(
+            resolve(&parse(&link).unwrap(), &[], &|p| p.is_file()),
+            Resolution::SingleFile { file: f, .. } if f == file
         ));
     }
 }
