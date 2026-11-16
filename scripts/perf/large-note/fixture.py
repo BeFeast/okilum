@@ -25,6 +25,10 @@ TABLES = 4
 TABLE_ROWS = 250
 TABLE_COLUMNS = 8
 NOTE = "Large.md"
+# The control: a short note in the same vault, opened the same way, so the
+# launch cost every note pays is not counted against the large one.
+SMALL = "Small.md"
+SMALL_TEXT = "".join(f"## Small section {i}\n\nA short paragraph {i}.\n\n" for i in range(5))
 NOTE_SHA256 = "ccb97e476dce3c9e32fe0ed73b62d85516609fc68915590dd3b2afa336bb188b"
 
 
@@ -109,6 +113,7 @@ def write(vault, check=False):
         raise SystemExit(f"{NOTE} drifted: sha256 {digest}, pinned {NOTE_SHA256}")
     path = vault / NOTE
     path.write_bytes(data)
+    (vault / SMALL).write_text(SMALL_TEXT)
     counts["sha256"] = digest
     return path, counts
 

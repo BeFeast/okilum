@@ -12,7 +12,7 @@ import fixture  # noqa: E402
 
 def run(**overrides):
     data = {
-        "open_ms": 700., "first_frame_ms": 20., "blocks": 4500, "outline_rows": 2000,
+        "open_ms": 700., "control_open_ms": 600., "open_over_control_ms": 100., "first_frame_ms": 20., "blocks": 4500, "outline_rows": 2000,
         "scroll_start_item": 0, "scroll_end_item": 900,
         "scroll": {"frames": 240, "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
         "jump": {"frames": 32, "p50_ms": 5., "p95_ms": 9., "max_ms": 15.},
@@ -38,6 +38,7 @@ class LargeNote(unittest.TestCase):
             self.assertEqual(path.read_bytes(), fixture.note()[0])
             self.assertEqual(len(list((Path(work) / "v/attachments").glob("*.png"))), fixture.IMAGE_FILES)
             self.assertTrue((Path(work) / "v/Targets/Target 099.md").exists())
+            self.assertEqual((Path(work) / "v" / fixture.SMALL).read_text().count("## "), 5)
             self.assertEqual(counts["sha256"], fixture.NOTE_SHA256)
 
     def test_controls_accept_a_complete_run(self):
@@ -62,11 +63,11 @@ class LargeNote(unittest.TestCase):
 
     def test_budgets_use_the_median_of_runs(self):
         counts = fixture.note()[1]
-        slow = run(open_ms=5000.)
+        slow = run(open_ms=5000., open_over_control_ms=4400.)
         summary, table = bench.summarize([run(), slow, run()], counts)
         self.assertEqual(summary["over"], [])
         summary, table = bench.summarize([slow, slow, run()], counts)
-        self.assertEqual(summary["over"], ["open_ms"])
+        self.assertEqual(summary["over"], ["open_ms", "open_over_control_ms"])
         self.assertIn("OVER", table)
 
 

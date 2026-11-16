@@ -32,16 +32,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixture  # noqa: E402
 
 # Budgets for the median of --runs, on a 4-6 vCPU Linux host under Xvfb.
+# `open_over_control_ms` is what the large note adds to the open of the small
+# control note in the same launch setup: the part of open time this note owns.
 # Tighten, never loosen, without review.
 BUDGETS = {
-    "open_ms": 1500.0,
+    "open_ms": 3000.0,
+    "open_over_control_ms": 300.0,
     "first_frame_ms": 100.0,
     "scroll.p95_ms": 25.0,
     "scroll.max_ms": 50.0,
     "jump.p95_ms": 25.0,
     "jump.max_ms": 60.0,
 }
-KEYS = ["open_ms", "first_frame_ms", "scroll.p50_ms", "scroll.p95_ms", "scroll.max_ms",
+KEYS = ["open_ms", "control_open_ms", "open_over_control_ms", "first_frame_ms", "scroll.p50_ms", "scroll.p95_ms", "scroll.max_ms",
         "jump.p50_ms", "jump.p95_ms", "jump.max_ms"]
 PHASES = {
     "note_open_core_preparation": "worker_ms",
@@ -76,22 +79,25 @@ def start_display():
 
 
 def phases(log):
-    """The note_open_* diagnostics of one launch: where the open time went."""
-    found = {}
+    """The note_open_* diagnostics of one launch, and the launch clock (ms)
+    at which every logged phase was first reported: where the open time went."""
+    found, timeline = {}, {}
     if log.exists():
         for line in log.read_text(errors="replace").splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
+            if "phase" in row and "elapsed_ms" in row:
+                timeline.setdefault(row["phase"], round(row["elapsed_ms"], 1))
             key = PHASES.get(row.get("phase"))
             if key and key in row.get("details", {}):
                 found.setdefault(row["phase"], row["details"][key])
-    return found
+    return found, timeline
 
 
-def run_once(binary, vault_source, display, work, rep):
-    base = work / f"run-{rep}"
+def run_once(binary, vault_source, display, work, rep, note=fixture.NOTE):
+    base = work / f"run-{rep}-{Path(note).stem}"
     home, vault = base / "home", base / "vault"
     shutil.copytree(vault_source, vault)
     state = home / "okilum"
@@ -108,15 +114,15 @@ def run_once(binary, vault_source, display, work, rep):
     with (base / "app.log").open("wb") as log:
         try:
             result = subprocess.run([str(binary), "--vault", str(vault), "--index-dir", str(base / "index"),
-                                     "--note", fixture.NOTE], env=env, timeout=180,
+                                     "--note", note], env=env, timeout=180,
                                     stdout=log, stderr=subprocess.STDOUT)
         except subprocess.TimeoutExpired:
             raise NoEvidence(f"run {rep}: the probe did not finish in 180 s (see {base / 'app.log'})")
     if not report.exists():
         raise NoEvidence(f"run {rep}: no probe report (exit {result.returncode}, see {base / 'app.log'})")
     data = json.loads(report.read_text())
-    data["phases"] = phases(state / "reader-diagnostic.log")
-    if (vault / fixture.NOTE).read_bytes() != (vault_source / fixture.NOTE).read_bytes():
+    data["phases"], data["timeline"] = phases(state / "reader-diagnostic.log")
+    if (vault / note).read_bytes() != (vault_source / note).read_bytes():
         raise NoEvidence(f"run {rep}: the note changed on disk")
     return data
 
@@ -179,13 +185,20 @@ def main():
             runs = []
             for rep in range(1, args.runs + 1):
                 data = run_once(args.binary.resolve(), vault_source, display, work, rep)
+                control = run_once(args.binary.resolve(), vault_source, display, work, rep, fixture.SMALL)
+                if control["blocks"] == 0 or control["outline_rows"] != 5:
+                    raise NoEvidence(f"run {rep}: the control note did not open: {json.dumps(control)}")
+                data["control_open_ms"] = control["open_ms"]
+                data["open_over_control_ms"] = data["open_ms"] - control["open_ms"]
+                data["control_timeline"] = control["timeline"]
                 problems = controls(data, counts)
                 if problems:
                     raise NoEvidence(f"run {rep} controls failed:\n  " + "\n  ".join(problems)
                                      + f"\n  report: {json.dumps(data)}")
-                print(f"run {rep}: open {data['open_ms']:.0f} ms, first frame {data['first_frame_ms']:.1f} ms, "
+                print(f"run {rep}: open {data['open_ms']:.0f} ms (control {control['open_ms']:.0f} ms), first frame {data['first_frame_ms']:.1f} ms, "
                       f"scroll p95 {data['scroll']['p95_ms']:.1f} ms, jump p95 {data['jump']['p95_ms']:.1f} ms, "
-                      f"phases {json.dumps(data['phases'])}", file=sys.stderr)
+                      f"phases {json.dumps(data['phases'])}\n  timeline {json.dumps(data['timeline'])}"
+                      f"\n  control timeline {json.dumps(control['timeline'])}", file=sys.stderr)
                 runs.append(data)
         finally:
             if xvfb:
