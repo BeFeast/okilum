@@ -688,7 +688,7 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("clock went back")));
         }
-        println!("issue2567 zone control passed in {zone}");
+        diagnostic_println!("issue2567 zone control passed in {zone}");
         Ok(())
     }
 }

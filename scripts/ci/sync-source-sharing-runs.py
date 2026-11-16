@@ -47,9 +47,8 @@ def zone_passed(exit_code, output):
     return (exit_code == 0
             and f"test source_sharing::{ZONE_TEST} ... ok" in lines
             and "test result: ok. 1 passed;" in output
-            and any(line.startswith("#2567 retention control timezone: IST +0200")
-                    or line.startswith("#2567 retention control timezone: IDT +0300")
-                    for line in lines))
+            and ("#2567 retention control timezone: IST +0200" in output
+                 or "#2567 retention control timezone: IDT +0300" in output))
 
 
 def main():
