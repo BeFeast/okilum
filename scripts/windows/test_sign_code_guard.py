@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import parse_qs, urlsplit
 
 HELPER = Path(__file__).with_name('okilum-sign-code.sh')
 SHA = 'd' * 40
@@ -62,6 +63,10 @@ response = responses.pop(0)
 (root / 'responses').write_text(json.dumps(responses))
 if response == 'timeout':
     sys.exit(28)
+if response == 'http-503':
+    # curl -f turns an HTTP 503 into exit 22 with no response body.
+    print('curl: (22) The requested URL returned error: 503', file=sys.stderr)
+    sys.exit(22)
 if isinstance(response, dict) and 'advance_clock' in response:
     (root / 'clock').write_text(str(response['advance_clock']))
     response = response['body']
@@ -85,6 +90,14 @@ print(json.dumps(response))
                                     input=otp, text=True, capture_output=True, timeout=60)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             self.assertNotIn('UNEXPECTED-LOGIN', result.stderr)
+            for call in calls.splitlines():
+                url = urlsplit(call.split(' ', 1)[1])
+                if url.path.endswith('/actions/runs'):
+                    query = parse_qs(url.query)
+                    self.assertEqual(query.get('page'), ['1'], call)
+                    self.assertEqual(query.get('workflow_id'), ['windows-diagnostic.yml'], call)
+                    self.assertEqual(len(query.get('limit', [])), 1, call)
+                    self.assertTrue(0 < int(query['limit'][0]) <= 50, call)
             return result, calls.splitlines()
 
     def assert_stopped(self, responses, allowlist=None, posts=0):
@@ -116,14 +129,17 @@ print(json.dumps(response))
 
     def test_transient_status_and_descriptor_failures_do_not_redispatch(self):
         run = dict(id=456, index_in_repo=321, status='success', html_url='https://example.invalid/run/321')
-        result, calls = self.run_helper(
-            [page(), page(), dict(data='operator@example.invalid'), dict(id=456),
-             'timeout', 'timeout', run, dict(build=14767)], otp='123456\n', login=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('status temporarily unavailable for run 456', result.stdout)
-        self.assertEqual(sum('/dispatches' in c for c in calls), 1)
-        self.assertEqual(sum(c.endswith('/actions/runs/456') for c in calls), 2)
-        self.assertNotIn('123456', result.stdout + result.stderr)
+        for failure in ['timeout', 'http-503']:
+            with self.subTest(failure=failure):
+                result, calls = self.run_helper(
+                    [page(), page(), dict(data='operator@example.invalid'), dict(id=456),
+                     failure, failure, run, dict(build=14767)], otp='123456\n', login=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('status temporarily unavailable for run 456', result.stdout)
+                self.assertIn('published 0.1.14767', result.stdout)
+                self.assertEqual(sum('/dispatches' in c for c in calls), 1)
+                self.assertEqual(sum(c.endswith('/actions/runs/456') for c in calls), 2)
+                self.assertNotIn('123456', result.stdout + result.stderr)
 
     def test_empty_allowlist_stops_on_active_run(self):
         self.assert_stopped([page(RUN)])
