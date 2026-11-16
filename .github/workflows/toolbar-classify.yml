@@ -102,8 +102,12 @@ jobs:
           key: classify-v1-${{ runner.os }}-${{ matrix.kind }}-${{ github.sha }}
   windows:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [a, b, c]
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,7 +124,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force diagnostics | Out-Null
-          xperf.exe -on PROC_THREAD+CSWITCH+DISPATCHER -BufferSize 1024 -MinBuffers 64 -MaxBuffers 256 -f diagnostics/kernel.etl
+          # #2845 split: DPC/ISR intervals and 0.5 ms sampled PCs (with stacks) on the same kernel session.
+          xperf.exe -on PROC_THREAD+LOADER+CSWITCH+DISPATCHER+DPC+INTERRUPT+PROFILE -stackwalk Profile -SetProfInt 5000 -BufferSize 1024 -MinBuffers 128 -MaxBuffers 512 -f diagnostics/kernel.etl
           if ($LASTEXITCODE) { throw 'Unable to start precise kernel scheduling trace' }
           try {
             python scripts/ci/toolbar-review/runner.py --inputs inputs --out diagnostics/pairs --mode pairs
@@ -132,10 +137,20 @@ jobs:
           if ($LASTEXITCODE) { throw 'Trace decode failed' }
           python scripts/ci/toolbar-review/correlate.py diagnostics/pairs
           if ($LASTEXITCODE) { throw 'Scheduling correlation failed' }
+      - name: Split Running into DPC/ISR, sampled on-core work and absent vCPU time
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/sym", "$env:RUNNER_TEMP/symcache" | Out-Null
+          $env:_NT_SYMBOL_PATH = "$env:RUNNER_TEMP/sym"
+          $env:_NT_SYMCACHE_PATH = "$env:RUNNER_TEMP/symcache"
+          xperf.exe -i diagnostics/pairs/reader.etl -o diagnostics/pairs/dump.csv -a dumper
+          if ($LASTEXITCODE) { throw 'Dumper failed' }
+          python scripts/ci/toolbar-review/split.py diagnostics/pairs
+          if ($LASTEXITCODE) { throw 'Running split failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: exact-Windows
+          name: exact-Windows-${{ matrix.host }}
           path: diagnostics/
           if-no-files-found: error
           retention-days: 7

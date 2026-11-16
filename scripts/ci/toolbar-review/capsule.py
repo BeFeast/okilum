@@ -10,7 +10,7 @@ import subprocess
 MAIN = '774cef4abf61d39147069918f8ba8a1000008187'
 TOOLBAR = '863bfdd3a50f699087f5d81d154dd59d1cdcd202'
 # #2845 census: the second kind is current main, which contains the toolbar work.
-CURRENT = '97358d464415f4ddf277b30747809e65a326d25e'
+CURRENT = '59c1fe26aa46b44521384ce922fc874000d8fbea'
 ROOT = Path(__file__).resolve().parents[3]
 SRC = 'crates/okilum-shell/src/'
 
