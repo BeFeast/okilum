@@ -134,7 +134,7 @@ impl gpui_component::input::InputHighlighter for Tint {
     fn update(
         &mut self,
         _: Option<gpui_component::input::InputEdit>,
-        _: &ropey::Rope,
+        _: &gpui_component::input::Rope,
         _: bool,
         _: &mut Window,
         _: &mut Context<EditorState>,
@@ -154,7 +154,10 @@ impl gpui_component::input::InputHighlighter for Tint {
             },
         )]
     }
-    fn fold_ranges(&self, _: &ropey::Rope) -> Vec<gpui_component::input::FoldRange> {
+    fn fold_ranges(
+        &self,
+        _: &gpui_component::input::Rope,
+    ) -> Vec<gpui_component::input::FoldRange> {
         Vec::new()
     }
 }
