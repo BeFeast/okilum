@@ -53,9 +53,12 @@ def macos_api(method, path, body=None):
 
 
 def macos_attempted(source, current_run, before_current=False, ref='main'):
-    # One automatic attempt per main SHA: any prior main dispatch (including a
-    # failed build or a successful build awaiting publication) backs off until
-    # the next SHA. Never repeat notarization while publication is still pending.
+    # The oldest attempt owns a SHA. On main, push and manual runs share this
+    # accounting (#2891): while an older attempt is queued, running, or signed
+    # and awaiting publication, a later run backs off, so notarization is never
+    # repeated while publication is pending. Only a finished failed or cancelled
+    # main attempt leaves the SHA to an explicit manual recovery. A PR preview
+    # keeps one attempt per head.
     data = macos_api('GET', '/actions/runs?workflow_id=macos-release.yml'
                      '&ref=' + quote('refs/heads/' + ref, safe='') + '&head_sha=' + source +
                      '&limit=50&page=1')
@@ -66,14 +69,22 @@ def macos_attempted(source, current_run, before_current=False, ref='main'):
     for run in runs:
         if (run['workflow_id'] != 'macos-release.yml' or run['commit_sha'] != source
                 or run['prettyref'] != ref or run['is_fork_pull_request']
-                or run['trigger_event'] not in ('workflow_dispatch', 'schedule')):
+                or run['trigger_event'] not in (('push', 'workflow_dispatch', 'schedule')
+                                                if ref == 'main' else ('workflow_dispatch', 'schedule'))):
             raise ValueError('Unexpected Mac attempt identity')
         if type(run['id']) is not int or run['id'] < 1 or not current_run.isdigit():
             raise ValueError('Invalid Mac run identity')
-        if ref != 'main':
+        if ref != 'main' or run['trigger_event'] == 'workflow_dispatch':
             payload = run['event_payload']
             if isinstance(payload, str):
                 payload = json.loads(payload)
+            inputs = payload.get('inputs', {})
+            if ref == 'main' and (inputs.get('preview_pr') or inputs.get('source')
+                    or inputs.get('hourly_source', source) not in ('', source)):
+                # A stale pinned dispatch or preview refuses this captured head
+                # before it starts a producer; it cannot reserve the newer SHA.
+                continue
+        if ref != 'main':
             # Dispatch resolves a mutable branch. A run that captured a newer
             # commit than requested exits without signing and is not an attempt
             # for that new head, which must remain eligible when its CI is green.
@@ -83,8 +94,13 @@ def macos_attempted(source, current_run, before_current=False, ref='main'):
         # not make the first run back off too (otherwise neither would build).
         if before_current and run['id'] >= int(current_run):
             continue
-        if (str(run['id']) != current_run
-                and (run['trigger_event'] == 'workflow_dispatch' or run['status'] == 'failure')):
+        if str(run['id']) == current_run:
+            continue
+        if ref == 'main':
+            # A main schedule run only dispatched a pinned run; it never signed.
+            if run['trigger_event'] != 'schedule' and run['status'] not in ('failure', 'cancelled'):
+                return True
+        elif run['trigger_event'] == 'workflow_dispatch' or run['status'] == 'failure':
             return True
     return False
 
@@ -142,13 +158,15 @@ def select_macos(event, source, env, now):
         return select_macos_preview(event, source, env, now)
     if event == 'push':
         build, source, reason = hourly_beta.push_select(source, 'macos', env, hourly_beta.published_beta)
-        return build, source, False, reason
-    if event == 'schedule' or (event == 'workflow_dispatch'
+    elif event == 'schedule' or (event == 'workflow_dispatch'
             and env.get('GITHUB_REF') == 'refs/heads/main'
             and not env.get('OKILUM_SOURCE')):
         build, source, reason = hourly_beta.select(event, source, 'macos', env, hourly_beta.published_beta)
-        return build, source, False, reason
-    return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
+    else:
+        return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
+    if build and macos_attempted(source, env['GITHUB_RUN_ID'], before_current=True):
+        return False, source, False, 'Mac beta backoff: source already attempted'
+    return build, source, False, reason
 
 
 def descriptor(source, platform):
