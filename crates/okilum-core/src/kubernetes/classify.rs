@@ -1,0 +1,206 @@
+//! Turns one bounded invocation into data or a typed failure. Successful empty
+//! data is never a failure; failures never carry partial stdout as data.
+use super::transport::{End, Raw};
+use std::io;
+use std::time::Duration;
+
+/// Why a read produced no current observation. Kinds stay separate so the UI
+/// can say "forbidden" without implying the cluster is down, and "sign in
+/// again" without implying a permission problem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The API server refused this verb/resource for the current identity.
+    Forbidden {
+        detail: String,
+    },
+    /// Credentials missing, rejected or expired (HTTP 401, failing helper).
+    AuthExpired {
+        detail: String,
+    },
+    /// A kubeconfig exec credential plugin needs a terminal, browser or MFA
+    /// step that a GUI child process cannot complete.
+    InteractiveLogin {
+        detail: String,
+    },
+    /// The object or API group/version does not exist on this cluster.
+    NotFound {
+        detail: String,
+    },
+    /// No usable connection: kubectl missing, network, TLS, server overloaded.
+    Unavailable {
+        detail: String,
+    },
+    /// The kubeconfig cannot satisfy the request (unknown context, none set).
+    Configuration {
+        detail: String,
+    },
+    /// A request this adapter refuses before running kubectl.
+    InvalidRequest {
+        detail: String,
+    },
+    /// Exit 0 but not the JSON this adapter expects.
+    Malformed {
+        detail: String,
+    },
+    /// Stdout exceeded the byte bound; the process tree was ended.
+    Oversized {
+        limit_bytes: usize,
+    },
+    TimedOut {
+        after: Duration,
+    },
+    Cancelled,
+    /// Any other kubectl failure, with its exit code and bounded stderr.
+    Failed {
+        code: Option<i32>,
+        detail: String,
+    },
+}
+
+impl Failure {
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Forbidden { detail } => format!("Forbidden: {detail}"),
+            Self::AuthExpired { detail } => format!("Credentials expired or rejected: {detail}"),
+            Self::InteractiveLogin { detail } => {
+                format!("Interactive sign-in (MFA/browser) required outside Okilum: {detail}")
+            }
+            Self::NotFound { detail } => format!("Not found: {detail}"),
+            Self::Unavailable { detail } => format!("Cluster unavailable: {detail}"),
+            Self::Configuration { detail } => format!("Kubeconfig: {detail}"),
+            Self::InvalidRequest { detail } => detail.clone(),
+            Self::Malformed { detail } => format!("Unexpected kubectl output: {detail}"),
+            Self::Oversized { limit_bytes } => {
+                format!("Response exceeded {limit_bytes} bytes; nothing from it was kept")
+            }
+            Self::TimedOut { after } => format!("No answer within {} s", after.as_secs()),
+            Self::Cancelled => "Cancelled".into(),
+            Self::Failed { code, detail } => match code {
+                Some(code) => format!("kubectl exited with {code}: {detail}"),
+                None => format!("kubectl was terminated: {detail}"),
+            },
+        }
+    }
+
+    pub(crate) fn invalid(detail: impl Into<String>) -> Self {
+        Self::InvalidRequest {
+            detail: detail.into(),
+        }
+    }
+}
+
+pub(crate) fn spawn_failure(error: &io::Error) -> Failure {
+    let detail = if error.kind() == io::ErrorKind::NotFound {
+        "kubectl was not found on the application's PATH".to_string()
+    } else {
+        format!("could not start kubectl: {error}")
+    };
+    Failure::Unavailable { detail }
+}
+
+/// Stdout of a successful run, or the failure it represents.
+pub(crate) fn outcome(raw: Raw, limits: &super::transport::Limits) -> Result<Vec<u8>, Failure> {
+    match raw.end {
+        End::Cancelled => Err(Failure::Cancelled),
+        End::Deadline => Err(Failure::TimedOut {
+            after: limits.deadline,
+        }),
+        End::StdoutLimit => Err(Failure::Oversized {
+            limit_bytes: limits.max_stdout,
+        }),
+        End::Exited { code: Some(0) } => Ok(raw.stdout),
+        End::Exited { code } => Err(from_stderr(code, &raw.stderr)),
+    }
+}
+
+/// Bounded, single-line-per-line text with control characters removed.
+pub(crate) fn detail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let mut out: String = text
+        .trim()
+        .chars()
+        .map(|c| if c == '\n' || !c.is_control() { c } else { ' ' })
+        .collect();
+    if out.len() > 2048 {
+        let mut end = 2048;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+        out.push('…');
+    }
+    out
+}
+
+pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
+    let detail = detail(stderr);
+    let lower = detail.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    let credentials = has(&["getting credentials", "exec plugin", "credential plugin"]);
+    if credentials
+        && has(&[
+            "interactive",
+            "not a terminal",
+            "mfa",
+            "multi-factor",
+            "device code",
+            "devicecode",
+            "browser",
+            "one-time",
+            "otp",
+        ])
+    {
+        Failure::InteractiveLogin { detail }
+    } else if has(&[
+        "(unauthorized)",
+        "unauthorized",
+        "must be logged in",
+        "provide credentials",
+        "token has expired",
+        "token is expired",
+        "expired token",
+        "refresh token",
+        "invalid_grant",
+    ]) || credentials
+    {
+        Failure::AuthExpired { detail }
+    } else if has(&["(forbidden)", " forbidden", "forbidden:"]) {
+        Failure::Forbidden { detail }
+    } else if has(&[
+        "context was not found",
+        "does not exist",
+        "no context",
+        "current-context is not set",
+        "invalid configuration",
+        "no configuration has been provided",
+    ]) && !has(&["(notfound)"])
+    {
+        Failure::Configuration { detail }
+    } else if has(&[
+        "(notfound)",
+        "could not find the requested resource",
+        "not found",
+    ]) {
+        Failure::NotFound { detail }
+    } else if has(&[
+        "unable to connect",
+        "connection refused",
+        "no such host",
+        "i/o timeout",
+        "dial tcp",
+        "tls handshake",
+        "x509",
+        "serviceunavailable",
+        "currently unable to handle",
+        "deadline exceeded",
+        "timeout",
+        "unexpected eof",
+        "connection reset",
+        "network is unreachable",
+        "too many requests",
+    ]) {
+        Failure::Unavailable { detail }
+    } else {
+        Failure::Failed { code, detail }
+    }
+}

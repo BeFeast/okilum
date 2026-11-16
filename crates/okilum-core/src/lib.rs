@@ -37,6 +37,7 @@ pub mod goal_criteria;
 pub mod har;
 pub mod ir;
 pub mod json_schema;
+pub mod kubernetes;
 pub mod link_candidates;
 pub mod link_registration;
 #[cfg(any(unix, windows))]

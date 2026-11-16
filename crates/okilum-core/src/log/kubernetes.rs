@@ -8,6 +8,16 @@ use std::time::Duration;
 const CHUNK_BYTES: usize = 16 * 1024;
 const QUEUED_CHUNKS: usize = 16;
 
+/// The program every Kubernetes connector runs, resolved by the OS against the
+/// PATH the application received. The typed read adapter (`crate::kubernetes`)
+/// uses this same function, so the two cannot pick different executables.
+/// Kept here so this module still builds on its own (docs/kubernetes-log-connector.md).
+pub const KUBECTL: &str = "kubectl";
+
+pub fn kubectl_command() -> Command {
+    Command::new(KUBECTL)
+}
+
 #[derive(Clone, Debug)]
 pub struct Request {
     /// None uses the existing current context, without changing it.
@@ -73,7 +83,7 @@ impl Request {
     /// Start only after the user explicitly selects the target. No discovery,
     /// credential creation, shell interpolation, retries or cluster mutations.
     pub fn open(&self) -> io::Result<Session> {
-        let mut command = Command::new("kubectl");
+        let mut command = kubectl_command();
         command.args(self.args()?);
         Session::spawn(command)
     }
