@@ -123,32 +123,49 @@ one ends within one poll interval (20 ms).
 
 ## Processes and credentials
 
-kubectl is resolved by `kubectl_command()`, the same function the log
-connector uses: the OS resolves `kubectl` against the PATH the application
-received. Nothing rewrites PATH, KUBECONFIG or HOME, so kubeconfig exec
-credential plugins behave as they do for the log connector. Stdin is closed:
-an exec plugin that requires interactive input fails and is reported as
+kubectl is chosen by `KubectlProgram` (an optional executable and an optional
+PATH), shared with the log connector: `Kubectl::with_program` and
+`Request::open_with` take the same value, and both defaults
+(`Kubectl::default()`, `Request::open`, `kubectl_command()`) use
+`KubectlProgram::default()`, which runs `kubectl` resolved against the PATH the
+application received. A GUI launch can set `search_path` when its PATH lacks
+the user's tools; that PATH also reaches kubeconfig exec credential plugins.
+Nothing else is rewritten: KUBECONFIG and HOME are inherited, so exec plugins
+behave as they do for the log connector. Stdin is closed: an exec plugin that
+requires interactive input fails and is reported as
 `InteractiveLogin`/`AuthExpired`.
 
-Owned-child cleanup: the direct kubectl child is always reaped, including on
-panic. On Unix it is spawned as the leader of its own process group and its
-pipes are read nonblocking on the calling thread: no reader thread outlives a
-read, and both pipe ends are closed when it returns, even if a helper
-descendant still holds stderr. Completion is "stdout at EOF and kubectl
-exited"; stderr is then drained to what kubectl wrote, without waiting for
-descendants. On cancel, deadline or the stdout limit kubectl has not been
-reaped yet, so the whole group is killed (even when kubectl itself has already
-exited) and then kubectl is reaped. `Raw::cleanup` reports what happened.
+Owned-tree cleanup. Completion is "stdout at EOF and kubectl exited"; stderr
+then gets a 250 ms grace period to close. If it is still open after that (a
+credential helper or something it started holds it, possibly writing), the
+whole owned tree is ended and the result is still kubectl's own exit. Cancel,
+the deadline and the stdout limit end the tree at once. Cancel and the
+deadline are checked throughout, including during the grace period.
+`Raw::cleanup` reports what happened.
+
+- Unix: kubectl leads its own process group. Its exit is observed with
+  `waitid(NOWAIT)`, so it is not reaped until the group has been signalled and
+  the group id cannot be reused in between. Both pipes are read nonblocking on
+  the calling thread: no reader thread outlives a read, and both pipe ends
+  close when it returns.
+- Windows: kubectl is created suspended, assigned to a Job Object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumed, so every descendant is
+  in the job. Ending the tree terminates the job (`Cleanup::JobObject`), which
+  closes every pipe write end; the two reader threads then reach EOF and are
+  joined (bounded at 2 s). The job handle closes when the read returns, which
+  ends any process still in it.
+
 Limits, surfaced here and in `Cleanup`:
 
-- A credential-helper descendant that moved to another process group or session
-  (`setsid`, daemonizing token caches) is not reached.
-- When kubectl exits by itself nothing is signalled; descendants it leaves are
-  not ended.
-- On Windows only the direct kubectl child is killed (`DirectChildOnly`);
-  helper descendants are not tracked. Pipes are read by one thread each; after
-  kubectl exits stderr gets 250 ms to close, and a reader whose pipe a
-  descendant holds open ends only when that descendant closes it.
+- Unix: a descendant that moved to another process group or session (`setsid`,
+  daemonizing token caches) is not reached. When kubectl exits by itself and
+  stderr closes within the grace period, nothing is signalled and such
+  descendants are left alone.
+- Windows: a process that breaks away from the job is not reached.
+- If the group cannot be signalled, or no Job Object can be created or
+  assigned, only the direct kubectl child is killed (`DirectChildOnly`); on
+  Windows a reader whose pipe a surviving descendant holds then ends only when
+  that descendant closes it.
 
 ## Log connector
 

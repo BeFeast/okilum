@@ -1088,7 +1088,8 @@ fn a_descendant_holding_stderr_does_not_hold_the_result() {
         .run(&[], Limits::default(), &Cancel::new())
         .unwrap();
     assert_eq!(raw.end, End::Exited { code: Some(0) });
-    assert_eq!(raw.cleanup, Cleanup::NotNeeded);
+    // It still holds stderr after the grace period, so the owned group is ended.
+    assert_eq!(raw.cleanup, Cleanup::ProcessGroup);
     assert!(
         start.elapsed() < Duration::from_secs(2),
         "{:?}",
@@ -1184,10 +1185,10 @@ fn explicit_server_reason_beats_error_words_in_names() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1496,4 +1497,136 @@ fn gui_executable_and_path_reach_synthetic_credential_helper() {
     assert!(client
         .list::<Pod>(&conn, "shop", &ListQuery::default(), &cancel)
         .is_err());
+}
+
+// ---------- Review regressions (PR #3013, review of 33d6988bf) ----------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_descendant_writing_stderr_forever_is_bounded_and_its_group_ended() {
+    use rustix::io::Errno;
+    use rustix::process::{test_kill_process_group, Pid};
+    let _serial = serial();
+    // kubectl prints its group id, leaves a stderr writer behind and exits.
+    let script = r#"
+        echo "$$" >&2
+        (exec >/dev/null; while :; do echo x >&2; done) &
+        exit 0
+    "#;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(fixture(script).run(&[], Limits::default(), &Cancel::new()));
+    });
+    let raw = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the read did not return while a descendant kept writing stderr")
+        .unwrap();
+    assert_eq!(raw.end, End::Exited { code: Some(0) });
+    assert_eq!(raw.cleanup, Cleanup::ProcessGroup);
+    assert!(raw.stderr.len() <= MAX_STDERR);
+    let group: i32 = String::from_utf8_lossy(&raw.stderr)
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let group = Pid::from_raw(group).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while test_kill_process_group(group) != Err(Errno::SRCH) {
+        assert!(
+            Instant::now() < deadline,
+            "the stderr writer's group survived"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(windows)]
+fn current_threads() -> usize {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    let pid = unsafe { GetCurrentProcessId() };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    assert_ne!(snapshot, INVALID_HANDLE_VALUE);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut count = 0;
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) };
+    while more != 0 {
+        if entry.th32OwnerProcessID == pid {
+            count += 1;
+        }
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        more = unsafe { Thread32Next(snapshot, &mut entry) };
+    }
+    unsafe { CloseHandle(snapshot) };
+    count
+}
+
+#[cfg(windows)]
+fn process_gone(pid: u32, wait: Duration) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return true;
+    }
+    let exited = unsafe { WaitForSingleObject(handle, wait.as_millis() as u32) } == WAIT_OBJECT_0;
+    unsafe { CloseHandle(handle) };
+    exited
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_job_ends_a_grandchild_holding_the_pipes() {
+    let _serial = serial();
+    // cmd (standing in for kubectl) starts a long-lived grandchild that
+    // inherits stdout and stderr and prints its PID, then exits.
+    let transport = Kubectl::with_command(|| {
+        use std::os::windows::process::CommandExt as _;
+        let mut command = std::process::Command::new("cmd");
+        command.raw_arg(
+            r#"/D /C start "" /B powershell -NoProfile -NonInteractive -Command "[Console]::Error.WriteLine($PID); Start-Sleep -Seconds 300" & ping -n 6 127.0.0.1 >NUL & exit /B 0"#,
+        );
+        command
+    });
+    let limits = Limits {
+        deadline: Duration::from_secs(20),
+        ..Limits::default()
+    };
+    let threads = current_threads();
+    let start = Instant::now();
+    let raw = transport.run(&[], limits, &Cancel::new()).unwrap();
+    let elapsed = start.elapsed();
+    // The grandchild holds stdout, so only the deadline ends the read, and
+    // then the whole job: kubectl's descendant included.
+    assert_eq!(raw.end, End::Deadline);
+    assert_eq!(raw.cleanup, Cleanup::JobObject);
+    assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
+    let pid: u32 = String::from_utf8_lossy(&raw.stderr)
+        .lines()
+        .find_map(|line| line.trim().parse().ok())
+        .expect("positive control: the grandchild reported its PID");
+    assert!(
+        process_gone(pid, Duration::from_secs(5)),
+        "grandchild {pid} survived the read"
+    );
+    // Both reader threads were joined, not left blocked on the pipes.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while current_threads() > threads {
+        assert!(
+            Instant::now() < deadline,
+            "{threads} -> {} threads",
+            current_threads()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

@@ -48,7 +48,8 @@ def receipt():
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
                 "Run native Windows delta console controls", "Run native Windows Sync identity controls",
                 "Run native Windows atlas upload controls",
-                "Run native Windows terminal console controls")]}]}
+                "Run native Windows terminal console controls",
+                "Run native Windows Kubernetes transport controls")]}]}
 
 
 
@@ -543,6 +544,23 @@ class VerdictTests(unittest.TestCase):
                     if step.get("name") == "Run native Windows terminal console controls")
         self.assertNotIn("if", step)
         self.assertIn("python scripts/ci/windows-terminal-console.py", step["run"])
+
+    def test_windows_kubernetes_transport_controls_are_required_in_the_routine_gate(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA), 0)
+        native = data["jobs"][1]["steps"]
+        step = next(s for s in native if s["name"] == "Run native Windows Kubernetes transport controls")
+        for state in ("skipped", "failure"):
+            step["conclusion"] = state
+            self.assertEqual(helper.verdict(data, SHA), 75)
+        native.remove(step)
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        step = next(step for step in workflow["jobs"]["windows-recovery"]["steps"]
+                    if step.get("name") == "Run native Windows Kubernetes transport controls")
+        self.assertNotIn("if", step)
+        self.assertIn("windows_job_ends_a_grandchild_holding_the_pipes", step["run"])
+        self.assertIn("exit $LASTEXITCODE", step["run"])
 
     def test_vault_regression_control_must_run_for_normal_worker_checks(self):
         info = receipt()
