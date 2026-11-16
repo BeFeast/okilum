@@ -37,6 +37,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(target_os = "macos")]
 mod folder_service;
+mod kubernetes_workspace;
 mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
@@ -595,6 +596,7 @@ fn bind_keys(cx: &mut App) {
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
+    kubernetes_workspace::bind_keys(cx);
     reader_delimited::bind_keys(cx);
     reader_har::bind_keys(cx);
     reader_code_file::bind_keys(cx);

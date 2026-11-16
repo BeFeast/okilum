@@ -16,21 +16,24 @@ const POLL: Duration = Duration::from_millis(100);
 const DIAGNOSTIC_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Status {
+pub(crate) enum Status {
     Reading,
     Complete,
     Stopped,
     Failed(String),
+    /// Loading stopped at a bound of the stream assembler (8 MiB, 20,000
+    /// lines, a 64 KiB line, invalid UTF-8); earlier rows are kept.
+    Truncated(String),
 }
 
-pub(super) struct Update {
+pub(crate) struct Update {
     pub snapshot: Option<Arc<Snapshot>>,
     pub status: Status,
     pub diagnostic: String,
     pub pending: usize,
 }
 
-pub(super) struct Worker(Arc<AtomicBool>);
+pub(crate) struct Worker(Arc<AtomicBool>);
 impl Worker {
     pub fn start(request: Request, scope: String) -> (Self, async_channel::Receiver<Update>) {
         let cancel = Arc::new(AtomicBool::new(false));
@@ -74,6 +77,14 @@ impl Worker {
     }
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
+    }
+}
+#[cfg(test)]
+impl Worker {
+    /// A worker without a process for UI tests, with its cancel flag.
+    pub(crate) fn detached() -> (Self, Arc<AtomicBool>) {
+        let flag = Arc::new(AtomicBool::new(false));
+        (Self(flag.clone()), flag)
     }
 }
 impl Drop for Worker {
@@ -128,7 +139,7 @@ fn run(
                     }
                     dirty = true;
                 }
-                Err(error) => break Status::Failed(error.to_string()),
+                Err(error) => break Status::Truncated(error.to_string()),
             },
             Ok(Some(Input::Diagnostic(bytes))) => {
                 // Keep bounded stderr separately; it must never become a log row.

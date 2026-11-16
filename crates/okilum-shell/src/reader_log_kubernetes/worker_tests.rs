@@ -67,7 +67,7 @@ fn failed_exit_and_history_limit_retain_previous_rows() {
         Input::Data(b"kept\n".to_vec()),
         Input::Data(vec![b'x'; 64 * 1024 + 1]),
     ]);
-    assert!(matches!(limit.status, Status::Failed(ref error) if error.contains("64 KiB")));
+    assert!(matches!(limit.status, Status::Truncated(ref error) if error.contains("64 KiB")));
     assert_eq!(limit.snapshot.unwrap().bytes(), b"kept\n");
 }
 

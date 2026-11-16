@@ -1420,6 +1420,14 @@ impl Reader {
                             })),
                     )
                     .child(
+                        Button::new("app-kubernetes-workspace")
+                            .ghost()
+                            .label("Kubernetes workspace…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                kubernetes_workspace::show(this.vault_root.clone(), cx)
+                            })),
+                    )
+                    .child(
                         Button::new("app-kubernetes-logs")
                             .ghost()
                             .label("Kubernetes logs…")
