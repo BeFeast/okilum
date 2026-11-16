@@ -958,6 +958,7 @@ fn fixture(script: &'static str) -> Kubectl {
 #[cfg(unix)]
 #[test]
 fn process_receives_exact_argv_without_shell_interpolation() {
+    let _serial = serial();
     let script = r#"
         [ "$1" = '--context=team/$(echo injected) a' ] || exit 9
         [ "$2" = '--request-timeout=20s' ] || exit 9
@@ -989,6 +990,7 @@ fn process_receives_exact_argv_without_shell_interpolation() {
 #[cfg(unix)]
 #[test]
 fn process_failure_keeps_stderr_bounded_and_classified() {
+    let _serial = serial();
     let script = r#"
         printf 'Error from server (Forbidden): pods is forbidden\n' >&2
         head -c 40000 /dev/zero | tr '\0' 'x' >&2
@@ -1009,6 +1011,7 @@ fn process_failure_keeps_stderr_bounded_and_classified() {
 #[cfg(unix)]
 #[test]
 fn oversized_stdout_ends_the_process_promptly() {
+    let _serial = serial();
     let limits = Limits {
         max_stdout: 64 * 1024,
         ..Limits::default()
@@ -1026,6 +1029,7 @@ fn oversized_stdout_ends_the_process_promptly() {
 #[cfg(unix)]
 #[test]
 fn deadline_ends_a_hung_credential_plugin() {
+    let _serial = serial();
     let limits = Limits {
         deadline: Duration::from_millis(300),
         ..Limits::default()
@@ -1041,6 +1045,7 @@ fn deadline_ends_a_hung_credential_plugin() {
 #[cfg(unix)]
 #[test]
 fn a_descendant_holding_stderr_does_not_hold_the_result() {
+    let _serial = serial();
     // Like a credential helper that leaves a background process behind; it
     // inherits stderr only (kubectl captures a plugin's stdout itself).
     let script = r#"
@@ -1076,6 +1081,7 @@ fn alive(pid: u32) -> bool {
 #[cfg(target_os = "linux")]
 #[test]
 fn cancel_ends_kubectl_and_its_process_group_descendants() {
+    let _serial = serial();
     let script = r#"
         sleep 30 &
         echo "$!" >&2
@@ -1117,4 +1123,159 @@ fn missing_kubectl_is_a_visible_unavailable_failure() {
     let result = client.contexts(&Cancel::new());
     assert!(matches!(result, Err(Failure::Unavailable { ref detail }) if detail.contains("PATH")));
     assert_eq!(Kubectl::default().program(), KUBECTL);
+}
+
+// ---------- Review regressions (PR #3013, review of 7605b10e) ----------
+
+#[test]
+fn explicit_server_reason_beats_error_words_in_names() {
+    let cases = [
+        (r#"Error from server (NotFound): pods "unauthorized" not found"#, "notfound"),
+        (r#"Error from server (NotFound): services "forbidden-timeout" not found"#, "notfound"),
+        (
+            r#"Error from server (Forbidden): pods "notfound-unauthorized" is forbidden: User "synthetic" cannot get resource "pods""#,
+            "forbidden",
+        ),
+        (
+            "W1116 12:00:00 warning: \"Unauthorized\" mentioned\nError from server (Forbidden): pods is forbidden",
+            "forbidden",
+        ),
+        (
+            r#"Error from server (BadRequest): container "unauthorized" in pod "timeout" is waiting to start"#,
+            "failed",
+        ),
+        ("error: context was not found for specified context: unauthorized-timeout", "configuration"),
+        ("Error from server (InternalError): an error on the server", "unavailable"),
+    ];
+    for (stderr, expected) in cases {
+        let got = classify::from_stderr(Some(1), stderr.as_bytes());
+        assert_eq!(failure_kind(&got), expected, "{stderr}");
+    }
+}
+
+#[cfg(unix)]
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(unix)]
+#[test]
+fn the_final_error_line_survives_stderr_noise_and_exit() {
+    let _serial = serial();
+    // ~240 KB of warnings before kubectl's error, then immediate exit.
+    let noisy = r#"
+        i=0
+        while [ $i -lt 4000 ]; do
+            echo "W1116 12:00:00.000000 warning line $i padding padding padding" >&2
+            i=$((i+1))
+        done
+        echo 'Error from server (Forbidden): pods is forbidden: User "synthetic" cannot list resource "pods"' >&2
+        exit 1
+    "#;
+    let client = Client::new(fixture(noisy), Limits::default());
+    let result = client.list::<Pod>(
+        &connection("a"),
+        "shop",
+        &ListQuery::default(),
+        &Cancel::new(),
+    );
+    assert!(
+        matches!(result, Err(Failure::Forbidden { .. })),
+        "{result:?}"
+    );
+    let raw = fixture(noisy)
+        .run(&[], Limits::default(), &Cancel::new())
+        .unwrap();
+    assert!(raw.stderr.len() <= MAX_STDERR && raw.stderr_truncated);
+    assert!(raw
+        .stderr
+        .starts_with(b"W1116 12:00:00.000000 warning line 0 "));
+    // A short error written just before exit is never lost either.
+    let short = "printf 'Error from server (Forbidden): pods is forbidden\\n' >&2; exit 1";
+    for _ in 0..25 {
+        let raw = fixture(short)
+            .run(&[], Limits::default(), &Cancel::new())
+            .unwrap();
+        assert_eq!(raw.end, End::Exited { code: Some(1) });
+        assert_eq!(
+            raw.stderr,
+            b"Error from server (Forbidden): pods is forbidden\n"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cancel_signals_the_group_after_kubectl_itself_exited() {
+    let _serial = serial();
+    // kubectl (the sh leader) exits at once; its descendant keeps stdout open,
+    // so the read is still running when cancel arrives.
+    let script = r#"
+        sleep 30 &
+        echo "$!" >&2
+        exit 0
+    "#;
+    let cancel = Cancel::new();
+    let trigger = cancel.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        trigger.cancel();
+    });
+    let raw = fixture(script)
+        .run(&[], Limits::default(), &cancel)
+        .unwrap();
+    canceller.join().unwrap();
+    assert_eq!(raw.end, End::Cancelled);
+    assert_eq!(raw.cleanup, Cleanup::ProcessGroup);
+    let pid: u32 = String::from_utf8_lossy(&raw.stderr).trim().parse().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while alive(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "descendant {pid} survived cancel"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn threads_and_fds() -> (usize, usize) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let threads = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Threads:"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    (threads, std::fs::read_dir("/proc/self/fd").unwrap().count())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reads_leave_no_threads_or_pipes_behind_a_helper_holding_stderr() {
+    let _serial = serial();
+    let script = r#"
+        (exec sleep 4 >/dev/null) &
+        printf '{"kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}'
+    "#;
+    let transport = fixture(script);
+    let (threads, fds) = threads_and_fds();
+    for _ in 0..40 {
+        let raw = transport
+            .run(&[], Limits::default(), &Cancel::new())
+            .unwrap();
+        assert_eq!(raw.end, End::Exited { code: Some(0) });
+    }
+    let (threads_after, fds_after) = threads_and_fds();
+    // Each leaked reader would add one thread and one pipe fd per read (40);
+    // the margin absorbs other tests running in parallel.
+    assert!(
+        threads_after < threads + 20,
+        "{threads} -> {threads_after} threads"
+    );
+    assert!(fds_after < fds + 20, "{fds} -> {fds_after} fds");
 }

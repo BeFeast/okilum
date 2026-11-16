@@ -132,12 +132,68 @@ pub(crate) fn detail(stderr: &[u8]) -> String {
     out
 }
 
+/// kubectl's explicit API status reason, as in `Error from server (Forbidden):`
+/// or `... to the server (Unauthorized)`. The last one wins: kubectl prints its
+/// error after any warnings. Quoted resource names are never read as a reason.
+fn server_reason(text: &str) -> Option<&str> {
+    let mut found: Option<(usize, &str)> = None;
+    for marker in ["from server (", "to the server ("] {
+        for (at, _) in text.match_indices(marker) {
+            let after = &text[at + marker.len()..];
+            let Some(end) = after.find(')') else { continue };
+            let reason = &after[..end];
+            if !reason.is_empty()
+                && reason.bytes().all(|b| b.is_ascii_alphabetic())
+                && found.is_none_or(|(seen, _)| at > seen)
+            {
+                found = Some((at, reason));
+            }
+        }
+    }
+    found.map(|(_, reason)| reason)
+}
+
+/// Text with every double-quoted span removed, so object or context names such
+/// as `"unauthorized"` or `"timeout-svc"` cannot look like an error kind.
+fn unquoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quoted = false;
+    for c in text.chars() {
+        if c == '"' {
+            quoted = !quoted;
+            out.push(' ');
+        } else if !quoted {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
     let detail = detail(stderr);
-    let lower = detail.to_ascii_lowercase();
+    if let Some(reason) = server_reason(&detail) {
+        return match reason {
+            "Forbidden" => Failure::Forbidden { detail },
+            "Unauthorized" => Failure::AuthExpired { detail },
+            "NotFound" => Failure::NotFound { detail },
+            "ServiceUnavailable" | "InternalError" | "Timeout" | "ServerTimeout"
+            | "TooManyRequests" => Failure::Unavailable { detail },
+            _ => Failure::Failed { code, detail },
+        };
+    }
+    // Client-side failures carry no server reason: match kubectl's own
+    // wording, outside quoted names, most specific first.
+    let lower = unquoted(&detail).to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
     let credentials = has(&["getting credentials", "exec plugin", "credential plugin"]);
-    if credentials
+    if has(&[
+        "context was not found",
+        "current-context is not set",
+        "invalid configuration",
+        "no configuration has been provided",
+    ]) {
+        Failure::Configuration { detail }
+    } else if credentials
         && has(&[
             "interactive",
             "not a terminal",
@@ -151,37 +207,18 @@ pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
         ])
     {
         Failure::InteractiveLogin { detail }
-    } else if has(&[
-        "(unauthorized)",
-        "unauthorized",
-        "must be logged in",
-        "provide credentials",
-        "token has expired",
-        "token is expired",
-        "expired token",
-        "refresh token",
-        "invalid_grant",
-    ]) || credentials
+    } else if credentials
+        || has(&[
+            "must be logged in",
+            "provide credentials",
+            "token has expired",
+            "token is expired",
+            "expired token",
+            "refresh token",
+            "invalid_grant",
+        ])
     {
         Failure::AuthExpired { detail }
-    } else if has(&["(forbidden)", " forbidden", "forbidden:"]) {
-        Failure::Forbidden { detail }
-    } else if has(&[
-        "context was not found",
-        "does not exist",
-        "no context",
-        "current-context is not set",
-        "invalid configuration",
-        "no configuration has been provided",
-    ]) && !has(&["(notfound)"])
-    {
-        Failure::Configuration { detail }
-    } else if has(&[
-        "(notfound)",
-        "could not find the requested resource",
-        "not found",
-    ]) {
-        Failure::NotFound { detail }
     } else if has(&[
         "unable to connect",
         "connection refused",
@@ -190,14 +227,10 @@ pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
         "dial tcp",
         "tls handshake",
         "x509",
-        "serviceunavailable",
-        "currently unable to handle",
         "deadline exceeded",
-        "timeout",
         "unexpected eof",
         "connection reset",
         "network is unreachable",
-        "too many requests",
     ]) {
         Failure::Unavailable { detail }
     } else {

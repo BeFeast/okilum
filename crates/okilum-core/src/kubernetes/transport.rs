@@ -7,7 +7,6 @@ use std::ffi::OsString;
 use std::io::{self, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -125,49 +124,48 @@ impl Transport for Kubectl {
     }
 }
 
-enum Message {
-    Out(Vec<u8>),
-    Err(Vec<u8>),
-    /// The pipe closed; `true` for stderr.
-    Eof(bool),
-    ReadError(bool, io::Error),
+/// Keeps the first `STDERR_HEAD` bytes and the newest bytes after them, within
+/// `MAX_STDERR` in total. kubectl prints warnings first and its error last, so
+/// the final error line survives any amount of earlier noise.
+const STDERR_HEAD: usize = 4 * 1024;
+const STDERR_GAP: &[u8] = b"\n[...]\n";
+
+#[derive(Default)]
+struct Stderr {
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    dropped: bool,
 }
 
-fn push_stderr(raw: &mut Raw, bytes: &[u8]) {
-    let room = MAX_STDERR - raw.stderr.len();
-    if bytes.len() > room {
-        raw.stderr_truncated = true;
-    }
-    raw.stderr
-        .extend_from_slice(&bytes[..bytes.len().min(room)]);
-}
-
-fn reader(mut input: impl Read + Send + 'static, sender: mpsc::SyncSender<Message>, err: bool) {
-    std::thread::spawn(move || loop {
-        let mut bytes = vec![0; CHUNK];
-        match input.read(&mut bytes) {
-            Ok(0) => {
-                let _ = sender.send(Message::Eof(err));
-                break;
-            }
-            Ok(count) => {
-                bytes.truncate(count);
-                let message = if err {
-                    Message::Err(bytes)
-                } else {
-                    Message::Out(bytes)
-                };
-                if sender.send(message).is_err() {
-                    break;
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                let _ = sender.send(Message::ReadError(err, error));
-                break;
+impl Stderr {
+    fn push(&mut self, mut bytes: &[u8]) {
+        let room = STDERR_HEAD - self.head.len();
+        let take = bytes.len().min(room);
+        self.head.extend_from_slice(&bytes[..take]);
+        bytes = &bytes[take..];
+        let cap = MAX_STDERR - STDERR_HEAD - STDERR_GAP.len();
+        if bytes.len() >= cap {
+            self.dropped |= !self.tail.is_empty() || bytes.len() > cap;
+            self.tail.clear();
+            bytes = &bytes[bytes.len() - cap..];
+        } else {
+            let excess = (self.tail.len() + bytes.len()).saturating_sub(cap);
+            if excess > 0 {
+                self.dropped = true;
+                self.tail.drain(..excess);
             }
         }
-    });
+        self.tail.extend(bytes);
+    }
+
+    fn finish(self, raw: &mut Raw) {
+        raw.stderr = self.head;
+        if self.dropped {
+            raw.stderr.extend_from_slice(STDERR_GAP);
+        }
+        raw.stderr.extend(self.tail);
+        raw.stderr_truncated = self.dropped;
+    }
 }
 
 /// The spawned child plus the guarantee that it is reaped, even on panic.
@@ -176,25 +174,21 @@ struct Owned {
 }
 
 impl Owned {
-    /// Ends the tree while kubectl is still unreaped, so the group id cannot
-    /// have been reused, then reaps the direct child.
+    /// Abnormal end (cancel, deadline, stdout limit, panic). kubectl has not
+    /// been reaped on these paths, so on Unix its process-group id is still
+    /// reserved and the group is signalled even if kubectl itself has already
+    /// exited; then kubectl is reaped.
     fn terminate(&mut self) -> io::Result<Cleanup> {
         let Some(child) = self.child.as_mut() else {
             return Ok(Cleanup::NotNeeded);
         };
-        let cleanup = if child.try_wait()?.is_none() {
-            kill_tree(child)
-        } else {
-            Cleanup::NotNeeded
-        };
+        let cleanup = kill_tree(child);
         child.wait()?;
         self.child.take();
         Ok(cleanup)
     }
 }
 
-/// Unix: the child was spawned as a process-group leader and is still unreaped,
-/// so its group id cannot have been reused yet.
 #[cfg(unix)]
 fn kill_tree(child: &mut Child) -> Cleanup {
     use rustix::io::Errno;
@@ -221,6 +215,16 @@ impl Drop for Owned {
     }
 }
 
+fn new_raw() -> Raw {
+    Raw {
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        stderr_truncated: false,
+        end: End::Exited { code: None },
+        cleanup: Cleanup::NotNeeded,
+    }
+}
+
 pub(crate) fn run_process(
     mut command: Command,
     args: &[String],
@@ -242,81 +246,215 @@ pub(crate) fn run_process(
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let mut owned = Owned { child: Some(child) };
-    let (sender, receiver) = mpsc::sync_channel(8);
-    reader(stdout, sender.clone(), false);
-    reader(stderr, sender, true);
+    let mut raw = new_raw();
+    let mut errors = Stderr::default();
+    let abnormal = pump(
+        &mut owned,
+        stdout,
+        stderr,
+        &mut raw,
+        &mut errors,
+        limits,
+        cancel,
+        started,
+    )?;
+    if let Some(end) = abnormal {
+        raw.cleanup = owned.terminate()?;
+        raw.end = end;
+    }
+    errors.finish(&mut raw);
+    Ok(raw)
+}
 
-    let mut raw = Raw {
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        stderr_truncated: false,
-        end: End::Exited { code: None },
-        cleanup: Cleanup::NotNeeded,
-    };
-    // Stderr may be held open by a credential-helper descendant that outlives
-    // kubectl, so completion is: stdout drained and kubectl exited.
-    let (mut stdout_open, mut readers) = (true, 2);
-    let abnormal = loop {
+fn read_some(input: &mut impl Read, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+    match input.read(buffer) {
+        Ok(count) => Ok(Some(count)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Unix: both pipes are nonblocking and read on this thread. No reader thread
+/// outlives the call, and both pipe ends close when it returns, even when a
+/// credential-helper descendant still holds the write end of stderr.
+/// Completion is "stdout at EOF and kubectl exited"; everything kubectl wrote
+/// to stderr is then already in the pipe and is drained without waiting.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn pump(
+    owned: &mut Owned,
+    mut stdout: std::process::ChildStdout,
+    mut stderr: std::process::ChildStderr,
+    raw: &mut Raw,
+    errors: &mut Stderr,
+    limits: Limits,
+    cancel: &Cancel,
+    started: Instant,
+) -> io::Result<Option<End>> {
+    rustix::io::ioctl_fionbio(&stdout, true)?;
+    rustix::io::ioctl_fionbio(&stderr, true)?;
+    let mut buffer = vec![0; CHUNK];
+    let (mut out_open, mut err_open) = (true, true);
+    loop {
         if cancel.is_cancelled() {
-            break Some(End::Cancelled);
+            return Ok(Some(End::Cancelled));
         }
         let elapsed = started.elapsed();
         if elapsed >= limits.deadline {
-            break Some(End::Deadline);
+            return Ok(Some(End::Deadline));
         }
-        if !stdout_open {
+        let mut progressed = false;
+        if out_open {
+            match read_some(&mut stdout, &mut buffer) {
+                Ok(Some(0)) => out_open = false,
+                Ok(Some(count)) => {
+                    if raw.stdout.len() + count > limits.max_stdout {
+                        return Ok(Some(End::StdoutLimit));
+                    }
+                    raw.stdout.extend_from_slice(&buffer[..count]);
+                    progressed = true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    errors.push(format!("\n[okilum: stdout read error: {error}]").as_bytes());
+                    out_open = false;
+                }
+            }
+        }
+        if err_open {
+            match read_some(&mut stderr, &mut buffer) {
+                Ok(Some(0)) => err_open = false,
+                Ok(Some(count)) => {
+                    errors.push(&buffer[..count]);
+                    progressed = true;
+                }
+                Ok(None) => {}
+                Err(_) => err_open = false,
+            }
+        }
+        if !out_open {
             let child = owned.child.as_mut().expect("unreaped child");
             if let Some(status) = child.try_wait()? {
                 owned.child.take();
-                // Collect stderr that is already written, without waiting on it.
-                while let Ok(message) = receiver.try_recv() {
-                    if let Message::Err(bytes) = message {
-                        push_stderr(&mut raw, &bytes);
+                while err_open {
+                    match read_some(&mut stderr, &mut buffer) {
+                        Ok(Some(0)) | Ok(None) | Err(_) => err_open = false,
+                        Ok(Some(count)) => errors.push(&buffer[..count]),
                     }
                 }
                 raw.end = End::Exited {
                     code: status.code(),
                 };
-                break None;
+                return Ok(None);
             }
         }
-        let wait = POLL.min(limits.deadline - elapsed);
-        if readers == 0 {
-            std::thread::sleep(wait);
-            continue;
+        if !progressed {
+            std::thread::sleep(POLL.min(limits.deadline - elapsed));
         }
-        match receiver.recv_timeout(wait) {
+    }
+}
+
+/// Windows: blocking pipes, one reader thread each. After kubectl exits,
+/// stderr gets a short grace period to reach EOF; a reader whose pipe is held
+/// open by a descendant ends only when that descendant closes it.
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+fn pump(
+    owned: &mut Owned,
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
+    raw: &mut Raw,
+    errors: &mut Stderr,
+    limits: Limits,
+    cancel: &Cancel,
+    started: Instant,
+) -> io::Result<Option<End>> {
+    enum Message {
+        Out(Vec<u8>),
+        Err(Vec<u8>),
+        Eof(bool),
+    }
+    fn reader(mut input: impl Read + Send + 'static, sender: mpsc::SyncSender<Message>, err: bool) {
+        std::thread::spawn(move || loop {
+            let mut bytes = vec![0; CHUNK];
+            match input.read(&mut bytes) {
+                Ok(0) => {
+                    let _ = sender.send(Message::Eof(err));
+                    break;
+                }
+                Ok(count) => {
+                    bytes.truncate(count);
+                    let message = if err {
+                        Message::Err(bytes)
+                    } else {
+                        Message::Out(bytes)
+                    };
+                    if sender.send(message).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    let _ = sender.send(Message::Eof(err));
+                    break;
+                }
+            }
+        });
+    }
+    let (sender, receiver) = mpsc::sync_channel(8);
+    reader(stdout, sender.clone(), false);
+    reader(stderr, sender, true);
+    let (mut out_open, mut err_open) = (true, true);
+    let mut exited: Option<(Option<i32>, Instant)> = None;
+    loop {
+        if exited.is_none() {
+            if cancel.is_cancelled() {
+                return Ok(Some(End::Cancelled));
+            }
+            if started.elapsed() >= limits.deadline {
+                return Ok(Some(End::Deadline));
+            }
+        }
+        if let Some((code, at)) = exited {
+            if !err_open || at.elapsed() >= Duration::from_millis(250) {
+                raw.end = End::Exited { code };
+                return Ok(None);
+            }
+        } else if !out_open {
+            let child = owned.child.as_mut().expect("unreaped child");
+            if let Some(status) = child.try_wait()? {
+                owned.child.take();
+                exited = Some((status.code(), Instant::now()));
+                continue;
+            }
+        }
+        match receiver.recv_timeout(POLL) {
             Ok(Message::Out(bytes)) => {
                 if raw.stdout.len() + bytes.len() > limits.max_stdout {
-                    break Some(End::StdoutLimit);
+                    return Ok(Some(End::StdoutLimit));
                 }
                 raw.stdout.extend_from_slice(&bytes);
             }
-            Ok(Message::Err(bytes)) => push_stderr(&mut raw, &bytes),
+            Ok(Message::Err(bytes)) => errors.push(&bytes),
             Ok(Message::Eof(err)) => {
-                readers -= 1;
-                stdout_open &= err;
-            }
-            Ok(Message::ReadError(err, error)) => {
-                readers -= 1;
-                stdout_open &= err;
-                push_stderr(
-                    &mut raw,
-                    format!("\n[okilum: pipe read error: {error}]").as_bytes(),
-                );
+                if err {
+                    err_open = false;
+                } else {
+                    out_open = false;
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                readers = 0;
-                stdout_open = false;
+                out_open = false;
+                err_open = false;
             }
         }
-    };
-    if let Some(end) = abnormal {
-        // Release blocked readers first; an escaped descendant may keep a pipe.
-        drop(receiver);
-        raw.cleanup = owned.terminate()?;
-        raw.end = end;
     }
-    Ok(raw)
 }

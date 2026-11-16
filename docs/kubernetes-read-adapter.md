@@ -88,7 +88,8 @@ conditions and current metric facts (`93%`, `930m`, ...).
   when given). A server that ignores `limit` is cut to it and marked truncated.
 - Stdout is bounded (default 16 MiB); beyond it the process tree is ended and
   the result is `Failure::Oversized`, nothing from it is kept. Stderr keeps at
-  most 16 KiB. Each invocation has a 45 s deadline and passes a 20 s
+  most 16 KiB: its first 4 KiB and its newest bytes, so kubectl's final error
+  line survives any amount of earlier warnings. Each invocation has a 45 s deadline and passes a 20 s
   `--request-timeout`.
 - Items that fail to decode (for example without a UID or resourceVersion) are
   reported in `List::rejected` (first 20) and `rejected_total`, never dropped
@@ -101,8 +102,12 @@ conditions and current metric facts (`93%`, `930m`, ...).
   server overload), `Configuration` (unknown or unset context),
   `InvalidRequest` (refused before running kubectl), `Malformed` (exit 0 but
   not the expected JSON kind), `Oversized`, `TimedOut`, `Cancelled` and
-  `Failed` (any other exit, with code and bounded stderr). Classification uses
-  kubectl's stderr wording; an unknown message stays `Failed`, never success.
+  `Failed` (any other exit, with code and bounded stderr). The explicit server
+  reason (`Error from server (Forbidden)`, `... to the server (Unauthorized)`,
+  the last one printed) decides first; only client-side errors without one are
+  matched on kubectl's wording, with quoted names ignored, so an object called
+  `"unauthorized"` cannot turn `NotFound` into `AuthExpired`. An unknown
+  message stays `Failed`, never success.
 
 ## Freshness, retention and cancellation
 
@@ -126,19 +131,24 @@ an exec plugin that requires interactive input fails and is reported as
 `InteractiveLogin`/`AuthExpired`.
 
 Owned-child cleanup: the direct kubectl child is always reaped, including on
-panic. On Unix it is spawned as the leader of its own process group; on
-cancel, deadline or the stdout limit the whole group is killed while kubectl is
-still unreaped (so the group id cannot have been reused), then kubectl is
-reaped. `Raw::cleanup` reports what happened. Limits, surfaced here and in
-`Cleanup`:
+panic. On Unix it is spawned as the leader of its own process group and its
+pipes are read nonblocking on the calling thread: no reader thread outlives a
+read, and both pipe ends are closed when it returns, even if a helper
+descendant still holds stderr. Completion is "stdout at EOF and kubectl
+exited"; stderr is then drained to what kubectl wrote, without waiting for
+descendants. On cancel, deadline or the stdout limit kubectl has not been
+reaped yet, so the whole group is killed (even when kubectl itself has already
+exited) and then kubectl is reaped. `Raw::cleanup` reports what happened.
+Limits, surfaced here and in `Cleanup`:
 
 - A credential-helper descendant that moved to another process group or session
   (`setsid`, daemonizing token caches) is not reached.
-- On Windows only the direct kubectl child is killed (`DirectChildOnly`); helper
-  descendants are not tracked.
-- When kubectl exits by itself nothing is signalled. A descendant that still
-  holds stderr does not delay the result: completion is "stdout drained and
-  kubectl exited".
+- When kubectl exits by itself nothing is signalled; descendants it leaves are
+  not ended.
+- On Windows only the direct kubectl child is killed (`DirectChildOnly`);
+  helper descendants are not tracked. Pipes are read by one thread each; after
+  kubectl exits stderr gets 250 ms to close, and a reader whose pipe a
+  descendant holds open ends only when that descendant closes it.
 
 ## Log connector
 
