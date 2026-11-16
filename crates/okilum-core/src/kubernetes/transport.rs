@@ -374,6 +374,7 @@ pub(crate) fn run_process(
     Ok(raw)
 }
 
+#[cfg(unix)]
 fn read_some(input: &mut impl Read, buffer: &mut [u8]) -> io::Result<Option<usize>> {
     match input.read(buffer) {
         Ok(count) => Ok(Some(count)),
@@ -493,6 +494,22 @@ fn pump(
     }
 }
 
+/// Reader threads alive right now (non-Unix). Tests use it to prove that no
+/// reader outlives a read; a thread-count probe would also see OS workers.
+#[cfg(not(unix))]
+pub(crate) static LIVE_READERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(not(unix))]
+struct LiveReader;
+
+#[cfg(not(unix))]
+impl Drop for LiveReader {
+    fn drop(&mut self) {
+        LIVE_READERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Reader threads (Windows only; Unix reads on the calling thread, so the list
 /// is empty there).
 type Readers = Vec<std::thread::JoinHandle<()>>;
@@ -536,7 +553,14 @@ fn pump(
         sender: mpsc::SyncSender<Message>,
         err: bool,
     ) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || loop {
+        LIVE_READERS.fetch_add(1, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let _live = LiveReader;
+            read_loop(&mut input, &sender, err)
+        })
+    }
+    fn read_loop(input: &mut impl Read, sender: &mpsc::SyncSender<Message>, err: bool) {
+        loop {
             let mut bytes = vec![0; CHUNK];
             match input.read(&mut bytes) {
                 Ok(0) => {
@@ -560,7 +584,7 @@ fn pump(
                     break;
                 }
             }
-        })
+        }
     }
     let (sender, receiver) = mpsc::sync_channel(8);
     let readers = vec![

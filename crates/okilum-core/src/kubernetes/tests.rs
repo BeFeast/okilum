@@ -6,7 +6,7 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
 
@@ -1619,14 +1619,11 @@ fn windows_job_ends_a_grandchild_holding_the_pipes() {
         process_gone(pid, Duration::from_secs(5)),
         "grandchild {pid} survived the read"
     );
-    // Both reader threads were joined, not left blocked on the pipes.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while current_threads() > threads {
-        assert!(
-            Instant::now() < deadline,
-            "{threads} -> {} threads",
-            current_threads()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    // Both reader threads ended and were joined, not left blocked on pipes.
+    assert_eq!(
+        super::transport::LIVE_READERS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    // Diagnostic only: OS worker threads can make the process count noisy.
+    eprintln!("process threads {threads} -> {}", current_threads());
 }
