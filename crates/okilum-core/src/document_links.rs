@@ -392,10 +392,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     if ext.eq_ignore_ascii_case("md") {
         return None;
     }
-    if vault.graph_root.is_some() {
-        return Some(IndexedResolver::new(vault).resolve(target, wiki, from));
-    }
-    if !vault.paths_complete() && !vault.single_file {
+    if (!vault.paths_complete() && !vault.single_file) || vault.graph_root.is_some() {
         return Some(ResolvedLink {
             url: format!("{}{}", render::UNRESOLVED_SCHEME, encode(target)),
             status: "unresolved",
