@@ -48,6 +48,17 @@ the dispatched run's commit equals the selected source; otherwise it uses
 archive-only publication. Stable promotion is separate. A cancellation allowlist
 alone grants none of these effects.
 
+The source repair for #2977 landed in commit
+`5cb5d69091ec64669a59fba25e890918dab162ac`. The helper accepts protected stdin
+with or without a trailing newline and polls the exact run ID returned by its
+single dispatch. Transient status/CDN read failures (including HTTP 503) keep
+observing that run within the existing polling budget; they never redispatch.
+All remaining run-list requests specify `page=1`, `limit=50` and
+`workflow_id=windows-diagnostic.yml`. The pre-OTP guard still stops on read
+failures. Offline curl/ssh controls cover these paths without contacting a
+signer or dispatching production work. The next signing cycle requires its
+existing owner's separate signing grant.
+
 Offline regression tests (also discovered by the Linux CI gate):
 
 ```bash
