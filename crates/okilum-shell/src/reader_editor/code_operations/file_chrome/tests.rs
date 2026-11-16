@@ -1686,3 +1686,5 @@ fn xml2912_grammar_never_vetoes_valid_xml(cx: &mut TestAppContext) {
         assert_eq!(text(&input, visual), expected, "{name}");
     }
 }
+
+mod xml_large_tests;
