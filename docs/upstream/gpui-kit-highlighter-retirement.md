@@ -167,3 +167,13 @@ isolation first; it cannot be obtained just by moving/dropping the current Tree.
 The same gpui-kit adapter owns this follow-up. Deferring an unused reuse snapshot
 until work admission is general enough for an upstream proposal with the two
 ownership controls; no upstream submission has been authorized or opened.
+
+
+## Completed output abandoned before foreground publication
+
+Patch 0144 covers a separate, reachable lifetime: the parser Task is complete,
+but the foreground continuation is cancelled before polling its stored output.
+The scheduler can destroy that output on foreground even though the producer
+future was destroyed on background. The output now carries its own background
+retirement destination until consumed. See [0144 ownership, controls and limits](0144.md).
+This does not remove Tree::edit or the required running/retired snapshots above.
