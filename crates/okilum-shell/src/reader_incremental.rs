@@ -114,7 +114,7 @@ impl Reader {
         #[cfg(test)]
         let hold = self.incremental_hold.take();
         let mut tasks = self.tasks_index.clone().unwrap_or_default();
-        let mut projects = (*self.projects).clone();
+        let projects = self.projects.clone();
         let workbench = self.workbench.clone();
         let previous_vault = self.vault.clone();
         let previous_titles = self.backlink_titles.clone();
@@ -124,6 +124,9 @@ impl Reader {
             worker_cancel.check()?;
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
+            // Capture the immutable published snapshot on UI; copying all project
+            // metadata belongs to this worker, just like applying the batch.
+            let mut projects = (*projects).clone();
             // Equal source-bank bytes suppress graph/search work, but a rebound
             // Reader may own newly retired derived views. Explicit hints still
             // reconcile those paths from the verified snapshot, off thread.
@@ -836,3 +839,6 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod reconcile_tests;
+
+#[cfg(all(test, unix))]
+mod save_work_tests;
