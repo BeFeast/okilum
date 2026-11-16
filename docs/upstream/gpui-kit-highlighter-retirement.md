@@ -31,8 +31,8 @@ can copy/traverse affected subtrees. `Tree::drop` invokes `ts_tree_delete`, whos
 `ts_subtree_release` decrements shared references and walks/free nodes when their
 last reference disappears. Thus an apparently simple assignment can perform
 substantial work. The pinned implementation is in
-[tree-sitter tree ownership](https://github.com/tree-sitter/tree-sitter/blob/v0.26.8/lib/src/tree.c)
-and [subtree edit/release](https://github.com/tree-sitter/tree-sitter/blob/v0.26.8/lib/src/subtree.c).
+[tree-sitter tree ownership](https://github.com/tree-sitter/tree-sitter/blob/v0.26.13/lib/src/tree.c)
+and [subtree edit/release](https://github.com/tree-sitter/tree-sitter/blob/v0.26.13/lib/src/subtree.c).
 
 Each cleanup task owns one already-existing retired/rejected tree and layer Vec;
 it captures no UI entity, Rc, parser, source edit or history. There is no new
@@ -110,7 +110,9 @@ source is `async-task/src/task.rs::set_canceled`/`Drop`, and
 `raw.rs::RawTask::run`'s CLOSED branch. GPUI's `Context::spawn_in` explicitly
 polls this continuation on the main thread.
 
-Tree-sitter 0.26.8's `ts_tree_copy` retains the root. At each edited heap node,
+The app lock resolves tree-sitter 0.26.13 (the standalone vendor lock is 0.26.8);
+the relevant copy/edit/COW C functions are identical in both versions.
+Tree-sitter's `ts_tree_copy` retains the root. At each edited heap node,
 `ts_subtree_make_mut` returns the same node only with ref_count=1; otherwise
 `ts_subtree_clone` copies its child array and retains those children. An edit
 also walks affected children independently of copying. A whole-file replacement

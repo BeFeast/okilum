@@ -1,0 +1,243 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -42,6 +42,23 @@
+     Some(if offset < start { offset }
+         else if offset >= new.len() - tail { old.len() - (new.len() - offset) }
+         else { start })
++}
++
++#[cfg(test)]
++#[path = "row_copy_tests.rs"]
++mod row_copy_tests;
++
++/// Keep the wrapped/subrange construction unchanged. A complete unwrapped
++/// row already has contiguous bytes: do not allocate a second String before
++/// SharedString copies those bytes into its own shared storage.
++fn source_row_text(text: &str, range: &Range<usize>, whole_unwrapped: bool) -> SharedString {
++    #[cfg(test)]
++    let _allocation_scope = row_copy_tests::observe(range.len(), whole_unwrapped);
++    if whole_unwrapped && range.start == 0 && range.end == text.len() {
++        SharedString::from(text)
++    } else {
++        text[range.clone()].to_string().into()
++    }
+ }
+ 
+ fn diagnostic_highlight_style(
+@@ -1666,7 +1683,11 @@
+                     )
+                 };
+ 
+-                let sub_line: SharedString = line_text[range.clone()].to_string().into();
++                let sub_line = source_row_text(
++                    &line_text,
++                    range,
++                    !state.soft_wrap && line_item.wrapped_lines.len() == 1,
++                );
+                 let aligned_runs = align_runs_to_char_boundaries(&sub_line, &line_runs);
+                 debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
+                 let line_runs = aligned_runs.unwrap_or(line_runs);
+--- /dev/null
++++ b/crates/base/src/input/base/row_copy_tests.rs
+@@ -0,0 +1,201 @@
++//! Actual allocation observations scoped to the production row conversion.
++use super::*;
++use std::alloc::{GlobalAlloc, Layout, System};
++use std::cell::{Cell, RefCell};
++
++#[derive(Clone, Copy, Debug)]
++pub(super) struct Observation {
++    source_bytes: usize,
++    whole_unwrapped: bool,
++    source_sized_allocations: usize,
++}
++
++thread_local! {
++    static ACTIVE: Cell<Option<Observation>> = const { Cell::new(None) };
++    static OBSERVED: RefCell<Vec<Observation>> = const { RefCell::new(Vec::new()) };
++}
++
++fn allocation(bytes: usize) {
++    let _ = ACTIVE.try_with(|active| {
++        if let Some(mut sample) = active.get() {
++            if bytes >= sample.source_bytes.max(1) {
++                sample.source_sized_allocations += 1;
++                active.set(Some(sample));
++            }
++        }
++    });
++}
++
++struct Allocator;
++
++// Test-binary-only allocator: no production allocator or API is changed.
++unsafe impl GlobalAlloc for Allocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        allocation(layout.size());
++        // SAFETY: the allocator caller supplies the valid layout.
++        unsafe { System.alloc(layout) }
++    }
++    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++        allocation(layout.size());
++        // SAFETY: the allocator caller supplies the valid layout.
++        unsafe { System.alloc_zeroed(layout) }
++    }
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        // SAFETY: allocation/deallocation are delegated to the same System.
++        unsafe { System.dealloc(ptr, layout) }
++    }
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++        allocation(size);
++        // SAFETY: the allocator caller supplies the matching pointer/layout.
++        unsafe { System.realloc(ptr, layout, size) }
++    }
++}
++
++#[global_allocator]
++static ALLOCATOR: Allocator = Allocator;
++
++pub(super) struct Scope;
++
++pub(super) fn observe(source_bytes: usize, whole_unwrapped: bool) -> Scope {
++    ACTIVE.with(|active| {
++        assert!(active.replace(Some(Observation {
++            source_bytes,
++            whole_unwrapped,
++            source_sized_allocations: 0,
++        })).is_none(), "row allocation scopes must not nest");
++    });
++    Scope
++}
++
++impl Drop for Scope {
++    fn drop(&mut self) {
++        let sample = ACTIVE.with(|active| active.take().unwrap());
++        // Collection allocation happens after the observed scope is disabled.
++        OBSERVED.with(|samples| samples.borrow_mut().push(sample));
++    }
++}
++
++fn take() -> Vec<Observation> {
++    OBSERVED.with(|samples| std::mem::take(&mut *samples.borrow_mut()))
++}
++
++#[test]
++fn large2803_row_full_conversion_keeps_only_shared_storage_allocation() {
++    let text = "abc שלום🙂 e\u{301} ".repeat(140_000);
++    assert!(text.len() > 2 * 1024 * 1024);
++    take();
++    let actual = source_row_text(&text, &(0..text.len()), true);
++    let measured = take();
++    assert_eq!(actual.as_str(), text);
++    assert_eq!(measured.len(), 1, "actual conversion scope must fire");
++    assert_eq!(measured[0].source_sized_allocations, 1,
++        "full row allocated an intermediate String before shared storage");
++
++    // Fired whole-copy positive control: the old production expression really
++    // allocates both an intermediate String and SmolStr/Arc shared storage.
++    let copied: SharedString = {
++        let _scope = observe(text.len(), true);
++        std::hint::black_box(text.as_str().to_string()).into()
++    };
++    assert_eq!(copied, actual);
++    assert_eq!(take()[0].source_sized_allocations, 2,
++        "unfired whole-copy control or changed SharedString constructor contract");
++}
++
++#[gpui::test]
++fn large2803_row_full_actual_layout_avoids_intermediate_string(cx: &mut gpui::TestAppContext) {
++    use crate::input::EditorState;
++    use gpui::{AppContext as _, Context, Render, VisualTestContext};
++    struct Fixture(Entity<EditorState>);
++    impl Render for Fixture {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            gpui::div().size_full().child(self.0.clone())
++        }
++    }
++    let text = "abc 0123456789 ".repeat(160_000);
++    let mut input = None;
++    let handle = cx.update(|cx| {
++        cx.set_global(crate::theme::Theme::default());
++        crate::input::init(cx);
++        cx.open_window(Default::default(), |window, cx| {
++            let state = cx.new(|cx| {
++                let mut state = EditorState::new(window, cx).language("text").soft_wrap(false);
++                state.set_value(text.clone(), window, cx);
++                state
++            });
++            input = Some(state.clone());
++            cx.new(|_| Fixture(state))
++        }).unwrap()
++    });
++    let input = input.unwrap();
++    let mut visual = VisualTestContext::from_window(handle.into(), cx);
++    take();
++    visual.update(|window, cx| {
++        input.update(cx, |state, cx| {
++            state.source_shape_cache.borrow_mut().take();
++            cx.notify();
++        });
++        window.draw(cx).clear(cx);
++    });
++    let measured: Vec<_> = take().into_iter()
++        .filter(|sample| sample.source_bytes == text.len()).collect();
++    assert!(!measured.is_empty(), "unfired actual layout_lines row conversion");
++    for sample in measured {
++        assert!(sample.whole_unwrapped, "exercise the actual full unwrapped row");
++        assert_eq!(sample.source_sized_allocations, 1,
++            "actual layout copied the complete row before shared storage");
++    }
++    input.read_with(&visual, |state, _| {
++        let layout = state.last_layout.as_ref().expect("actual frame geometry installed");
++        let line = &layout.lines[0].wrapped_lines[0];
++        assert_eq!(line.text.as_str(), text, "shaper receives exact UTF-8 source bytes");
++        assert_eq!(line.len(), text.len());
++    });
++}
++
++#[gpui::test]
++fn large2803_row_subranges_keep_bytes_styles_and_geometry(cx: &mut gpui::TestAppContext) {
++    cx.update(crate::init);
++    let visual = cx.add_empty_window();
++    let text = "prefix שלום🙂 e\u{301} русский suffix";
++    let at = text.find('ש').unwrap();
++    // Full source, nonzero UTF-8 subrange, a wrapped full range, and small text.
++    for (range, whole) in [(0..text.len(), true), (at..text.len() - 7, true),
++        (0..text.len(), false), (at..at + "שלום".len(), false), (0..6, true)] {
++        let actual = source_row_text(text, &range, whole);
++        let original: SharedString = text[range.clone()].to_string().into();
++        assert_eq!(actual, original);
++        visual.update(|window, _| {
++            let runs = [TextRun { len: actual.len(), font: gpui::font("test-font"),
++                color: gpui::red(), background_color: Some(gpui::blue()),
++                ..Default::default() }];
++            let next = window.text_system().shape_line(actual.clone(), px(16.), &runs, None);
++            let old = window.text_system().shape_line(original, px(16.), &runs, None);
++            assert_eq!(next.width, old.width);
++            assert_eq!(next.runs.len(), old.runs.len());
++            for (next_run, old_run) in next.runs.iter().zip(&old.runs) {
++                assert_eq!(next_run.glyphs.len(), old_run.glyphs.len());
++                for (next_glyph, old_glyph) in next_run.glyphs.iter().zip(&old_run.glyphs) {
++                    assert_eq!((next_glyph.id, next_glyph.index, next_glyph.position, next_glyph.is_emoji),
++                        (old_glyph.id, old_glyph.index, old_glyph.position, old_glyph.is_emoji));
++                }
++            }
++            for index in actual.char_indices().map(|(ix, _)| ix).chain([actual.len()]) {
++                assert_eq!(next.x_for_index(index), old.x_for_index(index));
++                let x = old.x_for_index(index);
++                assert_eq!(next.closest_index_for_x(x), old.closest_index_for_x(x));
++                assert_eq!(next.index_for_x(x), old.index_for_x(x));
++            }
++            assert_eq!(next.runs.iter().map(|r| r.font_id).collect::<Vec<_>>(),
++                old.runs.iter().map(|r| r.font_id).collect::<Vec<_>>());
++        });
++    }
++    take();
++    let large = "nonzero שלום🙂 ".repeat(140_000);
++    // Wrapped and nonzero subranges retain the original allocation path too.
++    for (range, whole) in [(0..large.len(), false), (1..large.len(), true)] {
++        let shaped = source_row_text(&large, &range, whole);
++        assert_eq!(shaped.as_str(), &large[range]);
++        assert_eq!(take()[0].source_sized_allocations, 2);
++    }
++}
