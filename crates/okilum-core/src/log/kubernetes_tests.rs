@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::time::Instant;
 
 fn request() -> Request {
@@ -160,4 +161,21 @@ fn follow_delivers_before_exit_and_cancel_reaps_under_backpressure() {
 #[test]
 fn spawn_error_is_visible() {
     assert!(Session::spawn(Command::new("/nonexistent/okilum-fixture-kubectl")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_previous_instance_is_a_failure_without_current_fallback() {
+    let mut request = request();
+    request.previous = true;
+    let mut session = fixture(
+        "printf '%s\\n' \"$@\" >&2; printf 'previous terminated container not found\\n' >&2; exit 1",
+        &request,
+    );
+    let (data, diagnostic, status) = collect(&mut session);
+    assert!(data.is_empty());
+    assert!(!status.success());
+    let diagnostic = String::from_utf8(diagnostic).unwrap();
+    assert!(diagnostic.contains("--previous=true\n"));
+    assert!(diagnostic.contains("previous terminated container not found"));
 }

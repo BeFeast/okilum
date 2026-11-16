@@ -117,6 +117,14 @@ jobs:
         run: |
           python scripts/ci/windows-terminal-console.py
           exit $LASTEXITCODE
+      - name: Run native Windows Kubernetes transport controls
+        shell: pwsh
+        run: |
+          # Job Object ownership of kubectl descendants and bounded readers (#3009).
+          $discovered = & cargo test --locked -p okilum-core --lib kubernetes:: -- --list
+          if ($LASTEXITCODE -ne 0 -or !($discovered -match 'windows_job_ends_a_grandchild_holding_the_pipes: test')) { throw 'Windows Kubernetes transport control was not discovered' }
+          & cargo test --locked -p okilum-core --lib kubernetes:: -- --nocapture --test-threads=1
+          exit $LASTEXITCODE
   # Pre-merge gate (Oleg 13.11 ~14:20, ~15:10): formatting, Python and script
   # checks plus workspace clippy, which compiles the Linux workspace. No Rust
   # test suites and no Windows/macOS job; the full set runs daily before Stable.

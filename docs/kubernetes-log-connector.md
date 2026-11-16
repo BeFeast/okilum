@@ -6,6 +6,11 @@ and kubeconfig. An optional context is passed to this invocation only; omission
 uses kubectl's current context. Nothing edits credentials, kubeconfig, contexts,
 pods or other cluster resources. There is no pod discovery or implicit container
 selection. Existing kubeconfig exec credential plugins remain kubectl's behavior.
+The program comes from `KubectlProgram` (`open` uses its default,
+`open_with` a configured executable and PATH), which the typed read adapter
+(docs/kubernetes-read-adapter.md, #3009) also uses, so both resolve the same
+`kubectl`. Discovery lives in that adapter; this
+connector still opens only an explicit target.
 
 The only cluster command is `kubectl logs pod/<pod> --container=<container>`.
 Requests include an explicit namespace, tail count (0–100000), previous-instance
