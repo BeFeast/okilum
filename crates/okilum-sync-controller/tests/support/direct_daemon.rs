@@ -210,6 +210,9 @@ print(g.find('apikey').text)
                 .env("HOME", &self.home)
                 .env("GOMAXPROCS", "2")
                 .env("STMONITORED", "1")
+                // Archive stamps use the daemon's local zone (#2567), the same
+                // TZ as the test process that reads them.
+                .envs(std::env::var_os("TZ").map(|tz| ("TZ", tz)))
                 .stdout(log.try_clone()?)
                 .stderr(log),
         )?);

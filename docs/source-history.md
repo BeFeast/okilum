@@ -79,6 +79,31 @@ Recover notes excludes originals that still exist before charging its version
 and byte budgets, so an active note's many archives cannot hide deleted notes.
 The entry traversal limit still applies and is reported when reached.
 
+### Archive times (#2567)
+
+A Syncthing archive name such as `note~20261025-013000.md` carries a local wall
+time and no timezone or offset: Syncthing spells `time.Now()` in its local zone
+and its staggered cleanup parses the same stamp with `time.Local`. Okilum reads
+stamps in this computer's local timezone, so the order and age it shows are the
+ones the real retention trims by. The managed runtime is launched with Okilum's
+`TZ`, so both read one zone; an external daemon is assumed to use the same
+system timezone. Every Sync row keeps the original stamp spelling in its
+details, and discovery stays read-only.
+
+- **Unique local time:** listed at that instant.
+- **Repeated hour** (the clock went back): the stamp denotes two instants.
+  Okilum does not pick one silently. The row details name both UTC times, the
+  version is listed at the earlier one, and the listing shows a warning.
+- **Skipped hour** (the clock went forward): the time never occurred here, so the
+  archive was written under another timezone setting, for example a history moved
+  from another computer. It stays recoverable, is placed with the offset in
+  effect before the change, and is flagged.
+- **Later than this clock:** the archive was written under another timezone
+  setting; it is flagged the same way.
+- A history moved between timezone settings whose stamps happen to be valid here
+  cannot be detected from the name. It is shown in the current zone, which is
+  also how Syncthing's cleanup on this computer ages it.
+
 Folders created by Okilum use staggered versioning with a default maximum age of
 30 days on both the sharing and receiving computer. Existing owned folders
 reconcile this default on Sync refresh. Settings → Sync offers 7, 30, 90 and 365
@@ -109,4 +134,11 @@ both managed migrations and idempotence, deleted-note discovery and Restore,
 remote overwrite history, exact hashes, stale local edit refusal, external folder
 preservation and retention persistence. A 31-day time-shifted archive survives the
 90-day positive control, then disappears at 30 days while a 29-day sibling remains.
+The driver runs the scenario in UTC and again with both daemons and the reader
+in `Asia/Jerusalem`. Archive stamps are spelled by GNU `date` in the process
+timezone, and the listed order and instants must match `date`'s epoch to the
+second. A 2025-10-26 01:30 stamp is the DST ambiguity control: in Jerusalem it
+must be flagged and listed at the earlier instant, in UTC it is exact. The parser
+also runs in child processes under `TZ=UTC` and `TZ=Asia/Jerusalem` with
+ambiguous, skipped and future stamps.
 The fixture driver requires the named test and a non-zero exact passed count.

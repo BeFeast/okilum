@@ -711,6 +711,9 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
         .env_clear()
         .env("HOME", &b.home)
         .env("STMONITORED", "1")
+        // Version archive stamps are local wall times; Okilum reads them in its
+        // own zone, so the daemon must not fall back to another one (#2567).
+        .envs(std::env::var_os("TZ").map(|tz| ("TZ", tz)))
         .args([
             "serve",
             "--no-browser",
