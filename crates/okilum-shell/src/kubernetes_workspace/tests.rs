@@ -64,7 +64,10 @@ fn list(kind: &str, items: Vec<Value>) -> Value {
 }
 
 fn pod_json(name: &str, uid: &str) -> Value {
+    // A single-object GET carries kind/apiVersion; list items may omit them.
     json!({
+        "kind": "Pod",
+        "apiVersion": "v1",
         "metadata": fixtures::meta(name, uid, fixtures::owner("ReplicaSet", "checkout-7d9f", "rs-1"),
                                    json!({"app": "checkout"})),
         "spec": {"initContainers": [{"name": "proxy", "image": "registry.invalid/proxy:2",
@@ -567,6 +570,9 @@ fn workspace_layout_keeps_regions_apart_in_light_and_dark(cx: &mut TestAppContex
     }
     // Inspector tabs: Events and the typed Manifest.
     h.click("k8s-tab-Manifest");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert_eq!(ws.tab, Tab::Manifest, "tab click")
+    });
     assert!(h.visual.debug_bounds("k8s-manifest").is_some());
     h.click("k8s-tab-Events");
     assert!(h.visual.debug_bounds("k8s-manifest").is_none());

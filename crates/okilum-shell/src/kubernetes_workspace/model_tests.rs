@@ -298,7 +298,13 @@ fn selection_endpoint_membership_and_unknown_endpoints_stay_distinct() {
         .iter()
         .map(|p| p.meta.name.clone())
         .collect();
-    assert_eq!(selected, ["checkout-a", "checkout-b"], "label selection");
+    // Label selection includes the orphan, which no observed ReplicaSet owns:
+    // selection and ownership are different relations.
+    assert_eq!(
+        selected,
+        ["checkout-a", "checkout-b", "orphan-c"],
+        "label selection"
+    );
     assert_eq!(memberships(&data, "pod-a").len(), 1);
     assert!(
         memberships(&data, "pod-b").is_empty(),
