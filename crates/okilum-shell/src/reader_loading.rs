@@ -3100,6 +3100,7 @@ impl Reader {
                         };
                         div()
                             .id("reader-loading-phase")
+                            .debug_selector(|| "reader-loading-phase".into())
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
