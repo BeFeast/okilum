@@ -47,7 +47,7 @@ fn menu_shortcut_and_palette_open_the_items_folder(cx: &mut TestAppContext) {
 
     // Sidebar row menus: a folder opens itself, a file its containing folder.
     for (rel, expected) in [(FOLDER, &folder), ("start.md", &vault)] {
-        let item = row_items(&root, rel)
+        let item = row_items(&root, rel, LinkScope::Vault)
             .into_iter()
             .find_map(|item| match item {
                 PopupMenuItem::Item {

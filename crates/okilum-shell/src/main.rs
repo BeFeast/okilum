@@ -13537,7 +13537,8 @@ fn reader_item_menu(
         return menu;
     }
     let root = reader.read(cx).vault_root.clone();
-    let menu = reader_files::menu(menu, root, relative.clone(), window, cx);
+    let scope = reader.read(cx).link_scope();
+    let menu = reader_files::menu(menu, root, relative.clone(), scope, window, cx);
     #[cfg(any(unix, windows))]
     let menu =
         {

@@ -1461,7 +1461,7 @@ mod tests {
                 "Copy vault path keeps its global shortcut"
             );
         });
-        let items = row_items(&root, row);
+        let items = row_items(&root, row, LinkScope::Vault);
         let bound = |label: &str| {
             items.iter().find_map(|item| match item {
                 PopupMenuItem::Item {
@@ -1515,6 +1515,40 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(clipboard_text(visual).as_deref(), Some(row));
         reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), open));
+
+        // #1414: «Copy Okilum link» in the same production row menu. Building
+        // and showing the menu writes nothing; the Copy creates the identity.
+        let metadata = root.join(".okilum");
+        let popup = visual.update(|window, cx| {
+            let reader = reader.clone();
+            PopupMenu::build(window, cx, move |menu, window, cx| {
+                super::super::reader_item_menu(menu, &reader, row.into(), window, cx)
+            })
+        });
+        reader.update_in(visual, |r, window, cx| {
+            popup.focus_handle(cx).focus(window, cx);
+            r.file_menu = Some((popup.clone(), point(px(40.), px(40.))));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(!metadata.exists(), "an open menu writes nothing");
+        // Then Copy wikilink and Copy Okilum link.
+        let downs = vec!["down"; before + 6].join(" ");
+        visual.simulate_keystrokes(&format!("{downs} enter"));
+        visual.run_until_parked();
+        let link = clipboard_text(visual).unwrap();
+        let id = okilum_core::vault_link_identity::read(&root)
+            .unwrap()
+            .expect("the Copy created the identity");
+        assert_eq!(
+            okilum_core::deep_link::parse(&link).unwrap().address,
+            okilum_core::deep_link::Address::VaultId {
+                id,
+                vault: "vault".into(),
+                path: row.into(),
+            },
+            "{link}"
+        );
 
         // The global shortcut still copies the open note.
         reader.update_in(visual, |r, window, cx| {
