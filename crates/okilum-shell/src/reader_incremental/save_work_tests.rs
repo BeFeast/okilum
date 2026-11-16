@@ -13,7 +13,7 @@ fn edit2803_incremental_launch_moves_project_copy_off_foreground(cx: &mut TestAp
     let root = temp.path().join("vault");
     let project = root.join("Project");
     std::fs::create_dir_all(&project).unwrap();
-    let title = "שלום🙂 project metadata ".repeat(1024);
+    let title = format!("{}tail", "שלום🙂 project metadata ".repeat(1024));
     std::fs::write(
         project.join("@index.md"),
         format!("---\ntype: Project\nstatus: active\ntitle: {title}\n---\n# Project\n"),
