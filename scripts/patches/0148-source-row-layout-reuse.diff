@@ -1,0 +1,176 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1598,6 +1598,7 @@
+         runs: &[TextRun],
+         bg_segments: &[(Range<usize>, Hsla)],
+         whitespace_indicators: Option<WhitespaceIndicators>,
++        previous: Option<&super::layout::SourceShapeCache>,
+         window: &mut Window,
+     ) -> Vec<LineLayout> {
+         state.record_layout_diagnostic(|d| d.layout_calls += 1);
+@@ -1658,11 +1659,34 @@
+         let mut run_offset = 0;
+ 
+         for (vi, &buffer_line) in last_layout.visible_buffer_lines.iter().enumerate() {
+-            let line_text: String = display_text.slice_line(buffer_line).into();
++            let row = display_text.slice_line(buffer_line);
+             let line_item = state
+                 .display_map
+                 .line(buffer_line)
+                 .expect("line should exists in wrapper");
++            // Keep the existing wrapped/projected/IME paths. A complete source
++            // row can reuse the last frame's layout before materializing bytes.
++            if line_item.wrapped_lines.len() == 1
++                && line_item.wrapped_lines[0] == (0..row.len())
++                && state.display_map.line_scale(buffer_line) == 1.
++                && state.display_map.line_hang(buffer_line) == 0
++                && line_item.prefix_hang == px(0.) {
++                if let Some(line) = previous.and_then(|cache| cache.source_row(
++                    last_layout, buffer_line, row, runs, run_offset,
++                    state.display_map.buffer_line_to_display_row(buffer_line))) {
++                    state.record_layout_diagnostic(|d| d.source_row_cache_hits += 1);
++                    // Paragraph exemptions are contextual, not part of shaped
++                    // bytes. Reapply current placement without rebuilding cells.
++                    let align_right = (last_layout.text_align == TextAlign::Left
++                        && state.paragraph_rtl_at(buffer_line))
++                        .then(|| right_edge(last_layout));
++                    run_offset += row.len() + 1;
++                    lines.push(line.align_right(align_right));
++                    continue;
++                }
++            }
++            state.record_layout_diagnostic(|d| d.source_row_materialized_bytes += row.len() as u64);
++            let line_text: String = row.into();
+ 
+             debug_assert_eq!(line_item.len(), line_text.len());
+ 
+@@ -2546,7 +2570,9 @@
+             state.record_layout_diagnostic(|d| d.source_shape_cache_hits += 1);
+             cached
+         } else {
+-        let lines = Self::layout_lines(
++        let lines = {
++        let previous = state.source_shape_cache.borrow();
++        Self::layout_lines(
+             &state,
+             &display_text,
+             &last_layout,
+@@ -2554,8 +2580,10 @@
+             &runs,
+             &document_colors,
+             whitespace_indicators,
++            if cacheable && !state.masked { previous.as_ref() } else { None },
+             window,
+-        );
++        )
++        };
+ 
+         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
+         // 1. Single line
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -437,6 +437,38 @@
+     pub longest_width: Pixels,
+ }
+ impl SourceShapeCache {
++    /// A source edit invalidates the whole-frame key, not unchanged rows. Match
++    /// effective geometry/paint inputs and exact bytes, never generation alone.
++    pub(super) fn source_row(&self, next: &LastLayout, row: usize,
++        text: ropey::RopeSlice<'_>, runs: &[gpui::TextRun], offset: usize,
++        first_row: usize) -> Option<LineLayout> {
++        let old = &self.layout;
++        if old.source_stamp.document != next.source_stamp.document
++            || old.projection.is_some() || next.projection.is_some()
++            || old.font != next.font || old.font_size != next.font_size
++            || old.scale_factor != next.scale_factor || old.rows != next.rows
++            || old.wrap_width != next.wrap_width || old.wrapping_indent != next.wrapping_indent
++            || old.text_align != next.text_align || old.content_width != next.content_width
++            || old.line_number_width != next.line_number_width {
++            return None;
++        }
++        let vi = old.visible_buffer_lines.binary_search(&row).ok()?;
++        let line = old.lines.get(vi)?;
++        let shaped = line.wrapped_lines.first()?;
++        if shaped.font_size != next.font_size || text != shaped.text.as_ref() {
++            return None;
++        }
++        // Runs use the concatenated visible-row byte space, including LF even
++        // across folded gaps. Compare clipped row-relative runs in that space.
++        let old_offset = old.lines[..vi].iter().map(|line| line.len() + 1).sum();
++        let range = 0..text.len();
++        if super::element::runs_for_range(&self.runs, old_offset, &range)
++            != super::element::runs_for_range(runs, offset, &range) {
++            return None;
++        }
++        line.clone_source_row(first_row)
++    }
++
+     pub(super) fn matches(&self, next: &LastLayout, runs: &[gpui::TextRun]) -> bool {
+         let old = &self.layout;
+         old.source_stamp == next.source_stamp
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -4,6 +4,7 @@
+ use gpui::Half;
+ use std::borrow::Cow;
+ use std::ops::Range;
++use std::rc::Rc;
+ 
+ use gpui::{
+     App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window, point, px, size,
+@@ -771,6 +772,7 @@
+ }
+ 
+ /// The layout info of a line with soft wrapped lines.
++#[derive(Clone)]
+ pub(crate) struct LineLayout {
+     /// Total bytes length of this line.
+     len: usize,
+@@ -792,7 +794,8 @@
+     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
+     /// can skip the glyph walk for the common case of a line without highlights.
+     has_background: bool,
+-    bidi: Vec<Option<Geometry>>,
++    // Immutable geometry is shared when an unchanged source row is reused.
++    bidi: Vec<Option<Rc<Geometry>>>,
+     /// The display row of the first wrapped line; row geometry is looked up
+     /// from here (S6b, #1034).
+     first_row: usize,
+@@ -815,6 +818,17 @@
+         }
+     }
+ 
++    /// Reuse only plain, complete unwrapped rows. Display-row metadata belongs
++    /// to this frame; glyphs and immutable bidi cells retain their exact owners.
++    pub(crate) fn clone_source_row(&self, first_row: usize) -> Option<Self> {
++        if self.wrapped_lines.len() != 1 || self.wrap_indent != px(0.)
++            || self.hang != px(0.) || self.whitespace_indicators.is_some()
++            || !self.whitespace_chars.is_empty() {
++            return None;
++        }
++        Some(self.clone().first_row(first_row))
++    }
++
+     /// Set the display row of the first wrapped line.
+     pub(crate) fn first_row(mut self, first_row: usize) -> Self {
+         self.first_row = first_row;
+@@ -907,7 +921,7 @@
+             .unwrap_or_default();
+         self.longest_width = width;
+         let has_rtl = wrapped_lines.iter().any(|line| needs_bidi_geometry(&line.text));
+-        self.bidi = wrapped_lines.iter().map(|line| has_rtl.then(|| Geometry::new(line))).collect();
++        self.bidi = wrapped_lines.iter().map(|line| has_rtl.then(|| Rc::new(Geometry::new(line)))).collect();
+         self.wrapped_lines = wrapped_lines;
+     }
+ 
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -7,6 +7,8 @@
+ pub struct LayoutDiagnostics {
+     pub layout_calls: u64,
+     pub source_shape_cache_hits: u64,
++    pub source_row_cache_hits: u64,
++    pub source_row_materialized_bytes: u64,
+     pub metric_changes: u64,
+     pub provider_applies: u64,
+     pub projection_composes: u64,
