@@ -182,6 +182,17 @@ fn reader_with<'a>(
     files: &[(&str, &str)],
     open: &str,
 ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
+    reader_indexed(cx, files, open, None)
+}
+
+/// `index` outside the vault lets Reader preparation publish the real link
+/// graph; the default `.index` inside the vault is refused and leaves it empty.
+fn reader_indexed<'a>(
+    cx: &'a mut TestAppContext,
+    files: &[(&str, &str)],
+    open: &str,
+    index: Option<&std::path::Path>,
+) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
     cx.update(|cx| {
         crate::test_init(cx);
         bind_keys(cx);
@@ -192,6 +203,7 @@ fn reader_with<'a>(
     }
     let open = open.to_owned();
     let path = root.path().to_path_buf();
+    let index_dir = index.map_or_else(|| path.join(".index"), |dir| dir.to_path_buf());
     let mut reader = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -199,7 +211,7 @@ fn reader_with<'a>(
                 Opts {
                     vault: Some(path.clone()),
                     note: Some(open.clone()),
-                    index_dir: Some(path.join(".index")),
+                    index_dir: Some(index_dir.clone()),
                     ..Default::default()
                 },
                 window,
@@ -566,7 +578,8 @@ fn linked2885_data_files_hide_linked_from_and_notes_keep_it(cx: &mut TestAppCont
 
 #[gpui::test]
 fn linked2905_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
-    let (reader, visual, _root) = reader_with(
+    let index = tempfile::tempdir().unwrap();
+    let (reader, visual, _root) = reader_indexed(
         cx,
         &[
             ("note.md", "# Note\n\nSee [[data.json]] for the numbers.\n"),
@@ -574,7 +587,12 @@ fn linked2905_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
             ("other.json", "{\"b\":2}"),
         ],
         "data.json",
+        Some(index.path()),
     );
+    reader.read_with(visual, |r, _| {
+        assert!(r.vault.inventory_complete, "positive control: real vault");
+        assert_eq!(r.selected_file(), "data.json");
+    });
     reader.read_with(visual, |r, _| {
         assert_eq!(r.backlinks.len(), 1);
         assert_eq!(r.backlinks[0].path, "note.md");
