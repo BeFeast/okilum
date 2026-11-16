@@ -1,0 +1,215 @@
+--- a/crates/component/src/highlighter/input_adapter.rs
++++ b/crates/component/src/highlighter/input_adapter.rs
+@@ -15,7 +15,7 @@
+     InputHighlighterFactory,
+ };
+ use ropey::Rope;
+-use tree_sitter::{InputEdit, ParseOptions, Parser, Point};
++use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
+ 
+ use super::{LanguageRegistry, SyntaxHighlighter};
+ 
+@@ -26,6 +26,46 @@
+             Box::new(TreeSitterInputHighlighter::new(language)) as Box<dyn InputHighlighter>
+         })
+     })
++}
++
++type ParsedSyntax = (Tree, Vec<super::highlighter::InjectionLayer>, Vec<FoldRange>);
++
++/// A completed background Task can lose its foreground awaiter before its next
++/// poll. Dropping that Task destroys its stored output on the dropping executor,
++/// so the output itself must hand abandoned syntax to background retirement.
++struct BackgroundParseResult {
++    value: Option<ParsedSyntax>,
++    executor: gpui::BackgroundExecutor,
++}
++
++impl BackgroundParseResult {
++    fn new(value: ParsedSyntax, executor: gpui::BackgroundExecutor) -> Self {
++        #[cfg(test)]
++        COMPLETED_PARSE_OUTPUT.with(|count| count.set((count.get().0 + 1, value.1.len())));
++        Self { value: Some(value), executor }
++    }
++
++    fn into_inner(mut self) -> ParsedSyntax {
++        self.value.take().expect("parse output is consumed once")
++    }
++}
++
++impl Drop for BackgroundParseResult {
++    fn drop(&mut self) {
++        if let Some(value) = self.value.take() {
++            #[cfg(test)]
++            ABANDONED_PARSE_OUTPUTS.with(|count| count.set(count.get() + 1));
++            // No Tree clone, source snapshot, UI entity or publication callback.
++            // Detach cleanup so cancelling the awaiter cannot cancel retirement.
++            self.executor.spawn(async move { drop(value) }).detach();
++        }
++    }
++}
++
++#[cfg(test)]
++thread_local! {
++    static COMPLETED_PARSE_OUTPUT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
++    static ABANDONED_PARSE_OUTPUTS: Cell<usize> = const { Cell::new(0) };
+ }
+ 
+ struct TreeSitterInputHighlighter {
+@@ -125,6 +165,7 @@
+             let old_tree = highlighter.borrow().tree().cloned();
+             let injection_data = highlighter.borrow().injection_parse_data();
+             let parse_cancel = cancel.clone();
++            let retirement_executor = cx.background_executor().clone();
+             let result = cx
+                 .background_executor()
+                 .spawn(async move {
+@@ -163,12 +204,12 @@
+                     } else {
+                         Vec::new()
+                     };
+-                    Some((tree, injections, folds))
++                    Some(BackgroundParseResult::new((tree, injections, folds), retirement_executor))
+                 })
+                 .await;
+ 
+             pending.set(false);
+-            if let Some((tree, injections, folds)) = result {
++            if let Some((tree, injections, folds)) = result.map(BackgroundParseResult::into_inner) {
+                 let retired = highlighter
+                     .borrow_mut()
+                     .apply_background_tree(tree, &text_for_apply, injections);
+@@ -392,4 +433,121 @@
+         assert!(adapter.inner.borrow().tree().is_some());
+         assert!(!adapter.inner.borrow().semantic_spans(&(0..128)).is_empty());
+     }
+-}
++
++    fn completed_output_source() -> String {
++        let mut source = String::from("# שלום🙂 e\u{301}\r\n");
++        for i in 0..24 {
++            source.push_str(&format!("```rust\r\nfn owned_{i}() {{}}\r\n```\r\n\r\n"));
++        }
++        source.push_str(&"paragraph שלום🙂 e\u{301}\r\n\r\n".repeat(12_000));
++        assert!(source.len() > 256 * 1024);
++        source
++    }
++
++    fn completed_parse_output(cx: &mut TestAppContext, cancel: bool) {
++        use super::super::highlighter::INJECTION_LAYER_DROPS;
++        cx.update(crate::init);
++        let v = cx.add_empty_window();
++        let editor = v.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
++        let scheduler = v.dispatcher.scheduler().clone();
++        let source = completed_output_source();
++        let mut text = Rope::from_str(&source);
++        let mut adapter = TreeSitterInputHighlighter::new("markdown");
++        assert!(adapter.inner.borrow_mut().update(None, &text, None));
++        let old_layers = adapter.inner.borrow().injection_parse_data().unwrap().old_layers.len();
++        assert!(old_layers >= 24, "real injected syntax positive control");
++        let mut reference = SyntaxHighlighter::new("markdown");
++        assert!(reference.update(None, &text, None));
++        v.run_until_parked();
++        COMPLETED_PARSE_OUTPUT.with(|count| count.set((0, 0)));
++        ABANDONED_PARSE_OUTPUTS.with(|count| count.set(0));
++        INJECTION_LAYER_DROPS.with(|count| count.set(0));
++
++        let edit = insertion(&mut text, "\r\n");
++        reference.edit_tree(Some(to_tree_sitter_edit(edit)), &text);
++        v.update(|window, cx| editor.update(cx, |_, cx| {
++            adapter.update(Some(edit), &text, true, window, cx);
++        }));
++        v.run_until_parked();
++        scheduler.clock().advance(Duration::from_millis(151));
++        // A scheduler tick runs at most one task. Stop immediately after the
++        // real worker constructs its output and returns; no foreground tick can
++        // poll the completed Task before the next assertion/cancelling update.
++        // Other background tasks may be queued, so queue counts are not a
++        // trustworthy parse-admission signal.
++        for _ in 0..2000 {
++            if COMPLETED_PARSE_OUTPUT.with(|count| count.get().0) != 0 { break; }
++            assert!(scheduler.tick(), "production parser output must complete");
++        }
++        let (created, layers) = COMPLETED_PARSE_OUTPUT.with(|count| count.get());
++        assert_eq!(created, 1, "actual parser output readiness must fire");
++        assert!(layers >= 24);
++        assert!(adapter.is_pending(), "foreground awaiter has not published the result");
++        assert_eq!(ABANDONED_PARSE_OUTPUTS.with(|count| count.get()), 0);
++        assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), 0);
++        let check_pending = |adapter: &TreeSitterInputHighlighter, reference: &SyntaxHighlighter| {
++            let inner = adapter.inner.borrow();
++            assert_eq!(inner.text(), reference.text());
++            assert_eq!(inner.tree().unwrap().root_node().range(), reference.tree().unwrap().root_node().range());
++            assert_eq!(inner.semantic_spans(&(0..4096)), reference.semantic_spans(&(0..4096)));
++            assert_eq!(extract_fold_ranges(inner.tree().unwrap()), extract_fold_ranges(reference.tree().unwrap()));
++        };
++        check_pending(&adapter, &reference);
++
++        if cancel {
++            let edit = insertion(&mut text, "<!-- newer שלום🙂 e\u{301} -->\r\n");
++            reference.edit_tree(Some(to_tree_sitter_edit(edit)), &text);
++            v.update(|window, cx| editor.update(cx, |_, cx| {
++                adapter.update(Some(edit), &text, true, window, cx);
++            }));
++            assert_eq!(ABANDONED_PARSE_OUTPUTS.with(|count| count.get()), 0,
++                "Task handle drop only schedules foreground-future destruction");
++            for _ in 0..2000 {
++                if ABANDONED_PARSE_OUTPUTS.with(|count| count.get()) == 1 { break; }
++                assert!(scheduler.tick(), "cancelled foreground future must be destroyed");
++            }
++            assert_eq!(ABANDONED_PARSE_OUTPUTS.with(|count| count.get()), 1);
++            assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), 0,
++                "completed output destroyed injection syntax on foreground cancellation");
++            check_pending(&adapter, &reference);
++            assert!(adapter.is_pending(), "cancelled result cannot clear the newer pending parse");
++            while scheduler.tick_background_only() {}
++            assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), layers,
++                "background cleanup must actually destroy every abandoned injection layer");
++            // Cleanup cannot mutate pending syntax or publish old styles/folds.
++            check_pending(&adapter, &reference);
++            v.run_until_parked();
++            v.executor().advance_clock(Duration::from_millis(151));
++        }
++        v.run_until_parked();
++        assert!(!adapter.is_pending());
++        if !cancel {
++            assert_eq!(INJECTION_LAYER_DROPS.with(|count| count.get()), old_layers,
++                "accepted publication must retire exactly its previous injection layers");
++        }
++        assert_eq!(ABANDONED_PARSE_OUTPUTS.with(|count| count.get()), usize::from(cancel),
++            "accepted output must be consumed rather than scheduled for abandonment cleanup");
++        let mut fresh = SyntaxHighlighter::new("markdown");
++        assert!(fresh.update(None, &text, None));
++        check_pending(&adapter, &fresh);
++        assert_eq!(adapter.inner.borrow().semantic_spans(&(0..text.len())), fresh.semantic_spans(&(0..text.len())));
++        assert!(adapter.inner.borrow().injection_parse_data().unwrap().old_layers.len() >= 24);
++
++        // Fire the exact destructor meter on this executor too, so zero above
++        // cannot pass because observing real layer destruction was disabled.
++        INJECTION_LAYER_DROPS.with(|count| count.set(0));
++        drop(fresh);
++        assert!(INJECTION_LAYER_DROPS.with(|count| count.get()) >= 24);
++    }
++
++    #[gpui::test]
++    fn large2804_cancelled_completed_output_retires_on_background(cx: &mut TestAppContext) {
++        completed_parse_output(cx, true);
++    }
++
++    #[gpui::test]
++    fn large2804_accepted_completed_output_keeps_publication_semantics(cx: &mut TestAppContext) {
++        completed_parse_output(cx, false);
++    }
++
++}
+--- a/crates/component/src/highlighter/highlighter.rs
++++ b/crates/component/src/highlighter/highlighter.rs
+@@ -86,7 +86,7 @@
+ 
+ #[cfg(test)]
+ thread_local! {
+-    static INJECTION_LAYER_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++    pub(super) static INJECTION_LAYER_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+ }
+ 
+ // Observe the actual layer destructor, not a simulated retirement callback.
