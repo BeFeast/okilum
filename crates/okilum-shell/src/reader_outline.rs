@@ -237,6 +237,7 @@ mod tests {
             bind_keys(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
         let body = "# Introduction\n\nEarly body.\n\nWhat is Markdown?\n=================\n\n```markdown\n---\n# Fenced example\n```\n\n# Later section\n";
         for (name, yaml, closing) in [
             ("ordinary.md", "title: CommonMark\n", "---"),
@@ -257,6 +258,7 @@ mod tests {
                     Opts {
                         vault: Some(fixture.path().to_owned()),
                         note: Some("ordinary.md".into()),
+                        session_directory: Some(state.path().to_owned()),
                         ..Opts::default()
                     },
                     window,
