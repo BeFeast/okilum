@@ -94,8 +94,9 @@ NotFound, Unavailable, InvalidJson, Limit, Cancelled, Timeout and Io are separat
 Structured Kubernetes Forbidden/Unauthorized Status has priority; otherwise
 kubectl stderr classification is necessarily wording-dependent. Unknown
 nonzero failures remain Unavailable and keep their bounded diagnostic. An
-interactive credential/MFA renewal must be presented promptly using the
-failure diagnostic; the adapter does not answer credential prompts or retry.
+interactive credential/MFA renewal is surfaced from stderr immediately, even
+while the helper is still running; the adapter stops its owned kubectl child
+and does not answer credential prompts or retry.
 Successful stderr warnings are retained separately from resource facts.
 
 `SourceState` retains the last successful observation and the latest failure

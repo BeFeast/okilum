@@ -587,3 +587,83 @@ fn gui_executable_and_path_reach_synthetic_credential_helper() {
         .result
         .is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn interactive_credential_requirement_is_surfaced_before_helper_exit() {
+    let source = query(Kind::Pod);
+    let start = Instant::now();
+    // This process never exits voluntarily: waiting for exit would hit Timeout.
+    let failure = read_fixture(
+        "printf 'exec plugin: interactive MFA browser login required' >&2; while :; do :; done",
+        &source,
+    )
+    .unwrap_err();
+    assert_eq!(failure.kind, FailureKind::InteractiveLogin);
+    assert!(failure.diagnostic.contains("MFA"));
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[cfg(unix)]
+#[test]
+fn successful_stderr_is_bounded_and_not_resource_data() {
+    let source = query(Kind::Pod);
+    let observation = read_fixture("i=0; while [ \"$i\" -lt 10 ]; do printf '%8192s' x >&2; i=$((i+1)); done; printf '{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"items\":[]}'", &source).unwrap();
+    assert!(items(&observation).is_empty());
+    assert!(observation.diagnostic_truncated);
+    assert_eq!(observation.diagnostic.len(), MAX_DIAGNOSTIC_BYTES);
+}
+
+#[test]
+fn every_kind_has_a_fixed_server_page_and_get_has_no_pagination() {
+    for (kind, prefix, resource) in [
+        (Kind::Namespace, "/api/v1", "namespaces"),
+        (Kind::Pod, "/api/v1/namespaces/shop", "pods"),
+        (
+            Kind::Deployment,
+            "/apis/apps/v1/namespaces/shop",
+            "deployments",
+        ),
+        (
+            Kind::ReplicaSet,
+            "/apis/apps/v1/namespaces/shop",
+            "replicasets",
+        ),
+        (Kind::Service, "/api/v1/namespaces/shop", "services"),
+        (
+            Kind::EndpointSlice,
+            "/apis/discovery.k8s.io/v1/namespaces/shop",
+            "endpointslices",
+        ),
+        (Kind::Event, "/api/v1/namespaces/shop", "events"),
+        (
+            Kind::Hpa,
+            "/apis/autoscaling/v2/namespaces/shop",
+            "horizontalpodautoscalers",
+        ),
+    ] {
+        let args = query(kind).args().unwrap();
+        assert_eq!(
+            args.last().unwrap(),
+            &OsString::from(format!("--raw={prefix}/{resource}?limit=500"))
+        );
+        let get = Query::Get {
+            connection: connection("synthetic/team"),
+            namespace: "shop".into(),
+            kind,
+            name: "checkout".into(),
+        };
+        assert_eq!(
+            get.args().unwrap().last().unwrap(),
+            &OsString::from(format!("--raw={prefix}/{resource}/checkout"))
+        );
+    }
+    for namespace in ["a.b", "a..b", "-shop", "shop-", &"a".repeat(64)] {
+        let invalid = Query::List {
+            connection: connection("a"),
+            namespace: namespace.into(),
+            kind: Kind::Pod,
+        };
+        assert!(invalid.args().is_err());
+    }
+}

@@ -396,6 +396,13 @@ fn collect(
                 let available = MAX_DIAGNOSTIC_BYTES - diagnostic.len();
                 diagnostic_truncated |= chunk.len() > available;
                 diagnostic.extend(&chunk[..chunk.len().min(available)]);
+                let text = String::from_utf8_lossy(&diagnostic);
+                if classify(&[], &text) == FailureKind::InteractiveLogin {
+                    let mut failure =
+                        Failure::new(FailureKind::InteractiveLogin, text.into_owned());
+                    failure.diagnostic_truncated = diagnostic_truncated;
+                    break Err(failure);
+                }
             }
             Ok(Some(Event::Exited(status))) => {
                 if status.success() {
