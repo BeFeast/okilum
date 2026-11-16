@@ -508,6 +508,7 @@ Note renames, note moves and folder moves apply at once with one timed bottom
 notification and Undo. A folder move reports "Moved N notes" and, when links
 changed, "· updated M links". Unresolved or unreadable links alone never ask for
 confirmation. One info glyph in that notification lists each affected note once,
+at its new location,
 with folder context (`Folder › Section › _index`), instead of repeated
 service-status rows. The explicit review for a large rewrite of other notes'
 links (more than 20 affected paths) remains for single notes; folder moves stay
