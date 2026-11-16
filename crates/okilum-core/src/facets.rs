@@ -30,16 +30,7 @@ const DATE_KEYS: [&str; 5] = ["date", "created", "updated", "published", "day"];
 
 /// Split a note into its frontmatter block and the body after it.
 fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
-    let Some(rest) = text.strip_prefix("---\n") else {
-        return (None, text);
-    };
-    if let Some(end) = rest.find("\n---\n") {
-        return (Some(&rest[..end]), &rest[end + 5..]);
-    }
-    if let Some(end) = rest.find("\n---\r\n") {
-        return (Some(&rest[..end]), &rest[end + 6..]);
-    }
-    (None, text)
+    crate::render::split_frontmatter(text).map_or((None, text), |(yaml, body)| (Some(yaml), body))
 }
 
 fn clean_scalar(v: &str) -> String {

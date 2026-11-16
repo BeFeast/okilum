@@ -38,22 +38,10 @@ impl Property {
     }
 }
 
-/// The YAML text between the leading `---` delimiters, if the note has a
-/// terminated frontmatter block (same rule as `render::without_frontmatter`).
+/// The YAML text between the leading `---` and the first `---` or `...` end,
+/// if the note has a terminated frontmatter block. Rendering uses the same split.
 pub fn frontmatter_block(source: &str) -> Option<&str> {
-    let body = crate::render::without_frontmatter(source);
-    if body.len() == source.len() {
-        return None;
-    }
-    let head = &source[..source.len() - body.len()];
-    let head = head.strip_prefix('\u{feff}').unwrap_or(head);
-    let inner = head
-        .strip_prefix("---\r\n")
-        .or_else(|| head.strip_prefix("---\n"))?;
-    let inner = inner
-        .strip_suffix("---\r\n")
-        .or_else(|| inner.strip_suffix("---\n"))?;
-    Some(inner)
+    crate::render::split_frontmatter(source).map(|(yaml, _)| yaml)
 }
 
 /// Parse frontmatter YAML into properties, in written order. Invalid YAML

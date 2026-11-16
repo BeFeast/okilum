@@ -214,7 +214,7 @@ pub fn render_html_from_source(
     raw: &str,
     theme: &str,
 ) -> anyhow::Result<String> {
-    let mut text = preprocess(raw);
+    let mut text = preprocess(without_frontmatter(raw));
     for (link, destination) in crate::document_links::fallback_links(&text, vault, note_rel)
         .into_iter()
         .rev()
@@ -537,24 +537,28 @@ pub fn block_html(source: &str) -> String {
     out.trim_end().replace('\n', " ")
 }
 
-/// Strip leading YAML frontmatter for rendering without normalizing source bytes.
-/// Accept LF/CRLF and a UTF-8 BOM. An unterminated block remains visible.
-pub fn without_frontmatter(s: &str) -> &str {
+/// Split leading YAML frontmatter at its first document boundary. Both `---`
+/// and YAML's explicit `...` end are accepted; later Markdown fences cannot
+/// extend the envelope. Slices retain the authored LF/CRLF and BOM bytes.
+pub(crate) fn split_frontmatter(s: &str) -> Option<(&str, &str)> {
     let candidate = s.strip_prefix('\u{feff}').unwrap_or(s);
-    let Some(rest) = candidate
+    let rest = candidate
         .strip_prefix("---\r\n")
-        .or_else(|| candidate.strip_prefix("---\n"))
-    else {
-        return s;
-    };
+        .or_else(|| candidate.strip_prefix("---\n"))?;
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
-        if line == "---\n" || line == "---\r\n" {
-            return &rest[offset + line.len()..];
+        if matches!(line, "---\n" | "---\r\n" | "...\n" | "...\r\n") {
+            return Some((&rest[..offset], &rest[offset + line.len()..]));
         }
         offset += line.len();
     }
-    s
+    None
+}
+
+/// Strip leading YAML frontmatter for rendering without normalizing source bytes.
+/// Accept LF/CRLF and a UTF-8 BOM. An unterminated block remains visible.
+pub fn without_frontmatter(s: &str) -> &str {
+    split_frontmatter(s).map_or(s, |(_, body)| body)
 }
 
 #[cfg(test)]
@@ -676,21 +680,35 @@ mod reader_document_tests {
                     assert_eq!(document.original_body, body);
                     assert_eq!(document.rendered, body);
                     assert_eq!(document.frontmatter.as_deref(), Some(yaml.as_str()));
-                    let properties = crate::properties::parse(document.frontmatter.as_deref().unwrap())
-                        .unwrap();
+                    let properties =
+                        crate::properties::parse(document.frontmatter.as_deref().unwrap()).unwrap();
                     assert_eq!(properties.len(), 1);
                     assert_eq!(properties[0].key, "title");
+                    let facets = crate::facets::extract(&source);
+                    assert_eq!(
+                        facets.frontmatter.get("title").map(String::as_str),
+                        Some("CommonMark")
+                    );
+                    assert_eq!(facets.headings, ["Introduction", "Later section"]);
                     let headings = crate::document_links::HeadingInventory::new(&document.rendered);
                     assert_eq!(
-                        headings.entries.iter().map(|h| h.text.as_str()).collect::<Vec<_>>(),
+                        headings
+                            .entries
+                            .iter()
+                            .map(|h| h.text.as_str())
+                            .collect::<Vec<_>>(),
                         ["Introduction", "What is Markdown?", "Later section"]
                     );
-                    let html = render_html_from_source(&vault, "note.md", &source, "InspiredGitHub")
-                        .unwrap();
+                    let html =
+                        render_html_from_source(&vault, "note.md", &source, "InspiredGitHub")
+                            .unwrap();
                     assert!(html.contains("<h1>Introduction</h1>"), "{html}");
                     assert!(html.contains("Early body."), "{html}");
                     assert!(html.contains("<h1>What is Markdown?</h1>"), "{html}");
-                    assert_eq!(std::fs::read(fixture.path().join("note.md")).unwrap(), source.as_bytes());
+                    assert_eq!(
+                        std::fs::read(fixture.path().join("note.md")).unwrap(),
+                        source.as_bytes()
+                    );
                 }
             }
         }
@@ -707,9 +725,12 @@ mod reader_document_tests {
                 assert_eq!(document.canonical_source.as_ref(), source);
                 assert_eq!(document.original_body, body);
                 assert_eq!(document.rendered, body);
-                assert!(crate::properties::parse(document.frontmatter.as_deref().unwrap()).is_err());
+                assert!(
+                    crate::properties::parse(document.frontmatter.as_deref().unwrap()).is_err()
+                );
                 assert_eq!(
-                    crate::document_links::HeadingInventory::new(&document.rendered).entries[0].text,
+                    crate::document_links::HeadingInventory::new(&document.rendered).entries[0]
+                        .text,
                     "Introduction"
                 );
             }
@@ -720,8 +741,11 @@ mod reader_document_tests {
         assert_eq!(document.original_body, source);
         assert_eq!(document.rendered, source);
         assert!(document.frontmatter.is_none());
-        assert!(render_html_from_source(&vault, "note.md", source, "InspiredGitHub")
-            .unwrap().contains("Introduction"));
+        assert!(
+            render_html_from_source(&vault, "note.md", source, "InspiredGitHub")
+                .unwrap()
+                .contains("Introduction")
+        );
     }
 
     #[test]
