@@ -113,23 +113,32 @@ pub(crate) fn outcome(raw: Raw, limits: &super::transport::Limits) -> Result<Vec
     }
 }
 
-/// Bounded, single-line-per-line text with control characters removed.
-pub(crate) fn detail(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    let mut out: String = text
+/// Stderr as text with control characters (other than newlines) removed.
+fn sanitized(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
         .trim()
         .chars()
         .map(|c| if c == '\n' || !c.is_control() { c } else { ' ' })
-        .collect();
-    if out.len() > 2048 {
-        let mut end = 2048;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
-        out.push('…');
+        .collect()
+}
+
+const DETAIL_HEAD: usize = 512;
+const DETAIL_TAIL: usize = 1536;
+
+/// Display text, bounded to its start and its end: kubectl's error is last.
+fn bounded(text: String) -> String {
+    if text.len() <= DETAIL_HEAD + DETAIL_TAIL {
+        return text;
     }
-    out
+    let mut head = DETAIL_HEAD;
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len() - DETAIL_TAIL;
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}\n…\n{}", &text[..head], &text[tail..])
 }
 
 /// kubectl's explicit API status reason, as in `Error from server (Forbidden):`
@@ -170,8 +179,12 @@ fn unquoted(text: &str) -> String {
 }
 
 pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
-    let detail = detail(stderr);
-    if let Some(reason) = server_reason(&detail) {
+    // Classify on all retained stderr; only the displayed detail is shortened.
+    let text = sanitized(stderr);
+    let reason = server_reason(&text).map(str::to_string);
+    let lower = unquoted(&text).to_ascii_lowercase();
+    let detail = bounded(text);
+    if let Some(reason) = reason.as_deref() {
         return match reason {
             "Forbidden" => Failure::Forbidden { detail },
             "Unauthorized" => Failure::AuthExpired { detail },
@@ -183,7 +196,6 @@ pub(crate) fn from_stderr(code: Option<i32>, stderr: &[u8]) -> Failure {
     }
     // Client-side failures carry no server reason: match kubectl's own
     // wording, outside quoted names, most specific first.
-    let lower = unquoted(&detail).to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
     let credentials = has(&["getting credentials", "exec plugin", "credential plugin"]);
     if has(&[
