@@ -1,5 +1,6 @@
 use super::tests::{open_file, Fixture};
 use super::*;
+use ::core::prelude::v1::test;
 use gpui_component::input::{Redo, Undo};
 
 #[gpui::test]
