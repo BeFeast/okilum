@@ -1280,7 +1280,10 @@ mod tests {
             lines.contains(&"Target › Folder › Section 0 › _index"),
             "toast names notes where they are now: {review}"
         );
-        assert!(!lines.iter().any(|line| line.starts_with("Folder ›")), "{review}");
+        assert!(
+            !lines.iter().any(|line| line.starts_with("Folder ›")),
+            "{review}"
+        );
         let source = link_review_names(&preview, false);
         assert!(source.contains(&"Folder › Section 0 › _index".to_owned()));
         let unique: std::collections::BTreeSet<_> = lines.iter().collect();
