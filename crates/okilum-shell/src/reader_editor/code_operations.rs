@@ -1957,6 +1957,9 @@ mod tests {
 #[cfg(test)]
 mod large_tests;
 
+#[cfg(test)]
+mod registry_tests;
+
 // Each Button chain gets its own short-lived frame; none of them stays
 // reserved while the rest of a nested Reader draw runs (#2825).
 #[inline(never)]

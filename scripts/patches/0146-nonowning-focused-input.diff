@@ -1,0 +1,335 @@
+--- a/crates/component/src/input/state.rs
++++ b/crates/component/src/input/state.rs
+@@ -1,4 +1,4 @@
+-use gpui::{App, Entity, FocusHandle, Focusable as _, SharedString, Window};
++use gpui::{App, Entity, FocusHandle, Focusable as _, SharedString, WeakEntity, Window};
+ use gpui_base::OtpState;
+ use ropey::Rope;
+ 
+@@ -25,6 +25,26 @@
+     Otp(Entity<OtpState>),
+ }
+ 
++/// Window focus metadata must not extend an input's actual owning lifetime.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum WeakInputState {
++    Input(WeakEntity<InputState>),
++    Textarea(WeakEntity<TextareaState>),
++    Editor(WeakEntity<EditorState>),
++    Otp(WeakEntity<OtpState>),
++}
++
++impl WeakInputState {
++    pub(crate) fn upgrade(&self) -> Option<AnyInputState> {
++        match self {
++            Self::Input(state) => state.upgrade().map(AnyInputState::Input),
++            Self::Textarea(state) => state.upgrade().map(AnyInputState::Textarea),
++            Self::Editor(state) => state.upgrade().map(AnyInputState::Editor),
++            Self::Otp(state) => state.upgrade().map(AnyInputState::Otp),
++        }
++    }
++}
++
+ /// The three states the [`crate::input::Input`] element can render.
+ ///
+ /// [`AnyInputState`] also covers `OtpState`, which is a different engine with
+@@ -190,6 +210,14 @@
+ }
+ 
+ impl AnyInputState {
++    pub(crate) fn downgrade(&self) -> WeakInputState {
++        match self {
++            Self::Input(state) => WeakInputState::Input(state.downgrade()),
++            Self::Textarea(state) => WeakInputState::Textarea(state.downgrade()),
++            Self::Editor(state) => WeakInputState::Editor(state.downgrade()),
++            Self::Otp(state) => WeakInputState::Otp(state.downgrade()),
++        }
++    }
+     /// Returns the [`InputState`], if this is an `Input` state.
+     pub fn as_input(&self) -> Option<&Entity<InputState>> {
+         match self {
+@@ -278,9 +306,10 @@
+ ) {
+     let state = state.into();
+     let focused = state.focus_handle(cx).is_focused(window);
++    let state = state.downgrade();
+     Root::try_update(window, cx, |root, _, cx| {
+         if focused {
+-            root.focused_input = Some(state.clone());
++            root.focused_input = Some(state);
+         } else if root.focused_input.as_ref() == Some(&state) {
+             root.focused_input = None;
+         }
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -42,4 +42,5 @@
+ pub use number_input::{NumberInput, NumberInputEvent, NumberStep, StepAction};
+ pub use otp_input::*;
+ pub use state::AnyInputState;
++pub(crate) use state::WeakInputState;
+ pub use textarea::Textarea;
+--- a/crates/component/src/input/input.rs
++++ b/crates/component/src/input/input.rs
+@@ -991,22 +991,31 @@
+         ];
+         for expected in cases {
+             cx.update(|window, cx| {
+-                let _ = window.draw(cx);
++                window.draw(cx).clear(cx);
+             });
+             cx.update(|window, cx| expected.focus_handle(cx).focus(window, cx));
+             cx.run_until_parked();
+             cx.update(|window, cx| {
+-                let _ = window.draw(cx);
++                window.draw(cx).clear(cx);
+             });
+             assert_eq!(
+                 cx.update(|window, cx| window.focused_input(cx)),
+-                Some(expected)
++                Some(expected.clone())
+             );
++
++            // A modal temporarily owns focus, then returns it to this input.
++            cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog));
++            cx.run_until_parked();
++            assert_eq!(cx.update(|window, cx| window.focused_input(cx)), None);
++            cx.update(|window, cx| window.close_dialog(cx));
++            cx.run_until_parked();
++            cx.update(|window, cx| window.draw(cx).clear(cx));
++            assert_eq!(cx.update(|window, cx| window.focused_input(cx)), Some(expected));
+ 
+             cx.update(|window, cx| other_focus.clone().focus(window, cx));
+             cx.run_until_parked();
+             cx.update(|window, cx| {
+-                let _ = window.draw(cx);
++                window.draw(cx).clear(cx);
+             });
+             assert_eq!(cx.update(|window, cx| window.focused_input(cx)), None);
+         }
+@@ -1018,74 +1027,122 @@
+         use gpui::{AppContext as _, Render};
+ 
+         struct Probe {
+-            input: Entity<InputState>,
+-            show_input: bool,
++            input: Option<AnyInputState>,
+             other: gpui::FocusHandle,
+         }
+         impl Render for Probe {
+             fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                 let base = div().child(div().track_focus(&self.other));
+-                if self.show_input {
+-                    base.child(Input::new(&self.input))
+-                } else {
+-                    base
++                match self.input.as_ref() {
++                    Some(AnyInputState::Input(state)) => base.child(Input::new(state)),
++                    Some(AnyInputState::Textarea(state)) => {
++                        base.child(crate::input::Textarea::new(state))
++                    }
++                    Some(AnyInputState::Editor(state)) => {
++                        base.child(crate::input::Editor::new(state))
++                    }
++                    Some(AnyInputState::Otp(state)) => {
++                        base.child(crate::input::OtpInput::new(state))
++                    }
++                    None => base,
+                 }
+             }
+         }
+ 
+         cx.update(crate::init);
+-        let mut input = None;
+-        let mut other_focus = None;
+-        let mut probe_entity = None;
+-        let window = cx.update(|cx| {
+-            cx.open_window(Default::default(), |window, cx| {
+-                let state = cx.new(|cx| InputState::new(window, cx));
+-                input = Some(state.clone());
+-                let other = cx.focus_handle();
+-                other_focus = Some(other.clone());
+-                let probe = cx.new(|_| Probe {
+-                    input: state,
+-                    show_input: true,
+-                    other,
++        for kind in 0..4 {
++            let mut input = None;
++            let mut other_focus = None;
++            let mut probe_entity = None;
++            let released = std::rc::Rc::new(std::cell::Cell::new(0));
++            let seen = released.clone();
++            let mut release_watch = None;
++            let window = cx.update(|cx| {
++                cx.open_window(Default::default(), |window, cx| {
++                    let state: AnyInputState = match kind {
++                        0 => cx.new(|cx| InputState::new(window, cx)).into(),
++                        1 => cx
++                            .new(|cx| crate::input::TextareaState::new(window, cx))
++                            .into(),
++                        2 => cx
++                            .new(|cx| crate::input::EditorState::new(window, cx).language("rust"))
++                            .into(),
++                        _ => cx.new(|cx| gpui_base::OtpState::new(6, window, cx)).into(),
++                    };
++                    macro_rules! watch {
++                        ($state:expr) => {
++                            $state.update(cx, |_, cx| {
++                                cx.on_release(move |_, _| seen.set(seen.get() + 1))
++                            })
++                        };
++                    }
++                    release_watch = Some(match &state {
++                        AnyInputState::Input(s) => watch!(s),
++                        AnyInputState::Textarea(s) => watch!(s),
++                        AnyInputState::Editor(s) => watch!(s),
++                        AnyInputState::Otp(s) => watch!(s),
++                    });
++                    input = Some(state.clone());
++                    let other = cx.focus_handle();
++                    other_focus = Some(other.clone());
++                    let probe = cx.new(|_| Probe {
++                        input: Some(state),
++                        other,
++                    });
++                    probe_entity = Some(probe.clone());
++                    cx.new(|cx| Root::new(probe, window, cx))
++                })
++                .unwrap()
++            });
++            let input = input.unwrap();
++            // Existing GPUI weak handles only: this test also compiles against
++            // the old registry implementation for its negative control.
++            let weak: gpui::AnyWeakEntity = match &input {
++                AnyInputState::Input(s) => s.downgrade().into(),
++                AnyInputState::Textarea(s) => s.downgrade().into(),
++                AnyInputState::Editor(s) => s.downgrade().into(),
++                AnyInputState::Otp(s) => s.downgrade().into(),
++            };
++            let probe = probe_entity.unwrap();
++            let other_focus = other_focus.unwrap();
++            let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
++            visual.update(|window, cx| input.focus_handle(cx).focus(window, cx));
++            visual.run_until_parked();
++            visual.update(|window, cx| window.draw(cx).clear(cx));
++            assert_eq!(
++                visual.update(|window, cx| window.focused_input(cx)),
++                Some(input.clone())
++            );
++            visual.update(|window, cx| {
++                probe.update(cx, |probe, cx| {
++                    probe.input = None;
++                    cx.notify();
+                 });
+-                probe_entity = Some(probe.clone());
+-                cx.new(|cx| Root::new(probe, window, cx))
+-            })
+-            .unwrap()
+-        });
+-        let input: AnyInputState = input.unwrap().into();
+-        let other_focus = other_focus.unwrap();
+-        let probe = probe_entity.unwrap();
+-        let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+-
+-        cx.update(|window, cx| {
+-            let _ = window.draw(cx);
+-        });
+-        cx.update(|window, cx| input.focus_handle(cx).focus(window, cx));
+-        cx.run_until_parked();
+-        cx.update(|window, cx| {
+-            let _ = window.draw(cx);
+-        });
+-        assert_eq!(
+-            cx.update(|window, cx| window.focused_input(cx)),
+-            Some(input.clone())
+-        );
+-
+-        // Remove the input from the tree while it holds focus and move focus
+-        // elsewhere in the same update (e.g. closing a sidebar containing the
+-        // input) — the input never re-renders to unregister itself.
+-        cx.update(|window, cx| {
+-            probe.update(cx, |probe, cx| {
+-                probe.show_input = false;
+-                cx.notify();
++                other_focus.focus(window, cx);
+             });
+-            other_focus.focus(window, cx);
+-        });
+-        cx.run_until_parked();
+-        cx.update(|window, cx| {
+-            let _ = window.draw(cx);
+-        });
+-        assert!(!cx.update(|window, cx| window.has_focused_input(cx)));
+-        assert_eq!(cx.update(|window, cx| window.focused_input(cx)), None);
+-    }
++            drop(input);
++            for _ in 0..3 {
++                visual.run_until_parked();
++                visual.update(|window, cx| {
++                    window.simulate_next_frame(cx);
++                    window.draw(cx).clear(cx);
++                });
++            }
++            visual.run_until_parked();
++            assert!(
++                !weak.is_upgradable(),
++                "removed input retained by the focus registry before getter access; kind={kind}"
++            );
++            weak.assert_released();
++            assert_eq!(
++                released.get(),
++                1,
++                "real input release callback must fire; kind={kind}"
++            );
++            assert!(!visual.update(|window, cx| window.has_focused_input(cx)));
++            assert_eq!(visual.update(|window, cx| window.focused_input(cx)), None);
++            drop(release_watch);
++        }
++    }
++
+ }
+--- a/crates/component/src/root.rs
++++ b/crates/component/src/root.rs
+@@ -1,7 +1,7 @@
+ use crate::{
+     ActiveTheme, ElementExt, Placement, StyledExt,
+     dialog::{ANIMATION_DURATION, Dialog},
+-    input::{AnyInputState, Copy},
++    input::{Copy, WeakInputState},
+     native_menu::FallbackMenuOverlay,
+     notification::{Notification, NotificationList},
+     sheet::Sheet,
+@@ -38,7 +38,7 @@
+     view: AnyView,
+     pub(crate) active_sheet: Option<ActiveSheet>,
+     pub(crate) active_dialogs: Vec<ActiveDialog>,
+-    pub(super) focused_input: Option<AnyInputState>,
++    pub(super) focused_input: Option<WeakInputState>,
+     pub notification: Entity<NotificationList>,
+     pub(crate) tooltip_overlay: Entity<gpui_base::TooltipOverlay>,
+     pub(crate) native_menu_overlay: Entity<FallbackMenuOverlay>,
+--- a/crates/component/src/window_ext.rs
++++ b/crates/component/src/window_ext.rs
+@@ -221,15 +221,17 @@
+     }
+ 
+     fn focused_input(&mut self, cx: &mut App) -> Option<AnyInputState> {
+-        let state = Root::read(self, cx).focused_input.clone()?;
+-        if state.focus_handle(cx).is_focused(self) {
+-            return Some(state);
++        let registered = Root::read(self, cx).focused_input.clone()?;
++        if let Some(state) = registered.upgrade() {
++            if state.focus_handle(cx).is_focused(self) {
++                return Some(state);
++            }
+         }
+ 
+-        // An input removed from the tree while focused never re-renders to
+-        // unregister itself; drop the stale registration lazily.
++        // Removed inputs need not render again to release their state. Retire
++        // expired or unfocused metadata lazily without owning the input.
+         Root::try_update(self, cx, |root, _, cx| {
+-            if root.focused_input.as_ref() == Some(&state) {
++            if root.focused_input.as_ref() == Some(&registered) {
+                 root.focused_input = None;
+                 cx.notify();
+             }
