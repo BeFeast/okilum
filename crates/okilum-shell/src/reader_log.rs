@@ -5899,6 +5899,72 @@ mod tests {
     }
 
     #[gpui::test]
+    fn issue2778_quick_log_open_shows_encoding_refusal(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        let bytes: Vec<_> = [0xff, 0xfe]
+            .into_iter()
+            .chain(
+                "hello i am a file\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        let (directory, reader, visual) = open_named("utf-16le.log", &bytes, cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        reader.read_with(visual, |reader, _| {
+            let loading = reader.loading.as_ref().unwrap();
+            assert!(!loading.active);
+            assert_eq!(loading.phase, "UTF-16LE log encoding is not supported. Open a UTF-8 copy; the original file is unchanged.");
+            assert!(reader.file_preview.is_none(), "no RAW rows were published");
+        });
+        assert!(
+            reader_viewer_chrome::tests::measured_bounds(visual, "reader-loading-phase").is_some()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("utf-16le.log")).unwrap(),
+            bytes
+        );
+    }
+
+    #[gpui::test]
+    fn issue2778_embedded_log_refuses_on_reopen_and_keeps_utf8(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        let (directory, reader, visual) = open_named("supported.log", b"hello i am a file\n", cx);
+        let path = directory.path().join("utf-16le.log");
+        let bytes: Vec<_> = [0xff, 0xfe]
+            .into_iter()
+            .chain(
+                "hello i am a file\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        std::fs::write(&path, &bytes).unwrap();
+        for _ in 0..2 {
+            reader.update_in(visual, |reader, window, cx| {
+                reader.open_note("utf-16le.log", None, window, cx);
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            log_view(&reader, visual).read_with(visual, |view, _| {
+                assert!(matches!(view.state, State::Failed(_)));
+                assert_eq!(view.visible_len(), 0);
+                assert_eq!(view.status(), "Cannot show this log: UTF-16LE log encoding is not supported. Open a UTF-8 copy; the original file is unchanged.");
+            });
+            assert!(reader_viewer_chrome::tests::measured_bounds(visual, "log-status").is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            reader.update_in(visual, |reader, window, cx| {
+                reader.open_note("supported.log", None, window, cx);
+            });
+            visual.run_until_parked();
+            log_view(&reader, visual).read_with(visual, |view, _| {
+                assert_eq!(view.visible_len(), 1);
+                assert_eq!(view.file().unwrap().raw(0), Some(&b"hello i am a file"[..]));
+            });
+        }
+    }
+
+    #[gpui::test]
     fn a_rotated_gzip_log_opens_decoded_and_without_follow(cx: &mut TestAppContext) {
         let _shutdown = TestShutdown(cx.clone());
         // Packed by the system gzip; the text is the pack's 649-line access log.

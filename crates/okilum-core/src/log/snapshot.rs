@@ -50,6 +50,27 @@ impl WindowInfo {
     }
 }
 
+/// Log indexing uses byte-oriented line boundaries and UTF-8 display. Check
+/// the source head (not a bounded tail) before either can turn a Unicode BOM
+/// into apparently normal RAW rows. UTF-8 and existing lossy inputs are kept.
+fn ensure_supported_encoding(head: &[u8]) -> Result<()> {
+    let encoding = if head.starts_with(b"\xff\xfe\0\0") {
+        Some("UTF-32LE")
+    } else if head.starts_with(b"\0\0\xfe\xff") {
+        Some("UTF-32BE")
+    } else if head.starts_with(b"\xff\xfe") {
+        Some("UTF-16LE")
+    } else if head.starts_with(b"\xfe\xff") {
+        Some("UTF-16BE")
+    } else {
+        None
+    };
+    if let Some(encoding) = encoding {
+        anyhow::bail!("{encoding} log encoding is not supported. Open a UTF-8 copy; the original file is unchanged.");
+    }
+    Ok(())
+}
+
 pub struct LogSnapshot {
     bytes: Vec<u8>,
     index: LogIndex,
@@ -112,6 +133,7 @@ impl LogSnapshot {
             }
         }
         sample.truncate(n);
+        ensure_supported_encoding(&sample)?;
         let format = detect::detect(&sample);
         let window = window::read_tail(file, len, ReadBudget::default())?;
         ensure!(
@@ -121,6 +143,7 @@ impl LogSnapshot {
         Self::from_window(window, format, regex, complete, lease).map(Arc::new)
     }
     pub(super) fn decoded(bytes: Vec<u8>, lease: Reservation) -> Result<Arc<Self>> {
+        ensure_supported_encoding(&bytes)?;
         let len = bytes.len() as u64;
         let format = detect::detect(&bytes[..bytes.len().min(detect::SAMPLE_BYTES)]);
         let mut snapshot = Self::from_window(

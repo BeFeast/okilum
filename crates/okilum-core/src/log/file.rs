@@ -136,6 +136,80 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
+    // #2778: byte-oriented indexing must not present a Unicode BOM as RAW text.
+    #[test]
+    fn issue2778_unicode_bom_refusal_preserves_source_on_reopen() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        for (encoding, bom) in [
+            ("UTF-16LE", &b"\xff\xfe"[..]),
+            ("UTF-16BE", &b"\xfe\xff"[..]),
+            ("UTF-32LE", &b"\xff\xfe\0\0"[..]),
+            ("UTF-32BE", &b"\0\0\xfe\xff"[..]),
+        ] {
+            let mut bytes = bom.to_vec();
+            for unit in "hello i am a file\nsecond line\n".encode_utf16() {
+                match encoding {
+                    "UTF-16LE" => bytes.extend_from_slice(&unit.to_le_bytes()),
+                    "UTF-16BE" => bytes.extend_from_slice(&unit.to_be_bytes()),
+                    "UTF-32LE" => bytes.extend_from_slice(&u32::from(unit).to_le_bytes()),
+                    "UTF-32BE" => bytes.extend_from_slice(&u32::from(unit).to_be_bytes()),
+                    _ => unreachable!(),
+                }
+            }
+            for compressed in [false, true] {
+                let path = dir.path().join(if compressed {
+                    "sample.log.gz"
+                } else {
+                    "sample.log"
+                });
+                let source = if compressed {
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                    encoder.write_all(&bytes).unwrap();
+                    encoder.finish().unwrap()
+                } else {
+                    bytes.clone()
+                };
+                std::fs::write(&path, &source).unwrap();
+                for _ in 0..2 {
+                    let error = LogFile::open(&path)
+                        .err()
+                        .expect("unsupported encoding must be refused");
+                    assert_eq!(error.to_string(), format!("{encoding} log encoding is not supported. Open a UTF-8 copy; the original file is unchanged."));
+                    assert_eq!(std::fs::read(&path).unwrap(), source);
+                }
+                if !compressed {
+                    let error = super::super::LogTail::open(&path)
+                        .err()
+                        .expect("Follow must refuse too");
+                    assert!(error.to_string().starts_with(encoding), "{error:#}");
+                    assert_eq!(std::fs::read(&path).unwrap(), source);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue2778_supported_log_bytes_still_open_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        for bytes in [
+            &b"hello i am a file\nsecond line\n"[..],
+            "hello caf\u{e9} \u{05e9}\u{05dc}\u{05d5}\u{05dd}\n".as_bytes(),
+            "\u{feff}hello i am a file\n".as_bytes(),
+            &b"legacy lossy byte: \xff\n"[..],
+        ] {
+            let path = dir.path().join("supported.log");
+            std::fs::write(&path, bytes).unwrap();
+            for _ in 0..2 {
+                let file = LogFile::open(&path).unwrap();
+                assert_eq!(file.bytes(), bytes);
+                assert!(!file.index().is_empty());
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+
     #[test]
     fn empty_and_missing_files() {
         let dir = tempfile::tempdir().unwrap();
