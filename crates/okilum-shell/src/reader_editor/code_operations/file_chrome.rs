@@ -899,6 +899,23 @@ fn status_text(text: &str, language: &str, operation: Option<Action>, bytes: usi
     if text == "Validation not checked for this revision" {
         return "Not validated since your last change.".into();
     }
+    // These model notices already name the action, limit and file size (or
+    // explain the unchanged source). Keep one refusal instead of wrapping it
+    // in two more sentences at the file host.
+    if text == "Mixed line endings; source unchanged."
+        || [
+            "Validate works with files up to ",
+            "Format works with files up to ",
+            "Repair works with files up to ",
+            "Validate supports ",
+            "Format supports ",
+            "Repair supports ",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        return text.into();
+    }
     match operation {
         Some(Action::Format) => format!("Not formatted. {text} Nothing was changed."),
         Some(Action::Repair) => format!("No safe repair. {text} Nothing was changed."),
