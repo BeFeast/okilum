@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
@@ -295,17 +296,104 @@ def publish(client, platform, run_id):
         prepare.complete(R2(), client, source)
 
 
+# A failed publication of a completed build is re-run from the same artifacts
+# (reuse, no rebuild), a bounded number of times (#1559). Before this, one
+# failed publisher step left the beta at the previous build until a human
+# noticed or the next main push rebuilt. Only a failed publish job is retried:
+# a successful one, or one that decided "nothing to publish", never repeats.
+PUBLISH_PLATFORMS = (*WORKFLOWS, 'appimage')
+MAX_PUBLICATION_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 60
+DISPATCH_ATTEMPTS = 3
+FAILED_ISSUE_TITLE = 'Beta publication failed'
+
+
+def dispatch_publication(client, platform, run_id, attempt=1, sleep=time.sleep):
+    """Start release-publish for a completed build; a transient API error is retried.
+
+    A lost dispatch is a missing publication, as silent as a failed one. A
+    duplicate dispatch is harmless: the publisher refuses an already published
+    source or an older build under its lock.
+    """
+    if platform not in PUBLISH_PLATFORMS or int(run_id) < 1 or int(attempt) < 1:
+        raise ValueError('Invalid publication request')
+    inputs = {'platform': platform, 'run_id': str(run_id)}
+    if int(attempt) > 1:
+        inputs['attempt'] = str(attempt)
+    for tries in range(1, DISPATCH_ATTEMPTS + 1):
+        try:
+            client.call('POST', '/actions/workflows/release-publish.yml/dispatches',
+                        {'ref': 'main', 'inputs': inputs})
+            return
+        except (OSError, SystemExit) as error:  # Forgejo.call exits on an HTTP error
+            if tries == DISPATCH_ATTEMPTS:
+                raise SystemExit(f'Could not dispatch {platform} publication of run {run_id} '
+                                 f'after {tries} tries: {error}')
+            print(f'Publication dispatch failed ({error}); retrying')
+            sleep(10 * tries)
+
+
+def report_exhausted(client, platform, run_id, attempts, run_url):
+    """Leave a visible trace for the manager: one open issue, one comment per stuck build."""
+    body = (f'The {platform} beta publication of completed build run {run_id} failed '
+            f'{attempts} times; the {platform} beta feed stays at its previous build.\n\n'
+            f'Last publication run: {run_url}\n\n'
+            'Recovery without a rebuild: dispatch `release-publish` on main with '
+            f'`platform={platform}` and `run_id={run_id}` once the cause is fixed '
+            '(or the next main push builds and publishes a newer beta). '
+            'Close this issue when the beta is current again.')
+    issues = client.call('GET', '/issues?state=open&type=issues&limit=50&q='
+                         + urllib.parse.quote(FAILED_ISSUE_TITLE)) or []
+    existing = next((i for i in issues if i.get('title') == FAILED_ISSUE_TITLE), None)
+    if existing:
+        client.call('POST', f"/issues/{existing['number']}/comments", {'body': body})
+    else:
+        client.call('POST', '/issues', {'title': FAILED_ISSUE_TITLE, 'body': body})
+
+
+def retry(client, platform, run_id, attempt, *, run_url='', summary=None, sleep=time.sleep):
+    """Called only after a failed publish job of attempt `attempt`.
+
+    Re-dispatches the same completed build until MAX_PUBLICATION_ATTEMPTS, then
+    fails visibly: an error annotation, the job summary and a tracking issue.
+    """
+    if platform not in PUBLISH_PLATFORMS or run_id < 1 or attempt < 1:
+        raise ValueError('Invalid publication retry request')
+    if attempt < MAX_PUBLICATION_ATTEMPTS:
+        sleep(RETRY_DELAY_SECONDS * attempt)
+        dispatch_publication(client, platform, run_id, attempt + 1, sleep=sleep)
+        print(f'Publication attempt {attempt} of {platform} run {run_id} failed; '
+              f'dispatched attempt {attempt + 1}/{MAX_PUBLICATION_ATTEMPTS} (reuse, no rebuild)')
+        return
+    message = (f'{platform} beta publication of run {run_id} failed {attempt} times; '
+               'no further automatic retry. The beta feed stays at its previous build.')
+    if summary:
+        with Path(summary).open('a') as handle:
+            handle.write(message + '\n')
+    try:
+        report_exhausted(client, platform, run_id, attempt, run_url)
+    except (Exception, SystemExit) as error:  # the red job below stays the primary signal
+        print(f'Could not record the failure in an issue: {error}')
+    print('::error::' + message)
+    raise SystemExit(message)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['dispatch', 'publish'])
-    parser.add_argument('platform', choices=WORKFLOWS)
+    parser.add_argument('command', choices=['dispatch', 'publish', 'retry'])
+    parser.add_argument('platform', choices=PUBLISH_PLATFORMS)
     parser.add_argument('--run', type=int)
+    parser.add_argument('--attempt', type=int, default=1)
     args = parser.parse_args()
     client = Forgejo()
     if args.command == 'dispatch':
-        client.call('POST', '/actions/workflows/release-publish.yml/dispatches',
-                    {'ref': 'main', 'inputs': {'platform': args.platform, 'run_id': os.environ['GITHUB_RUN_ID']}})
+        dispatch_publication(client, args.platform, int(os.environ['GITHUB_RUN_ID']))
+    elif args.run is None or args.run < 1:
+        parser.error('--run must identify the source build')
+    elif args.command == 'retry':
+        retry(client, args.platform, args.run, args.attempt,
+              run_url=os.environ.get('RUN_URL', ''), summary=os.environ.get('GITHUB_STEP_SUMMARY'))
+    elif args.platform == 'appimage':
+        parser.error('AppImage publication is appimage_handoff.py publish')
     else:
-        if args.run is None or args.run < 1:
-            parser.error('--run must identify the source build')
         publish(client, args.platform, args.run)
