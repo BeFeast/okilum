@@ -1620,10 +1620,11 @@ fn windows_job_ends_a_grandchild_holding_the_pipes() {
         "grandchild {pid} survived the read"
     );
     // Both reader threads ended and were joined, not left blocked on pipes.
+    // The process thread count is context only: OS worker threads make it noisy.
     assert_eq!(
         super::transport::LIVE_READERS.load(std::sync::atomic::Ordering::SeqCst),
-        0
+        0,
+        "reader threads survived the read (process threads {threads} -> {})",
+        current_threads()
     );
-    // Diagnostic only: OS worker threads can make the process count noisy.
-    eprintln!("process threads {threads} -> {}", current_threads());
 }

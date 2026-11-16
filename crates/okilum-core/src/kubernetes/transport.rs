@@ -494,16 +494,26 @@ fn pump(
     }
 }
 
-/// Reader threads alive right now (non-Unix). Tests use it to prove that no
-/// reader outlives a read; a thread-count probe would also see OS workers.
-#[cfg(not(unix))]
+/// Test instrumentation: reader threads alive right now (non-Unix), so a
+/// test can prove no reader outlives a read. Production has no such state.
+#[cfg(all(test, not(unix)))]
 pub(crate) static LIVE_READERS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(not(unix))]
+/// Counts one reader from before its spawn until its thread ends; a failed
+/// spawn drops it at once, so no phantom count remains.
+#[cfg(all(test, not(unix)))]
 struct LiveReader;
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
+impl LiveReader {
+    fn new() -> Self {
+        LIVE_READERS.fetch_add(1, Ordering::SeqCst);
+        LiveReader
+    }
+}
+
+#[cfg(all(test, not(unix)))]
 impl Drop for LiveReader {
     fn drop(&mut self) {
         LIVE_READERS.fetch_sub(1, Ordering::SeqCst);
@@ -553,9 +563,11 @@ fn pump(
         sender: mpsc::SyncSender<Message>,
         err: bool,
     ) -> std::thread::JoinHandle<()> {
-        LIVE_READERS.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        let live = LiveReader::new();
         std::thread::spawn(move || {
-            let _live = LiveReader;
+            #[cfg(test)]
+            let _live = live;
             read_loop(&mut input, &sender, err)
         })
     }
