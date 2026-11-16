@@ -1082,6 +1082,19 @@ fn file2811_real_refusals_and_syntax_verdicts_have_one_bottom_home(cx: &mut Test
             bottom.starts_with(prefix) && bottom.contains(reason),
             "{name}: {bottom}"
         );
+        // Prefix/contains alone would accept a reintroduced trailing host
+        // sentence. These complete refusal contracts must be exact.
+        match name {
+            "mixed.json" => assert_eq!(bottom, "Mixed line endings; source unchanged."),
+            "deep.json" => assert_eq!(
+                bottom,
+                format!(
+                    "Format supports JSON nesting up to 128 levels; this file is {} bytes.",
+                    source.len()
+                )
+            ),
+            _ => {}
+        }
         measured(visual, "file-edit-status-line");
         assert!(visual.debug_bounds("source-code-validation").is_none());
         assert_eq!(text(&input, visual), source);
@@ -1688,3 +1701,51 @@ fn xml2912_grammar_never_vetoes_valid_xml(cx: &mut TestAppContext) {
 }
 
 mod xml_large_tests;
+
+#[gpui::test]
+fn file2804_repair_depth_notice_is_exact_and_keeps_source(cx: &mut TestAppContext) {
+    let source = format!("{{\"deep\":{}0{}}}", "[".repeat(129), "]".repeat(129));
+    let (reader, _file, input, visual, temp) = open(cx, "repair-budget.json", &source);
+    let (send, gate) = futures::channel::oneshot::channel();
+    reader.update_in(visual, |r, w, cx| {
+        r.editing.as_mut().unwrap().operations.worker_gate = Some(gate);
+        r.code_operation(Action::Repair, w, cx);
+        assert!(r.editing.as_ref().unwrap().operations.busy);
+    });
+    frame(visual);
+    let (_, busy, actions) = drawn(&input);
+    assert_eq!(busy, "Preparing repair…");
+    assert!(actions.contains(&"file-operation-cancel"));
+    send.send(()).unwrap();
+    frame(visual);
+    let bottom = drawn(&input).1;
+    assert_eq!(
+        bottom,
+        format!(
+            "Repair supports JSON nesting up to 128 levels; this file is {} bytes.",
+            source.len()
+        )
+    );
+    reader.read_with(visual, |r, _| {
+        let ops = &r.editing.as_ref().unwrap().operations;
+        assert!(!ops.busy && ops.running.is_none() && ops.preview.is_none());
+    });
+    assert_eq!(text(&input, visual), source);
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("vault/repair-budget.json")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn file2804_repair_input_budget_preserves_the_complete_model_sentence() {
+    // Exercise the real admission notice without allocating a 64 MiB editor.
+    // The depth case above covers actual worker delivery and rendered status.
+    let bytes = model::MAX_BYTES + 1;
+    let notice = model::size_notice("Repair", bytes);
+    assert_eq!(
+        status_text(&notice, "json", Some(Action::Repair), bytes),
+        notice,
+        "the complete budget sentence must have no repair prefix or changed-source suffix"
+    );
+}

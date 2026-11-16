@@ -47,3 +47,20 @@ other long lines, necessary sharing, Parser/Rope, wide traversal and platform
 residuals remain owned and unfinished; neither reporter issue is resolved by
 these tests alone. No GPUI core/tree-sitter change, private observer, upstream
 submission, device action or repeat of a completed native flow is involved.
+
+## Refusal contract follow-up
+
+The JSON file-host control now asserts complete mixed-newline and depth-limit
+strings, rather than only a prefix/reason fragment; an extra trailing host
+sentence is observable and must fail. A real Repair worker budget refusal gets
+the same exact rendered-message/no-preview/no-source-write checks. A separate
+admission-notice host control uses the actual model size sentence without
+allocating a 64 MiB editor.
+
+Keep `Mixed line endings; source unchanged.` action-neutral deliberately. It
+reports a file-state refusal shared by the formatter's callers, and the current
+Format command is already the context. It says what prevented the operation and
+that source is intact in one sentence; neither an extra action prefix nor a
+second host sentence adds a needed decision. Budget messages retain action names
+because their limits can differ by operation. This follow-up changes tests/docs
+only; it does not fork model/file/fence wording or alter formatter semantics.
