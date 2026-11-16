@@ -543,7 +543,7 @@ fn workspace_layout_keeps_regions_apart_in_light_and_dark(cx: &mut TestAppContex
             brand::apply_theme(cx);
         });
         h.visual.run_until_parked();
-        let get = |id: &'static str| {
+        let mut get = |id: &'static str| {
             h.visual
                 .debug_bounds(id)
                 .unwrap_or_else(|| panic!("{id} rendered in {mode:?}"))
