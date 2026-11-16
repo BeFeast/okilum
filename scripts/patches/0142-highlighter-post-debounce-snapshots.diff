@@ -27,7 +27,7 @@
              let parse_cancel = cancel.clone();
              let result = cx
                  .background_executor()
-@@ -248,3 +255,138 @@
+@@ -248,3 +255,141 @@
      ranges.dedup_by_key(|range| range.start_line);
      ranges
  }
@@ -76,7 +76,10 @@
 +            assert!(adapter.inner.borrow_mut().update(None, &text, None));
 +            let mut reference = SyntaxHighlighter::new(language);
 +            assert!(reference.update(None, &text, None));
-+            let id = adapter.inner.borrow().tree().unwrap().root_node().id();
++            // A root Node::id is the address of TSTree's root slot, which
++            // stays stable even when its heap subtree is copied. The first
++            // child slot lives in the copied child array and observes COW.
++            let id = adapter.inner.borrow().tree().unwrap().root_node().child(0).unwrap().id();
 +            for inserted in ["\r\n", " "] {
 +                let edit = insertion(&mut text, inserted);
 +                reference.edit_tree(Some(to_tree_sitter_edit(edit)), &text);
@@ -84,7 +87,7 @@
 +                    adapter.update(Some(edit), &text, true, window, cx);
 +                }));
 +                let inner = adapter.inner.borrow();
-+                assert_eq!(inner.tree().unwrap().root_node().id(), id,
++                assert_eq!(inner.tree().unwrap().root_node().child(0).unwrap().id(), id,
 +                    "a queued/debounced parse snapshot forced foreground Tree COW");
 +                assert_eq!(inner.tree().unwrap().root_node().range(),
 +                    reference.tree().unwrap().root_node().range());
@@ -102,7 +105,7 @@
 +
 +            // A running parser really needs its immutable old-tree snapshot.
 +            // Holding that same handle must fire the actual COW mechanism;
-+            // root identity is an ownership/work probe, not syntax identity.
++            // child-slot identity is an ownership/work probe, not syntax identity.
 +            let held = adapter.inner.borrow().tree().unwrap().clone();
 +            let held_range = held.root_node().range();
 +            let edit = insertion(&mut text, "\t");
@@ -110,7 +113,7 @@
 +            v.update(|window, cx| editor.update(cx, |_, cx| {
 +                adapter.update(Some(edit), &text, true, window, cx);
 +            }));
-+            assert_ne!(adapter.inner.borrow().tree().unwrap().root_node().id(), id,
++            assert_ne!(adapter.inner.borrow().tree().unwrap().root_node().child(0).unwrap().id(), id,
 +                "unfired COW positive control: the retained Tree must force a copy");
 +            assert_eq!(held.root_node().range(), held_range, "parser snapshot is immutable");
 +            assert_eq!(adapter.inner.borrow().tree().unwrap().root_node().range(),

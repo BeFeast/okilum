@@ -139,10 +139,14 @@ lock, task, threshold or editor/source/history/save mutation.
 The actual adapter tests cover both an unpolled queued task and a task parked
 inside debounce. JSON and Markdown with real Rust injections exceed the existing
 256 KiB async-parse boundary and contain Hebrew, emoji, combining marks and
-CRLF. Two edits keep the root allocation exclusive while retaining the original
+CRLF. Two edits keep the root child-array slots stable while retaining the original
 pending byte/point ranges, folds and semantic spans. A deliberate held Tree
-clone must force actual root COW and retain its old coordinates (fired positive
-control). The surviving worker must complete and match an independent full
+clone must force actual root child-array COW and retain its old coordinates (fired positive
+control). Tree-sitter's root Node::id points to the stable TSTree root slot,
+not the mutable heap subtree: the probe therefore observes the first child's
+slot in the root child array, which is actually copied by root COW. The initial
+root-id probe was rejected by its unfired retained-clone positive control.
+The surviving worker must complete and match an independent full
 parse's ranges/styles/folds/injection captures. A separate initial-parse control
 must complete without advancing the test clock. These are deterministic
 ownership/semantic controls, not native key-to-paint measurements. Restoring the
