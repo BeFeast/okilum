@@ -29,9 +29,10 @@ membership in a namespace picker.
 `Query::List`, `Get` and `RelatedEvents` have a fixed kind enum: Namespace,
 Pod, Deployment, ReplicaSet, Service, EndpointSlice, core Event and HPA.
 Namespace is cluster-scoped; all others require an explicit namespace. The
-argv uses explicit context and cluster flags, `get`, one fixed resource,
-optional validated name, `--output=json`, `--request-timeout=15s` and
-`--chunk-size=200`. Related Events add only a UID field selector. Names and UIDs
+argv uses explicit context and cluster flags, `--request-timeout=15s`, `get`
+and one generated `--raw=<path>` for the kind's fixed API version. Namespaces
+and optional names are validated path segments. Lists request one server page
+with `limit=500`; related Events add only a URL-encoded UID field selector. Names and UIDs
 cannot become arbitrary flags or commands. No shell, describe/table parsing,
 resource mutation, raw command text, terminal, exec or port-forward exists.
 
@@ -73,22 +74,23 @@ establish zero utilization or healthy autoscaling.
 ## Limits, freshness and failure
 
 Each invocation has a 20 s whole-operation deadline, checked with cancellation
-every 20 ms. Stdout is bounded to 8 MiB, stderr to 16 KiB plus an explicit
+every 20 ms during transport and once after bounded JSON parsing. Parsing is
+not preempted mid-document. Stdout is bounded to 8 MiB, stderr to 16 KiB plus an explicit
 truncation flag. The existing Session adds at most 16 queued 16 KiB chunks
 and one chunk per pipe. Typed JSON parsing has the standard serde recursion
 bound. Its temporary tree and decoded model add bounded allocation overhead;
 the byte ceiling is an input ceiling, not an exact total heap budget.
 
 At most 500 resources are exposed. A longer list is `ItemLimit` partial; a
-server continuation token is `ContinueToken` partial. kubectl may fetch more
-than one server page before producing JSON; chunk-size is not a total item
-limit. The byte ceiling and deadline bound this work, and there is no retry or
-continuation request in the adapter. A byte limit yields no new observation;
+server continuation token is `ContinueToken` partial. The adapter never follows
+that token, and fixed raw API reads prevent kubectl's automatic pagination.
+The byte ceiling and deadline also bound servers that ignore the page limit;
+there is no retry or continuation request in the adapter. A byte limit yields no new observation;
 it does not turn a JSON prefix into usable complete evidence.
 
 Successful empty Resources with no partial reasons is a known empty result.
-Forbidden, Authentication (including expired credentials), Unavailable,
-InvalidJson, Limit, Cancelled, Timeout and Io are separate failed attempts.
+Forbidden, Authentication (including expired credentials), InteractiveLogin,
+NotFound, Unavailable, InvalidJson, Limit, Cancelled, Timeout and Io are separate failed attempts.
 Structured Kubernetes Forbidden/Unauthorized Status has priority; otherwise
 kubectl stderr classification is necessarily wording-dependent. Unknown
 nonzero failures remain Unavailable and keep their bounded diagnostic. An

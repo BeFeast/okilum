@@ -153,8 +153,12 @@ fn typed_argv_cannot_widen_into_commands_or_namespace_options() {
     }
     let args = source.args().unwrap();
     assert_eq!(args[0], "--context=synthetic/$(echo unsafe) context");
-    assert!(args.contains(&OsString::from("pods")));
-    assert!(args.contains(&OsString::from("--namespace=shop")));
+    assert!(args.contains(&OsString::from(
+        "--raw=/api/v1/namespaces/shop/pods?limit=500"
+    )));
+    assert!(!args
+        .iter()
+        .any(|arg| arg.to_string_lossy().contains("chunk-size")));
     assert!(!args.contains(&OsString::from("logs")));
     for name in ["", "--all-namespaces", "a;echo", "pods/api"] {
         let get = Query::Get {
@@ -170,10 +174,9 @@ fn typed_argv_cannot_widen_into_commands_or_namespace_options() {
         namespace: "shop".into(),
         uid: "uid-a".into(),
     };
-    assert!(events
-        .args()
-        .unwrap()
-        .contains(&OsString::from("--field-selector=involvedObject.uid=uid-a")));
+    assert!(events.args().unwrap().contains(&OsString::from(
+        "--raw=/api/v1/namespaces/shop/events?limit=500&fieldSelector=involvedObject.uid%3Duid-a"
+    )));
 }
 
 #[test]
@@ -406,7 +409,7 @@ fn denied_namespace_listing_does_not_block_typed_namespaced_access() {
 #[test]
 fn oversized_transport_and_stalled_helpers_hit_bounds_and_reap_child() {
     let source = query(Kind::Pod);
-    let failure = read_fixture("while :; do printf '0123456789012345678901234567890123456789012345678901234567890123456789'; done",&source).unwrap_err();
+    let failure = read_fixture("while :; do printf '%8192s' x; done", &source).unwrap_err();
     assert_eq!(failure.kind, FailureKind::Limit);
     let mut session = fixture("printf 'started'; while :; do :; done", &source);
     // Positive control: this exact owned process ran and its pipe delivered data.

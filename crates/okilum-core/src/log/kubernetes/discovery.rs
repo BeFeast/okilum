@@ -105,23 +105,32 @@ impl Query {
         token(&connection.cluster)?;
         token(&connection.server)?;
         if kind != Kind::Namespace {
-            dns(namespace)?;
+            namespace_name(namespace)?;
         }
         // Bind both context and cluster name. We never accept an arbitrary server override.
         args.push(format!("--cluster={}", connection.cluster).into());
+        let mut path = kind.api_prefix().to_owned();
         if kind != Kind::Namespace {
-            args.push(format!("--namespace={namespace}").into());
+            path.push_str(&format!("/namespaces/{namespace}"));
         }
-        args.extend(["get".into(), kind.resource().into()]);
+        path.push_str(&format!("/{}", kind.resource()));
         if let Some(name) = name {
-            args.push(name.into());
+            path.push_str(&format!("/{name}"));
+        } else {
+            // One server page only: kubectl get's chunk-size automatically follows pages.
+            let mut parameters = url::form_urlencoded::Serializer::new(String::new());
+            parameters.append_pair("limit", &MAX_ITEMS.to_string());
+            if let Self::RelatedEvents { uid, .. } = self {
+                parameters.append_pair("fieldSelector", &format!("involvedObject.uid={uid}"));
+            }
+            path.push('?');
+            path.push_str(&parameters.finish());
         }
-        if let Self::RelatedEvents { uid, .. } = self {
-            args.push(format!("--field-selector=involvedObject.uid={uid}").into());
-        }
-        args.extend(
-            ["--output=json", "--request-timeout=15s", "--chunk-size=200"].map(OsString::from),
-        );
+        args.extend([
+            "--request-timeout=15s".into(),
+            "get".into(),
+            format!("--raw={path}").into(),
+        ]);
         Ok(args)
     }
 
@@ -155,14 +164,24 @@ fn token(value: &str) -> io::Result<()> {
         Ok(())
     }
 }
+fn namespace_name(value: &str) -> io::Result<()> {
+    dns(value)?;
+    if value.len() > 63 || value.contains('.') {
+        return Err(invalid("Explicit Kubernetes namespace must be a DNS label"));
+    }
+    Ok(())
+}
 fn dns(value: &str) -> io::Result<()> {
     if value.is_empty()
         || value.len() > 253
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
-        || !value.as_bytes()[0].is_ascii_alphanumeric()
-        || !value.as_bytes()[value.len() - 1].is_ascii_alphanumeric()
+        || !value.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+        })
     {
         Err(invalid("Explicit Kubernetes DNS name is required"))
     } else {
@@ -175,6 +194,8 @@ pub enum FailureKind {
     InvalidRequest,
     Forbidden,
     Authentication,
+    InteractiveLogin,
+    NotFound,
     Unavailable,
     InvalidJson,
     Limit,
@@ -406,6 +427,15 @@ fn collect(
     session
         .cancel()
         .map_err(|e| Failure::new(FailureKind::Io, format!("Could not reap kubectl: {e}")))?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Failure::new(FailureKind::Cancelled, "Discovery cancelled"));
+    }
+    if result.is_ok() && start.elapsed() >= deadline {
+        return Err(Failure::new(
+            FailureKind::Timeout,
+            "Discovery parsing deadline exceeded",
+        ));
+    }
     result
 }
 
@@ -415,10 +445,20 @@ fn classify(bytes: &[u8], diagnostic: &str) -> FailureKind {
         match value.get("reason").and_then(|v| v.as_str()) {
             Some("Forbidden") => return FailureKind::Forbidden,
             Some("Unauthorized") => return FailureKind::Authentication,
+            Some("NotFound") => return FailureKind::NotFound,
             _ => (),
         }
     }
     let lower = diagnostic.to_ascii_lowercase();
+    if ["interactive", "mfa", "device code", "browser"]
+        .iter()
+        .any(|s| lower.contains(s))
+        && ["credential", "exec plugin", "login", "authentication"]
+            .iter()
+            .any(|s| lower.contains(s))
+    {
+        return FailureKind::InteractiveLogin;
+    }
     if [
         "unauthorized",
         "must be logged in",
@@ -434,6 +474,8 @@ fn classify(bytes: &[u8], diagnostic: &str) -> FailureKind {
         FailureKind::Authentication
     } else if lower.contains("forbidden") {
         FailureKind::Forbidden
+    } else if lower.contains("(notfound)") || lower.contains("not found") {
+        FailureKind::NotFound
     } else {
         FailureKind::Unavailable
     }

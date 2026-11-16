@@ -18,12 +18,20 @@ impl Kind {
         match self {
             Self::Namespace => "namespaces",
             Self::Pod => "pods",
-            Self::Deployment => "deployments.apps",
-            Self::ReplicaSet => "replicasets.apps",
+            Self::Deployment => "deployments",
+            Self::ReplicaSet => "replicasets",
             Self::Service => "services",
-            Self::EndpointSlice => "endpointslices.discovery.k8s.io",
+            Self::EndpointSlice => "endpointslices",
             Self::Event => "events",
-            Self::Hpa => "horizontalpodautoscalers.autoscaling",
+            Self::Hpa => "horizontalpodautoscalers",
+        }
+    }
+    pub(super) fn api_prefix(self) -> &'static str {
+        match self {
+            Self::Namespace | Self::Pod | Self::Service | Self::Event => "/api/v1",
+            Self::Deployment | Self::ReplicaSet => "/apis/apps/v1",
+            Self::EndpointSlice => "/apis/discovery.k8s.io/v1",
+            Self::Hpa => "/apis/autoscaling/v2",
         }
     }
     fn wire(self) -> (&'static str, &'static str) {
@@ -48,6 +56,7 @@ pub struct Metadata {
     pub uid: String,
     /// An opaque server token: never parsed, ordered or used as a wall clock.
     pub resource_version: String,
+    pub generation: Option<i64>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -289,6 +298,7 @@ pub struct WorkloadStatus {
     pub ready_replicas: Option<i32>,
     pub available_replicas: Option<i32>,
     pub updated_replicas: Option<i32>,
+    pub unavailable_replicas: Option<i32>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -324,18 +334,20 @@ pub struct ServicePort {
 pub struct EndpointSlice {
     pub address_type: String,
     pub endpoints: Vec<Endpoint>,
+    #[serde(default)]
     pub ports: Vec<EndpointPort>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub addresses: Vec<String>,
+    #[serde(default)]
     pub conditions: EndpointConditions,
     pub target_ref: Option<ObjectReference>,
     pub node_name: Option<String>,
     pub zone: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct EndpointConditions {
     pub ready: Option<bool>,
     pub serving: Option<bool>,
@@ -547,7 +559,7 @@ pub(super) fn parse(
             .as_str()
             .unwrap_or("default")
             .to_string();
-        dns(&default_namespace).map_err(|_| bad())?;
+        namespace_name(&default_namespace).map_err(|_| bad())?;
         Data::Connection(Connection {
             context: context.clone(),
             kubeconfig: kubeconfig.clone(),
