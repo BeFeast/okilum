@@ -85,6 +85,27 @@ def restricts_to_main(guard):
     return any(" ".join(part.split()) == MAIN_REF for part in _top_level(expression, "&&"))
 
 
+def duplicate_mapping_keys(text, name):
+    """Return "name:line key" for every key repeated inside one YAML mapping."""
+    found = []
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    def construct(loader, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                found.append(f"{name}:{key_node.start_mark.line + 1} {key}")
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct)
+    yaml.load(text, Loader=Loader)
+    return found
+
+
 def cache_save_violations(workflows):
     """(cache actions found, unguarded saves) over {file name: parsed workflow}."""
     found, violations = 0, []
@@ -451,6 +472,26 @@ class VerdictTests(unittest.TestCase):
             {"uses": "actions/cache@v4", "with": {"path": "target"}}]}}}}
         self.assertEqual(cache_save_violations(job("github.ref == 'refs/heads/main' && github.run_attempt == 1"))[1], [])
         self.assertEqual(len(cache_save_violations(job("github.ref == 'refs/heads/main' || true"))[1]), 1)
+
+    def test_workflows_have_no_duplicate_mapping_keys(self):
+        # GitHub rejects a workflow with a repeated key before any job starts
+        # ("workflow file issue"); PyYAML silently keeps the last value. A
+        # doubled save-if kept updater-helper-compat red on every push.
+        files = sorted(p for d in (".github/workflows", ".forgejo/workflows")
+                       for g in ("*.yml", "*.yaml") for p in (ROOT / d).glob(g))
+        self.assertGreaterEqual(len(files), 10, "workflows must be discovered")
+        found = [dup for path in files for dup in duplicate_mapping_keys(path.read_text(), path.name)]
+        self.assertEqual(found, [])
+
+    def test_duplicate_mapping_key_guard_controls(self):
+        clean = "jobs:\n  a:\n    steps:\n      - with:\n          save-if: x\n          other: y\n"
+        self.assertEqual(duplicate_mapping_keys(clean, "w.yml"), [])
+        # Same key in sibling mappings is fine; same key in one mapping is not.
+        siblings = "a:\n  k: 1\nb:\n  k: 2\n"
+        self.assertEqual(duplicate_mapping_keys(siblings, "w.yml"), [])
+        doubled = clean + "          save-if: z\n"
+        self.assertEqual(duplicate_mapping_keys(doubled, "w.yml"), ["w.yml:7 save-if"])
+        self.assertEqual(len(duplicate_mapping_keys("on: 1\non: 2\n", "w.yml")), 1)
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):

@@ -42,7 +42,6 @@ jobs:
           # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify exact source and vendor
         shell: bash
         run: |
@@ -96,7 +95,6 @@ jobs:
           # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/download-artifact@v4
         with:
           name: updater-helper-icon
@@ -137,7 +135,6 @@ jobs:
           # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build recovery test binary
         shell: bash
         run: |
