@@ -298,7 +298,7 @@ impl Workspace {
         match loaded {
             backend::Loaded::Namespaces(result) => {
                 if let Ok(choice) =
-                    choose_namespace(&data.scope.connection, Some(&typed), Some(&result))
+                    choose_namespace(&data.scope.connection, Some(typed.as_str()), Some(&result))
                 {
                     self.namespace_note = Some(namespace_note(&choice.origin));
                 }
