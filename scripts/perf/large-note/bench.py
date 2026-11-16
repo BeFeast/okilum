@@ -96,11 +96,14 @@ def run_once(binary, vault_source, display, work, rep):
     shutil.copytree(vault_source, vault)
     state = home / "okilum"
     state.mkdir(parents=True)
+    runtime = home / "runtime"
+    runtime.mkdir(mode=0o700)
     report = base / "probe.json"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("OKILUM_", "XDG_"))}
     env.update(HOME=str(home), WAYLAND_DISPLAY="", DISPLAY=display,
                XDG_CONFIG_HOME=str(home / "config"), XDG_CACHE_HOME=str(home / "cache"),
                XDG_DATA_HOME=str(home / "data"), XDG_STATE_HOME=str(home / "state"),
+               XDG_RUNTIME_DIR=str(runtime),
                OKILUM_STATE_DIR=str(state), OKILUM_READER_PERF_PROBE=str(report))
     with (base / "app.log").open("wb") as log:
         try:
@@ -178,7 +181,8 @@ def main():
                 data = run_once(args.binary.resolve(), vault_source, display, work, rep)
                 problems = controls(data, counts)
                 if problems:
-                    raise NoEvidence(f"run {rep} controls failed:\n  " + "\n  ".join(problems))
+                    raise NoEvidence(f"run {rep} controls failed:\n  " + "\n  ".join(problems)
+                                     + f"\n  report: {json.dumps(data)}")
                 print(f"run {rep}: open {data['open_ms']:.0f} ms, first frame {data['first_frame_ms']:.1f} ms, "
                       f"scroll p95 {data['scroll']['p95_ms']:.1f} ms, jump p95 {data['jump']['p95_ms']:.1f} ms, "
                       f"phases {json.dumps(data['phases'])}", file=sys.stderr)
@@ -197,6 +201,8 @@ def main():
         shutil.copytree(work, args.keep, dirs_exist_ok=True)
     shutil.rmtree(work, ignore_errors=True)
     summary, table = summarize(runs, counts)
+    landed = [jump["landed_frame"] for run in runs for jump in run["jumps"]]
+    table += f"\noutline jumps landed in frame (0 = first after the click): {landed}"
     print(f"fixture: {counts}\n{table}")
     if args.json:
         args.json.write_text(json.dumps(summary, indent=2) + "\n")

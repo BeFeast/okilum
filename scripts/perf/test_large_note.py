@@ -16,7 +16,7 @@ def run(**overrides):
         "scroll_start_item": 0, "scroll_end_item": 900,
         "scroll": {"frames": 240, "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
         "jump": {"frames": 32, "p50_ms": 5., "p95_ms": 9., "max_ms": 15.},
-        "jumps": [{"outline_row": r, "target_block": r * 2, "top_block": r * 2} for r in (999, 1899, 499, 1499)],
+        "jumps": [{"outline_row": r, "target_block": r * 2, "top_block": r * 2, "landed_frame": 1} for r in (999, 1899, 499, 1499)],
     }
     data.update(overrides)
     return data
@@ -51,7 +51,8 @@ class LargeNote(unittest.TestCase):
             "outline": run(outline_rows=436),
             "did not move": run(scroll_end_item=0),
             "jumps recorded": run(jumps=[]),
-            "landed on": run(jumps=[{"outline_row": 999, "target_block": 1998, "top_block": 1500}] * 4),
+            "landed on": run(jumps=[{"outline_row": 999, "target_block": 1998, "top_block": 1500,
+                                        "landed_frame": None}] * 4),
             "no timed frames": run(jump={"frames": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}),
         }
         for needle, data in cases.items():

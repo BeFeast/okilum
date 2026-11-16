@@ -17,7 +17,8 @@ const STEP: Pixels = px(96.);
 /// Frames after the first document paint that are not timed.
 const SETTLE_FRAMES: usize = 3;
 const SCROLL_FRAMES: usize = 240;
-/// Far outline jumps as fractions of the outline, each followed by scroll frames.
+/// Far outline jumps as fractions of the outline. Each is timed over this many
+/// frames without other input; the landing is read on the last of them.
 const JUMPS: [f32; 4] = [0.5, 0.95, 0.25, 0.75];
 const FRAMES_PER_JUMP: usize = 8;
 
@@ -32,6 +33,17 @@ pub(crate) enum Step {
     Jump(usize),
     /// Write the report and quit.
     Finish,
+}
+
+/// One outline jump: the row opened, its heading's block, the block on top
+/// after the jump's frames, and the frame (0 = the first after the click) in
+/// which that block first was on top.
+#[derive(Debug, PartialEq)]
+struct Jump {
+    row: usize,
+    target: usize,
+    top: usize,
+    landed_frame: Option<usize>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,9 +66,9 @@ pub(crate) struct Probe {
     jump_frames: Vec<f64>,
     start_item: usize,
     end_item: usize,
-    /// (outline row, its target block, the block on top after the jump)
-    jumps: Vec<(usize, usize, usize)>,
-    pending_jump: Option<(usize, usize)>,
+    jumps: Vec<Jump>,
+    /// (outline row, its target block, first frame with the block on top)
+    pending_jump: Option<(usize, usize, Option<usize>)>,
 }
 
 impl Probe {
@@ -134,14 +146,22 @@ impl Probe {
             }
             Phase::Jumping { jump, frame } => {
                 self.jump_frames.push(frame_ms);
-                if *frame == 0 {
-                    if let Some((row, block)) = self.pending_jump.take() {
-                        self.jumps.push((row, block, top));
+                if let Some((_, target, landed)) = &mut self.pending_jump {
+                    if landed.is_none() && top == *target {
+                        *landed = Some(*frame);
                     }
                 }
                 *frame += 1;
                 if *frame < FRAMES_PER_JUMP {
-                    return Step::ScrollBy(STEP);
+                    return Step::ScrollBy(px(0.));
+                }
+                if let Some((row, target, landed_frame)) = self.pending_jump.take() {
+                    self.jumps.push(Jump {
+                        row,
+                        target,
+                        top,
+                        landed_frame,
+                    });
                 }
                 let next = *jump + 1;
                 if next < JUMPS.len() {
@@ -162,7 +182,7 @@ impl Probe {
         let row = (outline.len().saturating_sub(1) as f32 * JUMPS[jump]) as usize;
         match outline.get(row) {
             Some(&block) => {
-                self.pending_jump = Some((row, block));
+                self.pending_jump = Some((row, block, None));
                 Step::Jump(row)
             }
             // No outline: the report's controls reject the run.
@@ -183,8 +203,9 @@ impl Probe {
             "jump": stats(&self.jump_frames),
             "scroll_start_item": self.start_item,
             "scroll_end_item": self.end_item,
-            "jumps": self.jumps.iter().map(|(row, block, top)| serde_json::json!({
-                "outline_row": row, "target_block": block, "top_block": top,
+            "jumps": self.jumps.iter().map(|jump| serde_json::json!({
+                "outline_row": jump.row, "target_block": jump.target, "top_block": jump.top,
+                "landed_frame": jump.landed_frame,
             })).collect::<Vec<_>>(),
         });
         std::fs::write(&self.output, serde_json::to_vec_pretty(&report)?)
@@ -230,18 +251,26 @@ mod tests {
         let mut steps = 0;
         let mut jumps = Vec::new();
         let mut top = 0;
+        // The Reader lands an outline jump one frame after the click.
+        let mut landing = None;
         loop {
             probe.render_started();
-            match probe.painted(2000, top, &outline, 50.) {
+            let step = probe.painted(2000, top, &outline, 50.);
+            if let Some(block) = landing.take() {
+                top = block;
+            }
+            match step {
                 Step::Finish => break,
                 Step::Idle => panic!("probe stalled"),
                 Step::Jump(row) => {
                     jumps.push(row);
-                    top = outline[row];
+                    landing = Some(outline[row]);
                 }
-                Step::ScrollBy(_) => {
+                Step::ScrollBy(distance) => {
                     steps += 1;
-                    top += 1;
+                    if distance > px(0.) {
+                        top += 1;
+                    }
                 }
             }
         }
@@ -253,7 +282,12 @@ mod tests {
             probe.jumps,
             jumps
                 .iter()
-                .map(|&row| (row, outline[row], outline[row]))
+                .map(|&row| Jump {
+                    row,
+                    target: outline[row],
+                    top: outline[row],
+                    landed_frame: Some(1),
+                })
                 .collect::<Vec<_>>()
         );
         assert!(probe.end_item > probe.start_item);
