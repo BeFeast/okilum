@@ -1467,6 +1467,9 @@ fn issue3079_offline_removal_then_rejoin_through_another_computer() -> Result<()
             snapshot.status
         );
         first.refresh()?;
+        // The source learns of the readmission and passes the closed removal
+        // on to the third computer, which acknowledges it on its refresh.
+        other.refresh()?;
         Ok(first.snapshot()?.pending_removals == 0)
     })?;
     let current = second.snapshot()?.peers;
