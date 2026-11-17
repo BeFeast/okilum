@@ -33,6 +33,19 @@ enum DropAt {
     Block(usize),
 }
 
+/// Point a background result at `anchor` (#1615: a block drop's result
+/// goes before the block in the note as it is, not into a slot).
+fn retarget(follow_up: &mut FollowUp, anchor: Anchor) {
+    match follow_up {
+        FollowUp::Files { anchor: at, .. }
+        | FollowUp::Title { anchor: at, .. }
+        | FollowUp::Image { anchor: at, .. }
+        | FollowUp::Rich { anchor: at, .. } => *at = anchor,
+        // Remote images replace text inserted now; they never come alone.
+        FollowUp::RemoteImages { .. } => {}
+    }
+}
+
 /// The byte offset where 1-based `line` starts in `text`; `None` past its
 /// last line.
 fn line_start(text: &str, line: u32) -> Option<usize> {
@@ -51,6 +64,10 @@ struct Target {
     root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
+    /// #1615: a drop onto a rendered block, whose result has not gone in
+    /// yet. It goes in as its own paragraph before the block at the anchor,
+    /// in one edit with its blank lines; until then the note is untouched.
+    slot: bool,
 }
 
 impl Target {
@@ -257,7 +274,8 @@ impl Reader {
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel));
         let note_rel = (!plain_file).then(|| self.selected_file().to_owned());
-        let source = input.read(cx).value().to_string();
+        let original = input.read(cx).value().to_string();
+        let source = original.clone();
         let (source, offset, slot) = match at {
             DropAt::Inline(offset) => (source, offset, None),
             DropAt::Block(offset) => {
@@ -297,17 +315,26 @@ impl Reader {
                     started.elapsed().as_secs_f64() * 1000.0,
                     routed.detail
                 );
-                let offset = match slot {
+                let (offset, pending_slot) = match slot {
                     // One edit: the slot's empty line with the routed text in
                     // it, which is the routing source the anchors were taken on.
-                    Some(slot) if routed.insert.is_some() || routed.follow_up.is_some() => {
+                    Some(slot) if routed.insert.is_some() => {
                         routed.insert = Some(slot.edit(routed.insert.as_deref().unwrap_or("")));
-                        slot.at
+                        (slot.at, false)
                     }
-                    Some(slot) => slot.at,
-                    None => offset,
+                    // Only a background result (copied files, a saved image,
+                    // converted rich text): nothing goes in now. The result
+                    // takes the slot in one edit when it is ready; a Cancel
+                    // leaves the note as it was.
+                    Some(slot) => {
+                        if let Some(follow_up) = routed.follow_up.as_mut() {
+                            retarget(follow_up, Anchor::at(&original, slot.at));
+                        }
+                        (slot.at, true)
+                    }
+                    None => (offset, false),
                 };
-                self.apply_routed(input, routed, offset, window, cx);
+                self.apply_routed(input, routed, offset, pending_slot, window, cx);
             }
             Err(error) => {
                 diagnostic_error!("Drop: not inserted ({error:?})");
@@ -316,12 +343,14 @@ impl Reader {
         }
     }
 
-    /// Insert a routed result at `offset` (a drop) and start its follow-up.
+    /// Insert a routed result at `offset` (a drop) and start its follow-up;
+    /// `slot`: the follow-up's result goes in as a block drop's paragraph.
     fn apply_routed(
         &mut self,
         input: Entity<EditorState>,
         routed: Routed,
         offset: usize,
+        slot: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -335,7 +364,7 @@ impl Reader {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
-            self.run_paste_follow_up(input, follow_up, window, cx);
+            self.run_follow_up(input, follow_up, slot, window, cx);
         }
     }
 
@@ -344,6 +373,17 @@ impl Reader {
         &mut self,
         input: Entity<EditorState>,
         follow_up: FollowUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_follow_up(input, follow_up, false, window, cx);
+    }
+
+    fn run_follow_up(
+        &mut self,
+        input: Entity<EditorState>,
+        follow_up: FollowUp,
+        slot: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -357,6 +397,7 @@ impl Reader {
             input,
             root: self.vault_root.clone(),
             path,
+            slot,
         };
         match follow_up {
             FollowUp::Files { plan, anchor } => {
@@ -686,16 +727,27 @@ fn insert_at_anchor(
         // Typed at the paste position meanwhile: on its own line, not glued
         // to the typed text (`![[clip.mov]]# Trip`).
         let block = block || (!moved && anchor.typed_at(&current, at));
-        let fitted = if markdown {
-            crate::note_paste::context::fit_markdown(text, block, &current, at..at)
-        } else {
-            crate::note_paste::context::fit(text, block, &current, at..at)
+        // A block drop (#1615): fitted to an empty line before the block,
+        // then that line and the text go in as one edit.
+        let slot = target.slot.then(|| BlockSlot::new(&current, at));
+        let (context, fit_at) = match &slot {
+            Some(slot) => (slot.routing_source(&current), slot.route_offset()),
+            None => (current.clone(), at),
         };
-        let inserted = state.replace_source_range(at..at, &fitted, window, cx);
+        let fitted = if markdown {
+            crate::note_paste::context::fit_markdown(text, block, &context, fit_at..fit_at)
+        } else {
+            crate::note_paste::context::fit(text, block, &context, fit_at..fit_at)
+        };
+        let (at, edit, text_at) = match &slot {
+            Some(slot) => (slot.at, slot.edit(&fitted), slot.at + slot.before.len()),
+            None => (at, fitted.clone(), at),
+        };
+        let inserted = state.replace_source_range(at..at, &edit, window, cx);
         if !inserted {
             diagnostic_error!("Paste: background result not inserted (the editor is read-only)");
         }
-        let region = inserted.then(|| Region::at(state.value().as_ref(), at, fitted.len()));
+        let region = inserted.then(|| Region::at(state.value().as_ref(), text_at, fitted.len()));
         (moved && inserted, region)
     });
     if moved {
@@ -1437,6 +1489,93 @@ mod reader_drop_tests {
                 "still before the block under the pointer"
             );
         });
+    }
+
+    /// The note's source, and the line of it that holds `needle`.
+    fn source_and_line(
+        reader: &Entity<Reader>,
+        visual: &mut VisualTestContext,
+        needle: &str,
+    ) -> (String, Option<String>) {
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            let line = source
+                .lines()
+                .find(|line| line.contains(needle))
+                .map(str::to_string);
+            (source, line)
+        })
+    }
+
+    /// Review of #3074: a file copied into the vault in the background goes
+    /// in only when the copy is done, in one edit with its blank lines; one
+    /// Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_copied_drop_goes_in_once_and_one_undo_restores_the_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        let outside = temp.path().join("outside.pdf");
+        std::fs::write(&outside, b"%PDF-1.4 dropped").unwrap();
+        drop_at(visual, next.center(), outside);
+        let (source, link) = source_and_line(&reader, visual, "outside");
+        let link = link.unwrap_or_else(|| panic!("the copied file is linked: {source:?}"));
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n")
+        );
+        fn copied(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    copied(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("outside")
+                }
+            })
+        }
+        assert!(
+            copied(&temp.path().join("vault")),
+            "positive control: the file was copied into the vault"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "outside");
+        assert_eq!(source, NOTE, "one Undo: byte-identical, no empty slot left");
+    }
+
+    /// Review of #3074: above the ask threshold, the note is untouched while
+    /// the question is open, and Cancel leaves it byte-identical.
+    #[gpui::test]
+    fn a_cancelled_drop_leaves_the_note_byte_identical(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let ui_state = temp.path().join("ui-state");
+        std::fs::create_dir_all(&ui_state).unwrap();
+        visual.update(|_, cx| {
+            crate::reader_ui_state::install(&ui_state, cx);
+            crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
+        });
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        let large = temp.path().join("large.bin");
+        std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
+        drop_at(visual, next.center(), large);
+        assert!(
+            visual.has_pending_prompt(),
+            "positive control: Copy into Vault? is asked"
+        );
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "no edit while the question is open");
+        visual.simulate_prompt_answer("Cancel");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "Cancel: byte-identical");
+        assert!(
+            reader.read_with(visual, |r, _| r.editing.is_some()),
+            "the note stays in Edit"
+        );
     }
 
     #[test]
