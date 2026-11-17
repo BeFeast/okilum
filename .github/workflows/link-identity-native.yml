@@ -1,0 +1,129 @@
+# #1414/#1439 native gate: the vault link identity (first Copy, forced write
+# failure, unknown-field preservation, reopen under another folder name,
+# mismatch refusal, legacy links) and single-file Copy links, on hosted macOS
+# and Windows. Issue-scoped refs only; no release, updater or signing work.
+name: link-identity-native
+on:
+  push:
+    branches: ['link-identity-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: link-identity-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: link-identity-windows-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  native-rust:
+    needs: icon
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - name: Keep source and vendor patches in LF format
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: link-identity-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}-${{ github.sha }}
+          restore-keys: |
+            link-identity-native-v1-${{ runner.os }}-
+            keymap-native-v1-${{ runner.os }}-
+            math-native-v1-${{ runner.os }}-
+            updater-native-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: link-identity-windows-icon
+          path: target/windows-dist
+      - name: Verify exact source and prepare native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            test "$(uname -m)" = arm64
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+          fi
+      - name: Run native link identity and deep-link core regressions
+        shell: bash
+        run: |
+          for filter in vault_link_identity:: deep_link::; do
+            cargo test --locked -p okilum-core --lib "$filter" -- --list | tee "$RUNNER_TEMP/tests.txt"
+            grep -q ': test$' "$RUNNER_TEMP/tests.txt"
+            cargo test --locked -p okilum-core --lib "$filter" -- --nocapture --test-threads=1
+          done
+          # The platform-specific controls must have run on this OS.
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            cargo test --locked -p okilum-core --lib deep_link:: -- --list | grep -q 'plain_and_verbatim_file_links_match_the_same_windows_vault: test$'
+          else
+            cargo test --locked -p okilum-core --lib vault_link_identity:: -- --list | grep -q 'a_failed_write_leaves_no_metadata_folder: test$'
+          fi
+      - name: Run native Copy, reopen and refusal regressions in the Reader
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+            export OKILUM_WINDOWS_ICON
+          fi
+          filters=(
+            issue1414_identity_first_copy_write_failure_reopen_and_mismatch
+            single_file_copied_links_reopen_the_file_and_land
+            single_file_folders_are_not_known_vaults
+            every_copy_names_the_file_in_a_single_file_view_and_the_vault_otherwise
+            copy_link_to_heading_names_the_heading_under_the_pointer
+            a_renamed_vault_titles_its_windows_and_links_still_open
+          )
+          for filter in "${filters[@]}"; do
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list | tee "$RUNNER_TEMP/tests.txt"
+            grep -q ': test$' "$RUNNER_TEMP/tests.txt"
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
+          done
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.cache.outputs.cache-primary-key }}

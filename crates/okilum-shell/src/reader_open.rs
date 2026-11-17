@@ -4114,6 +4114,173 @@ mod entry_tests {
         );
     }
 
+    /// #1414 native gate (link-identity-native, hosted macOS and Windows):
+    /// a failed first Copy leaves everything as it was, the next Copy creates
+    /// the vault's identity once without touching other metadata, the synced
+    /// identity reopens the vault under another folder name (and a reopened
+    /// vault copies the same id without rewriting it), a different identity is
+    /// refused without opening or writing anything, and the legacy
+    /// folder-name link still opens.
+    #[gpui::test]
+    fn issue1414_identity_first_copy_write_failure_reopen_and_mismatch(cx: &mut TestAppContext) {
+        use super::super::reader_files::{copy_link, LinkScope};
+        use okilum_core::vault_link_identity::{read, FILE};
+        let fixture = tempfile::tempdir().unwrap();
+        let make = |path: std::path::PathBuf| {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("Plan.md"), "# Plan\n\nBody.\n").unwrap();
+            path.canonicalize().unwrap()
+        };
+        // The same synced vault under two folder names, and an unrelated namesake.
+        let first = make(fixture.path().join("machine-a").join("Obsidian Vault"));
+        let second = make(fixture.path().join("machine-b").join("Brain"));
+        // Named like the copying machine's folder, with its own identity.
+        let namesake = make(fixture.path().join("machine-c").join("Obsidian Vault"));
+        let identity = |root: &Path| root.join(FILE);
+        let entries = |root: &Path| {
+            let mut names: Vec<_> = std::fs::read_dir(root.join(".okilum"))
+                .map(|dir| dir.map(|e| e.unwrap().file_name()).collect())
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+
+        // Forced write failure: a file where the metadata folder belongs.
+        std::fs::write(first.join(".okilum"), "not a folder").unwrap();
+        let failed = copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default());
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(
+            std::fs::read(first.join(".okilum")).unwrap(),
+            b"not a folder",
+            "the obstruction is left as it was"
+        );
+        std::fs::remove_file(first.join(".okilum")).unwrap();
+
+        // Other metadata with fields from a newer Okilum is never touched.
+        std::fs::create_dir(first.join(".okilum")).unwrap();
+        let display = br#"{"name":"Work","future":{"keep":[1,2]}}"#;
+        std::fs::write(first.join(".okilum/vault.json"), display).unwrap();
+        // A failure inside the folder: a directory where the identity belongs.
+        std::fs::create_dir(identity(&first)).unwrap();
+        assert!(copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).is_err());
+        assert!(identity(&first).is_dir(), "nothing replaced it");
+        std::fs::remove_dir(identity(&first)).unwrap();
+        assert_eq!(read(&first).unwrap(), None, "the failures created nothing");
+
+        // First Copy: one identity file, the display name byte-identical.
+        let link = copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        let id = read(&first).unwrap().expect("the first Copy created it");
+        assert!(link.contains(&format!("vault_id={id}")), "{link}");
+        assert_eq!(
+            entries(&first),
+            vec![
+                std::ffi::OsString::from("link-identity.json"),
+                std::ffi::OsString::from("vault.json")
+            ],
+            "no temporary leftovers"
+        );
+        assert_eq!(
+            std::fs::read(first.join(".okilum/vault.json")).unwrap(),
+            display
+        );
+        // A newer Okilum adds a field; every later Copy keeps the bytes.
+        let synced = format!(r#"{{"version":1,"id":"{id}","future":"keep"}}"#);
+        std::fs::write(identity(&first), &synced).unwrap();
+        assert_eq!(
+            copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).unwrap(),
+            link,
+            "the same id again"
+        );
+        assert_eq!(std::fs::read_to_string(identity(&first)).unwrap(), synced);
+
+        // Sync: the other machine's folder is named differently.
+        std::fs::create_dir(second.join(".okilum")).unwrap();
+        std::fs::write(identity(&second), &synced).unwrap();
+        // A namesake with its own, different identity (the losing first Copy).
+        let losing =
+            copy_link(&namesake, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        assert!(!losing.contains(&id));
+        let namesake_bytes = std::fs::read(identity(&namesake)).unwrap();
+
+        cx.update(|cx| {
+            crate::test_init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            super::super::reader_ui_state::trust_for_links(&second, cx);
+            super::super::reader_ui_state::trust_for_links(&namesake, cx);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        let open = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.read(cx).vault_root.clone(),
+                            r.read(cx).current_rel.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let error_text = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.windows().iter().find_map(|handle| {
+                    Some(
+                        handle
+                            .downcast::<Root>()?
+                            .read(cx)
+                            .ok()?
+                            .view()
+                            .clone()
+                            .downcast::<OpenError>()
+                            .ok()?
+                            .read(cx)
+                            .0
+                            .clone(),
+                    )
+                })
+            })
+        };
+
+        // Mismatch: only the namesake with another identity is known.
+        cx.update(|cx| open_deep_link_among(&link, &[namesake.clone()], cx));
+        settle(cx);
+        assert!(open(cx).is_empty(), "no vault is selected");
+        let refusal = error_text(cx).expect("a clear refusal is shown");
+        assert!(refusal.contains("different identity"), "{refusal}");
+        assert_eq!(std::fs::read(identity(&namesake)).unwrap(), namesake_bytes);
+
+        // Reopen: the synced identity finds the vault under its other name.
+        cx.update(|cx| open_deep_link_among(&link, &[namesake.clone(), second.clone()], cx));
+        settle(cx);
+        assert_eq!(open(cx), vec![(second.clone(), "Plan.md".to_string())]);
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        // Copy on the reopened vault: the same id, nothing rewritten.
+        let again = copy_link(&second, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        assert!(again.contains(&format!("vault_id={id}")), "{again}");
+        assert!(again.starts_with("okilum://v/Brain/"), "{again}");
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        // The legacy folder-name link still opens, in the same window.
+        cx.update(|cx| open_deep_link_among("okilum://v/Brain/Plan.md", &[second.clone()], cx));
+        settle(cx);
+        assert_eq!(open(cx), vec![(second.clone(), "Plan.md".to_string())]);
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        assert_eq!(std::fs::read(identity(&namesake)).unwrap(), namesake_bytes);
+        assert_eq!(
+            std::fs::read(first.join(".okilum/vault.json")).unwrap(),
+            display
+        );
+    }
+
     /// #1439: a folder seen only through a single-file view is not a known
     /// vault, so a link to its file can never open the folder as one.
     #[gpui::test]
