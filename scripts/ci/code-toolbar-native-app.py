@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Reader-hosted Tree budget: 3.5 MB, 414 paths, native CPU draw <=16 ms."""
+"""Reader-hosted Tree budget: 3.5 MB, 414 paths, UI-thread Running <=16 ms.
+
+Every frame must run <=16 ms on the UI thread. Wall time must stay <=16 ms in
+all but 5 of 48 frames per pass, and <=100 ms always: hosted Windows renders
+through WARP on the same CPUs, so some frames wait Ready (#2845).
+"""
 import hashlib
 import json
 import os
@@ -58,8 +63,16 @@ def main():
             frames = [f for f in receipt['frames'] if f['marks'] == marked]
             assert len(frames) == 48
             assert sum(f['text_work']['work']['glyph_bitmap']['calls'] for f in frames) <= 1, 'Tree scroll must reuse warmed glyph variants'
+            assert all(f['running_ms'] <= f['cpu_draw_ms'] * 1.05 + 1 for f in frames)
             if not smoke:
-                assert max(f['cpu_draw_ms'] for f in frames) <= 16
+                assert (receipt['running_budget_ms'], receipt['wall_budget_ms'],
+                        receipt['wall_misses_allowed'], receipt['wall_ceiling_ms']) == (16, 16, 5, 100)
+                assert max(f['running_ms'] for f in frames) <= 16, 'UI-thread Running over 16 ms'
+                assert max(f['cpu_draw_ms'] for f in frames) <= 100, 'wall frame over 100 ms'
+                misses = [f for f in frames if f['cpu_draw_ms'] > 16]
+                for f in misses:
+                    print(f"WALL_MISS marks={marked} sample={f['sample']} wall_ms={f['cpu_draw_ms']:.2f} running_ms={f['running_ms']:.2f}", flush=True)
+                assert len(misses) <= 5, f'{len(misses)} of 48 frames over 16 ms wall'
             assert all(f['rows_built'] > 0 for f in frames)
             assert all(f.get('present_ms', -1) >= 0 for f in frames)
             assert len({f['scroll_y'] for f in frames}) == 48
