@@ -49,15 +49,22 @@ fn reader_press_and_drag(
     reader: &Entity<Reader>,
     visual: &mut VisualTestContext,
 ) -> (Point<Pixels>, String) {
+    // Press on the first painted glyph, not at the first block's origin: the
+    // document's opening space is part of that block (vendor 0097), so a fixed
+    // offset from its origin lands above the text and selects nothing (#1695).
     let start = reader.read_with(visual, |reader, cx| {
-        reader
-            .content
-            .read(cx)
-            .list_state()
-            .bounds_for_item(0)
-            .unwrap()
-            .origin
-            + point(px(4.), px(10.))
+        let content = reader.content.read(cx);
+        let (segment, _, _) = content
+            .rendered_source_at(None)
+            .expect("first paragraph has painted geometry");
+        let first_glyph = content
+            .rendered_position_for_source(segment, 0)
+            .expect("first paragraph start has painted geometry");
+        assert!(
+            content.bounds().contains(&first_glyph),
+            "first glyph lies inside the document: {first_glyph:?}"
+        );
+        first_glyph + point(px(1.), px(8.))
     });
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -87,7 +94,6 @@ fn reader_press_and_drag(
 }
 
 #[gpui::test]
-#[ignore = "flaky on hosted Linux runners; tracked in #1549"]
 fn lost_mouse_up_plain_motion_cannot_extend_read_selection(cx: &mut TestAppContext) {
     with_reader(cx, |reader, visual| {
         let (start, selected) = reader_press_and_drag(&reader, visual);
@@ -117,7 +123,6 @@ fn lost_mouse_up_plain_motion_cannot_extend_read_selection(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-#[ignore = "flaky on hosted Linux runners; tracked in #1549"]
 fn native_resize_focus_loss_and_pointer_leave_end_read_gestures(cx: &mut TestAppContext) {
     for signal in 0..3 {
         with_reader(cx, |reader, visual| {
@@ -146,7 +151,6 @@ fn native_resize_focus_loss_and_pointer_leave_end_read_gestures(cx: &mut TestApp
 }
 
 #[gpui::test]
-#[ignore = "flaky on hosted Linux runners; tracked in #1549"]
 fn cancellation_reflow_before_observer_delivery_keeps_selected_text(cx: &mut TestAppContext) {
     with_reader(cx, |reader, visual| {
         reader.update_in(visual, |reader, window, cx| {
@@ -188,7 +192,6 @@ fn cancellation_reflow_before_observer_delivery_keeps_selected_text(cx: &mut Tes
 }
 
 #[gpui::test]
-#[ignore = "flaky on hosted Linux runners; tracked in #1549"]
 fn cancellation_before_the_next_paint_keeps_the_last_drag_range(cx: &mut TestAppContext) {
     with_reader(cx, |reader, visual| {
         let (start, selected) = reader_press_and_drag(&reader, visual);
