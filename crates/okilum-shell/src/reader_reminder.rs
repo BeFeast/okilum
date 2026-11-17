@@ -51,13 +51,19 @@ pub(super) fn date_label(date: time::Date) -> String {
     )
 }
 
-/// Add the reminder entry to a context menu when the selection is a whole date.
+/// The Read background menu: a selected date, or with nothing selected the
+/// date under the right press at `position` (#724).
 #[cfg(any(unix, windows))]
-pub(super) fn menu(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> PopupMenu {
+pub(super) fn menu_at(
+    menu: PopupMenu,
+    reader: &WeakEntity<Reader>,
+    position: Point<Pixels>,
+    cx: &App,
+) -> PopupMenu {
     let Some(view) = reader.upgrade() else {
         return menu;
     };
-    let Some(request) = selection::Request::read(view.read(cx), cx) else {
+    let Some(request) = selection::Request::read_at(view.read(cx), position, cx) else {
         return menu;
     };
     let date = request.date();
@@ -268,13 +274,14 @@ impl MenuFacts {
         #[cfg(test)]
         let _work = crate::reader_editor::work::scope();
         let state = input.read(cx);
+        // A selected date, or with nothing selected the date under the caret
+        // (a right press moves the caret first): bounded work either way.
         #[cfg(any(unix, windows))]
-        let date = {
-            let range = state.selected_range();
-            (!range.is_empty() && range.len() <= MAX_DATE_BYTES)
-                .then(|| reminder_dates::parse(&state.selected_text().to_string(), today()))
-                .flatten()
-        };
+        let request = (markdown && state.selected_range().len() <= MAX_DATE_BYTES)
+            .then(|| selection::Request::editor(reader, input, state))
+            .flatten();
+        #[cfg(any(unix, windows))]
+        let date = request.as_ref().map(selection::Request::date);
         #[cfg(not(any(unix, windows)))]
         let date = None;
         *self.2.borrow_mut() = Some(MenuSource {
@@ -285,9 +292,7 @@ impl MenuFacts {
         });
         #[cfg(any(unix, windows))]
         {
-            *self.3.borrow_mut() = (markdown && date.is_some())
-                .then(|| selection::Request::editor(reader, input, state))
-                .flatten();
+            *self.3.borrow_mut() = request;
         }
         let code_block = None;
         self.0.set(Facts {
@@ -394,7 +399,12 @@ fn selected_date(state: &Entity<EditorState>, cx: &App) -> Option<(String, time:
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn menu(menu: PopupMenu, _: &WeakEntity<Reader>, _: &App) -> PopupMenu {
+pub(super) fn menu_at(
+    menu: PopupMenu,
+    _: &WeakEntity<Reader>,
+    _: Point<Pixels>,
+    _: &App,
+) -> PopupMenu {
     menu
 }
 

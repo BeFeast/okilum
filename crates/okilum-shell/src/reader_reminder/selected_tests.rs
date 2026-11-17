@@ -615,3 +615,276 @@ async fn reminder_724_configured_path_and_revision_checked_undo_preserve_recover
         );
     }
 }
+
+#[test]
+fn cursor_date_uses_hit_span_and_preserves_explicit_years() {
+    let now = time::macros::date!(2026 - 11 - 02);
+    for (spelling, expected) in [
+        ("1 November", time::macros::date!(2027 - 11 - 01)),
+        ("November 1, 2025", time::macros::date!(2025 - 11 - 01)),
+        ("1 ноября", time::macros::date!(2027 - 11 - 01)),
+        ("1 בנובמבר", time::macros::date!(2027 - 11 - 01)),
+        ("01.11", time::macros::date!(2027 - 11 - 01)),
+        ("2027-11-01", date()),
+        ("01.11.2027", date()),
+    ] {
+        let text = format!("Before ({spelling}). After 2028-01-03.");
+        let start = text.find(spelling).unwrap();
+        for (at, ch) in spelling
+            .char_indices()
+            .filter(|(_, ch)| ch.is_alphanumeric())
+        {
+            let (span, resolved) = selection::date_at(&text, start + at, now)
+                .unwrap_or_else(|| panic!("hit {ch} in {spelling}"));
+            assert_eq!(&text[span], spelling);
+            assert_eq!(resolved, expected);
+        }
+        assert!(
+            selection::date_at(&text, 0, now).is_none(),
+            "no nearby-date guess"
+        );
+        assert!(selection::date_at(&text, text.len(), now).is_none());
+    }
+    for invalid in [
+        "31 February",
+        "1 November 20277",
+        "1 November 0000",
+        "2027-02-30",
+    ] {
+        assert!(selection::date_at(invalid, 0, now).is_none(), "{invalid}");
+    }
+    assert!(selection::date_at("1\nNovember", 0, now).is_none());
+    assert!(
+        selection::date_at("נובמבר", 1, now).is_none(),
+        "UTF-8 interior"
+    );
+}
+
+#[test]
+fn caret_date_reads_a_bounded_rope_window() {
+    use gpui_component::input::projection::SourceText;
+    let now = time::macros::date!(2026 - 11 - 02);
+    let far = "x".repeat(10 * MAX_DATE_BYTES);
+    let source = format!("{far}\nПеревести часы 1 ноября 2027 года.\n{far}");
+    let text = SourceText::from(source.clone());
+    let caret = source.find("ноября").unwrap() + "но".len();
+    assert_eq!(
+        selection::date_at_caret(&text, caret, now),
+        Some(("1 ноября 2027".to_owned(), date()))
+    );
+    // Not a date under the caret: no nearby-date guess.
+    let caret = source.find("часы").unwrap();
+    assert_eq!(selection::date_at_caret(&text, caret, now), None);
+    // A caret inside a UTF-8 character is not a press offset.
+    assert_eq!(selection::date_at_caret(&text, caret + 1, now), None);
+    // The window edge never clips a long numeric token into a day.
+    let source = format!("{}1 November", "0".repeat(4 * MAX_DATE_BYTES));
+    let text = SourceText::from(source.clone());
+    let caret = source.find("November").unwrap();
+    assert_eq!(selection::date_at_caret(&text, caret, now), None);
+    let source = format!("{}1 November", "x ".repeat(4 * MAX_DATE_BYTES));
+    let text = SourceText::from(source.clone());
+    let caret = source.find("November").unwrap();
+    assert_eq!(
+        selection::date_at_caret(&text, caret, now),
+        Some(("1 November".to_owned(), date()))
+    );
+}
+
+#[gpui::test]
+async fn reminder_724_editor_cursor_right_press_retains_revision_and_writes_once(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (reader, visual) = mount(cx, &temp);
+    let root = temp.path().join("vault");
+    ready(&reader, visual).await;
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx)
+    });
+    visual.run_until_parked();
+    let input = reader.read_with(visual, |reader, _| {
+        reader.editing.as_ref().unwrap().input().clone()
+    });
+    let at = input.read_with(visual, |state, _| {
+        let start = state.value().find("November").unwrap();
+        state.range_to_bounds(&(start..start + 1)).unwrap().center()
+    });
+    input.update(visual, |state, cx| state.set_selected_range(0..0, cx));
+    visual.run_until_parked();
+    EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = None);
+    let before = MENU_BUILDS.with(|count| count.get());
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        MENU_BUILDS.with(|count| count.get()),
+        before + 1,
+        "real menu positive control"
+    );
+    input.read_with(visual, |state, _| {
+        assert!(state.selected_range().is_empty());
+        assert!(state.cursor() > 0, "right press moved the actual caret");
+    });
+    let request = EDITOR_REQUEST
+        .with(|slot| slot.borrow().clone())
+        .expect("date under actual press offered");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    input.update_in(visual, |state, window, cx| state.focus(window, cx));
+    visual.dispatch_action(RemindOnSelection {
+        request: Some(request.clone()),
+    });
+    added(&reader, visual, &root, NOTE, 1, 1).await;
+    assert_eq!(std::fs::read_to_string(root.join(NOTE)).unwrap(), LINE);
+    assert_eq!(
+        std::fs::read_to_string(root.join("Source.md")).unwrap(),
+        SOURCE
+    );
+    // A retained empty-selection request may not retarget after source changes.
+    visual.simulate_input("changed");
+    visual.run_until_parked();
+    visual.dispatch_action(RemindOnSelection {
+        request: Some(request),
+    });
+    visual.run_until_parked();
+    assert_eq!(std::fs::read_to_string(root.join(NOTE)).unwrap(), LINE);
+    visual.update(|_, cx| assert_eq!(cx.global::<Harness>().attempts.last(), Some(&false)));
+}
+
+#[gpui::test]
+async fn reminder_724_read_cursor_without_selection_appends_configured_note_and_undoes(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (reader, visual) = mount(cx, &temp);
+    let root = temp.path().join("vault");
+    ready(&reader, visual).await;
+    let destination = "Calendar.md";
+    let before = "\u{feff}# Existing\r\n";
+    std::fs::write(root.join(destination), before).unwrap();
+    reader.update(visual, |reader, _| {
+        reader.reminder_prefs.note = destination.into()
+    });
+    let heading = reader.read_with(visual, |reader, cx| {
+        crate::reader_scroll_geometry_tests::paragraph_origin(reader, cx, 0)
+    }) + point(px(10.), px(10.));
+    visual.simulate_mouse_down(heading, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(heading, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-me-item").is_none(),
+        "non-date under actual pointer"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let at = reader.read_with(visual, |reader, cx| {
+        assert!(reader.content.read(cx).selected_text().is_empty());
+        crate::reader_scroll_geometry_tests::paragraph_origin(reader, cx, 1)
+    }) + point(px(30.), px(10.));
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-me-item").is_some(),
+        "actual hit without selection offers date"
+    );
+    reader.read_with(visual, |reader, cx| {
+        assert!(reader.content.read(cx).selected_text().is_empty())
+    });
+    click_item(visual);
+    added(&reader, visual, &root, destination, 1, 1).await;
+    assert_eq!(
+        std::fs::read_to_string(root.join(destination)).unwrap(),
+        format!("{before}\r\n{}", LINE.replace('\n', "\r\n"))
+    );
+    assert!(!root.join(NOTE).exists(), "uses configured destination");
+    click_undo(visual);
+    visual
+        .condition(&reader, |_, cx| cx.global::<Harness>().undone == [true])
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(root.join(destination)).unwrap(),
+        before
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("Source.md")).unwrap(),
+        SOURCE
+    );
+}
+
+#[test]
+fn cursor_date_refuses_overlapping_dates_and_window_truncated_tokens() {
+    let now = time::macros::date!(2026 - 11 - 02);
+    let ambiguous = "November 1 December";
+    assert!(selection::date_at(ambiguous, ambiguous.find('1').unwrap(), now).is_none());
+    // Each independent date is a positive control for that refusal.
+    assert_eq!(
+        selection::date_at("November 1", 9, now).unwrap().1,
+        time::macros::date!(2027 - 11 - 01)
+    );
+    assert_eq!(
+        selection::date_at("1 December", 0, now).unwrap().1,
+        time::macros::date!(2026 - 12 - 01)
+    );
+
+    let text = format!(
+        "1 November {}2027bad",
+        " ".repeat(MAX_DATE_BYTES - "1 November ".len() - 4)
+    );
+    assert_eq!(
+        &text[..MAX_DATE_BYTES],
+        format!(
+            "1 November {}2027",
+            " ".repeat(MAX_DATE_BYTES - "1 November ".len() - 4)
+        )
+    );
+    assert!(
+        selection::date_at(&text, 0, now).is_none(),
+        "bounded window cannot clip a malformed year to 2027"
+    );
+    let text = format!("{}1 November", "0".repeat(MAX_DATE_BYTES));
+    let at = text.find("November").unwrap();
+    assert!(
+        selection::date_at(&text, at, now).is_none(),
+        "bounded window cannot clip a long numeric token to day 1"
+    );
+}
+
+#[gpui::test]
+async fn reminder_724_read_cursor_rejects_changed_displayed_revision(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let (reader, visual) = mount(cx, &temp);
+    let root = temp.path().join("vault");
+    ready(&reader, visual).await;
+    let at = reader.read_with(visual, |reader, cx| {
+        crate::reader_scroll_geometry_tests::paragraph_origin(reader, cx, 1)
+    }) + point(px(30.), px(10.));
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-me-item").is_some(),
+        "actual cursor menu positive control"
+    );
+    reader.read_with(visual, |reader, cx| {
+        assert!(reader.content.read(cx).selected_text().is_empty())
+    });
+    reader.update(visual, |reader, cx| {
+        reader.content.update(cx, |content, cx| {
+            content.set_text("# Replacement\n\n1 December 2028\n", cx)
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click_item(visual);
+    visual.update(|_, cx| assert_eq!(cx.global::<Harness>().attempts.last(), Some(&false)));
+    assert!(
+        !root.join(NOTE).exists(),
+        "old cursor packet may not retarget a new displayed date"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("Source.md")).unwrap(),
+        SOURCE
+    );
+}
