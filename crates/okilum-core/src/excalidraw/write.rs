@@ -70,10 +70,7 @@ pub fn write(base: &str, baseline: Option<&Value>, edited: &Value) -> Result<Wri
     let baseline_elements = baseline
         .map(|scene| scene_elements(scene, "Baseline scene"))
         .transpose()?;
-    let markdown = !base
-        .trim_start_matches('\u{feff}')
-        .trim_start()
-        .starts_with('{');
+    let markdown = is_markdown(base);
     let layout = markdown.then(|| Layout::parse(base)).transpose()?;
     let embedded: HashSet<&str> = layout
         .as_ref()
@@ -104,6 +101,28 @@ pub fn write(base: &str, baseline: Option<&Value>, edited: &Value) -> Result<Wri
     let reread = Scene::parse(&text).context("Saved drawing does not read back")?;
     ensure!(reread.json == scene, "Saved drawing does not read back");
     Ok(WriteOutcome::Updated(text))
+}
+
+/// Whether `base` is an Obsidian `.excalidraw.md` file rather than plain JSON.
+pub(super) fn is_markdown(base: &str) -> bool {
+    !base
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .starts_with('{')
+}
+
+/// Ids listed under `## Embedded Files` (vault images, formulas): their data
+/// lives outside the JSON, which the writer never fills in for them.
+pub(super) fn vault_file_ids(base: &str) -> Result<HashSet<String>> {
+    if !is_markdown(base) {
+        return Ok(HashSet::new());
+    }
+    let layout = Layout::parse(base)?;
+    Ok(layout
+        .embedded_ids(base)
+        .into_iter()
+        .map(str::to_owned)
+        .collect())
 }
 
 fn scene_elements<'a>(scene: &'a Value, what: &str) -> Result<&'a [Value]> {

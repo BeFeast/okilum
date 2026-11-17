@@ -1,5 +1,6 @@
 //! Excalidraw scene decoding, independent of the desktop renderer, and the
 //! explicit writer an editor uses to save a scene back (`write`).
+pub mod edit;
 mod lz;
 mod vector;
 mod write;
