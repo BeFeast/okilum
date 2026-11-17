@@ -62,18 +62,22 @@ scanout. Reference-machine series (muninn, M4 night window, VM 150, and the
 Hedva slow-machine series queued on #2094) are follow-up work on the same
 collector; the Reader-mode 10 MiB open lands with #653's Reader probe.
 
-## Hosted baseline (17.11, five runs, two CPU classes)
+## Hosted baseline (17.11, six runs, three CPU classes)
 
-| metric | AMD EPYC 9V74 | Intel Xeon 6975P-C | product | hosted ceiling |
-|---|---:|---:|---:|---:|
-| cold start | 470–481 ms | 427–428 ms | 300 | 650 |
-| typing | 39–43 ms | 30–31 ms | 16 | 70 |
-| open 10 MiB (over control) | — | 56.7–57.0 s | 1000 | 1000 |
-| search 10k | 12.4–12.5 ms | 11.4 ms | 100 | 100 |
+| metric | Xeon 6975P-C | EPYC 9V74 | EPYC 7763 | product | hosted ceiling |
+|---|---:|---:|---:|---:|---:|
+| cold start | 427–428 ms | 470–481 ms | 787 ms | 300 | 1100 |
+| typing | 30–31 ms | 39–43 ms | 48 ms | 16 | 75 |
+| open 10 MiB (over control) | 56.7–57.0 s | — | 34.5 s | 1000 | 1000 |
+| search 10k | 11.4 ms | 12.4–12.5 ms | 16.0 ms | 100 | 100 |
+
+The hosted CPU classes differ up to 1.8x on unchanged code, so a ceiling
+judged on whichever runner GitHub assigns only catches gross regressions;
+same-runner comparison is what #1662's A/B does for typing.
 
 Ceilings follow the #1639 editor margin, `max(slowest median × 1.35, + 25 ms)`,
 never below the product budget (`budgets.json` keeps the arithmetic and run ids).
-The 10 MiB ceiling is deliberately not ratcheted to the measured 57 s: it stays
+The 10 MiB ceiling is deliberately not ratcheted to the measured 34.5–57 s: it stays
 at the product budget, so that metric reports FAIL until the open is fixed.
 In the diagnostic log the worker has the note's source after ~1 s; the UI
 thread then spends ~55 s after `first_ui_stage` before `note_open_set_text`.
