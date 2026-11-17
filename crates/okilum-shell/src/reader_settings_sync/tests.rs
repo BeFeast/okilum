@@ -4,7 +4,7 @@ use super::{
     destination, destination_name, draw_sync_fixture, mac_direct_state, perform,
     perform_with_locations, serve_paired, shared, suspend, sync_fixture_init,
     sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch, Operation, Output,
-    SyncSettings, TestSyncState, TestWorker,
+    SyncSettings, TestPortable, TestSyncState, TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -2686,7 +2686,7 @@ fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_c
 /// builds deliver it through the same gpui system notification as Windows.
 #[gpui::test]
 fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     cx.update(|cx| cx.set_app_identity("com.befeast.okilum", "Okilum"));
     let directory = tempfile::tempdir().unwrap();
     let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
@@ -2801,7 +2801,7 @@ enum Answer {
 /// Reject send exactly that request id; any answer, including a stale request
 /// the controller refuses as expired, retracts the OS notice.
 fn issue2490_answer(cx: &mut TestAppContext, answer: Answer) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let state = tempfile::tempdir().unwrap();
     cx.update(|cx| {
         reader_features::install(state.path(), cx);
@@ -2946,7 +2946,7 @@ fn issue2490_stale_request_refused_as_expired_retracts_the_notice(cx: &mut TestA
 /// waits, the line the approving computer's banner repeats.
 #[gpui::test]
 fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let (_root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
@@ -2969,4 +2969,101 @@ fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
     );
     assert!(visual.debug_bounds("sync-waiting-device").is_some());
     assert!(visual.debug_bounds("sync-approval-device").is_none());
+}
+
+/// #1029, #1037: a portable Windows copy has no Sync helper. Settings → Sync
+/// offers the installer and never opens a controller or pairing listener.
+#[gpui::test]
+fn issue1029_portable_settings_offer_the_installer_and_never_pair(cx: &mut TestAppContext) {
+    cx.update(sync_fixture_init);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(TestPortable);
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| SyncSettings::new(window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.run_until_parked();
+    assert_visible(visual, "sync-portable");
+    assert_visible(visual, "sync-portable-install");
+    assert!(
+        visual.debug_bounds("sync-add-computer").is_none(),
+        "the portable copy offers no pairing"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view.controller.is_none() && !view.busy && view.error.is_none());
+    });
+
+    // A pairing link or the share menu lands here too: no wizard opens.
+    view.update(visual, |view, cx| view.receive(cx));
+    draw_sync_fixture(visual);
+    assert!(visual.update(|window, cx| !window.has_active_dialog(cx)));
+    assert_visible(visual, "sync-portable");
+    let install = visual.debug_bounds("sync-portable-install").unwrap();
+    visual.simulate_click(install.center(), Modifiers::default());
+    assert_eq!(visual.opened_url().as_deref(), Some(super::INSTALLER_URL));
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "no Sync operation ran: {:?}",
+        calls.lock().unwrap()
+    );
+
+    // Positive control: the installed build opens pairing through the same worker.
+    visual.update(|_, cx| {
+        cx.remove_global::<TestPortable>();
+    });
+    view.update(visual, |view, cx| view.run(Operation::EnterPairing, cx));
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+    draw_sync_fixture(visual);
+    assert!(visual.debug_bounds("sync-portable").is_none());
+    assert_visible(visual, "sync-add-computer");
+}
+
+/// #1029, #1037: the portable copy never serves Sync at app start, even when
+/// the saved journal would start it in the installed build.
+#[gpui::test]
+fn issue1029_portable_build_never_serves_sync_at_start(cx: &mut TestAppContext) {
+    cx.update(sync_fixture_init);
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("direct");
+    std::fs::create_dir(&state).unwrap();
+    // An unreadable journal starts serving so the failure stays visible.
+    std::fs::write(state.join("direct.json"), b"not a journal").unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let recorded = calls.clone();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(TestSyncState(state.clone()));
+        cx.set_global(TestWorker(std::sync::Arc::new(move |_| {
+            *recorded.lock().unwrap() += 1;
+            Err(anyhow::anyhow!("fixture Sync worker"))
+        })));
+        cx.set_global(TestPortable);
+        // Turning Sync on serves paired computers in the installed build.
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        assert!(!cx.has_global::<BackgroundSync>(), "portable never serves");
+    });
+    assert_eq!(*calls.lock().unwrap(), 0);
+
+    // Positive control: the same journal starts serving in the installed build.
+    cx.update(|cx| {
+        cx.remove_global::<TestPortable>();
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| assert!(cx.has_global::<BackgroundSync>()));
+    assert!(*calls.lock().unwrap() >= 1);
 }

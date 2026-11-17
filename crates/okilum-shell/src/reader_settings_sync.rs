@@ -17,6 +17,27 @@ impl Global for BackgroundSync {}
 /// A failed background start (no network yet, say) tries again this often.
 const SERVE_RETRY: Duration = Duration::from_secs(30);
 
+/// #1029, #1037: the portable Windows ZIP ships no Sync helper and leaves no
+/// background components behind, so Settings → Sync offers the installer.
+pub(super) const INSTALLER_URL: &str =
+    "https://updates.befeast.com/okilum/windows/stable/Setup.exe";
+
+/// A portable Windows copy (no Velopack install) never opens Sync: no
+/// controller, pairing listener or Sync state is created.
+fn portable_build(cx: &App) -> bool {
+    #[cfg(test)]
+    return cx.has_global::<TestPortable>();
+    #[cfg(not(test))]
+    {
+        let _ = cx;
+        cfg!(windows) && crate::updater::channel() == "Portable"
+    }
+}
+#[cfg(test)]
+struct TestPortable;
+#[cfg(test)]
+impl Global for TestPortable {}
+
 /// #2589: a running app answers paired computers (catalog, vault transfers,
 /// approvals) for its whole run, not only after Settings → Sync was opened.
 /// When Sync is on and the saved journal pairs this computer or attaches a
@@ -35,7 +56,7 @@ fn serve_paired_from(
     state: impl FnOnce() -> anyhow::Result<PathBuf> + Send + 'static,
     cx: &mut App,
 ) {
-    if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+    if !reader_features::enabled(reader_features::Feature::Sync, cx) || portable_build(cx) {
         return;
     }
     let access = reader_features::access(reader_features::Feature::Sync, cx);
@@ -404,7 +425,10 @@ impl SyncSettings {
         if self.first_sync_applying(cx) {
             return;
         }
-        if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
+        if self.busy
+            || !reader_features::enabled(reader_features::Feature::Sync, cx)
+            || portable_build(cx)
+        {
             return;
         }
         let destination_vault = match &operation {

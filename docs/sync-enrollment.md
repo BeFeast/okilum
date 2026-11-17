@@ -12,7 +12,9 @@ records the fresh two-computer run on beta 7538. macOS beta 29262 or later suppo
 fresh setup in either role; [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489)
 records the native Mac flow, both-direction file checks and walkthrough. Windows
 requires the installed signed build with its Sync helper; portable packages
-do not include background Sync. Native first-merge acceptance and containing
+do not include background Sync. In a portable copy, Settings → Sync says
+«Sync is available in the installed version» and links to the installer instead of
+starting pairing ([#1029](https://git.oklabs.uk/BeFeast/okilum/issues/1029)). Native first-merge acceptance and containing
 betas are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
 ## Connect your computers
