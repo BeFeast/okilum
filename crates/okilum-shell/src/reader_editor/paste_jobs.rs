@@ -467,17 +467,7 @@ impl Reader {
                             stamp,
                             image_options,
                         },
-                        Box::new(move || {
-                            // Not inserted: its saved images would be linked
-                            // from nowhere.
-                            if let Some(lease) = &admission {
-                                if let Ok(_admission) = lease.enter() {
-                                    for file in &saved {
-                                        let _ = std::fs::remove_file(file);
-                                    }
-                                }
-                            }
-                        }),
+                        Leftovers::new(admission, saved),
                         window,
                         cx,
                     );
@@ -996,7 +986,7 @@ fn convert_in_background(
         .spawn(async move { router::run_rich_job(job) });
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
-        let done = task.await;
+        let mut done = task.await;
         finished.store(true, Ordering::Relaxed);
         diagnostic_error!(
             "Paste: background rich text bytes={html_bytes} inserted={} convert_ms={:.1} \
@@ -1008,7 +998,14 @@ fn convert_in_background(
             done.remote.len(),
             started.elapsed().as_millis()
         );
-        let _ = cx.update_window(handle, |_, window, cx| {
+        // Its saved images, removed again if the text never goes in: by the
+        // window update, or here when the window is gone.
+        let pending_leftovers: PendingLeftovers = std::rc::Rc::new(std::cell::RefCell::new(Some(
+            Leftovers::new(done.admission.take(), std::mem::take(&mut done.files)),
+        )));
+        let taken = pending_leftovers.clone();
+        let shown = cx.update_window(handle, move |_, window, cx| {
+            let leftovers = taken.borrow_mut().take().unwrap_or_default();
             if done.text.is_empty() {
                 return;
             }
@@ -1019,7 +1016,6 @@ fn convert_in_background(
                 } else if done.failed > 0 {
                     reader_toast::transient(router::failed_images_text(done.failed), window, cx);
                 }
-                let (files, admission) = (done.files, done.admission);
                 download_then_insert(
                     input,
                     anchor,
@@ -1035,16 +1031,7 @@ fn convert_in_background(
                         stamp,
                         image_options,
                     },
-                    Box::new(move || {
-                        // Not inserted: its saved images would be linked from nowhere.
-                        if let Some(lease) = &admission {
-                            if let Ok(_admission) = lease.enter() {
-                                for file in &files {
-                                    let _ = std::fs::remove_file(file);
-                                }
-                            }
-                        }
-                    }),
+                    leftovers,
                     window,
                     cx,
                 );
@@ -1060,17 +1047,15 @@ fn convert_in_background(
                 cx,
             );
             let region = match region {
-                Ok(region) => region,
+                // In the note: its saved images stay.
+                Ok(region) => {
+                    drop(leftovers);
+                    region
+                }
                 Err(missed) => {
                     // Not inserted: its saved images would be linked from nowhere.
-                    if let Some(lease) = &done.admission {
-                        if let Ok(_admission) = lease.enter() {
-                            for file in &done.files {
-                                let _ = std::fs::remove_file(file);
-                            }
-                        }
-                    }
-                    not_inserted(missed, "", window, cx);
+                    let kept = leftovers.remove();
+                    not_inserted(missed, &kept, window, cx);
                     return;
                 }
             };
@@ -1093,6 +1078,9 @@ fn convert_in_background(
                 );
             }
         });
+        if shown.is_err() {
+            window_gone(&pending_leftovers);
+        }
     })
     .detach();
 }
@@ -1263,6 +1251,70 @@ fn progress_toast(
     .detach();
 }
 
+/// Files saved for text that may never go in (#1615): a background paste's
+/// or drop's `data:`, `file://` and downloaded images. When the text does
+/// not go in they are removed under their writer lease, also when the
+/// window is gone; the ones that cannot be (the lease is held by a writer
+/// drain, or the removal failed) are named instead of left unnamed.
+#[derive(Default)]
+struct Leftovers(Vec<(Option<okilum_write_authority::WriterLease>, Vec<PathBuf>)>);
+
+impl Leftovers {
+    fn new(lease: Option<okilum_write_authority::WriterLease>, files: Vec<PathBuf>) -> Self {
+        let mut leftovers = Self::default();
+        leftovers.add(lease, files);
+        leftovers
+    }
+
+    fn add(&mut self, lease: Option<okilum_write_authority::WriterLease>, files: Vec<PathBuf>) {
+        if !files.is_empty() {
+            self.0.push((lease, files));
+        }
+    }
+
+    /// Remove the files; the names of those still there.
+    fn remove(self) -> String {
+        let mut kept = Vec::new();
+        for (lease, files) in self.0 {
+            let entered = match &lease {
+                Some(lease) => lease.enter().map(Some),
+                None => Ok(None),
+            };
+            match entered {
+                Ok(_guard) => {
+                    for file in files {
+                        if std::fs::remove_file(&file).is_err() && file.exists() {
+                            kept.push(file);
+                        }
+                    }
+                }
+                Err(error) => {
+                    diagnostic_error!("Paste: saved files not removed ({error:#})");
+                    kept.extend(files);
+                }
+            }
+        }
+        kept.iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+}
+
+/// What a background result's window update leaves to clean up: taken by
+/// the update when it runs, else by the task itself (the window is gone).
+type PendingLeftovers = std::rc::Rc<std::cell::RefCell<Option<Leftovers>>>;
+
+/// The window is gone: no editor took the text and no toast can name what
+/// is left, so remove it here and log what could not be.
+fn window_gone(leftovers: &PendingLeftovers) {
+    if let Some(leftovers) = leftovers.borrow_mut().take() {
+        let kept = leftovers.remove();
+        diagnostic_error!("Paste: the window closed before the result went in; kept: {kept:?}");
+    }
+}
+
 /// Where and how remote images are saved.
 struct Downloads {
     folder: PathBuf,
@@ -1367,7 +1419,7 @@ fn download_then_insert(
     pending: Pending,
     images: Vec<RemoteImage>,
     downloads: Downloads,
-    on_missed: Box<dyn FnOnce()>,
+    leftovers: Leftovers,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1420,7 +1472,15 @@ fn download_then_insert(
                     text.replace(placeholder, embed)
                 })
         };
-        let _ = cx.update_window(handle, |_, window, cx| {
+        let mut leftovers = leftovers;
+        for name in saved {
+            leftovers.add(Some(name.admission), name.paths);
+        }
+        let pending_leftovers: PendingLeftovers =
+            std::rc::Rc::new(std::cell::RefCell::new(Some(leftovers)));
+        let taken = pending_leftovers.clone();
+        let shown = cx.update_window(handle, move |_, window, cx| {
+            let leftovers = taken.borrow_mut().take().unwrap_or_default();
             let result = match pending {
                 Pending::Prepared(text) => {
                     insert_prepared(&input, &anchor, &replace(text), window, cx)
@@ -1432,20 +1492,23 @@ fn download_then_insert(
                 } => insert_at_anchor(&input, &anchor, &replace(text), block, markdown, window, cx)
                     .map(|_| ()),
             };
-            if let Err(missed) = result {
-                for name in saved {
-                    if let Ok(_admission) = name.admission.enter() {
-                        for path in name.paths {
-                            let _ = std::fs::remove_file(path);
-                        }
+            match result {
+                Err(missed) => {
+                    let kept = leftovers.remove();
+                    not_inserted(missed, &kept, window, cx);
+                }
+                // In the note: its files stay.
+                Ok(()) => {
+                    drop(leftovers);
+                    if failed > 0 {
+                        reader_toast::transient(router::failed_images_text(failed), window, cx);
                     }
                 }
-                on_missed();
-                not_inserted(missed, "", window, cx);
-            } else if failed > 0 {
-                reader_toast::transient(router::failed_images_text(failed), window, cx);
             }
         });
+        if shown.is_err() {
+            window_gone(&pending_leftovers);
+        }
     })
     .detach();
 }
@@ -2505,6 +2568,106 @@ mod reader_drop_tests {
             saved,
             "the second drop never went in: no image of it is left behind"
         );
+    }
+
+    /// Review of #3078: the window closes while the drop's text is converted
+    /// and its remote image downloaded. No editor takes the text, and the
+    /// image its conversion saved is removed, not left unnamed in the vault.
+    #[gpui::test]
+    fn a_closed_window_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
+        use base64::Engine as _;
+        let (reader, visual, temp) = reader_on_note(cx);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let html = format!(
+            "<p>Two <img alt=\"local\" src=\"data:image/png;base64,{data}\"> \
+             <img alt=\"remote\" src=\"http://127.0.0.1:1/remote.png\"></p>"
+        );
+        let dropped = gpui::ExternalData::with_contents(
+            [
+                SharedString::from("public.html"),
+                SharedString::from("public.utf8-plain-text"),
+            ],
+            [
+                (SharedString::from("public.html"), html.as_bytes().into()),
+                (
+                    SharedString::from("public.utf8-plain-text"),
+                    b"Two"[..].into(),
+                ),
+            ],
+        );
+        fn images(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        images(&path)
+                    } else {
+                        usize::from(path.extension().is_some_and(|e| e == "png" || e == "webp"))
+                    }
+                })
+                .sum()
+        }
+        let vault = temp.path().join("vault");
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        // Positive control: with the window open the drop saves its image.
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx)
+        });
+        visual.run_until_parked();
+        let saved = images(&vault);
+        assert!(saved >= 1, "positive control: the data: image was saved");
+        let on_disk = std::fs::read_to_string(vault.join("note.md")).unwrap();
+        // The same drop, and the window closes before it is done.
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx);
+            window.remove_window();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            images(&vault),
+            saved,
+            "the second drop never went in: no image of it is left behind"
+        );
+        assert_eq!(
+            std::fs::read_to_string(vault.join("note.md")).unwrap(),
+            on_disk,
+            "and the note on disk is as it was"
+        );
+    }
+
+    /// Review of #3078: a missed drop's saved files are removed under their
+    /// writer lease; while a writer drain holds the lease they stay and are
+    /// named, never left unnamed.
+    #[test]
+    fn leftovers_are_removed_or_named_when_the_lease_is_held() {
+        let vault = tempfile::tempdir().unwrap();
+        let authority = okilum_write_authority::Authority::for_root(vault.path()).unwrap();
+        let lease = authority.admit().unwrap();
+        let removed = vault.path().join("removed.png");
+        let kept = vault.path().join("kept.png");
+        std::fs::write(&removed, b"png").unwrap();
+        std::fs::write(&kept, b"png").unwrap();
+        assert_eq!(
+            Leftovers::new(Some(lease.clone()), vec![removed.clone()]).remove(),
+            ""
+        );
+        assert!(!removed.exists());
+        let hold = authority.begin_drain("leftovers-test").unwrap();
+        assert_eq!(
+            Leftovers::new(Some(lease), vec![kept.clone()]).remove(),
+            "kept.png",
+            "a held lease: kept and named"
+        );
+        assert!(kept.exists());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
     }
 
     #[test]
