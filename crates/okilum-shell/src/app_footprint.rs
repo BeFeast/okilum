@@ -724,18 +724,21 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
             .await;
         if let Err(error) = removed {
             diagnostic_error!("Okilum uninstall cancelled, Sync could not be stopped: {error:#}");
-            let _ = asking.update(cx, |_, window, cx| {
-                let _ = window.prompt(
+            let shown = asking.update(cx, |_, window, cx| {
+                window.prompt(
                     gpui::PromptLevel::Critical,
                     "Okilum was not uninstalled",
                     Some(SYNC_STOP_FAILED),
                     &["OK"],
                     cx,
-                );
+                )
             });
+            if let Ok(answer) = shown {
+                let _ = answer.await;
+            }
             return;
         }
-        let _ = cx.update(|cx| cx.quit());
+        cx.update(|cx| cx.quit());
     })
     .detach();
 }
