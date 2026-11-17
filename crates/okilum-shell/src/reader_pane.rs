@@ -293,6 +293,19 @@ impl Reader {
         }
     }
 
+    /// Runs `f` for every pane of this window, each as the active surface
+    /// for that call, and returns every result: it never stops early, so Quit
+    /// and window close protect every pane even after one fails. One pane
+    /// today; the second pane's host swaps each inactive surface in for its
+    /// call, the same swap it makes on focus.
+    pub(super) fn for_each_pane<R>(
+        &mut self,
+        cx: &mut Context<Self>,
+        mut f: impl FnMut(&mut Self, &mut Context<Self>) -> R,
+    ) -> Vec<R> {
+        vec![f(self, cx)]
+    }
+
     /// Replays what the now-active pane finished while it was inactive, then
     /// publishes its pending first document.
     #[cfg_attr(
