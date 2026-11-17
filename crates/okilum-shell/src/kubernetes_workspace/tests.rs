@@ -409,12 +409,12 @@ fn selection_and_scope_changes_never_start_or_retarget_logs(cx: &mut TestAppCont
     }
     // Old rows stay until the new session sends.
     h.workspace.read_with(h.visual, |ws, _| {
-        assert!(!ws.dock.displayed.as_ref().unwrap().previous);
+        assert!(!ws.dock.displayed.as_ref().unwrap().target.previous);
         assert_eq!(ws.dock.view.as_ref().unwrap().entity_id(), view.entity_id());
     });
     h.send(1, b"previous instance\n", worker::Status::Complete);
     h.workspace.read_with(h.visual, |ws, _| {
-        assert!(ws.dock.displayed.as_ref().unwrap().previous);
+        assert!(ws.dock.displayed.as_ref().unwrap().target.previous);
         assert_eq!(ws.dock.session.as_ref().unwrap().phase, dock::Phase::Ended);
         assert!(!ws.dock.worker_running());
     });
@@ -1030,7 +1030,11 @@ fn export_writes_the_shown_session_and_reads_nothing(cx: &mut TestAppContext) {
     assert_eq!(manifest["selection"]["uid"], "pod-a");
     assert_eq!(manifest["log_session"]["target"]["container"], "api");
     assert_eq!(manifest["log_session"]["phase"], "receiving");
-    assert_eq!(manifest["log_session"]["view_filter"]["rows_loaded"], 2);
+    assert_eq!(manifest["log_rows"]["view_filter"]["rows_loaded"], 2);
+    assert_eq!(
+        manifest["log_rows"]["from_session"]["is_the_pinned_session"],
+        true
+    );
     assert_eq!(
         std::fs::read(bundle.join("logs/checkout-a_api_current.log")).unwrap(),
         b"line one\nline two\n"
@@ -1069,4 +1073,116 @@ fn copy_command_hands_off_the_exact_pinned_argv(cx: &mut TestAppContext) {
     h.workspace.read_with(h.visual, |ws, _| {
         assert!(ws.dock.message.as_deref().unwrap().contains("by name"));
     });
+}
+
+/// Review finding 3 through the real flows: exporting between a retarget
+/// and its first data, after a failed check, and after restarting the same
+/// target keeps the rows labelled with the session that sent them.
+#[gpui::test]
+fn export_labels_rows_by_their_own_session_across_retarget_failure_and_restart(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"current instance line\n", worker::Status::Reading);
+    let export = |h: &mut Harness, name: &str| -> Value {
+        let folder = dir.path().join(name);
+        std::fs::create_dir(&folder).unwrap();
+        h.update(|ws, _, _| ws.export_dir = Some(folder.clone()));
+        h.click("k8s-export");
+        h.wait("bundle written", |ws| !ws.exporting);
+        let bundle = std::fs::read_dir(&folder)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+        let file = manifest["log_rows"]["file"].as_str().unwrap().to_string();
+        assert_eq!(
+            std::fs::read(bundle.join(&file)).unwrap(),
+            b"current instance line\n",
+            "{name}: the file holds the rows the view shows"
+        );
+        manifest
+    };
+
+    // 1. Retarget to the previous instance; export before it sends data.
+    h.click("k8s-open-previous-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("retarget start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    let m = export(&mut h, "retarget");
+    assert_eq!(m["log_rows"]["file"], "logs/checkout-a_api_current.log");
+    assert_eq!(
+        m["log_rows"]["from_session"]["target"]["instance"],
+        "current"
+    );
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"],
+        false
+    );
+    assert_eq!(m["log_session"]["target"]["instance"], "previous");
+    assert_eq!(m["log_session"]["has_sent_rows"], false);
+
+    // 2. Retarget to a Pod whose check fails (no synthetic route): the
+    // session is not started and the rows stay the earlier ones.
+    h.click("k8s-row-3");
+    h.click("k8s-open-logs-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("check failed", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| matches!(s.phase, dock::Phase::NotStarted(_)))
+    });
+    let m = export(&mut h, "failed");
+    assert_eq!(m["log_rows"]["file"], "logs/checkout-a_api_current.log");
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"],
+        false
+    );
+    assert_eq!(m["log_session"]["target"]["pod"], "checkout-b");
+    assert_eq!(
+        m["log_session"]["phase"],
+        "not started: check before kubectl logs failed"
+    );
+
+    // 3. Back to the first target, then restart it: same name, new session.
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("same target start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| !s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    h.click("k8s-dock-stop");
+    // The process-free worker ends when its session reports it stopped.
+    h.send(2, b"", worker::Status::Stopped);
+    assert!(h
+        .workspace
+        .read_with(h.visual, |ws, _| !ws.dock.worker_running()));
+    h.click("k8s-dock-start");
+    h.wait("restart", |ws| ws.dock.worker_running());
+    let m = export(&mut h, "restart");
+    assert_eq!(
+        m["log_rows"]["from_session"]["target"]["instance"],
+        "current"
+    );
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"], false,
+        "same target, but the rows came from an earlier session"
+    );
+    assert_eq!(m["log_session"]["has_sent_rows"], false);
 }

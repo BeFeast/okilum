@@ -36,7 +36,12 @@ pub(crate) enum Phase {
     Truncated(String),
     /// A followed stream failed after data arrived (connection, Pod gone).
     Disconnected(String),
+    /// The session's own failure (worker/transport text, never kubectl stderr).
     Failed(String),
+    /// The UID check or the request before `kubectl logs` failed: nothing
+    /// was started. Kept typed, so an export can show only its safe parts;
+    /// the UI shows its summary.
+    NotStarted(Failure),
     /// The name now refers to another Pod UID: nothing was started.
     Replaced {
         uid: String,
@@ -57,6 +62,7 @@ impl Phase {
             Self::Truncated(_) => "Stopped at a loading limit".into(),
             Self::Disconnected(_) => "Disconnected".into(),
             Self::Failed(_) => "Failed".into(),
+            Self::NotStarted(_) => "Not started".into(),
             Self::Replaced { .. } => "Not started: Pod replaced".into(),
         }
     }
@@ -65,15 +71,27 @@ impl Phase {
             Self::Receiving => Tone::Good,
             Self::Verifying | Self::Stopping | Self::Ended | Self::Stopped => Tone::Neutral,
             Self::Truncated(_) | Self::Disconnected(_) | Self::Replaced { .. } => Tone::Warning,
-            Self::Failed(_) => Tone::Danger,
+            Self::Failed(_) | Self::NotStarted(_) => Tone::Danger,
         }
     }
     fn detail(&self) -> Option<String> {
         match self {
             Self::Truncated(e) | Self::Disconnected(e) | Self::Failed(e) => Some(e.clone()),
+            Self::NotStarted(failure) => Some(failure.summary()),
             _ => None,
         }
     }
+}
+
+/// Where the rows in the log view came from: the session that sent them,
+/// kept with them, so a retarget or restart cannot relabel old bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Shown {
+    pub target: LogTarget,
+    pub generation: u64,
+    pub verified_at: Option<SystemTime>,
+    pub follow: bool,
+    pub tail_lines: u32,
 }
 
 pub(crate) struct Session {
@@ -94,7 +112,7 @@ pub(crate) struct Dock {
     pub pending_retarget: Option<LogTarget>,
     pub message: Option<String>,
     /// The target whose rows the view currently shows.
-    pub displayed: Option<LogTarget>,
+    pub displayed: Option<Shown>,
     pub follow_stream: bool,
     pub tail: u32,
     pub generation: u64,
@@ -129,6 +147,10 @@ impl Default for Dock {
 }
 
 impl Dock {
+    /// Rows received but not yet handed to the view, if any.
+    pub(crate) fn pending_snapshot(&self) -> Option<Arc<Snapshot>> {
+        self.pending.clone()
+    }
     pub(crate) fn worker_running(&self) -> bool {
         self.worker.is_some()
     }
@@ -237,16 +259,8 @@ impl Workspace {
                 cx.notify();
                 return;
             }
-            Err(Failure::NotFound { .. }) => {
-                session.phase = Phase::Failed(format!(
-                    "Pod {} no longer exists; nothing was started.",
-                    session.target.pod
-                ));
-                cx.notify();
-                return;
-            }
             Err(failure) => {
-                session.phase = Phase::Failed(failure.summary());
+                session.phase = Phase::NotStarted(failure);
                 cx.notify();
                 return;
             }
@@ -275,7 +289,7 @@ impl Workspace {
         ) {
             Ok(request) => request,
             Err(failure) => {
-                session.phase = Phase::Failed(failure.summary());
+                session.phase = Phase::NotStarted(failure);
                 cx.notify();
                 return;
             }
@@ -314,7 +328,13 @@ impl Workspace {
         };
         if let Some(snapshot) = update.snapshot {
             self.dock.pending = Some(snapshot);
-            self.dock.displayed = Some(session.target.clone());
+            self.dock.displayed = Some(Shown {
+                target: session.target.clone(),
+                generation,
+                verified_at: session.verified_at,
+                follow: session.follow,
+                tail_lines: self.dock.tail,
+            });
             session.received = true;
         }
         session.diagnostic = update.diagnostic;
@@ -610,12 +630,12 @@ impl Workspace {
                     ));
                 }
             }
-            if let Some(displayed) = &self.dock.displayed {
-                if displayed != &session.target {
+            if let Some(shown) = &self.dock.displayed {
+                if shown.generation != self.dock.generation {
                     notes.push((
                         format!(
-                            "Rows below are from {} until the new session sends data.",
-                            displayed.label()
+                            "Rows below are from an earlier session of {} until the new session sends data.",
+                            shown.target.label()
                         ),
                         Tone::Warning,
                     ));

@@ -4,7 +4,7 @@
 //! session, a `manifest.json` saying where each came from and what was not
 //! collected, and `SHA256SUMS` over every file. Nothing is read from the
 //! cluster to build it. docs/kubernetes-workspace.md §Evidence export.
-use super::dock::{Phase, Session};
+use super::dock::{Phase, Session, Shown};
 use super::model::{self, Data, EventGroup, Key, LogTarget, Resolved, UidCheck};
 use okilum_core::kubernetes::{Completeness, Failure, List, Slot, Staleness, View};
 use okilum_core::log::stream::{MAX_BYTES, MAX_LINES, MAX_LINE_BYTES};
@@ -21,11 +21,13 @@ pub(crate) const EXCLUDED: [&str; 5] = [
     "Secrets (never read)",
     "container environment values and exec probe commands (not retained by the read adapter)",
     "kubectl stderr diagnostics of log sessions",
-    "failure details of authentication, credential-helper, kubeconfig and unclassified kubectl failures (kind only)",
+    "failure text other than kubectl's own 'Error from server (...)' line for a denied or missing object, or text Okilum wrote itself (kind only otherwise)",
 ];
 
 /// The log view's state at export time, from the LogView itself.
 pub(crate) struct LogViewState {
+    /// The rows `displayed` describes: a snapshot not yet handed to the
+    /// view is preferred, so bytes and provenance always belong together.
     pub snapshot: Option<std::sync::Arc<okilum_core::log::stream::Snapshot>>,
     pub filter: Value,
 }
@@ -36,7 +38,10 @@ pub(crate) struct Inputs<'a> {
     pub related_uids: Vec<String>,
     pub lens: &'static str,
     pub session: Option<&'a Session>,
-    pub displayed: Option<&'a LogTarget>,
+    /// Who sent the rows in the view (may be an earlier session).
+    pub displayed: Option<&'a Shown>,
+    /// The pinned session's generation, to tell its rows from older ones.
+    pub current_generation: u64,
     pub tail_lines: u32,
     pub view: Option<LogViewState>,
     pub generated_at: SystemTime,
@@ -61,24 +66,35 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// A failure as evidence: its kind always; its detail only for kinds whose
-/// detail is the API server's own answer, never credential-helper output.
+/// kubectl's report of the API server's answer, the last
+/// `Error from server (Reason): ...` line, bounded. It is the line the
+/// classifier decided on; anything around it may be credential-helper or
+/// other stderr output and is never exported.
+fn server_message(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("Error from server ("))
+        .map(|line| line.chars().take(400).collect())
+}
+
+/// A failure as evidence: its kind always. A category is not redaction:
+/// failure details carry kubectl's bounded stderr, which can include helper
+/// output before the server's answer. So only text Okilum wrote itself, or
+/// the server's own line for a denied or missing object, is exported.
 pub(crate) fn failure_json(failure: &Failure) -> Value {
-    let detail = match failure {
-        Failure::Forbidden { .. }
-        | Failure::NotFound { .. }
-        | Failure::Unavailable { .. }
-        | Failure::InvalidRequest { .. }
-        | Failure::Malformed { .. }
+    let own = match failure {
+        Failure::InvalidRequest { .. }
         | Failure::Oversized { .. }
         | Failure::TimedOut { .. }
         | Failure::Cancelled => Some(failure.summary()),
-        Failure::AuthExpired { .. }
-        | Failure::InteractiveLogin { .. }
-        | Failure::Configuration { .. }
-        | Failure::Failed { .. } => None,
+        _ => None,
     };
-    json!({"kind": model::failure_kind(failure), "detail": detail})
+    let server = match failure {
+        Failure::Forbidden { detail } | Failure::NotFound { detail } => server_message(detail),
+        _ => None,
+    };
+    json!({"kind": model::failure_kind(failure), "detail": own, "server_message": server})
 }
 
 fn source_json<T>(name: &str, slot: &Slot<List<T>>) -> Value {
@@ -187,6 +203,7 @@ fn phase_name(phase: &Phase) -> &'static str {
         Phase::Truncated(_) => "stopped at a loading limit",
         Phase::Disconnected(_) => "disconnected",
         Phase::Failed(_) => "failed",
+        Phase::NotStarted(_) => "not started: check before kubectl logs failed",
         Phase::Replaced { .. } => "not started: pod replaced",
     }
 }
@@ -248,23 +265,57 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
         ));
     }
 
-    let mut log = Value::Null;
-    if let Some(session) = inputs.session {
-        let snapshot = inputs.view.as_ref().and_then(|v| v.snapshot.clone());
-        let file = snapshot.as_ref().map(|snapshot| {
-            let path = format!(
-                "logs/{}_{}_{}.log",
-                slug(&session.target.pod),
-                slug(&session.target.container),
-                if session.target.previous {
-                    "previous"
-                } else {
-                    "current"
-                }
-            );
-            files.push((path.clone(), snapshot.bytes().to_vec()));
-            (path, snapshot.bytes().len(), snapshot.index().len())
+    // The rows and the session are described separately: after a retarget,
+    // a failed check or a restart the view still shows an earlier session's
+    // rows, labelled with that session's own target, time and coverage.
+    let mut log_rows = Value::Null;
+    if let (Some(shown), Some(snapshot)) = (
+        inputs.displayed,
+        inputs.view.as_ref().and_then(|v| v.snapshot.clone()),
+    ) {
+        let path = format!(
+            "logs/{}_{}_{}.log",
+            slug(&shown.target.pod),
+            slug(&shown.target.container),
+            if shown.target.previous {
+                "previous"
+            } else {
+                "current"
+            }
+        );
+        files.push((path.clone(), snapshot.bytes().to_vec()));
+        let current = inputs.session.is_some() && shown.generation == inputs.current_generation;
+        log_rows = json!({
+            "file": path,
+            "bytes": snapshot.bytes().len(),
+            "lines": snapshot.index().len(),
+            "from_session": {
+                "target": target_json(&shown.target),
+                "uid_verified_at": shown.verified_at.map(rfc3339),
+                "stream_new_lines": shown.follow,
+                "initial_tail_lines": shown.tail_lines,
+                "is_the_pinned_session": current,
+            },
+            "incomplete_trailing_bytes_not_exported": if current {
+                json!(inputs.session.map(|s| s.pending_bytes))
+            } else {
+                json!("unknown: from an earlier session")
+            },
+            "limits": {"max_bytes": MAX_BYTES, "max_lines": MAX_LINES, "max_line_bytes": MAX_LINE_BYTES},
+            "view_filter": inputs.view.as_ref().map(|v| v.filter.clone()),
+            "log_file_is_unfiltered": true,
+            "coverage": format!(
+                "Only complete lines received by that session: up to {} initial lines, then {}. \
+                 Older history, other instances and rotated logs are not included. kubectl logs \
+                 addresses the Pod by name; compare uid_verified_at with the Pods source.",
+                shown.tail_lines,
+                if shown.follow { "new lines until it ended or was replaced" } else { "no further lines" }
+            ),
         });
+    }
+
+    let mut log_session = Value::Null;
+    if let Some(session) = inputs.session {
         let uid_check = inputs
             .data
             .map(|data| match model::check_listed(&session.target, data) {
@@ -273,14 +324,15 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
                 UidCheck::Missing => json!("missing"),
                 UidCheck::Unknown => json!("unknown"),
             });
-        let rows_from = inputs.displayed.map(target_json);
-        log = json!({
+        log_session = json!({
             "target": target_json(&session.target),
             "phase": phase_name(&session.phase),
             "phase_detail": match &session.phase {
-                // Bounds and transport errors of the session itself; kubectl
-                // stderr is not exported.
+                // The session's own bounds and transport text; kubectl stderr
+                // is never exported.
                 Phase::Truncated(e) | Phase::Disconnected(e) | Phase::Failed(e) => json!(e),
+                // Only the safe parts of a typed failure (see failure_json).
+                Phase::NotStarted(failure) => failure_json(failure),
                 Phase::Replaced { uid } => json!({"current_uid": uid}),
                 _ => Value::Null,
             },
@@ -288,22 +340,7 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
             "uid_against_latest_pods_read": uid_check,
             "stream_new_lines": session.follow,
             "initial_tail_lines": inputs.tail_lines,
-            "rows_from_target": rows_from,
-            "rows_from_target_differs": inputs.displayed.is_some_and(|d| d != &session.target),
-            "file": file.as_ref().map(|f| f.0.clone()),
-            "bytes": file.as_ref().map(|f| f.1),
-            "lines": file.as_ref().map(|f| f.2),
-            "incomplete_trailing_bytes_not_exported": session.pending_bytes,
-            "limits": {"max_bytes": MAX_BYTES, "max_lines": MAX_LINES, "max_line_bytes": MAX_LINE_BYTES},
-            "view_filter": inputs.view.as_ref().map(|v| v.filter.clone()),
-            "coverage": format!(
-                "Only complete lines received in this session: up to {} initial lines, then {}. \
-                 Older history, other instances and rotated logs are not included. kubectl logs \
-                 addresses the Pod by name; compare uid_verified_at and uid_against_latest_pods_read.",
-                inputs.tail_lines,
-                if session.follow { "new lines until the session ended" } else { "no further lines" }
-            ),
-            "log_file_is_unfiltered": true,
+            "has_sent_rows": inputs.displayed.is_some_and(|d| d.generation == inputs.current_generation),
         });
     }
 
@@ -341,7 +378,8 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
         "lens": inputs.lens,
         "sources": sources,
         "selection": selection,
-        "log_session": log,
+        "log_rows": log_rows,
+        "log_session": log_session,
         "excluded": EXCLUDED,
         "artifacts": artifacts,
     });
@@ -356,33 +394,58 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
 }
 
 /// Writes the bundle as a new directory inside `parent`. The directory
-/// appears whole or not at all, and never replaces an existing one.
+/// appears whole or not at all and never replaces anything: files go to a
+/// staging directory created exclusively for this call (no other writer can
+/// share or delete it), and the commit cannot overwrite an existing path.
 pub(crate) fn write(parent: &Path, bundle: &Bundle) -> std::io::Result<PathBuf> {
     let target = parent.join(&bundle.name);
-    if target.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("{} already exists", target.display()),
-        ));
-    }
-    let staging = parent.join(format!(".{}.partial", bundle.name));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)?;
-    }
-    let result = (|| {
-        for (path, bytes) in &bundle.files {
-            let file = staging.join(path);
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::write(&file, bytes)?;
+    // Unique and exclusive (mkdtemp-style); dropped, it removes only itself.
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{}.", bundle.name))
+        .suffix(".partial")
+        .tempdir_in(parent)?;
+    for (path, bytes) in &bundle.files {
+        let file = staging.path().join(path);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
         }
-        std::fs::rename(&staging, &target)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::write(&file, bytes)?;
     }
-    result.map(|()| target)
+    commit(staging.path(), &target)?;
+    // The staging path no longer exists; dropping finds nothing to remove.
+    drop(staging);
+    Ok(target)
+}
+
+/// Moves `staging` to `target` only if nothing is at `target`.
+#[cfg(unix)]
+fn commit(staging: &Path, target: &Path) -> std::io::Result<()> {
+    // A plain rename may replace an empty directory created after any
+    // existence check. Claim the name exclusively first: whoever creates
+    // it owns it, and renaming onto one's own empty claim is safe.
+    std::fs::create_dir(target)?;
+    if let Err(error) = std::fs::rename(staging, target) {
+        // Removes the claim only while it is still empty, so files someone
+        // else put there are never deleted.
+        let _ = std::fs::remove_dir(target);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails when anything
+/// exists at `target`: no check-then-act window.
+#[cfg(windows)]
+fn commit(staging: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
+    let (from, to) = (wide(staging), wide(target));
+    // SAFETY: both are NUL-terminated UTF-16 paths alive for the call.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// File count and size, for the confirmation line.
