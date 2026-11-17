@@ -23,6 +23,15 @@ pub(super) struct Ticket {
     generation: u64,
 }
 
+impl Ticket {
+    pub(super) fn pane(&self) -> PaneId {
+        self.pane
+    }
+}
+
+/// A completion kept for a pane that was not active when it finished.
+pub(super) type Deferred = Box<dyn FnOnce(&mut Reader, &mut Window, &mut Context<Reader>)>;
+
 pub(super) struct Surface {
     /// Stable for this surface's lifetime; a replacement surface gets a new one.
     id: PaneId,
@@ -90,6 +99,10 @@ pub(super) struct Surface {
     pub queued_landing: Option<okilum_core::deep_link::Position>,
     pub usable_document: bool,
     pub last_recorded_document: Option<(PathBuf, String, u64)>,
+    /// Completions that finished while this pane was inactive, in arrival
+    /// order; `resume_active_pane` replays them. Each one rechecks its own
+    /// ticket, so a result that went stale meanwhile still changes nothing.
+    pub deferred: Vec<Deferred>,
 
     /// Test-only: holds the next document preparation before it publishes.
     #[cfg(test)]
@@ -142,6 +155,7 @@ impl Surface {
             queued_landing: None,
             usable_document: false,
             last_recorded_document: None,
+            deferred: Vec::new(),
             #[cfg(test)]
             preparation_hold: None,
             #[cfg(test)]
@@ -213,9 +227,50 @@ impl Reader {
         self.pane.id == pane
     }
 
-    /// Publishes what the now-active pane prepared while it was inactive.
-    #[expect(dead_code, reason = "#773 stage 4 calls this from its pane switch")]
+    /// Runs a completion for `pane` now when it is the active pane. A
+    /// completion for an inactive pane is kept with that pane and replayed by
+    /// `resume_active_pane`; one for a closed pane is dropped with it. Either
+    /// way it never touches the pane that happens to be active.
+    pub(super) fn run_for_pane(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if self.is_active_pane(pane) {
+            work(self, window, cx);
+        } else if let Some(surface) = self.surface_mut(pane) {
+            surface.deferred.push(Box::new(work));
+        }
+    }
+
+    /// `run_for_pane` for completions that run without a window.
+    pub(super) fn run_for_pane_without_window(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        if self.is_active_pane(pane) {
+            work(self, cx);
+        } else if let Some(surface) = self.surface_mut(pane) {
+            surface
+                .deferred
+                .push(Box::new(move |this, _, cx| work(this, cx)));
+        }
+    }
+
+    /// Replays what the now-active pane finished while it was inactive, then
+    /// publishes its pending first document.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "#773 stage 4 calls this from its pane switch")
+    )]
     pub(super) fn resume_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for work in std::mem::take(&mut self.pane.deferred) {
+            work(self, window, cx);
+        }
         self.publish_pending_document(window, cx);
     }
 }

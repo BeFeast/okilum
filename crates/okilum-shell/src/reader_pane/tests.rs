@@ -219,3 +219,54 @@ fn pane773_landing_for_another_pane_leaves_this_one_alone(cx: &mut gpui::TestApp
         });
     }
 }
+
+#[gpui::test]
+fn pane773_completions_run_for_their_own_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| {
+        let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+        let log = |label: &'static str| {
+            let ran = ran.clone();
+            move |_: &mut Reader, _: &mut Window, _: &mut Context<Reader>| {
+                ran.borrow_mut().push(label)
+            }
+        };
+        r.run_for_pane(r.pane.id(), window, cx, log("active"));
+        assert_eq!(*ran.borrow(), ["active"], "the active pane runs it now");
+        let closed = reader_panes::PaneId::next();
+        r.run_for_pane(closed, window, cx, log("closed"));
+        let ran_cx = ran.clone();
+        r.run_for_pane_without_window(closed, cx, move |_, _| ran_cx.borrow_mut().push("closed"));
+        assert_eq!(
+            *ran.borrow(),
+            ["active"],
+            "a closed pane takes its results with it"
+        );
+        assert!(
+            r.pane.deferred.is_empty(),
+            "nothing is kept for the active pane"
+        );
+
+        // Work kept while the pane was inactive replays in order on
+        // activation and still checks its own ticket.
+        let stale = r.pane.navigation_ticket();
+        r.pane.navigation.generation = r.pane.navigation.generation.wrapping_add(1);
+        let fresh = r.pane.navigation_ticket();
+        for (ticket, label) in [(stale, "stale"), (fresh, "fresh")] {
+            let ran = ran.clone();
+            r.pane.deferred.push(Box::new(move |this, _, _| {
+                if this.pane.holds_navigation(ticket) {
+                    ran.borrow_mut().push(label);
+                }
+            }));
+        }
+        r.resume_active_pane(window, cx);
+        assert_eq!(
+            *ran.borrow(),
+            ["active", "fresh"],
+            "a stale replay changes nothing"
+        );
+        assert!(r.pane.deferred.is_empty());
+        assert_eq!(r.pane.refused, vec![stale]);
+    });
+}
