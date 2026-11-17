@@ -236,8 +236,9 @@ def red(api, sha, run_url, run_id=None):
     if kind == 'infra':
         body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
                 f'**This looks like infrastructure, not a merge**: {detail}. No merge is blamed. '
-                'Re-run the job in the web UI (Forgejo has no API for it) or let the next merge retest; '
-                'if it fails again with build or test output, the merges are reported.\n'
+                'Re-run the job in the web UI (Forgejo has no API for it) or dispatch `ci` on main; otherwise '
+                'the next daily run (04:00 UTC) retests, since merges no longer start `ci`. '
+                'If it fails again with build or test output, the merges are reported.\n'
                 'This issue closes itself when main is green again.')
         issue = api.open_issue()
         if issue is None:

@@ -10,6 +10,12 @@ transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 WORKFLOW = '.github/workflows/forgejo-linux.yml'
 BUILD_STEP = 'Run full Linux gate'
+# The daily full set dispatches Linux, perf, shell and macOS at 04:00 UTC while agent
+# checks also queue on the same GitHub account: a 15-minute queue budget failed main
+# with no build output (#3045, run 28988). ci.yml's linux-github timeout must exceed
+# QUEUE_TIMEOUT + RUN_TIMEOUT.
+QUEUE_TIMEOUT = 3600
+RUN_TIMEOUT = 5400
 
 
 def main():
@@ -27,7 +33,7 @@ def main():
         transport.push_head(branch, sha, api.token)
         pushed = True
         result, message = transport.wait_for_run(api, branch, sha, workflow=WORKFLOW,
-            job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=5400,
+            job_name='linux', build_step=BUILD_STEP, queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT,
             **(dict(on_run=receipt.observed) if receipt else {}))
         if receipt:
             receipt.finish()

@@ -204,8 +204,8 @@ jobs:
     if: >-
       github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
-    # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
-    timeout-minutes: 110
+    # Must exceed github-linux.py QUEUE_TIMEOUT + RUN_TIMEOUT (60 + 90 min).
+    timeout-minutes: 155
     outputs:
       result: ${{ steps.remote.outputs.result }}
     steps:
