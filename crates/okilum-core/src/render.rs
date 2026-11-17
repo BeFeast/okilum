@@ -1844,8 +1844,8 @@ mod splice_tests {
                 (23..28, "[[C]]"),
             ],
             &[(0..0, "start "), (28..28, " end")],
-            // Out of order and overlapping: the old right-to-left result.
-            &[(23..28, "Z"), (0..5, "A")],
+            // Nested and overlapping: not ascending, so the old right-to-left result.
+            &[(0..5, "AAAA"), (2..3, "x")],
             &[(0..10, "X"), (5..17, "Y")],
         ];
         for edits in cases {
