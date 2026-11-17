@@ -279,3 +279,38 @@ fn pane773_completions_run_for_their_own_pane(cx: &mut gpui::TestAppContext) {
         assert_eq!(r.pane.refused, vec![stale]);
     });
 }
+
+#[gpui::test]
+fn pane773_quit_protection_visits_every_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = reader.read_with(visual, |r, _| r.vault_root.join("A.md"));
+    reader.update_in(visual, |r, window, cx| {
+        window.activate_window();
+        r.toggle_source(window, cx);
+        let input = r
+            .pane
+            .editing
+            .as_ref()
+            .expect("Edit opened")
+            .input()
+            .clone();
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..0), "unsaved ", window, cx)
+        });
+    });
+    visual.run_until_parked();
+    reader.update(visual, |r, cx| {
+        let pane = r.pane.id();
+        let visited = r.for_each_pane(cx, |r, cx| (r.pane.id(), r.save_source_for_close(cx)));
+        assert_eq!(
+            visited,
+            vec![(pane, true)],
+            "each pane once, with its own result"
+        );
+    });
+    visual.run_until_parked();
+    assert!(
+        std::fs::read_to_string(&a).unwrap().starts_with("unsaved "),
+        "the pane's edit is saved through the per-pane quit path"
+    );
+}

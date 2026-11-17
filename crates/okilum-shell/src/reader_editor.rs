@@ -422,8 +422,14 @@ pub(crate) fn save_all(cx: &mut App) -> bool {
 pub(crate) fn save_all_for_quit(cx: &mut App) -> bool {
     let editors = cx.default_global::<Editors>().0.clone();
     editors.into_iter().fold(true, |allowed, (editor, _)| {
+        // Every pane of the window, inactive ones included (#773).
         let result = editor
-            .update(cx, |reader, cx| reader.save_source_for_close(cx))
+            .update(cx, |reader, cx| {
+                reader
+                    .for_each_pane(cx, |reader, cx| reader.save_source_for_close(cx))
+                    .into_iter()
+                    .all(|saved| saved)
+            })
             .unwrap_or(true);
         allowed && result
     })
@@ -440,8 +446,16 @@ fn save_all_outcomes(cx: &mut App) -> (bool, bool) {
     editors
         .into_iter()
         .fold((true, true), |(saved, protected), (editor, _)| {
+            // Every pane of the window, inactive ones included (#773).
             let result = editor
-                .update(cx, |reader, cx| reader.save_source_outcome(cx))
+                .update(cx, |reader, cx| {
+                    reader
+                        .for_each_pane(cx, |reader, cx| reader.save_source_outcome(cx))
+                        .into_iter()
+                        .fold((true, true), |(s, p), (saved, protected)| {
+                            (s && saved, p && protected)
+                        })
+                })
                 .unwrap_or((true, true));
             (saved && result.0, protected && result.1)
         })
@@ -455,7 +469,12 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
         .filter(|(_, owner)| *owner == window)
         .all(|(editor, _)| {
             editor
-                .update(cx, |reader, cx| reader.save_source_for_close(cx))
+                .update(cx, |reader, cx| {
+                    reader
+                        .for_each_pane(cx, |reader, cx| reader.save_source_for_close(cx))
+                        .into_iter()
+                        .all(|saved| saved)
+                })
                 .unwrap_or(true)
         })
 }
@@ -1172,6 +1191,8 @@ impl Reader {
             }
             // A hover popup describes the text before this edit (#2953).
             this.sync_hover_revision(cx);
+            // The recovery write below answers to this pane's editor (#773).
+            let pane = this.pane.id();
             let Some(editing) = &mut this.pane.editing else {
                 return;
             };
@@ -1281,38 +1302,40 @@ impl Reader {
                         (result, directions, Some(prepared))
                     })
                     .await;
-                let _ = this.update(cx, |this, cx| {
-                    let Some(editing) = &mut this.pane.editing else {
-                        return;
-                    };
-                    if editing.input.entity_id() != input_id
-                        || editing.input.read(cx).source_stamp() != source_stamp
-                    {
-                        return;
-                    }
-                    // Save retires recovery ownership, not same-revision
-                    // presentation preparation. New typing invalidates both.
-                    if let Some(prepared_context) = prepared_context {
-                        *context.borrow_mut() = BlockNote::from_prepared(prepared_context);
-                    }
-                    editing.input.update(cx, |input, cx| {
-                        input.set_direction_exempt_lines(directions);
-                        cx.notify();
+                let _ = this.update(cx, move |this, cx| {
+                    this.run_for_pane_without_window(pane, cx, move |this, cx| {
+                        let Some(editing) = &mut this.pane.editing else {
+                            return;
+                        };
+                        if editing.input.entity_id() != input_id
+                            || editing.input.read(cx).source_stamp() != source_stamp
+                        {
+                            return;
+                        }
+                        // Save retires recovery ownership, not same-revision
+                        // presentation preparation. New typing invalidates both.
+                        if let Some(prepared_context) = prepared_context {
+                            *context.borrow_mut() = BlockNote::from_prepared(prepared_context);
+                        }
+                        editing.input.update(cx, |input, cx| {
+                            input.set_direction_exempt_lines(directions);
+                            cx.notify();
+                        });
+                        if editing.recovery_epoch != epoch {
+                            return;
+                        }
+                        editing.protecting = false;
+                        if let Err(error) = result {
+                            editing.save_failed = true;
+                            diagnostic_error!("Draft recovery could not be saved: {error:#}");
+                            this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
+                            cx.notify();
+                        } else if this.link_notice.as_deref() == Some(DRAFT_WRITE_NOTICE) {
+                            editing.save_failed = false;
+                            this.link_notice = None;
+                            cx.notify();
+                        }
                     });
-                    if editing.recovery_epoch != epoch {
-                        return;
-                    }
-                    editing.protecting = false;
-                    if let Err(error) = result {
-                        editing.save_failed = true;
-                        diagnostic_error!("Draft recovery could not be saved: {error:#}");
-                        this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
-                        cx.notify();
-                    } else if this.link_notice.as_deref() == Some(DRAFT_WRITE_NOTICE) {
-                        editing.save_failed = false;
-                        this.link_notice = None;
-                        cx.notify();
-                    }
                 });
             }));
             if !plain_file {
@@ -2227,6 +2250,7 @@ impl Reader {
     /// a change made outside Okilum: the store refuses that and the conflict
     /// view opens.
     fn schedule_autosave(&mut self, input_id: EntityId, epoch: u64, cx: &mut Context<Self>) {
+        let pane = self.pane.id();
         let Some(editing) = self
             .pane
             .editing
@@ -2247,7 +2271,13 @@ impl Reader {
         editing.autosave_schedule.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(pause).await;
             let _ = handle.update(cx, |_, window, cx| {
-                let _ = this.update(cx, |this, cx| this.autosave(input_id, epoch, window, cx));
+                // A pane made inactive before the timer fired autosaves when
+                // it is active again (#773), not the pane active now.
+                let _ = this.update(cx, |this, cx| {
+                    this.run_for_pane(pane, window, cx, move |this, window, cx| {
+                        this.autosave(input_id, epoch, window, cx)
+                    })
+                });
             });
         }));
     }
