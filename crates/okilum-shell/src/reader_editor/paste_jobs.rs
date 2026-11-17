@@ -33,6 +33,16 @@ enum DropAt {
     Block(usize),
 }
 
+/// The byte offset where 1-based `line` starts in `text`; `None` past its
+/// last line.
+fn line_start(text: &str, line: u32) -> Option<usize> {
+    let skip = usize::try_from(line.checked_sub(1)?).ok()?;
+    if skip == 0 {
+        return Some(0);
+    }
+    text.match_indices('\n').nth(skip - 1).map(|(at, _)| at + 1)
+}
+
 /// The note a background paste result belongs to (#1611).
 #[derive(Clone)]
 struct Target {
@@ -154,22 +164,35 @@ impl Reader {
             return;
         }
         let block = self.reader_block_at(window.mouse_position(), cx);
-        let canonical = self.note_canonical_source.clone();
         let rendered = self.note_source.clone();
         self.toggle_source(window, cx);
         let Some(input) = self.source_input() else {
             return;
         };
         diagnostic_error!("Drop: onto the Reader, block={block:?}");
-        // Mapping the block to its source line parses the note, so it runs
-        // off the UI thread (as place_editor_at_reader does).
+        // The mapping runs on the editor's text as it opened. Mapping the
+        // block to its source line parses the note, so it runs off the UI
+        // thread (as place_editor_at_reader does); text edited meanwhile is
+        // followed by an anchor, never by the old line number.
+        let (snapshot, stamp) = {
+            let state = input.read(cx);
+            (state.value().to_string(), state.source_stamp())
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let line =
-                cx.background_executor()
-                    .spawn(async move {
-                        okilum_core::deep_link::block_line(&canonical?, &rendered, block?)
-                    })
-                    .await;
+            let (snapshot, offset) = cx
+                .background_executor()
+                .spawn(async move {
+                    let line = block.and_then(|block| {
+                        okilum_core::deep_link::block_line(&snapshot, &rendered, block)
+                    });
+                    // Below the last block, or a block the mapping cannot
+                    // place: the end of the note.
+                    let offset = line
+                        .and_then(|line| line_start(&snapshot, line))
+                        .unwrap_or(snapshot.len());
+                    (snapshot, offset)
+                })
+                .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this
                     .editing
@@ -180,21 +203,21 @@ impl Reader {
                     return;
                 }
                 let offset = {
-                    use gpui_component::input::RopeExt as _;
                     let state = input.read(cx);
-                    match line {
-                        Some(line) if line >= 1 => {
-                            state
-                                .text()
-                                .position_to_offset(&gpui_component::input::Position {
-                                    line: line - 1,
-                                    character: 0,
-                                })
-                        }
-                        // Below the last block, or a block the mapping cannot
-                        // place: the end of the note.
-                        _ => state.value().len(),
+                    if state.source_stamp() == stamp {
+                        Some(offset)
+                    } else {
+                        Anchor::at(&snapshot, offset).locate(state.value().as_ref())
                     }
+                };
+                let Some(offset) = offset else {
+                    diagnostic_error!("Drop: not inserted (the note changed at the drop point)");
+                    reader_toast::error(
+                        "The note changed where the drop went, so nothing was inserted.",
+                        window,
+                        cx,
+                    );
+                    return;
                 };
                 this.route_drop(
                     input,
@@ -1375,5 +1398,56 @@ mod reader_drop_tests {
                 "appended after the last block: {source:?}"
             );
         });
+    }
+
+    /// Lines typed above the target while the block mapping still runs move
+    /// the drop with its block; the old line number would now be another
+    /// block (here the title).
+    #[gpui::test]
+    fn edits_during_the_block_mapping_do_not_move_the_drop(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        visual.simulate_mouse_move(next.center(), None, Modifiers::default());
+        let spec = temp.path().join("vault/docs/spec.txt");
+        let typed = "Typed above.\n\nMore typed.\n\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_reader(&ExternalPaths(vec![spec].into_iter().collect()), window, cx);
+            let input = r.source_input().expect("Edit opens at the drop");
+            assert_eq!(
+                input.read(cx).value().as_ref(),
+                NOTE,
+                "positive control: the block mapping has not finished"
+            );
+            input.update(cx, |state, cx| {
+                assert!(state.replace_source_range(0..0, typed, window, cx));
+            });
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            let link = source
+                .lines()
+                .find(|line| line.contains("spec.txt"))
+                .unwrap_or_else(|| panic!("the dropped file's link is in the note: {source:?}"))
+                .to_string();
+            assert_eq!(
+                source,
+                format!("{typed}# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n"),
+                "still before the block under the pointer"
+            );
+        });
+    }
+
+    #[test]
+    fn line_start_is_the_offset_of_a_one_based_line() {
+        let text = "a\nbc\r\n\nd";
+        assert_eq!(line_start(text, 1), Some(0));
+        assert_eq!(line_start(text, 2), Some(2));
+        assert_eq!(line_start(text, 3), Some(6));
+        assert_eq!(line_start(text, 4), Some(7));
+        assert_eq!(line_start(text, 5), None);
+        assert_eq!(line_start(text, 0), None);
     }
 }
