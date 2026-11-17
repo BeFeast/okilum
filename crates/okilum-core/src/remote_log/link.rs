@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(read(&other).unwrap(), None);
         assert!(!other.join(".okilum").exists());
         let missing = link
-            .resolve_vault(&[other.clone()], state.path())
+            .resolve_vault(std::slice::from_ref(&other), state.path())
             .unwrap_err();
         assert!(
             missing.to_string().contains("not open in Okilum"),

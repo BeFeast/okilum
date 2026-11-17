@@ -4540,7 +4540,7 @@ mod entry_tests {
 
         // Control: a vault this computer never opened is refused.
         let before = cx.update(|cx| cx.windows().len());
-        cx.update(|cx| open_deep_link_among(&encoded, &[other.clone()], cx));
+        cx.update(|cx| open_deep_link_among(&encoded, std::slice::from_ref(&other), cx));
         cx.run_until_parked();
         assert!(kibana(cx, &root).is_none() && kibana(cx, &other).is_none());
         assert_eq!(
