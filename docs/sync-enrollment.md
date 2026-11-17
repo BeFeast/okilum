@@ -34,7 +34,7 @@ betas are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
    a lost approval reply does not require another link or request.
 4. **Back on the first computer**, check the name in the visible approval banner.
    Select **Approve** only for the computer you intended to connect, or **Reject**.
-   On Linux and Mac, an OS notification also directs you back to Okilum. Only approval makes the
+   On Linux, Mac and Windows, an OS notification also directs you back to Okilum. Only approval makes the
    authorized vault catalog available to the new computer.
 5. **On the new computer**, select **Choose folder** for each wanted vault under
    **Available vaults**. Select an existing folder or create one in the native
@@ -47,7 +47,7 @@ betas are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
    delete a working copy to make setup proceed.
 6. Follow the first transfer in the wizard or close it and inspect the vault's
    state on the Sync page. The received vault opens when the controller reports
-   it ready. Save a small edit with **Cmd+S** on Mac or **Ctrl+S** on Linux, check it on the other computer,
+   it ready. Save a small edit with **Cmd+S** on Mac or **Ctrl+S** on Linux and Windows, check it on the other computer,
    then save a change there to check the return direction.
 
 On Linux, Okilum prepares its bundled connection only after checking that no

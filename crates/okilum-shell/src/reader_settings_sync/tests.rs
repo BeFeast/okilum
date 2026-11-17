@@ -2681,3 +2681,106 @@ fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_c
         assert!(view.presentation.error_details.is_none());
     });
 }
+
+/// #2490: Windows gets the Linux/Mac "wants to connect" OS notification. Test
+/// builds deliver it through the same gpui system notification as Windows.
+#[gpui::test]
+fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(|cx| cx.set_app_identity("com.befeast.okilum", "Okilum"));
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let (root, visual) =
+        cx.add_window_view(|window, cx| Root::new(cx.new(|cx| fixture(window, cx)), window, cx));
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    let pending = |request_id, incoming, name: &str| {
+        Some(direct::Pending {
+            request_id,
+            incoming,
+            name: name.into(),
+            device_id: "A".repeat(63),
+            fingerprint: "B".repeat(64),
+        })
+    };
+    let output = |pending| Output {
+        runtime_health: Default::default(),
+        first_sync: Default::default(),
+        overview: Default::default(),
+        connection_error: None,
+        diagnostic: None,
+        controller: controller.clone(),
+        snapshot: snapshot(pending),
+        inspected: None,
+        selected_destination: None,
+        #[cfg(target_os = "linux")]
+        runtimes: vec![],
+        vaults: vec![],
+    };
+    let first = uuid::Uuid::new_v4();
+    let second = uuid::Uuid::new_v4();
+    let tag = |id| super::presentation::approval_tag(id);
+
+    // Outgoing requests wait on the other computer: nothing to approve here.
+    view.update(visual, |view, cx| {
+        view.publish(output(pending(first, false, "Desktop")), cx)
+    });
+    assert!(
+        visual.shown_system_notifications().is_empty(),
+        "an outgoing request must not ask this computer to approve"
+    );
+
+    view.update(visual, |view, cx| {
+        view.publish(output(pending(first, true, "Laptop")), cx)
+    });
+    let shown = visual.shown_system_notifications();
+    assert_eq!(shown.len(), 1, "incoming request notifies once");
+    assert_eq!(shown[0].tag, tag(first));
+    assert_eq!(shown[0].title.as_ref(), "Laptop wants to connect");
+    assert_eq!(
+        shown[0].body.as_ref(),
+        "Open Okilum to approve or reject this computer. No files are shared before approval."
+    );
+    assert!(shown[0].actions.is_empty());
+
+    // Background refreshes keep reporting the same request: no repeat.
+    for _ in 0..3 {
+        view.update(visual, |view, cx| {
+            view.publish(output(pending(first, true, "Laptop")), cx)
+        });
+    }
+    assert_eq!(visual.shown_system_notifications().len(), 1);
+    assert!(visual.dismissed_system_notifications().is_empty());
+
+    // A replacing request retracts the old notice and posts its own.
+    view.update(visual, |view, cx| {
+        view.publish(output(pending(second, true, "Tablet")), cx)
+    });
+    let shown = visual.shown_system_notifications();
+    assert_eq!(shown.len(), 2);
+    assert_eq!(shown[1].tag, tag(second));
+    assert_eq!(shown[1].title.as_ref(), "Tablet wants to connect");
+    assert_eq!(visual.dismissed_system_notifications(), vec![tag(first)]);
+
+    // Approved (or rejected, expired): the request is gone, so is the notice.
+    view.update(visual, |view, cx| view.publish(output(None), cx));
+    assert_eq!(
+        visual.dismissed_system_notifications(),
+        vec![tag(first), tag(second)]
+    );
+    view.update(visual, |view, cx| {
+        view.publish(output(None), cx);
+        assert!(view.presentation.notice.is_none());
+    });
+    assert_eq!(
+        visual.dismissed_system_notifications().len(),
+        2,
+        "nothing left to retract"
+    );
+    assert_eq!(visual.shown_system_notifications().len(), 2);
+    assert!(
+        visual.delivered_system_notifications().is_empty(),
+        "no approval request left in the notification center"
+    );
+}
