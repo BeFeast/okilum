@@ -145,3 +145,34 @@
              .and_then(|view| view.read(cx).link_secondary_press.clone())
          {
              let links = self.links.clone();
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -9,7 +9,7 @@
+ pub use gpui_base::text::{
+     LinkPresentation, LinkSecondaryPress, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+     MarkdownInline, MarkdownInlineParserFn, MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData, TextMark,
+-    TableSecondaryPress, TextViewState, markdown_ast,
++    TableSecondaryPress, TextSecondaryPress, TextViewState, markdown_ast,
+ };
+ pub use style::TextViewStyle;
+ 
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -140,6 +140,17 @@
+         self.inner = self.inner.on_link_secondary_press(f);
+         self
+     }
++    /// Observes secondary (right) presses on rendered text outside links.
++    pub fn on_text_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&gpui_base::text::TextSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.inner = self.inner.on_text_secondary_press(f);
++        self
++    }
+     /// Observes secondary (right) presses anywhere on a rendered code block.
+     pub fn on_code_block_secondary_press<F>(mut self, f: F) -> Self
+     where
