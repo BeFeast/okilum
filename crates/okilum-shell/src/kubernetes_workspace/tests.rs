@@ -537,6 +537,22 @@ fn workspace_layout_keeps_regions_apart_in_light_and_dark(cx: &mut TestAppContex
     let mut h = open(cx, routes(standard_pods(), "pod-a"));
     h.load("");
     h.click("k8s-row-0");
+    // Inspector tabs: Events and the typed Manifest.
+    let diag = format!(
+        "tab {:?} tabs {:?} inspector {:?} title {:?}",
+        h.visual.debug_bounds("k8s-tab-Manifest"),
+        h.visual.debug_bounds("k8s-inspector-tabs"),
+        h.visual.debug_bounds("k8s-inspector"),
+        h.visual.debug_bounds("k8s-inspector-title"),
+    );
+    h.click("k8s-tab-Manifest");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert_eq!(ws.tab, Tab::Manifest, "tab click: {diag}")
+    });
+    assert!(h.visual.debug_bounds("k8s-manifest").is_some());
+    h.click("k8s-tab-Events");
+    assert!(h.visual.debug_bounds("k8s-manifest").is_none());
+    h.click("k8s-tab-Overview");
     for mode in [
         gpui_component::ThemeMode::Light,
         gpui_component::ThemeMode::Dark,
@@ -568,21 +584,6 @@ fn workspace_layout_keeps_regions_apart_in_light_and_dark(cx: &mut TestAppContex
         assert!(h.visual.debug_bounds("k8s-inspector-title").is_some());
         assert!(h.visual.debug_bounds("k8s-dock-empty").is_some());
     }
-    // Inspector tabs: Events and the typed Manifest.
-    let diag = format!(
-        "tab {:?} tabs {:?} inspector {:?} title {:?}",
-        h.visual.debug_bounds("k8s-tab-Manifest"),
-        h.visual.debug_bounds("k8s-inspector-tabs"),
-        h.visual.debug_bounds("k8s-inspector"),
-        h.visual.debug_bounds("k8s-inspector-title"),
-    );
-    h.click("k8s-tab-Manifest");
-    h.workspace.read_with(h.visual, |ws, _| {
-        assert_eq!(ws.tab, Tab::Manifest, "tab click: {diag}")
-    });
-    assert!(h.visual.debug_bounds("k8s-manifest").is_some());
-    h.click("k8s-tab-Events");
-    assert!(h.visual.debug_bounds("k8s-manifest").is_none());
 }
 
 #[gpui::test]
