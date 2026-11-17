@@ -70,10 +70,11 @@ bytes instead of cancelling it. Mac hosted runs use `macos-shipping-beta-<source
 without `cancel-in-progress`, so a delayed manual dispatch of an older source
 cannot cancel a newer push producer (#2891). Verify-only runs use a separate
 per-source namespace. Main Mac selection counts push and manual attempts
-together: the oldest run owns a source while it is queued, running, or signed and
-awaiting publication, and a later push or manual run for that source backs off.
-Only a finished failed or cancelled attempt leaves the source to a manual
-recovery run. A stale pinned dispatch that captured a newer main SHA does not
+together, by each run's `hosted-artifact` producer job: the oldest run owns a
+source while that producer is pending, running, or signed and awaiting
+publication, and a later push or manual run for that source backs off. A backoff
+run skips its producer and never owns the source, even though it ends green. A
+failed or cancelled producer leaves the source to a manual recovery run. A stale pinned dispatch that captured a newer main SHA does not
 reserve that newer source. An incomplete attempt inventory fails selection
 before a producer is dispatched. Manual, pinned, archive, AppImage-only
 and Windows re-sign dispatches keep their own Forgejo groups: a push never

@@ -54,11 +54,12 @@ def macos_api(method, path, body=None):
 
 def macos_attempted(source, current_run, before_current=False, ref='main'):
     # The oldest attempt owns a SHA. On main, push and manual runs share this
-    # accounting (#2891): while an older attempt is queued, running, or signed
-    # and awaiting publication, a later run backs off, so notarization is never
-    # repeated while publication is pending. Only a finished failed or cancelled
-    # main attempt leaves the SHA to an explicit manual recovery. A PR preview
-    # keeps one attempt per head.
+    # accounting (#2891): a run owns the SHA only through its hosted producer
+    # (main_producer_owns), so a later run backs off while that producer is
+    # pending, running, or signed and awaiting publication, and notarization is
+    # never repeated before publication. A backoff or skipped run never owns it,
+    # and a failed or cancelled producer leaves it to a manual recovery. A PR
+    # preview keeps one attempt per head.
     data = macos_api('GET', '/actions/runs?workflow_id=macos-release.yml'
                      '&ref=' + quote('refs/heads/' + ref, safe='') + '&head_sha=' + source +
                      '&limit=50&page=1')
@@ -98,11 +99,40 @@ def macos_attempted(source, current_run, before_current=False, ref='main'):
             continue
         if ref == 'main':
             # A main schedule run only dispatched a pinned run; it never signed.
-            if run['trigger_event'] != 'schedule' and run['status'] not in ('failure', 'cancelled'):
+            if run['trigger_event'] != 'schedule' and main_producer_owns(run):
                 return True
         elif run['trigger_event'] == 'workflow_dispatch' or run['status'] == 'failure':
             return True
     return False
+
+
+# hosted-artifact is the only Mac producer on main (release is `if: false`).
+MACOS_PRODUCER_JOB = 'hosted-artifact'
+
+
+def main_producer_owns(run):
+    """Whether a main Mac run's hosted producer holds its SHA.
+
+    Signed (success): owns, its build awaits or reached publication. Skipped:
+    the run backed off or was not selected, even though it ended `success`.
+    Failed or cancelled: frees the SHA for recovery. Any other state is still
+    pending (select undecided, or the producer queued or running) and owns,
+    unless the run itself already ended failed or cancelled.
+    """
+    jobs = macos_api('GET', f"/actions/runs/{run['id']}/jobs")
+    if isinstance(jobs, dict):
+        jobs = jobs.get('jobs')
+    if not isinstance(jobs, list):
+        raise ValueError('Unreadable Mac job inventory')
+    producers = [job for job in jobs if isinstance(job, dict) and job.get('name') == MACOS_PRODUCER_JOB]
+    if len(producers) != 1:
+        raise ValueError('Mac run lacks exactly one hosted producer job')
+    status = producers[0].get('status')
+    if status == 'success':
+        return True
+    if status in ('skipped', 'failure', 'cancelled'):
+        return False
+    return run['status'] not in ('failure', 'cancelled')
 
 
 def select_macos_preview(event, source, env, now):
