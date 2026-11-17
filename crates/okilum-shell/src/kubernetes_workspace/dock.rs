@@ -47,7 +47,7 @@ impl Phase {
     pub(crate) fn active(&self) -> bool {
         matches!(self, Self::Verifying | Self::Receiving | Self::Stopping)
     }
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         match self {
             Self::Verifying => "Verifying Pod UID…".into(),
             Self::Receiving => "Receiving".into(),
@@ -365,6 +365,37 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Terminal handoff: the exact kubectl argv of the pinned target. It
+    /// addresses the Pod by name, as the session does.
+    pub(crate) fn copy_command(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.dock.session else {
+            return;
+        };
+        let target = &session.target;
+        let request = okilum_core::log::kubernetes::Request {
+            context: Some(target.context.clone()),
+            namespace: target.namespace.clone(),
+            pod: target.pod.clone(),
+            container: target.container.clone(),
+            previous: target.previous,
+            follow: session.follow,
+            tail_lines: self.dock.tail,
+        };
+        self.dock.message = Some(match request.args() {
+            Ok(args) => {
+                let line = shell_words::join(std::iter::once("kubectl".to_string()).chain(args));
+                cx.write_to_clipboard(ClipboardItem::new_string(line));
+                format!(
+                    "Copied the kubectl command. It reads Pod {} by name; this session verified UID {}.",
+                    target.pod,
+                    target.short_uid()
+                )
+            }
+            Err(error) => format!("No command: {error}"),
+        });
+        cx.notify();
+    }
+
     /// Start the pinned target again (a fresh UID check first).
     fn restart_logs(&mut self, cx: &mut Context<Self>) {
         if let Some(target) = self.dock.session.as_ref().map(|s| s.target.clone()) {
@@ -527,6 +558,16 @@ impl Workspace {
                     .disabled(self.dock.view.is_none())
                     .tooltip("Keep the newest row in view. Scrolling up pauses this; receiving continues.")
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_follow_bottom(cx))),
+            )
+            .child(
+                Button::new("k8s-dock-copy-command")
+                    .debug_selector(|| "k8s-dock-copy-command".into())
+                    .small()
+                    .ghost()
+                    .label("Copy command")
+                    .disabled(session.is_none())
+                    .tooltip("Copy the exact kubectl logs command of the pinned target for a terminal")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_command(cx))),
             )
             .child(
                 Button::new("k8s-dock-start")

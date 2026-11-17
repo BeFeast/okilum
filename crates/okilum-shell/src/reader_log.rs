@@ -2773,6 +2773,34 @@ impl LogView {
         self.stream_bottom
     }
 
+    /// The session stream shown, for evidence export (#3012).
+    pub(crate) fn stream_snapshot(&self) -> Option<Arc<okilum_core::log::stream::Snapshot>> {
+        match &self.state {
+            State::Stream(snapshot) => Some(snapshot.clone()),
+            _ => None,
+        }
+    }
+
+    /// The filter the reader applied, exactly as chosen, and what it shows.
+    pub(crate) fn filter_evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "active": self.filter.is_active(),
+            "query": self.query_text,
+            "text": self.filter.text,
+            "level": format!("{:?}", self.filter.level),
+            "time": format!("{:?}", self.filter.time),
+            "fields": self
+                .filter
+                .chips
+                .iter()
+                .map(|chip| format!("{}={}", chip.key, chip.value))
+                .collect::<Vec<_>>(),
+            "rows_shown": self.visible_len(),
+            "rows_loaded": self.total(),
+            "rows_marked": self.marks.len(),
+        })
+    }
+
     /// Following and pinned: the newest row stays in view.
     fn keep_pinned(&mut self) {
         let pinned = (self.following() && self.follow.as_ref().is_some_and(|follow| follow.pinned))

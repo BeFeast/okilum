@@ -991,3 +991,82 @@ fn service_path_with_denied_pods_shows_unknown_targets(cx: &mut TestAppContext) 
         }
     });
 }
+
+// ---------- Evidence export and terminal handoff (#3012) ----------
+
+#[gpui::test]
+fn export_writes_the_shown_session_and_reads_nothing(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    assert!(
+        h.workspace.read_with(h.visual, |ws, _| ws.data.is_none()),
+        "nothing to export before Load"
+    );
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"line one\nline two\n", worker::Status::Reading);
+    let reads = h.calls().len();
+    let path = dir.path().to_path_buf();
+    h.update(|ws, _, _| ws.export_dir = Some(path));
+    h.click("k8s-export");
+    h.wait("bundle written", |ws| !ws.exporting);
+    assert_eq!(
+        h.calls().len(),
+        reads,
+        "exporting reads nothing from the cluster"
+    );
+    let bundles: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(bundles.len(), 1, "one new bundle directory");
+    let bundle = &bundles[0];
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["scope"]["context"], "prod-east");
+    assert_eq!(manifest["selection"]["uid"], "pod-a");
+    assert_eq!(manifest["log_session"]["target"]["container"], "api");
+    assert_eq!(manifest["log_session"]["phase"], "receiving");
+    assert_eq!(manifest["log_session"]["view_filter"]["rows_loaded"], 2);
+    assert_eq!(
+        std::fs::read(bundle.join("logs/checkout-a_api_current.log")).unwrap(),
+        b"line one\nline two\n"
+    );
+    assert!(bundle.join("SHA256SUMS").exists());
+    h.workspace.read_with(h.visual, |ws, _| {
+        let (note, tone) = ws.export_note.clone().unwrap();
+        assert!(note.starts_with("Evidence written to"), "{note}");
+        assert_eq!(tone, Tone::Good);
+        assert!(ws.dock.worker_running(), "export never stops the session");
+    });
+}
+
+#[gpui::test]
+fn copy_command_hands_off_the_exact_pinned_argv(cx: &mut TestAppContext) {
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-previous-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.click("k8s-dock-copy-command");
+    let copied = h
+        .visual
+        .read(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+        .unwrap();
+    let argv = shell_words::split(&copied).unwrap();
+    let started = h.started.borrow().requests[0].args().unwrap();
+    assert_eq!(argv[0], "kubectl");
+    assert_eq!(
+        argv[1..],
+        started[..],
+        "the terminal gets the session's own argv"
+    );
+    assert!(argv.contains(&"--previous=true".to_string()));
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.dock.message.as_deref().unwrap().contains("by name"));
+    });
+}
