@@ -27,6 +27,9 @@ jobs:
         id: probe
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/t3-contract-target
+          # Read-only upstream release inventory; nightly.py removes it from the
+          # environment before any child process starts.
+          GITHUB_TOKEN: ${{ github.token }}
         continue-on-error: true
         run: python3 scripts/t3-contract/nightly.py run --output "$RUNNER_TEMP/t3-contract-report"
       - name: Open or update the single drift incident
@@ -42,6 +45,10 @@ jobs:
           path: ${{ runner.temp }}/t3-contract-report/
           if-no-files-found: error
           retention-days: 14
+      # Report-only by design (#1789, Oleg 27.10): a non-PASS result keeps the run
+      # green but is never silent. It updates the single t3-contract incident (step
+      # above; a publication error fails the job) and raises an ::error annotation
+      # plus a status headline on the run page here.
       - name: Report observation outcome
         if: always()
         run: |
@@ -49,6 +56,16 @@ jobs:
           import json,sys
           from pathlib import Path
           result=json.loads(Path(sys.argv[1]).read_text())
+          status=result.get('status','ERROR')
+          version=result.get('version','unknown T3 version')
+          detail=result.get('error') or result.get('schema_error') or result.get('bootstrap_error') or ''
+          if status != 'PASS':
+              # Annotation text is single-line; it repeats only what result.json already holds.
+              message=f"{status} for {version}" + (f": {detail}" if detail else '') + '. See the t3-contract incident issue and the t3-contract-report artifact.'
+              print('::error title=T3 nightly contract ' + status + '::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
           with open(sys.argv[2], 'a') as summary:
-              summary.write('## T3 nightly contract (report only)\n\n```json\n'+json.dumps(result,indent=2)+'\n```\n')
+              summary.write(f'## T3 nightly contract (report only): {status}\n\n')
+              if status != 'PASS':
+                  summary.write('**Not PASS.** Incident issue opened or updated; full diff in the `t3-contract-report` artifact.\n\n')
+              summary.write('```json\n'+json.dumps(result,indent=2)+'\n```\n')
           PY
