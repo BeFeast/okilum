@@ -21,6 +21,7 @@ fn fixture(
         crate::test_init(cx);
         bind_keys(cx);
     });
+    super::DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow_mut().clear());
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("notes");
     std::fs::create_dir(&root).unwrap();
@@ -149,11 +150,14 @@ fn pane773_late_preparation_after_close_is_dropped(cx: &mut gpui::TestAppContext
     release.try_send(()).unwrap();
     settle(visual);
     reader.read_with(visual, |r, _| {
+        // The completion fired and was dropped at the routing boundary for
+        // the closed pane, so no ticket check of the new pane ever saw it.
         assert_eq!(
-            r.pane.refused,
-            vec![stale],
-            "the late completion was observed"
+            super::DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow().clone()),
+            vec![stale.pane()],
+            "the late completion was observed and dropped for its closed pane"
         );
+        assert!(r.pane.refused.is_empty(), "the new pane never checked it");
         assert_eq!(
             r.pane.current_rel, "A.md",
             "and never published into the new pane"
@@ -241,6 +245,11 @@ fn pane773_completions_run_for_their_own_pane(cx: &mut gpui::TestAppContext) {
             *ran.borrow(),
             ["active"],
             "a closed pane takes its results with it"
+        );
+        assert_eq!(
+            super::DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow().clone()),
+            vec![closed, closed],
+            "both closed-pane completions were seen at the boundary"
         );
         assert!(
             r.pane.deferred.is_empty(),
