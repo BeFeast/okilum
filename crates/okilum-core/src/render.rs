@@ -216,11 +216,9 @@ pub fn render_html_from_source(
     raw: &str,
     theme: &str,
 ) -> anyhow::Result<String> {
-    let mut text = preprocess(without_frontmatter(raw));
-    for (link, destination) in crate::document_links::fallback_links(&text, vault, note_rel)
-        .into_iter()
-        .rev()
-    {
+    let text = preprocess(without_frontmatter(raw));
+    let mut edits = Vec::new();
+    for (link, destination) in crate::document_links::fallback_links(&text, vault, note_rel) {
         let (path, heading) = link
             .target
             .split_once('#')
@@ -232,8 +230,9 @@ pub fn render_html_from_source(
                 &crate::document_links::decode(heading),
             ));
         }
-        text.replace_range(destination, &encoded);
+        edits.push((destination, encoded));
     }
+    let text = splice(&text, edits);
     let arena = Arena::new();
     let opts = comrak_options();
     let root = {
@@ -285,8 +284,9 @@ fn rewrite_source_links_indexed(
     from_note: &str,
     identities: &mut Vec<crate::document_links::prepared::LinkIdentity>,
 ) -> String {
-    let mut output = text.to_owned();
+    let mut edits = Vec::new();
     let mut resolutions = std::collections::BTreeMap::new();
+    let mut known: std::collections::HashSet<_> = identities.iter().cloned().collect();
     for link in resolver.parse(text, from_note).into_iter().rev() {
         let resolved = resolutions
             .entry((link.wiki, link.target.clone()))
@@ -297,7 +297,7 @@ fn rewrite_source_links_indexed(
             wiki: link.wiki,
             url: resolved.url.clone(),
         };
-        if !identities.contains(&identity) {
+        if known.insert(identity.clone()) {
             identities.push(identity);
         }
         // An unverified range keeps the link as authored rather than splice
@@ -318,9 +318,39 @@ fn rewrite_source_links_indexed(
                 link.title.replace('\\', "\\\\").replace('"', "\\\"")
             )
         };
-        let replacement = format!("[{label}]({}{title})", resolved.url);
-        output.replace_range(link.range, &replacement);
+        edits.push((link.range, format!("[{label}]({}{title})", resolved.url)));
     }
+    // Collected last link first, the order the identities record.
+    edits.reverse();
+    splice(text, edits)
+}
+
+/// `text` with each `(range, replacement)` applied, ranges in `text`'s own
+/// coordinates and listed in document order. Ascending, disjoint ranges are
+/// copied in one pass: splicing them one at a time from the end moves the
+/// whole tail per edit, O(bytes × edits), which took most of a second for the
+/// links of a 10 MiB note (#3073). Any other order keeps the right-to-left
+/// splice result exactly.
+pub(crate) fn splice(text: &str, edits: Vec<(std::ops::Range<usize>, String)>) -> String {
+    let ordered = edits
+        .windows(2)
+        .all(|pair| pair[0].0.end <= pair[1].0.start);
+    if !ordered {
+        let mut output = text.to_owned();
+        for (range, replacement) in edits.into_iter().rev() {
+            output.replace_range(range, &replacement);
+        }
+        return output;
+    }
+    let extra: usize = edits.iter().map(|(_, replacement)| replacement.len()).sum();
+    let mut output = String::with_capacity(text.len() + extra);
+    let mut copied = 0;
+    for (range, replacement) in edits {
+        output.push_str(&text[copied..range.start]);
+        output.push_str(&replacement);
+        copied = range.end;
+    }
+    output.push_str(&text[copied..]);
     output
 }
 
@@ -483,11 +513,7 @@ pub fn rewrite_source_images_with(
         };
         replacements.push((range, format!("![{}]({}{})", label, destination, title)));
     }
-    let mut output = text.to_owned();
-    for (range, replacement) in replacements.into_iter().rev() {
-        output.replace_range(range, &replacement);
-    }
-    output
+    splice(text, replacements)
 }
 
 /// Rewrite Obsidian `==highlight==` spans in Markdown *source* into inline
@@ -1782,5 +1808,75 @@ mod drawing_path_tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(urls, ["folder/a%20%28v2%29%25%5Cdraft.excalidraw"]);
+    }
+}
+
+#[cfg(test)]
+mod splice_tests {
+    use super::splice;
+
+    fn right_to_left(text: &str, edits: &[(std::ops::Range<usize>, &str)]) -> String {
+        let mut output = text.to_owned();
+        for (range, replacement) in edits.iter().rev() {
+            output.replace_range(range.clone(), replacement);
+        }
+        output
+    }
+
+    fn owned(edits: &[(std::ops::Range<usize>, &str)]) -> Vec<(std::ops::Range<usize>, String)> {
+        edits
+            .iter()
+            .map(|(range, replacement)| (range.clone(), replacement.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn matches_right_to_left_splicing() {
+        let text = "[[a]] and [[bé]] then [[c]]";
+        let cases: &[&[(std::ops::Range<usize>, &str)]] = &[
+            &[],
+            &[(0..5, "[a](x)")],
+            // Adjacent, empty and growing/shrinking edits in document order.
+            &[
+                (0..5, "[a](okilum://a)"),
+                (5..5, "!"),
+                (10..17, ""),
+                (23..28, "[[C]]"),
+            ],
+            &[(0..0, "start "), (28..28, " end")],
+            // Out of order and overlapping: the old right-to-left result.
+            &[(23..28, "Z"), (0..5, "A")],
+            &[(0..10, "X"), (5..17, "Y")],
+        ];
+        for edits in cases {
+            assert_eq!(
+                splice(text, owned(edits)),
+                right_to_left(text, edits),
+                "{edits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn many_edits_in_a_long_note_are_one_pass() {
+        // 4 MiB with 40,000 links: splicing from the end moves ~80 GB here
+        // (seconds even with memmove); one pass copies the note once (#3073).
+        let link = "[[target]]";
+        let line = format!("{link} {}\n", "x".repeat(94));
+        let text = line.repeat(40_000);
+        let edits: Vec<_> = (0..40_000)
+            .map(|ix| {
+                (
+                    ix * line.len()..ix * line.len() + link.len(),
+                    "[target](okilum://open/target.md)".to_string(),
+                )
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let output = splice(&text, edits);
+        let elapsed = started.elapsed();
+        assert_eq!(output.matches("](okilum://open/target.md)").count(), 40_000);
+        assert!(!output.contains(link));
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
     }
 }

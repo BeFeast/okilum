@@ -1393,6 +1393,15 @@ fn backlink_occurrence(b: &Backlink) -> (String, Option<std::ops::Range<usize>>,
     (context, link, jump)
 }
 
+/// The «On this page» entries of a rendered Markdown source.
+fn note_outline(source: &str) -> Vec<okilum_core::document_links::HeadingEntry> {
+    okilum_core::document_links::HeadingInventory::new(source)
+        .entries
+        .into_iter()
+        .filter(|heading| heading.supported_container)
+        .collect()
+}
+
 /// Install the reader's Markdown plugins and link handler on a TextView.
 /// Recursive on purpose: a callout body is rendered by a nested TextView
 /// built through the same function, so images and callouts inside a callout
@@ -2810,6 +2819,7 @@ impl Reader {
             original: original_body,
             identities,
             frontmatter,
+            outline: prepared_outline,
         } = match document {
             Ok(document) => document,
             Err(error) => {
@@ -2934,13 +2944,11 @@ impl Reader {
         self.trace_note_body(source.len(), window, cx);
         self.outline = if self.use_html {
             Vec::new()
+        } else if let Some(outline) = prepared_outline {
+            outline
         } else {
             let _phase = reader_diagnostics::phase(cx, "note_open_heading_inventory");
-            okilum_core::document_links::HeadingInventory::new(&source)
-                .entries
-                .into_iter()
-                .filter(|heading| heading.supported_container)
-                .collect()
+            note_outline(&source)
         };
         self.outline_list
             .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
