@@ -205,8 +205,7 @@ fn run(
     sleep: &mpsc::Receiver<()>,
     status: &Mutex<PollStatus>,
 ) {
-    let registered = SystemTime::now();
-    let mut baseline: Option<Manifest> = None;
+    let mut walker = Walker::new(root, config.clone(), SystemTime::now());
     let mut pause = config.first;
     loop {
         match sleep.recv_timeout(pause) {
@@ -218,28 +217,19 @@ fn run(
             return;
         }
         let started = Instant::now();
-        // The baseline also distrusts stamps written since registration: the
-        // reader's inventory may have read those files before they changed.
-        let since = match &baseline {
-            None => registered.min(SystemTime::now()),
-            Some(_) => SystemTime::now(),
-        };
-        let walked = walk(root, baseline.as_ref(), config, since, stop);
+        let walked = walker.step(SystemTime::now(), stop);
         if stop.load(Ordering::Relaxed) {
             return;
         }
         let elapsed = started.elapsed();
         let mut current = status.lock().unwrap();
         match walked {
-            Some(next) => {
-                if let Some(previous) = &baseline {
-                    for event in diff(root, previous, &next) {
-                        if tx.send(Ok(event)).is_err() {
-                            return;
-                        }
+            Some(events) => {
+                for event in events {
+                    if tx.send(Ok(event)).is_err() {
+                        return;
                     }
                 }
-                baseline = Some(next);
                 current.interval = next_interval(elapsed, config);
                 current.last_walk = Some(elapsed);
                 current.unavailable = false;
@@ -247,6 +237,52 @@ fn run(
             None => current.unavailable = true,
         }
         pause = current.interval;
+    }
+}
+
+/// The walk/diff state machine, free of threads and wall-clock reads so it
+/// can be stepped deterministically.
+pub(crate) struct Walker {
+    root: PathBuf,
+    config: Config,
+    registered: SystemTime,
+    baseline: Option<Manifest>,
+}
+
+impl Walker {
+    pub fn new(root: &Path, config: Config, registered: SystemTime) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            config,
+            registered,
+            baseline: None,
+        }
+    }
+
+    /// One walk at time `now`. `None` when the share is unavailable (or the
+    /// watcher stopped); the baseline is then kept. The first successful
+    /// walk only records the baseline and returns no events.
+    pub fn step(&mut self, now: SystemTime, stop: &AtomicBool) -> Option<Vec<Event>> {
+        // The baseline also distrusts stamps written since registration: the
+        // reader's inventory may have read those files before they changed.
+        let since = match &self.baseline {
+            None => self.registered.min(now),
+            Some(_) => now,
+        };
+        let next = walk(
+            &self.root,
+            self.baseline.as_ref(),
+            &self.config,
+            since,
+            stop,
+        )?;
+        let events = self
+            .baseline
+            .as_ref()
+            .map(|previous| diff(&self.root, previous, &next))
+            .unwrap_or_default();
+        self.baseline = Some(next);
+        Some(events)
     }
 }
 
@@ -391,9 +427,11 @@ fn diff(root: &Path, previous: &Manifest, next: &Manifest) -> Vec<Event> {
 
 #[cfg(test)]
 mod tests {
+    //! Deterministic: every walk is stepped explicitly with a simulated clock
+    //! and its events are drained at once; no sleeps or timing windows.
     use super::*;
     use crate::watch::VaultWatcher;
-    use std::sync::atomic::AtomicUsize;
+    use std::collections::BTreeSet;
 
     /// A share that never delivers native events, rounds stamps down to
     /// 2 s like FAT/SMB, and can be "disconnected" or have one folder fail.
@@ -401,7 +439,6 @@ mod tests {
     struct Share {
         offline: AtomicBool,
         failing: Mutex<Option<PathBuf>>,
-        walks: AtomicUsize,
     }
 
     fn coarse(time: SystemTime) -> SystemTime {
@@ -409,121 +446,130 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(since.as_secs() / 2 * 2)
     }
 
-    fn config(share: &Arc<Share>, root: &Path) -> Config {
+    fn shared_lister(share: &Arc<Share>) -> Lister {
         let share = share.clone();
-        let root = root.to_path_buf();
-        Config {
-            min: Duration::from_millis(40),
-            max: Duration::from_millis(200),
-            load: 4,
-            racy: Duration::from_secs(3),
-            first: Duration::from_millis(10),
-            list: Arc::new(move |dir: &Path| {
-                if dir == root {
-                    share.walks.fetch_add(1, Ordering::SeqCst);
-                }
-                if share.offline.load(Ordering::SeqCst) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "share is not responding",
-                    ));
-                }
-                if share.failing.lock().unwrap().as_deref() == Some(dir) {
-                    return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-                }
-                Ok(list_dir(dir)?
-                    .into_iter()
-                    .map(|mut entry| {
-                        entry.modified = entry.modified.map(coarse);
-                        entry
-                    })
-                    .collect())
-            }),
-        }
+        Arc::new(move |dir: &Path| {
+            if share.offline.load(Ordering::SeqCst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "share is not responding",
+                ));
+            }
+            if share.failing.lock().unwrap().as_deref() == Some(dir) {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            Ok(list_dir(dir)?
+                .into_iter()
+                .map(|mut entry| {
+                    entry.modified = entry.modified.map(coarse);
+                    entry
+                })
+                .collect())
+        })
     }
 
-    fn watcher(root: &Path, share: &Arc<Share>) -> VaultWatcher {
-        VaultWatcher::polling_with(root, config(share, root)).unwrap()
+    /// Fixture notes carry this stamp; the simulated clock starts later.
+    fn epoch() -> SystemTime {
+        coarse(SystemTime::now()) - Duration::from_secs(3600)
     }
 
-    /// Wait until `n` more complete walks of the root have started and ended.
-    fn walks(share: &Share, n: usize) {
-        let target = share.walks.load(Ordering::SeqCst) + n + 1;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while share.walks.load(Ordering::SeqCst) < target {
-            assert!(Instant::now() < deadline, "poller stopped walking");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn old(path: &Path) {
-        let file = std::fs::File::options().write(true).open(path).unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(3600))
+    fn stamp(path: &Path, time: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
             .unwrap();
     }
 
-    fn vault() -> (tempfile::TempDir, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("vault");
-        std::fs::create_dir_all(root.join("Notes")).unwrap();
-        for note in ["a.md", "Notes/b.md", "Notes/c.md"] {
-            std::fs::write(root.join(note), "# note\n").unwrap();
-            old(&root.join(note));
-        }
-        (temp, root.canonicalize().unwrap())
+    struct Harness {
+        _temp: tempfile::TempDir,
+        root: PathBuf,
+        share: Arc<Share>,
+        walker: Walker,
+        watcher: VaultWatcher,
+        tx: mpsc::Sender<notify::Result<Event>>,
+        /// Simulated clock, one minute per walk: far beyond the racy window
+        /// unless a test stamps a file "now" on purpose.
+        now: SystemTime,
+        stop: AtomicBool,
     }
 
-    /// Drain every batch until the share stays quiet. Recent stamps (fresh
-    /// folders, just-written notes) are re-reported until they leave the
-    /// racy window, so this also proves that re-reporting ends.
-    fn settle(watcher: &mut VaultWatcher, share: &Share) -> Vec<crate::Changes> {
-        walks(share, 2);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let mut batches = Vec::new();
-        while let Some(changes) = watcher.wait(QUIET) {
-            assert!(Instant::now() < deadline, "racy entries never settled");
-            batches.push(changes);
+    impl Harness {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("vault");
+            std::fs::create_dir_all(root.join("Notes")).unwrap();
+            for note in ["a.md", "Notes/b.md", "Notes/c.md"] {
+                std::fs::write(root.join(note), "# note\n").unwrap();
+                stamp(&root.join(note), epoch());
+            }
+            let root = root.canonicalize().unwrap();
+            let share = Arc::new(Share::default());
+            let config = Config {
+                list: shared_lister(&share),
+                ..Config::default()
+            };
+            // Registered after the fixture: its folders are not racy.
+            let now = SystemTime::now() + Duration::from_secs(60);
+            let walker = Walker::new(&root, config, now);
+            // Coalescing only: native events go to a detached channel.
+            let mut watcher = VaultWatcher::new(&root).unwrap();
+            let (tx, rx) = mpsc::channel();
+            watcher.rx = rx;
+            let mut harness = Self {
+                _temp: temp,
+                root,
+                share,
+                walker,
+                watcher,
+                tx,
+                now,
+                stop: AtomicBool::new(false),
+            };
+            assert_eq!(harness.walk(), Some(crate::Changes::default()), "baseline");
+            harness
         }
-        batches
+
+        /// One walk at the next simulated minute; `None` if unavailable.
+        fn walk(&mut self) -> Option<crate::Changes> {
+            self.now += Duration::from_secs(60);
+            let events = self.walker.step(self.now, &self.stop)?;
+            for event in events {
+                self.tx.send(Ok(event)).unwrap();
+            }
+            Some(self.watcher.drain_preparation_changes().unwrap_or_default())
+        }
+
+        fn path(&self, relative: &str) -> PathBuf {
+            self.root.join(relative)
+        }
     }
 
-    const QUIET: Duration = Duration::from_millis(600);
-
-    fn next(watcher: &mut VaultWatcher, share: &Share) -> crate::Changes {
-        walks(share, 1);
-        watcher
-            .wait(Duration::from_secs(5))
-            .expect("polling must report the change")
+    fn set(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|path| path.to_string()).collect()
     }
 
     #[test]
     fn other_clients_creates_writes_and_removals_arrive_without_native_events() {
-        let (_temp, root) = vault();
-        let share = Arc::new(Share::default());
-        let mut watcher = watcher(&root, &share);
-        settle(&mut watcher, &share);
-        // Negative control: an unchanged vault produces no batch.
-        walks(&share, 2);
-        assert!(
-            watcher.wait(QUIET).is_none(),
-            "unchanged share must stay quiet"
-        );
+        let mut share = Harness::new();
+        // Negative control: an unchanged vault produces nothing.
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
 
-        std::fs::write(root.join("Notes/new.md"), "# new\n").unwrap();
-        std::fs::write(root.join("a.md"), "# a, edited elsewhere\n").unwrap();
-        std::fs::remove_file(root.join("Notes/c.md")).unwrap();
-        let changes = next(&mut watcher, &share);
-        assert!(changes.changed.contains("Notes/new.md"), "{changes:?}");
-        assert!(changes.changed.contains("a.md"), "{changes:?}");
-        assert!(changes.removed.contains("Notes/c.md"), "{changes:?}");
+        std::fs::write(share.path("Notes/new.md"), "# new\n").unwrap();
+        std::fs::write(share.path("a.md"), "# a, edited elsewhere\n").unwrap();
+        std::fs::remove_file(share.path("Notes/c.md")).unwrap();
+        let changes = share.walk().unwrap();
+        assert_eq!(changes.changed, set(&["Notes/new.md", "a.md"]));
+        assert_eq!(changes.removed, set(&["Notes/c.md"]));
         assert!(!changes.rescan);
-        settle(&mut watcher, &share);
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
 
         // Attachments change the listed inventory; service trees are skipped.
-        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
-        std::fs::write(root.join(".git/objects/x"), "blob").unwrap();
-        std::fs::write(root.join("Notes/image.png"), "png").unwrap();
-        let changes = next(&mut watcher, &share);
+        std::fs::create_dir_all(share.path(".git/objects")).unwrap();
+        std::fs::write(share.path(".git/objects/x"), "blob").unwrap();
+        std::fs::write(share.path("Notes/image.png"), "png").unwrap();
+        let changes = share.walk().unwrap();
         assert!(changes.directories.contains("Notes"), "{changes:?}");
         assert!(changes
             .directories
@@ -534,72 +580,47 @@ mod tests {
 
     #[test]
     fn same_size_rewrite_inside_a_coarse_mtime_tick_is_still_reported() {
-        let (_temp, root) = vault();
-        let fresh = root.join("Notes/fresh.md");
+        let mut share = Harness::new();
+        // Another client writes a note during the next walk's server tick.
+        let fresh = share.path("Notes/fresh.md");
         std::fs::write(&fresh, "version 1\n").unwrap();
-        let stamp = std::fs::metadata(&fresh).unwrap().modified().unwrap();
-        let share = Arc::new(Share::default());
-        let mut watcher = watcher(&root, &share);
-        walks(&share, 1);
-        // Another client rewrites within the same server tick: same size and,
-        // after the server's rounding, the same stamp.
+        let tick = coarse(share.now + Duration::from_secs(60));
+        stamp(&fresh, tick);
+        assert_eq!(share.walk().unwrap().changed, set(&["Notes/fresh.md"]));
+        // Same size, same rounded stamp: metadata alone cannot see it.
         std::fs::write(&fresh, "version 2\n").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&fresh)
-            .unwrap()
-            .set_modified(stamp)
-            .unwrap();
-        let changes = next(&mut watcher, &share);
-        assert!(changes.changed.contains("Notes/fresh.md"), "{changes:?}");
+        stamp(&fresh, tick);
+        let changes = share.walk().unwrap();
+        assert_eq!(changes.changed, set(&["Notes/fresh.md"]), "racy re-report");
+        // Reported once: the stamp is now older than the racy window.
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
         // Control: an old stamp is trusted, so the same trick on a settled
-        // note is invisible to metadata polling. This is why only recent
-        // stamps are reported again, and why Rescan rereads bytes.
-        settle(&mut watcher, &share);
-        let settled_note = root.join("Notes/b.md");
-        let stamp = std::fs::metadata(&settled_note)
-            .unwrap()
-            .modified()
-            .unwrap();
-        std::fs::write(&settled_note, "# NOTE\n").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&settled_note)
-            .unwrap()
-            .set_modified(stamp)
-            .unwrap();
-        walks(&share, 2);
-        let quiet = watcher.wait(QUIET);
-        assert!(
-            quiet
-                .as_ref()
-                .is_none_or(|c| !c.changed.contains("Notes/b.md")),
-            "{quiet:?}"
-        );
+        // note stays invisible to metadata polling (why Rescan rereads bytes).
+        let settled = share.path("Notes/b.md");
+        let old = std::fs::metadata(&settled).unwrap().modified().unwrap();
+        std::fs::write(&settled, "# NOTE\n").unwrap();
+        stamp(&settled, old);
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
     }
 
     #[test]
     fn renames_are_reported_as_removal_and_creation_including_case_only() {
-        let (_temp, root) = vault();
-        let share = Arc::new(Share::default());
-        let mut watcher = watcher(&root, &share);
-        settle(&mut watcher, &share);
-        std::fs::rename(root.join("Notes/b.md"), root.join("Notes/B.md")).unwrap();
-        std::fs::rename(root.join("a.md"), root.join("Notes/moved.md")).unwrap();
-        let changes = next(&mut watcher, &share);
+        let mut share = Harness::new();
+        std::fs::rename(share.path("Notes/b.md"), share.path("Notes/B.md")).unwrap();
+        std::fs::rename(share.path("a.md"), share.path("Notes/moved.md")).unwrap();
+        let changes = share.walk().unwrap();
         assert!(changes.removed.contains("Notes/b.md"), "{changes:?}");
         assert!(changes.removed.contains("a.md"), "{changes:?}");
         assert!(changes.changed.contains("Notes/moved.md"), "{changes:?}");
         // On a case-insensitive share both spellings name one file; the
         // caller's existence check then keeps it. Here the FS is sensitive.
-        if !root.join("Notes/b.md").exists() {
+        if !share.path("Notes/b.md").exists() {
             assert!(changes.changed.contains("Notes/B.md"), "{changes:?}");
         }
-        settle(&mut watcher, &share);
 
-        // A whole folder renamed away: its notes are removed, the folders hinted.
-        std::fs::rename(root.join("Notes"), root.join("Archive")).unwrap();
-        let changes = next(&mut watcher, &share);
+        // A whole folder renamed away: its notes are removed, both folders hinted.
+        std::fs::rename(share.path("Notes"), share.path("Archive")).unwrap();
+        let changes = share.walk().unwrap();
         assert!(changes.removed.contains("Notes/c.md"), "{changes:?}");
         assert!(changes.changed.contains("Archive/c.md"), "{changes:?}");
         assert!(changes.directories.contains("Notes"), "{changes:?}");
@@ -608,43 +629,34 @@ mod tests {
 
     #[test]
     fn disconnected_share_never_reports_removals_and_catches_up_after_reconnect() {
-        let (_temp, root) = vault();
-        let share = Arc::new(Share::default());
-        let mut watcher = watcher(&root, &share);
-        settle(&mut watcher, &share);
-
-        share.offline.store(true, Ordering::SeqCst);
-        walks(&share, 3);
-        assert!(
-            watcher.wait(QUIET).is_none(),
-            "offline must not empty the vault"
-        );
-        assert!(watcher.polling_status().unwrap().unavailable);
+        let mut share = Harness::new();
+        share.share.offline.store(true, Ordering::SeqCst);
+        for _ in 0..3 {
+            assert_eq!(share.walk(), None, "offline is unavailable, not empty");
+        }
         // Another client edits while this computer cannot reach the server.
-        std::fs::write(root.join("Notes/b.md"), "# b, edited while offline\n").unwrap();
-        std::fs::remove_file(root.join("Notes/c.md")).unwrap();
+        std::fs::write(share.path("Notes/b.md"), "# b, edited while offline\n").unwrap();
+        std::fs::remove_file(share.path("Notes/c.md")).unwrap();
 
-        share.offline.store(false, Ordering::SeqCst);
-        let changes = next(&mut watcher, &share);
-        assert!(changes.changed.contains("Notes/b.md"), "{changes:?}");
-        assert!(changes.removed.contains("Notes/c.md"), "{changes:?}");
-        assert!(!changes.removed.contains("a.md"), "{changes:?}");
-        assert!(!watcher.polling_status().unwrap().unavailable);
+        share.share.offline.store(false, Ordering::SeqCst);
+        let changes = share.walk().unwrap();
+        assert_eq!(changes.changed, set(&["Notes/b.md"]));
+        assert_eq!(changes.removed, set(&["Notes/c.md"]));
     }
 
     #[test]
     fn unreadable_subfolder_keeps_its_notes() {
-        let (_temp, root) = vault();
-        let share = Arc::new(Share::default());
-        let mut watcher = watcher(&root, &share);
-        settle(&mut watcher, &share);
-        *share.failing.lock().unwrap() = Some(root.join("Notes"));
-        std::fs::write(root.join("a.md"), "# positive control, longer\n").unwrap();
-        let changes = next(&mut watcher, &share);
-        assert!(changes.changed.contains("a.md"), "{changes:?}");
-        for changes in std::iter::once(changes).chain(settle(&mut watcher, &share)) {
-            assert!(changes.removed.is_empty(), "{changes:?}");
-        }
+        let mut share = Harness::new();
+        *share.share.failing.lock().unwrap() = Some(share.path("Notes"));
+        std::fs::write(share.path("a.md"), "# positive control, longer\n").unwrap();
+        let changes = share.walk().unwrap();
+        assert_eq!(changes.changed, set(&["a.md"]));
+        assert!(changes.removed.is_empty(), "{changes:?}");
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
+        // Once readable again, the folder's real state is reported.
+        std::fs::remove_file(share.path("Notes/c.md")).unwrap();
+        *share.share.failing.lock().unwrap() = None;
+        assert_eq!(share.walk().unwrap().removed, set(&["Notes/c.md"]));
     }
 
     #[test]
@@ -664,21 +676,57 @@ mod tests {
         );
     }
 
+    /// The thread is driven by a gate in the lister: each root listing
+    /// announces itself and waits for permission, so the test knows exactly
+    /// which walk has finished. Blocking channel handoffs, no sleeps.
     #[test]
-    fn dropping_the_watcher_stops_the_walk_thread() {
-        let (_temp, root) = vault();
-        let share = Arc::new(Share::default());
-        let watcher = watcher(&root, &share);
-        walks(&share, 1);
+    fn background_thread_delivers_walks_and_stops_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "# a\n").unwrap();
+        let (gate, gate_rx) = mpsc::sync_channel::<()>(0);
+        let (entered_tx, entered) = mpsc::channel::<()>();
+        let (gate_rx, entered_tx) = (Mutex::new(gate_rx), Mutex::new(entered_tx));
+        let listed_root = root.clone();
+        let config = Config {
+            min: Duration::ZERO,
+            max: Duration::ZERO,
+            first: Duration::ZERO,
+            list: Arc::new(move |dir: &Path| {
+                if dir == listed_root {
+                    let _ = entered_tx.lock().unwrap().send(());
+                    gate_rx
+                        .lock()
+                        .unwrap()
+                        .recv()
+                        .map_err(|_| std::io::Error::other("gate closed"))?;
+                }
+                list_dir(dir)
+            }),
+            ..Config::default()
+        };
+        const LIMIT: Duration = Duration::from_secs(30);
+        let mut watcher = VaultWatcher::polling_with(&root, config).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        gate.send(()).unwrap(); // baseline walk
+        entered.recv_timeout(LIMIT).unwrap(); // baseline done, next walk waits
+        assert_eq!(watcher.drain_preparation_changes(), None);
+        std::fs::write(root.join("new.md"), "# new\n").unwrap();
+        gate.send(()).unwrap(); // second walk
+        entered.recv_timeout(LIMIT).unwrap(); // its events are already sent
+        let changes = watcher.drain_preparation_changes().unwrap();
+        assert!(changes.changed.contains("new.md"), "{changes:?}");
+        let status = watcher.polling_status().unwrap();
+        assert!(!status.unavailable && status.last_walk.is_some());
+
         drop(watcher);
-        // The lister (holding a clone of `share`) is released with the thread.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Arc::strong_count(&share) > 1 {
-            assert!(
-                Instant::now() < deadline,
-                "poll thread outlived its watcher"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        // Closing the gate fails the blocked listing; the stopped thread then
+        // exits and drops the lister, which disconnects `entered`.
+        drop(gate);
+        assert_eq!(
+            entered.recv_timeout(LIMIT),
+            Err(mpsc::RecvTimeoutError::Disconnected),
+            "poll thread outlived its watcher"
+        );
     }
 }
