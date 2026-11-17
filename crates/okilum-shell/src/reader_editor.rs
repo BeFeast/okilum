@@ -1446,13 +1446,7 @@ impl Reader {
                     } else {
                         Vec::new()
                     };
-                    this.run_paste_follow_up_uploading(
-                        input.clone(),
-                        follow_up,
-                        upload_after,
-                        window,
-                        cx,
-                    );
+                    this.run_paste_follow_up(input.clone(), follow_up, upload_after, window, cx);
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {

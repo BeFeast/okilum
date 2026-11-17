@@ -218,7 +218,7 @@ impl Reader {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
-            self.run_paste_follow_up_uploading(input, follow_up, upload_after, window, cx);
+            self.run_paste_follow_up(input, follow_up, upload_after, window, cx);
         }
     }
 
@@ -237,21 +237,10 @@ impl Reader {
         }
     }
 
-    /// Start the background part of a paste.
-    pub(super) fn run_paste_follow_up(
-        &mut self,
-        input: Entity<EditorState>,
-        follow_up: FollowUp,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_paste_follow_up_uploading(input, follow_up, Vec::new(), window, cx);
-    }
-
-    /// As [`Self::run_paste_follow_up`]; `upload_after` are files the paste
+    /// Start the background part of a paste. `upload_after` are files the paste
     /// already linked in the text that remote image downloads rewrite. They
     /// upload once those downloads are done (#1073), never alongside them.
-    pub(super) fn run_paste_follow_up_uploading(
+    pub(super) fn run_paste_follow_up(
         &mut self,
         input: Entity<EditorState>,
         follow_up: FollowUp,
@@ -1016,7 +1005,7 @@ mod attachment_refresh_tests {
                     plan.image_options = options;
                     FollowUp::Files { plan, anchor }
                 };
-                reader.run_paste_follow_up(input, follow_up, window, cx);
+                reader.run_paste_follow_up(input, follow_up, Vec::new(), window, cx);
             });
             visual.run_until_parked();
             let (input, pasted) = reader.read_with(visual, |r, cx| {
