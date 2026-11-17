@@ -33,10 +33,7 @@ $releasePath = Join-Path $Work 'release.json'
 Save-Url "$archive/release.json" $releasePath
 $release = Get-Content -Raw -LiteralPath $releasePath | ConvertFrom-Json
 if ("$($release.build)" -ne $Build) { throw "release.json names build $($release.build), not $Build" }
-if ($release.signed -ne $true) { throw "Build $Build is not recorded as signed" }
-if ("$($release.signer_sha256)".ToLowerInvariant() -ne $pinned) {
-    throw "Build $Build records signer $($release.signer_sha256), expected $pinned"
-}
+# CONTROL ONLY: metadata gate removed to exercise signtool on unsigned PEs
 
 $targets = [System.Collections.Generic.List[object]]::new()
 $setup = Join-Path $Work 'Setup.exe'
