@@ -179,14 +179,29 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
+    // Reopening creates a new EditorState; f.input is the detached first one.
     f.reader.read_with(visual, |reader, cx| {
-        assert!(reader.editing.is_some(), "Edit reopens the saved result");
-        assert_eq!(value(&f, cx), formatted);
+        let editing = reader
+            .editing
+            .as_ref()
+            .expect("Edit reopens the saved result");
+        assert_eq!(editing.input.read(cx).value().as_ref(), formatted);
     });
     visual.dispatch_action(Undo);
     settle(visual);
-    f.reader.read_with(visual, |_, cx| {
-        assert_eq!(value(&f, cx), source, "one Undo survives the round trip")
+    f.reader.read_with(visual, |reader, cx| {
+        assert_eq!(
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .value()
+                .as_ref(),
+            source,
+            "one Undo survives the round trip"
+        )
     });
 }
 
