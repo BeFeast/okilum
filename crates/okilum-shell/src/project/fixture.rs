@@ -57,6 +57,11 @@ pub(super) struct Fake {
     pub local_projects: Mutex<Option<Vec<Project>>>,
     pub local_creates: Mutex<Vec<String>>,
     pub local_starts: Mutex<Vec<String>>,
+    /// Replays one frame of the recorded T3 launch fixture (#1420):
+    /// `{"frame": {manager, executors}, "firstItems": {...}, "receipt": {...}}`.
+    pub launch_t3: Mutex<Option<serde_json::Value>>,
+    /// Threads read while `launch_t3` is set, in order.
+    pub launch_reads: Mutex<Vec<String>>,
 }
 impl ManagerGateway for Fake {
     fn status(&self) -> GatewayStatus {
@@ -119,7 +124,12 @@ impl ManagerGateway for Fake {
         self.local_starts.lock().unwrap().push(project.into());
         Ok("mcp:fixture-local-manager".into())
     }
-    fn list_threads(&self, _: &str) -> Result<Vec<ThreadSummary>> {
+    fn list_threads(&self, project: &str) -> Result<Vec<ThreadSummary>> {
+        if let Some(t3) = self.launch_t3.lock().unwrap().as_ref() {
+            assert_eq!(project, "fixture-executors");
+            return serde_json::from_value(t3["frame"]["executors"].clone())
+                .map_err(|error| GatewayError::Protocol(error.to_string()));
+        }
         if let Some(error) = self.list_error.lock().unwrap().clone() {
             return Err(GatewayError::Protocol(error));
         }
@@ -129,6 +139,9 @@ impl ManagerGateway for Fake {
         self.reads.lock().unwrap().push(q.clone());
         if self.revoked {
             return Err(GatewayError::Revoked);
+        }
+        if let Some(t3) = self.launch_t3.lock().unwrap().as_ref() {
+            return launch_page(t3, q, &mut self.launch_reads.lock().unwrap());
         }
         let grown = *self.grown.lock().unwrap();
         let project_id = if self.local_projects.lock().unwrap().is_some() {
@@ -161,6 +174,10 @@ impl ManagerGateway for Fake {
             return Err(GatewayError::Unreachable(
                 "The response was interrupted".into(),
             ));
+        }
+        if let Some(t3) = self.launch_t3.lock().unwrap().as_ref() {
+            return serde_json::from_value(t3["receipt"].clone())
+                .map_err(|error| GatewayError::Protocol(error.to_string()));
         }
         Ok(SendReceipt {
             thread_id: message.thread_id.clone(),
@@ -227,6 +244,44 @@ impl ManagerGateway for Fake {
         *self.model_current.lock().unwrap() = Some(selection.clone());
         self.thread_configuration(thread)
     }
+}
+
+/// `t3_thread_read` of the recorded launch frame: the manager's detail, or a
+/// listed executor thread with its recorded first message.
+fn launch_page(
+    t3: &serde_json::Value,
+    q: &ThreadQuery,
+    reads: &mut Vec<String>,
+) -> Result<ThreadPage> {
+    use serde_json::json;
+    reads.push(q.thread_id.clone());
+    let frame = &t3["frame"];
+    let page = if frame["manager"]["threadId"] == q.thread_id.as_str() {
+        json!({"thread": frame["manager"], "items": [], "hasMore": false})
+    } else {
+        let row = frame["executors"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["threadId"] == q.thread_id.as_str())
+            })
+            .ok_or_else(|| GatewayError::Tool {
+                code: "thread_not_found".into(),
+                message: q.thread_id.clone(),
+            })?;
+        let items = t3["firstItems"]
+            .get(&q.thread_id)
+            .map(|item| json!([item]))
+            .unwrap_or(json!([]));
+        json!({
+            "thread": {"threadId": row["threadId"], "projectId": "fixture-executors",
+                "title": row["title"], "status": row["status"], "activeRunId": row["activeRunId"],
+                "providerInstanceId": "codex", "model": "gpt-6.1-sol", "runtimeMode": "full-access",
+                "linkedPullRequest": null, "updatedAt": row["updatedAt"]},
+            "items": items, "hasMore": false
+        })
+    };
+    serde_json::from_value(page).map_err(|error| GatewayError::Protocol(error.to_string()))
 }
 
 pub(super) fn view(

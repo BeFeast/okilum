@@ -1,0 +1,367 @@
+{
+ "_comment": "Wire shape of T3 MCP structuredContent for t3_thread_send, t3_thread_read (view=messages) and t3_thread_list (packages/contracts/src/orchestratorMcp.ts), in the order T3 reports one manager-mediated executor launch. Identifiers and text are synthetic; {{REQUEST_ID}} is replaced with the request under test. Used by okilum-t3 McpGateway tests and the okilum-shell fake gateway.",
+ "receipt": {
+  "threadId": "mcp:fixture-manager",
+  "messageId": "message:launch-request",
+  "runId": "run:launch-request",
+  "status": "queued",
+  "delivery": "queued"
+ },
+ "firstItems": {
+  "mcp:fixture-executor-new": {
+   "position": 0,
+   "itemId": "item:new-0",
+   "messageId": "message:new-0",
+   "runId": "run:executor-1",
+   "type": "user_message",
+   "status": "completed",
+   "text": "Okilum launch request: {{REQUEST_ID}}\nBootstrap: read the area rules and brief on the server before work.",
+   "textTruncated": true,
+   "nextTextOffset": 256,
+   "updatedAt": "2026-11-17T10:00:30.000Z"
+  },
+  "mcp:fixture-executor-unrelated": {
+   "position": 0,
+   "itemId": "item:unrelated-0",
+   "messageId": "message:unrelated-0",
+   "runId": "run:unrelated",
+   "type": "user_message",
+   "status": "completed",
+   "text": "Fix the flaky sync test.\nOkilum launch request: {{REQUEST_ID}} appears only as quoted text here.",
+   "updatedAt": "2026-11-17T10:00:20.000Z"
+  },
+  "mcp:fixture-executor-old": {
+   "position": 0,
+   "itemId": "item:old-0",
+   "messageId": "message:old-0",
+   "runId": "run:old",
+   "type": "user_message",
+   "status": "completed",
+   "text": "Earlier task",
+   "updatedAt": "2026-11-16T08:00:00.000Z"
+  }
+ },
+ "frames": [
+  {
+   "name": "manager-busy-with-earlier-turn",
+   "manager": {
+    "threadId": "mcp:fixture-manager",
+    "projectId": "fixture-managers",
+    "title": "Project manager",
+    "status": "running",
+    "activeRunId": "run:earlier",
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "runtimeMode": "full-access",
+    "linkedPullRequest": null,
+    "itemCount": 40,
+    "pendingRequestCount": 0,
+    "updatedAt": "2026-11-17T10:00:05.000Z"
+   },
+   "executors": [
+    {
+     "threadId": "mcp:fixture-executor-old",
+     "title": "Earlier executor",
+     "status": "completed",
+     "latestRunId": "run:old",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 120,
+     "updatedAt": "2026-11-16T08:00:00.000Z"
+    }
+   ]
+  },
+  {
+   "name": "manager-run-accepted",
+   "manager": {
+    "threadId": "mcp:fixture-manager",
+    "projectId": "fixture-managers",
+    "title": "Project manager",
+    "status": "running",
+    "activeRunId": "run:launch-request",
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "runtimeMode": "full-access",
+    "linkedPullRequest": null,
+    "itemCount": 40,
+    "pendingRequestCount": 0,
+    "updatedAt": "2026-11-17T10:00:05.000Z"
+   },
+   "executors": [
+    {
+     "threadId": "mcp:fixture-executor-old",
+     "title": "Earlier executor",
+     "status": "completed",
+     "latestRunId": "run:old",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 120,
+     "updatedAt": "2026-11-16T08:00:00.000Z"
+    }
+   ]
+  },
+  {
+   "name": "executor-preparing",
+   "manager": {
+    "threadId": "mcp:fixture-manager",
+    "projectId": "fixture-managers",
+    "title": "Project manager",
+    "status": "running",
+    "activeRunId": "run:launch-request",
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "runtimeMode": "full-access",
+    "linkedPullRequest": null,
+    "itemCount": 40,
+    "pendingRequestCount": 0,
+    "updatedAt": "2026-11-17T10:00:05.000Z"
+   },
+   "executors": [
+    {
+     "threadId": "mcp:fixture-executor-old",
+     "title": "Earlier executor",
+     "status": "completed",
+     "latestRunId": "run:old",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 120,
+     "updatedAt": "2026-11-16T08:00:00.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-unrelated",
+     "title": "Unrelated executor",
+     "status": "running",
+     "latestRunId": "run:unrelated",
+     "activeRunId": "run:unrelated",
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 3,
+     "updatedAt": "2026-11-17T10:00:20.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-new",
+     "title": "UI executor",
+     "status": "preparing",
+     "latestRunId": null,
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 1,
+     "updatedAt": "2026-11-17T10:00:30.000Z"
+    }
+   ]
+  },
+  {
+   "name": "executor-running",
+   "manager": {
+    "threadId": "mcp:fixture-manager",
+    "projectId": "fixture-managers",
+    "title": "Project manager",
+    "status": "completed",
+    "activeRunId": null,
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "runtimeMode": "full-access",
+    "linkedPullRequest": null,
+    "itemCount": 40,
+    "pendingRequestCount": 0,
+    "updatedAt": "2026-11-17T10:00:05.000Z"
+   },
+   "executors": [
+    {
+     "threadId": "mcp:fixture-executor-old",
+     "title": "Earlier executor",
+     "status": "completed",
+     "latestRunId": "run:old",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 120,
+     "updatedAt": "2026-11-16T08:00:00.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-unrelated",
+     "title": "Unrelated executor",
+     "status": "running",
+     "latestRunId": "run:unrelated",
+     "activeRunId": "run:unrelated",
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 3,
+     "updatedAt": "2026-11-17T10:00:20.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-new",
+     "title": "UI executor",
+     "status": "running",
+     "latestRunId": "run:executor-1",
+     "activeRunId": "run:executor-1",
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 9,
+     "updatedAt": "2026-11-17T10:01:00.000Z"
+    }
+   ]
+  },
+  {
+   "name": "executor-completed",
+   "manager": {
+    "threadId": "mcp:fixture-manager",
+    "projectId": "fixture-managers",
+    "title": "Project manager",
+    "status": "completed",
+    "activeRunId": null,
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "runtimeMode": "full-access",
+    "linkedPullRequest": null,
+    "itemCount": 40,
+    "pendingRequestCount": 0,
+    "updatedAt": "2026-11-17T10:00:05.000Z"
+   },
+   "executors": [
+    {
+     "threadId": "mcp:fixture-executor-old",
+     "title": "Earlier executor",
+     "status": "completed",
+     "latestRunId": "run:old",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 120,
+     "updatedAt": "2026-11-16T08:00:00.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-unrelated",
+     "title": "Unrelated executor",
+     "status": "completed",
+     "latestRunId": "run:unrelated",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 3,
+     "updatedAt": "2026-11-17T10:00:20.000Z"
+    },
+    {
+     "threadId": "mcp:fixture-executor-new",
+     "title": "UI executor",
+     "status": "completed",
+     "latestRunId": "run:executor-1",
+     "activeRunId": null,
+     "providerInstanceId": "codex",
+     "model": "gpt-6.1-sol",
+     "runtimeMode": "full-access",
+     "linkedPullRequest": null,
+     "pullRequests": null,
+     "settled": false,
+     "parentThreadId": null,
+     "itemCount": 80,
+     "updatedAt": "2026-11-17T10:20:00.000Z"
+    }
+   ]
+  }
+ ],
+ "outcomes": {
+  "failed": {
+   "threadId": "mcp:fixture-executor-new",
+   "title": "UI executor",
+   "status": "failed",
+   "latestRunId": "run:executor-1",
+   "activeRunId": null,
+   "providerInstanceId": "codex",
+   "model": "gpt-6.1-sol",
+   "runtimeMode": "full-access",
+   "linkedPullRequest": null,
+   "pullRequests": null,
+   "settled": false,
+   "parentThreadId": null,
+   "itemCount": 12,
+   "updatedAt": "2026-11-17T10:05:00.000Z"
+  },
+  "interrupted": {
+   "threadId": "mcp:fixture-executor-new",
+   "title": "UI executor",
+   "status": "interrupted",
+   "latestRunId": "run:executor-1",
+   "activeRunId": null,
+   "providerInstanceId": "codex",
+   "model": "gpt-6.1-sol",
+   "runtimeMode": "full-access",
+   "linkedPullRequest": null,
+   "pullRequests": null,
+   "settled": false,
+   "parentThreadId": null,
+   "itemCount": 12,
+   "updatedAt": "2026-11-17T10:05:00.000Z"
+  },
+  "cancelled": {
+   "threadId": "mcp:fixture-executor-new",
+   "title": "UI executor",
+   "status": "cancelled",
+   "latestRunId": "run:executor-1",
+   "activeRunId": null,
+   "providerInstanceId": "codex",
+   "model": "gpt-6.1-sol",
+   "runtimeMode": "full-access",
+   "linkedPullRequest": null,
+   "pullRequests": null,
+   "settled": false,
+   "parentThreadId": null,
+   "itemCount": 12,
+   "updatedAt": "2026-11-17T10:05:00.000Z"
+  }
+ }
+}
