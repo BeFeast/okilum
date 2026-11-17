@@ -29,6 +29,7 @@ pub mod manifest;
 mod mcp;
 pub mod message_types;
 pub mod models;
+pub(crate) mod network;
 pub mod oauth;
 pub mod projection;
 pub mod projects;

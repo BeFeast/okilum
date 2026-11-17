@@ -31,7 +31,7 @@ pub struct Authorization {
 
 impl Authorization {
     pub fn prepare(env: &Environment, client_name: &str) -> Result<Self> {
-        let http = http_client()?;
+        let http = http_client(env)?;
         let metadata = discover(&http, env)?;
         let callback = Callback::bind()?;
         callback.listener.set_nonblocking(true)?;

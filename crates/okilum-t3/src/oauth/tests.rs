@@ -173,7 +173,7 @@ fn metadata_pointing_elsewhere_is_refused() {
         )
     });
     let env = Environment::new("test", &server.origin).unwrap();
-    let error = discover(&http_client().unwrap(), &env).unwrap_err();
+    let error = discover(&http_client(&env).unwrap(), &env).unwrap_err();
     assert!(error.to_string().contains("issuer"), "{error}");
 }
 
@@ -224,7 +224,7 @@ fn a_pasted_callback_after_loopback_timeout_keeps_pkce_and_rejects_foreign_answe
     let env = Environment::new("test", &server.origin).unwrap();
     let pending = Authorization::prepare(&env, "Okilum on test").unwrap();
     // Browser approved, but never delivered its redirect to the listener.
-    let response = http_client()
+    let response = http_client(&env)
         .unwrap()
         .get(pending.url().clone())
         .send()
@@ -296,12 +296,9 @@ fn a_pasted_callback_after_loopback_timeout_keeps_pkce_and_rejects_foreign_answe
 #[test]
 fn waiting_longer_reopens_the_original_callback_and_cancel_is_bounded() {
     let (server, _) = fake_t3_oauth(str::to_owned);
-    let pending = Authorization::prepare(
-        &Environment::new("test", &server.origin).unwrap(),
-        "Okilum on test",
-    )
-    .unwrap();
-    let response = http_client()
+    let env = Environment::new("test", &server.origin).unwrap();
+    let pending = Authorization::prepare(&env, "Okilum on test").unwrap();
+    let response = http_client(&env)
         .unwrap()
         .get(pending.url().clone())
         .send()

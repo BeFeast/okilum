@@ -447,9 +447,8 @@ pub fn discover(vault: &Path) -> Discovery {
 /// Public T3 descriptor: browser login stays inside WKWebView and does not
 /// require copying cookies or obtaining an MCP bearer token first.
 pub fn browser_identity(environment: &crate::Environment) -> Result<crate::ServerIdentity> {
-    let http = reqwest::blocking::Client::builder()
+    let http = crate::network::builder(&environment.origin(), std::time::Duration::from_secs(15))?
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let url = url::Url::parse(&environment.origin())?.join("/.well-known/t3/environment")?;

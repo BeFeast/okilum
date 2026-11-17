@@ -84,6 +84,8 @@ impl Reader {
             self.repository = base.to_owned();
             self.cache.clear();
             self.retry_at = None;
+            // The client's Windows TLS/proxy policy belongs to the old origin.
+            self.client = None;
         }
         if let Some(remaining) = self
             .retry_at
@@ -96,11 +98,14 @@ impl Reader {
         }
         if self.client.is_none() {
             self.client = Some(
-                reqwest::blocking::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .connect_timeout(Duration::from_secs(3))
-                    .user_agent("Okilum-Board/1")
-                    .build()?,
+                crate::network::builder(
+                    &repo.origin().ascii_serialization(),
+                    Duration::from_secs(20),
+                )?
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(3))
+                .user_agent(super::BOARD_USER_AGENT)
+                .build()?,
             );
         }
         let deadline = Instant::now() + Duration::from_secs(20);
