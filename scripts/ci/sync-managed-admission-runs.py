@@ -25,6 +25,7 @@ TESTS = {
     'issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary',
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
+    'issue3105_receiver_shares_onward_then_refreshes_and_removes_that_computer',
 }
 CHECKPOINTS = (
     'destination-prepared', 'source-staged', 'source-partial-blob', 'source-prepared',
