@@ -1,0 +1,42 @@
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1452,14 +1452,26 @@
+             .clone()
+             .filter(|_| self.copy_code.is_some());
+         let mut display = self.clone();
++        // A header row exists only for a label to show (#3119): an empty row
++        // above the code reads as a stray leading newline. An explicit fence
++        // language reserves it before lazy resolution, so it never jumps.
++        let mut header = false;
+         if let Some(resolver) = &resolver {
+-            display.lang = self.language_cache.lock().ok().and_then(|cache| {
++            let cached = self.language_cache.lock().ok().and_then(|cache| {
+                 cache
+                     .as_ref()
+                     .filter(|c| Arc::ptr_eq(&c.resolver, resolver))
+-                    .and_then(|c| c.language.clone())
++                    .map(|c| c.language.clone())
+             });
++            header = match &cached {
++                Some(language) => language.is_some(),
++                None => self.lang.is_some(),
++            };
++            display.lang = cached.flatten();
+         }
++        // Without a header the actions sit in the top-right corner; keep the
++        // code clear of them instead of drawing text underneath.
++        let corner_actions = !header && node_cx.code_block_actions.is_some();
+         let block = self.clone();
+ 
+         div()
+@@ -1479,8 +1491,8 @@
+                     .w_full()
+                     .min_w_0()
+                     .p_3()
+-                    // Reserve header space before lazy inference: no layout jump.
+-                    .when(resolver.is_some(), |el| el.pt(px(36.)))
++                    .when(header, |el| el.pt(px(36.)))
++                    .when(corner_actions, |el| el.pr(px(40.)))
+                     .on_prepaint(move |bounds, window, cx| {
+                         let Some(resolver) = &resolver else {
+                             return;
