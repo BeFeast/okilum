@@ -30,9 +30,15 @@ pub(super) struct Target {
     root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
+    /// Whether this paste uploads (#1073), decided when it happened.
+    upload: Option<reader_ui_state::UploadDecision>,
 }
 
 impl Target {
+    pub(super) fn upload_decision(&self) -> Option<reader_ui_state::UploadDecision> {
+        self.upload
+    }
+
     fn files_saved(&self, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
         if let Some(reader) = self.reader.upgrade() {
             reader.update(cx, |reader, cx| {
@@ -265,6 +271,8 @@ impl Reader {
             input,
             root: self.vault_root.clone(),
             path,
+            // Read at the paste: later background results carry it.
+            upload: reader_ui_state::upload_decision(cx),
         }
     }
 

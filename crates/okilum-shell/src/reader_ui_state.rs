@@ -1823,6 +1823,29 @@ pub(crate) fn upload_pasted_generation(cx: &App) -> u64 {
         .map_or(0, |generation| generation.0)
 }
 
+/// Whether a paste uploads, decided once when the paste happens (#1073) and
+/// carried with its background work: a conversion, copy or download that
+/// finishes later never reads the setting afresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UploadDecision {
+    generation: u64,
+}
+
+/// The decision for a paste happening now: `None` while the setting is off.
+pub(crate) fn upload_decision(cx: &App) -> Option<UploadDecision> {
+    upload_pasted_files(cx).then(|| UploadDecision {
+        generation: upload_pasted_generation(cx),
+    })
+}
+
+/// A paste's decision still holds: it was on at the paste, it is on now, and
+/// it was never turned off in between (any change bumps the generation).
+pub(crate) fn upload_decision_holds(decision: Option<UploadDecision>, cx: &App) -> bool {
+    decision.is_some_and(|decision| {
+        upload_pasted_files(cx) && upload_pasted_generation(cx) == decision.generation
+    })
+}
+
 pub(crate) fn set_upload_pasted_files(value: bool, cx: &mut App) {
     if !installed(cx) || upload_pasted_files(cx) == value {
         return;
@@ -2446,6 +2469,34 @@ mod tests {
         assert_eq!(restored.panels, legacy.panels);
         assert_eq!(restored.widths, legacy.widths);
         assert_eq!(restored.project_layout, saved.project_layout);
+    }
+
+    /// #1073, review of #3114: whether a paste uploads is decided at the
+    /// paste. Off then means never, even if the setting is turned on before
+    /// a background conversion finishes; an off→on cycle in between cancels.
+    #[gpui::test]
+    fn an_upload_decision_is_taken_at_the_paste(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            // Off at the paste: no decision, whatever happens later.
+            let off_at_paste = upload_decision(cx);
+            assert_eq!(off_at_paste, None);
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(off_at_paste, cx));
+            // On at the paste: holds while nothing changes.
+            let on_at_paste = upload_decision(cx);
+            assert!(on_at_paste.is_some());
+            assert!(upload_decision_holds(on_at_paste, cx));
+            // Off, then on again before the work finishes: cancelled.
+            set_upload_pasted_files(false, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            // A new paste decides afresh.
+            assert!(upload_decision_holds(upload_decision(cx), cx));
+        });
     }
 
     /// #1073: upload of pasted files is off unless the user turns it on,

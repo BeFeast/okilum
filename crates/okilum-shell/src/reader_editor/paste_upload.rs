@@ -44,7 +44,7 @@ pub(super) fn start(
 
 /// An upload decided when the paste went in, run later: a paste whose remote
 /// images are still downloading (#1073). Its links are tracked from the
-/// insert on, the setting and its generation are those of the paste, and the
+/// insert on, its upload decision is the one taken at the paste, and the
 /// downloads add the links they write ([`Pending::add`]). Dropped without
 /// [`Pending::start`], it uploads nothing.
 pub(super) struct Pending {
@@ -52,8 +52,9 @@ pub(super) struct Pending {
     watch: gpui::Subscription,
 }
 
-/// Begin tracking the links to `paths` in `span` of `input`, when the setting
-/// is on now. `None` when it is off: nothing of this paste will upload.
+/// Begin tracking the links to `paths` in `span` of `input`, when the paste's
+/// decision ([`Target::upload_decision`], taken at the paste) still holds.
+/// `None` otherwise: nothing of this paste will upload.
 pub(super) fn track(
     target: Target,
     input: &Entity<EditorState>,
@@ -62,10 +63,10 @@ pub(super) fn track(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Pending> {
-    if !reader_ui_state::upload_pasted_files(cx) {
+    let decision = target.upload_decision();
+    if !reader_ui_state::upload_decision_holds(decision, cx) {
         return None;
     }
-    let generation = reader_ui_state::upload_pasted_generation(cx);
     let links: Links = Rc::new(RefCell::new(Vec::new()));
     // Follow every edit of this editor until the job ends.
     let followed = links.clone();
@@ -75,7 +76,7 @@ pub(super) fn track(
             target,
             input: input.clone(),
             links,
-            generation,
+            decision,
             handle: window.window_handle(),
         },
         watch,
@@ -126,7 +127,7 @@ struct Job {
     target: Target,
     input: Entity<EditorState>,
     links: Links,
-    generation: u64,
+    decision: Option<reader_ui_state::UploadDecision>,
     handle: gpui::AnyWindowHandle,
 }
 
@@ -153,12 +154,9 @@ fn by_file(links: &[TrackedLink]) -> Vec<PathBuf> {
     files
 }
 
-/// Still on, and never turned off since the job started.
-fn enabled(generation: u64, cx: &gpui::AsyncApp) -> bool {
-    cx.update(|cx| {
-        reader_ui_state::upload_pasted_files(cx)
-            && reader_ui_state::upload_pasted_generation(cx) == generation
-    })
+/// On at the paste, on now, and never turned off in between.
+fn enabled(decision: Option<reader_ui_state::UploadDecision>, cx: &gpui::AsyncApp) -> bool {
+    cx.update(|cx| reader_ui_state::upload_decision_holds(decision, cx))
 }
 
 async fn run(job: Job, cx: &mut gpui::AsyncApp) {
@@ -167,7 +165,7 @@ async fn run(job: Job, cx: &mut gpui::AsyncApp) {
     let files = by_file(&job.links.borrow());
     let handle = job.handle;
     let token = note_upload::token(cx).await;
-    if !enabled(job.generation, cx) {
+    if !enabled(job.decision, cx) {
         diagnostic_error!("Upload: cancelled before it started (setting turned off)");
         return;
     }
@@ -194,7 +192,7 @@ async fn run(job: Job, cx: &mut gpui::AsyncApp) {
     let mut cancelled = false;
     for path in files {
         // Checked before every send: off means nothing more leaves.
-        if !enabled(job.generation, cx) {
+        if !enabled(job.decision, cx) {
             cancelled = true;
             break;
         }
@@ -221,7 +219,7 @@ async fn run(job: Job, cx: &mut gpui::AsyncApp) {
             }
         };
         uploaded += 1;
-        if !enabled(job.generation, cx) {
+        if !enabled(job.decision, cx) {
             // Turned off while this one was under way: the note stays local.
             cancelled = true;
             break;

@@ -26,6 +26,11 @@ default.
 - The local file always stays (decision Q2, 17.11). A failed upload, a
   closed note or a link the user changed meanwhile leaves the local link,
   and a toast says which.
+- Whether a paste uploads is decided when the paste happens
+  (`UploadDecision`, carried in the paste's `Target` into every background
+  result: file copies, image saves, large rich-text conversion, remote
+  downloads). Off at the paste means never, even if the setting is turned on
+  before the background work finishes.
 - The setting is checked again before every file is sent, together with a
   session generation bumped on every change. Turning it off cancels the job
   for good, even if it is turned on again before the job notices: nothing
