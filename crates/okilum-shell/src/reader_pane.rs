@@ -11,8 +11,22 @@
 //! borrows. The second pane's host stores the inactive surface beside it and
 //! swaps on focus, so these call sites do not change again.
 use super::*;
+use reader_panes::PaneId;
+
+/// What background work for a surface captures (#773, stage 2): the pane it
+/// was started for and the generation current then. A completion publishes
+/// only while both still match, so a late result can never land in a pane
+/// that was replaced, closed or reused for another note.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Ticket {
+    pane: PaneId,
+    generation: u64,
+}
 
 pub(super) struct Surface {
+    /// Stable for this surface's lifetime; a replacement surface gets a new one.
+    id: PaneId,
+
     // The rendered document and this note's history, positions and pending
     // landing.
     pub content: Entity<TextViewState>,
@@ -66,6 +80,23 @@ pub(super) struct Surface {
     pub file_preview: Option<reader_files::FilePreview>,
     pub typed_navigation: reader_typed_view::Navigation,
     pub hover_preview: reader_hover::HoverPreview,
+
+    // Load pipeline: the document being published into this surface and
+    // what it has recorded as usable. The vault's own preparation
+    // (`Reader::loading`) stays window-level.
+    pub pending_open_document: Option<reader_loading::PendingDocument>,
+    pub queued_open_note: Option<String>,
+    /// Where an external link queued with `queued_open_note` lands (#1049).
+    pub queued_landing: Option<okilum_core::deep_link::Position>,
+    pub usable_document: bool,
+    pub last_recorded_document: Option<(PathBuf, String, u64)>,
+
+    /// Test-only: holds the next document preparation before it publishes.
+    #[cfg(test)]
+    pub preparation_hold: Option<async_channel::Receiver<()>>,
+    /// Test-only: completions this surface observed and refused as stale.
+    #[cfg(test)]
+    pub refused: Vec<Ticket>,
 }
 
 impl Surface {
@@ -76,6 +107,7 @@ impl Surface {
         use_html: bool,
     ) -> Self {
         Self {
+            id: PaneId::next(),
             content,
             _content_sub: content_sub,
             navigation: Default::default(),
@@ -105,6 +137,58 @@ impl Surface {
             file_preview: None,
             typed_navigation: Default::default(),
             hover_preview: Default::default(),
+            pending_open_document: None,
+            queued_open_note: None,
+            queued_landing: None,
+            usable_document: false,
+            last_recorded_document: None,
+            #[cfg(test)]
+            preparation_hold: None,
+            #[cfg(test)]
+            refused: Vec::new(),
         }
     }
+
+    /// For work that must not outlive the document's navigation generation.
+    pub(super) fn navigation_ticket(&self) -> Ticket {
+        Ticket {
+            pane: self.id,
+            generation: self.navigation.generation,
+        }
+    }
+
+    /// For a document preparation request (`open_note` and its variants).
+    pub(super) fn preparation_ticket(&self) -> Ticket {
+        Ticket {
+            pane: self.id,
+            generation: self.navigation.preparation_generation,
+        }
+    }
+
+    pub(super) fn holds_navigation(&mut self, ticket: Ticket) -> bool {
+        self.holds(ticket, self.navigation.generation)
+    }
+
+    pub(super) fn holds_preparation(&mut self, ticket: Ticket) -> bool {
+        self.holds(ticket, self.navigation.preparation_generation)
+    }
+
+    fn holds(&mut self, ticket: Ticket, generation: u64) -> bool {
+        let current = ticket.pane == self.id && ticket.generation == generation;
+        #[cfg(test)]
+        if !current {
+            self.refused.push(ticket);
+        }
+        current
+    }
+
+    /// Test-only: this surface is closed and a fresh one takes its place with
+    /// the same generations, so only the pane identity tells them apart.
+    #[cfg(test)]
+    pub(super) fn reopen_as_new_pane(&mut self) {
+        self.id = PaneId::next();
+    }
 }
+
+#[cfg(test)]
+mod tests;

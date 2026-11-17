@@ -1501,7 +1501,7 @@ impl Reader {
         let observer = cx.observe_in(&content, window, |this, _, window, cx| {
             this.publish_pending_document(window, cx)
         });
-        self.pending_open_document = Some(PendingDocument {
+        self.pane.pending_open_document = Some(PendingDocument {
             intent,
             vault,
             searcher,
@@ -1519,6 +1519,7 @@ impl Reader {
 
     fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(status) = self
+            .pane
             .pending_open_document
             .as_ref()
             .and_then(|pending| pending.content.read(cx).preparation_status())
@@ -1526,7 +1527,7 @@ impl Reader {
             return;
         };
         if status.is_ok() {
-            let pending = self.pending_open_document.as_mut().unwrap();
+            let pending = self.pane.pending_open_document.as_mut().unwrap();
             if !pending.languages_prepared {
                 if pending.language_task.is_none() {
                     let content = pending.content.clone();
@@ -1536,7 +1537,7 @@ impl Reader {
                     pending.language_task = Some(cx.spawn_in(window, async move |this, cx| {
                         work.await;
                         let _ = this.update_in_own_window(cx, |this, window, cx| {
-                            let Some(pending) = this.pending_open_document.as_mut() else {
+                            let Some(pending) = this.pane.pending_open_document.as_mut() else {
                                 return;
                             };
                             if pending.content != content {
@@ -1550,7 +1551,7 @@ impl Reader {
                 return;
             }
         }
-        if self.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
+        if self.pane.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
                 Box::new(|this, window, cx| this.publish_pending_document(window, cx)),
                 window,
@@ -1558,7 +1559,7 @@ impl Reader {
             );
             return;
         }
-        let Some(pending) = self.pending_open_document.take() else {
+        let Some(pending) = self.pane.pending_open_document.take() else {
             return;
         };
         if let Err(error) = status {
@@ -1663,7 +1664,7 @@ impl Reader {
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
             self.link_notice = None;
-            self.last_recorded_document = None;
+            self.pane.last_recorded_document = None;
             self.record_usable_document(cx);
         } else {
             self.accept_prepared_document_using(
@@ -1689,9 +1690,9 @@ impl Reader {
             .as_ref()
             .and_then(|load| load.opts.landing.clone())
             .filter(|_| !preserve_document);
-        if let Some(note) = self.queued_open_note.take() {
+        if let Some(note) = self.pane.queued_open_note.take() {
             let edit = self.queued_edit_note.take().as_deref() == Some(note.as_str());
-            match self.queued_landing.take() {
+            match self.pane.queued_landing.take() {
                 Some(position) => self.open_link(&note, position, window, cx),
                 None if edit => self.open_created_note(&note, window, cx),
                 None => self.open_note(&note, None, window, cx),
@@ -1887,8 +1888,8 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = self.pane.current_rel.clone();
         let root = self.vault_root.clone();
-        let navigation = self.pane.navigation.generation;
-        let generation = self.pane.navigation.preparation_generation;
+        let navigation = self.pane.navigation_ticket();
+        let preparation = self.pane.preparation_ticket();
         let html = self.pane.use_html;
         self.pane.navigation.reconciliation_generation = self
             .pane
@@ -1955,8 +1956,8 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.pane.current_rel != rel
-                    || this.pane.navigation.generation != navigation
-                    || this.pane.navigation.preparation_generation != generation
+                    || !this.pane.holds_navigation(navigation)
+                    || !this.pane.holds_preparation(preparation)
                     || this.pane.navigation.reconciliation_generation != reconciliation
                 {
                     return;
@@ -2244,7 +2245,7 @@ impl Reader {
             document,
             self.pane.navigation.generation,
         );
-        if self.last_recorded_document.as_ref() == Some(&identity) {
+        if self.pane.last_recorded_document.as_ref() == Some(&identity) {
             return;
         }
         if let Some(send) = &self.session_records {
@@ -2270,19 +2271,19 @@ impl Reader {
                 })
                 .is_ok()
             {
-                self.last_recorded_document = Some(identity);
+                self.pane.last_recorded_document = Some(identity);
             }
         }
     }
 
     pub(crate) fn document_ready(&self) -> bool {
-        self.usable_document
+        self.pane.usable_document
     }
 
     pub(crate) fn cancel_loading(&mut self, cx: &mut Context<Self>) {
         if let Some(load) = self.loading.as_mut().filter(|l| l.active) {
             load.cancellation.cancel();
-            self.pending_open_document = None;
+            self.pane.pending_open_document = None;
             load.active = false;
             load.phase = "Preparation cancelled".into();
             load.opts.cache_lease = None;
@@ -2447,7 +2448,7 @@ impl Reader {
         if let Some(load) = &self.loading {
             load.cancellation.cancel();
         }
-        self.pending_open_document = None;
+        self.pane.pending_open_document = None;
         let generation = self
             .loading
             .as_ref()

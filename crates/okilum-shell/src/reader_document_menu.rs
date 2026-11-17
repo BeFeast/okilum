@@ -591,7 +591,7 @@ impl Reader {
         self.pane.navigation.preparation_generation =
             self.pane.navigation.preparation_generation.wrapping_add(1);
         self.pane.navigation.generation = self.pane.navigation.generation.wrapping_add(1);
-        self.pending_open_document = None;
+        self.pane.pending_open_document = None;
         self.pane.timeline = None;
         self.pane.current_rel.clear();
         self.pane.current_title.clear();
@@ -602,7 +602,7 @@ impl Reader {
         self.editing = None;
         self.pane.table_overlay = None;
         self.pane.find_open = false;
-        self.usable_document = false;
+        self.pane.usable_document = false;
         self.pane.outline.clear();
         self.outline_list.reset(0);
         // Through set_backlinks: the cards' ranges and the list must change with it (#1313).
@@ -615,7 +615,7 @@ impl Reader {
         self.pane.link_original_source = None;
         self.pane.link_rendered_source = None;
         self.pane.link_identities = Arc::default();
-        self.last_recorded_document = None;
+        self.pane.last_recorded_document = None;
         if let Some(send) = &self.session_records {
             let _ = send.try_send(reader_loading::SessionRecord {
                 root: self.vault_root.clone(),

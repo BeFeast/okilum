@@ -1408,8 +1408,8 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
                             None => reader.open_note(note, None, window, cx),
                         }
                     } else {
-                        reader.queued_open_note = Some(note.clone());
-                        reader.queued_landing = opts.landing.clone();
+                        reader.pane.queued_open_note = Some(note.clone());
+                        reader.pane.queued_landing = opts.landing.clone();
                         reader.queued_edit_note = opts.created_note.then(|| note.clone());
                     }
                 }
@@ -2832,7 +2832,7 @@ mod entry_tests {
         busy.try_lock().unwrap();
         for reader in cx.update(|cx| readers(cx)) {
             reader.update(cx, |reader, cx| {
-                reader.last_recorded_document = None;
+                reader.pane.last_recorded_document = None;
                 reader.record_usable_document(cx);
             });
         }

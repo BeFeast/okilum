@@ -1899,10 +1899,6 @@ struct Reader {
     recovery_dismissed: bool,
     recovery_startup: bool,
     loading: Option<reader_loading::Loading>,
-    pending_open_document: Option<reader_loading::PendingDocument>,
-    queued_open_note: Option<String>,
-    /// Where an external link queued with `queued_open_note` lands (#1049).
-    queued_landing: Option<okilum_core::deep_link::Position>,
     queued_edit_note: Option<String>,
     /// An external link opened while editing: once its note is accepted, the
     /// editor returns there with the caret on the link's line (#1049).
@@ -1916,14 +1912,12 @@ struct Reader {
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
     shared_service_version: u64,
-    usable_document: bool,
     /// When the current note was requested, for the `note_open_*` phases (#1003).
     open_started: Option<std::time::Instant>,
     /// Watches the current note's parse for `note_open_parsed`; replaced per open.
     note_body_trace: Option<Subscription>,
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
-    last_recorded_document: Option<(PathBuf, String, u64)>,
     /// The note part of the native window title; the vault part is added
     /// from its display name, so a rename can retitle the window (#1327).
     title_note: Option<String>,
@@ -2216,9 +2210,6 @@ impl Reader {
             panel_capture: Default::default(),
             ui_state: Default::default(),
             loading: None,
-            pending_open_document: None,
-            queued_open_note: None,
-            queued_landing: None,
             queued_edit_note: None,
             pending_link_edit: None,
             side_panels: [None, None],
@@ -2229,12 +2220,10 @@ impl Reader {
             shared_service_version: 0,
             vault_publication_revision: (0, 0),
             source_publication_epoch: 0,
-            usable_document: false,
             open_started: None,
             note_body_trace: None,
             session_directory: opts.session_directory.clone(),
             session_records: None,
-            last_recorded_document: None,
             title_note: None,
             index_dir,
             cache_lease: None,
@@ -2927,7 +2916,7 @@ impl Reader {
         self.pane.table_overlay = None;
         self.discover_source_recovery(cx);
         self.note_opened(cx);
-        self.usable_document = true;
+        self.pane.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
         self.pane.current_title = self.note_label(rel);
@@ -3105,7 +3094,7 @@ impl Reader {
         self.cancel_pending_landing();
         self.pane.navigation.pending_landing = Some(position);
         let landing = self.pane.navigation.landing_generation;
-        let generation = self.pane.navigation.generation;
+        let ticket = self.pane.navigation_ticket();
         let content = self.pane.content.entity_id();
         cx.spawn(async move |entity, cx| {
             loop {
@@ -3117,7 +3106,7 @@ impl Reader {
                         if landing != this.pane.navigation.landing_generation {
                             return true;
                         }
-                        if generation != this.pane.navigation.generation
+                        if !this.pane.holds_navigation(ticket)
                             || content != this.pane.content.entity_id()
                         {
                             this.pane.navigation.pending_landing = None;
