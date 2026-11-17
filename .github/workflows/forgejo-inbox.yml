@@ -35,6 +35,8 @@ jobs:
         cargo test --locked --workspace
     - name: Consistent SQLite backup and restore
       run: python3 inbox/deploy/test_backup.py
+    - name: Ordered Inbox/ingress restart and rollback unit tests
+      run: python3 -I -m unittest discover -s inbox/deploy -p 'test_restart.py' -v
     - name: Web outbox and WebAuthn encoding tests
       working-directory: web/inbox
       run: |
