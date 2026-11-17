@@ -773,7 +773,7 @@ impl Workspace {
                             .small()
                             .ghost()
                             .label(label)
-                            .selected(self.section == section)
+                            .map(|b| segment(b, self.section == section, cx))
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.set_section(section, cx)),
                             )
@@ -891,6 +891,7 @@ impl Workspace {
         }
         h_flex()
             .id(("k8s-row", ix))
+            .w_full()
             .debug_selector(move || format!("k8s-row-{ix}"))
             .px_3()
             .py(px(5.))
@@ -1051,6 +1052,26 @@ fn blocking_failure(loaded: &backend::Loaded) -> Option<String> {
             | Failure::Unavailable { .. }
     )
     .then(|| failure.summary())
+}
+
+/// The shared segmented-control look (reader_segmented): the active segment
+/// is raised with a border and semibold text, the others are muted. A plain
+/// ghost `selected` matches the segment track and is invisible.
+pub(crate) fn segment(button: Button, active: bool, cx: &App) -> Button {
+    let tokens = brand::palette(cx);
+    button
+        .selected(active)
+        .text_color(if active {
+            tokens.text
+        } else {
+            tokens.text_muted
+        })
+        .when(active, |b| {
+            b.bg(tokens.surface_raised)
+                .border_1()
+                .border_color(tokens.border_subtle)
+                .font_weight(FontWeight::SEMIBOLD)
+        })
 }
 
 pub(crate) fn tone_color(tone: Tone, cx: &App) -> Hsla {
