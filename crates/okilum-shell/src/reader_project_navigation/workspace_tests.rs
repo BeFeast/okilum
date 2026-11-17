@@ -282,7 +282,7 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
             reader.panel_widths.backlinks, 830.,
             "Project width survives restart"
         );
-        assert_eq!(reader.current_rel, "home.md");
+        assert_eq!(reader.pane.current_rel, "home.md");
     });
     restart_visual.update(|window, _| window.refresh());
     restart_visual.run_until_parked();
@@ -326,7 +326,7 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
     let (explicit, explicit_visual) = open(cx, &vault, &state, temp.path(), true);
     explicit.read_with(explicit_visual, |reader, _| {
         assert!(reader.project_navigation.active.is_none());
-        assert_eq!(reader.current_rel, "home.md");
+        assert_eq!(reader.pane.current_rel, "home.md");
     });
     explicit.update_in(explicit_visual, |_, window, _| window.remove_window());
     std::fs::create_dir_all(vault.join("ops")).unwrap();
@@ -416,7 +416,7 @@ fn user_intent_cancels_inflight_workspace_restore(cx: &mut TestAppContext) {
             match intent {
                 "file" => reader.open_note("target.md", None, window, cx),
                 "same-note-link" => {
-                    let current = reader.current_rel.clone();
+                    let current = reader.pane.current_rel.clone();
                     reader.open_link(
                         &current,
                         okilum_core::deep_link::Position::default(),
@@ -436,7 +436,7 @@ fn user_intent_cancels_inflight_workspace_restore(cx: &mut TestAppContext) {
                 "old validation must not enter Project"
             );
             if intent == "file" {
-                assert_eq!(reader.current_rel, "target.md");
+                assert_eq!(reader.pane.current_rel, "target.md");
             }
             reader.panel_widths.notes = 321. + index as f32;
             reader.record_ui_state(true, cx);

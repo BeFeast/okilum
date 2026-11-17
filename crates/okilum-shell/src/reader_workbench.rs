@@ -495,7 +495,7 @@ impl Reader {
         let reader = cx.entity().downgrade();
         let root = self.vault_root.clone();
         let generation = self.watcher_generation;
-        let selected = path == self.current_rel;
+        let selected = path == self.pane.current_rel;
         let tooltip = location(path);
         let path = path.to_owned();
         v_flex()
@@ -634,7 +634,7 @@ impl Reader {
                             .item(PopupMenuItem::new("Reveal current note in Tree").on_click(
                                 move |_, window, cx| {
                                     let _ = reveal_reader.update(cx, |this, cx| {
-                                        let path = this.current_rel.clone();
+                                        let path = this.pane.current_rel.clone();
                                         this.reveal_in_tree(&path, window, cx);
                                     });
                                 },
@@ -658,7 +658,7 @@ impl Reader {
                             )
                         }),
                 );
-        let current_unit = index.unit_for(&self.current_rel);
+        let current_unit = index.unit_for(&self.pane.current_rel);
         let mut groups: std::collections::BTreeMap<&str, Vec<&Activity>> = Default::default();
         for activity in &view.active {
             groups.entry(activity.domain()).or_default().push(activity);
@@ -1011,11 +1011,11 @@ mod tests {
         index.observed_at = now;
         index.refresh(now, now - 1000, now - workbench::DAY);
         reader.update(visual, |r, cx| {
-            r.current_rel = "Dev/Projects/App/Note 090.md".into();
+            r.pane.current_rel = "Dev/Projects/App/Note 090.md".into();
             r.workbench = Arc::new(index);
             r.workbench_ready = Some(r.workbench.clone());
             r.workbench_clock_minute = now / 60;
-            r.sidebar.pinned = vec![r.current_rel.clone()];
+            r.sidebar.pinned = vec![r.pane.current_rel.clone()];
             cx.notify();
         });
         visual.run_until_parked();
@@ -1133,7 +1133,7 @@ mod tests {
         assert_eq!(index.view.project_count, 0);
         reader.update(visual, |r, cx| {
             r.vault = Arc::new(Vault::from_note_paths(["Note.md".into()]));
-            r.current_rel = "Note.md".into();
+            r.pane.current_rel = "Note.md".into();
             r.sidebar = reader_sidebar::State::default();
             r.sidebar.initialize_now();
             r.workbench = Arc::new(index);

@@ -337,7 +337,7 @@ mod mounted {
         };
         fixture.reader.read_with(visual, |reader, _| {
             assert!(reader.document_ready());
-            assert_eq!(reader.current_rel, "Start.md");
+            assert_eq!(reader.pane.current_rel, "Start.md");
         });
         (fixture, visual)
     }
@@ -420,7 +420,7 @@ mod mounted {
                 assert!(!reader.tree_preview.is_open());
                 assert!(reader.tree_preview.preview.is_none());
                 assert!(reader.tree_focus.is_focused(window));
-                assert_eq!(reader.current_rel, "Start.md");
+                assert_eq!(reader.pane.current_rel, "Start.md");
                 assert_eq!(reader.navigation.history, history);
                 assert_eq!(reader.navigation.history_ix, history_ix);
                 assert_eq!(reader.content, content);
@@ -518,7 +518,7 @@ mod mounted {
             assert!(matches!(preview.media, MediaState::Image(_, _)));
         });
         f.reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Start.md");
+            assert_eq!(reader.pane.current_rel, "Start.md");
             assert_eq!(reader.navigation.history, history);
             assert!(reader.pane.file_preview.is_none());
         });

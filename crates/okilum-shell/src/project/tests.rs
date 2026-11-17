@@ -865,7 +865,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
                 .rows
                 .iter()
                 .all(|r| r.path.starts_with(&format!("{folder}/"))));
-            assert_eq!(view.current_rel, "note.md");
+            assert_eq!(view.pane.current_rel, "note.md");
             assert!(view.content == before.2);
         });
     }

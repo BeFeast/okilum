@@ -279,7 +279,7 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     visual.simulate_keystrokes("right enter");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "Other/far.md");
+        assert_eq!(view.pane.current_rel, "Other/far.md");
         assert!(!view.recent_switcher.open());
         assert_eq!(view.title_nav.menu, None);
     });
@@ -338,7 +338,7 @@ fn recent_gallery_shows_cards_beyond_the_old_list_cap_and_narrow_windows_keep_gl
     visual.run_until_parked();
     reader.read_with(visual, |view, cx| {
         assert_eq!(
-            view.current_rel, "note.md",
+            view.pane.current_rel, "note.md",
             "search alone is not navigation"
         );
         assert_eq!(
@@ -348,7 +348,7 @@ fn recent_gallery_shows_cards_beyond_the_old_list_cap_and_narrow_windows_keep_gl
     });
     click(visual, "recent-gallery-card-39");
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "n39.md");
+        assert_eq!(view.pane.current_rel, "n39.md");
         assert!(!view.recent_switcher.open());
     });
     click(visual, "title-recent");
@@ -524,7 +524,10 @@ fn recent_gallery_arrows_wrap_without_starting_the_ctrl_tab_switcher(cx: &mut Te
     let selected = |visual: &mut VisualTestContext| {
         reader.read_with(visual, |view, cx| {
             assert_eq!(view.title_nav.menu, None);
-            assert_eq!(view.current_rel, "note.md", "highlight is not navigation");
+            assert_eq!(
+                view.pane.current_rel, "note.md",
+                "highlight is not navigation"
+            );
             view.recent_switcher.gallery_selection(cx).unwrap()
         })
     };
@@ -547,7 +550,7 @@ fn recent_gallery_arrows_wrap_without_starting_the_ctrl_tab_switcher(cx: &mut Te
     visual.simulate_keystrokes("left left enter");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "b.md");
+        assert_eq!(view.pane.current_rel, "b.md");
         assert!(!view.recent_switcher.open());
     });
     assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
@@ -556,7 +559,7 @@ fn recent_gallery_arrows_wrap_without_starting_the_ctrl_tab_switcher(cx: &mut Te
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
         assert!(!view.recent_switcher.open());
-        assert_eq!(view.current_rel, "b.md");
+        assert_eq!(view.pane.current_rel, "b.md");
     });
 
     // Closed menu: ⌃Tab is the recent switcher, as before.

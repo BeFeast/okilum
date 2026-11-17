@@ -683,7 +683,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |view, _| {
             assert_eq!(
-                view.current_rel, "Project/AGENTS.md",
+                view.pane.current_rel, "Project/AGENTS.md",
                 "real click opens the hidden file"
             );
             assert!(
@@ -699,7 +699,9 @@ mod tests {
         let root = visual.debug_bounds("tree-agent-rules-AGENTS.md").unwrap();
         visual.simulate_click(root.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |view, _| assert_eq!(view.current_rel, "AGENTS.md"));
+        reader.read_with(visual, |view, _| {
+            assert_eq!(view.pane.current_rel, "AGENTS.md")
+        });
         reader.update(visual, |view, cx| {
             view.tree.set_subtree("Project", true);
             cx.notify();

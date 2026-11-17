@@ -48,8 +48,8 @@ fn snapshot(cx: &mut App) -> Result<Value> {
             let reader = reader.read(cx);
             (
                 reader.reader_window,
-                json!({"vault": reader.vault_root, "note": reader.current_rel,
-                "ready": !reader.current_rel.is_empty() && !reader.loading.as_ref().is_some_and(|l| l.active && !l.published),
+                json!({"vault": reader.vault_root, "note": reader.pane.current_rel,
+                "ready": !reader.pane.current_rel.is_empty() && !reader.loading.as_ref().is_some_and(|l| l.active && !l.published),
                     "editor": reader.editing.as_ref().map(|e| e.input().read(cx).value().to_string())}),
             )
         };

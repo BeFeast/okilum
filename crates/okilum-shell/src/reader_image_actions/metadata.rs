@@ -289,7 +289,9 @@ pub(super) mod tests {
             reader.open_note(note, None, window, cx)
         });
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert_eq!(reader.current_rel, note));
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.pane.current_rel, note)
+        });
     }
 
     fn ready(hover: &Entity<Hover>, visual: &mut VisualTestContext) -> Facts {
@@ -366,7 +368,7 @@ pub(super) mod tests {
             visual.update(|window, cx| {
                 let reader = reader.read(cx);
                 (
-                    reader.current_rel.clone(),
+                    reader.pane.current_rel.clone(),
                     reader.tree.cursor.clone(),
                     reader.navigation.preparation_generation,
                     window.focused(cx),

@@ -742,11 +742,11 @@ mod tests {
         assert_eq!(matches(visual, "!--"), 0, "the marker is not shown either");
         assert_eq!(matches(visual, ""), 0);
         let (target, definition, reference) = view.read_with(visual, |v, _| {
-            let inventory = okilum_core::document_links::HeadingInventory::new(&v.note_source);
+            let inventory = okilum_core::document_links::HeadingInventory::new(&v.pane.note_source);
             (
                 inventory.locate("^target").unwrap().block,
-                okilum_core::obsidian::footnote_block(&v.note_source, "1").unwrap(),
-                okilum_core::obsidian::footnote_reference_block(&v.note_source, "1").unwrap(),
+                okilum_core::obsidian::footnote_block(&v.pane.note_source, "1").unwrap(),
+                okilum_core::obsidian::footnote_reference_block(&v.pane.note_source, "1").unwrap(),
             )
         });
         assert_eq!(reference, 1);

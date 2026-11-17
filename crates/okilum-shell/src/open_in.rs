@@ -409,7 +409,7 @@ impl Reader {
         rel: &str,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Option<usize>> {
-        if self.vault_root != root || self.current_rel != rel {
+        if self.vault_root != root || self.pane.current_rel != rel {
             return Ok(None);
         }
         let Some(line) = self.editing_caret_line(cx) else {
