@@ -1,9 +1,12 @@
 # Native Authenticode check of a published Windows build (#1104), no secrets.
 #
-#   verify-signatures-native.ps1 -Build N -CertSha256 <hex> [-Base <url>] [-Work <dir>]
+#   verify-signatures-native.ps1 -Build N -CertSha256 <hex> [-Base <url>] [-Catalog <url>] [-Work <dir>]
 #
-# Downloads the public release.json, Setup.exe, full nupkg and portable ZIP of build N,
-# checks their hashes against release.json and the feed, then requires for every PE
+# Downloads the public release.json, the exact-build catalog entry
+# (<Catalog>/<source>/windows.json, as scripts/releases/windows_stable.py reads it),
+# Setup.exe, full nupkg and portable ZIP of build N. Setup.exe and the ZIP must match the
+# catalog's size and SHA-256 (Setup.exe also release.json), the nupkg the feed; a missing
+# or unreadable artifact fails. Then it requires for every PE
 # (Setup.exe, lib/app/*.exe and *.dll in the nupkg, okilum.exe in the portable ZIP):
 #   - signtool verify /pa /all /v /tw exits 0 (2 = warnings, e.g. no timestamp = fail);
 #   - Get-AuthenticodeSignature Status Valid with a timestamper certificate;
@@ -14,6 +17,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Build,
     [Parameter(Mandatory = $true)][string]$CertSha256,
     [string]$Base = 'https://updates.befeast.com/okilum/windows',
+    [string]$Catalog = 'https://updates.befeast.com/okilum/releases',
     [string]$Work = (Join-Path ([IO.Path]::GetTempPath()) "okilum-signatures-$PID")
 )
 $ErrorActionPreference = 'Stop'
@@ -38,9 +42,35 @@ if ("$($release.signer_sha256)".ToLowerInvariant() -ne $pinned) {
     throw "Build $Build records signer $($release.signer_sha256), expected $pinned"
 }
 
+$source = "$($release.source)"
+if ($source -notmatch '^[0-9a-f]{40}$') { throw "release.json has no full source SHA" }
+$descriptorPath = Join-Path $Work 'windows.json'
+Save-Url "$Catalog/$source/windows.json" $descriptorPath
+$descriptor = Get-Content -Raw -LiteralPath $descriptorPath | ConvertFrom-Json
+if ("$($descriptor.platform)" -ne 'windows' -or "$($descriptor.source)" -ne $source -or "$($descriptor.build)" -ne $Build) {
+    throw "Catalog entry for $source does not name Windows build $Build"
+}
+$assets = @{}
+foreach ($asset in @($descriptor.assets)) { $assets["$($asset.name)"] = $asset }
+if ($assets.Count -ne 2 -or -not $assets['Setup.exe'] -or -not $assets['Okilum-windows-portable.zip']) {
+    throw 'Expected exactly Setup.exe and Okilum-windows-portable.zip in the catalog entry'
+}
+
+# Download one catalogued archive asset; fail unless its bytes are exactly the catalogued ones.
+function Save-Catalogued([string]$Name, [string]$Url) {
+    $asset = $assets[$Name]
+    if ("$($asset.key)" -ne "okilum/windows/builds/$Build/$Name") { throw "Unexpected catalog key $($asset.key)" }
+    $path = Join-Path $Work $Name
+    Save-Url $Url $path
+    $size = (Get-Item -LiteralPath $path).Length
+    if ($size -ne [int64]$asset.size -or (Get-Sha256 $path) -ne "$($asset.sha256)".ToLowerInvariant()) {
+        throw "$Name differs from the catalog (size $size, expected $($asset.size), or SHA-256 mismatch)"
+    }
+    $path
+}
+
 $targets = [System.Collections.Generic.List[object]]::new()
-$setup = Join-Path $Work 'Setup.exe'
-Save-Url "$archive/Setup.exe" $setup
+$setup = Save-Catalogued 'Setup.exe' "$archive/Setup.exe"
 if ((Get-Sha256 $setup) -ne "$($release.setup_sha256)".ToLowerInvariant()) { throw 'Setup.exe hash differs from release.json' }
 $targets.Add([pscustomobject]@{Label = 'Setup.exe'; Path = $setup})
 
@@ -68,15 +98,13 @@ foreach ($pe in $pes) {
     $targets.Add([pscustomobject]@{Label = "$name!lib/app/$($pe.FullName.Substring($app.Length + 1).Replace('\', '/'))"; Path = $pe.FullName})
 }
 
-$zip = Join-Path $Work 'Okilum-windows-portable.zip'
-try { Save-Url "$archive/Okilum-windows-portable.zip" $zip } catch { $zip = $null; Write-Host 'No portable ZIP for this build' }
-if ($zip) {
-    $portable = Join-Path $Work 'portable'
-    [IO.Compression.ZipFile]::ExtractToDirectory($zip, $portable)
-    $exe = @(Get-ChildItem -LiteralPath $portable -Recurse -File -Filter 'okilum.exe')
-    if ($exe.Count -ne 1) { throw "Expected one okilum.exe in the portable ZIP, found $($exe.Count)" }
-    $targets.Add([pscustomobject]@{Label = 'Okilum-windows-portable.zip!okilum.exe'; Path = $exe[0].FullName})
-}
+# The ZIP is required: a missing, unreadable or substituted ZIP fails here (no fallback).
+$zip = Save-Catalogued 'Okilum-windows-portable.zip' "$archive/Okilum-windows-portable.zip"
+$portable = Join-Path $Work 'portable'
+[IO.Compression.ZipFile]::ExtractToDirectory($zip, $portable)
+$exe = @(Get-ChildItem -LiteralPath $portable -Recurse -File -Filter 'okilum.exe')
+if ($exe.Count -ne 1) { throw "Expected one okilum.exe in the portable ZIP, found $($exe.Count)" }
+$targets.Add([pscustomobject]@{Label = 'Okilum-windows-portable.zip!okilum.exe'; Path = $exe[0].FullName})
 
 $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
     Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
