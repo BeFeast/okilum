@@ -126,8 +126,11 @@ pub fn attachment_index_builds() -> usize {
 }
 
 /// Interior slot so immutable published `Arc<Vault>` handles can be warmed.
+/// Clones of one inventory share the slot itself, so whichever clone builds
+/// first (the temporary backlink resolver, a render, a publication warm) fills
+/// it for all of them. A mutation detaches only the mutated vault.
 #[derive(Default)]
-pub(crate) struct Slot(RwLock<Option<Arc<AttachmentIndex>>>);
+pub(crate) struct Slot(Arc<RwLock<Option<Arc<AttachmentIndex>>>>);
 
 impl Slot {
     /// The current index of `vault`, if one was already built for it.
@@ -156,16 +159,15 @@ impl Slot {
         index
     }
 
-    /// A clone of an unchanged inventory reuses the same immutable index.
-    pub(crate) fn clone_for(&self, vault: &Vault) -> Self {
-        Self(RwLock::new(self.current(vault)))
+    /// A clone of an unchanged inventory shares the slot, cold or warm. The
+    /// count/fingerprint guard still refuses an index built for other inputs.
+    pub(crate) fn share(&self) -> Self {
+        Self(self.0.clone())
     }
 
+    /// Detach from every clone; their shared index stays valid for them.
     pub(crate) fn clear(&mut self) {
-        *self
-            .0
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.0 = Arc::default();
     }
 }
 
@@ -260,6 +262,59 @@ mod tests {
         );
         assert_eq!(render(&clone), first);
         assert_eq!(attachment_index_builds() - before, 1);
+    }
+
+    #[test]
+    fn a_cold_clone_and_its_source_build_the_index_once() {
+        let vault = project(1_000);
+        let resolver = vault.clone();
+        let before = attachment_index_builds();
+        render(&resolver);
+        assert_eq!(attachment_index_builds() - before, 1, "positive control");
+        assert!(
+            vault.attachment_index_ready(),
+            "the source shares the clone's build"
+        );
+        vault.warm_attachment_index();
+        assert_eq!(attachment_index_builds() - before, 1, "warming reuses it");
+        let mut mutated = vault.clone();
+        mutated.set_attachment_identity("assets/late.png", true);
+        assert!(
+            !mutated.attachment_index_ready(),
+            "the mutated clone detaches"
+        );
+        assert!(
+            vault.attachment_index_ready(),
+            "detaching keeps the source's index"
+        );
+        assert_eq!(attachment_index_builds() - before, 1);
+    }
+
+    #[test]
+    fn a_cold_reconcile_and_its_publication_warm_build_the_index_once() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join("integrations/src")).unwrap();
+        for i in 0..200 {
+            std::fs::write(root.join(format!("integrations/src/file{i}.json")), "{}").unwrap();
+        }
+        std::fs::write(root.join("message.md"), "[spec](file7.json)\n").unwrap();
+        let before = attachment_index_builds();
+        let (vault, _, _) =
+            crate::vault::warm::reconcile(root, None, false, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(
+            attachment_index_builds() - before,
+            1,
+            "positive control: the backlink pass resolved the file link"
+        );
+        assert_eq!(vault.backlinks("integrations/src/file7.json").len(), 1);
+        vault.warm_attachment_index();
+        vault.clone().warm_attachment_index();
+        assert_eq!(
+            attachment_index_builds() - before,
+            1,
+            "publication warming reuses the reconcile build"
+        );
     }
 
     #[test]

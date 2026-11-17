@@ -79,7 +79,7 @@ impl Clone for Vault {
             graph_os_paths: self.graph_os_paths.clone(),
             publication: Default::default(),
             publication_id: next_id(),
-            attachment_index: self.attachment_index.clone_for(self),
+            attachment_index: self.attachment_index.share(),
         }
     }
 }

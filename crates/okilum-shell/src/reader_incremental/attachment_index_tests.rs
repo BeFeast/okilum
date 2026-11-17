@@ -30,6 +30,8 @@ fn edit2803_saves_and_ui_renders_reuse_the_background_attachment_index(cx: &mut 
     }
     std::fs::write(root.join("assets/diagram.png"), b"png").unwrap();
     std::fs::write(root.join("message.md"), NOTE).unwrap();
+    // Unresolved until `assets/new.png` appears: that batch must reparse it.
+    std::fs::write(root.join("refs.md"), "Later: ![](new.png)\n").unwrap();
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let reader = cx.new(|cx| {
@@ -125,9 +127,16 @@ fn edit2803_saves_and_ui_renders_reuse_the_background_attachment_index(cx: &mut 
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert!(!r.incremental_active);
-        assert!(
-            builds() - before >= 1,
-            "positive control: the new attachment rebuilt the index in the worker"
+        // The backlink pass and the publication warm share one build.
+        assert_eq!(
+            builds() - before,
+            1,
+            "the new attachment rebuilt the index exactly once, in the worker"
+        );
+        assert_eq!(
+            r.vault.backlinks("assets/new.png").len(),
+            1,
+            "positive control: the affected file-link referrer was reparsed"
         );
         assert!(r.vault.attachment_index_ready());
         assert_ne!(r.vault.attachment_index_identity(), Some(index));
