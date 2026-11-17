@@ -28,7 +28,7 @@ def snapshot():
 
 
 def operation(snap=None):
-    _, records = project(snap or snapshot(),CONFIG,'pilot-thread')
+    _, records, _ = project(snap or snapshot(),CONFIG,'pilot-thread')
     q = next(iter(records.values()))[0]
     return {'request':{'operation_id':str(uuid.uuid4()),'question_id':q['id'],
             'expected_revision':q['source_revision'],
@@ -80,7 +80,8 @@ class Inbox:
 class ProjectionTests(unittest.TestCase):
     def test_identity_revision_and_exact_option_values(self):
         snap = snapshot()
-        seq, records = project(snap,CONFIG,'pilot-thread')
+        seq, records, incomplete = project(snap,CONFIG,'pilot-thread')
+        self.assertEqual(incomplete,set())
         q = next(iter(records.values()))[0]
         self.assertEqual(seq,10)
         self.assertTrue(q['can_reply'])
@@ -98,8 +99,11 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotEqual(changed['source_revision'],q['source_revision'])
 
     def test_partial_mismatched_and_unsupported_sources_fail_closed(self):
-        mutations = [lambda s:s.update(hasMoreHistory=True),
+        mutations = [lambda s:s.update(hasMoreHistory=None),
                      lambda s:s.update(payloadBudgetExceeded=True),
+                     # Modern T3 omits the removed budget flag; then only an
+                     # explicit null cursor proves the history is complete.
+                     lambda s:s.pop('payloadBudgetExceeded'),
                      lambda s:s['projection']['thread'].update(projectId='production-project'),
                      lambda s:s['projection'].update(turnItems=[]),
                      lambda s:s['projection'].update(providerTurns=[]),
@@ -199,10 +203,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(op['error_code'],'source_stale')
 
     def test_absent_or_partial_source_is_not_withdrawal(self):
-        op=self.enqueue();self.source.value['hasMoreHistory']=True
-        with self.assertRaises(Unavailable):self.runner.step()
+        op=self.enqueue();self.source.value['payloadBudgetExceeded']=True
+        self.assertEqual(self.runner.step(),['pilot-thread'])
         self.assertEqual(op['state'],'queued');self.assertEqual(self.source.sent,[])
-        self.source.value['hasMoreHistory']=False
+        self.source.value['payloadBudgetExceeded']=False
         self.source.value['snapshotSequence']+=1
         self.source.value['projection']['runtimeRequests']=[]
         self.source.value['projection']['turnItems']=[]
@@ -220,10 +224,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.source.sent),1)
 
     def test_title_enrichment_keeps_revision_and_exact_cursor_guard(self):
-        _, before = project(self.source.value, CONFIG, 'pilot-thread')
+        _, before, _ = project(self.source.value, CONFIG, 'pilot-thread')
         self.runner.observe('pilot-thread')
         self.source.value['projection']['thread']['title'] = 'Inbox execution pilot'
-        _, after = project(self.source.value, CONFIG, 'pilot-thread')
+        _, after, _ = project(self.source.value, CONFIG, 'pilot-thread')
         q = next(iter(after.values()))[0]
         self.assertEqual(q['thread_title'], 'Inbox execution pilot')
         self.assertEqual(q['source_revision'], next(iter(before.values()))[0]['source_revision'])
