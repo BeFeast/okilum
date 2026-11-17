@@ -1,7 +1,9 @@
 {
-  "schema": 1,
+  "schema": 2,
   "relative": 0.15,
   "minimum_delta_ms": 3.0,
+  "absolute_ceiling_ms": 250.0,
+  "family_alpha": 0.05,
   "warmups": 1,
   "repetitions": 5,
   "max_attempts": 2,
