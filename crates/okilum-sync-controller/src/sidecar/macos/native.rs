@@ -173,6 +173,13 @@ impl super::registration::RegistrationPort for RegistrationService {
     }
 }
 
+/// Uninstall only, when no journal exists and launchd runs no helper
+/// (`uninstall::stop`). Never a way to obtain another launch permission.
+pub(super) fn unregister_unowned() -> Result<()> {
+    unsafe { service(PLIST)?.unregisterAndReturnError() }
+        .map_err(|error| anyhow::anyhow!("ServiceManagement unregister failed: {error}"))
+}
+
 /// Only after the controller durably recorded both authenticated owned-tree
 /// Stop and captured supervisor exit. No ordinary registration/absence probe
 /// may unregister an existing service to obtain another launch permission.

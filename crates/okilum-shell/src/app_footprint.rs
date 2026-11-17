@@ -621,16 +621,25 @@ const SYNC_STOP_FAILED: &str = "Sync on this Mac could not be stopped, so nothin
 /// identity and journal stay. An isolated Reader profile never touches them.
 #[cfg(target_os = "macos")]
 fn stop_sync_for_uninstall() -> anyhow::Result<()> {
-    use okilum_sync_controller::sidecar::macos::{account_state_directory, bootstrap};
     if crate::reader_history::isolated_state_directory().is_some() {
         return Ok(());
     }
-    match std::fs::symlink_metadata(account_state_directory()?) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-        Ok(_) => (),
-    }
-    bootstrap::disable_current_app(crate::reader_settings_sync::native_signing_policy()?)
+    // Checks the login agent even when Sync's state folder is gone; the
+    // signing policy is needed only when a journal exists.
+    okilum_sync_controller::sidecar::macos::bootstrap::disable_current_app(
+        crate::reader_settings_sync::native_signing_policy,
+    )
+}
+
+/// Uninstall order (#588): Sync is stopped first, and when that fails nothing
+/// is purged, exported or moved to the Trash.
+#[cfg(any(target_os = "macos", test))]
+fn stop_then_remove<T>(
+    stop: impl FnOnce() -> anyhow::Result<()>,
+    remove: impl FnOnce() -> T,
+) -> anyhow::Result<T> {
+    stop()?;
+    Ok(remove())
 }
 
 /// Settings → About → Uninstall Okilum…: one confirmation, then remove
@@ -681,11 +690,39 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
         }
         // The Sync helper runs from inside the bundle that goes to the Trash.
         // Stop it and unregister its agent first; otherwise remove nothing.
-        let stopped = cx
+        let removed = cx
             .background_executor()
-            .spawn(async { stop_sync_for_uninstall() })
+            .spawn(async move {
+                stop_then_remove(stop_sync_for_uninstall, || {
+                    let home = std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .unwrap_or_default();
+                    let report = purge(
+                        &roots(),
+                        state.as_deref(),
+                        &std::env::temp_dir(),
+                        &home.join("Documents"),
+                    );
+                    diagnostic_error!("Okilum uninstall: {report:?}");
+                    let app = std::env::current_exe()
+                        .ok()
+                        .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
+                        .unwrap_or_default();
+                    use std::os::unix::process::CommandExt;
+                    let _ = std::process::Command::new("/bin/sh")
+                        .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
+                        .arg(&app)
+                        .arg(std::process::id().to_string())
+                        .arg(state.as_deref().unwrap_or(Path::new("")))
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .process_group(0)
+                        .spawn();
+                })
+            })
             .await;
-        if let Err(error) = stopped {
+        if let Err(error) = removed {
             diagnostic_error!("Okilum uninstall cancelled, Sync could not be stopped: {error:#}");
             let _ = asking.update(cx, |_, window, cx| {
                 let _ = window.prompt(
@@ -698,34 +735,7 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
             });
             return;
         }
-        cx.update(|cx| {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let report = purge(
-                &roots(),
-                state.as_deref(),
-                &std::env::temp_dir(),
-                &home.join("Documents"),
-            );
-            diagnostic_error!("Okilum uninstall: {report:?}");
-            let app = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
-                .unwrap_or_default();
-            use std::os::unix::process::CommandExt;
-            let _ = std::process::Command::new("/bin/sh")
-                .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
-                .arg(&app)
-                .arg(std::process::id().to_string())
-                .arg(state.as_deref().unwrap_or(Path::new("")))
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .process_group(0)
-                .spawn();
-            cx.quit();
-        });
+        let _ = cx.update(|cx| cx.quit());
     })
     .detach();
 }
@@ -994,6 +1004,34 @@ mod tests {
         );
         assert!(!reason.as_deref().unwrap().contains("Settings"));
         assert!(reason.as_deref().unwrap().contains("have been kept"));
+    }
+
+    #[test]
+    fn a_refused_sync_stop_removes_nothing() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state/okilum");
+        write(&state.join("settings.json"), "{}");
+        let fixture_roots = vec![state.clone()];
+        let documents = state.parent().unwrap().join("Documents");
+        let mut stopped = false;
+        let outcome = stop_then_remove(
+            || anyhow::bail!("recovery pending: Sync helper is not answering"),
+            || purge(&fixture_roots, Some(&state), &documents, &documents),
+        );
+        assert!(outcome.is_err());
+        assert!(state.join("settings.json").exists(), "nothing was purged");
+        // Positive control: once Sync is stopped the same purge runs.
+        let report = stop_then_remove(
+            || {
+                stopped = true;
+                Ok(())
+            },
+            || purge(&fixture_roots, Some(&state), &documents, &documents),
+        )
+        .unwrap();
+        assert!(stopped);
+        assert_eq!(report.removed, vec![state.clone()]);
+        assert!(!state.exists());
     }
 
     #[cfg(unix)]

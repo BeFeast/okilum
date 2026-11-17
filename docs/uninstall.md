@@ -139,7 +139,10 @@ what goes and which vaults stay, then:
 0. stops Sync on this Mac if it was set up (#588): the signed helper gets an
    authenticated Stop, its exit is captured, the retirement is recorded and the
    `com.befeast.okilum.sync` login agent is unregistered
-   (`sidecar::macos::bootstrap::disable_current_app`). Sync's identity, Syncthing
+   (`sidecar::macos::bootstrap::disable_current_app`, decision in
+   `sidecar::macos::uninstall`). The agent is checked even when Sync's state
+   folder is missing: with no journal it is unregistered only while launchd runs
+   no helper. Sync's identity, Syncthing
    configuration and journal in `~/Library/Application Support/Okilum/Sync/`
    stay, and the hub is not told. If Sync cannot be stopped (helper not
    answering, unconfirmed registration, unfinished update or another pending

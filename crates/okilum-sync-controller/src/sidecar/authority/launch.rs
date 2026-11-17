@@ -48,6 +48,11 @@ impl VerifiedExit {
     pub(crate) fn after_native_stop(binding: Binding, token: super::StopToken) -> Self {
         Self { binding, token }
     }
+    /// Fixtures only: stands in for a native Stop reply plus captured exit.
+    #[cfg(test)]
+    pub(crate) fn for_test(binding: Binding, token: super::StopToken) -> Self {
+        Self { binding, token }
+    }
 }
 impl Registration {
     pub fn generation(&self) -> Uuid {
