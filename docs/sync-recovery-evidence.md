@@ -68,8 +68,13 @@ The log is retained in CT141's issue cache under `589/recovery.log`.
 
 `scripts/ci/sync-disk-full.sh` runs in the hosted `agent-checks` Linux job. It
 mounts one private 16 MiB tmpfs per test with the runner's passwordless sudo and
-fills only that volume with real, non-sparse filler. Each test first proves its
-directory is that tmpfs and that the incoming note no longer fits. Both use the
+fills only that volume with real, non-sparse filler. The script refuses to run
+anywhere but a disposable GitHub-hosted runner, and its cleanup stops this job's
+fixture daemons, then unmounts each volume independently, also on timeout or
+signal. Each test first proves its directory is the dedicated
+`okilum-disk-full` tmpfs mount point, private to the fixture user, and that the
+incoming note no longer fits. The first-merge control requires the failure and
+the refused recovery to be ENOSPC (`os error 28`), not any other error. Both use the
 pinned managed runtimes of the two-instance first-merge fixture; the destination
 vault lives on the small volume, everything else (controller state, Syncthing
 homes, the source vault) does not.

@@ -988,7 +988,35 @@ fn disk_full_volume(variable: &str) -> Result<PathBuf> {
         fs::read_dir(&path)?.next().is_none(),
         "disk-full volume is not empty"
     );
+    // Only the dedicated mount that sync-disk-full.sh created for this test:
+    // its own mount point (not a directory inside some other tmpfs), named
+    // okilum-disk-full, private to the fixture user.
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    let dedicated = mountinfo.lines().any(|line| {
+        let fields: Vec<_> = line.split(' ').collect();
+        let separator = fields.iter().position(|field| *field == "-");
+        fields.get(4).is_some_and(|point| Path::new(point) == path)
+            && separator.is_some_and(|at| {
+                fields.get(at + 1) == Some(&"tmpfs")
+                    && fields.get(at + 2) == Some(&"okilum-disk-full")
+            })
+    });
+    ensure!(
+        dedicated,
+        "{} is not a dedicated okilum-disk-full tmpfs mount point",
+        path.display()
+    );
+    use std::os::unix::fs::MetadataExt;
+    let owner = fs::metadata(&path)?;
+    ensure!(
+        owner.uid() == unsafe { libc::getuid() } && owner.mode() & 0o777 == 0o700,
+        "disk-full volume is not private to this fixture user"
+    );
     Ok(path)
+}
+/// The real filesystem error, not any other failure (#3080).
+fn is_enospc(message: &str) -> bool {
+    message.contains("No space left on device (os error 28)")
 }
 #[allow(
     clippy::unnecessary_cast,
@@ -1086,10 +1114,15 @@ fn issue3080_first_merge_disk_full_keeps_every_version_and_recovers() -> Result<
     );
     let outcome = plan.apply(plan.consent(true).unwrap(), backend.as_mut());
     println!("ISSUE3080_FIRST_MERGE_DISK_FULL outcome={outcome:?}");
-    ensure!(
-        outcome.is_err(),
-        "first merge into a full disk reported success"
-    );
+    // The failure must be the destination's own ENOSPC while writing, after
+    // the operation was created (checked below), not an earlier refusal.
+    match &outcome {
+        Err(okilum_sync_controller::merge_preview::Error::Backend(message)) => ensure!(
+            is_enospc(message),
+            "first merge failed for another reason than a full disk: {message}"
+        ),
+        other => anyhow::bail!("first merge into a full disk did not fail with ENOSPC: {other:?}"),
+    }
     // No byte version is lost on either computer, and nothing half-written
     // appears under a canonical name.
     let kept: Vec<_> = every_version(&here)?
@@ -1111,9 +1144,12 @@ fn issue3080_first_merge_disk_full_keeps_every_version_and_recovers() -> Result<
         .find(|p| p.path == here && p.vault == *vault)
         .with_context(|| format!("no pending first Sync is visible: {pending:?}"))?
         .operation;
-    assert!(
-        second.recover_first_sync(operation).is_err(),
-        "recovery cannot complete while the disk is still full"
+    let refused = second
+        .recover_first_sync(operation)
+        .expect_err("recovery cannot complete while the disk is still full");
+    ensure!(
+        is_enospc(&format!("{refused:#}")),
+        "recovery on a full disk failed for another reason: {refused:#}"
     );
     assert_eq!(fs::read(there.join("large.bin"))?, large);
     fs::remove_file(filler)?;
