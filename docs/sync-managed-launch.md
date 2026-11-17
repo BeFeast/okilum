@@ -114,3 +114,30 @@ This closes #2582 only. #2508 retains scoped runtime drain receipts, fenced
 resume/recovery, stale-event rejection and its full acceptance. Non-empty direct
 attachment remains refused. #2504 must compose local and transport proofs before
 exclusive apply ownership.
+
+## Composed exclusive ownership (#2504)
+
+Exclusive mutation ownership of one vault is the composition already used by
+first Sync (`direct/inventory/merge.rs`): `Authority::begin_drain` closes local
+admission and `Hold::try_hold` succeeds only after every admitted writer
+finishes. Only then does `ScopedHold::acquire` pause the selected folder and
+accept the operation-labelled `FolderPaused` receipt from the live managed
+generation. Publication calls `ScopedHold::validate` before every canonical
+write. `release_and_resume` (or `resume_committed` / `cancel_unpublished`) is
+the only exit; Drop, a closed window, holder death and runtime restart keep the
+vault fenced until an explicit `Authority::recover` adopts the exact observed
+state.
+
+`issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold`
+exercises that boundary with production Reader writers in separate processes
+and the checksum-pinned runtime together. An admitted `PreparedCopy` keeps the
+holder draining and the folder unpaused until it publishes. Later saves and
+creates in that vault are refused immediately, and their drafts are retained.
+Under the composed hold, the competing inbound change is withheld while a second
+folder on the same runtime and an unrelated vault keep working. After the holder
+is killed, a restarted Reader process and a restarted `FolderController` resume
+are both refused. A runtime crash and relaunch keeps the folder fenced, and the
+second folder keeps transferring. Explicit recovery then publishes the same
+withheld change, both retained drafts save, and the consumed recovery snapshot
+cannot replay. Uncoordinated external editors remain unsupported. Non-empty
+direct attachment remains refused.

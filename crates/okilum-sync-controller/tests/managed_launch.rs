@@ -9,6 +9,10 @@ mod direct_daemon;
 use anyhow::{ensure, Context, Result};
 use direct_daemon::fixture_process;
 use direct_daemon::{wait, Peer};
+use okilum_core::{
+    file_editor::{FileEditor, Save},
+    note_files::{self, PreparedCopy},
+};
 use okilum_sync_controller::{
     daemon::{DaemonIdentity, Preparation},
     direct::Controller,
@@ -34,7 +38,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -59,6 +63,39 @@ fn issue2582_child() -> Result<()> {
     match std::env::var("OKILUM_ADMISSION_CHILD")?.as_str() {
         "resume" => {
             FolderController::new(root.join("folder-state")).pause(false)?;
+        }
+        // #2504: a real Reader publisher admitted before the drain. It
+        // publishes only after the parent proves exclusive admission waited.
+        "reader-copy" => {
+            let copy = PreparedCopy::prepare(
+                &root.join("selected/in-flight.bin"),
+                &root.join("drafts"),
+                b"\0admitted before the drain\xff\r\n",
+            )?;
+            fs::write(root.join("copy-admitted"), "production writer admitted")?;
+            wait("parent releases the admitted writer", || {
+                Ok(root.join("copy-go").exists())
+            })?;
+            copy.publish()?;
+        }
+        // A restarted Reader process after the holder died keeps its draft.
+        "reader-refused" => {
+            let mut editor =
+                FileEditor::open(&root.join("selected/window-b.md"), &root.join("drafts"))?;
+            editor.set_text("restarted window draft".into())?;
+            ensure!(
+                editor.save().is_err(),
+                "a restarted Reader bypassed the unfinished hold"
+            );
+        }
+        // A restarted controller cannot resume the held folder's transport.
+        "resume-selected" => {
+            ensure!(
+                FolderController::new(root.join("selected-state"))
+                    .pause(false)
+                    .is_err(),
+                "a restarted controller resumed the held folder"
+            );
         }
         "holder" => {
             let authority = Authority::for_root(&root.join("selected"))?;
@@ -1036,6 +1073,242 @@ fn issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart() -> R
         b"withheld during scoped hold"
     );
     assert!(authority.operation().is_ok());
+    runtime.disable()?;
+    Ok(())
+}
+
+/// #2504 acceptance: the composed exclusive ownership used by first Sync,
+/// exercised with production Reader writers in separate processes and the
+/// checksum-pinned managed runtime together.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -> Result<()> {
+    use okilum_sync_controller::managed_launch::ScopedHold;
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let services = Services::default();
+    let rest = TcpListener::bind("127.0.0.1:0")?;
+    let listen = TcpListener::bind("127.0.0.1:0")?;
+    let request = Preparation {
+        executable: binary()?,
+        rest_address: rest.local_addr()?,
+        listen_address: listen.local_addr()?,
+    };
+    drop((rest, listen));
+    let runtime = Runtime::with_services(
+        root.path().join("runtime"),
+        root.path().join("units"),
+        services.clone(),
+        launcher(),
+    );
+    let identity = runtime
+        .enable(Selection::Managed(request), &[])?
+        .identity
+        .unwrap();
+    let home = identity.config_file.parent().unwrap();
+    services.remember_pid(home)?;
+    let source = Peer::new(root.path(), "source", binary()?)?;
+    let selected = root.path().join("selected");
+    let second = root.path().join("second");
+    let source_second = root.path().join("source-second");
+    let unrelated = root.path().join("unrelated");
+    let drafts = root.path().join("drafts");
+    for path in [&selected, &second, &source_second, &unrelated] {
+        fs::create_dir(path)?;
+    }
+    fs::write(unrelated.join("note.md"), b"unrelated original")?;
+    let api = identity.connect()?;
+    let address = api.config()?["options"]["listenAddresses"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    source
+        .api
+        .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+    for (id, path, source_path) in [
+        ("selected", &selected, &source.vault),
+        ("second", &second, &source_second),
+    ] {
+        FolderController::new(root.path().join(format!("{id}-state"))).enroll(
+            &identity,
+            std::slice::from_ref(&identity.config_file),
+            &approval(&identity, &source, id),
+            path,
+        )?;
+        add_source(&source, &identity, id, source_path)?;
+        fs::write(source_path.join("control.md"), format!("{id} before hold"))?;
+    }
+    wait("positive control transfers before the hold", || {
+        source.api.scan("selected")?;
+        source.api.scan("second")?;
+        Ok(selected.join("control.md").exists() && second.join("control.md").exists())
+    })?;
+    // Enrollment only accepts an empty destination; Reader notes come after.
+    for name in ["window-a.md", "window-b.md"] {
+        fs::write(selected.join(name), b"original")?;
+    }
+    private_json(
+        &root.path().join("scoped-daemon.json"),
+        &serde_json::to_value(&identity)?,
+    )?;
+
+    // 1. An admitted production writer pins the drain; exclusive transport
+    //    ownership is not granted while it is in flight.
+    let mut writer = worker("reader-copy", root.path())?;
+    wait("production writer admitted", || {
+        Ok(root.path().join("copy-admitted").exists())
+    })?;
+    let mut holder = worker("scoped-holder", root.path())?;
+    let authority = Authority::for_root(&selected)?;
+    wait("holder closes admission", || {
+        Ok(authority.snapshot()?.phase != Phase::Open)
+    })?;
+    let started = Instant::now();
+    assert!(
+        note_files::create(&selected, Path::new("blocked.md")).is_err(),
+        "admission stays closed while draining"
+    );
+    let mut window = FileEditor::open(&selected.join("window-a.md"), &drafts)?;
+    window.set_text("window draft under hold".into())?;
+    assert!(window.save().is_err(), "a later Reader save is refused");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "refusals return immediately instead of waiting for the hold"
+    );
+    drop(window);
+    for _ in 0..5 {
+        assert!(holder.0.try_wait()?.is_none());
+        assert!(
+            !root.path().join("holder-ready").exists(),
+            "exclusive ownership granted before the admitted writer finished"
+        );
+        assert_eq!(
+            api.folder("selected")?["paused"],
+            false,
+            "transport pause must follow the local drain"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    fs::write(root.path().join("copy-go"), "publish")?;
+    assert!(writer.0.wait()?.success(), "admitted writer completes");
+    assert_eq!(
+        fs::read(selected.join("in-flight.bin"))?,
+        b"\0admitted before the drain\xff\r\n"
+    );
+    wait("composed local and transport receipt", || {
+        Ok(root.path().join("holder-ready").exists())
+    })?;
+    assert_eq!(authority.snapshot()?.phase, Phase::Held);
+    assert_eq!(api.folder("selected")?["paused"], true);
+    assert_eq!(api.folder("second")?["paused"], false);
+
+    // 2. Under the hold: the competing inbound change is withheld, other
+    //    folders and vaults keep working, Reader drafts are retained.
+    fs::write(
+        source.vault.join("withheld.md"),
+        b"competing inbound change",
+    )?;
+    fs::write(source_second.join("progress.md"), b"second folder progress")?;
+    let mut other = FileEditor::open(&unrelated.join("note.md"), &drafts)?;
+    other.set_text("unrelated vault save".into())?;
+    assert_eq!(other.save()?, Save::Saved);
+    drop(other);
+    note_files::create(&unrelated, Path::new("created.md"))?;
+    wait("second folder transfers under the hold", || {
+        source.api.scan("selected")?;
+        source.api.scan("second")?;
+        Ok(second.join("progress.md").exists())
+    })?;
+    for _ in 0..10 {
+        source.api.scan("selected")?;
+        assert!(
+            !selected.join("withheld.md").exists(),
+            "transport published during exclusive ownership"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    let window = FileEditor::open(&selected.join("window-a.md"), &drafts)?;
+    assert_eq!(window.text(), "window draft under hold");
+    assert!(window.dirty());
+    drop(window);
+    assert_eq!(fs::read(selected.join("window-a.md"))?, b"original");
+
+    // 3. Holder death, restarted Reader/controller and a runtime crash cannot
+    //    bypass the unfinished durable hold.
+    fixture_process::stop(&mut holder.0)?;
+    let observed = authority.snapshot()?;
+    assert_eq!(observed.phase, Phase::RecoveryPending);
+    let mut restarted = worker("reader-refused", root.path())?;
+    assert!(
+        restarted.0.wait()?.success(),
+        "restarted Reader observed the refusal"
+    );
+    let mut controller = worker("resume-selected", root.path())?;
+    assert!(
+        controller.0.wait()?.success(),
+        "restarted controller observed the refusal"
+    );
+    assert_eq!(api.folder("selected")?["paused"], true);
+    services.crash_runtime()?;
+    services.launch()?;
+    services.remember_pid(home)?;
+    assert!(live_generation(home)?
+        .paused_at_start
+        .contains(&"selected".into()));
+    let api = identity.connect()?;
+    wait("REST after restart", || Ok(api.folder("selected").is_ok()))?;
+    fs::write(
+        source_second.join("after-restart.md"),
+        b"second after restart",
+    )?;
+    wait("second folder transfers after runtime restart", || {
+        source.api.scan("second")?;
+        Ok(second.join("after-restart.md").exists())
+    })?;
+    for _ in 0..10 {
+        source.api.scan("selected")?;
+        assert!(
+            !selected.join("withheld.md").exists(),
+            "restarted runtime published the held folder"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(fs::read(selected.join("window-b.md"))?, b"original");
+
+    // 4. Explicit recovery and release: the same withheld change publishes,
+    //    retained drafts save, and the recovered snapshot cannot replay.
+    let mut hold = authority.recover(&observed)?;
+    let token = hold.token().clone();
+    assert!(
+        hold.try_hold(&token)?,
+        "no writer is admitted during recovery"
+    );
+    let scope = ScopedHold::acquire(identity.clone(), "selected", hold, true)?;
+    scope.validate()?;
+    assert!(!selected.join("withheld.md").exists());
+    scope.release_and_resume()?;
+    assert!(
+        authority.recover(&observed).is_err(),
+        "a consumed recovery snapshot cannot replay"
+    );
+    wait("withheld change publishes after release", || {
+        source.api.scan("selected")?;
+        Ok(selected.join("withheld.md").exists())
+    })?;
+    assert_eq!(
+        fs::read(selected.join("withheld.md"))?,
+        b"competing inbound change"
+    );
+    for (name, draft) in [
+        ("window-a.md", "window draft under hold"),
+        ("window-b.md", "restarted window draft"),
+    ] {
+        let mut editor = FileEditor::open(&selected.join(name), &drafts)?;
+        assert_eq!(editor.text(), draft, "{name} draft survived the hold");
+        assert_eq!(editor.save()?, Save::Saved);
+        assert_eq!(fs::read(selected.join(name))?, draft.as_bytes());
+    }
+    note_files::create(&selected, Path::new("after-release.md"))?;
     runtime.disable()?;
     Ok(())
 }
