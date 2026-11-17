@@ -307,7 +307,7 @@ fn issue2957_rename_field_and_note_find_keep_focus_and_a_hidden_field_hands_it_t
     assert!(!visible(&fixture, visual, Panel::Notes));
     fixture.reader.update_in(visual, |r, window, cx| {
         assert!(
-            r.content.read(cx).focus_handle().is_focused(window),
+            r.pane.content.read(cx).focus_handle().is_focused(window),
             "the hidden rename field hands focus to the drawn note"
         );
     });
@@ -318,7 +318,7 @@ fn issue2957_rename_field_and_note_find_keep_focus_and_a_hidden_field_hands_it_t
     assert!(!maximized(&fixture, visual), "restores without a click");
     fixture.reader.update_in(visual, |r, window, cx| {
         r.renaming = None;
-        let focus = r.content.read(cx).focus_handle().clone();
+        let focus = r.pane.content.read(cx).focus_handle().clone();
         focus.focus(window, cx);
         cx.notify();
     });

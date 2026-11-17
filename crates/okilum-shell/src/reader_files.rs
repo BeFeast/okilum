@@ -500,12 +500,12 @@ impl Reader {
         // A deleted note asks before its contents are left behind (#1986).
         if self.leaving_deleted_note(Some(rel), cx) {
             let retry = rel.to_owned();
-            let history = self.navigation.history_nav;
+            let history = self.pane.navigation.history_nav;
             self.ask_leaving_deleted_note(
                 Box::new(move |this, window, cx| {
-                    let outer = std::mem::replace(&mut this.navigation.history_nav, history);
+                    let outer = std::mem::replace(&mut this.pane.navigation.history_nav, history);
                     this.preview_file(&retry, window, cx);
-                    this.navigation.history_nav = outer;
+                    this.pane.navigation.history_nav = outer;
                 }),
                 window,
                 cx,
@@ -520,32 +520,35 @@ impl Reader {
                 // Read before this choice moves focus to the document.
                 let tree_had_focus = self.tree_focus.contains_focused(window, cx);
                 self.cancel_pending_landing();
-                self.navigation.preparation_generation =
-                    self.navigation.preparation_generation.wrapping_add(1);
+                self.pane.navigation.preparation_generation =
+                    self.pane.navigation.preparation_generation.wrapping_add(1);
                 self.pane.table_overlay = None;
-                if let Some(index) = self.navigation.history_nav {
-                    self.navigation.history_ix = index;
+                if let Some(index) = self.pane.navigation.history_nav {
+                    self.pane.navigation.history_ix = index;
                 } else if self
+                    .pane
                     .navigation
                     .history
-                    .get(self.navigation.history_ix)
+                    .get(self.pane.navigation.history_ix)
                     .map(String::as_str)
                     != Some(rel)
                 {
-                    if !self.navigation.history.is_empty() {
-                        self.navigation
+                    if !self.pane.navigation.history.is_empty() {
+                        self.pane
+                            .navigation
                             .history
-                            .truncate(self.navigation.history_ix + 1);
-                        self.navigation
+                            .truncate(self.pane.navigation.history_ix + 1);
+                        self.pane
+                            .navigation
                             .history_positions
-                            .truncate(self.navigation.history_ix + 1);
+                            .truncate(self.pane.navigation.history_ix + 1);
                     }
-                    self.navigation.history.push(rel.into());
-                    self.navigation.history_positions.push(ListOffset {
+                    self.pane.navigation.history.push(rel.into());
+                    self.pane.navigation.history_positions.push(ListOffset {
                         item_ix: 0,
                         offset_in_item: px(0.),
                     });
-                    self.navigation.history_ix = self.navigation.history.len() - 1;
+                    self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
                 }
                 let mut preview = preview;
                 if okilum_core::excalidraw::is_drawing(rel) {
@@ -1704,7 +1707,7 @@ mod tests {
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.pane.file_preview.as_ref().unwrap().image);
             assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
-            assert_eq!(reader.navigation.history.last().unwrap(), "report.pdf");
+            assert_eq!(reader.pane.navigation.history.last().unwrap(), "report.pdf");
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
             assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some());
@@ -1749,7 +1752,7 @@ mod tests {
                 assert_eq!(reader.selected_title(), name);
                 assert_eq!(reader.note_label(path), name);
                 assert_eq!(reader.selected_file(), path);
-                assert_eq!(reader.navigation.history.last().unwrap(), path);
+                assert_eq!(reader.pane.navigation.history.last().unwrap(), path);
                 reader.file_action(FileAction::Relative, window, cx);
                 assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), path);
                 assert_eq!(

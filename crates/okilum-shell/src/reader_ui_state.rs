@@ -1170,14 +1170,15 @@ impl Reader {
                     .get(saved.history_index)
                     .is_some_and(|visit| visit.note == self.pane.current_rel)
             {
-                self.navigation.history = visits.iter().map(|visit| visit.note.clone()).collect();
-                self.navigation.history_positions =
+                self.pane.navigation.history =
+                    visits.iter().map(|visit| visit.note.clone()).collect();
+                self.pane.navigation.history_positions =
                     visits.iter().map(|visit| visit.position.list()).collect();
-                self.navigation.history_ix = saved.history_index;
+                self.pane.navigation.history_ix = saved.history_index;
             }
             if !saved.note.is_empty() && !saved.source {
                 self.cancel_pending_landing();
-                let positioned = self.content.update(cx, |content, cx| {
+                let positioned = self.pane.content.update(cx, |content, cx| {
                     content.scroll_to_prepared_position(saved.position.list(), cx)
                 });
                 if !positioned {
@@ -1302,11 +1303,11 @@ impl Reader {
     }
 
     pub(crate) fn restoring_reader(&self) -> bool {
-        self.ui_state.reader_position_pending && self.navigation.pending_landing.is_some()
+        self.ui_state.reader_position_pending && self.pane.navigation.pending_landing.is_some()
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
-        if self.navigation.pending_landing.is_none() {
+        if self.pane.navigation.pending_landing.is_none() {
             self.ui_state.reader_position_pending = false;
         }
         if self.ui_state.workspace.is_some()
@@ -1336,19 +1337,21 @@ impl Reader {
         let position = self
             .ui_state
             .source_reader_position
-            .or(self.navigation.pending_landing)
-            .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
+            .or(self.pane.navigation.pending_landing)
+            .unwrap_or_else(|| self.pane.content.read(cx).list_state().logical_scroll_top());
         let history = self
+            .pane
             .navigation
             .history
             .iter()
             .enumerate()
             .map(|(index, note)| Visit {
                 note: note.clone(),
-                position: if index == self.navigation.history_ix {
+                position: if index == self.pane.navigation.history_ix {
                     position.into()
                 } else {
-                    self.navigation
+                    self.pane
+                        .navigation
                         .history_positions
                         .get(index)
                         .copied()
@@ -1413,7 +1416,7 @@ impl Reader {
                 .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
                 .map_or_else(|| self.pane.current_rel.clone(), |p| p.rel.clone()),
             history,
-            history_index: self.navigation.history_ix,
+            history_index: self.pane.navigation.history_ix,
             position: position.into(),
             // An automatic Edit is the Settings default, not this session's
             // choice: relaunch applies the setting again, never as a choice
@@ -3693,6 +3696,7 @@ mod tests {
                 );
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -3732,6 +3736,7 @@ mod tests {
                 } else {
                     assert_eq!(
                         reader
+                            .pane
                             .content
                             .read(cx)
                             .list_state()
@@ -3740,7 +3745,7 @@ mod tests {
                         14
                     );
                     assert!(
-                        reader.navigation.pending_landing.is_none(),
+                        reader.pane.navigation.pending_landing.is_none(),
                         "first reader frame is positioned without a timer"
                     );
                 }
@@ -3819,13 +3824,17 @@ mod tests {
                     assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
                 }
             }
-            assert_eq!(reader.navigation.history, ["other.md", "Folder/note.md"]);
-            assert_eq!(reader.navigation.history_ix, 1);
+            assert_eq!(
+                reader.pane.navigation.history,
+                ["other.md", "Folder/note.md"]
+            );
+            assert_eq!(reader.pane.navigation.history_ix, 1);
             assert_eq!(
                 if source {
                     reader.ui_state.source_reader_position.unwrap().item_ix
                 } else {
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -3890,7 +3899,12 @@ mod tests {
         {
             for _ in 0..2 {
                 let before = reader.read_with(visual, |reader, cx| {
-                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    let position = reader
+                        .pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top();
                     (
                         reader.source_scroll_offset(cx),
                         position.item_ix,
@@ -3906,7 +3920,12 @@ mod tests {
                 });
                 visual.run_until_parked();
                 let after = reader.read_with(visual, |reader, cx| {
-                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    let position = reader
+                        .pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top();
                     (
                         reader.source_scroll_offset(cx),
                         position.item_ix,

@@ -153,8 +153,8 @@ impl HeaderKey {
                 reader.panel_widths.clone(),
             ),
             navigation: (
-                reader.navigation.history_ix,
-                reader.navigation.history.len(),
+                reader.pane.navigation.history_ix,
+                reader.pane.navigation.history.len(),
                 reader.tree.can_reveal(reader.selected_file()),
             ),
             labels: reader_ui_state::toolbar_labels(cx),
@@ -1083,7 +1083,7 @@ fn navigation_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Reader
                 cx,
             )
             .debug_selector(|| "reader-history-back".into())
-            .disabled(reader.navigation.history_ix == 0)
+            .disabled(reader.pane.navigation.history_ix == 0)
             .on_click(cx.listener(|r, _, w, cx| r.history_move(-1, w, cx))),
         )
         .child(
@@ -1094,7 +1094,7 @@ fn navigation_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Reader
                 cx,
             )
             .debug_selector(|| "reader-history-forward".into())
-            .disabled(reader.navigation.history_ix + 1 >= reader.navigation.history.len())
+            .disabled(reader.pane.navigation.history_ix + 1 >= reader.pane.navigation.history.len())
             .on_click(cx.listener(|r, _, w, cx| r.history_move(1, w, cx))),
         )
         .when(plan.shows("reveal"), |row| {

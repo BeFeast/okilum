@@ -292,7 +292,7 @@ async fn snooze_calendar_stale_menu_navigation_root_and_index_refuse_without_ret
         });
         reader.update_in(visual, |reader, _, cx| {
             match scope {
-                "navigation" => reader.navigation.generation += 1,
+                "navigation" => reader.pane.navigation.generation += 1,
                 "root" => reader.vault_root = temp.path().join("other-vault"),
                 _ => reader.tasks_index = Some(Arc::new((*old.1).clone())),
             }
@@ -308,7 +308,7 @@ async fn snooze_calendar_stale_menu_navigation_root_and_index_refuse_without_ret
         reader.update_in(visual, |reader, _, cx| {
             reader.vault_root = old.0;
             reader.tasks_index = Some(old.1);
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             cx.notify();
         });
         visual.simulate_keystrokes("escape escape");
@@ -434,7 +434,7 @@ async fn snooze_calendar_held_worker_and_completion_reject_rebound_reader(cx: &m
         }
         reader.update_in(visual, |reader, _, cx| {
             reader.vault_root = temp.path().join("replacement");
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             reader.tasks_index = Some(Arc::default());
             cx.notify();
         });
@@ -467,7 +467,7 @@ async fn snooze_calendar_held_worker_and_completion_reject_rebound_reader(cx: &m
         );
         reader.update_in(visual, |reader, window, cx| {
             reader.vault_root = root.clone();
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             reader.start_incremental(
                 okilum_core::Changes {
                     changed: ["Work.md".into()].into_iter().collect(),

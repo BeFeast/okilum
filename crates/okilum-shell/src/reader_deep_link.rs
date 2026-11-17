@@ -49,11 +49,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let before = self.navigation.preparation_generation;
+        let before = self.pane.navigation.preparation_generation;
         self.open_note(rel, None, window, cx);
-        if self.navigation.preparation_generation != before {
+        if self.pane.navigation.preparation_generation != before {
             self.pending_link_edit = Some(EditLanding {
-                generation: Some(self.navigation.preparation_generation),
+                generation: Some(self.pane.navigation.preparation_generation),
                 rel: rel.to_owned(),
                 line: None,
                 column: None,
@@ -96,7 +96,7 @@ impl Reader {
             self.open_note_landing(rel, None, None, None, window, cx);
             if self.editing.is_none() {
                 self.pending_link_edit = Some(EditLanding {
-                    generation: Some(self.navigation.preparation_generation),
+                    generation: Some(self.pane.navigation.preparation_generation),
                     rel: rel.to_owned(),
                     line,
                     column: position.column,
@@ -193,14 +193,18 @@ impl Reader {
     /// Highlight a Reader block once, fading out (#1049: a link's line
     /// shows where it landed). Reduced motion keeps it still, then clears.
     pub(crate) fn flash_block(&mut self, block: usize, cx: &mut Context<Self>) {
-        let serial = self.navigation.flash.map_or(0, |(_, s)| s.wrapping_add(1));
-        self.navigation.flash = Some((block, serial));
+        let serial = self
+            .pane
+            .navigation
+            .flash
+            .map_or(0, |(_, s)| s.wrapping_add(1));
+        self.pane.navigation.flash = Some((block, serial));
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FLASH).await;
             let _ = this.update(cx, |this, cx| {
-                if this.navigation.flash.is_some_and(|(_, s)| s == serial) {
-                    this.navigation.flash = None;
+                if this.pane.navigation.flash.is_some_and(|(_, s)| s == serial) {
+                    this.pane.navigation.flash = None;
                     cx.notify();
                 }
             });
@@ -210,8 +214,13 @@ impl Reader {
 
     /// The highlight over the flashed block, drawn where the list put it.
     pub(crate) fn render_landing_flash(&self, cx: &App) -> Option<AnyElement> {
-        let (block, serial) = self.navigation.flash?;
-        let bounds = self.content.read(cx).list_state().bounds_for_item(block)?;
+        let (block, serial) = self.pane.navigation.flash?;
+        let bounds = self
+            .pane
+            .content
+            .read(cx)
+            .list_state()
+            .bounds_for_item(block)?;
         let color = cx.theme().primary.opacity(0.18);
         let mark = div()
             .debug_selector(|| "reader-landing-flash".into())
@@ -239,7 +248,7 @@ impl Reader {
         if self.editing.is_some() || self.pane.file_preview.is_some() || self.pointer_on_link() {
             return None;
         }
-        let list = self.content.read(cx).list_state();
+        let list = self.pane.content.read(cx).list_state();
         self.pane
             .outline
             .iter()
@@ -375,7 +384,7 @@ mod tests {
         visual.simulate_resize(size(px(1000.), px(600.)));
         visual.run_until_parked();
         let (heading, paragraph) = reader.read_with(visual, |v, cx| {
-            let list = v.content.read(cx).list_state();
+            let list = v.pane.content.read(cx).list_state();
             let heading = v
                 .pane
                 .outline
@@ -402,7 +411,7 @@ mod tests {
         reader.update_in(visual, |v, _, cx| {
             v.pointer_link = Some((
                 "okilum://open/Other.md".into(),
-                v.navigation.preparation_generation,
+                v.pane.navigation.preparation_generation,
             ));
             assert_eq!(
                 v.heading_at(heading, cx),
@@ -633,8 +642,14 @@ mod tests {
             visual.executor().advance_clock(Duration::from_millis(300));
             visual.run_until_parked();
         };
-        let top =
-            |v: &Reader, cx: &App| v.content.read(cx).list_state().logical_scroll_top().item_ix;
+        let top = |v: &Reader, cx: &App| {
+            v.pane
+                .content
+                .read(cx)
+                .list_state()
+                .logical_scroll_top()
+                .item_ix
+        };
 
         // Reader: line 82 is paragraph 40, block 39.
         reader.update_in(visual, |v, window, cx| {
@@ -647,7 +662,7 @@ mod tests {
             assert!(v.link_notice.is_none());
             assert_eq!(top(v, cx), 39);
             assert_eq!(
-                v.navigation.flash.map(|(block, _)| block),
+                v.pane.navigation.flash.map(|(block, _)| block),
                 Some(39),
                 "landed block flashes"
             );
@@ -659,7 +674,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(1500));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert!(v.navigation.flash.is_none(), "it fades once")
+            assert!(v.pane.navigation.flash.is_none(), "it fades once")
         });
         // Positive control: the same note without a line opens at the top.
         reader.update_in(visual, |v, window, cx| {
@@ -673,7 +688,7 @@ mod tests {
         reader.read_with(visual, |v, cx| {
             assert_eq!(top(v, cx), 0);
             assert!(
-                v.navigation.flash.is_none(),
+                v.pane.navigation.flash.is_none(),
                 "a bare link highlights nothing"
             );
         });

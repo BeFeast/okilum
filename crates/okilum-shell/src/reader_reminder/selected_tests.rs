@@ -81,7 +81,7 @@ fn select_date(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Point
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         assert_eq!(
-            reader.content.read(cx).selected_text().trim(),
+            reader.pane.content.read(cx).selected_text().trim(),
             "1 November 2027",
             "painted date drag positive control"
         )
@@ -170,6 +170,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
     // A non-date selection offers nothing; the same mounted menu below is its positive control.
     reader.update(visual, |reader, cx| {
         reader
+            .pane
             .content
             .update(cx, |content, cx| content.select_all(cx))
     });
@@ -359,7 +360,7 @@ async fn reminder_724_stale_reader_and_editor_menu_refuse_without_retarget(
     ready(&reader, visual).await;
     open_menu(&reader, visual);
     reader.update(visual, |reader, cx| {
-        reader.navigation.generation += 1;
+        reader.pane.navigation.generation += 1;
         cx.notify();
     });
     click_item(visual);
@@ -453,7 +454,7 @@ async fn reminder_724_held_worker_and_completion_refuse_rebound_owner(cx: &mut T
         }
         reader.update(visual, |reader, cx| {
             reader.vault_root = temp.path().join("replacement");
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             cx.notify();
         });
         visual.run_until_parked();
@@ -468,7 +469,7 @@ async fn reminder_724_held_worker_and_completion_refuse_rebound_owner(cx: &mut T
         );
         reader.update(visual, |reader, cx| {
             reader.vault_root = root.clone();
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             cx.notify();
         });
         visual.run_until_parked();
@@ -779,7 +780,7 @@ async fn reminder_724_read_cursor_without_selection_appends_configured_note_and_
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     let at = reader.read_with(visual, |reader, cx| {
-        assert!(reader.content.read(cx).selected_text().is_empty());
+        assert!(reader.pane.content.read(cx).selected_text().is_empty());
         crate::reader_scroll_geometry_tests::paragraph_origin(reader, cx, 1)
     }) + point(px(30.), px(10.));
     visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
@@ -790,7 +791,7 @@ async fn reminder_724_read_cursor_without_selection_appends_configured_note_and_
         "actual hit without selection offers date"
     );
     reader.read_with(visual, |reader, cx| {
-        assert!(reader.content.read(cx).selected_text().is_empty())
+        assert!(reader.pane.content.read(cx).selected_text().is_empty())
     });
     click_item(visual);
     added(&reader, visual, &root, destination, 1, 1).await;
@@ -868,10 +869,10 @@ async fn reminder_724_read_cursor_rejects_changed_displayed_revision(cx: &mut Te
         "actual cursor menu positive control"
     );
     reader.read_with(visual, |reader, cx| {
-        assert!(reader.content.read(cx).selected_text().is_empty())
+        assert!(reader.pane.content.read(cx).selected_text().is_empty())
     });
     reader.update(visual, |reader, cx| {
-        reader.content.update(cx, |content, cx| {
+        reader.pane.content.update(cx, |content, cx| {
             content.set_text("# Replacement\n\n1 December 2028\n", cx)
         });
         cx.notify();

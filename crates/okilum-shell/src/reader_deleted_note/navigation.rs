@@ -47,7 +47,7 @@ impl Reader {
             .is_some_and(|(root, rel, generation)| {
                 root == &self.vault_root
                     && rel == &self.pane.current_rel
-                    && *generation == self.navigation.generation
+                    && *generation == self.pane.navigation.generation
             })
         {
             return false;
@@ -78,14 +78,14 @@ impl Reader {
         let answer = ask_leave(window, cx, self.selected_title(), disk);
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
-        let generation = self.navigation.preparation_generation;
+        let generation = self.pane.navigation.preparation_generation;
         cx.spawn_in(window, async move |this, cx| {
             let choice = answer.recv().await.unwrap_or(Leave::Cancel);
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.deleted_note_asking = false;
                 let current = this.vault_root == root
                     && this.pane.current_rel == rel
-                    && this.navigation.preparation_generation == generation;
+                    && this.pane.navigation.preparation_generation == generation;
                 if !current {
                     return;
                 }
@@ -124,7 +124,7 @@ impl Reader {
         self.deleted_note_leaving = Some((
             self.vault_root.clone(),
             self.pane.current_rel.clone(),
-            self.navigation.generation,
+            self.pane.navigation.generation,
         ));
         retry(self, window, cx);
     }

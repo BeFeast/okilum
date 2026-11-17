@@ -632,9 +632,10 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
     reader.read_with(visual, |r, cx| {
         assert!(r.editing.is_none());
         let block = r
+            .pane
             .navigation
             .pending_landing
-            .unwrap_or_else(|| r.content.read(cx).list_state().logical_scroll_top())
+            .unwrap_or_else(|| r.pane.content.read(cx).list_state().logical_scroll_top())
             .item_ix;
         assert!(
             block > 80,

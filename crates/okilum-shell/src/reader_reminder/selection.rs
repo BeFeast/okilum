@@ -145,9 +145,9 @@ impl Owner {
             state: reader.session_directory.clone(),
             index_directory: reader.index_dir.clone(),
             document: reader.pane.current_rel.clone(),
-            navigation: reader.navigation.generation,
-            preparation: reader.navigation.preparation_generation,
-            content: reader.content.clone(),
+            navigation: reader.pane.navigation.generation,
+            preparation: reader.pane.navigation.preparation_generation,
+            content: reader.pane.content.clone(),
             destination: reader.reminder_prefs.note.clone(),
         }
     }
@@ -160,9 +160,9 @@ impl Owner {
             && self.state == reader.session_directory
             && self.index_directory == reader.index_dir
             && self.document == reader.pane.current_rel
-            && self.navigation == reader.navigation.generation
-            && self.preparation == reader.navigation.preparation_generation
-            && self.content == reader.content
+            && self.navigation == reader.pane.navigation.generation
+            && self.preparation == reader.pane.navigation.preparation_generation
+            && self.content == reader.pane.content
             && self.destination == reader.reminder_prefs.note
     }
 }
@@ -201,7 +201,7 @@ impl Request {
 
     /// A date under a right press in Read mode, when nothing is selected.
     pub(super) fn read_at(reader: &Reader, position: Point<Pixels>, cx: &App) -> Option<Self> {
-        let content = reader.content.read(cx);
+        let content = reader.pane.content.read(cx);
         if !content.selected_text().is_empty() {
             return Self::read(reader, cx);
         }
@@ -289,7 +289,8 @@ impl Request {
             && match &self.evidence {
                 Evidence::ReadPress { displayed } => {
                     reader.editing.is_none()
-                        && reader.content.read(cx).document_source().as_ref() == Some(displayed)
+                        && reader.pane.content.read(cx).document_source().as_ref()
+                            == Some(displayed)
                         && reader
                             .pane
                             .note_canonical_source

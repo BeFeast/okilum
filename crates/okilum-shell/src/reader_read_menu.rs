@@ -112,12 +112,12 @@ pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
     if state.editing.is_some() || state.pane.file_preview.is_some() {
         return None;
     }
-    let content = state.content.read(cx);
+    let content = state.pane.content.read(cx);
     Some(Snapshot {
         plain: content.selected_text_as(SelectionFormat::Plain),
         markdown: content.selected_text_as(SelectionFormat::Source),
         document: content.document_source(),
-        generation: state.navigation.preparation_generation,
+        generation: state.pane.navigation.preparation_generation,
         rich_markdown: !state.pane.use_html,
     })
 }
@@ -176,8 +176,9 @@ fn build(
             .on_click(move |_, window, cx| {
                 if command == Command::SelectAll {
                     let _ = reader.update(cx, |reader, cx| {
-                        if reader.navigation.preparation_generation == snapshot.generation {
+                        if reader.pane.navigation.preparation_generation == snapshot.generation {
                             reader
+                                .pane
                                 .content
                                 .update(cx, |content, cx| content.select_all(cx));
                         }
@@ -252,14 +253,15 @@ mod tests {
             )
         });
         reader.read_with(visual, |reader, cx| {
-            assert!(reader.content.read(cx).selected_text().is_empty())
+            assert!(reader.pane.content.read(cx).selected_text().is_empty())
         });
 
         right_click(visual);
         visual.simulate_keystrokes("down enter");
         visual.run_until_parked();
-        let selected =
-            reader.read_with(visual, |reader, cx| reader.content.read(cx).selected_text());
+        let selected = reader.read_with(visual, |reader, cx| {
+            reader.pane.content.read(cx).selected_text()
+        });
         assert!(
             !selected.is_empty(),
             "positive control: Select all selected the document"
@@ -275,7 +277,11 @@ mod tests {
             )
         });
         assert_eq!(
-            reader.read_with(visual, |reader, cx| reader.content.read(cx).selected_text()),
+            reader.read_with(visual, |reader, cx| reader
+                .pane
+                .content
+                .read(cx)
+                .selected_text()),
             selected
         );
         assert_eq!(

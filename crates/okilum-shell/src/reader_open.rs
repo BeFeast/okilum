@@ -2891,7 +2891,10 @@ mod entry_tests {
                     let name = reader.vault_root.file_name().unwrap().to_string_lossy();
                     assert!(reader.document_ready(), "{name} shows its note");
                     assert!(
-                        matches!(reader.content.read(cx).preparation_status(), Some(Ok(()))),
+                        matches!(
+                            reader.pane.content.read(cx).preparation_status(),
+                            Some(Ok(()))
+                        ),
                         "{name} prepared its note"
                     );
                     assert!(reader.link_notice.is_none(), "{name} shows no notice");
@@ -4503,7 +4506,12 @@ mod entry_tests {
                 assert_eq!(readers.len(), 1, "one Reader for the vault");
                 let reader = readers[0].0.upgrade().unwrap();
                 let reader = reader.read(cx);
-                let top = reader.content.read(cx).list_state().logical_scroll_top();
+                let top = reader
+                    .pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top();
                 (
                     reader.pane.current_rel.clone(),
                     top.item_ix,
@@ -4930,7 +4938,12 @@ mod entry_tests {
                 .iter()
                 .find(|h| h.text == "Distant checkpoint")
                 .map(|h| h.target.block);
-            let top = reader.content.read(cx).list_state().logical_scroll_top();
+            let top = reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .logical_scroll_top();
             (block, top.item_ix)
         });
         assert!(landed.0.is_some_and(|block| block > 30), "{landed:?}");
@@ -5296,8 +5309,8 @@ mod entry_tests {
             );
             assert!(second.read(cx).recent_expanded);
             assert_eq!(
-                second.read(cx).navigation.history,
-                first.read(cx).navigation.history
+                second.read(cx).pane.navigation.history,
+                first.read(cx).pane.navigation.history
             );
 
             assert!(std::sync::Arc::ptr_eq(
@@ -5320,9 +5333,12 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(first.read(cx).pane.current_rel, "a.md");
             assert_eq!(second.read(cx).pane.current_rel, "b.md");
-            assert_eq!(first.read(cx).navigation.history, vec!["a.md".to_string()]);
             assert_eq!(
-                second.read(cx).navigation.history,
+                first.read(cx).pane.navigation.history,
+                vec!["a.md".to_string()]
+            );
+            assert_eq!(
+                second.read(cx).pane.navigation.history,
                 vec!["a.md".to_string(), "b.md".to_string()]
             );
             second.update(cx, |reader, cx| reader.record_ui_state(true, cx));
