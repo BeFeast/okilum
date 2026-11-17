@@ -176,6 +176,65 @@ The path stays on its Service while its Pods and containers are inspected. A
 Service that disappears from a later read is reported, not replaced by a
 same-named one. There is no general graph canvas.
 
+## Evidence export (#3012)
+
+**Export evidence** (scope strip) asks for a folder and writes one new
+directory, `okilum-kubernetes-evidence-<context>-<namespace>-<UTC time>`, that
+appears whole or not at all and never replaces an existing one. It holds only
+what the window already observed and loaded; nothing is read from the
+cluster to build it.
+
+| File | Contents |
+|---|---|
+| `facts/selection.yaml` | Typed, read-only YAML of the selected object (the same as the Manifest tab) |
+| `facts/events.json` | Event groups of the selection and its owned objects, with the Events source state |
+| `logs/<pod>_<container>_<current\|previous>.log` | The exact complete lines received in the pinned session (bytes, CRLF and UTF-8 unchanged; not filtered) |
+| `manifest.json` | Format `okilum.kubernetes-evidence/1`, app version/source, scope (context, cluster, server, namespace), lens, every source's state (fresh/aged/stale/failed/unread), read time, list resourceVersion, item count, completeness and latest failure, the selection's kind/name/UID/resourceVersion and container, the log session (target with Pod UID and instance, UID verification time, UID against the latest Pods read, phase and its detail, stream/tail choices, bytes/lines, trailing bytes not exported, limits, the LogView filter and row counts, and a coverage statement), the exclusions and every artifact's size and SHA-256 |
+| `SHA256SUMS` | `sha256sum -c` compatible hashes of every other file |
+
+The coverage statement says what is *not* there: older history beyond the
+initial tail, other instances, rotated logs, and that `kubectl logs`
+addresses Pods by name. Never exported: kubeconfig users/tokens/certificates/
+exec settings and Secrets (never read), container env values and exec probe
+commands (not retained), kubectl stderr of log sessions, and the detail of
+auth, credential-helper, kubeconfig and unclassified failures (their kind
+only). A denied read keeps the API server's own message.
+
+The LogView's own row export (raw/JSONL/CSV of the shown, selected or marked
+rows) is unchanged and stays the way to export filtered rows.
+
+**Copy command** (log dock) copies the pinned target's exact `kubectl logs`
+argv (context, namespace, `pod/<name>`, container, previous, follow, tail)
+for a terminal, and says that it reads the Pod by name while the session
+verified a UID. There is no Kibana handoff for Kubernetes sources: no
+mapping from a Pod/container to a Kibana index exists, and different
+backends are not assumed to hold the same lines.
+
+## Native visual harness (#3012)
+
+The non-publishing `kubernetes-ui-harness` feature lets
+`OKILUM_KUBERNETES_HARNESS=<workspace|triage|service-path>:<light|dark>`
+open the real Workspace window with synthetic in-process data (no kubectl,
+cluster or credential), drive it through the ordinary Load, lens, selection
+and Open logs paths, optionally export a bundle
+(`OKILUM_KUBERNETES_HARNESS_EXPORT`), and write `READY` to
+`OKILUM_KUBERNETES_HARNESS_READY`. `.github/workflows/kubernetes-native.yml`
+builds it on hosted Linux (Xvfb + lavapipe), macOS and Windows runners;
+`scripts/ci/kubernetes-native-screens.py` captures all six compositions,
+checks each capture is not blank and checks the exported bundle's hashes and
+exclusions byte for byte.
+
+## Native acceptance status
+
+Verified by this repository's checks: the typed adapter, the Workspace,
+lenses and export with synthetic data (unit and GPUI tests), and native
+rendering of the six compositions on hosted runners (screenshots). Not
+verified here, and needing a real cluster and the user's own kubeconfig:
+GUI-launched kubectl/PATH and exec credential plugins, namespace-list
+denial, expired login and MFA, connection loss and recovery, independent
+`kubectl` comparison of a real namespace, and user acceptance. Freelens stays
+the fallback for every workflow not accepted on the installed build.
+
 ## Keys
 
 Only while the resource list has focus: `J`/`↓` next, `K`/`↑` previous, `L`

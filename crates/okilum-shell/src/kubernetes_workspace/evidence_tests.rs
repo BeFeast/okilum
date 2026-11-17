@@ -34,7 +34,7 @@ fn bundle(data: &Data, with_log: bool) -> Bundle {
         pod_uid: "pod-a".into(),
         container: "api".into(),
     };
-    let (session, target) = session(data);
+    let pinned = with_log.then(|| session(data));
     let snapshot = Assembler::new("pod.log".into(), "evidence".into())
         .unwrap()
         .append(LOG)
@@ -44,8 +44,8 @@ fn bundle(data: &Data, with_log: bool) -> Bundle {
         selected: Some(&key),
         related_uids: vec!["pod-a".into()],
         lens: "Triage",
-        session: with_log.then_some(&session),
-        displayed: with_log.then_some(&target),
+        session: pinned.as_ref().map(|(s, _)| s),
+        displayed: pinned.as_ref().map(|(_, t)| t),
         tail_lines: 1000,
         view: with_log.then(|| LogViewState {
             snapshot,
