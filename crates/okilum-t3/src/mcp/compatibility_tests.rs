@@ -169,14 +169,27 @@ fn pending_list_accepts_ids_without_a_count_or_thread_wrapper() {
     }
 }
 
+/// The `t3_project_update` fields T3's `ProjectUpdatePayload` declares
+/// `optional(NullOr(..))`; `null` there clears the setting. Every other
+/// optional field is `optional(..)` alone and takes no `null`.
+const NULLABLE_PROJECT_UPDATE_FIELDS: [&str; 4] = [
+    "projectIcon",
+    "faviconPath",
+    "defaultModelSelection",
+    "defaultThreadEnvMode",
+];
+
 /// #1765: the captured `t3_project_update` schema advertises `projectIcon`
-/// as an object with a required `kind` and no `null` branch. T3 strips the
-/// `null` branch of every optional property when it advertises a tool
-/// (`advertisedJsonSchema.compact`) and decodes the call with its own
-/// payload, `projectIcon: optional(NullOr(ProjectIconOverride))`; its
-/// `project.update` command keeps a `null` and clears the override (source of
-/// upstream 0.1.10-nightly.20261116). So a reset sends `null`, a key the
-/// advertised schema lists as optional, and no guessed default icon.
+/// as an object with a required `kind` and no `null` branch. That is T3's
+/// advertising rule, not its input contract: `advertisedJsonSchema` drops
+/// "the `null` branch of optional properties" and "decoding still uses the
+/// full schema" (pingdotgg/t3code `apps/server/src/mcp/advertisedJsonSchema.ts`,
+/// same in the running 0.1.10-nightly.20261116). The full schema is
+/// `projectIcon: optional(NullOr(ProjectIconOverride))`, its `project.update`
+/// command keeps the `null` and clears the override, and T3's own project
+/// settings panel resets an icon with `projectIcon: null`. So the advertised
+/// schema is checked as advertised, `null` only where T3's payload is
+/// nullable, and a reset is never a guessed default icon.
 #[test]
 fn icon_save_and_reset_fit_the_captured_project_update_schema() {
     use crate::projects::icon::{IconColor, ProjectIcon};
@@ -218,7 +231,11 @@ fn icon_save_and_reset_fit_the_captured_project_update_schema() {
                     let property = &schema["properties"][field];
                     assert!(property.is_object(), "unadvertised {field}");
                     if value.is_null() {
-                        assert!(!required.contains(field), "null {field}");
+                        assert!(!required.contains(field), "null required {field}");
+                        assert!(
+                            NULLABLE_PROJECT_UPDATE_FIELDS.contains(&field.as_str()),
+                            "T3 does not take null for {field}"
+                        );
                         continue;
                     }
                     if field == "projectIcon" {
