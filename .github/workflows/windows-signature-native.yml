@@ -1,0 +1,30 @@
+# Native Authenticode check of a published Windows build (#1104). Public downloads
+# only, no secrets. Run it for the first signed build and before each stable promotion:
+# dispatch with the build number, or push any commit to windows-signature-native/<build>.
+name: windows-signature-native
+on:
+  push:
+    branches: ['windows-signature-native/**']
+  workflow_dispatch:
+    inputs:
+      build: {description: 'Published Windows build number', required: true}
+      cert-sha256:
+        description: 'Pinned signer certificate SHA-256'
+        required: true
+        default: 5fe45be3a5ea5207fbc8ab89f7f6edd8412409f3746ff09e4f0a012c2022db0e
+permissions: {contents: read}
+concurrency: {group: 'windows-signature-native-${{ github.ref }}-${{ inputs.build }}', cancel-in-progress: false}
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: signtool and Get-AuthenticodeSignature on every shipped PE
+        shell: pwsh
+        env:
+          BUILD: ${{ inputs.build }}
+          CERT: ${{ inputs.cert-sha256 || '5fe45be3a5ea5207fbc8ab89f7f6edd8412409f3746ff09e4f0a012c2022db0e' }}
+        run: |
+          if (-not $env:BUILD) { $env:BUILD = ($env:GITHUB_REF_NAME -split '/')[-1] }
+          ./scripts/windows/verify-signatures-native.ps1 -Build $env:BUILD -CertSha256 $env:CERT -Work (Join-Path $env:RUNNER_TEMP 'signatures')
