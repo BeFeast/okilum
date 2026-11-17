@@ -27,6 +27,8 @@ if cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --li
     grep -q '::dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo: test$' "$RUNNER_TEMP/projected-cache-tests.txt"
     run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::display_map::projected_cache::
     run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::projection_layout::
+    # #653: a long note parsed in chunks gives the tree of a single parse.
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib text::format::markdown::tests::chunked_parse
 else
     failures=$((failures + 1))
 fi

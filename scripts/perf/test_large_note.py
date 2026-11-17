@@ -12,7 +12,8 @@ import fixture  # noqa: E402
 
 def run(**overrides):
     data = {
-        "open_ms": 700., "control_open_ms": 600., "open_over_control_ms": 100., "first_frame_ms": 20., "blocks": 4500, "outline_rows": 2000,
+        "open_ms": 700., "control_open_ms": 600., "open_over_control_ms": 100.,
+        "document_stage_ms": 150., "control_document_stage_ms": 20., "first_frame_ms": 20., "blocks": 4500, "outline_rows": 2000,
         "scroll_start_item": 0, "scroll_end_item": 900,
         "scroll": {"frames": 240, "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
         "jump": {"frames": 32, "p50_ms": 5., "p95_ms": 9., "max_ms": 15.},
@@ -69,6 +70,12 @@ class LargeNote(unittest.TestCase):
         summary, table = bench.summarize([slow, slow, run()], counts)
         self.assertEqual(summary["over"], ["open_ms", "open_over_control_ms"])
         self.assertIn("OVER", table)
+
+
+    def test_document_stage_needs_both_diagnostics(self):
+        self.assertEqual(bench.document_stage({"first_event_received": 1000., "document_first_paint": 1250.}), 250.)
+        with self.assertRaises(bench.NoEvidence):
+            bench.document_stage({"first_event_received": 1000.})
 
 
 if __name__ == "__main__":

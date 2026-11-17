@@ -38,13 +38,15 @@ import fixture  # noqa: E402
 BUDGETS = {
     "open_ms": 3000.0,
     "open_over_control_ms": 300.0,
+    "document_stage_ms": 400.0,
     "first_frame_ms": 100.0,
     "scroll.p95_ms": 25.0,
     "scroll.max_ms": 50.0,
     "jump.p95_ms": 25.0,
     "jump.max_ms": 60.0,
 }
-KEYS = ["open_ms", "control_open_ms", "open_over_control_ms", "first_frame_ms", "scroll.p50_ms", "scroll.p95_ms", "scroll.max_ms",
+KEYS = ["open_ms", "control_open_ms", "open_over_control_ms", "document_stage_ms",
+        "control_document_stage_ms", "first_frame_ms", "scroll.p50_ms", "scroll.p95_ms", "scroll.max_ms",
         "jump.p50_ms", "jump.p95_ms", "jump.max_ms"]
 PHASES = {
     "note_open_core_preparation": "worker_ms",
@@ -94,6 +96,16 @@ def phases(log):
             if key and key in row.get("details", {}):
                 found.setdefault(row["phase"], row["details"][key])
     return found, timeline
+
+
+def document_stage(timeline):
+    """From the loader handing the prepared note to the UI to the first frame
+    with its blocks: the TextView parse and publication of this note, without
+    the launch, the vault scan or the software display's start-up."""
+    try:
+        return timeline["document_first_paint"] - timeline["first_event_received"]
+    except KeyError as missing:
+        raise NoEvidence(f"diagnostic {missing} not logged") from None
 
 
 def run_once(binary, vault_source, display, work, rep, note=fixture.NOTE):
@@ -191,6 +203,8 @@ def main():
                 data["control_open_ms"] = control["open_ms"]
                 data["open_over_control_ms"] = data["open_ms"] - control["open_ms"]
                 data["control_timeline"] = control["timeline"]
+                data["document_stage_ms"] = document_stage(data["timeline"])
+                data["control_document_stage_ms"] = document_stage(control["timeline"])
                 problems = controls(data, counts)
                 if problems:
                     raise NoEvidence(f"run {rep} controls failed:\n  " + "\n  ".join(problems)
