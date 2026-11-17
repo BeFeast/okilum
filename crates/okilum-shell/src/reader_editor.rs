@@ -706,6 +706,8 @@ impl Reader {
         };
         let path = self.vault_root.join(self.selected_file());
         let generation = self.pane.navigation.preparation_generation;
+        // The draft check answers for this pane only (#773).
+        let pane = self.pane.id();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -713,31 +715,33 @@ impl Reader {
                     FileEditor::has_unsaved_draft(&path, &directory.join("editor-drafts"))
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.pane.navigation.preparation_generation != generation
-                    || this.pane.editing.is_some()
-                {
-                    return;
-                }
-                match result {
-                    Ok(available) => {
-                        this.pane.recovery_offer = available;
-                        if available {
-                            this.pane.recovery_dismissed = false;
-                        }
-                        this.pane.recovery_checked = true;
+            let _ = this.update(cx, move |this, cx| {
+                this.run_for_pane_without_window(pane, cx, move |this, cx| {
+                    if this.pane.navigation.preparation_generation != generation
+                        || this.pane.editing.is_some()
+                    {
+                        return;
                     }
-                    Err(error) => {
-                        this.pane.recovery_error = true;
-                        this.link_notice = Some(
-                            format!(
+                    match result {
+                        Ok(available) => {
+                            this.pane.recovery_offer = available;
+                            if available {
+                                this.pane.recovery_dismissed = false;
+                            }
+                            this.pane.recovery_checked = true;
+                        }
+                        Err(error) => {
+                            this.pane.recovery_error = true;
+                            this.link_notice = Some(
+                                format!(
                         "Could not check saved drafts: {error:#}. Draft files have been preserved."
                     )
-                            .into(),
-                        )
+                                .into(),
+                            )
+                        }
                     }
-                }
-                cx.notify();
+                    cx.notify();
+                });
             });
         })
         .detach();
@@ -2319,21 +2323,26 @@ impl Reader {
                 .flatten();
             (result, copy.disk_stamp(), rules_revision, conflict)
         });
+        // The autosave belongs to this pane's editor even if another pane is
+        // active when it finishes (#773).
+        let pane = self.pane.id();
         cx.spawn(async move |this, cx| {
             let (result, stamp, rules_revision, conflict) = worker.await;
-            let _ = this.update(cx, |this, cx| {
-                let accepted = matches!(&result, Ok(Save::Saved))
-                    && this.pane.editing.as_ref().is_some_and(|editing| {
-                        editing.input.entity_id() == input_id
-                            && editing.saves == saves
-                            && editing.autosaving.as_ref() == Some(&text)
-                    });
-                this.autosaved_observed(input_id, saves, text, result, stamp, conflict, cx);
-                if accepted {
-                    if let Some((absolute_path, saved_revision)) = rules_revision {
-                        this.agents_rules_saved(&absolute_path, &saved_revision, cx);
+            let _ = this.update(cx, move |this, cx| {
+                this.run_for_pane_without_window(pane, cx, move |this, cx| {
+                    let accepted = matches!(&result, Ok(Save::Saved))
+                        && this.pane.editing.as_ref().is_some_and(|editing| {
+                            editing.input.entity_id() == input_id
+                                && editing.saves == saves
+                                && editing.autosaving.as_ref() == Some(&text)
+                        });
+                    this.autosaved_observed(input_id, saves, text, result, stamp, conflict, cx);
+                    if accepted {
+                        if let Some((absolute_path, saved_revision)) = rules_revision {
+                            this.agents_rules_saved(&absolute_path, &saved_revision, cx);
+                        }
                     }
-                }
+                });
             });
         })
         .detach();
