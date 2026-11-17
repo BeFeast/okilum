@@ -693,6 +693,41 @@ mod tests {
         }
     }
 
+    /// #1618: on Linux, Ctrl+Shift+V and Ctrl+Alt+V in a note's editor are
+    /// Paste as Plain Text and Paste as Titled Link, and no Okilum or toolkit
+    /// binding claims either chord anywhere else.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_paste_variants_own_their_chords(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let keymap = reader_keymap(cx);
+        let editor: Vec<_> = ["Reader ReaderSource", "Input"]
+            .into_iter()
+            .map(|value| KeyContext::parse(value).unwrap())
+            .collect();
+        for (chord, action) in [
+            (
+                "ctrl-shift-v",
+                note_paste::PasteAsPlainText::name_for_type(),
+            ),
+            ("ctrl-alt-v", note_paste::PasteAsTitledLink::name_for_type()),
+        ] {
+            let key = KeyBinding::new(chord, note_paste::PasteAsPlainText, None);
+            let bound: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| binding.keystrokes() == key.keystrokes())
+                .map(|binding| binding.action().name())
+                .collect();
+            assert_eq!(bound, [action], "{chord}");
+            let resolved = keymap.bindings_for_input(key.keystrokes(), &editor).0;
+            assert_eq!(
+                resolved.first().map(|binding| binding.action().name()),
+                Some(action),
+                "{chord} in a note editor"
+            );
+        }
+    }
+
     #[gpui::test]
     fn every_bound_reader_action_is_listed(cx: &mut TestAppContext) {
         // Bound only in the separate settings window, which has no sheet.

@@ -3,13 +3,14 @@
 //! upstream), so a page copied from a browser arrived as plain text. This
 //! reads the regular selection's targets over Okilum's own short-lived X11
 //! connection, inside the user's paste command, and hands them to the same
-//! MIME negotiation the Wayland data-control reader uses. GPUI core is not
+//! note board the Wayland data-control reader feeds: the target list up
+//! front, then only the flavors the router asks for (#1618). GPUI core is not
 //! patched and clipboard ownership is never taken.
 //!
 //! Okilum's own copy is left to GPUI (its cached item keeps images and
 //! metadata). The owner's process comes from the X-Resource extension; where
 //! that cannot name it, the read is `Unsupported` and GPUI answers as before.
-use super::exact_wayland_clipboard::{receive_selection, Selection};
+use super::exact_wayland_clipboard::NoteSelection;
 use gpui_component::input::clipboard::ClipboardReadError as Error;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 use std::time::{Duration, Instant};
@@ -34,19 +35,15 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TARGETS: usize = 512;
 
 /// Read the CLIPBOARD selection for a note paste on `display`. `own_pid` is
-/// this process: its own copy is reported as [`Selection::Own`].
-pub(super) fn read_note_in_command(display: &str, own_pid: u32) -> Result<Selection, Error> {
+/// this process: its own copy is reported as [`NoteSelection::Own`]. The
+/// connection stays open in the returned offer until the paste is routed.
+pub(super) fn read_note_in_command(display: &str, own_pid: u32) -> Result<NoteSelection, Error> {
     read_note(display, own_pid, Instant::now() + TIMEOUT)
 }
 
-fn read_note(display: &str, own_pid: u32, deadline: Instant) -> Result<Selection, Error> {
+fn read_note(display: &str, own_pid: u32, deadline: Instant) -> Result<NoteSelection, Error> {
     let (conn, screen) = RustConnection::connect(Some(display)).map_err(|_| Error::Unsupported)?;
-    let reader = Reader::new(conn, screen, deadline)?;
-    let result = reader.read(own_pid);
-    // The connection closes on drop; destroying first keeps a reused display tidy.
-    let _ = reader.conn.destroy_window(reader.window);
-    let _ = reader.conn.flush();
-    result
+    Reader::new(conn, screen, deadline)?.read(own_pid)
 }
 
 struct Reader {
@@ -108,24 +105,26 @@ impl Reader {
         })
     }
 
-    fn read(&self, own_pid: u32) -> Result<Selection, Error> {
+    /// The owner's target list now; each flavor later, on request. X11 has
+    /// no change counter: every conversion must be answered while the same
+    /// owner holds the selection, or the paste is a changed offer.
+    fn read(self, own_pid: u32) -> Result<NoteSelection, Error> {
         let owner = self.owner()?;
         if owner == NONE {
-            return Ok(Selection::Empty);
+            return Ok(NoteSelection::Empty);
         }
         if self.owner_pid(owner)? == own_pid {
-            return Ok(Selection::Own);
+            return Ok(NoteSelection::Own);
         }
-        let targets = self.targets()?;
+        let mimes = self.targets()?;
         self.same_owner(owner)?;
-        receive_selection(&targets, None, true, |mime, limit| {
-            let bytes = self.convert(mime, limit)?;
-            self.same_owner(owner)?;
-            Ok(if mime == "text/html" {
-                html_utf8(bytes)
-            } else {
-                bytes
-            })
+        Ok(NoteSelection::Offer {
+            mimes,
+            receive: Box::new(move |mime, limit| {
+                let bytes = self.convert(mime, limit)?;
+                self.same_owner(owner)?;
+                Ok(bytes)
+            }),
         })
     }
 
@@ -326,31 +325,16 @@ impl Reader {
     }
 }
 
-fn connection(_: ConnectionError) -> Error {
-    Error::Io
+impl Drop for Reader {
+    /// The connection closes on drop; destroying first keeps a reused display tidy.
+    fn drop(&mut self) {
+        let _ = self.conn.destroy_window(self.window);
+        let _ = self.conn.flush();
+    }
 }
 
-/// Browsers on X11 have offered `text/html` as UTF-16 with a byte order mark
-/// (Firefox did for years); the converters take UTF-8.
-fn html_utf8(bytes: Vec<u8>) -> Vec<u8> {
-    let decode = |little: bool| {
-        let units = bytes[2..].as_chunks::<2>().0.iter().map(|pair| {
-            if little {
-                u16::from_le_bytes(*pair)
-            } else {
-                u16::from_be_bytes(*pair)
-            }
-        });
-        char::decode_utf16(units)
-            .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect::<String>()
-            .into_bytes()
-    };
-    match bytes.get(..2) {
-        Some([0xFF, 0xFE]) => decode(true),
-        Some([0xFE, 0xFF]) => decode(false),
-        _ => bytes,
-    }
+fn connection(_: ConnectionError) -> Error {
+    Error::Io
 }
 
 #[cfg(test)]
@@ -571,12 +555,18 @@ pub(super) mod tests {
         }
     }
 
-    fn data(selection: Selection) -> Vec<(String, Vec<u8>)> {
-        match selection {
-            Selection::Data(data) => data,
-            Selection::Empty => panic!("#2006: X11 selection read as empty"),
-            Selection::Own => panic!("#2006: foreign X11 owner read as own"),
-        }
+    /// The offer's MIME list and the bytes of `wanted`, read in that order.
+    fn receive(selection: NoteSelection, wanted: &[&str]) -> (Vec<String>, Vec<(String, Vec<u8>)>) {
+        let (mimes, mut receive) = match selection {
+            NoteSelection::Offer { mimes, receive } => (mimes, receive),
+            NoteSelection::Empty => panic!("#2006: X11 selection read as empty"),
+            NoteSelection::Own => panic!("#2006: foreign X11 owner read as own"),
+        };
+        let data = wanted
+            .iter()
+            .map(|&mime| (mime.to_owned(), receive(mime, 64 * 1024 * 1024).unwrap()))
+            .collect();
+        (mimes, data)
     }
     const FOREIGN: u32 = u32::MAX;
 
@@ -586,7 +576,7 @@ pub(super) mod tests {
         // Positive control first: an empty CLIPBOARD reads as empty, not an error.
         assert!(matches!(
             read_note_in_command(&server.display, FOREIGN),
-            Ok(Selection::Empty)
+            Ok(NoteSelection::Empty)
         ));
         let html = b"<p>Hello <strong>world</strong></p>".to_vec();
         let _owner = Owner::serve(
@@ -598,7 +588,13 @@ pub(super) mod tests {
             ],
             usize::MAX,
         );
-        let data = data(read_note_in_command(&server.display, FOREIGN).unwrap());
+        let (mimes, data) = receive(
+            read_note_in_command(&server.display, FOREIGN).unwrap(),
+            &["text/html", "UTF8_STRING"],
+        );
+        for offered in ["TARGETS", "UTF8_STRING", "text/html", "text/plain"] {
+            assert!(mimes.iter().any(|mime| mime == offered), "{mimes:?}");
+        }
         assert_eq!(
             data,
             vec![
@@ -607,6 +603,38 @@ pub(super) mod tests {
             ],
             "#2006: X11 smart paste must receive text/html next to the plain text"
         );
+    }
+
+    /// #1618: the same owner must answer every flavor of one paste. A copy in
+    /// another application between two reads is a changed offer, never half
+    /// of each.
+    #[test]
+    fn a_new_owner_between_two_reads_is_a_changed_offer() {
+        let Some(server) = Xvfb::start() else { return };
+        let first = Owner::serve(
+            &server.display,
+            vec![
+                ("text/html", b"<b>first</b>".to_vec()),
+                ("UTF8_STRING", b"first".to_vec()),
+            ],
+            usize::MAX,
+        );
+        let NoteSelection::Offer { mut receive, .. } =
+            read_note_in_command(&server.display, FOREIGN).unwrap()
+        else {
+            panic!("#1618: the foreign copy was not offered");
+        };
+        // Positive control: the same owner answers.
+        assert_eq!(receive("text/html", 1024).unwrap(), b"<b>first</b>");
+        // The first owner stays connected, so the new owner's window can
+        // never reuse its id.
+        let _second = Owner::serve(
+            &server.display,
+            vec![("UTF8_STRING", b"second".to_vec())],
+            usize::MAX,
+        );
+        assert_eq!(receive("UTF8_STRING", 1024), Err(Error::ChangedOffer));
+        drop(first);
     }
 
     #[test]
@@ -623,13 +651,16 @@ pub(super) mod tests {
             ],
             64 * 1024,
         );
-        let data = data(read_note_in_command(&server.display, FOREIGN).unwrap());
+        let (_, data) = receive(
+            read_note_in_command(&server.display, FOREIGN).unwrap(),
+            &["text/html", "image/png"],
+        );
         assert_eq!(data[0], ("text/html".to_owned(), big));
         assert_eq!(data[1], ("image/png".to_owned(), png));
         // The owner above is this process: its copy is GPUI's to answer.
         assert!(matches!(
             read_note_in_command(&server.display, std::process::id()),
-            Ok(Selection::Own)
+            Ok(NoteSelection::Own)
         ));
         // A payload above the budget is refused, not truncated.
         let reader = {
@@ -665,18 +696,16 @@ pub(super) mod tests {
         let start = Instant::now();
         let selection = loop {
             match read_note_in_command(&server.display, std::process::id()) {
-                Ok(Selection::Empty) if start.elapsed() < Duration::from_secs(5) => {
+                Ok(NoteSelection::Empty) if start.elapsed() < Duration::from_secs(5) => {
                     thread::sleep(Duration::from_millis(20))
                 }
                 other => break other,
             }
         };
+        let (_, data) = receive(selection.unwrap(), &["text/html"]);
         let _ = xclip.kill();
         let _ = xclip.wait();
-        assert_eq!(
-            data(selection.unwrap()),
-            vec![("text/html".to_owned(), html.into())]
-        );
+        assert_eq!(data, vec![("text/html".to_owned(), html.into())]);
     }
 
     #[test]
@@ -685,16 +714,5 @@ pub(super) mod tests {
             read_note_in_command(":59000", FOREIGN).err(),
             Some(Error::Unsupported)
         );
-    }
-
-    #[test]
-    fn utf16_html_is_decoded_and_utf8_html_is_untouched() {
-        let mut le = vec![0xFF, 0xFE];
-        le.extend("<b>Привет</b>".encode_utf16().flat_map(u16::to_le_bytes));
-        assert_eq!(html_utf8(le), "<b>Привет</b>".as_bytes());
-        let mut be = vec![0xFE, 0xFF];
-        be.extend("<i>x</i>".encode_utf16().flat_map(u16::to_be_bytes));
-        assert_eq!(html_utf8(be), b"<i>x</i>");
-        assert_eq!(html_utf8(b"<p>a</p>".to_vec()), b"<p>a</p>");
     }
 }
