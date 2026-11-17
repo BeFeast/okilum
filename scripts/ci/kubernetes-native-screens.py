@@ -63,8 +63,9 @@ def check_bundle(directory):
         digest, name = line.split('  ', 1)
         actual = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
         assert actual == digest, (name, actual, digest)
-    log = manifest['log_session']
+    log = manifest['log_rows']
     assert log and log['file'], log
+    assert manifest['log_session']['target'] == log['from_session']['target'], manifest['log_session']
     log_bytes = (bundle / log['file']).read_bytes()
     assert len(log_bytes) == log['bytes'] and log_bytes.endswith(b'(OOMKilled)\n'), log
     everything = b''.join(p.read_bytes() for p in bundle.rglob('*') if p.is_file())
@@ -74,7 +75,7 @@ def check_bundle(directory):
         'bundle': bundle.name,
         'files': sorted(str(p.relative_to(bundle)) for p in bundle.rglob('*') if p.is_file()),
         'selection': manifest['selection'],
-        'log_target': log['target'],
+        'log_target': log['from_session']['target'],
         'sources': [(s['kind'], s['state']) for s in manifest['sources']],
     }
 

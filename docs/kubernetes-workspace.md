@@ -189,7 +189,7 @@ cluster to build it.
 | `facts/selection.yaml` | Typed, read-only YAML of the selected object (the same as the Manifest tab) |
 | `facts/events.json` | Event groups of the selection and its owned objects, with the Events source state |
 | `logs/<pod>_<container>_<current\|previous>.log` | The exact complete lines received in the pinned session (bytes, CRLF and UTF-8 unchanged; not filtered) |
-| `manifest.json` | Format `okilum.kubernetes-evidence/1`, app version/source, scope (context, cluster, server, namespace), lens, every source's state (fresh/aged/stale/failed/unread), read time, list resourceVersion, item count, completeness and latest failure, the selection's kind/name/UID/resourceVersion and container, the log session (target with Pod UID and instance, UID verification time, UID against the latest Pods read, phase and its detail, stream/tail choices, bytes/lines, trailing bytes not exported, limits, the LogView filter and row counts, and a coverage statement), the exclusions and every artifact's size and SHA-256 |
+| `manifest.json` | Format `okilum.kubernetes-evidence/1`, app version/source, scope (context, cluster, server, namespace), lens, every source's state (fresh/aged/stale/failed/unread), read time, list resourceVersion, item count, completeness and latest failure, the selection's kind/name/UID/resourceVersion and container; `log_rows` for the bytes in the view, described by the session that sent them (target with Pod UID and instance, UID verification time, stream/tail choices, whether it is the pinned session), with bytes/lines, trailing bytes not exported, limits, the LogView filter and row counts and a coverage statement; `log_session` for the pinned session separately (target, phase and safe detail, UID verification, UID against the latest Pods read, whether it has sent rows); the exclusions and every artifact's size and SHA-256 |
 | `SHA256SUMS` | `sha256sum -c` compatible hashes of every other file |
 
 The coverage statement says what is *not* there: older history beyond the
@@ -197,8 +197,20 @@ initial tail, other instances, rotated logs, and that `kubectl logs`
 addresses Pods by name. Never exported: kubeconfig users/tokens/certificates/
 exec settings and Secrets (never read), container env values and exec probe
 commands (not retained), kubectl stderr of log sessions, and the detail of
-auth, credential-helper, kubeconfig and unclassified failures (their kind
-only). A denied read keeps the API server's own message.
+failures: a failure's kind is always kept, but its text only when Okilum
+wrote it (invalid request, size or time limit, cancel), plus kubectl's own
+`Error from server (...)` line for a denied or missing object. A failure
+category is not redaction: kubectl's stderr can carry credential-helper
+output before the server's answer, and none of it is exported. A failed UID
+check before `kubectl logs` is kept typed for the same reason.
+
+After a retarget, a failed check or a restart, the view still shows the
+earlier session's rows; the bundle names the log file and its provenance
+after that session, never after the newly pinned one. The bundle directory
+is staged in a uniquely created directory and committed without replacing
+anything at its name (an exclusive claim on Unix, `MoveFileExW` without
+replace on Windows), so concurrent exports never mix or delete each other's
+files.
 
 The LogView's own row export (raw/JSONL/CSV of the shown, selected or marked
 rows) is unchanged and stays the way to export filtered rows.

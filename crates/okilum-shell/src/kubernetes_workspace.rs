@@ -357,12 +357,16 @@ impl Workspace {
             (Some(data), Some(key)) => self.event_uids(&model::resolve(data, key)),
             _ => Vec::new(),
         };
-        let view = self.dock.view.as_ref().map(|view| {
-            let view = view.read(cx);
-            evidence::LogViewState {
-                snapshot: view.stream_snapshot(),
-                filter: view.filter_evidence(),
-            }
+        // Bytes and provenance travel together: `displayed` is set when a
+        // snapshot arrives, before the next frame hands it to the view.
+        let view = self.dock.view.as_ref().map(|view| view.read(cx));
+        let snapshot = self
+            .dock
+            .pending_snapshot()
+            .or_else(|| view.and_then(|view| view.stream_snapshot()));
+        let view = (snapshot.is_some() || view.is_some()).then(|| evidence::LogViewState {
+            snapshot,
+            filter: view.map_or(serde_json::Value::Null, |view| view.filter_evidence()),
         });
         evidence::build(evidence::Inputs {
             data: self.data.as_ref(),
@@ -371,6 +375,7 @@ impl Workspace {
             lens: self.lens.label(),
             session: self.dock.session.as_ref(),
             displayed: self.dock.displayed.as_ref(),
+            current_generation: self.dock.generation,
             tail_lines: self.dock.tail,
             view,
             generated_at: std::time::SystemTime::now(),
