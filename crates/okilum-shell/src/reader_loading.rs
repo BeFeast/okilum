@@ -220,6 +220,7 @@ fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
                 original: Some(String::new()),
                 identities: Vec::new(),
                 frontmatter: None,
+                outline: None,
             },
         )),
         published: None,
