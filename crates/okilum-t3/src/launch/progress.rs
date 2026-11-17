@@ -141,6 +141,9 @@ pub struct Observation {
     inspected: Vec<String>,
     /// New threads read without a first message yet.
     empty: Vec<String>,
+    /// New threads whose read failed, with the reason. Like empty threads
+    /// they stay unchecked and take their turn again; other results stand.
+    unreadable: Vec<(String, String)>,
     matched: Vec<String>,
     /// New threads of this listing still unchecked after this observation.
     unchecked: usize,
@@ -222,6 +225,7 @@ impl Tracker {
             listed: Vec::new(),
             inspected: Vec::new(),
             empty: Vec::new(),
+            unreadable: Vec::new(),
             matched: Vec::new(),
             unchecked: 0,
         };
@@ -267,9 +271,15 @@ impl Tracker {
             let mut query = ThreadQuery::messages(&id).from_start();
             query.limit = Some(1);
             query.max_chars_per_item = Some(FIRST_ITEM_CHARS);
-            let page = gateway
-                .read_thread(&query)
-                .with_context(|| format!("Cannot read new T3 thread {id}"))?;
+            // One unreadable thread must not discard the whole observation:
+            // the matched executor keeps updating and this one stays unchecked.
+            let page = match gateway.read_thread(&query) {
+                Ok(page) => page,
+                Err(error) => {
+                    observation.unreadable.push((id, error.to_string()));
+                    continue;
+                }
+            };
             let first = page
                 .items
                 .iter()
@@ -302,8 +312,12 @@ impl Tracker {
             return false;
         }
         let before = self.progress.clone();
-        for id in observation.empty {
-            self.empty_since.insert(id, observation.revision);
+        for id in observation
+            .empty
+            .iter()
+            .chain(observation.unreadable.iter().map(|(id, _)| id))
+        {
+            self.empty_since.insert(id.clone(), observation.revision);
         }
         for id in &observation.inspected {
             self.empty_since.remove(id);
@@ -354,6 +368,9 @@ impl Tracker {
                                 }
                             }
                             None => {
+                                // An unknown status withdraws a provisional outcome.
+                                self.progress.outcome = None;
+                                self.progress.provisional = false;
                                 note = Some(format!(
                                     "T3 reports an unknown executor status \"{}\".",
                                     thread.status
@@ -367,9 +384,12 @@ impl Tracker {
                         });
                     }
                     None => {
+                        // So does a matched thread that left the listing.
+                        self.progress.outcome = None;
+                        self.progress.provisional = false;
                         note = Some(format!(
-                        "Executor thread {id} is missing from the executor project's T3 listing."
-                    ))
+                            "Executor thread {id} is missing from the executor project's T3 listing."
+                        ))
                     }
                 }
             }
@@ -384,6 +404,19 @@ impl Tracker {
                     self.matched.iter().cloned().collect::<Vec<_>>().join(", ")
                 ));
             }
+        }
+        if let Some((id, error)) = observation.unreadable.first() {
+            let unreadable = format!(
+                "Cannot read new T3 thread {id} ({error}); it stays unchecked and is read again{}.",
+                match observation.unreadable.len() - 1 {
+                    0 => String::new(),
+                    more => format!(", with {more} more"),
+                }
+            );
+            note = Some(match note {
+                Some(note) => format!("{note} {unreadable}"),
+                None => unreadable,
+            });
         }
         self.progress.note = note;
         self.progress != before

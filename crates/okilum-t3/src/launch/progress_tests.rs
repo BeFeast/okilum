@@ -40,6 +40,8 @@ struct Recorded {
     executors: Mutex<Value>,
     reads: Mutex<Vec<String>>,
     lists: Mutex<usize>,
+    /// Threads whose `t3_thread_read` fails.
+    failing: Mutex<BTreeSet<String>>,
 }
 
 impl Recorded {
@@ -52,6 +54,7 @@ impl Recorded {
             executors: Mutex::new(frame["executors"].clone()),
             reads: Mutex::default(),
             lists: Mutex::default(),
+            failing: Mutex::default(),
         }
     }
     fn frame(&self, index: usize) {
@@ -116,6 +119,11 @@ impl ManagerGateway for Recorded {
             query.from_start,
             "executor threads are read from the first item"
         );
+        if self.failing.lock().unwrap().contains(&query.thread_id) {
+            return Err(crate::GatewayError::Unreachable(
+                "thread read timed out".into(),
+            ));
+        }
         let items = timeline_page(&self.fixture["timelines"][&query.thread_id], query);
         Ok(serde_json::from_value(json!({
             "thread": {"threadId": row["threadId"], "projectId": "fixture-executors", "title": row["title"],
@@ -622,4 +630,113 @@ fn review4_an_unrelated_empty_thread_shows_the_confirmed_outcome_as_provisional(
     step(&mut launch, &t3);
     assert_eq!(launch.progress.line(), "requested → accepted → [completed]");
     assert!(launch.progress.finished() && launch.progress.note.is_none());
+}
+
+#[test]
+fn review5_an_unreadable_new_thread_keeps_the_executor_updating() {
+    // The unrelated new thread's read fails on every poll. The matched
+    // executor still advances, the failing thread stays unchecked and is
+    // retried, and the outcome remains provisional with both warnings.
+    let t3 = Recorded::new();
+    t3.failing
+        .lock()
+        .unwrap()
+        .insert("mcp:fixture-executor-unrelated".into());
+    let mut launch = tracker(&t3, true);
+    t3.frame(2);
+    assert!(step(&mut launch, &t3));
+    assert_eq!(
+        launch.progress.line(),
+        "requested → accepted → [preparing] → running → completed"
+    );
+    assert!(launch.progress.note.as_deref().unwrap().contains(
+        "Cannot read new T3 thread mcp:fixture-executor-unrelated (T3 is unreachable: thread read timed out)"
+    ));
+    t3.frame(3);
+    step(&mut launch, &t3);
+    assert_eq!(launch.progress.reached, Stage::Running);
+    t3.frame(4);
+    step(&mut launch, &t3);
+    assert_eq!(
+        launch.progress.line(),
+        "requested → accepted → preparing → running → [completed, provisional]"
+    );
+    assert!(!launch.progress.finished());
+    let note = launch.progress.note.clone().unwrap();
+    assert!(
+        note.contains("possible duplicate") && note.contains("Cannot read new T3 thread"),
+        "{note}"
+    );
+    assert_eq!(
+        t3.reads()
+            .iter()
+            .filter(|r| *r == "mcp:fixture-executor-unrelated")
+            .count(),
+        3,
+        "the unreadable thread is tried again on every poll"
+    );
+    // Once it can be read (no marker), the outcome becomes final.
+    t3.failing.lock().unwrap().clear();
+    step(&mut launch, &t3);
+    assert_eq!(
+        launch.progress.line(),
+        "requested → accepted → preparing → running → [completed]"
+    );
+    assert!(launch.progress.finished() && launch.progress.note.is_none());
+}
+
+#[test]
+fn review6_an_unknown_status_or_a_vanished_executor_withdraws_a_provisional_outcome() {
+    let provisional = || {
+        // The matched executor completed; an unrelated new thread is empty.
+        let mut fixture = Recorded::new().fixture;
+        let mut rows = fixture["frames"][4]["executors"].clone();
+        let mut empty = fixture["frames"][2]["executors"][1].clone();
+        empty["threadId"] = json!("mcp:fixture-empty-unrelated");
+        empty["updatedAt"] = json!("2026-11-17T12:00:00.000Z");
+        rows.as_array_mut().unwrap().push(empty);
+        fixture["timelines"]["mcp:fixture-empty-unrelated"] = json!([]);
+        let t3 = Recorded {
+            fixture,
+            ..Recorded::new()
+        };
+        t3.executors(rows.clone());
+        let mut launch = tracker(&t3, true);
+        step(&mut launch, &t3);
+        assert_eq!(
+            launch.progress.line(),
+            "requested → accepted → [completed, provisional]"
+        );
+        (t3, launch, rows)
+    };
+
+    // The executor moves to a status this client does not know.
+    let (t3, mut launch, mut rows) = provisional();
+    rows[2]["status"] = json!("hibernating");
+    t3.executors(rows);
+    step(&mut launch, &t3);
+    assert!(launch.progress.outcome.is_none() && !launch.progress.provisional);
+    assert_eq!(
+        launch.progress.line(),
+        "requested → [accepted] → preparing → running → completed"
+    );
+    assert!(launch
+        .progress
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("hibernating"));
+    assert_eq!(
+        launch.progress.executor.as_ref().unwrap().status,
+        "hibernating"
+    );
+
+    // The executor disappears from the listing.
+    let (t3, mut launch, mut rows) = provisional();
+    rows.as_array_mut().unwrap().remove(2);
+    t3.executors(rows);
+    step(&mut launch, &t3);
+    assert!(launch.progress.outcome.is_none() && !launch.progress.provisional);
+    assert!(!launch.progress.finished());
+    assert!(launch.progress.note.as_deref().unwrap().contains("missing"));
 }
