@@ -43,7 +43,7 @@ impl Owner {
             && reader.pane.navigation.generation == self.navigation
             && reader.pane.current_rel == self.document
             && reader.pane.content == self.content
-            && reader.editing.is_none()
+            && reader.pane.editing.is_none()
     }
 }
 impl TaskAction {

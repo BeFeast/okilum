@@ -106,7 +106,7 @@ impl Hud {
 /// Note text zoom applies here: notes in every mode, code and plain text
 /// files. PDF keeps its own zoom; images and other previews have none.
 fn applies(this: &Reader) -> bool {
-    this.editing.is_some()
+    this.pane.editing.is_some()
         || this
             .pane
             .file_preview
@@ -427,7 +427,7 @@ fn change(
         cx.stop_propagation();
         return;
     }
-    if let Some(editing) = &this.editing {
+    if let Some(editing) = &this.pane.editing {
         editing
             .input()
             .update(cx, |state, _| state.preserve_zoom_anchor(pointer));
@@ -646,7 +646,7 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         visual.update(|window, cx| {
             input.update(cx, |state, cx| {
@@ -872,15 +872,21 @@ mod tests {
         }
         reader.update_in(visual, |r, window, cx| {
             r.open_live_preview(window, cx);
-            r.editing.as_ref().unwrap().input().update(cx, |input, cx| {
-                input.set_selected_range(source.len()..source.len(), cx);
-            });
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .input()
+                .update(cx, |input, cx| {
+                    input.set_selected_range(source.len()..source.len(), cx);
+                });
         });
         frame(visual);
         // Font measurements need the measured source rows in the viewport.
         // Keep the caret at the end so the callout remains concealed.
         reader.update(visual, |r, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .input()
@@ -888,7 +894,7 @@ mod tests {
         });
         frame(visual);
         let lp_identity = reader.read_with(visual, |r, cx| {
-            let input = r.editing.as_ref().unwrap().input().read(cx);
+            let input = r.pane.editing.as_ref().unwrap().input().read(cx);
             assert_eq!(input.value().as_ref(), source);
             (input.source_stamp(), input.selected_range())
         });
@@ -899,7 +905,7 @@ mod tests {
         ];
         let widths = |r: &Reader, cx: &App| {
             assert!(r.source_live_preview());
-            let input = r.editing.as_ref().unwrap().input().read(cx);
+            let input = r.pane.editing.as_ref().unwrap().input().read(cx);
             assert_eq!(
                 input.top_visible_line(),
                 Some(0),
@@ -933,7 +939,7 @@ mod tests {
             reader.update_in(visual, |r, window, cx| change(r, zoom, None, window, cx));
             frame(visual);
             let before = reader.read_with(visual, |r, cx| {
-                let input = r.editing.as_ref().unwrap().input().read(cx);
+                let input = r.pane.editing.as_ref().unwrap().input().read(cx);
                 (
                     input.source_stamp(),
                     input.selected_range(),
@@ -944,7 +950,8 @@ mod tests {
             });
             diagnostic_error!("LP_VIEWPORT_BEFORE zoom={zoom} state={before:?}");
             reader.update(visual, |r, cx| {
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input()
@@ -952,7 +959,7 @@ mod tests {
             });
             frame(visual);
             reader.read_with(visual, |r, cx| {
-                let input = r.editing.as_ref().unwrap().input().read(cx);
+                let input = r.pane.editing.as_ref().unwrap().input().read(cx);
                 assert_eq!(
                     (input.source_stamp(), input.selected_range()),
                     (before.0, before.1)
@@ -961,7 +968,7 @@ mod tests {
             let actual = reader.read_with(visual, widths);
             let styles = CODE_STYLES.with(|styles| styles.borrow_mut().take().unwrap());
             let (font_size, stamp, epoch, painted_cursor) = reader.read_with(visual, |r, cx| {
-                let input = r.editing.as_ref().unwrap().input().read(cx);
+                let input = r.pane.editing.as_ref().unwrap().input().read(cx);
                 (
                     reader_ui_state::font_size(cx),
                     input.source_stamp(),
@@ -1117,7 +1124,7 @@ mod tests {
         });
         frame(visual);
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         visual.update(|window, cx| {
             input.update(cx, |state, cx| state.focus(window, cx));

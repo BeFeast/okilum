@@ -132,7 +132,7 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     input.update_in(visual, |input, window, cx| {
         input.set_value(

@@ -1091,7 +1091,7 @@ mod tests {
         reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "B.md"));
         let previous_input = reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing.as_ref().unwrap().test_input()
+            r.pane.editing.as_ref().unwrap().test_input()
         });
         visual.run_until_parked();
         visual.simulate_keystrokes("ctrl-tab");
@@ -1104,7 +1104,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, "B.md");
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
         });
         // Wayland can clear Control while the window still reports active,
         // then deliver deactivation. No navigation may happen in between.
@@ -1154,6 +1154,7 @@ mod tests {
                 "real release accepted the target"
             );
             let editing = r
+                .pane
                 .editing
                 .as_ref()
                 .expect("file selection restored the chosen editor");
@@ -1173,7 +1174,7 @@ mod tests {
         visual.simulate_input("mine");
         visual.run_until_parked();
         let dirty_source = reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(editing.test_input(), current_input);
             let source = editing.test_input().read(cx).value().to_string();
             assert!(
@@ -1197,7 +1198,7 @@ mod tests {
                 r.pane.current_rel, "A.md",
                 "external conflict refuses real navigation"
             );
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(
                 editing.test_input(),
                 current_input,

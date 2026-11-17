@@ -198,7 +198,7 @@ impl Reader {
             self.leave_hover(url, cx);
             return;
         }
-        if self.quick_open.open || self.editing.is_some() || self.file_menu.is_some() {
+        if self.quick_open.open || self.pane.editing.is_some() || self.file_menu.is_some() {
             return;
         }
         if let Some(target) =

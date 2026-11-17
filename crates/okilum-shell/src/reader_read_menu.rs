@@ -8,7 +8,7 @@ pub(super) const COPY_MARKDOWN_KEY: &str = "secondary-shift-c";
 
 impl Reader {
     pub(super) fn read_copy_available(&self) -> bool {
-        self.editing.is_none()
+        self.pane.editing.is_none()
             && self.pane.file_preview.is_none()
             && !self.selected_file().is_empty()
             && !self.pane.typed_navigation.active.get()
@@ -20,6 +20,7 @@ impl Reader {
 
     pub(super) fn copy_read_markdown(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self
+            .pane
             .editing
             .as_ref()
             .and_then(|editing| editing.selected_markdown(window, cx))
@@ -109,7 +110,7 @@ impl Snapshot {
 }
 
 pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
-    if state.editing.is_some() || state.pane.file_preview.is_some() {
+    if state.pane.editing.is_some() || state.pane.file_preview.is_some() {
         return None;
     }
     let content = state.pane.content.read(cx);
@@ -154,7 +155,7 @@ fn build(
             PopupMenuItem::element(move |_, cx| {
                 let editing = hint_reader
                     .upgrade()
-                    .is_some_and(|reader| reader.read(cx).editing.is_some());
+                    .is_some_and(|reader| reader.read(cx).pane.editing.is_some());
                 let hints =
                     |action: &dyn Action| reader_shortcuts::content_shortcuts(action, editing, cx);
                 h_flex()

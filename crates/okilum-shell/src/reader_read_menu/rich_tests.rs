@@ -280,14 +280,14 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
     let mut f = open(cx);
     for live in [false, true] {
         f.reader.update_in(f.visual, |reader, window, cx| {
-            if reader.editing.is_none() {
+            if reader.pane.editing.is_none() {
                 reader.toggle_source(window, cx);
             }
             reader.set_live_preview(live, window, cx);
         });
         f.visual.run_until_parked();
         let input = f.reader.read_with(f.visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         input.update(f.visual, |input, cx| {
             input.set_selected_range(0..NOTE.len(), cx)

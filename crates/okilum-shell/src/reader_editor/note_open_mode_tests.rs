@@ -82,7 +82,7 @@ fn open(reader: &Entity<Reader>, visual: &mut VisualTestContext, rel: &str) {
 fn assert_open(reader: &Entity<Reader>, visual: &mut VisualTestContext, rel: &str, edit: bool) {
     reader.read_with(visual, |r, cx| {
         assert_eq!(r.selected_file(), rel, "positive control: the chosen file");
-        match &r.editing {
+        match &r.pane.editing {
             Some(editing) if edit => {
                 assert_eq!(editing.store.path(), r.vault_root.join(rel));
                 assert_eq!(
@@ -147,7 +147,7 @@ fn edit_setting_opens_notes_in_edit_and_files_in_read(cx: &mut TestAppContext) {
 fn edit_setting_keeps_live_preview_choice(cx: &mut TestAppContext) {
     let (reader, visual, _temp) = fixture(Some(NoteOpenMode::Edit), cx);
     reader.update_in(visual, |r, window, cx| {
-        assert!(r.editing.is_some());
+        assert!(r.pane.editing.is_some());
         r.set_live_preview(true, window, cx);
     });
     open(&reader, visual, "second.md");
@@ -157,7 +157,7 @@ fn edit_setting_keeps_live_preview_choice(cx: &mut TestAppContext) {
     });
     open(&reader, visual, "third.md");
     reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_some());
+        assert!(r.pane.editing.is_some());
         assert!(!r.source_live_preview(), "Source is kept too");
     });
 }
@@ -200,13 +200,16 @@ fn note_that_cannot_be_edited_stays_in_read_without_notice(cx: &mut TestAppConte
     open(&reader, visual, "damaged.md");
     reader.read_with(visual, |r, _| {
         assert_eq!(r.pane.current_rel, "damaged.md");
-        assert!(r.editing.is_none(), "an uneditable note stays readable");
+        assert!(
+            r.pane.editing.is_none(),
+            "an uneditable note stays readable"
+        );
         assert!(r.link_notice.is_none(), "the default asked for nothing");
     });
     // Positive control: an explicit Edit of the same note reports why.
     reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
     reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_none());
+        assert!(r.pane.editing.is_none());
         assert!(
             r.link_notice.is_some(),
             "explicit Edit explains the refusal"
@@ -255,6 +258,7 @@ fn automatic_edit_owns_nothing_until_the_first_edit(cx: &mut TestAppContext) {
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         let editing = r
+            .pane
             .editing
             .as_ref()
             .expect("positive control: Edit by default");
@@ -282,7 +286,7 @@ fn automatic_edit_owns_nothing_until_the_first_edit(cx: &mut TestAppContext) {
     visual.simulate_input("x");
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
-        let editing = r.editing.as_ref().unwrap();
+        let editing = r.pane.editing.as_ref().unwrap();
         assert!(editing.store.owns_lock(), "the first edit takes the note");
     });
     assert!(okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).is_err());
@@ -292,13 +296,13 @@ fn automatic_edit_owns_nothing_until_the_first_edit(cx: &mut TestAppContext) {
 fn first_edit_after_another_window_took_the_note_returns_to_read(cx: &mut TestAppContext) {
     let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
     let path = temp.path().join("vault/first.md");
-    reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+    reader.read_with(visual, |r, _| assert!(r.pane.editing.is_some()));
     let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
     visual.simulate_input("lost");
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert_eq!(r.pane.current_rel, "first.md");
-        assert!(r.editing.is_none(), "back to Read");
+        assert!(r.pane.editing.is_none(), "back to Read");
         let notice = r.link_notice.as_ref().expect("the reason is shown");
         assert!(notice.to_string().contains("being edited"), "{notice}");
     });
@@ -314,7 +318,7 @@ fn note_another_window_edits_opens_in_read_with_notice(cx: &mut TestAppContext) 
     open(&reader, visual, "second.md");
     reader.read_with(visual, |r, _| {
         assert_eq!(r.pane.current_rel, "second.md");
-        assert!(r.editing.is_none());
+        assert!(r.pane.editing.is_none());
         let notice = r
             .link_notice
             .as_ref()
@@ -361,7 +365,7 @@ fn read_only_note_opens_in_read_quietly(cx: &mut TestAppContext) {
     let state = reader.read_with(visual, |r, _| {
         (
             r.pane.current_rel.clone(),
-            r.editing.is_some(),
+            r.pane.editing.is_some(),
             r.link_notice.is_some(),
         )
     });
@@ -390,7 +394,7 @@ enum Before {
 /// capture path runs before the SourceMutation subscriber (#2817 review).
 fn type_then(reader: &Entity<Reader>, visual: &mut VisualTestContext, text: &str, before: Before) {
     reader.update_in(visual, |r, window, cx| {
-        let input = r.editing.as_ref().unwrap().input.clone();
+        let input = r.pane.editing.as_ref().unwrap().input.clone();
         input.update(cx, |input, cx| {
             input.replace_text_in_range(Some(0..0), text, window, cx)
         });
@@ -421,9 +425,10 @@ fn assert_refused(
     reader.read_with(visual, |r, cx| {
         assert_eq!(r.pane.current_rel, "first.md");
         assert!(
-            r.editing.is_none(),
+            r.pane.editing.is_none(),
             "the refused editor returns to Read: {:?}",
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .map(|e| (e.store.owns_lock(), e.input.read(cx).value().to_string()))
         );
@@ -444,7 +449,7 @@ fn first_edit_captured_by_blur_or_refresh_first_takes_ownership(cx: &mut TestApp
         let path = temp.path().join("vault/first.md");
         type_then(&reader, visual, "mine ", before);
         reader.read_with(visual, |r, _| {
-            let editing = r.editing.as_ref().expect("{before:?}: still editing");
+            let editing = r.pane.editing.as_ref().expect("{before:?}: still editing");
             assert!(
                 editing.store.owns_lock(),
                 "{before:?}: captured only once owned"
@@ -479,7 +484,9 @@ fn first_edit_captured_by_blur_or_refresh_first_is_refused_when_taken(cx: &mut T
 }
 
 fn ime_commit(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
-    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    let input = reader.read_with(visual, |r, _| {
+        r.pane.editing.as_ref().unwrap().input.clone()
+    });
     reader.update_in(visual, |_, window, cx| {
         input.focus_handle(cx).focus(window, cx)
     });
@@ -521,7 +528,9 @@ impl gpui_component::input::clipboard::ExactClipboardProvider for Clipboard {
 }
 
 fn paste(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
-    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    let input = reader.read_with(visual, |r, _| {
+        r.pane.editing.as_ref().unwrap().input.clone()
+    });
     input.update_in(visual, |input, window, cx| {
         input.set_exact_clipboard_provider(Some(Arc::new(Clipboard("pasted "))), cx);
         input.set_selected_range(0..0, cx);
@@ -539,7 +548,7 @@ fn ime_commit_or_paste_as_first_input_takes_ownership(cx: &mut TestAppContext) {
     ime_commit(&reader, visual);
     reader.read_with(visual, |r, _| {
         assert!(
-            r.editing.as_ref().unwrap().store.owns_lock(),
+            r.pane.editing.as_ref().unwrap().store.owns_lock(),
             "IME composition owns"
         );
     });
@@ -556,7 +565,7 @@ fn ime_commit_or_paste_as_first_input_takes_ownership(cx: &mut TestAppContext) {
     let path = temp.path().join("vault/first.md");
     paste(&reader, visual);
     reader.read_with(visual, |r, cx| {
-        let editing = r.editing.as_ref().unwrap();
+        let editing = r.pane.editing.as_ref().unwrap();
         assert!(
             editing.input.read(cx).value().contains("pasted"),
             "positive control: the paste reached the editor: {:?}",
@@ -604,7 +613,13 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
     let path = temp.path().join("vault/long.md");
     open(&reader, visual, "long.md");
     reader.update_in(visual, |r, _, cx| {
-        let input = r.editing.as_ref().expect("Edit by default").input.clone();
+        let input = r
+            .pane
+            .editing
+            .as_ref()
+            .expect("Edit by default")
+            .input
+            .clone();
         // Caret and view far down: typing keeps the caret in view.
         let at = input.read(cx).value().find("Paragraph 150.").unwrap();
         input.update(cx, |input, cx| {
@@ -614,7 +629,8 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
     });
     visual.run_until_parked();
     let top = reader.read_with(visual, |r, cx| {
-        r.editing
+        r.pane
+            .editing
             .as_ref()
             .unwrap()
             .input
@@ -630,7 +646,7 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
     visual.simulate_input("x");
     visual.run_until_parked();
     reader.read_with(visual, |r, cx| {
-        assert!(r.editing.is_none());
+        assert!(r.pane.editing.is_none());
         let block = r
             .pane
             .navigation
@@ -654,7 +670,7 @@ fn refused_first_edit_keeps_the_place_in_read(cx: &mut TestAppContext) {
 
 fn assert_untouched(reader: &Entity<Reader>, visual: &mut VisualTestContext, why: &str) {
     reader.read_with(visual, |r, _| {
-        let editing = r.editing.as_ref().expect("still in Edit");
+        let editing = r.pane.editing.as_ref().expect("still in Edit");
         assert!(!editing.store.owns_lock(), "{why}: no ownership");
         assert!(!editing.store.dirty(), "{why}: not dirty");
         assert!(
@@ -681,7 +697,8 @@ fn watcher_adoption_of_equal_text_keeps_an_untouched_editor_clean(cx: &mut TestA
     // bytes in a new revision.
     reader.update_in(visual, |r, window, cx| {
         let text = std::fs::read_to_string(&path).unwrap();
-        r.editing
+        r.pane
+            .editing
             .as_mut()
             .unwrap()
             .replace_clean_source(text, window, cx);
@@ -700,7 +717,9 @@ fn equal_text_input_takes_nothing(cx: &mut TestAppContext) {
     let (reader, visual, temp) = fixture(Some(NoteOpenMode::Edit), cx);
     let path = temp.path().join("vault/first.md");
     let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-    let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+    let input = reader.read_with(visual, |r, _| {
+        r.pane.editing.as_ref().unwrap().input.clone()
+    });
     // Input events that leave the text equal: a character replaced by
     // itself, and an empty insertion (as an Undo with nothing to undo).
     for (range, text) in [(2..3, "F"), (0..0, "")] {
@@ -713,7 +732,14 @@ fn equal_text_input_takes_nothing(cx: &mut TestAppContext) {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert_eq!(
-                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
                 "# First\n\nOne.\n",
                 "positive control: the input event left the text equal"
             );

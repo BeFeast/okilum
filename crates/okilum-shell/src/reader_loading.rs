@@ -1841,7 +1841,7 @@ impl Reader {
             self.preview_file(&rel, window, cx);
         } else if let Some(position) = first_link {
             self.open_first_link(position, window, cx);
-        } else if created_note && self.editing.is_none() {
+        } else if created_note && self.pane.editing.is_none() {
             self.toggle_source(window, cx);
         }
         self.refresh_quick_open(cx);
@@ -1887,7 +1887,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
             return;
@@ -1940,7 +1940,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             return;
         }
@@ -1995,7 +1995,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
             return;
@@ -2639,7 +2639,7 @@ impl Reader {
         let publication_vault = refresh_worker.then(|| self.vault.clone());
         let prepare_preferences = !refresh_worker || !self.panel_preferences_ready;
         let panel_revision = self.panel_widths_revision;
-        let recovery_startup = self.recovery_startup;
+        let recovery_startup = self.pane.recovery_startup;
         let ui_notes = reader_ui_state::notes(cx);
         cx.background_executor()
             .spawn(async move {
@@ -3428,7 +3428,7 @@ mod tests {
             r.toggle_source(window, cx);
             r.open_live_preview(window, cx);
             assert!(
-                r.editing.is_none(),
+                r.pane.editing.is_none(),
                 "neither editing entry accepts lossy text"
             );
             assert!(r.save_source(cx)); // Saving without an editor is a no-op.
@@ -3448,7 +3448,7 @@ mod tests {
             assert_eq!(r.pane.current_rel, "Valid.md");
             assert!(!r.note_encoding_damaged);
             r.toggle_source(window, cx);
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
             // Positive control: ordinary I/O errors still open the attention dialog.
@@ -3564,7 +3564,8 @@ mod tests {
                 .is_some());
             r.toggle_source(window, cx);
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .test_input()
@@ -8811,10 +8812,11 @@ mod quick_view_tests {
                     r.single_file, single_file,
                     "both transition directions exercised"
                 );
-                if r.editing.is_none() {
+                if r.pane.editing.is_none() {
                     r.toggle_source(window, cx);
                 }
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("# Latest unsaved buffer\n", window, cx);
@@ -8839,13 +8841,15 @@ mod quick_view_tests {
                 std::fs::read_to_string(&path).unwrap(),
                 "# External replacement\n"
             );
-            let editor = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().test_input());
+            let editor =
+                reader.read_with(visual, |r, _| r.pane.editing.as_ref().unwrap().test_input());
             reader.update_in(visual, |r, window, cx| {
                 r.resolve_source(true, window, cx);
-                r.editing
-                    .as_ref()
-                    .unwrap()
-                    .set_value("# Safely saved latest buffer\n", window, cx);
+                r.pane.editing.as_ref().unwrap().set_value(
+                    "# Safely saved latest buffer\n",
+                    window,
+                    cx,
+                );
                 r.switch_window_mode(window, cx);
             });
             visual.run_until_parked();
@@ -8857,7 +8861,7 @@ mod quick_view_tests {
                 assert_eq!(r.single_file, !single_file);
                 assert_eq!(r.pane.current_rel, "nested/start.md");
                 assert_eq!(
-                    r.editing.as_ref().unwrap().test_input(),
+                    r.pane.editing.as_ref().unwrap().test_input(),
                     editor,
                     "the native editor keeps its caret and viewport owner"
                 );
@@ -9236,7 +9240,7 @@ mod quick_view_tests {
             });
             visual.run_until_parked();
             let input = reader.read_with(visual, |reader, _| {
-                reader.editing.as_ref().unwrap().test_input()
+                reader.pane.editing.as_ref().unwrap().test_input()
             });
             input.update_in(visual, |input, window, cx| {
                 input.replace_text_in_range(Some(0..0), "edited ", window, cx);

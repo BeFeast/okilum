@@ -559,7 +559,7 @@ impl Reader {
                 // chosen editor. Explicit link landings above keep ownership.
                 if this.pane.navigation.generation != navigation
                     && this.ui_state.source_mode
-                    && this.editing.is_none()
+                    && this.pane.editing.is_none()
                 {
                     let tree_had_focus = this.tree_focus.contains_focused(window, cx);
                     this.toggle_source(window, cx);
@@ -568,7 +568,7 @@ impl Reader {
                     if tree_had_focus {
                         this.tree_focus.focus(window, cx);
                     }
-                } else if this.pane.navigation.generation != navigation && this.editing.is_none() {
+                } else if this.pane.navigation.generation != navigation && this.pane.editing.is_none() {
                     // #2817: the Settings default opens a note in Edit.
                     let tree_had_focus = this.tree_focus.contains_focused(window, cx);
                     this.open_note_by_default(tree_had_focus, window, cx);
@@ -696,7 +696,7 @@ impl Reader {
                     if this.pane.link_preparation_generation != generation
                         || !this.pane.holds_navigation(ticket)
                         || source_stamp.is_some_and(|stamp| {
-                            this.editing.as_ref().is_none_or(|editing| {
+                            this.pane.editing.as_ref().is_none_or(|editing| {
                                 editing.input().read(cx).source_stamp() != stamp
                             })
                         })
@@ -727,7 +727,7 @@ impl Reader {
     }
 
     pub(crate) fn refresh_link_preparation(&mut self, cx: &mut Context<Self>) {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             let snapshot = editing.input().read(cx).source_snapshot();
             let text = okilum_core::source_projection::revision::Text::from_identified_rope(
                 snapshot.text.rope().clone(),
@@ -819,7 +819,7 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             v.incremental_hold = Some(first_hold);
             v.toggle_source(window, cx);
-            v.editing.as_ref().unwrap().set_value(
+            v.pane.editing.as_ref().unwrap().set_value(
                 "# Start\n\n[[target|Control]]\n\n[[missing|Missing]]",
                 window,
                 cx,
@@ -829,7 +829,7 @@ mod tests {
         });
         visual.run_until_parked();
         let url = reader.read_with(visual, |v, _| {
-            assert!(v.editing.is_none() && v.incremental_active);
+            assert!(v.pane.editing.is_none() && v.incremental_active);
             v.pane
                 .link_identities
                 .iter()

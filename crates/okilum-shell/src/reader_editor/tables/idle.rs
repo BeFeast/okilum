@@ -129,9 +129,15 @@ impl TableGrid {
         let Some(reader) = self.reader.upgrade() else {
             return;
         };
-        if !reader.read(cx).editing.as_ref().is_some_and(|editing| {
-            editing.input == self.input && editing.markdown && editing.live_preview.enabled
-        }) {
+        if !reader
+            .read(cx)
+            .pane
+            .editing
+            .as_ref()
+            .is_some_and(|editing| {
+                editing.input == self.input && editing.markdown && editing.live_preview.enabled
+            })
+        {
             return;
         }
         if text.len() > source_classifier::MAX_BYTES {
@@ -183,9 +189,15 @@ impl TableGrid {
         let Some(reader) = self.reader.upgrade() else {
             return;
         };
-        if !reader.read(cx).editing.as_ref().is_some_and(|editing| {
-            editing.input == self.input && editing.markdown && editing.live_preview.enabled
-        }) {
+        if !reader
+            .read(cx)
+            .pane
+            .editing
+            .as_ref()
+            .is_some_and(|editing| {
+                editing.input == self.input && editing.markdown && editing.live_preview.enabled
+            })
+        {
             return;
         }
         if self
@@ -343,7 +355,7 @@ mod tests {
         });
         visual.run_until_parked();
         let (input, grid) = reader.read_with(visual, |reader, _| {
-            let editing = reader.editing.as_ref().unwrap();
+            let editing = reader.pane.editing.as_ref().unwrap();
             (editing.input.clone(), editing.table_grid.clone())
         });
         if grid_mode {

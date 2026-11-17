@@ -420,7 +420,7 @@ mod tests {
                 }
                 r.panel_widths.set(Panel::Notes, 315.);
                 r.panel_widths.set(Panel::Backlinks, 287.);
-                if let Some(editing) = &r.editing {
+                if let Some(editing) = &r.pane.editing {
                     editing.input().focus_handle(cx).focus(window, cx);
                 } else {
                     r.pane
@@ -449,7 +449,8 @@ mod tests {
                 (
                     r.panels.clone(),
                     r.panel_widths.clone(),
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
                 )
@@ -477,13 +478,14 @@ mod tests {
                 );
                 assert_eq!(saved.widths, before.1);
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
                     before.2,
                     "maximizing retains the current editor and canonical source stamp"
                 );
-                if let Some(editing) = &r.editing {
+                if let Some(editing) = &r.pane.editing {
                     assert!(editing.input().focus_handle(cx).is_focused(window));
                 }
             });
@@ -504,7 +506,8 @@ mod tests {
                 assert_eq!(r.panel_widths, before.1);
                 assert_eq!(r.pane.current_rel, "note.md");
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .map(|e| (e.input().entity_id(), e.input().read(cx).source_stamp())),
                     before.2

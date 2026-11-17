@@ -144,6 +144,7 @@ impl HeaderKey {
                 .and_then(|preview| preview.drawing.as_ref())
                 .map(|drawing| drawing.read(cx).revision()),
             editing: reader
+                .pane
                 .editing
                 .as_ref()
                 .map(|editing| editing.input().entity_id()),
@@ -265,7 +266,7 @@ impl SaveControls {
     fn synchronize(&mut self, cx: &mut Context<Self>) {
         let dirty = self.reader.upgrade().is_some_and(|reader| {
             let reader = reader.read(cx);
-            reader.editing.as_ref().is_some_and(|editing| {
+            reader.pane.editing.as_ref().is_some_and(|editing| {
                 editing.input().entity_id() == self.input && reader.source_indicator_dirty(cx)
             })
         });
@@ -650,7 +651,7 @@ impl Reader {
             self.viewer_find_controls.borrow_mut().take();
             self.viewer_find_bounds.set(None);
         }
-        let save = if self.editing.is_some() {
+        let save = if self.pane.editing.is_some() {
             Some(self.file_save_controls(cx))
         } else {
             self.viewer_save_controls.borrow_mut().take();
@@ -737,7 +738,7 @@ impl Reader {
             .pane
             .file_preview
             .as_ref()
-            .filter(|_| self.editing.is_none())
+            .filter(|_| self.pane.editing.is_none())
             .and_then(|p| p.code.as_ref())
         {
             return code
@@ -756,7 +757,7 @@ impl Reader {
             .pane
             .file_preview
             .as_ref()
-            .filter(|_| self.editing.is_none())
+            .filter(|_| self.pane.editing.is_none())
             .and_then(|p| p.code.as_ref())
         {
             let chrome = code.read(cx).header_chrome(code.clone(), cx);
@@ -784,7 +785,7 @@ impl Reader {
             return reader_log::chrome::describe(log, cx);
         }
         if let Some(code) = &preview.code {
-            return if self.editing.is_none() {
+            return if self.pane.editing.is_none() {
                 self.with_har_views(code.read(cx).chrome(code.clone(), cx), cx)
             } else {
                 ViewerChrome::default()
@@ -900,7 +901,7 @@ impl Reader {
         window: &Window,
         cx: &App,
     ) -> HeaderLayout {
-        let editing = self.editing.is_some();
+        let editing = self.pane.editing.is_some();
         let editable = self.file_is_source() && self.code_file_editable(cx);
         let width_applies = self
             .pane
@@ -1036,7 +1037,7 @@ impl Reader {
     }
 
     fn file_save_controls(&self, cx: &mut Context<Self>) -> Entity<SaveControls> {
-        let input = self.editing.as_ref().unwrap().input().clone();
+        let input = self.pane.editing.as_ref().unwrap().input().clone();
         let mut cached = self.viewer_save_controls.borrow_mut();
         if let Some(controls) = cached
             .as_ref()

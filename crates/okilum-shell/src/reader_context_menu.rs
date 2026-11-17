@@ -83,7 +83,7 @@ pub(super) fn menu(
     };
     let state = entity.read(cx);
     let position = window.mouse_position();
-    if state.editing.is_some()
+    if state.pane.editing.is_some()
         || state.pointer_on_link()
         || state
             .file_menu

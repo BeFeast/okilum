@@ -579,7 +579,7 @@ impl Reader {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage is available"))?;
         let guard = if !directory
-            && (from != self.pane.current_rel || self.editing.is_none())
+            && (from != self.pane.current_rel || self.pane.editing.is_none())
             && !other_source_editor
         {
             let editor =
@@ -611,7 +611,7 @@ impl Reader {
         let root = self.vault_root.clone();
         let from = from.to_owned();
         let current = self.pane.current_rel.clone();
-        let was_editing = self.editing.is_some();
+        let was_editing = self.pane.editing.is_some();
         let index = self.move_index.clone();
         let state = self.session_directory.clone();
         let cancel = reader_loading::Cancellation::default();
@@ -673,7 +673,7 @@ impl Reader {
                         anyhow::ensure!(
                             this.vault_root == root
                                 && this.pane.current_rel == current
-                                && this.editing.is_some() == was_editing,
+                                && this.pane.editing.is_some() == was_editing,
                             "The open note changed; preview again"
                         );
                         this.check_move_editors(&links.editor_paths(), cx)?;
@@ -858,7 +858,7 @@ impl Reader {
             anyhow::ensure!(
                 self.vault_root == pending.root
                     && self.pane.current_rel == pending.current
-                    && self.editing.is_some() == pending.was_editing,
+                    && self.pane.editing.is_some() == pending.was_editing,
                 "The open note changed. Nothing was moved; preview again"
             );
             anyhow::ensure!(
@@ -1013,7 +1013,7 @@ impl Reader {
                     cx.notify();
                     return;
                 }
-                self.editing = None;
+                self.pane.editing = None;
                 self.pane.navigation.preparation_generation =
                     self.pane.navigation.preparation_generation.wrapping_add(1);
                 let success_message =
@@ -1681,7 +1681,7 @@ mod tests {
             assert_eq!(reader.pane.current_rel, "Folder/Новое 🧠.md");
             assert_eq!(reader.pane.current_title, "Новое 🧠");
             assert!(reader.pane.note_source.contains("durable draft"));
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         std::fs::write(root.join("target.md"), "[[Folder/Новое 🧠#Heading|alias]]").unwrap();
         reader.update_in(visual, |reader, window, cx| reader.rename_note(window, cx));
@@ -1716,7 +1716,7 @@ mod tests {
         );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.pane.current_rel, "Folder/Final.md");
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         // Missing index uses cancellable background fallback, without another dialog.
         reader.update_in(visual, |r, window, cx| {
@@ -1808,7 +1808,7 @@ mod tests {
         );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.pane.current_rel, "Folder/Final.md");
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         // Large changes require the compact sheet; cancellation writes nothing.
         for index in 0..21 {
@@ -2078,7 +2078,8 @@ mod tests {
         });
         reader.update_in(visual, |r, window, cx| {
             r.cancel_rename(window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .test_input()

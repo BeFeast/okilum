@@ -252,7 +252,7 @@ mod tests {
             assert!(!r.tree_preview.is_open());
             assert!(!r.tree_quick_look_shown());
             assert_eq!(r.pane.current_rel, rel);
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
         });
         assert!(
             visual.debug_bounds("reader-source").is_some(),

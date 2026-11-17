@@ -258,7 +258,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
 fn editor_action(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> RemindOnSelection {
     EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = None);
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     visual.run_until_parked();
     let at = input.read_with(visual, |state, _| {
@@ -273,7 +273,7 @@ fn editor_action(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Rem
             .center()
     });
     reader.read_with(visual, |reader, _| {
-        let facts = reader.editing.as_ref().unwrap().menu_facts();
+        let facts = reader.pane.editing.as_ref().unwrap().menu_facts();
         assert_eq!(
             facts.date(),
             Some(date()),
@@ -317,7 +317,7 @@ async fn reminder_724_editor_menu_captures_original_selection_and_unsaved_source
     });
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     let unsaved = "# Unsaved heading\r\n\r\nMeet 1 November 2027 in Jerusalem.\r\n";
     input.update_in(visual, |state, window, cx| {
@@ -374,7 +374,7 @@ async fn reminder_724_stale_reader_and_editor_menu_refuse_without_retarget(
     });
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     let at = input.read_with(visual, |state, _| {
         state.value().find("1 November 2027").unwrap()
@@ -705,7 +705,7 @@ async fn reminder_724_editor_cursor_right_press_retains_revision_and_writes_once
     });
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     let at = input.read_with(visual, |state, _| {
         let start = state.value().find("November").unwrap();

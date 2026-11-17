@@ -92,7 +92,7 @@ impl Reader {
                 match choice {
                     Leave::Cancel => {}
                     Leave::DontSave => {
-                        let had_editor = this.editing.is_some();
+                        let had_editor = this.pane.editing.is_some();
                         if !this.release_deleted_editor(cx) {
                             return;
                         }

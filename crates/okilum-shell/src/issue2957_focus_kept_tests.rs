@@ -155,7 +155,7 @@ fn issue2957_find_keeps_focus_and_query_through_maximize_and_panel_hide_in_forma
             .as_ref()
             .expect("JSON opens as a preview");
         assert!(preview.code.is_some(), "JSON opens in the code viewer");
-        assert!(r.editing.is_none(), "read-only Formatted view");
+        assert!(r.pane.editing.is_none(), "read-only Formatted view");
     });
     click_code_viewer(visual);
 
@@ -191,7 +191,7 @@ fn issue2957_find_keeps_focus_and_query_through_maximize_and_panel_hide_in_forma
     click_code_viewer(visual);
     press(visual, "secondary-e");
     fixture.reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_some(), "positive control: Edit view");
+        assert!(r.pane.editing.is_some(), "positive control: Edit view");
     });
     press(visual, "secondary-f");
     let edit_query = find_query(&fixture, visual);
@@ -274,7 +274,7 @@ fn issue2957_rename_field_and_note_find_keep_focus_and_a_hidden_field_hands_it_t
     let (fixture, visual) = open(cx, "note.md");
     fixture.reader.update_in(visual, |r, window, cx| {
         assert!(
-            r.pane.file_preview.is_none() && r.editing.is_none(),
+            r.pane.file_preview.is_none() && r.pane.editing.is_none(),
             "a note"
         );
         r.begin_rename("note.md".into(), window, cx);
@@ -398,6 +398,9 @@ fn issue2957_toolbar_and_menu_maximize_and_panel_toggle_keep_chords_without_a_cl
     assert!(!maximized(&fixture, visual), "the chord restores");
     press(visual, "secondary-e");
     fixture.reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_some(), "the Edit chord works without a click");
+        assert!(
+            r.pane.editing.is_some(),
+            "the Edit chord works without a click"
+        );
     });
 }

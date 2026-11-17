@@ -1255,21 +1255,21 @@ impl Reader {
         let Some(offset) = self.ui_state.source.take() else {
             return;
         };
-        if self.editing.is_none()
+        if self.pane.editing.is_none()
             && !self.pane.current_rel.is_empty()
             && self.pane.file_preview.is_none()
         {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
-            if self.editing.is_none() {
+            if self.pane.editing.is_none() {
                 if let Some(position) = self.ui_state.source_reader_position.take() {
                     // If draft recovery cannot open, preserve the preview landing
                     // as well as the existing error notice.
                     self.scroll_to_position(position, cx);
                 }
             }
-            self.ui_state.source_position_pending = self.editing.is_some();
-            if self.editing.is_some() {
+            self.ui_state.source_position_pending = self.pane.editing.is_some();
+            if self.pane.editing.is_some() {
                 self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
@@ -1299,7 +1299,7 @@ impl Reader {
     pub(crate) fn restoring_source(&self) -> bool {
         self.ui_state.source.is_some()
             || self.ui_state.source_position_pending
-            || (self.editing.is_some() && self.ui_state.source_highlight_pending)
+            || (self.pane.editing.is_some() && self.ui_state.source_highlight_pending)
     }
 
     pub(crate) fn restoring_reader(&self) -> bool {
@@ -1330,7 +1330,7 @@ impl Reader {
             self.set_ui_active(false, cx);
             return;
         }
-        if self.editing.is_none() && self.ui_state.source.is_none() {
+        if self.pane.editing.is_none() && self.ui_state.source.is_none() {
             self.ui_state.source_reader_position = None;
         }
         let pending = self.ui_state.tree.as_ref();
@@ -1421,9 +1421,9 @@ impl Reader {
             // An automatic Edit is the Settings default, not this session's
             // choice: relaunch applies the setting again, never as a choice
             // that would carry to text, data or code files (#2817).
-            source: (self.editing.is_some() && !self.ui_state.auto_edit)
+            source: (self.pane.editing.is_some() && !self.ui_state.auto_edit)
                 || self.ui_state.source.is_some(),
-            live_preview: if self.editing.is_some() {
+            live_preview: if self.pane.editing.is_some() {
                 self.source_live_preview()
             } else {
                 self.ui_state.live_preview
@@ -3724,7 +3724,10 @@ mod tests {
                 let load = reader.loading.as_ref().unwrap();
                 assert!(load.active && load.published, "search remains unfinished");
                 if source {
-                    assert!(reader.editing.is_some(), "source must not wait for search");
+                    assert!(
+                        reader.pane.editing.is_some(),
+                        "source must not wait for search"
+                    );
                     assert!(
                         !reader.restoring_source(),
                         "source viewport must be visible"
@@ -3779,7 +3782,7 @@ mod tests {
         });
         for _ in 0..5 {
             reader.read_with(visual, |reader, _| {
-                if source && reader.ui_state.ready && reader.editing.is_none() {
+                if source && reader.ui_state.ready && reader.pane.editing.is_none() {
                     assert!(reader.restoring_source(), "preview must remain hidden");
                 }
             });
@@ -3808,14 +3811,17 @@ mod tests {
                 "saved tree scroll must survive the initial selected-note reveal"
             );
             if source {
-                assert!(reader.editing.is_some(), "positive control: source mounted");
+                assert!(
+                    reader.pane.editing.is_some(),
+                    "positive control: source mounted"
+                );
                 assert!(
                     !reader.restoring_source(),
                     "restored source must become visible"
                 );
                 assert_eq!(reader.source_live_preview(), live_preview);
                 if live_preview {
-                    let input = reader.editing.as_ref().unwrap().test_input();
+                    let input = reader.pane.editing.as_ref().unwrap().test_input();
                     assert!(input.read(cx).value().contains("Unsaved draft sentinel"));
                     assert!(!std::fs::read_to_string(root.join("Folder/note.md"))
                         .unwrap()

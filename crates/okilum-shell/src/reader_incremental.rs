@@ -432,7 +432,7 @@ mod tests {
                     assert!(r.share_session().is_some());
                 }
                 r.toggle_source(window, cx);
-                r.editing.as_ref().unwrap().set_value(
+                r.pane.editing.as_ref().unwrap().set_value(
                     "---\naliases: [After]\n---\n# New title\n\n[[New]]\n",
                     window,
                     cx,
@@ -467,7 +467,14 @@ mod tests {
             });
             let (generation, stamp) = reader.update_in(visual, |r, window, cx| {
                 let generation = r.loading.as_ref().unwrap().generation;
-                let stamp = r.editing.as_ref().unwrap().input().read(cx).source_stamp();
+                let stamp = r
+                    .pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input()
+                    .read(cx)
+                    .source_stamp();
                 r.refresh_inventory(
                     okilum_core::Changes {
                         rescan: true,
@@ -492,7 +499,13 @@ mod tests {
                     "full reconciliation also retains unchanged inventory ownership"
                 );
                 assert_eq!(
-                    r.editing.as_ref().unwrap().input().read(cx).source_stamp(),
+                    r.pane
+                        .editing
+                        .as_ref()
+                        .unwrap()
+                        .input()
+                        .read(cx)
+                        .source_stamp(),
                     stamp,
                     "full own-save echoes never reset native input/Undo"
                 );
@@ -541,7 +554,8 @@ mod tests {
             let baseline = v.searcher.clone().unwrap();
             let generation = v.loading.as_ref().unwrap().generation;
             v.toggle_source(window, cx);
-            v.editing
+            v.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("# Note\n\nnewword [[New]]", window, cx);
@@ -579,7 +593,7 @@ mod tests {
             );
             assert_eq!(v.vault.backlinks("New.md").len(), 1);
             assert!(v.vault.backlinks("Old.md").is_empty());
-            assert!(v.editing.is_some());
+            assert!(v.pane.editing.is_some());
         });
         let saved = okilum_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
         assert!(saved.source("note.md").unwrap().contains("newword"));
@@ -670,13 +684,14 @@ mod tests {
             .enumerate()
         {
             reader.update_in(visual, |v, window, cx| {
-                if v.editing.is_none() {
+                if v.pane.editing.is_none() {
                     v.toggle_source(window, cx);
                 }
-                v.editing
-                    .as_ref()
-                    .unwrap()
-                    .set_value(&format!("# Note\n\n{word}"), window, cx);
+                v.pane.editing.as_ref().unwrap().set_value(
+                    &format!("# Note\n\n{word}"),
+                    window,
+                    cx,
+                );
                 assert!(v.save_source(cx));
             });
             visual.run_until_parked();

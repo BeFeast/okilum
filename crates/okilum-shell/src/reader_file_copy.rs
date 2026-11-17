@@ -42,7 +42,7 @@ impl Reader {
         if !reader_viewer_chrome::copy_content_available(self) {
             return;
         }
-        if let Some(editing) = self.editing.as_ref() {
+        if let Some(editing) = self.pane.editing.as_ref() {
             if editing.input().read(cx).value().len() as u64 > LIMIT {
                 reader_toast::error("File content exceeds the 64 MB copy limit", window, cx);
                 return;
