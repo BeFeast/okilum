@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every #2582/#2043/#2504 control under one unchanged 600-second deadline.
+"""Run every #2582/#2043/#2504/#2508 control under one unchanged 600-second deadline.
 
 Independent crash checkpoints have separate parent processes and private state
 roots. At most two run together; each remains a subreaper of its own helpers.
@@ -22,6 +22,7 @@ TESTS = {
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',
+    'issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary',
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
 }
