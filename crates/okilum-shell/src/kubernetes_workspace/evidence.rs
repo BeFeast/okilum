@@ -21,10 +21,11 @@ pub(crate) const EXCLUDED: [&str; 5] = [
     "Secrets (never read)",
     "container environment values and exec probe commands (not retained by the read adapter)",
     "kubectl stderr diagnostics of log sessions",
-    "failure text other than kubectl's own 'Error from server (...)' line for a denied or missing object, or text Okilum wrote itself (kind only otherwise)",
+    "failure text from kubectl's stderr, including lines that look like a server answer (kind only; text only when Okilum wrote it)",
 ];
 
 /// The log view's state at export time, from the LogView itself.
+#[derive(Clone)]
 pub(crate) struct LogViewState {
     /// The rows `displayed` describes: a snapshot not yet handed to the
     /// view is preferred, so bytes and provenance always belong together.
@@ -49,6 +50,44 @@ pub(crate) struct Inputs<'a> {
     pub app_source: &'a str,
 }
 
+/// An owned copy of everything a bundle is built from, taken on the UI
+/// thread (cheap clones; log bytes are shared, not copied). Building,
+/// serialising and hashing up to 8 MiB of logs happen later, off it.
+#[derive(Clone)]
+pub(crate) struct Capture {
+    pub data: Option<Data>,
+    pub selected: Option<Key>,
+    pub related_uids: Vec<String>,
+    pub lens: &'static str,
+    pub session: Option<Session>,
+    pub displayed: Option<Shown>,
+    pub current_generation: u64,
+    pub tail_lines: u32,
+    pub view: Option<LogViewState>,
+    pub generated_at: SystemTime,
+    pub app_version: &'static str,
+    pub app_source: &'static str,
+}
+
+impl Capture {
+    pub(crate) fn build(&self) -> Bundle {
+        build(Inputs {
+            data: self.data.as_ref(),
+            selected: self.selected.as_ref(),
+            related_uids: self.related_uids.clone(),
+            lens: self.lens,
+            session: self.session.as_ref(),
+            displayed: self.displayed.as_ref(),
+            current_generation: self.current_generation,
+            tail_lines: self.tail_lines,
+            view: self.view.clone(),
+            generated_at: self.generated_at,
+            app_version: self.app_version,
+            app_source: self.app_source,
+        })
+    }
+}
+
 /// Files in bundle order. `manifest.json` and `SHA256SUMS` come last.
 pub(crate) struct Bundle {
     pub name: String,
@@ -66,22 +105,12 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// kubectl's report of the API server's answer, the last
-/// `Error from server (Reason): ...` line, bounded. It is the line the
-/// classifier decided on; anything around it may be credential-helper or
-/// other stderr output and is never exported.
-fn server_message(text: &str) -> Option<String> {
-    text.lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| line.starts_with("Error from server ("))
-        .map(|line| line.chars().take(400).collect())
-}
-
-/// A failure as evidence: its kind always. A category is not redaction:
-/// failure details carry kubectl's bounded stderr, which can include helper
-/// output before the server's answer. So only text Okilum wrote itself, or
-/// the server's own line for a denied or missing object, is exported.
+/// A failure as evidence: its kind always, and text only when Okilum wrote
+/// it (an invalid request, a size or time limit, a cancel). Every other
+/// failure's text comes from kubectl's stderr, which a credential helper can
+/// also write to, in any form, including lines that look like a server
+/// answer. A category is not redaction, and no line of that stream is
+/// trusted, so none of it is exported.
 pub(crate) fn failure_json(failure: &Failure) -> Value {
     let own = match failure {
         Failure::InvalidRequest { .. }
@@ -90,11 +119,7 @@ pub(crate) fn failure_json(failure: &Failure) -> Value {
         | Failure::Cancelled => Some(failure.summary()),
         _ => None,
     };
-    let server = match failure {
-        Failure::Forbidden { detail } | Failure::NotFound { detail } => server_message(detail),
-        _ => None,
-    };
-    json!({"kind": model::failure_kind(failure), "detail": own, "server_message": server})
+    json!({"kind": model::failure_kind(failure), "detail": own})
 }
 
 fn source_json<T>(name: &str, slot: &Slot<List<T>>) -> Value {
@@ -268,8 +293,20 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
     // The rows and the session are described separately: after a retarget,
     // a failed check or a restart the view still shows an earlier session's
     // rows, labelled with that session's own target, time and coverage.
+    // Logs and their session belong to a context and namespace. The view
+    // keeps them across scope changes, so one from another scope than the
+    // bundle's is left out and named, never filed under this scope.
+    let scope_of = |t: &LogTarget| format!("{} / {}", t.context, t.namespace);
+    let in_scope = |t: &LogTarget| inputs.data.is_some_and(|d| t.in_scope(&d.scope));
     let mut log_rows = Value::Null;
-    if let (Some(shown), Some(snapshot)) = (
+    if let Some(shown) = inputs.displayed.filter(|s| !in_scope(&s.target)) {
+        log_rows = json!({
+            "excluded": format!(
+                "The log view holds rows from {}, not this bundle's scope; they are not exported. Export from that scope to include them.",
+                scope_of(&shown.target)
+            ),
+        });
+    } else if let (Some(shown), Some(snapshot)) = (
         inputs.displayed,
         inputs.view.as_ref().and_then(|v| v.snapshot.clone()),
     ) {
@@ -315,7 +352,14 @@ pub(crate) fn build(inputs: Inputs) -> Bundle {
     }
 
     let mut log_session = Value::Null;
-    if let Some(session) = inputs.session {
+    if let Some(session) = inputs.session.filter(|s| !in_scope(&s.target)) {
+        log_session = json!({
+            "excluded": format!(
+                "The pinned log session belongs to {}, not this bundle's scope.",
+                scope_of(&session.target)
+            ),
+        });
+    } else if let Some(session) = inputs.session {
         let uid_check = inputs
             .data
             .map(|data| match model::check_listed(&session.target, data) {

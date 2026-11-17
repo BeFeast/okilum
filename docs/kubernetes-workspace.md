@@ -198,11 +198,12 @@ addresses Pods by name. Never exported: kubeconfig users/tokens/certificates/
 exec settings and Secrets (never read), container env values and exec probe
 commands (not retained), kubectl stderr of log sessions, and the detail of
 failures: a failure's kind is always kept, but its text only when Okilum
-wrote it (invalid request, size or time limit, cancel), plus kubectl's own
-`Error from server (...)` line for a denied or missing object. A failure
-category is not redaction: kubectl's stderr can carry credential-helper
-output before the server's answer, and none of it is exported. A failed UID
-check before `kubectl logs` is kept typed for the same reason.
+wrote it (invalid request, size or time limit, cancel). Every other failure
+text comes from kubectl's stderr, which a credential helper can also write
+to, including lines shaped like a server answer, so none of it is exported.
+A failed UID check before `kubectl logs` is kept typed for the same reason.
+Logs and their session from another context or namespace than the bundle's
+(the view keeps them across a scope change) are left out and named.
 
 After a retarget, a failed check or a restart, the view still shows the
 earlier session's rows; the bundle names the log file and its provenance
@@ -216,9 +217,14 @@ The LogView's own row export (raw/JSONL/CSV of the shown, selected or marked
 rows) is unchanged and stays the way to export filtered rows.
 
 **Copy command** (log dock) copies the pinned target's exact `kubectl logs`
-argv (context, namespace, `pod/<name>`, container, previous, follow, tail)
-for a terminal, and says that it reads the Pod by name while the session
-verified a UID. There is no Kibana handoff for Kubernetes sources: no
+argv (context, namespace, `pod/<name>`, container, previous, follow, tail),
+quoted for the platform's shell and naming it: POSIX quoting on Linux and
+macOS, PowerShell single-quoted literals on Windows (not cmd.exe; an
+argument with `"` is refused there because Windows PowerShell 5.1 passes it
+incorrectly). The note says that it reads the Pod by name and states this
+session's actual UID check: verified at a time, pending, failed or replaced.
+Building and hashing a bundle run off the UI thread; only an owned capture
+of the shown state is taken when Export is pressed. There is no Kibana handoff for Kubernetes sources: no
 mapping from a Pod/container to a Kibana index exists, and different
 backends are not assumed to hold the same lines.
 

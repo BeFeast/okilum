@@ -94,6 +94,7 @@ pub(crate) struct Shown {
     pub tail_lines: u32,
 }
 
+#[derive(Clone)]
 pub(crate) struct Session {
     pub target: LogTarget,
     pub phase: Phase,
@@ -168,7 +169,79 @@ impl Dock {
 /// What the copied command is known to address. It reads the Pod by name;
 /// whether that name was confirmed to be the pinned UID depends on this
 /// session's own check, which may be pending, failed or never started.
-pub(crate) fn copy_note(session: &Session) -> String {
+/// The shell a copied command is written for. Each has its own quoting;
+/// a command quoted for one is not safe to paste into another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shell {
+    /// sh, bash, zsh: POSIX quoting.
+    Posix,
+    /// Windows PowerShell 5.1 and PowerShell 7: single-quoted literals.
+    /// Not cmd.exe, which has no safe quoting for every argument.
+    PowerShell,
+}
+
+impl Shell {
+    pub(crate) const NATIVE: Shell = if cfg!(windows) {
+        Shell::PowerShell
+    } else {
+        Shell::Posix
+    };
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Shell::Posix => "POSIX shell (sh, bash, zsh)",
+            Shell::PowerShell => "PowerShell (not cmd.exe)",
+        }
+    }
+}
+
+/// Characters every supported shell passes through unquoted and unchanged.
+/// No `,` (a PowerShell array), `@` (splatting), `$`, quotes, spaces or
+/// cmd/sh metacharacters.
+fn plain(arg: &str) -> bool {
+    !arg.is_empty()
+        && arg.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'=' | b':')
+        })
+}
+
+/// PowerShell treats these as single quotes too; each is doubled inside a
+/// single-quoted literal.
+const POWERSHELL_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// `kubectl` and its arguments for `shell`, or why it cannot be written
+/// safely. Windows PowerShell 5.1 passes native arguments containing `"`
+/// incorrectly, so such an argument is refused rather than mangled.
+pub(crate) fn command_line(args: &[String], shell: Shell) -> Result<String, String> {
+    let mut words = vec!["kubectl".to_string()];
+    for arg in args {
+        if plain(arg) {
+            words.push(arg.clone());
+            continue;
+        }
+        words.push(match shell {
+            Shell::Posix => shell_words::quote(arg).into_owned(),
+            Shell::PowerShell => {
+                if arg.contains('"') {
+                    return Err(format!(
+                        "an argument contains a double quote, which PowerShell 5.1 passes to kubectl incorrectly: {arg}"
+                    ));
+                }
+                let mut quoted = String::from("'");
+                for c in arg.chars() {
+                    if POWERSHELL_QUOTES.contains(&c) {
+                        quoted.push(c);
+                    }
+                    quoted.push(c);
+                }
+                quoted.push('\'');
+                quoted
+            }
+        });
+    }
+    Ok(words.join(" "))
+}
+
+pub(crate) fn copy_note(session: &Session, shell: Shell) -> String {
     let target = &session.target;
     let state = match (&session.phase, session.verified_at) {
         (Phase::Replaced { uid }, _) => format!(
@@ -192,7 +265,8 @@ pub(crate) fn copy_note(session: &Session) -> String {
         (_, None) => format!("UID {} was not verified by this session", target.short_uid()),
     };
     format!(
-        "Copied the kubectl command. It reads Pod {} by name; {state}.",
+        "Copied a kubectl command for {}. It reads Pod {} by name; {state}.",
+        shell.name(),
         target.pod
     )
 }
@@ -434,11 +508,13 @@ impl Workspace {
             tail_lines: self.dock.tail,
         };
         self.dock.message = Some(match request.args() {
-            Ok(args) => {
-                let line = shell_words::join(std::iter::once("kubectl".to_string()).chain(args));
-                cx.write_to_clipboard(ClipboardItem::new_string(line));
-                copy_note(session)
-            }
+            Ok(args) => match command_line(&args, Shell::NATIVE) {
+                Ok(line) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(line));
+                    copy_note(session, Shell::NATIVE)
+                }
+                Err(why) => format!("Nothing copied: {why}"),
+            },
             Err(error) => format!("No command: {error}"),
         });
         cx.notify();

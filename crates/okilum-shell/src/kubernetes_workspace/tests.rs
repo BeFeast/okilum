@@ -1195,15 +1195,18 @@ fn copy_note_reflects_pending_failed_replaced_and_verified_checks() {
     let pod = data.pods().iter().find(|p| p.meta.uid == "pod-a").unwrap();
     let target = model::LogTarget::new(&data.scope, pod, "api", false).unwrap();
     let note = |phase: dock::Phase, verified_at: Option<std::time::SystemTime>| {
-        dock::copy_note(&dock::Session {
-            target: target.clone(),
-            phase,
-            follow: true,
-            verified_at,
-            received: false,
-            diagnostic: String::new(),
-            pending_bytes: 0,
-        })
+        dock::copy_note(
+            &dock::Session {
+                target: target.clone(),
+                phase,
+                follow: true,
+                verified_at,
+                received: false,
+                diagnostic: String::new(),
+                pending_bytes: 0,
+            },
+            dock::Shell::Posix,
+        )
     };
     let pending = note(dock::Phase::Verifying, None);
     assert!(
@@ -1240,4 +1243,125 @@ fn copy_note_reflects_pending_failed_replaced_and_verified_checks() {
     for text in [&pending, &failed, &replaced, &stopped, &verified] {
         assert!(text.contains("by name"), "{text}");
     }
+}
+
+/// Review (Terra P1): a copied command is quoted for the shell it names.
+/// POSIX quoting is not safe in cmd.exe or PowerShell, and vice versa.
+#[test]
+fn command_line_quotes_per_shell_and_round_trips() {
+    let args: Vec<String> = [
+        "--context=team a&b|c;d$e'f`g",
+        "--namespace=shop",
+        "logs",
+        "pod/checkout-a",
+        "--container=api",
+        "--previous=false",
+        "--context=x,y@z",
+        "--context=curly\u{2019}quote",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    // POSIX: shell_words splits it back to exactly the argv.
+    let posix = dock::command_line(&args, dock::Shell::Posix).unwrap();
+    let split = shell_words::split(&posix).unwrap();
+    assert_eq!(split[0], "kubectl");
+    assert_eq!(split[1..], args[..]);
+    assert!(
+        posix.contains("--namespace=shop"),
+        "plain args stay unquoted"
+    );
+
+    // PowerShell: every non-plain word is one single-quoted literal, in
+    // which only quote characters are special (doubled). Parse it back.
+    let ps = dock::command_line(&args, dock::Shell::PowerShell).unwrap();
+    let quotes = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+    let mut words = Vec::new();
+    let mut chars = ps.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ' ' {
+            continue;
+        }
+        let mut word = String::new();
+        if quotes.contains(&c) {
+            loop {
+                let c = chars.next().expect("closed literal");
+                if quotes.contains(&c) {
+                    if chars.peek().is_some_and(|n| quotes.contains(n)) {
+                        word.push(chars.next().unwrap());
+                        continue;
+                    }
+                    break;
+                }
+                word.push(c);
+            }
+        } else {
+            word.push(c);
+            while let Some(&n) = chars.peek() {
+                if n == ' ' {
+                    break;
+                }
+                assert!(
+                    n.is_ascii_alphanumeric() || "-_./=:".contains(n),
+                    "unquoted {n:?} in {ps}"
+                );
+                word.push(chars.next().unwrap());
+            }
+        }
+        words.push(word);
+    }
+    assert_eq!(words[0], "kubectl");
+    assert_eq!(words[1..], args[..], "{ps}");
+    assert!(ps.contains("'--context=team a&b|c;d$e''f`g'"), "{ps}");
+    assert!(
+        ps.contains("'--context=x,y@z'"),
+        "comma and @ are quoted: {ps}"
+    );
+
+    // A double quote cannot be passed safely by PowerShell 5.1: refused.
+    let quoted = vec!["--context=a\"b".to_string()];
+    assert!(dock::command_line(&quoted, dock::Shell::PowerShell).is_err());
+    assert!(dock::command_line(&quoted, dock::Shell::Posix).is_ok());
+}
+
+/// Review (Terra P1) through the real flow: logs opened in one namespace
+/// stay in the view after loading another; that scope's bundle leaves them
+/// out and says where they are from.
+#[gpui::test]
+fn export_after_a_scope_change_leaves_the_other_scopes_logs_out(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"shop namespace line\n", worker::Status::Reading);
+    h.load("payments");
+    let path = dir.path().to_path_buf();
+    h.update(|ws, _, _| ws.export_dir = Some(path));
+    h.click("k8s-export");
+    h.wait("bundle written", |ws| !ws.exporting);
+    let bundle = std::fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        !bundle.join("logs").exists(),
+        "no log file in the payments bundle"
+    );
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["scope"]["namespace"], "payments");
+    assert!(manifest["log_rows"]["excluded"]
+        .as_str()
+        .unwrap()
+        .contains("prod-east / shop"));
+    assert!(manifest["log_session"]["excluded"].as_str().is_some());
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.dock.worker_running(), "the shop session keeps running");
+    });
 }

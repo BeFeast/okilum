@@ -352,7 +352,9 @@ impl Workspace {
     // ---------- Evidence export ----------
 
     /// The bundle as of now: only what this window holds, nothing re-read.
-    pub(crate) fn evidence_bundle(&self, cx: &App) -> evidence::Bundle {
+    /// What the bundle will hold, captured now on the UI thread. Building
+    /// and hashing it is `Capture::build`, run off the UI thread.
+    pub(crate) fn evidence_capture(&self, cx: &App) -> evidence::Capture {
         let related_uids = match (&self.data, &self.selected) {
             (Some(data), Some(key)) => self.event_uids(&model::resolve(data, key)),
             _ => Vec::new(),
@@ -368,20 +370,20 @@ impl Workspace {
             snapshot,
             filter: view.map_or(serde_json::Value::Null, |view| view.filter_evidence()),
         });
-        evidence::build(evidence::Inputs {
-            data: self.data.as_ref(),
-            selected: self.selected.as_ref(),
+        evidence::Capture {
+            data: self.data.clone(),
+            selected: self.selected.clone(),
             related_uids,
             lens: self.lens.label(),
-            session: self.dock.session.as_ref(),
-            displayed: self.dock.displayed.as_ref(),
+            session: self.dock.session.clone(),
+            displayed: self.dock.displayed.clone(),
             current_generation: self.dock.generation,
             tail_lines: self.dock.tail,
             view,
             generated_at: std::time::SystemTime::now(),
             app_version: env!("OKILUM_RELEASE_VERSION"),
             app_source: env!("OKILUM_SOURCE_COMMIT"),
-        })
+        }
     }
 
     /// Asks for a folder, then writes a new bundle directory into it off the
@@ -390,7 +392,7 @@ impl Workspace {
         if self.exporting || self.data.is_none() {
             return;
         }
-        let bundle = self.evidence_bundle(cx);
+        let capture = self.evidence_capture(cx);
         self.exporting = true;
         self.export_note = Some((
             "Choose a folder for the evidence bundle…".into(),
@@ -422,6 +424,7 @@ impl Workspace {
                 Some(folder) => Some(
                     executor
                         .spawn(async move {
+                            let bundle = capture.build();
                             let summary = evidence::summary(&bundle);
                             evidence::write(&folder, &bundle).map(|path| (path, summary))
                         })

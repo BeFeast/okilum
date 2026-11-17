@@ -1,6 +1,6 @@
 //! Synthetic objects and bytes only (no cluster, kubeconfig or credentials).
 use super::*;
-use crate::kubernetes_workspace::model::tests::{fail, fixture, put, recovered_pod};
+use crate::kubernetes_workspace::model::tests::{fail, fixture, put, recovered_pod, scope};
 use ::core::prelude::v1::test;
 use okilum_core::kubernetes::{Cancel, Cleanup, Client, End, Kind, Limits, ListQuery, Pod, Raw};
 use okilum_core::log::stream::Assembler;
@@ -227,7 +227,6 @@ fn credentials_helper_output_and_unretained_values_never_enter_a_bundle() {
         "sign-in expired"
     );
     assert!(event_source["latest_failure"]["failure"]["detail"].is_null());
-    assert!(event_source["latest_failure"]["failure"]["server_message"].is_null());
     assert!(m["excluded"].as_array().unwrap().len() >= 4);
 }
 
@@ -295,10 +294,11 @@ fn classified(stderr: &str) -> Failure {
         .unwrap_err()
 }
 
-/// Review finding 2: the classifier keeps all bounded stderr in a detail;
-/// only the server's own line is exported, never helper output before it.
+/// Review (Codex finding 2, Terra P1): the classifier keeps all bounded
+/// stderr in a detail, and a credential helper can write any line there,
+/// including one shaped like a server answer. No stderr text is exported.
 #[test]
-fn mixed_helper_output_and_server_denial_exports_only_the_server_line() {
+fn stderr_text_never_enters_a_bundle_even_when_shaped_like_a_server_answer() {
     let server = r#"Error from server (Forbidden): pods is forbidden: User "demo" cannot list resource "pods" in API group "" in the namespace "shop""#;
     let denied = classified(&format!(
         "I1117 exec_credential.go:42] helper debug token=sk-SYNTHETIC-HELPER\n{server}\n"
@@ -306,6 +306,12 @@ fn mixed_helper_output_and_server_denial_exports_only_the_server_line() {
     assert!(
         matches!(&denied, Failure::Forbidden { detail } if detail.contains("sk-SYNTHETIC-HELPER")),
         "positive control: the real classifier keeps helper output in the detail: {denied:?}"
+    );
+    // A helper printing a forged server line: classified as Forbidden.
+    let forged = classified("Error from server (Forbidden): token=sk-SYNTHETIC-FORGED\n");
+    assert!(
+        matches!(&forged, Failure::Forbidden { detail } if detail.contains("sk-SYNTHETIC-FORGED")),
+        "positive control: the forged line is what the classifier decides on: {forged:?}"
     );
     let unavailable = classified(
         "helper refresh failed sk-SYNTHETIC-HELPER2\nUnable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
@@ -317,17 +323,23 @@ fn mixed_helper_output_and_server_denial_exports_only_the_server_line() {
     let mut data = fixture();
     fail(&mut data.slices, denied);
     fail(&mut data.services, unavailable);
+    fail(&mut data.deployments, forged);
     let b = bundle(&data, true);
     let all = everything(&b);
-    assert!(!all.contains("sk-SYNTHETIC-HELPER"), "helper output leaked");
+    for marker in [
+        "sk-SYNTHETIC-HELPER",
+        "sk-SYNTHETIC-FORGED",
+        "cannot list resource",
+    ] {
+        assert!(!all.contains(marker), "{marker} leaked into the bundle");
+    }
     let m = manifest(&b);
-    let slices = &m["sources"][4]["latest_failure"]["failure"];
-    assert_eq!(slices["kind"], "forbidden");
-    assert_eq!(slices["server_message"], server);
-    assert!(slices["detail"].is_null());
-    let services = &m["sources"][3]["latest_failure"]["failure"];
-    assert_eq!(services["kind"], "unavailable");
-    assert!(services["detail"].is_null() && services["server_message"].is_null());
+    for (index, kind) in [(4, "forbidden"), (3, "unavailable"), (1, "forbidden")] {
+        let failure = &m["sources"][index]["latest_failure"]["failure"];
+        assert_eq!(failure["kind"], kind);
+        assert!(failure["detail"].is_null(), "{failure}");
+        assert!(failure.get("server_message").is_none(), "{failure}");
+    }
 }
 
 /// Review finding 3: rows keep the provenance of the session that sent them.
@@ -502,4 +514,52 @@ fn write_never_touches_other_writers_and_never_replaces_late_claims() {
     let mut expected = vec![b.name.clone(), format!(".{}.partial", b.name)];
     expected.sort();
     assert_eq!(entries(dir.path()), expected, "no staging of ours remains");
+}
+
+/// Review (Terra P1): logs loaded in one scope and still shown after
+/// switching to another are never filed under the new scope's bundle.
+#[test]
+fn logs_from_another_scope_are_left_out_and_named() {
+    let data = fixture(); // prod-east / shop
+    let pod = data.pods().iter().find(|p| p.meta.uid == "pod-a").unwrap();
+    for other in [scope("staging", "shop"), scope("prod-east", "payments")] {
+        // The Pod fixture names namespace shop; pin the other scope exactly.
+        let mut foreign = LogTarget::new(&other, pod, "api", false).unwrap();
+        foreign.context = other.connection.context.clone();
+        foreign.namespace = other.namespace.clone();
+        let s = session(foreign.clone(), Phase::Receiving, Some(at(T0)));
+        let rows = shown(foreign, 2, at(T0));
+        let b = bundle_with(&data, Some((&s, Some(&rows), 2)));
+        assert!(
+            !b.files.iter().any(|(p, _)| p.starts_with("logs/")),
+            "{}: no log file",
+            other.label()
+        );
+        let all = everything(&b);
+        assert!(
+            !all.contains("out of memory"),
+            "{}: log bytes leaked",
+            other.label()
+        );
+        let m = manifest(&b);
+        assert!(m["log_rows"]["excluded"]
+            .as_str()
+            .unwrap()
+            .contains(&format!(
+                "{} / {}",
+                other.connection.context, other.namespace
+            )));
+        assert!(m["log_rows"].get("file").is_none());
+        assert!(m["log_session"]["excluded"].as_str().is_some());
+        assert!(m["log_session"].get("target").is_none());
+    }
+    // Positive control: the same rows in the bundle's own scope are kept.
+    let own = target(&data, false);
+    let s = session(own.clone(), Phase::Receiving, Some(at(T0)));
+    let rows = shown(own, 2, at(T0));
+    let b = bundle_with(&data, Some((&s, Some(&rows), 2)));
+    assert!(b
+        .files
+        .iter()
+        .any(|(p, _)| p == "logs/checkout-a_api_current.log"));
 }

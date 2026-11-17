@@ -401,7 +401,11 @@ async fn drive(workspace: Entity<Workspace>, plan: Plan, cx: &mut AsyncApp) {
         .timer(std::time::Duration::from_millis(1200))
         .await;
     if let (true, Some(dir)) = (ok, plan.export.as_ref()) {
-        let bundle = workspace.read_with(cx, |ws, cx| ws.evidence_bundle(cx));
+        let capture = workspace.read_with(cx, |ws, cx| ws.evidence_capture(cx));
+        let bundle = cx
+            .background_executor()
+            .spawn(async move { capture.build() })
+            .await;
         if let Err(error) = evidence::write(dir, &bundle) {
             diagnostic_error!("kubernetes-ui-harness: export failed: {error}");
         }
