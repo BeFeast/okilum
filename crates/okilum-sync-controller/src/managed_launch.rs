@@ -983,25 +983,27 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                             "startup fence readback failed"
                         );
                     }
-                    // Evidence for a later launch whose root has gone missing. A
-                    // folder whose status cannot be read keeps its last evidence.
-                    let previous: Vec<String> = if r.directory.join(INDEXED).try_exists()? {
-                        serde_json::from_slice(&private::read(&r.directory.join(INDEXED))?)?
-                    } else {
-                        Vec::new()
-                    };
-                    let mut indexed = Vec::new();
-                    for folder in api.config()?["folders"]
+                    // Evidence for a later launch whose root has gone missing.
+                    // Monotonic per instance: a paused (for example just parked)
+                    // folder reports no sequence, so readiness only adds IDs;
+                    // creating an instance is what revokes them.
+                    let configured: Vec<String> = api.config()?["folders"]
                         .as_array()
                         .context("folder inventory missing")?
-                    {
-                        let id = folder["id"].as_str().context("folder ID missing")?;
-                        let known = match api.status(id) {
-                            Ok(status) => status["sequence"].as_i64().unwrap_or(0) > 0,
-                            Err(_) => previous.iter().any(|p| p == id),
-                        };
-                        if known {
-                            indexed.push(id.to_owned());
+                        .iter()
+                        .filter_map(|folder| folder["id"].as_str().map(str::to_owned))
+                        .collect();
+                    let mut indexed: Vec<String> = read_ids(r, INDEXED)?
+                        .into_iter()
+                        .filter(|id| configured.contains(id))
+                        .collect();
+                    for id in &configured {
+                        if !indexed.contains(id)
+                            && api
+                                .status(id)
+                                .is_ok_and(|status| status["sequence"].as_i64().unwrap_or(0) > 0)
+                        {
+                            indexed.push(id.clone());
                         }
                     }
                     private::write(&r.directory.join(INDEXED), &serde_json::to_vec(&indexed)?)?;
