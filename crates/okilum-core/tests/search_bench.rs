@@ -133,3 +133,124 @@ fn corpus_scale_latency() {
         assert!(v < fail, "{name} landed in the Fail band: {v:.2}");
     }
 }
+
+/// #2094 speed budget: query latency on a synthetic 10,000-note vault.
+///
+/// Unlike `corpus_scale_latency`, this needs no private vault, so hosted CI can
+/// run it on a Stable candidate. It writes the vault to disk, scans and indexes
+/// it through the product path, then times the Search palette's call: ownership
+/// over every note applied before the top-100 cut (`search_in_paths`), fully
+/// materialized ranked rows with snippets. No UI paint is included.
+///
+/// Report-only: the test fails only when a positive control fails (wrong hit
+/// counts, missing snippets). Budgets are judged by `scripts/perf/speed`, which
+/// reads the JSON written to `OKILUM_SPEED_SEARCH_REPORT`.
+///
+/// ```sh
+/// OKILUM_SPEED_SEARCH_REPORT=search.json cargo test --release -p okilum-core \
+///   --test search_bench synthetic_10k -- --ignored --nocapture --test-threads=1
+/// ```
+#[test]
+#[ignore = "speed budget probe; run by scripts/perf/speed in the stable-speed workflow"]
+fn synthetic_10k_query_latency() {
+    const NOTES: usize = 10_000;
+    const LIMIT: usize = 100;
+    const RUNS: usize = 30;
+    let work = tempfile::tempdir().unwrap();
+    let root = work.path().join("vault");
+    for folder in ["archive", "notes"] {
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    let mut source_bytes = 0usize;
+    for i in 0..NOTES {
+        let folder = if i % 2 == 0 { "archive" } else { "notes" };
+        // One note in a hundred is ~65 KiB, so snippet work sees long bodies.
+        let prose = "Ordinary synthetic prose with unrelated tokens. ".repeat(if i % 100 == 0 {
+            1400
+        } else {
+            35
+        });
+        let text = format!(
+            "# Document {i:05}\n\n{prose}\n\ncommonmarker adjacent phrase שלום\n\n{}\n\nunique{i:05}\n",
+            "More ordinary source text. ".repeat(35)
+        );
+        source_bytes += text.len();
+        std::fs::write(root.join(folder).join(format!("note-{i:05}.md")), text).unwrap();
+    }
+
+    let t = Instant::now();
+    let vault = Vault::scan(&root).unwrap();
+    let scan_ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(
+        vault.notes.len(),
+        NOTES,
+        "the synthetic vault was not fully scanned"
+    );
+    let index = work.path().join("index");
+    let t = Instant::now();
+    // Merges finish before timing, so no background merge competes with queries.
+    Searcher::build(&vault, &index)
+        .unwrap()
+        .finish_build()
+        .unwrap();
+    let build_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let searcher = Searcher::open(&index).unwrap();
+    let open_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let mut owned: Vec<String> = (0..NOTES)
+        .map(|i| {
+            let folder = if i % 2 == 0 { "archive" } else { "notes" };
+            format!("{folder}/note-{i:05}.md")
+        })
+        .collect();
+    owned.sort();
+
+    let mut queries = Vec::new();
+    for (query, expected) in [
+        ("commonmarker", LIMIT),
+        ("adjacent phrase", LIMIT),
+        ("שלום", LIMIT),
+        ("path:archive commonmarker", LIMIT),
+        ("unique09999", 1),
+    ] {
+        let mut times = Vec::with_capacity(RUNS + 1);
+        for _ in 0..=RUNS {
+            let t = Instant::now();
+            let hits = searcher.search_in_paths(query, LIMIT, &owned).unwrap();
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+            // Positive controls: the timed call did the palette's real work.
+            assert_eq!(hits.len(), expected, "{query}: wrong hit count");
+            assert!(
+                hits.iter()
+                    .all(|h| h.display_snippet.is_some() && !h.snippet_html.is_empty()),
+                "{query}: a row has no materialized snippet"
+            );
+            if query.starts_with("path:") {
+                assert!(hits.iter().all(|h| h.path.starts_with("archive/")));
+            }
+            if expected == 1 {
+                assert_eq!(hits[0].path, "notes/note-09999.md");
+            }
+        }
+        let first_ms = times.remove(0);
+        println!(
+            "SPEED_SEARCH query={query:?} first_ms={first_ms:.3} p50_ms={:.3} max_ms={:.3}",
+            percentile(times.clone(), 0.5),
+            percentile(times.clone(), 1.0)
+        );
+        queries.push(serde_json::json!({
+            "query": query, "hits": expected, "first_ms": first_ms, "samples_ms": times,
+        }));
+    }
+    let report = serde_json::json!({
+        "schema": 1,
+        "boundary": "query_to_materialized_rows (search_in_paths, all notes owned, limit 100)",
+        "notes": NOTES, "source_bytes": source_bytes, "limit": LIMIT, "runs": RUNS,
+        "scan_ms": scan_ms, "build_ms": build_ms, "open_ms": open_ms,
+        "queries": queries,
+    });
+    println!("SPEED_SEARCH notes={NOTES} source_bytes={source_bytes} scan_ms={scan_ms:.0} build_ms={build_ms:.0} open_ms={open_ms:.1}");
+    if let Some(path) = std::env::var_os("OKILUM_SPEED_SEARCH_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+}

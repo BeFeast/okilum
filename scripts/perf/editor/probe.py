@@ -41,8 +41,8 @@ def events(path):
     return result
 
 
-def wait_for(predicate, proc, deadline, description):
-    end = min(deadline, time.monotonic() + 12)
+def wait_for(predicate, proc, deadline, description, limit=12):
+    end = min(deadline, time.monotonic() + limit)
     while time.monotonic() < end:
         if proc.poll() is not None:
             raise NoEvidence(f"app exited {proc.returncode} while waiting for {description}")
@@ -83,14 +83,19 @@ def draw_samples(path, start_us, end_us):
     return result
 
 
-def run_once(binary, base, name, live, rep, deadline, *, input_only=False):
+def run_once(binary, base, name, live, rep, deadline, *, input_only=False,
+             source=None, open_only=False, keep_open=False, open_limit=12):
+    """One isolated launch. ``source`` replaces the pinned editor fixture bytes
+    (#2094 speed budget notes); ``open_only`` stops after the first content frame
+    and one visible window; ``keep_open`` keeps ``open_first_ms`` in input-only
+    samples; ``open_limit`` bounds the wait for the first content frame. The defaults are the #1639/#1662 collector unchanged."""
     raw_tail = name == "raw-tail-60k.md"
     home = base / "home"
     state = home / "okilum"
     vault = base / "notes"
     state.mkdir(parents=True)
     vault.mkdir()
-    source = fixtures.notes()[name]
+    source = fixtures.notes()[name] if source is None else source
     (vault / name).write_bytes(source)
     layout = {"note": name, "source": True, "live_preview": live}
     (state / "reader-ui.json").write_text(json.dumps({
@@ -113,7 +118,8 @@ def run_once(binary, base, name, live, rep, deadline, *, input_only=False):
                              str(base / "index"), "--note", name], env=env,
                             stdout=app_log, stderr=subprocess.STDOUT)
     try:
-        opened = wait_for(lambda: frame_event(log, "open"), proc, deadline, "source content frame")
+        opened = wait_for(lambda: frame_event(log, "open"), proc, deadline, "source content frame",
+                          open_limit)
         sample = {"open_first_ms": (opened["monotonic_ns"] - launch_ns) / 1e6}
         if live:
             full = wait_for(lambda: frame_event(log, "live"), proc, deadline, "full LP frame")
@@ -127,6 +133,12 @@ def run_once(binary, base, name, live, rep, deadline, *, input_only=False):
             return found[-1].decode() if len(found) == 1 else None
 
         win = wait_for(find_window, proc, deadline, "one visible app window")
+        if open_only:
+            proof = {"scenario": f"{'live' if live else 'source'}:{name}", "rep": rep,
+                     "opened": opened, "bytes": len(source), "window": win,
+                     "boundary": "launch to first painted Source content frame"}
+            (base / "sample.json").write_text(json.dumps({"sample": sample, "evidence": proof}, indent=2))
+            return sample, proof
         command("xdotool", "windowsize", win, "1366", "768", "windowfocus", win, env=env)
         command("xdotool", "key", "ctrl+End" if raw_tail else "ctrl+Home", env=env)
         # Let the resize and focus frame complete before the sparse edit.
@@ -165,7 +177,8 @@ def run_once(binary, base, name, live, rep, deadline, *, input_only=False):
                      "buffer_verified": True, "binary_kind": "shipped-unpatched",
                      "input": "Enter at EOF inside unclosed fence" if raw_tail else "x at BOF",
                      "sent_ns": sent_ns, "edit_pixel_verified_ns": pixel_verified_ns}
-            sample = {"input_frame_ms": sample["input_frame_ms"]}
+            sample = {key: sample[key] for key in
+                      (("open_first_ms", "input_frame_ms") if keep_open else ("input_frame_ms",))}
             (base / "sample.json").write_text(json.dumps({"sample": sample, "evidence": proof}, indent=2))
             return sample, proof
         command("xdotool", "key", "Left", "ctrl+Home", env=env)

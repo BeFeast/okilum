@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "metrics": {
+    "cold_start_ms": {
+      "product_budget_ms": 300,
+      "hosted_limit_ms": 1100
+    },
+    "typing_ms": {
+      "product_budget_ms": 16,
+      "hosted_limit_ms": 75
+    },
+    "open_10mib_ms": {
+      "product_budget_ms": 1000,
+      "hosted_limit_ms": 1000
+    },
+    "search_10k_ms": {
+      "product_budget_ms": 100,
+      "hosted_limit_ms": 100
+    }
+  },
+  "calibration": {
+    "runner": "GitHub ubuntu-24.04, 4 vCPU, Xvfb",
+    "runs": {
+      "44017249078": {
+        "cpu": "AMD EPYC 9V74",
+        "cold_start_ms": 470.4,
+        "typing_ms": 43.4,
+        "search_10k_ms": 12.5
+      },
+      "44017253775": {
+        "cpu": "AMD EPYC 9V74",
+        "cold_start_ms": 480.5,
+        "typing_ms": 38.7,
+        "search_10k_ms": 12.4
+      },
+      "44017258568": {
+        "cpu": "Intel Xeon 6975P-C",
+        "cold_start_ms": 427.5,
+        "typing_ms": 31.4,
+        "search_10k_ms": 11.4
+      },
+      "44022005601": {
+        "cpu": "Intel Xeon 6975P-C",
+        "cold_start_ms": 426.7,
+        "typing_ms": 30.1,
+        "open_10mib_ms": 56706.6,
+        "search_10k_ms": 11.4
+      },
+      "44022009877": {
+        "cpu": "Intel Xeon 6975P-C",
+        "cold_start_ms": 428.3,
+        "typing_ms": 30.1,
+        "open_10mib_ms": 56984.6,
+        "search_10k_ms": 11.4
+      },
+      "44031515966": {
+        "cpu": "AMD EPYC 7763",
+        "cold_start_ms": 786.6,
+        "typing_ms": 47.9,
+        "open_10mib_ms": 34527.1,
+        "search_10k_ms": 16.0
+      }
+    },
+    "rule": "ceiling = max(slowest calibration median x 1.35, + 25 ms), rounded up, never below the product budget (the #1639 editor-budget margin)",
+    "cold_start_ms": "slowest 786.6 (EPYC 7763) -> 1061.9 -> 1100; hosted CPU classes differ 1.8x on unchanged code (427 Xeon 6975P-C, 470-481 EPYC 9V74, 787 EPYC 7763), so this catches gross regressions only",
+    "typing_ms": "slowest 47.9 -> 72.9 -> 75; hosted input is bimodal (#1662), so the +25 ms term decides",
+    "search_10k_ms": "slowest 16.0 -> 41.0, below the product budget -> 100",
+    "open_10mib_ms": "measured 34.5 s (EPYC 7763) to 57 s (Xeon 6975P-C), 35-57x over budget; the ceiling is NOT ratcheted to a broken value and stays at the product budget, so this metric reports FAIL until the open is fixed"
+  }
+}
