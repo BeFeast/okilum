@@ -2,9 +2,9 @@
 use super::linux_runtime;
 use super::{
     destination, destination_name, draw_sync_fixture, mac_direct_state, perform,
-    perform_with_locations, serve_paired, shared, suspend, sync_refresh_interval, user_error,
-    BackgroundSync, ControllerGuard, Epoch, Operation, Output, SyncSettings, TestSyncState,
-    TestWorker,
+    perform_with_locations, serve_paired, shared, suspend, sync_fixture_init,
+    sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch, Operation, Output,
+    SyncSettings, TestSyncState, TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -89,7 +89,7 @@ fn issue2049_external_service_links_never_open_sync(cx: &mut TestAppContext) {
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn issue2049_previous_connection_message_is_visible_in_settings(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
         reader_features::install(directory.path(), cx);
@@ -136,7 +136,7 @@ fn settings_2487_close_button_commits_invitation_before_closing(cx: &mut TestApp
 fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invitation: bool) {
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
-        crate::test_init(cx);
+        sync_fixture_init(cx);
         reader_settings::install(cx);
         crate::reader_ui_state::install(directory.path(), cx);
         reader_features::install(directory.path(), cx);
@@ -321,7 +321,7 @@ fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Re
 
 #[gpui::test]
 fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let directory = tempfile::tempdir().unwrap();
     let trace = crate::reader_diagnostics::Trace::new(Some(directory.path().to_owned()), None);
     cx.update(|cx| {
@@ -824,7 +824,7 @@ fn controller_opened_after_sync_suspend_is_revoked_before_publication() -> anyho
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn reader_settings_sync_lists_an_ordinary_vault_and_shared_state(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let path = PathBuf::from("/ordinary-vault");
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -966,7 +966,7 @@ fn guided_first_run_welcome_opens_pairing_and_enables_sync(cx: &mut TestAppConte
     let state = directory.path().join("state");
     std::fs::create_dir(&state).unwrap();
     cx.update(|cx| {
-        crate::test_init(cx);
+        sync_fixture_init(cx);
         reader_open::install(cx);
         reader_features::install(&state, cx);
         cx.set_global(reader_history::TestSessionDirectory(state.clone()));
@@ -1033,7 +1033,7 @@ fn guided_first_run_welcome_opens_pairing_and_enables_sync(cx: &mut TestAppConte
 fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_visible(
     cx: &mut TestAppContext,
 ) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let mut offer = snapshot(None);
     offer.status = "Waiting for the new computer".into();
     offer.offer_url = Some(format!("okilum://pair/{}", "fixture".repeat(60)));
@@ -1183,7 +1183,7 @@ fn issue2042_last_peer_removal_refreshes_until_ack_then_stops(cx: &mut TestAppCo
 
 #[gpui::test]
 fn guided_first_run_waiting_then_catalog_arrives_from_timer(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let id = uuid::Uuid::new_v4();
     let waiting = snapshot(Some(direct::Pending {
         request_id: id,
@@ -1643,7 +1643,7 @@ async fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let directory = tempfile::tempdir().unwrap();
     let peer = uuid::Uuid::new_v4();
     let mut ready = snapshot(None);
@@ -1739,7 +1739,7 @@ fn sync_2419_sidebar_is_visible_while_off_and_first_click_enables_only_sync(
 ) {
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
-        crate::test_init(cx);
+        sync_fixture_init(cx);
         reader_features::install(directory.path(), cx);
     });
     let calls = guided_worker(cx, vec![snapshot(None)]);
@@ -1856,7 +1856,7 @@ fn sync_2419_pairing_cadence_is_fast_and_idle_returns_to_normal() {
 fn sync_2419_share_menu_opens_sync_with_module_off(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     cx.update(|cx| {
-        crate::test_init(cx);
+        sync_fixture_init(cx);
         reader_features::install(directory.path(), cx);
     });
     let calls = guided_worker(cx, vec![snapshot(None)]);
@@ -1936,7 +1936,7 @@ fn sync_2419_first_use_keeps_sync_off_when_preferences_cannot_be_saved(cx: &mut 
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let directory = tempfile::tempdir().unwrap();
     let prepared = directory.path().join("prepared");
     std::fs::create_dir(&prepared).unwrap();
@@ -2138,7 +2138,7 @@ fn issue2615_error_details_are_hidden_until_requested(cx: &mut TestAppContext) {
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let directory = tempfile::tempdir().unwrap();
     let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
     let vault = ExistingVault {
@@ -2223,7 +2223,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
 
 #[gpui::test]
 fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let calls = guided_worker(cx, vec![snapshot(None)]);
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {

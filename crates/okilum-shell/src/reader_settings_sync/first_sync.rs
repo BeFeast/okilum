@@ -74,7 +74,7 @@ mod tests {
         let directory = Arc::new(tempfile::tempdir().unwrap());
         let controller = Controller::open(directory.path().join("controller"), vec![]).unwrap();
         cx.update(|cx| {
-            crate::test_init(cx);
+            super::super::sync_fixture_init(cx);
             reader_features::install(directory.path(), cx);
             reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
             cx.set_global(TestWorker(Arc::new(move |_| {
