@@ -360,7 +360,7 @@ pub(crate) fn open(cx: &mut App) -> bool {
         cx.new(|cx| Root::new(workspace, window, cx))
     });
     if opened.is_err() {
-        eprintln!("kubernetes-ui-harness: window could not be opened");
+        diagnostic_error!("kubernetes-ui-harness: window could not be opened");
         std::process::exit(2);
     }
     cx.activate(true);
@@ -403,11 +403,11 @@ async fn drive(workspace: Entity<Workspace>, plan: Plan, cx: &mut AsyncApp) {
     if let (true, Some(dir)) = (ok, plan.export.as_ref()) {
         let bundle = workspace.read_with(cx, |ws, cx| ws.evidence_bundle(cx));
         if let Err(error) = evidence::write(dir, &bundle) {
-            eprintln!("kubernetes-ui-harness: export failed: {error}");
+            diagnostic_error!("kubernetes-ui-harness: export failed: {error}");
         }
     }
     let line = if ok { "READY" } else { "FAILED" };
-    println!("kubernetes-ui-harness: {line}");
+    diagnostic_println!("kubernetes-ui-harness: {line}");
     if let Some(ready) = plan.ready {
         let _ = std::fs::write(ready, line);
     }
