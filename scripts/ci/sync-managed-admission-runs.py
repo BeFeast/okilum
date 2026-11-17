@@ -19,6 +19,11 @@ CRASH_TEST = 'issue2043_crash_recovery_retains_versions_and_rejects_third_versio
 TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
+    'issue2582_missing_root_never_stops_the_runtime_across_launches',
+    'issue2582_unsafe_missing_roots_fail_closed_without_recreating_them',
+    'issue2582_readded_folder_id_never_inherits_index_evidence',
+    'issue2582_missing_root_admission_is_held_through_startup',
+    'issue2582_redirected_missing_root_is_refused',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',

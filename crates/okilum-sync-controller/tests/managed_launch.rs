@@ -1927,6 +1927,409 @@ fn issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary()
     Ok(())
 }
 
+/// #2582 fixture: one managed runtime and a source peer sharing `ids`.
+/// Every folder has transferred `control.md` unless listed in `empty`.
+struct MissingRootFixture {
+    // Field order is drop order: daemons stop before the directory goes.
+    runtime: Runtime<Services>,
+    services: Services,
+    identity: DaemonIdentity,
+    source: Peer,
+    base: PathBuf,
+    _root: tempfile::TempDir,
+}
+impl MissingRootFixture {
+    fn new(ids: &[&str], empty: &[&str]) -> Result<Self> {
+        subreaper()?;
+        let root = tempfile::tempdir()?;
+        let base = root.path().to_owned();
+        let services = Services::default();
+        let rest = TcpListener::bind("127.0.0.1:0")?;
+        let listen = TcpListener::bind("127.0.0.1:0")?;
+        let request = Preparation {
+            executable: binary()?,
+            rest_address: rest.local_addr()?,
+            listen_address: listen.local_addr()?,
+        };
+        drop((rest, listen));
+        let runtime = Runtime::with_services(
+            base.join("runtime"),
+            base.join("units"),
+            services.clone(),
+            launcher(),
+        );
+        let identity = runtime
+            .enable(Selection::Managed(request), &[])?
+            .identity
+            .unwrap();
+        services.remember_pid(identity.config_file.parent().unwrap())?;
+        let source = Peer::new(&base, "source", binary()?)?;
+        let api = identity.connect()?;
+        let address = api.config()?["options"]["listenAddresses"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        source
+            .api
+            .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+        let fixture = Self {
+            runtime,
+            services,
+            identity,
+            source,
+            base,
+            _root: root,
+        };
+        for id in ids {
+            fs::create_dir(fixture.vault(id))?;
+            fs::create_dir(fixture.origin(id))?;
+            FolderController::new(fixture.state(id)).enroll(
+                &fixture.identity,
+                std::slice::from_ref(&fixture.identity.config_file),
+                &approval(&fixture.identity, &fixture.source, id),
+                &fixture.vault(id),
+            )?;
+            add_source(&fixture.source, &fixture.identity, id, &fixture.origin(id))?;
+            if !empty.contains(id) {
+                fs::write(
+                    fixture.origin(id).join("control.md"),
+                    format!("{id} before"),
+                )?;
+            }
+        }
+        for id in ids.iter().filter(|id| !empty.contains(id)) {
+            fixture.transfers(id, "control.md")?;
+        }
+        // A live generation records which folders have index history.
+        fixture.relaunch()?;
+        Ok(fixture)
+    }
+    fn vault(&self, id: &str) -> PathBuf {
+        self.base.join(id)
+    }
+    fn origin(&self, id: &str) -> PathBuf {
+        self.base.join(format!("source-{id}"))
+    }
+    fn away(&self, id: &str) -> PathBuf {
+        self.base.join(format!("unmounted-{id}"))
+    }
+    fn state(&self, id: &str) -> PathBuf {
+        self.base.join(format!("{id}-state"))
+    }
+    fn home(&self) -> &Path {
+        self.identity.config_file.parent().unwrap()
+    }
+    fn launch_dir(&self) -> PathBuf {
+        self.home().parent().unwrap().join("managed-launch")
+    }
+    fn relaunch(&self) -> Result<()> {
+        self.services.crash_runtime()?;
+        self.services.launch()?;
+        self.services.remember_pid(self.home())?;
+        Ok(())
+    }
+    fn transfers(&self, id: &str, name: &str) -> Result<()> {
+        wait("folder transfers", || {
+            self.source.api.scan(id)?;
+            Ok(self.vault(id).join(name).exists())
+        })
+    }
+    fn withheld(&self, id: &str, name: &str) -> Result<()> {
+        for _ in 0..10 {
+            self.source.api.scan(id)?;
+            ensure!(!self.vault(id).join(name).exists(), "{id} published {name}");
+            thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+    /// The autonomous launch command must exit unsuccessfully before any runtime
+    /// starts, so nothing can recreate the missing root.
+    fn launch_refused(&self) -> Result<()> {
+        self.services.launch()?;
+        let mut state = self.services.0.lock().unwrap();
+        let child = state.child.as_mut().context("no launch helper")?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            ensure!(Instant::now() < deadline, "launch was not refused");
+            thread::sleep(Duration::from_millis(50));
+        };
+        ensure!(!status.success(), "launch must fail closed");
+        state.child = None;
+        Ok(())
+    }
+}
+
+/// #2582: an indexed, unpaused folder whose root disappeared (moved, deleted,
+/// unmounted) and that has no unfinished hold never stops the runtime for the
+/// other vaults. Pinned v2.1.6 only reports `ErrPathMissing` for it.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()> {
+    use okilum_sync_controller::network_policy::{self, Policy};
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(indexed.contains(&"kept".into()) && indexed.contains(&"gone".into()));
+    // No-op reconciliation (the Sync refresh) is admitted configuration that
+    // changes no folder instance: it keeps the evidence.
+    for _ in 0..3 {
+        FolderController::new(f.state("gone")).pause(false)?;
+    }
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(
+        indexed.contains(&"gone".into()),
+        "no-op reconciliation keeps index evidence"
+    );
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for launch in 1..=2 {
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert!(live_generation(f.home())?.paused_at_start.is_empty());
+        let api = f.identity.connect()?;
+        assert_eq!(
+            api.folder("gone")?["paused"],
+            false,
+            "a missing root is never paused"
+        );
+        let marker = format!("while-gone-{launch}.md");
+        fs::write(f.origin("kept").join(&marker), b"other vault keeps syncing")?;
+        f.transfers("kept", &marker)?;
+        f.source.api.scan("gone")?;
+        assert!(
+            !f.vault("gone").exists(),
+            "a missing root is never recreated"
+        );
+        assert!(
+            f.origin("gone").join("control.md").exists(),
+            "a missing root never propagates deletions"
+        );
+        if launch == 1 {
+            // Runtime-wide effects need no lease on an absent root.
+            network_policy::reconcile(
+                f.home().parent().unwrap(),
+                &f.identity,
+                Some(Policy::PublicDiscoveryAndRelays),
+            )?;
+            assert!(
+                FolderController::new(f.state("gone")).pause(true).is_err(),
+                "a configuration effect on the missing folder itself is refused"
+            );
+        }
+        f.services.crash_runtime()?;
+    }
+    // The second missing-root launch kept its index evidence.
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(indexed.contains(&"gone".into()));
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    fs::write(f.origin("gone").join("after-return.md"), b"syncs again")?;
+    f.transfers("gone", "after-return.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: index evidence belongs to one folder instance. Removing a
+/// folder and re-adding the same ID revokes it, so a missing root of the new
+/// instance (possibly sequence zero) keeps the launch fail-closed.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_readded_folder_id_never_inherits_index_evidence() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    let evidence = f.launch_dir().join("indexed-folders.json");
+    let indexed = |id: &str| -> Result<bool> {
+        let ids: Vec<String> = serde_json::from_slice(&fs::read(&evidence)?)?;
+        Ok(ids.iter().any(|known| known == id))
+    };
+    assert!(indexed("gone")? && indexed("kept")?);
+    FolderController::new(f.state("gone")).remove()?;
+    assert!(!indexed("gone")?, "removal revokes the evidence");
+    assert!(indexed("kept")?, "other folders keep theirs");
+    // Re-add the same ID at the same (emptied) root before any restart.
+    for entry in fs::read_dir(f.vault("gone"))? {
+        let entry = entry?.path();
+        if entry.is_dir() {
+            fs::remove_dir_all(entry)?;
+        } else {
+            fs::remove_file(entry)?;
+        }
+    }
+    FolderController::new(f.base.join("gone-again-state")).enroll(
+        &f.identity,
+        std::slice::from_ref(&f.identity.config_file),
+        &approval(&f.identity, &f.source, "gone"),
+        &f.vault("gone"),
+    )?;
+    assert!(!indexed("gone")?, "a re-added ID starts without evidence");
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!f.vault("gone").exists(), "missing root recreated");
+    }
+    Ok(())
+}
+
+/// #2582 review: a missing root's admission is a real writer lease held from
+/// the launch decision through child startup. A root that returns in that
+/// window cannot be drained under the runtime; a holder that completes later
+/// and dies is fenced by the next generation.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_admission_is_held_through_startup() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("missing root admitted, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    // The root returns and another process starts draining it.
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    let authority = Authority::for_root(&f.vault("gone"))?;
+    let mut hold = authority.begin_drain("startup-race")?;
+    let token = hold.token().clone();
+    for _ in 0..5 {
+        assert!(
+            !hold.try_hold(&token)?,
+            "the launch lease pins the drain until startup completes"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    fs::write(pause.join("launch-go"), "start")?;
+    f.services.remember_pid(f.home())?;
+    wait("drain completes after startup", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies before any transport pause
+                // The next generation fences the held folder; the sibling keeps going.
+    f.relaunch()?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"gone".into()));
+    fs::write(f.origin("gone").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"sibling runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("gone", "withheld.md")?;
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("gone")).pause(false)?;
+    f.transfers("gone", "withheld.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a missing configured path must name exactly the saved root.
+/// An indexed, Open folder ID redirected to another path is refused, and
+/// nothing is ever published into the redirected destination.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_redirected_missing_root_is_refused() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    let config = f.identity.config_file.clone();
+    let xml = fs::read_to_string(&config)?;
+    let tag = xml.find("id=\"gone\"").context("gone folder in config")?;
+    let start = tag + xml[tag..].find("path=\"").context("folder path")? + "path=\"".len();
+    let end = start + xml[start..].find('"').context("path end")?;
+    let elsewhere = f.base.join("elsewhere");
+    let redirected = format!("{}{}{}", &xml[..start], elsewhere.display(), &xml[end..]);
+    fs::write(&config, redirected)?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!elsewhere.exists(), "redirected root created");
+    }
+    // The redirected destination appears with its own unfinished hold.
+    fs::create_dir(&elsewhere)?;
+    let held = Authority::for_root(&elsewhere)?;
+    let mut hold = held.begin_drain("redirected")?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    drop(hold);
+    fs::write(f.origin("gone").join("redirected.md"), b"must not publish")?;
+    f.launch_refused()?;
+    assert!(
+        fs::read_dir(&elsewhere)?.next().is_none(),
+        "nothing is published into the redirected destination"
+    );
+    Ok(())
+}
+
+/// #2582 review controls: pinned v2.1.6 would recreate the root of a paused
+/// folder or of one without index history, and a returning root must never meet
+/// an unfinished hold inside a running runtime. Those missing roots keep the
+/// launch fail-closed, without creating anything.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_unsafe_missing_roots_fail_closed_without_recreating_them() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "paused", "empty", "held"], &["empty"])?;
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(
+        !indexed.contains(&"empty".into()),
+        "a folder without files has sequence zero"
+    );
+    FolderController::new(f.state("paused")).pause(true)?;
+    for id in ["paused", "empty"] {
+        f.services.crash_runtime()?;
+        fs::rename(f.vault(id), f.away(id))?;
+        for _ in 0..2 {
+            f.launch_refused()?;
+            assert!(!f.vault(id).exists(), "{id}: missing root recreated");
+        }
+        fs::rename(f.away(id), f.vault(id))?;
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+    }
+
+    // A holder dies with its hold unfinished, then the root disappears.
+    let authority = Authority::for_root(&f.vault("held"))?;
+    let mut hold = authority.begin_drain("dead-holder")?;
+    let token = hold.token().clone();
+    wait("local writers drained", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies; the hold stays durable
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("held"), f.away("held"))?;
+    f.launch_refused()?;
+    assert!(!f.vault("held").exists());
+    // The root returns: launch fences the held folder; the other folder runs.
+    fs::rename(f.away("held"), f.vault("held"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"held".into()));
+    fs::write(f.origin("held").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"other folder runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("held", "withheld.md")?;
+    assert!(
+        FolderController::new(f.state("held")).pause(false).is_err(),
+        "resume is refused while the hold is unfinished"
+    );
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("held")).pause(false)?;
+    f.transfers("held", "withheld.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() -> Result<()> {

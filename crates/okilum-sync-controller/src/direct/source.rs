@@ -164,6 +164,8 @@ impl Controller {
             no_overlap(&configs, &path, &source.id)?;
             root.verify(&path)?;
             self.check()?;
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(&daemon, &source.id)?;
             api.add_paused_folder(&source.folder)?;
         }
         let folder = api.folder(&source.id)?;

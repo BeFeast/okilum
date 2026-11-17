@@ -159,3 +159,74 @@ inbound change and publishes it after release. For a lost acknowledgement
 another operation ID, restores the original label, and is idempotent. A fresh
 operation cannot start while an unfinished hold is pending. The second folder on
 the shared runtime is never paused.
+
+### A missing folder root (#2582, Linux)
+
+A configured root that no longer exists (moved, deleted or on an unmounted disk)
+cannot be fenced by pausing. Pinned v2.1.6 recreates the root of every paused
+folder at startup (`lib/model/model.go`, `initFolders`), and also the root of an
+unpaused folder whose local sequence is zero (`newFolder`). It also drops a
+folder's index at startup when the folder is absent from its configuration
+(`lib/syncthing/syncthing.go`), so removing the folder would resurrect peer
+deletions when the root returns.
+
+The launch command therefore leaves a missing root untouched, takes no lease
+for it, and lets the runtime start only when all of these hold:
+
+- the folder is unpaused, so Syncthing only reports `ErrPathMissing`, publishes
+  nothing and propagates no deletion;
+- its local sequence was non-zero in the last live authenticated generation.
+  Each launch records this in the private `indexed-folders.json`, and a folder
+  whose status cannot be read keeps its last evidence. Creating or removing the
+  folder instance (`add_paused_folder`, `remove_folder`, under configuration
+  admission and the launch gate) revokes it, so a removed and re-added ID
+  never inherits the old instance's history. No-op reconciliation such as the
+  2-second Sync refresh keeps it;
+- the configured path names exactly the saved (canonical) root. Any drift is
+  refused, because an absent path cannot be canonicalized;
+- a writer lease is admitted for its bound authority without the root, through
+  `DurableBinding::admit_without_root` (same admission lock, Open state and
+  shared writers lock as an ordinary writer). The launcher holds it from the
+  decision through child startup, exactly like a present root's lease, so no
+  drain can complete in that window. A root that returned during startup must
+  then match the saved root identity, or the folder is paused before the
+  leases are released.
+
+Every other missing root (paused, without index history, with an unfinished or
+unreadable hold, or unbound) keeps the launch fail-closed, as before. The runtime
+does not start, and nothing creates the root. Once the root returns, the normal
+launch fence applies; a held folder starts paused until explicit recovery.
+Runtime-wide effects (network policy, device addresses) hold the same
+root-independent lease for an absent root, after checking that its configured
+path names the saved root. Configuration effects on the missing folder itself
+are refused.
+
+Not covered: the managed-runtime upgrade (`initialize`) still refuses a missing
+root with its explicit message. There is no live-generation evidence at that
+point, and an unbound folder's hold cannot be checked. macOS and Windows are
+unchanged.
+
+Pinned-runtime controls:
+
+- `issue2582_missing_root_never_stops_the_runtime_across_launches`: admitted
+  no-op reconciliation keeps the evidence. Across two launches with one root
+  missing, the other folder transfers, the root is never recreated and no
+  deletion propagates. Then the root returns and syncs.
+- `issue2582_unsafe_missing_roots_fail_closed_without_recreating_them` covers a
+  user-paused folder, a sequence-zero folder, and a dead holder's unfinished
+  hold. For each, the launch is refused twice without creating the root. For
+  the held folder, its returning root starts paused, the competing change is
+  withheld while the other folder transfers, and the change publishes only
+  after explicit recovery and resume.
+- `issue2582_missing_root_admission_is_held_through_startup`: a fixture-only
+  pause holds the launcher between its decision and child start while the root
+  returns and a drain begins. The drain stays pinned until startup completes.
+  After its holder dies, the next generation fences the folder, withholds the
+  competing change while the sibling transfers, and publishes after recovery.
+- `issue2582_redirected_missing_root_is_refused`: an indexed folder ID whose
+  configured path is redirected to another absent path is refused twice
+  without creating it. Once that destination appears with its own hold, the
+  launch is still refused and nothing is published into it.
+- `issue2582_readded_folder_id_never_inherits_index_evidence`: remove a
+  folder, re-add the same ID before any restart, and remove its root. The
+  launch is refused twice and the root is not recreated.

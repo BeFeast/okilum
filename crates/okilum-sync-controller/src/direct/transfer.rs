@@ -293,6 +293,8 @@ impl Controller {
             .any(|f| f["id"] == *vault)
         {
             self.validate_first_sync_completion(receipt, true)?;
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(daemon, vault)?;
             api.add_paused_folder(&json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
                 "type":"sendreceive","paused":true,"devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
                 "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
@@ -509,6 +511,8 @@ impl Controller {
             // Revalidate the empty-folder/no-overlap gate immediately before
             // creation; never use stale empty-destination evidence after a pause.
             validate_destination(&path, vault_id, &daemon::discover(&configs).folders()?)?;
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(&daemon, vault_id)?;
             api.add_paused_folder(&json!({"id":vault_id,"label":owned_label(&transfer)?,"path":path,"type":"receiveonly","paused":true,
                 "devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
                 "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;

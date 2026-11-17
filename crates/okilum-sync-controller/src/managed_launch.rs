@@ -166,6 +166,47 @@ pub struct Reference {
     identity: Identity,
     id: Uuid,
 }
+/// Linux only (#2582): whether a configured folder root is absent (moved,
+/// deleted, unmounted). Launch admits such a folder only in the provably safe
+/// state checked by `fence_folders`. Other platforms keep failing closed.
+fn missing_root(root: &Path) -> Result<bool> {
+    Ok(cfg!(target_os = "linux") && !root.try_exists()?)
+}
+/// An absent root cannot be canonicalized, so the configured path must name
+/// the saved (canonical) root exactly. Any drift keeps the folder refused.
+fn same_missing_root(configured: &Path, saved: &Path) -> bool {
+    configured.components().eq(saved.components())
+}
+/// Folder IDs whose local index sequence was non-zero in the last live,
+/// authenticated generation. Pinned v2.1.6 recreates the root of a folder with
+/// sequence zero (`model.newFolder`), so only these may start while missing.
+const INDEXED: &str = "indexed-folders.json";
+/// The evidence belongs to one folder instance. Only effects that create or
+/// remove the instance (`add_paused_folder`, `remove_folder`) revoke it, under
+/// the configuration admission that already holds the launch gate; only the
+/// next live generation records it again. A removed and re-added ID never
+/// inherits the old instance's history, while no-op reconciliation (the 2 s
+/// Sync refresh) keeps it.
+pub(crate) fn folder_instance_changing(daemon: &DaemonIdentity, folder: &str) -> Result<()> {
+    let home = daemon.config_file.parent().context("daemon home missing")?;
+    if !directory(home)?.join(INDEXED).try_exists()? {
+        return Ok(());
+    }
+    revoke_index_evidence(&existing(home)?, folder)
+}
+fn revoke_index_evidence(r: &Reference, folder: &str) -> Result<()> {
+    let path = r.directory.join(INDEXED);
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    let mut indexed: Vec<String> = serde_json::from_slice(&private::read(&path)?)?;
+    let before = indexed.len();
+    indexed.retain(|id| id != folder);
+    if indexed.len() != before {
+        private::write(&path, &serde_json::to_vec(&indexed)?)?;
+    }
+    Ok(())
+}
 fn directory(home: &Path) -> Result<PathBuf> {
     Ok(home
         .parent()
@@ -458,6 +499,7 @@ pub(crate) fn configuration(
 /// vault refuses the shared effect without stopping the running daemon.
 pub(crate) struct RuntimeConfiguration {
     _operations: Vec<okilum_write_authority::OperationGuard>,
+    _missing: Vec<WriterLease>,
     _gate: Option<Arc<LockFile>>,
 }
 pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeConfiguration> {
@@ -476,12 +518,15 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
             .as_array()
             .context("folder inventory missing")?
         {
-            operations.push(okilum_write_authority::operation(Path::new(
-                folder["path"].as_str().context("folder root missing")?,
-            ))?);
+            let root = Path::new(folder["path"].as_str().context("folder root missing")?);
+            // A missing root has no canonical publisher to admit (#2582).
+            if !missing_root(root)? {
+                operations.push(okilum_write_authority::operation(root)?);
+            }
         }
         return Ok(RuntimeConfiguration {
             _operations: operations,
+            _missing: Vec::new(),
             _gate: None,
         });
     }
@@ -500,16 +545,27 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     let api = daemon.connect()?;
     let config = api.config()?;
     let mut operations = Vec::new();
+    let mut missing = Vec::new();
     for folder in config["folders"]
         .as_array()
         .context("folder inventory missing")?
     {
         let id = folder["id"].as_str().context("folder ID missing")?;
+        let root = Path::new(folder["path"].as_str().context("folder path missing")?);
         let saved = b
             .folders
             .get(id)
             .context("managed folder binding missing")?;
-        let root = Path::new(folder["path"].as_str().context("folder path missing")?);
+        if missing_root(root)? {
+            // Runtime-wide effects restart connections; the folder's own
+            // admission still holds the bound authority without its root.
+            ensure!(
+                same_missing_root(root, &saved.root),
+                "managed folder root changed"
+            );
+            missing.push(saved.authority.admit_without_root()?);
+            continue;
+        }
         ensure!(
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
             "managed folder root changed"
@@ -518,6 +574,7 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     }
     Ok(RuntimeConfiguration {
         _operations: operations,
+        _missing: missing,
         _gate: Some(gate),
     })
 }
@@ -620,12 +677,21 @@ struct FencedFolders {
     leases: Vec<WriterLease>,
     closed: Vec<String>,
     paused_at_start: Vec<String>,
+    /// Admitted while their root was absent; checked again after readiness.
+    returning: Vec<(String, Folder)>,
 }
 fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut xml = Element::parse(read_configuration(&b.home.join("config.xml"))?.as_slice())?;
+    let indexed: Vec<String> =
+        if cfg!(target_os = "linux") && r.directory.join(INDEXED).try_exists()? {
+            serde_json::from_slice(&private::read(&r.directory.join(INDEXED))?)?
+        } else {
+            Vec::new()
+        };
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
     let mut paused_at_start = Vec::new();
+    let mut returning = Vec::new();
     for e in xml
         .children
         .iter_mut()
@@ -633,6 +699,39 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         .filter(|e| e.name == "folder")
     {
         let id = e.attributes.get("id").context("folder ID missing")?.clone();
+        let root = Path::new(e.attributes.get("path").context("folder root missing")?);
+        if missing_root(root)? {
+            // Moved, deleted or unmounted (#2582). Pausing cannot fence it:
+            // pinned v2.1.6 recreates the root of every PAUSED folder at
+            // startup (`model.initFolders`) and of an unpaused folder whose
+            // local sequence is zero (`model.newFolder`). An unpaused, indexed
+            // folder only reports `ErrPathMissing` and publishes nothing, so it
+            // may start untouched, but only for exactly its saved root and
+            // under a writer lease admitted without the root and retained
+            // through startup, like a present root's lease. Every other
+            // missing root keeps the whole launch fail-closed.
+            let paused =
+                e.get_child("paused").and_then(Element::get_text).as_deref() == Some("true");
+            let saved = b
+                .folders
+                .get(&id)
+                .filter(|saved| same_missing_root(root, &saved.root));
+            let lease = match saved {
+                Some(saved) if !paused && indexed.iter().any(|known| known == &id) => {
+                    saved.authority.admit_without_root().ok()
+                }
+                _ => None,
+            };
+            let lease = lease.with_context(|| {
+                format!(
+                    "Sync folder {id} at {} is unavailable; reconnect its disk or remove this folder from Sync",
+                    root.display()
+                )
+            })?;
+            leases.push(lease);
+            returning.push((id, saved.unwrap().clone()));
+            continue;
+        }
         let saved = b
             .folders
             .get(&id)
@@ -641,7 +740,6 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             !r.directory.starts_with(&saved.root) && !b.home.starts_with(&saved.root),
             "managed launch state must be outside the vault"
         );
-        let root = Path::new(e.attributes.get("path").context("folder root missing")?);
         ensure!(
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
             "managed folder replaced"
@@ -675,6 +773,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         leases,
         closed,
         paused_at_start,
+        returning,
     })
 }
 #[cfg(target_os = "linux")]
@@ -701,9 +800,23 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
     );
     let FencedFolders {
         leases,
-        closed,
+        mut closed,
         paused_at_start,
+        returning,
     } = fence_folders(r, &b)?;
+    // Fixture-only interleaving point (#2582 review): the decision is taken and
+    // its leases are held, the child is not started yet.
+    #[cfg(feature = "first-sync-fixture")]
+    if let Some(dir) = std::env::var_os("OKILUM_LAUNCH_FIXTURE_PAUSE") {
+        let dir = PathBuf::from(dir);
+        fs::write(
+            dir.join("launch-admitted"),
+            b"leases held, child not started",
+        )?;
+        while !dir.join("launch-go").exists() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     // Never restore an old paused=false value, even after authority release.
     // Explicit admitted resume/reconciliation owns the later configuration.
     let mut command = Command::new(&b.executable);
@@ -777,12 +890,47 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                             .context("runtime REST generation missing")?
                             .to_owned(),
                     );
+                    // A root admitted while absent may have returned during
+                    // startup. Only exactly the saved root may run; anything
+                    // else is paused now, before the leases are released.
+                    for (id, saved) in &returning {
+                        let root = Path::new(saved.root.as_path());
+                        if root.try_exists()?
+                            && (root.canonicalize()? != saved.root
+                                || identity(root)? != saved.identity)
+                        {
+                            api.patch_folder(id, &serde_json::json!({"paused":true}))?;
+                            closed.push(id.clone());
+                        }
+                    }
                     for id in &closed {
                         ensure!(
                             api.folder(id)?["paused"] == true,
                             "startup fence readback failed"
                         );
                     }
+                    // Evidence for a later launch whose root has gone missing. A
+                    // folder whose status cannot be read keeps its last evidence.
+                    let previous: Vec<String> = if r.directory.join(INDEXED).try_exists()? {
+                        serde_json::from_slice(&private::read(&r.directory.join(INDEXED))?)?
+                    } else {
+                        Vec::new()
+                    };
+                    let mut indexed = Vec::new();
+                    for folder in api.config()?["folders"]
+                        .as_array()
+                        .context("folder inventory missing")?
+                    {
+                        let id = folder["id"].as_str().context("folder ID missing")?;
+                        let known = match api.status(id) {
+                            Ok(status) => status["sequence"].as_i64().unwrap_or(0) > 0,
+                            Err(_) => previous.iter().any(|p| p == id),
+                        };
+                        if known {
+                            indexed.push(id.to_owned());
+                        }
+                    }
+                    private::write(&r.directory.join(INDEXED), &serde_json::to_vec(&indexed)?)?;
                     break;
                 }
                 Err(e) if Instant::now() < deadline => {

@@ -208,6 +208,11 @@ impl FolderController {
                     j.path.read_dir()?.next().is_none(),
                     "destination changed before creation"
                 );
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                crate::managed_launch::folder_instance_changing(
+                    &j.daemon,
+                    &j.descriptor.folder_id,
+                )?;
                 api.add_paused_folder(&json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]}))?;
             }
             let folder = api.folder(&j.descriptor.folder_id)?;
@@ -414,6 +419,11 @@ impl FolderController {
             if j.owns_folder {
                 validate_owned(&j, folder)?;
                 api.patch_folder(&j.descriptor.folder_id, &json!({"paused":true}))?;
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                crate::managed_launch::folder_instance_changing(
+                    &j.daemon,
+                    &j.descriptor.folder_id,
+                )?;
                 api.remove_folder(&j.descriptor.folder_id)?;
             } else if j.changed_pause {
                 ensure!(
