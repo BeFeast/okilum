@@ -73,10 +73,13 @@ fn bundle_with(data: &Data, log: Option<(&Session, Option<&Shown>, u64)>) -> Bun
 }
 
 fn bundle(data: &Data, with_log: bool) -> Bundle {
+    if !with_log {
+        return bundle_with(data, None);
+    }
     let pinned = target(data, true);
     let s = session(pinned.clone(), Phase::Ended, Some(at(T0)));
     let rows = shown(pinned, 4, at(T0));
-    bundle_with(data, with_log.then_some((&s, Some(&rows), 4)))
+    bundle_with(data, Some((&s, Some(&rows), 4)))
 }
 
 fn file<'a>(bundle: &'a Bundle, path: &str) -> &'a [u8] {
