@@ -3141,6 +3141,10 @@ impl Reader {
                     .await;
                 let done = entity
                     .update(cx, |this, cx| {
+                        // Started for another pane: leave this one's landing alone.
+                        if !this.pane.owns(ticket) {
+                            return true;
+                        }
                         if landing != this.pane.navigation.landing_generation {
                             return true;
                         }

@@ -1558,8 +1558,14 @@ impl Reader {
             );
             state
         });
-        let observer = cx.observe_in(&content, window, |this, _, window, cx| {
-            this.publish_pending_document(window, cx)
+        // The pending document belongs to this pane. While another pane is
+        // active its parse progress waits; `resume_active_pane` publishes it
+        // once this pane is active again.
+        let pane = self.pane.id();
+        let observer = cx.observe_in(&content, window, move |this, _, window, cx| {
+            if this.is_active_pane(pane) {
+                this.publish_pending_document(window, cx)
+            }
         });
         // The outline scan is linear but slow on a long note; run it beside
         // the parse rather than on the UI thread at publication (#3073).
@@ -1589,7 +1595,7 @@ impl Reader {
         self.publish_pending_document(window, cx);
     }
 
-    fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(status) = self
             .pane
             .pending_open_document
@@ -1599,6 +1605,7 @@ impl Reader {
             return;
         };
         if status.is_ok() {
+            let pane = self.pane.id();
             let trace = self
                 .loading
                 .as_ref()
@@ -1629,7 +1636,13 @@ impl Reader {
                             None => None,
                         };
                         let _ = this.update_in_own_window(cx, |this, window, cx| {
-                            let Some(pending) = this.pane.pending_open_document.as_mut() else {
+                            // Mark the pane that started the work, even when
+                            // another pane is active now; a closed pane took
+                            // its pending document with it.
+                            let Some(pending) = this
+                                .surface_mut(pane)
+                                .and_then(|surface| surface.pending_open_document.as_mut())
+                            else {
                                 return;
                             };
                             if pending.content != content {
@@ -1652,7 +1665,9 @@ impl Reader {
                                     }),
                                 );
                             }
-                            this.publish_pending_document(window, cx);
+                            if this.is_active_pane(pane) {
+                                this.publish_pending_document(window, cx);
+                            }
                         });
                     }));
                 }

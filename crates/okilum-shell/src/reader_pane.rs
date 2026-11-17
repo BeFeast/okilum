@@ -149,6 +149,10 @@ impl Surface {
         }
     }
 
+    pub(super) fn id(&self) -> PaneId {
+        self.id
+    }
+
     /// For work that must not outlive the document's navigation generation.
     pub(super) fn navigation_ticket(&self) -> Ticket {
         Ticket {
@@ -163,6 +167,12 @@ impl Surface {
             pane: self.id,
             generation: self.navigation.preparation_generation,
         }
+    }
+
+    /// Whether work stamped with `ticket` was started for this surface. Check
+    /// it before touching any state, so work for another pane changes nothing.
+    pub(super) fn owns(&self, ticket: Ticket) -> bool {
+        ticket.pane == self.id
     }
 
     pub(super) fn holds_navigation(&mut self, ticket: Ticket) -> bool {
@@ -187,6 +197,26 @@ impl Surface {
     #[cfg(test)]
     pub(super) fn reopen_as_new_pane(&mut self) {
         self.id = PaneId::next();
+    }
+}
+
+/// Routing of background work to the pane it was started for (#773). One
+/// pane today: the inline `Reader::pane`. The second pane's host extends
+/// these three, and its focus switch calls `resume_active_pane`.
+impl Reader {
+    /// The surface with this id, active or not; `None` once it was closed.
+    pub(super) fn surface_mut(&mut self, pane: PaneId) -> Option<&mut Surface> {
+        (self.pane.id == pane).then_some(&mut self.pane)
+    }
+
+    pub(super) fn is_active_pane(&self, pane: PaneId) -> bool {
+        self.pane.id == pane
+    }
+
+    /// Publishes what the now-active pane prepared while it was inactive.
+    #[expect(dead_code, reason = "#773 stage 4 calls this from its pane switch")]
+    pub(super) fn resume_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.publish_pending_document(window, cx);
     }
 }
 

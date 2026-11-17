@@ -176,3 +176,46 @@ fn pane773_navigation_ticket_needs_pane_and_generation(cx: &mut gpui::TestAppCon
         assert_eq!(r.pane.refused, vec![ticket, current]);
     });
 }
+
+#[gpui::test]
+fn pane773_landing_for_another_pane_leaves_this_one_alone(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let start = ListOffset {
+        item_ix: 0,
+        offset_in_item: px(0.),
+    };
+    let marker = ListOffset {
+        item_ix: 1,
+        offset_in_item: px(0.),
+    };
+    for reopen in [false, true] {
+        reader.update(visual, |r, cx| {
+            r.scroll_to_position(start, cx);
+            // Another landing with the same landing generation, as a second
+            // pane would have after its own navigation.
+            r.pane.navigation.pending_landing = Some(marker);
+            if reopen {
+                r.pane.reopen_as_new_pane();
+            } else {
+                r.pane.navigation.generation = r.pane.navigation.generation.wrapping_add(1);
+            }
+        });
+        visual.executor().advance_clock(Duration::from_millis(120));
+        visual.run_until_parked();
+        reader.update(visual, |r, _| {
+            if reopen {
+                assert_eq!(
+                    r.pane.navigation.pending_landing.map(|p| p.item_ix),
+                    Some(marker.item_ix),
+                    "a landing for another pane leaves this one alone"
+                );
+            } else {
+                assert!(
+                    r.pane.navigation.pending_landing.is_none(),
+                    "positive control: a stale landing in the same pane is cleared"
+                );
+            }
+            r.pane.navigation.pending_landing = None;
+        });
+    }
+}
