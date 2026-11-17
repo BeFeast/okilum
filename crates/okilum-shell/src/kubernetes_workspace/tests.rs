@@ -806,6 +806,7 @@ fn service_path_follows_routing_and_selects_in_the_shared_inspector(cx: &mut Tes
         "k8s-path-endpoint-0-2",
         "k8s-path-endpoint-0-0-api",
         "k8s-path-endpoint-0-0-proxy",
+        "k8s-path-facts",
     ] {
         assert!(h.visual.debug_bounds(id).is_some(), "{id} rendered");
     }
