@@ -1,0 +1,17 @@
+[package]
+name = "okilum-gpui-test-macro"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "The #[gpui::test] wrapper okilum-gpui exports (#1669)."
+
+[lib]
+proc-macro = true
+doctest = false
+
+# Already in Cargo.lock through gpui-pre-macros.
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

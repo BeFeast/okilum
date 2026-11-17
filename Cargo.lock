@@ -6195,6 +6195,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-gpui"
+version = "0.1.0"
+dependencies = [
+ "gpui-pre",
+ "okilum-gpui-test-macro",
+]
+
+[[package]]
+name = "okilum-gpui-test-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "okilum-http"
 version = "0.1.0"
 dependencies = [
@@ -6263,7 +6280,6 @@ dependencies = [
  "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
- "gpui-pre",
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "hayro",
@@ -6279,6 +6295,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "okilum-appimage",
  "okilum-core",
+ "okilum-gpui",
  "okilum-http",
  "okilum-paste",
  "okilum-sync-controller",
