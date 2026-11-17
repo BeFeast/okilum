@@ -47,6 +47,13 @@ gpui-kit-assets = { path = "vendor/gpui-component/crates/assets" }
 [profile.release]
 debug = false
 
+# Dev/test builds keep file:line in panic backtraces but drop variable/type
+# debuginfo: the okilum-shell unittest binary shrinks ~2.5x and links faster
+# (#1851). [profile.test] inherits this. Full debuginfo for a debugger session:
+# CARGO_PROFILE_DEV_DEBUG=true cargo build (or test).
+[profile.dev]
+debug = "line-tables-only"
+
 # gpui is unusably slow in a debug profile; keep it optimised even there.
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
