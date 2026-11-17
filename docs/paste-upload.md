@@ -50,7 +50,12 @@ default.
 
 - Uploads are sent with `private: true` and `expire: never`: links do not
   rot after pomoi's 72-hour default, and the URL alone does not open them.
-- Okilum loads `https://pomoi.co/f/…` images itself, with the saved token, in
+  An answer that is not private or carries an `expires_at` other than null
+  is refused, and the note keeps its local link.
+- Without a token in memory (none saved, or the credential read still
+  running) a hosted image takes the ordinary anonymous image path, like
+  any other URL.
+- With a token in memory, Okilum loads `https://pomoi.co/f/…` images itself, with that token, in
   Reader, Live Preview, link hover and imported bodies
   (`note_upload::image_source`, a GPUI custom image source). Other remote
   images keep their existing path.

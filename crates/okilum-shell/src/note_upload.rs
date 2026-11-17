@@ -183,6 +183,12 @@ fn parse_upload(
     if body.get("private").and_then(serde_json::Value::as_bool) != Some(true) {
         return Err(UploadError::Response);
     }
+    // `expire: never` answers `expires_at: null`. A timestamp (pomoi's
+    // 72-hour default when the header was missing or ignored) or no field
+    // at all would put a link that rots into the note.
+    if body.get("expires_at") != Some(&serde_json::Value::Null) {
+        return Err(UploadError::Response);
+    }
     Ok(Uploaded {
         url: url.to_owned(),
     })
@@ -417,8 +423,11 @@ pub(crate) async fn token(cx: &gpui::AsyncApp) -> Option<Arc<str>> {
     }
 }
 
-/// A remote Markdown image: the provider's files load with the token, any
-/// other URL through GPUI's ordinary resource path.
+/// A remote Markdown image. A provider file loads with the token only once
+/// a token is in memory; until then (no token saved, or the credential read
+/// still running) it takes GPUI's ordinary anonymous resource path, exactly
+/// as any other URL, and never blanks. Saving a token refreshes windows, so
+/// a private image then loads with it.
 pub(crate) fn image_source(url: &str) -> ImageSource {
     if !provider().hosts(url) {
         return ImageSource::from(url);
@@ -426,13 +435,19 @@ pub(crate) fn image_source(url: &str) -> ImageSource {
     let url: Arc<str> = url.into();
     ImageSource::Custom(Arc::new(move |window: &mut Window, cx: &mut App| {
         ensure_token(cx);
-        match token_state(cx) {
-            TokenState::Known(_) => {}
-            _ => return None,
+        if authenticated(&token_state(cx)) {
+            let key = (url.clone(), generation(cx));
+            window.use_asset::<HostedImage>(&key, cx)
+        } else {
+            let resource = gpui::Resource::Uri(url.to_string().into());
+            window.use_asset::<gpui::ImgResourceLoader>(&resource, cx)
         }
-        let key = (url.clone(), generation(cx));
-        window.use_asset::<HostedImage>(&key, cx)
     }))
+}
+
+/// Whether hosted images load with the token: only with one in memory.
+fn authenticated(state: &TokenState) -> bool {
+    matches!(state, TokenState::Known(Some(_)))
 }
 
 struct HostedImage;
@@ -514,6 +529,24 @@ mod tests {
             parse_upload(&Pomoi, &serde_json::json!({})),
             Err(UploadError::Response)
         );
+        // Review of #3114: private but expiring (or silent about it) is refused.
+        let expiring = serde_json::json!({
+            "url": "https://pomoi.co/f/1/a.png", "private": true,
+            "expires_at": "2026-11-20T22:00:00Z"
+        });
+        assert_eq!(parse_upload(&Pomoi, &expiring), Err(UploadError::Response));
+        let silent = serde_json::json!({"url": "https://pomoi.co/f/1/a.png", "private": true});
+        assert_eq!(parse_upload(&Pomoi, &silent), Err(UploadError::Response));
+    }
+
+    /// Review of #3114: without a token in memory a hosted image keeps the
+    /// anonymous path, also while the credential read runs.
+    #[test]
+    fn hosted_images_use_the_token_only_when_one_is_known() {
+        assert!(!authenticated(&TokenState::Unread));
+        assert!(!authenticated(&TokenState::Reading));
+        assert!(!authenticated(&TokenState::Known(None)));
+        assert!(authenticated(&TokenState::Known(Some("t".into()))));
     }
 
     #[test]
