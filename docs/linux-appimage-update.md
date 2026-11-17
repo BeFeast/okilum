@@ -98,9 +98,13 @@ process in it. Arming therefore moves the helper into its own transient scope
 `okilum-update-<pid>.scope` through the user manager (#3077); the relaunched
 build runs there. Until the move is done the helper waits at a gate (a pipe on
 fd 8) and runs shell builtins only, so no child of it is left in the service.
-The outcome is recorded in `apply.log`. If the move fails the helper stays
-where it is, as before, and a service launched without `ExitType=cgroup` can
-still lose it.
+The outcome is recorded in `apply.log`. If the move fails, Okilum asks the
+user manager whether the unit keeps its other processes after the app exits
+(`ExitType=cgroup`, or `KillMode=process`/`none`). If it does, the helper
+stays there. Otherwise the helper is stopped at the gate, its unapplied backup
+link is removed, and Restart now reports the error while Okilum stays open.
+The helper's lock and gate are copied above stderr before spawn, so a source on
+fd 0–2 cannot be replaced by the child's stdio.
 A later session exit never rolls back a committed update. The recovery directory
 is printed in the diagnostic log; it contains `previous.AppImage` and `apply.log`.
 A successful replacement retains the previous file for manual recovery. Restore
