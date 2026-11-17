@@ -23,6 +23,12 @@ dispatch `fast.yml` on main with `certification_source` set to the candidate SHA
 and wait for that source's full-suite result. Certification is on demand only:
 nothing certifies main automatically any more, and Beta never reads it.
 
+Speed budget (#2094): dispatch `.github/workflows/stable-speed.yml` on the GitHub
+mirror with `source` set to the candidate SHA and include its job-summary table
+in the Stable report. It is **report-only**: its result does not gate promotion
+(the `enforce` input stays off until Oleg decides otherwise). What it measures:
+`scripts/perf/speed/README.md`.
+
 Since #2589 both certification jobs wait on a `bridge` runner while GitHub's
 dedicated `ubuntu-24.04` runners execute that source's own commands: `check`
 runs the CI tooling, releases and updater Python suites and

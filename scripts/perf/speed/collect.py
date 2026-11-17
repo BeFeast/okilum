@@ -39,7 +39,10 @@ import notes  # noqa: E402
 import probe  # noqa: E402
 
 ROUNDS = 6  # round 0 is the warmup
-DEADLINE_SECONDS = 540
+DEADLINE_SECONDS = 900
+# A slow 10 MiB open is a measured budget failure, not missing evidence: wait
+# up to a minute for its first frame (the editor probe's default is 12 s).
+LARGE_OPEN_LIMIT_SECONDS = 60
 SEARCH_RUNS = 30
 SEARCH_NOTES = 10_000
 APP_METRICS = ("cold_start_ms", "typing_ms", "open_10mib_ms")
@@ -87,7 +90,8 @@ def app_metrics(binary, out, files, deadline, run_once=probe.run_once):
             try:
                 big, proof = run_once(binary, out / "ten-mib" / f"round{rnd}", notes.LARGE, False, rnd,
                                       deadline, input_only=True, open_only=True,
-                                      source=files[notes.LARGE])
+                                      source=files[notes.LARGE],
+                                      open_limit=LARGE_OPEN_LIMIT_SECONDS)
                 evidence.append(proof)
             except (probe.NoEvidence, OSError, ValueError, KeyError) as error:
                 errors["large"] = f"round {rnd}: {error}"

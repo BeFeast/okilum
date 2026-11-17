@@ -41,8 +41,8 @@ def events(path):
     return result
 
 
-def wait_for(predicate, proc, deadline, description):
-    end = min(deadline, time.monotonic() + 12)
+def wait_for(predicate, proc, deadline, description, limit=12):
+    end = min(deadline, time.monotonic() + limit)
     while time.monotonic() < end:
         if proc.poll() is not None:
             raise NoEvidence(f"app exited {proc.returncode} while waiting for {description}")
@@ -84,11 +84,11 @@ def draw_samples(path, start_us, end_us):
 
 
 def run_once(binary, base, name, live, rep, deadline, *, input_only=False,
-             source=None, open_only=False, keep_open=False):
+             source=None, open_only=False, keep_open=False, open_limit=12):
     """One isolated launch. ``source`` replaces the pinned editor fixture bytes
     (#2094 speed budget notes); ``open_only`` stops after the first content frame
     and one visible window; ``keep_open`` keeps ``open_first_ms`` in input-only
-    samples. The defaults are the #1639/#1662 collector unchanged."""
+    samples; ``open_limit`` bounds the wait for the first content frame. The defaults are the #1639/#1662 collector unchanged."""
     raw_tail = name == "raw-tail-60k.md"
     home = base / "home"
     state = home / "okilum"
@@ -118,7 +118,8 @@ def run_once(binary, base, name, live, rep, deadline, *, input_only=False,
                              str(base / "index"), "--note", name], env=env,
                             stdout=app_log, stderr=subprocess.STDOUT)
     try:
-        opened = wait_for(lambda: frame_event(log, "open"), proc, deadline, "source content frame")
+        opened = wait_for(lambda: frame_event(log, "open"), proc, deadline, "source content frame",
+                          open_limit)
         sample = {"open_first_ms": (opened["monotonic_ns"] - launch_ns) / 1e6}
         if live:
             full = wait_for(lambda: frame_event(log, "live"), proc, deadline, "full LP frame")
