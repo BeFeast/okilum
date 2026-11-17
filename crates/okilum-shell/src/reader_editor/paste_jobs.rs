@@ -458,7 +458,11 @@ impl Reader {
                     let target = self.follow_up_target(input, is_slot, true, cx);
                     download_then_insert(
                         target,
-                        Anchor::at(&original, at),
+                        if is_slot {
+                            Anchor::at_block(&original, at)
+                        } else {
+                            Anchor::at(&original, at)
+                        },
                         Pending::Prepared(text),
                         images,
                         Downloads {
