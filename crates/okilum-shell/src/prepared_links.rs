@@ -530,7 +530,8 @@ impl Reader {
             if let Some(hold) = hold {
                 let _ = hold.recv().await;
             }
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, move |this, window, cx| {
+                this.run_for_pane(ticket.pane(), window, cx, move |this, window, cx| {
                 if !this.pane.holds_preparation(ticket) {
                     return;
                 }
@@ -581,6 +582,7 @@ impl Reader {
                     );
                     cx.notify();
                 }
+                });
             });
         })
         .detach();
@@ -689,34 +691,36 @@ impl Reader {
                     (states, identities)
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.pane.link_preparation_generation != generation
-                    || !this.pane.holds_navigation(ticket)
-                    || source_stamp.is_some_and(|stamp| {
-                        this.editing
-                            .as_ref()
-                            .is_none_or(|editing| editing.input().read(cx).source_stamp() != stamp)
-                    })
-                {
-                    return;
-                }
-                let retired_states =
-                    std::mem::replace(&mut this.pane.link_presentations, states.clone());
-                let retired_identities =
-                    std::mem::replace(&mut this.pane.link_identities, identities);
-                this.pane.prepared_links = states;
-                cx.background_executor()
-                    .spawn(async move {
-                        drop((retired_states, retired_identities));
-                    })
-                    .detach();
-                // TextView caches its entity render independently of Reader.
-                // Refresh paint without replacing the parse, scroll or selection.
-                this.pane.content.update(cx, |_, cx| cx.notify());
-                if let Some(overlay) = &this.pane.table_overlay {
-                    overlay.update(cx, |_, cx| cx.notify());
-                }
-                cx.notify();
+            let _ = this.update(cx, move |this, cx| {
+                this.run_for_pane_without_window(ticket.pane(), cx, move |this, cx| {
+                    if this.pane.link_preparation_generation != generation
+                        || !this.pane.holds_navigation(ticket)
+                        || source_stamp.is_some_and(|stamp| {
+                            this.editing.as_ref().is_none_or(|editing| {
+                                editing.input().read(cx).source_stamp() != stamp
+                            })
+                        })
+                    {
+                        return;
+                    }
+                    let retired_states =
+                        std::mem::replace(&mut this.pane.link_presentations, states.clone());
+                    let retired_identities =
+                        std::mem::replace(&mut this.pane.link_identities, identities);
+                    this.pane.prepared_links = states;
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop((retired_states, retired_identities));
+                        })
+                        .detach();
+                    // TextView caches its entity render independently of Reader.
+                    // Refresh paint without replacing the parse, scroll or selection.
+                    this.pane.content.update(cx, |_, cx| cx.notify());
+                    if let Some(overlay) = &this.pane.table_overlay {
+                        overlay.update(cx, |_, cx| cx.notify());
+                    }
+                    cx.notify();
+                });
             });
         })
         .detach();

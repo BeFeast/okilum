@@ -2076,57 +2076,59 @@ impl Reader {
                     }
                 })
                 .await;
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.vault_root != root
-                    || this.pane.current_rel != rel
-                    || !this.pane.holds_navigation(navigation)
-                    || !this.pane.holds_preparation(preparation)
-                    || this.pane.navigation.reconciliation_generation != reconciliation
-                {
-                    return;
-                }
-                if this.deleted_current().is_some() {
-                    this.reconcile_deleted_source_in_background(window, cx);
-                    return;
-                }
-                if this.track_deleted_note(&Default::default(), cx) {
-                    return;
-                }
-                let result = match result {
-                    Ok(None) => {
-                        this.refresh_link_preparation(cx);
+            let _ = this.update_in_own_window(cx, move |this, window, cx| {
+                this.run_for_pane(navigation.pane(), window, cx, move |this, window, cx| {
+                    if this.vault_root != root
+                        || this.pane.current_rel != rel
+                        || !this.pane.holds_navigation(navigation)
+                        || !this.pane.holds_preparation(preparation)
+                        || this.pane.navigation.reconciliation_generation != reconciliation
+                    {
                         return;
                     }
-                    Ok(Some(document)) => Ok(document),
-                    Err(error) => Err(error),
-                };
-                // Sample the position after preparation, so intervening scrolling
-                // cannot be overwritten with the earlier reconciliation position.
-                // A consumed session snapshot may still await its first layout
-                // landing. Carry that intent through this same-document derived
-                // replacement instead of substituting the not-yet-landed top.
-                let position = this.retained_document_position(cx);
-                let request = prepared_links::DocumentRequest {
-                    rel,
-                    jump: None,
-                    heading: None,
-                    history_index: Some(this.pane.navigation.history_ix),
-                    restore_position: Some(position),
-                };
-                // A watcher refresh updates the retained document, not the
-                // user's project surface. Explicit note navigation still leaves Board.
-                let board_visible = this.project_navigation.board_visible;
-                this.accept_prepared_document(request, result, window, cx);
-                this.project_navigation.board_visible = board_visible;
-                if board_visible {
-                    // Its TextView is unmounted behind Board. Keep the reading
-                    // place for an explicit return without polling an invisible layout.
-                    this.pane.navigation.places.insert(
-                        (this.vault_root.clone(), this.pane.current_rel.clone()),
-                        position,
-                    );
-                    this.cancel_pending_landing();
-                }
+                    if this.deleted_current().is_some() {
+                        this.reconcile_deleted_source_in_background(window, cx);
+                        return;
+                    }
+                    if this.track_deleted_note(&Default::default(), cx) {
+                        return;
+                    }
+                    let result = match result {
+                        Ok(None) => {
+                            this.refresh_link_preparation(cx);
+                            return;
+                        }
+                        Ok(Some(document)) => Ok(document),
+                        Err(error) => Err(error),
+                    };
+                    // Sample the position after preparation, so intervening scrolling
+                    // cannot be overwritten with the earlier reconciliation position.
+                    // A consumed session snapshot may still await its first layout
+                    // landing. Carry that intent through this same-document derived
+                    // replacement instead of substituting the not-yet-landed top.
+                    let position = this.retained_document_position(cx);
+                    let request = prepared_links::DocumentRequest {
+                        rel,
+                        jump: None,
+                        heading: None,
+                        history_index: Some(this.pane.navigation.history_ix),
+                        restore_position: Some(position),
+                    };
+                    // A watcher refresh updates the retained document, not the
+                    // user's project surface. Explicit note navigation still leaves Board.
+                    let board_visible = this.project_navigation.board_visible;
+                    this.accept_prepared_document(request, result, window, cx);
+                    this.project_navigation.board_visible = board_visible;
+                    if board_visible {
+                        // Its TextView is unmounted behind Board. Keep the reading
+                        // place for an explicit return without polling an invisible layout.
+                        this.pane.navigation.places.insert(
+                            (this.vault_root.clone(), this.pane.current_rel.clone()),
+                            position,
+                        );
+                        this.cancel_pending_landing();
+                    }
+                });
             });
         })
         .detach();
