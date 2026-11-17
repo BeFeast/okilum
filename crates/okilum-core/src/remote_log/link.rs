@@ -1,9 +1,13 @@
-//! Payload seam for the existing external-link router. No vault resolution,
-//! identity writes or credentials occur here; that router retains ownership.
-use super::discover::Discover;
+//! Payload of `okilum://logs` links (docs/deep-links.md). The router resolves
+//! the vault among roots the user already opened by the vault's portable link
+//! identity (#1414, `crate::vault_link_identity`); nothing here guesses a
+//! vault by name, writes an identity or touches credentials.
+use super::discover::{Discover, TimeRange};
+use super::Source;
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 pub const MAX_LINK_BYTES: usize = 131_072;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,6 +30,51 @@ impl RemoteLink {
             "Remote log links must carry a fixed absolute range with live paused"
         );
         Ok(())
+    }
+    /// The link for what a Kibana window shows now: the applied query and
+    /// filters over the loaded absolute range, with live paused. `vault_id`
+    /// is the vault's portable link identity (`vault_link_identity`).
+    pub fn for_view(vault_id: uuid::Uuid, source: &Source, range: &TimeRange) -> Result<Self> {
+        let mut state = source.discover.clone();
+        state.time = range.clone();
+        state.refresh_paused = true;
+        let link = Self {
+            version: 1,
+            vault_id,
+            source_id: source.id,
+            state,
+        };
+        link.validate()?;
+        Ok(link)
+    }
+    /// The one known root carrying this link's vault identity and holding its
+    /// saved source. `known` are vault roots this computer already opened,
+    /// canonical as stored. Read-only: a namesake without the identity never
+    /// wins, and several roots with the same identity select nothing.
+    pub fn resolve_vault(&self, known: &[PathBuf], state: &Path) -> Result<PathBuf> {
+        let wanted = self.vault_id.to_string();
+        let mut roots: Vec<&PathBuf> = Vec::new();
+        for root in known {
+            let here = crate::vault_link_identity::read(root).ok().flatten();
+            if here.as_deref() == Some(wanted.as_str()) && !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        let root = match roots.as_slice() {
+            [root] => *root,
+            [] => anyhow::bail!(
+                "This log link belongs to a vault that is not open in Okilum on this computer"
+            ),
+            _ => anyhow::bail!(
+                "Several vaults on this computer have this log link\u{2019}s identity, so no vault was opened"
+            ),
+        };
+        let sources = super::load_sources(state, root)?;
+        ensure!(
+            sources.iter().any(|source| source.id == self.source_id),
+            "This Kibana source is not saved in the linked vault; import it explicitly"
+        );
+        Ok(root.clone())
     }
     pub fn encode(&self) -> Result<String> {
         self.validate()?;
@@ -151,5 +200,84 @@ mod tests {
         let mut relative = link;
         relative.state.time.to = "now".into();
         assert!(relative.encode().is_err());
+    }
+
+    fn source() -> Source {
+        let mut source = Source::direct("Synthetic", "https://logs.example", "events", "").unwrap();
+        source.discover = super::super::tests::state();
+        source
+    }
+
+    #[test]
+    fn view_link_freezes_the_loaded_range_and_pauses_live() {
+        let vault = uuid::Uuid::new_v4();
+        let mut source = source();
+        source.discover.time = TimeRange {
+            from: "now-15m".into(),
+            to: "now".into(),
+        };
+        source.discover.refresh_paused = false;
+        let loaded = TimeRange {
+            from: "2026-11-13T10:00:00Z".into(),
+            to: "2026-11-13T10:15:00Z".into(),
+        };
+        let link = RemoteLink::for_view(vault, &source, &loaded).unwrap();
+        assert_eq!(link.state.time, loaded);
+        assert!(link.state.refresh_paused);
+        assert_eq!(link.state.filters, source.discover.filters);
+        assert_eq!(link.source_id, source.id);
+        assert_eq!(link.vault_id, vault);
+        let decoded = RemoteLink::parse(&link.encode().unwrap()).unwrap().unwrap();
+        assert_eq!(decoded, link);
+        // Control: a relative range is refused, never silently linked.
+        assert!(RemoteLink::for_view(vault, &source, &source.discover.time).is_err());
+    }
+
+    #[test]
+    fn link_resolves_only_the_vault_that_saved_its_source() {
+        use crate::vault_link_identity::{for_copy, read, FILE};
+        let state = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let work = roots.path().join("work");
+        // Same folder name elsewhere: a name match must never win.
+        let other = roots.path().join("elsewhere").join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let source = source();
+        super::super::save_source(state.path(), &work, &source).unwrap();
+        let range = TimeRange {
+            from: "2026-11-13T10:00:00Z".into(),
+            to: "2026-11-13T10:15:00Z".into(),
+        };
+        let id = uuid::Uuid::parse_str(&for_copy(&work).unwrap()).unwrap();
+        let link = RemoteLink::for_view(id, &source, &range).unwrap();
+        let known = vec![other.clone(), work.clone()];
+        assert_eq!(link.resolve_vault(&known, state.path()).unwrap(), work);
+        // Resolution is read-only: the namesake gains no identity.
+        assert_eq!(read(&other).unwrap(), None);
+        assert!(!other.join(".okilum").exists());
+        let missing = link
+            .resolve_vault(std::slice::from_ref(&other), state.path())
+            .unwrap_err();
+        assert!(
+            missing.to_string().contains("not open in Okilum"),
+            "{missing}"
+        );
+        // The vault is known but the source was never saved there.
+        let mut foreign = link.clone();
+        foreign.source_id = uuid::Uuid::new_v4();
+        let unsaved = foreign.resolve_vault(&known, state.path()).unwrap_err();
+        assert!(unsaved.to_string().contains("not saved"), "{unsaved}");
+        // A namesake with its own, different identity still never wins.
+        let other_id = for_copy(&other).unwrap();
+        assert_ne!(other_id, id.to_string());
+        assert_eq!(link.resolve_vault(&known, state.path()).unwrap(), work);
+        // Two roots with the same identity (a copied vault): select nothing.
+        std::fs::write(other.join(FILE), std::fs::read(work.join(FILE)).unwrap()).unwrap();
+        let ambiguous = link.resolve_vault(&known, state.path()).unwrap_err();
+        assert!(
+            ambiguous.to_string().contains("Several vaults"),
+            "{ambiguous}"
+        );
     }
 }

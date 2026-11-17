@@ -20,11 +20,31 @@ pub(crate) fn show(vault: PathBuf, cx: &mut App) {
     show_inner(vault, None, cx);
 }
 
-/// The existing router must first resolve `link.vault_id` to this exact root,
-/// without guessing a name or writing/enrolling an identity (#1414 owner).
-#[allow(dead_code)]
+/// `reader_open` resolves `link.vault_id` to this exact root among vaults the
+/// user opened, without guessing a name or writing an identity.
 pub(crate) fn show_link(vault: PathBuf, link: remote_log::link::RemoteLink, cx: &mut App) {
     show_inner(vault, Some(link), cx);
+}
+
+/// The Kibana window of `vault`, if open: its pending link and status text.
+#[cfg(test)]
+pub(crate) fn test_window_state(
+    vault: &Path,
+    cx: &mut App,
+) -> Option<(Option<remote_log::link::RemoteLink>, String)> {
+    let handle = cx
+        .try_global::<Windows>()
+        .and_then(|w| w.0.get(&remote_log::vault_scope(vault)))
+        .copied()?;
+    handle
+        .update(cx, |root, _, cx| {
+            root.view().clone().downcast::<Panel>().ok().map(|panel| {
+                let panel = panel.read(cx);
+                (panel.pending_link.clone(), panel.message.clone())
+            })
+        })
+        .ok()
+        .flatten()
 }
 
 fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &mut App) {
@@ -91,6 +111,9 @@ struct Panel {
     guided: Guided,
     _chips: Option<Subscription>,
     pending_link: Option<remote_log::link::RemoteLink>,
+    /// A link was just applied: the Stop acknowledgement of that change keeps
+    /// the link notice instead of claiming retained rows (#1441).
+    link_notice: bool,
     generation: u64,
     following: bool,
     credential_pending: bool,
@@ -176,7 +199,31 @@ impl Panel {
             });
         });
         let guided = Guided::new(window, cx);
-        Self{credentials:Default::default(),_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{credentials:Default::default(),_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,link_notice:false,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+    }
+    /// Copy an `okilum://logs` link that reopens this view: applied query and
+    /// filters over the loaded absolute range. No endpoint, key or events.
+    /// Like every explicit Copy (#1414), this may create the vault's portable
+    /// link identity once; a refused link is checked before that write.
+    fn copy_link(&mut self, cx: &mut Context<Self>) {
+        let (Some(source), Some(range)) = (&self.applied, &self.range) else {
+            return;
+        };
+        let link = remote_log::link::RemoteLink::for_view(uuid::Uuid::nil(), source, range)
+            .and_then(|link| link.encode())
+            .and_then(|_| okilum_core::vault_link_identity::for_copy(&self.vault))
+            .and_then(|id| Ok(uuid::Uuid::parse_str(&id)?))
+            .and_then(|id| remote_log::link::RemoteLink::for_view(id, source, range))
+            .and_then(|link| link.encode());
+        match link {
+            Ok(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.error = None;
+                self.message = "Okilum link copied: same query and fixed time range, live paused. Opening it re-queries the server.".into();
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        cx.notify();
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
         self.stop();
@@ -632,6 +679,7 @@ impl Panel {
         if update.generation != self.generation || self.credential_pending {
             return;
         }
+        let link_notice = std::mem::take(&mut self.link_notice);
         self.following = update.following;
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| {
@@ -800,7 +848,9 @@ impl Panel {
                 if warning.is_some() {
                     self.error = warning;
                 }
-                self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
+                if !link_notice {
+                    self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
+                }
             }
         }
         self.configure_server_counts(cx);
@@ -1071,6 +1121,16 @@ impl Panel {
                         })),
                 )
                 .child(
+                    Button::new("remote-copy-link")
+                        .debug_selector(|| "remote-copy-link".into())
+                        .small()
+                        .ghost()
+                        .label("Copy Okilum link")
+                        .tooltip("Link to this query and loaded time range, live paused")
+                        .disabled(self.applied.is_none() || self.range.is_none() || self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.copy_link(cx))),
+                )
+                .child(
                     Button::new("remote-connection-details")
                         .debug_selector(|| "remote-connection-details".into())
                         .small()
@@ -1248,6 +1308,7 @@ impl Render for Panel {
                         }
                         self.choose(source, window, cx);
                         self.message="Linked query and fixed time range loaded. Apply re-queries the server; this is not an immutable snapshot.".into();
+                        self.link_notice = true;
                     }
                     Err(error) => self.error = Some(error.to_string()),
                 }
@@ -1528,3 +1589,7 @@ mod session_key_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/polish_tests.rs"]
 mod polish_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/link_tests.rs"]
+mod link_tests;
