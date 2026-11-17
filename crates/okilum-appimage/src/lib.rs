@@ -2234,6 +2234,7 @@ trace_stage shell-start
     /// - move fails (busctl refuses), ExitType=main: arming fails while the
     ///   app is open, the helper is stopped and the original stays;
     /// - move fails, ExitType=cgroup: the unit keeps the helper; it commits.
+    ///
     /// CI sets OKILUM_REQUIRE_SYSTEMD_USER so a missing manager fails, not skips.
     #[test]
     #[allow(clippy::zombie_processes)] // The helper must outlive the app side.
