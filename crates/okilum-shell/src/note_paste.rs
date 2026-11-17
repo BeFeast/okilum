@@ -7,6 +7,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod anchor;
 pub mod attachments;
+pub mod block_drop;
 pub mod context;
 pub mod download;
 pub mod fetch;

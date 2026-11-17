@@ -11,6 +11,7 @@
 //! again; never into an editor that was closed.
 use super::*;
 use crate::note_paste::anchor::{Anchor, Region};
+use crate::note_paste::block_drop::BlockSlot;
 use crate::note_paste::download::{self, DownloadError};
 use crate::note_paste::files::{self, FileAction, FilePlan};
 use crate::note_paste::router::{self, FollowUp, RemoteImage, RichJob, RouteContext, Routed};
@@ -21,6 +22,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// A background paste job shows its progress toast after this long.
 const PROGRESS_AFTER: Duration = Duration::from_millis(300);
+
+/// Where a drop goes in the note's source.
+#[derive(Clone, Copy, Debug)]
+enum DropAt {
+    /// At this offset, as a paste there (a drop onto the editor).
+    Inline(usize),
+    /// Before the block starting at this offset, as its own paragraph (a
+    /// drop onto the rendered note, #1615).
+    Block(usize),
+}
 
 /// The note a background paste result belongs to (#1611).
 #[derive(Clone)]
@@ -112,18 +123,128 @@ impl Reader {
         if paths.is_empty() {
             return;
         }
+        let position = window.mouse_position();
+        let offset = {
+            let state = input.read(cx);
+            state
+                .source_offset_for_point(position)
+                .unwrap_or_else(|| state.cursor())
+        };
+        self.route_drop(
+            input,
+            &DroppedFiles(paths),
+            DropAt::Inline(offset),
+            window,
+            cx,
+        );
+    }
+
+    /// #1615: files dropped onto the rendered note. The note switches to
+    /// Edit and they go in at the start of the block under the pointer, as
+    /// their own paragraph (the end of the note below the last block). A
+    /// note that cannot be edited explains why, as Edit does.
+    pub(crate) fn drop_on_reader(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = paths.0.to_vec();
+        if paths.is_empty() || self.editing.is_some() {
+            return;
+        }
+        let block = self.reader_block_at(window.mouse_position(), cx);
+        let canonical = self.note_canonical_source.clone();
+        let rendered = self.note_source.clone();
+        self.toggle_source(window, cx);
+        let Some(input) = self.source_input() else {
+            return;
+        };
+        diagnostic_error!("Drop: onto the Reader, block={block:?}");
+        // Mapping the block to its source line parses the note, so it runs
+        // off the UI thread (as place_editor_at_reader does).
+        cx.spawn_in(window, async move |this, cx| {
+            let line =
+                cx.background_executor()
+                    .spawn(async move {
+                        okilum_core::deep_link::block_line(&canonical?, &rendered, block?)
+                    })
+                    .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .editing
+                    .as_ref()
+                    .is_none_or(|editing| editing.input != input)
+                {
+                    diagnostic_error!("Drop: not inserted (the editor closed first)");
+                    return;
+                }
+                let offset = {
+                    use gpui_component::input::RopeExt as _;
+                    let state = input.read(cx);
+                    match line {
+                        Some(line) if line >= 1 => {
+                            state
+                                .text()
+                                .position_to_offset(&gpui_component::input::Position {
+                                    line: line - 1,
+                                    character: 0,
+                                })
+                        }
+                        // Below the last block, or a block the mapping cannot
+                        // place: the end of the note.
+                        _ => state.value().len(),
+                    }
+                };
+                this.route_drop(
+                    input,
+                    &DroppedFiles(paths),
+                    DropAt::Block(offset),
+                    window,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    /// The rendered block under `position`: the first laid-out block that
+    /// ends below it. `None` below the last block.
+    fn reader_block_at(&self, position: Point<Pixels>, cx: &App) -> Option<usize> {
+        let content = self.content.read(cx);
+        let list = content.list_state();
+        let count = list.item_count();
+        (list.logical_scroll_top().item_ix..count)
+            .map_while(|ix| list.bounds_for_item(ix).map(|bounds| (ix, bounds)))
+            .find(|(_, bounds)| position.y < bounds.bottom())
+            .map(|(ix, _)| ix)
+    }
+
+    /// Route a drop through the paste router and insert it.
+    fn route_drop(
+        &mut self,
+        input: Entity<EditorState>,
+        board: &impl crate::note_paste::offer::Pasteboard,
+        at: DropAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let plain_file = self
             .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel));
         let note_rel = (!plain_file).then(|| self.selected_file().to_owned());
-        let position = window.mouse_position();
-        let (source, offset) = {
-            let state = input.read(cx);
-            let offset = state
-                .source_offset_for_point(position)
-                .unwrap_or_else(|| state.cursor());
-            (state.value().to_string(), offset)
+        let source = input.read(cx).value().to_string();
+        let (source, offset, slot) = match at {
+            DropAt::Inline(offset) => (source, offset, None),
+            DropAt::Block(offset) => {
+                let slot = BlockSlot::new(&source, offset);
+                (
+                    slot.routing_source(&source),
+                    slot.route_offset(),
+                    Some(slot),
+                )
+            }
         };
         let stamp = attachments::stamp_now();
         let context = RouteContext {
@@ -142,16 +263,27 @@ impl Reader {
             ask_above: crate::note_paste::ask_above_bytes(cx),
         };
         let started = std::time::Instant::now();
-        match router::route(&DroppedFiles(paths), &context) {
-            Ok(routed) => {
+        match router::route(board, &context) {
+            Ok(mut routed) => {
                 diagnostic_error!(
-                    "Drop: route={:?} offset={} follow_up={} ms={:.1} {}",
+                    "Drop: route={:?} offset={} block={} follow_up={} ms={:.1} {}",
                     routed.route,
                     offset,
+                    slot.is_some(),
                     routed.follow_up.is_some(),
                     started.elapsed().as_secs_f64() * 1000.0,
                     routed.detail
                 );
+                let offset = match slot {
+                    // One edit: the slot's empty line with the routed text in
+                    // it, which is the routing source the anchors were taken on.
+                    Some(slot) if routed.insert.is_some() || routed.follow_up.is_some() => {
+                        routed.insert = Some(slot.edit(routed.insert.as_deref().unwrap_or("")));
+                        slot.at
+                    }
+                    Some(slot) => slot.at,
+                    None => offset,
+                };
                 self.apply_routed(input, routed, offset, window, cx);
             }
             Err(error) => {
@@ -1121,5 +1253,126 @@ mod attachment_refresh_tests {
             assert_eq!(reader.current_rel, "note.md");
         });
         drop(held_watcher);
+    }
+}
+
+#[cfg(test)]
+mod reader_drop_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    const NOTE: &str = "# Title\n\nFirst paragraph.\n\n## Next\n\nBody.\n";
+
+    fn reader_on_note(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("note.md"), NOTE).unwrap();
+        std::fs::write(root.join("docs/spec.txt"), "spec").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.simulate_resize(size(px(1000.), px(700.)));
+        visual.run_until_parked();
+        (entity.unwrap(), visual, temp)
+    }
+
+    /// A native drop at `position`: the real FileDropEvent path.
+    fn drop_at(visual: &mut VisualTestContext, position: Point<Pixels>, path: PathBuf) {
+        visual.simulate_event(gpui::FileDropEvent::Entered {
+            position,
+            paths: ExternalPaths(vec![path].into_iter().collect()),
+        });
+        visual.simulate_event(gpui::FileDropEvent::Submit { position });
+        visual.run_until_parked();
+    }
+
+    /// #1615: a file dropped onto a rendered block in Read switches the note
+    /// to Edit and goes in at that block's start, as its own paragraph.
+    #[gpui::test]
+    fn a_drop_in_read_opens_edit_before_the_block_under_the_pointer(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let (next, first) = reader.read_with(visual, |r, cx| {
+            assert!(
+                r.editing.is_none(),
+                "positive control: the note opens in Read"
+            );
+            let list = r.content.read(cx).list_state();
+            (
+                list.bounds_for_item(2)
+                    .expect("the `## Next` block is laid out"),
+                list.bounds_for_item(0)
+                    .expect("the title block is laid out"),
+            )
+        });
+        assert!(
+            next.top() > first.bottom(),
+            "positive control: distinct blocks"
+        );
+        let spec = temp.path().join("vault/docs/spec.txt");
+        drop_at(visual, next.center(), spec);
+        reader.read_with(visual, |r, cx| {
+            let source = r
+                .source_input()
+                .expect("the drop switched the note to Edit")
+                .read(cx)
+                .value()
+                .to_string();
+            let link = source
+                .lines()
+                .find(|line| line.contains("spec.txt"))
+                .unwrap_or_else(|| panic!("the dropped file's link is in the note: {source:?}"))
+                .to_string();
+            assert_eq!(
+                source,
+                format!("# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n"),
+                "before the block under the pointer, on its own paragraph"
+            );
+        });
+    }
+
+    /// Below the last block, the drop goes to the end of the note.
+    #[gpui::test]
+    fn a_drop_below_the_last_block_appends(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let below = reader.read_with(visual, |r, cx| {
+            let list = r.content.read(cx).list_state();
+            let last = list.bounds_for_item(3).expect("the last block is laid out");
+            let viewport = list.viewport_bounds();
+            assert!(
+                viewport.bottom() > last.bottom() + px(8.),
+                "positive control: room below the last block"
+            );
+            point(last.center().x, last.bottom() + px(4.))
+        });
+        drop_at(visual, below, temp.path().join("vault/docs/spec.txt"));
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            assert!(
+                source.starts_with(NOTE) && source.contains("spec.txt"),
+                "appended after the last block: {source:?}"
+            );
+        });
     }
 }
