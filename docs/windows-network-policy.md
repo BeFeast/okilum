@@ -60,15 +60,37 @@ The live Board reader drops its client when the repository changes.
 A loopback origin (`127.0.0.0/8`, `::1`, `localhost`) is always direct on
 Windows and never runs WinHTTP discovery: a corporate proxy cannot route back to
 this machine, and a local T3 should not fail because a PAC file is unreachable.
+
+T3 and Board use `okilum_http::local_network_builder`, which also sends a
+private IP literal direct: RFC 1918, link-local, the CGNAT block Tailscale uses
+(`100.64/10`), IPv6 unique-local/link-local and IPv4-mapped forms. That is the
+same set T3 already accepts over plain HTTP. The reason is WinHTTP's bypass
+rule: `<local>` ("bypass proxy for local addresses") matches only host names
+without a period ([WinHttpOpen](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpopen),
+[netsh winhttp](https://learn.microsoft.com/en-us/windows/win32/winhttp/netsh-exe-commands)),
+and `windows_proxy::bypasses` implements exactly that. An origin such as
+`http://10.10.0.23:3773` or a tailnet `http://100.x.y.z:3773` therefore went to a
+static corporate proxy (pre-#1944 too, via hyper-util's registry proxy) and,
+with this slice, to whatever a PAC file answers. Such a proxy cannot route to
+the user's home LAN or tailnet. Host names (for example a LAN name that resolves
+to `10.x`) keep the system/PAC decision, because the DNS answer is not known
+when the client is built. Feedback, updater and remote log keep the plain
+`builder` (loopback only); macOS/Linux behaviour is unchanged for all of them.
+
 Other origins keep the slice-1 fail-closed PAC behaviour: the gateway, flow or
 reader is not constructed and the existing error path reports it. Long-lived
 gateways resolve PAC once; reconnecting the T3 environment refreshes it.
+
+The shared builder's 5-second connect default applies on every platform, so
+each migrated client sets its own pre-#1944 connect budget explicitly (Board
+issue reads: connect bounded only by their 10-second total).
 
 `crates/okilum-http/tests/client_inventory.rs` pins this. It scans every
 production source in `crates/` for raw `reqwest`/`tungstenite` client
 construction and fails on any site not listed with a reason, or on a listed site
 that disappeared. It also asserts that each migrated path still calls the shared
-builder and that `okilum-core`, `okilum-t3` and `okilum-shell` depend on
+builder with its own connect budget, that T3/Board use the local-network
+policy, and that `okilum-core`, `okilum-t3` and `okilum-shell` depend on
 `okilum-http` outside dev-dependencies.
 
 ### Recorded exceptions

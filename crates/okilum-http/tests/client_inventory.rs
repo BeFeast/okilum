@@ -197,55 +197,108 @@ fn every_outbound_client_takes_the_shared_policy_or_a_recorded_exception() {
     );
 }
 
-/// The paths this issue moved must keep building through the shared policy.
+/// The paths this issue moved must keep building through the shared policy, and
+/// each keeps its own pre-#1944 connect budget instead of the shared 5 s default
+/// (which also applies on macOS/Linux). `None`: the policy's default is the
+/// client's own, unchanged budget.
+const MIGRATED: &[(&str, &str, Option<&str>)] = &[
+    (
+        "crates/okilum-core/src/remote_log/transport.rs",
+        "okilum_http::async_builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+    (
+        "crates/okilum-core/src/log/http/mod.rs",
+        "okilum_http::builder(",
+        None,
+    ),
+    (
+        "crates/okilum-shell/src/reader_feedback/model.rs",
+        "okilum_http::async_client(",
+        None,
+    ),
+    (
+        "crates/okilum-shell/src/updater/whats_new/model.rs",
+        "okilum_http::builder(",
+        Some(".connect_timeout(profile.first_connect)"),
+    ),
+    (
+        "crates/okilum-t3/src/network.rs",
+        "okilum_http::local_network_builder(",
+        None,
+    ),
+    (
+        "crates/okilum-t3/src/mcp.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/session.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(CONNECT_TIMEOUT)"),
+    ),
+    (
+        "crates/okilum-t3/src/oauth.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/stream/auth.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(timeout)"),
+    ),
+    (
+        "crates/okilum-t3/src/projects.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(std::time::Duration::from_secs(10))"),
+    ),
+    // Board issue reads had a 10 s total and no connect cap before #1944.
+    (
+        "crates/okilum-t3/src/board.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/board/live.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+    (
+        "crates/okilum-t3/src/board/peek.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+];
+
 #[test]
-fn migrated_clients_still_build_through_okilum_http() {
+fn migrated_clients_build_through_okilum_http_with_their_own_connect_budget() {
     let root = workspace();
-    for (path, marker) in [
-        (
-            "crates/okilum-core/src/remote_log/transport.rs",
-            "okilum_http::async_builder(",
-        ),
-        (
-            "crates/okilum-core/src/log/http/mod.rs",
-            "okilum_http::builder(",
-        ),
-        (
-            "crates/okilum-shell/src/reader_feedback/model.rs",
-            "okilum_http::async_client(",
-        ),
-        (
-            "crates/okilum-shell/src/updater/whats_new/model.rs",
-            "okilum_http::builder(",
-        ),
-        ("crates/okilum-t3/src/network.rs", "okilum_http::builder("),
-        ("crates/okilum-t3/src/mcp.rs", "crate::network::builder("),
-        (
-            "crates/okilum-t3/src/session.rs",
-            "crate::network::builder(",
-        ),
-        ("crates/okilum-t3/src/oauth.rs", "crate::network::builder("),
-        (
-            "crates/okilum-t3/src/stream/auth.rs",
-            "crate::network::builder(",
-        ),
-        (
-            "crates/okilum-t3/src/projects.rs",
-            "crate::network::builder(",
-        ),
-        ("crates/okilum-t3/src/board.rs", "crate::network::builder("),
-        (
-            "crates/okilum-t3/src/board/live.rs",
-            "crate::network::builder(",
-        ),
-        (
-            "crates/okilum-t3/src/board/peek.rs",
-            "crate::network::builder(",
-        ),
-    ] {
+    for (path, marker, connect) in MIGRATED {
         let text = fs::read_to_string(root.join(path)).unwrap();
-        assert!(text.contains(marker), "{path} no longer uses {marker}");
+        let sites: Vec<_> = text.match_indices(marker).map(|(at, _)| at).collect();
+        assert!(!sites.is_empty(), "{path} no longer uses {marker}");
+        let Some(connect) = connect else { continue };
+        for at in sites {
+            // The builder chain runs from the policy call to its `.build()`.
+            let chain = &text[at..];
+            let chain = &chain[..chain.find(".build()").unwrap_or(chain.len())];
+            assert!(
+                chain.contains(connect),
+                "{path}: client from {marker} lost its connect budget {connect}"
+            );
+        }
     }
+}
+
+/// T3 and Board peers on a LAN/tailnet literal stay direct on Windows.
+#[test]
+fn t3_and_board_use_the_local_network_policy() {
+    let root = workspace();
+    let network = fs::read_to_string(root.join("crates/okilum-t3/src/network.rs")).unwrap();
+    assert!(network.contains("okilum_http::local_network_builder("));
+    assert!(!network.contains("okilum_http::builder("));
+    let lib = fs::read_to_string(root.join("crates/okilum-http/src/lib.rs")).unwrap();
+    assert!(lib.contains("blocking_builder(endpoint, version, timeout, is_private_literal)"));
 }
 
 /// Crate-only Windows test builds must link the same backend as okilum.exe:

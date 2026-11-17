@@ -1,7 +1,8 @@
 //! #1944: every T3 and Forgejo HTTP client this crate builds takes the shared
 //! `okilum_http` policy for its one origin. On Windows that is SChannel with the
 //! OS trust store and the current user's static/per-protocol/PAC/WPAD proxy; a
-//! loopback origin stays direct. Redirects stay refused. PAC discovery runs once
+//! loopback or private IP literal (LAN, Tailscale) stays direct, because WinHTTP's
+//! `<local>` bypass covers only dotless names. Redirects stay refused. PAC discovery runs once
 //! per client: recreate the gateway/reader to refresh it after a network change.
 //! macOS/Linux keep reqwest's bundled roots and environment proxies.
 use std::time::Duration;
@@ -15,7 +16,10 @@ pub(crate) fn builder(
     origin: &str,
     timeout: Duration,
 ) -> anyhow::Result<reqwest::blocking::ClientBuilder> {
-    Ok(okilum_http::builder(origin, env!("CARGO_PKG_VERSION"), timeout)?.user_agent(USER_AGENT))
+    Ok(
+        okilum_http::local_network_builder(origin, env!("CARGO_PKG_VERSION"), timeout)?
+            .user_agent(USER_AGENT),
+    )
 }
 
 #[cfg(test)]

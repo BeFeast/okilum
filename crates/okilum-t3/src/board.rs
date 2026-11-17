@@ -497,7 +497,10 @@ pub fn read_issues(binding: &Binding) -> Vec<(u64, Result<Issue, String>)> {
         Duration::from_secs(10),
     )
     .and_then(|builder| {
+        // Pre-#1944 budget: connect bounded only by the 10 s total, never by
+        // the shared 5 s default.
         Ok(builder
+            .connect_timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(BOARD_USER_AGENT)
             .build()?)

@@ -210,14 +210,60 @@ fn loopback_endpoints_are_recognised_without_name_tricks() {
         assert!(!is_loopback(&url::Url::parse(remote).unwrap()), "{remote}");
     }
 }
+#[test]
+fn private_literals_match_the_t3_plain_http_set_and_never_names() {
+    for private in [
+        "http://127.0.0.1/",
+        "http://localhost:3773/",
+        "http://10.10.0.23:3773/",
+        "http://172.16.0.1/",
+        "http://172.31.255.255/",
+        "http://192.168.1.5/",
+        "http://169.254.1.1/",
+        "http://100.64.0.1/",
+        "http://100.127.255.254/",
+        "http://[fd7a:115c:a1e0::1]/",
+        "http://[fe80::1]/",
+        "http://[::ffff:10.0.0.1]/",
+    ] {
+        assert!(
+            is_private_literal(&url::Url::parse(private).unwrap()),
+            "{private}"
+        );
+    }
+    for public in [
+        "http://172.32.0.1/",
+        "http://100.128.0.1/",
+        "http://8.8.8.8/",
+        "http://[2001:db8::1]/",
+        "https://t3.example.test/",
+        // A name stays with the system/PAC decision even if it resolves privately.
+        "https://t3-mac.example.test/",
+        "https://10.0.0.1.example.test/",
+    ] {
+        assert!(
+            !is_private_literal(&url::Url::parse(public).unwrap()),
+            "{public}"
+        );
+    }
+}
 #[cfg(windows)]
 #[test]
-fn windows_loopback_policy_is_direct_without_proxy_discovery() {
-    let endpoint = url::Url::parse("http://127.0.0.1:3773/mcp").unwrap();
-    assert!(matches!(
-        windows_policy(&endpoint).unwrap(),
-        windows_proxy::Policy::Direct
-    ));
+fn windows_direct_policy_skips_proxy_discovery() {
+    for (endpoint, direct) in [
+        (
+            "http://127.0.0.1:3773/mcp",
+            is_loopback as fn(&url::Url) -> bool,
+        ),
+        ("http://10.10.0.23:3773/mcp", is_private_literal),
+        ("http://100.64.0.1:3773/mcp", is_private_literal),
+    ] {
+        let endpoint = url::Url::parse(endpoint).unwrap();
+        assert!(matches!(
+            windows_policy(&endpoint, direct).unwrap(),
+            windows_proxy::Policy::Direct
+        ));
+    }
 }
 #[test]
 fn async_policy_refuses_non_http_endpoints() {

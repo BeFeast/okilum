@@ -16,6 +16,28 @@ pub fn client(endpoint: &str, version: &str, timeout: Duration) -> Result<Client
 }
 
 pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<ClientBuilder> {
+    blocking_builder(endpoint, version, timeout, is_loopback)
+}
+
+/// For a peer the user points at by address on their own network (T3, Board).
+/// As [`builder`], but a private IP literal is also direct on Windows: WinHTTP's
+/// `<local>` bypass covers only dotless names, so `10.0.0.5` or a Tailscale
+/// `100.64/10` address would otherwise reach a corporate proxy that cannot route
+/// to it. Host names keep the system/PAC decision.
+pub fn local_network_builder(
+    endpoint: &str,
+    version: &str,
+    timeout: Duration,
+) -> Result<ClientBuilder> {
+    blocking_builder(endpoint, version, timeout, is_private_literal)
+}
+
+fn blocking_builder(
+    endpoint: &str,
+    version: &str,
+    timeout: Duration,
+    direct: fn(&url::Url) -> bool,
+) -> Result<ClientBuilder> {
     let endpoint = parse_endpoint(endpoint)?;
     let builder = Client::builder()
         .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
@@ -25,14 +47,14 @@ pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<Clien
     #[cfg(windows)]
     let builder = {
         let builder = builder.use_native_tls();
-        match windows_policy(&endpoint)? {
+        match windows_policy(&endpoint, direct)? {
             windows_proxy::Policy::Inherit => builder,
             windows_proxy::Policy::Direct => builder.no_proxy(),
             windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
         }
     };
     #[cfg(not(windows))]
-    let _ = endpoint;
+    let _ = (endpoint, direct);
     Ok(builder)
 }
 
@@ -57,9 +79,37 @@ pub fn is_loopback(endpoint: &url::Url) -> bool {
     }
 }
 
+/// Loopback, RFC 1918, link-local, the CGNAT block Tailscale uses (100.64/10),
+/// IPv6 unique-local/link-local and IPv4-mapped forms of those; the same set
+/// T3 accepts over plain HTTP. Only literals: a name's DNS answer is not known.
+pub fn is_private_literal(endpoint: &url::Url) -> bool {
+    fn v4(ip: std::net::Ipv4Addr) -> bool {
+        let [a, b, ..] = ip.octets();
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || (a == 100 && (64..128).contains(&b))
+    }
+    match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => v4(ip),
+        Some(url::Host::Ipv6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || ip.to_ipv4_mapped().is_some_and(v4)
+        }
+        Some(url::Host::Domain(_)) => is_loopback(endpoint),
+        None => false,
+    }
+}
+
 #[cfg(windows)]
-fn windows_policy(endpoint: &url::Url) -> Result<windows_proxy::Policy> {
-    if is_loopback(endpoint) {
+fn windows_policy(
+    endpoint: &url::Url,
+    direct: fn(&url::Url) -> bool,
+) -> Result<windows_proxy::Policy> {
+    if direct(endpoint) {
         return Ok(windows_proxy::Policy::Direct);
     }
     windows_proxy::resolve(endpoint)
@@ -88,7 +138,7 @@ pub fn async_builder(
     #[cfg(windows)]
     let builder = {
         let builder = builder.use_native_tls();
-        match windows_policy(&endpoint)? {
+        match windows_policy(&endpoint, is_loopback)? {
             windows_proxy::Policy::Inherit => builder,
             windows_proxy::Policy::Direct => builder.no_proxy(),
             windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
