@@ -179,6 +179,28 @@ def one(root, pattern):
     return str(files[0])
 
 
+def resumable_notes(store, client, build, source):
+    """Mac beta notes; a retried publication of the same build keeps its first range (#1559).
+
+    An attempt that already recorded notes for this build reuses them. One that
+    stopped after the appcast write (this build is already the beta head) takes
+    the newest older beta as its predecessor, never itself.
+    """
+    raw = store.call('GET', release_notes.key(source, 'macos', 'beta'))
+    if raw is not None:
+        existing = json.loads(raw)
+        if (existing['build'], existing['source'], existing['platform'], existing['channel']) == (
+                build, source, 'macos', 'beta'):
+            return existing
+    notes = release_notes.prepare(store, client, 'macos', build, source)
+    if notes['previous_build'] != build:
+        return notes
+    previous = release_notes.predecessor(store, 'macos', below=build)
+    return {**notes, 'previous_build': previous['build'] if previous else None,
+            'previous_source': previous['source'] if previous else None,
+            'items': release_notes.merged_items(client, previous['source'] if previous else None, source)}
+
+
 def publish(client, platform, run_id):
     # Dispatch is the build's final step. Wait only for its final success record;
     # a newer push cancelling it must never authorize publication.
@@ -263,6 +285,7 @@ def publish(client, platform, run_id):
         # Capture the same-platform beta predecessor before ANY publisher writes.
         # Sidecars never alter descriptor, artifact, signing or promotion contracts.
         notes = (release_notes.prepare_preview(R2(), preview, build, source) if preview
+                 else resumable_notes(R2(), client, build, source) if platform == 'macos'
                  else release_notes.prepare(R2(), client, platform, build, source))
         # Selection and publication are separated by compilation/notarization.
         # A racing hourly/manual producer may have published this source in that
@@ -333,10 +356,38 @@ def dispatch_publication(client, platform, run_id, attempt=1, sleep=time.sleep):
             sleep(10 * tries)
 
 
-def report_exhausted(client, platform, run_id, attempts, run_url):
+FEED_PLATFORM = {'macos': 'macos', 'windows': 'windows', 'linux': 'linux', 'appimage': 'linux-appimage'}
+
+
+def feed_state(client, platform, run_id, feeds=None):
+    """What the public beta feed serves now, said against this run's build."""
+    try:
+        if feeds is None:
+            import hourly_beta
+            feeds = hourly_beta.PublicFeeds()
+        head = release_notes.predecessor(feeds, FEED_PLATFORM[platform])
+        build = None
+        if platform != 'appimage':  # AppImage numbers its builds in its own handoff
+            build = 5000 + int(client.call('GET', f'/actions/runs/{run_id}')['index_in_repo'])
+    except (Exception, SystemExit) as error:
+        return f'The {platform} beta feed could not be read ({type(error).__name__}); its state is unknown.'
+    if head is None:
+        return f'The {platform} beta feed serves no build.'
+    serves = f"build {head['build']} (source {head['source'][:8]})"
+    if build is None:
+        return f'The {platform} beta feed serves {serves}.'
+    if head['build'] == build:
+        return (f'The {platform} beta feed already serves this {serves}; '
+                'a later publication step did not complete.')
+    if head['build'] > build:
+        return f'The {platform} beta feed serves newer {serves}; build {build} is superseded.'
+    return f'The {platform} beta feed still serves previous {serves}; build {build} is not published.'
+
+
+def report_exhausted(client, platform, run_id, attempts, run_url, state):
     """Leave a visible trace for the manager: one open issue, one comment per stuck build."""
     body = (f'The {platform} beta publication of completed build run {run_id} failed '
-            f'{attempts} times; the {platform} beta feed stays at its previous build.\n\n'
+            f'{attempts} times. {state}\n\n'
             f'Last publication run: {run_url}\n\n'
             'Recovery without a rebuild: dispatch `release-publish` on main with '
             f'`platform={platform}` and `run_id={run_id}` once the cause is fixed '
@@ -351,11 +402,12 @@ def report_exhausted(client, platform, run_id, attempts, run_url):
         client.call('POST', '/issues', {'title': FAILED_ISSUE_TITLE, 'body': body})
 
 
-def retry(client, platform, run_id, attempt, *, run_url='', summary=None, sleep=time.sleep):
+def retry(client, platform, run_id, attempt, *, run_url='', summary=None, sleep=time.sleep, feeds=None):
     """Called only after a failed publish job of attempt `attempt`.
 
     Re-dispatches the same completed build until MAX_PUBLICATION_ATTEMPTS, then
-    fails visibly: an error annotation, the job summary and a tracking issue.
+    fails visibly: an error annotation, the job summary and a tracking issue,
+    each stating what the public feed actually serves.
     """
     if platform not in PUBLISH_PLATFORMS or run_id < 1 or attempt < 1:
         raise ValueError('Invalid publication retry request')
@@ -365,13 +417,14 @@ def retry(client, platform, run_id, attempt, *, run_url='', summary=None, sleep=
         print(f'Publication attempt {attempt} of {platform} run {run_id} failed; '
               f'dispatched attempt {attempt + 1}/{MAX_PUBLICATION_ATTEMPTS} (reuse, no rebuild)')
         return
+    state = feed_state(client, platform, run_id, feeds)
     message = (f'{platform} beta publication of run {run_id} failed {attempt} times; '
-               'no further automatic retry. The beta feed stays at its previous build.')
+               f'no further automatic retry. {state}')
     if summary:
         with Path(summary).open('a') as handle:
             handle.write(message + '\n')
     try:
-        report_exhausted(client, platform, run_id, attempt, run_url)
+        report_exhausted(client, platform, run_id, attempt, run_url, state)
     except (Exception, SystemExit) as error:  # the red job below stays the primary signal
         print(f'Could not record the failure in an issue: {error}')
     print('::error::' + message)
