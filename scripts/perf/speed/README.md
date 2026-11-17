@@ -43,7 +43,7 @@ No UI paint is included. The absolute 10 MiB open (launch → frame) is kept in
 the summary as `open_10mib_ms.absolute`.
 
 `notes.py` reuses the editor generator; `manifest.json` pins both notes and the
-collector refuses drift. The 10 MiB launch may take up to 60 s to its first
+collector refuses drift. The 10 MiB launch may take up to 120 s to its first
 frame (the editor probe's default wait is 12 s), so a slow open is a measured
 over-budget value, not missing evidence. A failed control makes that metric `NO_EVIDENCE`
 (exit 2 in every mode, never a pass); the other metrics are still measured.
@@ -61,6 +61,22 @@ The boundary is the Xvfb software post-frame: neither GPU completion nor
 scanout. Reference-machine series (muninn, M4 night window, VM 150, and the
 Hedva slow-machine series queued on #2094) are follow-up work on the same
 collector; the Reader-mode 10 MiB open lands with #653's Reader probe.
+
+## Hosted baseline (17.11, five runs, two CPU classes)
+
+| metric | AMD EPYC 9V74 | Intel Xeon 6975P-C | product | hosted ceiling |
+|---|---:|---:|---:|---:|
+| cold start | 470–481 ms | 427–428 ms | 300 | 650 |
+| typing | 39–43 ms | 30–31 ms | 16 | 70 |
+| open 10 MiB (over control) | — | 56.7–57.0 s | 1000 | 1000 |
+| search 10k | 12.4–12.5 ms | 11.4 ms | 100 | 100 |
+
+Ceilings follow the #1639 editor margin, `max(slowest median × 1.35, + 25 ms)`,
+never below the product budget (`budgets.json` keeps the arithmetic and run ids).
+The 10 MiB ceiling is deliberately not ratcheted to the measured 57 s: it stays
+at the product budget, so that metric reports FAIL until the open is fixed.
+In the diagnostic log the worker has the note's source after ~1 s; the UI
+thread then spends ~55 s after `first_ui_stage` before `note_open_set_text`.
 
 ## Files
 

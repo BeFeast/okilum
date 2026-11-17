@@ -1,10 +1,24 @@
 {
   "schema": 1,
   "metrics": {
-    "cold_start_ms": {"product_budget_ms": 300, "hosted_limit_ms": 1500},
-    "typing_ms": {"product_budget_ms": 16, "hosted_limit_ms": 100},
-    "open_10mib_ms": {"product_budget_ms": 1000, "hosted_limit_ms": 3000},
-    "search_10k_ms": {"product_budget_ms": 100, "hosted_limit_ms": 300}
+    "cold_start_ms": {"product_budget_ms": 300, "hosted_limit_ms": 650},
+    "typing_ms": {"product_budget_ms": 16, "hosted_limit_ms": 70},
+    "open_10mib_ms": {"product_budget_ms": 1000, "hosted_limit_ms": 1000},
+    "search_10k_ms": {"product_budget_ms": 100, "hosted_limit_ms": 100}
   },
-  "calibration": "provisional; replaced by measured hosted runs before merge"
+  "calibration": {
+    "runner": "GitHub ubuntu-24.04, 4 vCPU, Xvfb",
+    "runs": {
+      "44017249078": {"cpu": "AMD EPYC 9V74", "cold_start_ms": 470.4, "typing_ms": 43.4, "search_10k_ms": 12.5},
+      "44017253775": {"cpu": "AMD EPYC 9V74", "cold_start_ms": 480.5, "typing_ms": 38.7, "search_10k_ms": 12.4},
+      "44017258568": {"cpu": "Intel Xeon 6975P-C", "cold_start_ms": 427.5, "typing_ms": 31.4, "search_10k_ms": 11.4},
+      "44022005601": {"cpu": "Intel Xeon 6975P-C", "cold_start_ms": 426.7, "typing_ms": 30.1, "open_10mib_ms": 56706.6, "search_10k_ms": 11.4},
+      "44022009877": {"cpu": "Intel Xeon 6975P-C", "cold_start_ms": 428.3, "typing_ms": 30.1, "open_10mib_ms": 56984.6, "search_10k_ms": 11.4}
+    },
+    "rule": "ceiling = max(slowest calibration median x 1.35, + 25 ms), rounded up, never below the product budget (the #1639 editor-budget margin)",
+    "cold_start_ms": "slowest 480.5 -> 648.7 -> 650",
+    "typing_ms": "slowest 43.4 -> 68.4 -> 70; hosted input is bimodal (#1662), so the +25 ms term decides",
+    "search_10k_ms": "slowest 12.5 -> 37.5, below the product budget -> 100",
+    "open_10mib_ms": "measured 57 s, 57x over budget; the ceiling is NOT ratcheted to a broken value and stays at the product budget, so this metric reports FAIL until the open is fixed"
+  }
 }

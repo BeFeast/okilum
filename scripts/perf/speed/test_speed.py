@@ -123,7 +123,7 @@ class App(unittest.TestCase):
         self.assertTrue(calls[0][2]["keep_open"] and calls[0][2]["input_only"])
         self.assertTrue(calls[1][2]["open_only"])
         self.assertEqual(calls[1][2]["source"], b"large")
-        self.assertEqual(calls[1][2]["open_limit"], 60)
+        self.assertEqual(calls[1][2]["open_limit"], collect.LARGE_OPEN_LIMIT_SECONDS)
         self.assertNotIn("open_limit", calls[0][2])
         self.assertEqual(metrics["cold_start_ms"]["samples_ms"], [201.0, 202.0, 203.0, 204.0, 205.0])
         self.assertEqual(metrics["typing_ms"]["median_ms"], 33.0)

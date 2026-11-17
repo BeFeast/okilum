@@ -41,8 +41,8 @@ import probe  # noqa: E402
 ROUNDS = 6  # round 0 is the warmup
 DEADLINE_SECONDS = 900
 # A slow 10 MiB open is a measured budget failure, not missing evidence: wait
-# up to a minute for its first frame (the editor probe's default is 12 s).
-LARGE_OPEN_LIMIT_SECONDS = 60
+# up to two minutes for its first frame (the editor probe's default is 12 s).
+LARGE_OPEN_LIMIT_SECONDS = 120
 SEARCH_RUNS = 30
 SEARCH_NOTES = 10_000
 APP_METRICS = ("cold_start_ms", "typing_ms", "open_10mib_ms")

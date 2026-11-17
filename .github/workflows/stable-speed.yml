@@ -91,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           export DISPLAY=:99
-          timeout --signal=TERM --kill-after=5s 960s dbus-run-session -- \
+          timeout --signal=TERM --kill-after=5s 1200s dbus-run-session -- \
             python3 scripts/perf/speed/collect.py "$RUNNER_TEMP/bin/okilum" "$RUNNER_TEMP/speed" \
             --search-report "$RUNNER_TEMP/search.json" --source-commit "$SOURCE_SHA"
       - name: Judge the budgets
