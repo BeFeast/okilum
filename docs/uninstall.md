@@ -46,6 +46,17 @@ Settings → Apps → Okilum → Uninstall runs Velopack's uninstaller. Its
 before-uninstall hook (`app_footprint::uninstall`) removes everything below that
 Velopack does not.
 
+The hook first stops Sync if it was set up (#3109):
+`sidecar::windows::bootstrap::disable_current_app` sends the authenticated
+stop to the `Okilum-Sync-<instance>` task's supervisor, waits for its signed
+reply and captured exit, then unregisters the task. Sync's identity,
+Syncthing configuration and journal in `%LOCALAPPDATA%\Okilum\Sync\` and
+`%LOCALAPPDATA%\Okilum\SyncDirect\` stay, and the hub is not told. NTFS
+compares names without case, so the state root `%LOCALAPPDATA%\okilum\` is
+their parent folder: it is emptied around them, not removed. If Sync cannot be
+stopped, or its folders cannot be resolved, the hook removes **nothing**
+(registrations, state, config, dumps); Velopack still removes the install root.
+
 | Item | Path / key | Removed by |
 |---|---|---|
 | Install root | `%LOCALAPPDATA%\BeFeast.Okilum\` (`Update.exe`, `Okilum.exe`, `current\`, `packages\` update cache) | Velopack |
@@ -54,16 +65,17 @@ Velopack does not.
 | Markdown Open With | `HKCU\Software\Classes\BeFeast.Okilum.Markdown`, value `BeFeast.Okilum.Markdown` in `HKCU\Software\Classes\.md\OpenWithProgids` | hook (`markdown_handler::uninstall`) |
 | `okilum:` links | `HKCU\Software\Classes\okilum` (installed build only; the portable ZIP registers nothing) | hook (`url_protocol::uninstall`) |
 | Notification identity | `HKCU\Software\Classes\AppUserModelId\com.befeast.okilum` | hook |
-| State and search index | `%LOCALAPPDATA%\okilum\` (state files, `editor-drafts\`, `link-moves\`, `sidebar\`, `reminders\`, `reader\<sha>\` index, `reader-diagnostic.log`, `windows-update-channel`, `windows-update-verified`) | hook |
+| State and search index | `%LOCALAPPDATA%\okilum\` (state files, `editor-drafts\`, `link-moves\`, `sidebar\`, `reminders\`, `reader\<sha>\` index, `reader-diagnostic.log`, `windows-update-channel`, `windows-update-verified`), except `Sync\` and `SyncDirect\` | hook |
+| Sync task | `Okilum-Sync-<instance>` in Task Scheduler and its `\\.\pipe\Okilum-Sync-…` pipe (only after Sync was set up) | hook, stopped and unregistered before anything else |
+| Sync identity | `%LOCALAPPDATA%\Okilum\Sync\`, `%LOCALAPPDATA%\Okilum\SyncDirect\` | kept, so a reinstall pairs as the same device |
 | Config | `%APPDATA%\okilum\` (`reader-layout.json`, `appearance.json`, `reader-runs\`) | hook |
 | Search sessions | `%TEMP%\okilum-search-session-*` | hook; startup sweeps stale ones |
 | Crash dumps | `%LOCALAPPDATA%\CrashDumps\okilum.exe.*.dmp` | hook |
 | Velopack's per-app log | `%LOCALAPPDATA%\velopack\velopack_BeFeast.Okilum.log` (Velopack writes it after the hook); the `velopack` folder only if then empty | hook, by a detached cleanup that waits for `Update.exe` to exit |
 | What Windows records about the app | values for `%LOCALAPPDATA%\BeFeast.Okilum\…` in `HKCU\Software\Classes\Local Settings\…\Shell\MuiCache` and `HKCU\…\AppCompatFlags\Compatibility Assistant\Store`; `velopack.BeFeast.Okilum` / `com.befeast.okilum` in `HKCU\…\CurrentVersion\Search\JumplistData`, `…\Start\TileProperties\W~<id>` and `…\Explorer\UserAssist\{…}\Count` (names in ROT13); `okilum_okilum` and `BeFeast.Okilum.*` in `HKCU\…\CurrentVersion\ApplicationAssociationToasts` | the same detached cleanup, matched by exact name |
 
-There is no Run key, scheduled task, named pipe, service or
-Credential Manager entry. The sync sidecar's task and pipe exist in code but are
-not shipped on Windows.
+There is no Run key, service or Credential Manager entry. The only scheduled
+task and named pipe are Sync's, above.
 
 Acceptance on a clean profile: `scripts/uninstall/windows-snapshot.ps1 -Out before.txt`
 before install, use the app, uninstall, snapshot again, then

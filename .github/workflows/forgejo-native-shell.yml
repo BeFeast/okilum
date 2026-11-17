@@ -122,6 +122,20 @@ jobs:
         cargo test --locked -p okilum-shell --bin okilum updater:: -- --nocapture --test-threads=1
         exit $LASTEXITCODE
 
+    - name: Run uninstall Sync identity regression
+      shell: pwsh
+      run: |
+        # #3109: the Velopack hook stops Sync first and keeps Okilum\Sync on NTFS.
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        $list = & cargo test --locked -p okilum-shell --bin okilum app_footprint::tests:: -- --list
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $list
+        if (-not ($list | Select-String 'windows_hook_stops_sync_first_and_keeps_its_identity_in_the_state_root: test$')) {
+          Write-Error 'Windows uninstall Sync identity regression did not match'; exit 1
+        }
+        cargo test --locked -p okilum-shell --bin okilum app_footprint::tests:: -- --nocapture --test-threads=1
+        exit $LASTEXITCODE
+
     - name: Run owned non-modal tool regressions
       shell: pwsh
       run: |

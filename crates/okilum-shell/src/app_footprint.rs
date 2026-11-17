@@ -179,6 +179,8 @@ pub(crate) struct Report {
     pub exported_drafts: Vec<PathBuf>,
     pub kept_holding_vault: Vec<PathBuf>,
     pub failed: Vec<(PathBuf, String)>,
+    /// Roots emptied around Sync's retained identity instead of removed (#588).
+    pub kept_for_sync: Vec<PathBuf>,
 }
 
 /// Vault roots recorded in the state dir. Windows stores verbatim prefixes.
@@ -270,6 +272,20 @@ pub(crate) fn purge(
     temp: &Path,
     documents: &Path,
 ) -> Report {
+    purge_keeping(roots, &[], state, temp, documents)
+}
+
+/// `purge`, but every path in `keep` survives even when a root contains it.
+/// Matching ignores case where the filesystem usually does: on macOS
+/// `Application Support/okilum` (config) is the same folder as
+/// `Application Support/Okilum`, the parent of Sync's identity (#588).
+pub(crate) fn purge_keeping(
+    roots: &[PathBuf],
+    keep: &[PathBuf],
+    state: Option<&Path>,
+    temp: &Path,
+    documents: &Path,
+) -> Report {
     let mut report = Report::default();
     let vaults = state.map(recorded_vaults).unwrap_or_default();
     if let Some(state) = state {
@@ -289,6 +305,11 @@ pub(crate) fn purge(
             report.kept_holding_vault.push(root.clone());
             continue;
         }
+        if keep.iter().any(|kept| inside(kept, root, IGNORE_CASE)) {
+            remove_except(root, keep, &mut report);
+            report.kept_for_sync.push(root.clone());
+            continue;
+        }
         match std::fs::remove_dir_all(root) {
             Ok(()) => report.removed.push(root.clone()),
             Err(error) => report.failed.push((root.clone(), error.to_string())),
@@ -301,6 +322,31 @@ pub(crate) fn purge(
         }
     }
     report
+}
+
+/// macOS (APFS default) and Windows compare names without case.
+const IGNORE_CASE: bool = cfg!(any(windows, target_os = "macos"));
+
+/// Remove everything in `dir` except the paths in `keep` and their ancestors.
+fn remove_except(dir: &Path, keep: &[PathBuf], report: &mut Report) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if keep.iter().any(|kept| inside(&path, kept, IGNORE_CASE)) {
+            continue;
+        }
+        if keep.iter().any(|kept| inside(kept, &path, IGNORE_CASE)) {
+            remove_except(&path, keep, report);
+            continue;
+        }
+        let removed = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
+        match removed {
+            Ok(()) => report.removed.push(path),
+            Err(error) => report.failed.push((path, error.to_string())),
+        }
+    }
 }
 
 /// Whether `path` is `root` or below it. NTFS paths are case-insensitive, so
@@ -371,25 +417,54 @@ pub(crate) fn sweep_stale_search_sessions() {
 }
 
 /// Velopack's before-uninstall hook: everything Okilum created for this user.
+/// Sync goes first (#3109): its task is stopped through the authenticated stop
+/// and unregistered, and its identity stays. When that fails, or Sync's
+/// folders cannot be resolved, the hook removes nothing.
 #[cfg(windows)]
 pub(crate) fn uninstall() {
-    crate::markdown_handler::uninstall();
-    okilum_core::folder_registration::uninstall();
-    crate::url_protocol::uninstall();
-    windows::remove_registrations();
     let state = crate::reader_history::state_directory().ok();
     let documents = dirs::document_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(std::env::temp_dir);
-    let report = purge(
-        &roots(),
-        state.as_deref(),
-        &std::env::temp_dir(),
-        &documents,
+    let outcome = stop_sync_then_purge(windows::stop_sync_for_uninstall, |keep| {
+        crate::markdown_handler::uninstall();
+        okilum_core::folder_registration::uninstall();
+        crate::url_protocol::uninstall();
+        windows::remove_registrations();
+        let report = purge_keeping(
+            &roots(),
+            keep,
+            state.as_deref(),
+            &std::env::temp_dir(),
+            &documents,
+        );
+        windows::remove_crash_dumps();
+        windows::remove_leftovers_after_exit();
+        report
+    });
+    match outcome {
+        Ok(report) => diagnostic_error!("Okilum uninstall: {report:?}"),
+        Err(error) => diagnostic_error!(
+            "Okilum uninstall removed nothing, Sync could not be stopped: {error:#}"
+        ),
+    }
+}
+
+/// Windows uninstall order (#3109): `stop` stops Sync and returns the folders
+/// of its retained identity; only then does `remove` run, and it must keep
+/// them. `%LOCALAPPDATA%\okilum` (state) is the same NTFS folder as their
+/// parent `%LOCALAPPDATA%\Okilum`. A failed stop removes nothing.
+#[cfg(any(windows, test))]
+fn stop_sync_then_purge<T>(
+    stop: impl FnOnce() -> anyhow::Result<Vec<PathBuf>>,
+    remove: impl FnOnce(&[PathBuf]) -> T,
+) -> anyhow::Result<T> {
+    let keep = stop()?;
+    anyhow::ensure!(
+        !keep.is_empty() && keep.iter().all(|path| path.is_absolute()),
+        "Sync identity folders are unknown"
     );
-    windows::remove_crash_dumps();
-    windows::remove_leftovers_after_exit();
-    diagnostic_error!("Okilum uninstall: {report:?}");
+    Ok(remove(&keep))
 }
 
 /// `windows_uninstall_cleanup.ps1` with its install root and local app data.
@@ -750,6 +825,25 @@ mod windows {
     /// Notifications register this AUMID (gpui system_notifications).
     const AUMID_KEY: &str = r"HKCU\Software\Classes\AppUserModelId\com.befeast.okilum";
 
+    /// Stop the account's Sync task through its authenticated stop and
+    /// unregister it (#3109); identity, configuration and journal stay, the
+    /// hub is not told. Returns `Okilum\Sync` and `Okilum\SyncDirect`, which
+    /// the purge keeps. An isolated Reader profile never touches the task.
+    pub(super) fn stop_sync_for_uninstall() -> anyhow::Result<Vec<std::path::PathBuf>> {
+        use anyhow::Context as _;
+        use okilum_sync_controller::sidecar::windows::bootstrap;
+        let sync = bootstrap::active_state_directory()?;
+        let direct = sync
+            .parent()
+            .context("Sync state parent unavailable")?
+            .join("SyncDirect");
+        if crate::reader_history::isolated_state_directory().is_none() {
+            // Returns at once when Sync was never set up on this account.
+            bootstrap::disable_current_app()?;
+        }
+        Ok(vec![sync, direct])
+    }
+
     pub(super) fn remove_registrations() {
         let _ = Command::new("reg.exe")
             .args(["delete", AUMID_KEY, "/f"])
@@ -851,6 +945,68 @@ mod tests {
         ] {
             assert!(script.contains(wanted), "cleanup misses {wanted}");
         }
+    }
+
+    /// #3109: the Velopack hook stops Sync before anything is removed, and the
+    /// state root `%LOCALAPPDATA%\okilum` keeps `Okilum\Sync` and
+    /// `Okilum\SyncDirect`; on Windows both spellings are the same folder.
+    #[test]
+    fn windows_hook_stops_sync_first_and_keeps_its_identity_in_the_state_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let local = fixture.path().join("Local");
+        // The state root as `roots()` names it on Windows.
+        let state = local.join("okilum");
+        write(&state.join("settings.json"), "{}");
+        write(&state.join("reader/index.bin"), "index");
+        write(&state.join("Sync/config/cert.pem"), "certificate");
+        write(&state.join("Sync/sidecar.json"), "{}");
+        write(&state.join("SyncDirect/direct.json"), "{}");
+        let documents = fixture.path().join("Documents");
+        // Sync's own spelling (`active_state_directory`).
+        let spelled = if IGNORE_CASE { "Okilum" } else { "okilum" };
+        let keep = vec![
+            local.join(spelled).join("Sync"),
+            local.join(spelled).join("SyncDirect"),
+        ];
+        let roots = vec![state.clone()];
+        let remove =
+            |kept: &[PathBuf]| purge_keeping(&roots, kept, Some(&state), &documents, &documents);
+
+        let refused =
+            stop_sync_then_purge(|| anyhow::bail!("Sync helper is not answering"), remove);
+        assert!(refused.is_err());
+        let unknown = stop_sync_then_purge(|| Ok(Vec::new()), remove);
+        assert!(unknown.is_err());
+        let relative = stop_sync_then_purge(|| Ok(vec![PathBuf::from("Okilum/Sync")]), remove);
+        assert!(relative.is_err());
+        assert!(state.join("settings.json").exists(), "nothing was purged");
+
+        let stopped = std::cell::Cell::new(false);
+        let report = stop_sync_then_purge(
+            || {
+                stopped.set(true);
+                Ok(keep.clone())
+            },
+            |kept| {
+                assert!(stopped.get(), "Sync is stopped before the purge");
+                remove(kept)
+            },
+        )
+        .unwrap();
+        assert!(!state.join("settings.json").exists());
+        assert!(!state.join("reader").exists());
+        assert_eq!(
+            std::fs::read_to_string(keep[0].join("config/cert.pem")).unwrap(),
+            "certificate"
+        );
+        assert!(keep[0].join("sidecar.json").exists());
+        assert!(keep[1].join("direct.json").exists());
+        assert_eq!(report.kept_for_sync, vec![state.clone()]);
+        assert!(report.failed.is_empty(), "{report:?}");
+        // Positive control: the hook's purge before #3109 removed the root.
+        let report = purge(&roots, Some(&state), &documents, &documents);
+        assert_eq!(report.removed, vec![state.clone()]);
+        assert!(!keep[0].exists());
     }
 
     #[test]
