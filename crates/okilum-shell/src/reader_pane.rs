@@ -29,6 +29,14 @@ impl Ticket {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: panes whose completions arrived after the pane was closed
+    /// and were dropped at the routing boundary, before any ticket check.
+    pub(super) static DROPPED_FOR_CLOSED_PANE: std::cell::RefCell<Vec<PaneId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// A completion kept for a pane that was not active when it finished.
 pub(super) type Deferred = Box<dyn FnOnce(&mut Reader, &mut Window, &mut Context<Reader>)>;
 
@@ -238,6 +246,10 @@ impl Reader {
         cx: &mut Context<Self>,
         work: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
+        #[cfg(test)]
+        if !self.is_active_pane(pane) && self.surface_mut(pane).is_none() {
+            DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow_mut().push(pane));
+        }
         if self.is_active_pane(pane) {
             work(self, window, cx);
         } else if let Some(surface) = self.surface_mut(pane) {
@@ -252,6 +264,10 @@ impl Reader {
         cx: &mut Context<Self>,
         work: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
     ) {
+        #[cfg(test)]
+        if !self.is_active_pane(pane) && self.surface_mut(pane).is_none() {
+            DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow_mut().push(pane));
+        }
         if self.is_active_pane(pane) {
             work(self, cx);
         } else if let Some(surface) = self.surface_mut(pane) {
