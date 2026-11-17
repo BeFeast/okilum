@@ -101,8 +101,9 @@ sign commercially distributed software.
   from the owner's 6-digit SimplySign code. There is no OTP seed, password or PIN on the
   host or in CI.
 - **What is signed:** `okilum.exe` and `okilum-sync-supervisor.exe` before packing,
-  then `Update.exe`, the execution stub and `Setup.exe` through Velopack's sign template.
-  That is five signatures per build. `scripts/windows/verify-signatures.py` checks every
+  then every other PE (`Squirrel.exe`/Update.exe, the execution stub, the bundled
+  `syncthing.exe`) and `Setup.exe` through Velopack's sign template. Stable 0.1.33094
+  carries six signatures. `scripts/windows/verify-signatures.py` checks every
   PE in Setup.exe, the full nupkg and the portable ZIP. Each one needs one valid
   signature, an RFC 3161 timestamp and the pinned signer; one failure stops publication.
   `release.json` and the catalog then record `signed` and `signer_sha256`, and the
@@ -115,7 +116,7 @@ sign commercially distributed software.
   +25 min worked; one at +2 h 46 min was refused (2026-10-13). So every signing day
   needs a fresh code from the owner, and no session outlives that day.
 - **Quota:** Certum allows 5000 signatures a month. Only promotable builds are signed
-  (five each), not every hourly beta.
+  (six each), not every hourly beta.
 - **Native check:** `.github/workflows/windows-signature-native.yml` on the GitHub mirror,
   `windows-2022`, no secrets. Dispatch it with the build number, or push any commit to
   `windows-signature-native/<build>`. It downloads the public `release.json`, Setup.exe,
