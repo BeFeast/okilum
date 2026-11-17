@@ -697,13 +697,21 @@ impl SyncSettings {
                     )
                     .child(
                         div()
+                            .id("sync-approval-device")
+                            .debug_selector(|| "sync-approval-device".into())
+                            .w_full()
+                            .whitespace_normal()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(presentation::device_line(pending)),
+                    )
+                    .child(
+                        div()
                             .w_full()
                             .whitespace_normal()
                             .text_sm()
                             .text_color(p.text_muted)
-                            .child(
-                                "Approve this computer before it can choose your shared vaults.",
-                            ),
+                            .child(presentation::approval_check(&pending.name)),
                     ),
             )
             .child(
@@ -933,6 +941,25 @@ impl SyncSettings {
                             .bg(p.selected)
                             .rounded_lg()
                             .child("Still waiting · no files are shared before approval"),
+                    )
+                    .children(
+                        self.snapshot
+                            .as_ref()
+                            .and_then(|s| s.pending.as_ref())
+                            .filter(|p| !p.incoming)
+                            .map(|pending| {
+                                // The other computer's banner shows this same line.
+                                div()
+                                    .id("sync-waiting-device")
+                                    .debug_selector(|| "sync-waiting-device".into())
+                                    .w_full()
+                                    .whitespace_normal()
+                                    .text_sm()
+                                    .child(format!(
+                                        "This computer's {}. Check it in the request on the other computer.",
+                                        presentation::device_line(pending)
+                                    ))
+                            }),
                     )
                     .child(
                         Button::new("sync-cancel-request")
