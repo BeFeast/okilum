@@ -2439,6 +2439,18 @@ mod reader_drop_tests {
     fn a_closed_note_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
         use base64::Engine as _;
         let (reader, visual, temp) = reader_on_note(cx);
+        // Image import off: rich text's data: images are saved while it is
+        // routed, before the remote download (with it on, the whole text is
+        // converted in the background).
+        let ui_state = temp.path().join("ui-state");
+        std::fs::create_dir_all(&ui_state).unwrap();
+        visual.update(|_, cx| {
+            crate::reader_ui_state::install(&ui_state, cx);
+            crate::reader_ui_state::set_image_import_options(
+                crate::note_paste::image_import::Options::disabled(),
+                cx,
+            );
+        });
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         let mut png = std::io::Cursor::new(Vec::new());
