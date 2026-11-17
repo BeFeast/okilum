@@ -1007,7 +1007,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn issue2043_missing_migration_root_names_the_folder_and_recovery() -> Result<()> {
+    fn issue2582_missing_migration_root_no_longer_blocks_the_runtime() -> Result<()> {
         let root = tempfile::tempdir()?;
         let services = Services::default();
         let instance = instance(root.path())?;
@@ -1025,10 +1025,11 @@ mod tests {
             &services,
         )
         .with_launcher(PathBuf::from("/bin/true").canonicalize()?);
-        let error = format!("{:#}", lifecycle.enable(instance).unwrap_err());
-        assert!(error.contains("travelling-vault") && error.contains(missing.to_str().unwrap()));
-        assert!(error.contains("reconnect its disk or remove this folder"));
-        assert!(!services.active.get());
+        // #2582: one unavailable root used to refuse the whole upgrade. It is
+        // now left unbound (launch fences it) and the runtime is enabled.
+        lifecycle.enable(instance)?;
+        assert!(services.active.get());
+        assert!(!missing.exists(), "enable never creates a missing root");
         Ok(())
     }
     #[test]
