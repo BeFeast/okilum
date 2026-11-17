@@ -1060,6 +1060,128 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
 
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_history_2568_remote_rename_recovery_explains_duplicate() -> Result<()> {
+    use okilum_core::source_history;
+    let pair = Pair::loopback()?;
+    let shared = b"# Plan\r\nIdentical text in two independent notes\r\n";
+    fs::create_dir(pair.source.vault.join("Projects"))?;
+    fs::write(pair.source.vault.join("Projects/plan.md"), shared)?;
+    // Negative control: an independent note with exactly the same bytes.
+    fs::write(pair.source.vault.join("twin.md"), shared)?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("rename fixture initial hashes", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "Projects/plan.md", shared)
+            && same_hash(&pair.target.vault, "twin.md", shared))
+    })?;
+    assert!(
+        source_history::sync::list(&pair.target.vault, None)?
+            .versions
+            .is_empty(),
+        "no archive exists before the rename"
+    );
+
+    // A real rename on the sharing computer. The receiver's versioner keeps
+    // the old path, so Recover notes sees it exactly like a deletion.
+    fs::rename(
+        pair.source.vault.join("Projects/plan.md"),
+        pair.source.vault.join("Projects/renamed.md"),
+    )?;
+    wait("remote rename and archived old path", || {
+        pair.tick(&id)?;
+        Ok(!pair.target.vault.join("Projects/plan.md").exists()
+            && same_hash(&pair.target.vault, "Projects/renamed.md", shared)
+            && source_history::sync::list(&pair.target.vault, None)?
+                .versions
+                .iter()
+                .any(|v| v.note == pair.target.vault.join("Projects/plan.md")))
+    })?;
+    let listing = source_history::sync::list(&pair.target.vault, None)?;
+    let version = listing
+        .versions
+        .iter()
+        .find(|v| v.note == pair.target.vault.join("Projects/plan.md"))
+        .context("renamed note's old path absent from Recover notes")?;
+    assert_eq!(version.bytes(), shared);
+    assert!(
+        listing
+            .versions
+            .iter()
+            .all(|v| v.note == pair.target.vault.join("Projects/plan.md")),
+        "live same-content notes are not recovery candidates"
+    );
+    let notice = source_history::restore_notice(&pair.target.vault, version)?;
+    assert_eq!(notice.destination, "Projects/plan.md");
+    let text = notice.lines.join("\n");
+    ensure!(
+        text.contains("renamed or moved") && text.contains("second, separate copy"),
+        "notice must state the possible rename and the duplicate: {text}"
+    );
+    ensure!(
+        !text.contains("renamed.md") && !text.contains("twin"),
+        "notice must not infer identity from identical bytes: {text}"
+    );
+
+    // Confirmed Restore creates exactly the stated destination; the renamed
+    // note and the independent twin are untouched on both computers.
+    let drafts = pair._root.path().join("editor-drafts");
+    source_history::sync::restore_deleted(
+        &pair.target.vault,
+        Path::new(&notice.destination),
+        &drafts,
+        version.bytes(),
+    )?;
+    wait("restored duplicate hashes on both computers", || {
+        pair.tick(&id)?;
+        Ok([&pair.source.vault, &pair.target.vault]
+            .iter()
+            .all(|vault| {
+                same_hash(vault, "Projects/plan.md", shared)
+                    && same_hash(vault, "Projects/renamed.md", shared)
+                    && same_hash(vault, "twin.md", shared)
+            }))
+    })?;
+
+    // An edit arriving at the destination after review is never replaced.
+    fs::write(
+        pair.source.vault.join("Projects/plan.md"),
+        b"remote edit after review",
+    )?;
+    wait("remote edit reaches the restored path", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.target.vault,
+            "Projects/plan.md",
+            b"remote edit after review",
+        ))
+    })?;
+    assert!(source_history::sync::restore_deleted(
+        &pair.target.vault,
+        Path::new(&notice.destination),
+        &drafts,
+        version.bytes(),
+    )
+    .is_err());
+    assert!(same_hash(
+        &pair.target.vault,
+        "Projects/plan.md",
+        b"remote edit after review"
+    ));
+    assert!(
+        source_history::sync::list(&pair.target.vault, Some(Path::new("Projects/plan.md")))?
+            .versions
+            .iter()
+            .any(|v| v.bytes() == shared),
+        "the archive is retained after restoration"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_history_2045_broken_folder_warns_while_other_vault_receives() -> Result<()> {
     let pair = Pair::loopback()?;
     fs::write(pair.source.vault.join("healthy.md"), b"initial")?;

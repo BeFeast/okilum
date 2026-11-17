@@ -89,6 +89,8 @@ suite reader-outline-tests-draft-1320 120 cargo test --locked -p okilum-shell --
 suite manager-ttfm 120 cargo test --locked -p okilum-shell --bin okilum manager_ttfm_ -- --nocapture
 # #2045: require the native retention and restore regressions.
 suite issue2045 120 cargo test --locked -p okilum-shell --bin okilum issue2045_ -- --nocapture
+# #2568: Restore of an archived old path names a possible rename and waits for confirmation.
+suite issue2568 120 cargo test --locked -p okilum-shell --bin okilum issue2568_ -- --nocapture
 # #2044: explicit conflict controller and mounted shell acceptance.
 suite conflicts 120 cargo test --locked -p okilum-sync-controller --lib conflicts:: -- --nocapture
 suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ -- --nocapture --test-threads=1

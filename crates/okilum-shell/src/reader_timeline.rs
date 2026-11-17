@@ -1123,9 +1123,15 @@ mod tests {
         let button = visual
             .debug_bounds("recover-source-original")
             .expect("deleted note Restore action");
-        // A file appearing after the preview must never be overwritten.
-        std::fs::write(root.join("note.md"), b"racing local creation").unwrap();
         visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let confirm = visual
+            .debug_bounds("confirm-action")
+            .expect("Restore asks before creating the note (#2568)");
+        // A file appearing after the confirmation opened is never overwritten.
+        std::fs::write(root.join("note.md"), b"racing local creation").unwrap();
+        visual.simulate_click(confirm.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             std::fs::read(root.join("note.md")).unwrap(),
@@ -1141,10 +1147,120 @@ mod tests {
         let button = visual.debug_bounds("recover-source-original").unwrap();
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let confirm = visual.debug_bounds("confirm-action").unwrap();
+        visual.simulate_click(confirm.center(), Modifiers::default());
+        visual.run_until_parked();
         assert_eq!(std::fs::read(root.join("note.md")).unwrap(), old);
         assert_eq!(
             std::fs::read(root.join(".stversions/note~20261102-120000.md")).unwrap(),
             old
+        );
+    }
+    /// #2568: a Sync archive under an old path may belong to a note renamed on
+    /// another computer. Its preview names that possibility and the exact
+    /// destination, Restore writes nothing until confirmed, and Cancel leaves
+    /// the vault untouched. A same-content note elsewhere changes nothing.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn issue2568_restore_names_destination_and_waits_for_confirmation(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("notes");
+        std::fs::create_dir_all(root.join(".stversions/Projects")).unwrap();
+        std::fs::create_dir_all(root.join("Projects")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let old = b"# Plan\nShared text\n";
+        std::fs::write(
+            root.join(".stversions/Projects/Plan~20261102-120000.md"),
+            old,
+        )
+        .unwrap();
+        // The renamed note and an independent note carry the same bytes.
+        std::fs::write(root.join("Projects/Renamed.md"), old).unwrap();
+        std::fs::write(root.join("Independent.md"), old).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("Independent.md")),
+                        index_dir: Some(directory.path().join("index")),
+                        session_directory: Some(directory.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let listing = source_history::sync::list(&root, None).unwrap();
+        assert_eq!(
+            listing.versions.len(),
+            1,
+            "only the archived old path is recoverable"
+        );
+        let version = listing.versions[0].clone();
+        let notice = source_history::restore_notice(&root, &version).unwrap();
+        assert_eq!(notice.destination, "Projects/Plan.md");
+        let text = notice.lines.join("\n");
+        assert!(text.contains("renamed or moved") && text.contains("second, separate copy"));
+        assert!(!text.contains("Renamed") && !text.contains("Independent"));
+        reader.update_in(visual, |r, w, cx| {
+            r.preview_source_version(version.clone(), root.clone(), w, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("recover-restore-notice").is_some(),
+            "the preview explains a possible rename before Restore"
+        );
+        let button = visual.debug_bounds("recover-source-original").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            !root.join("Projects/Plan.md").exists(),
+            "Restore must not create the note before confirmation"
+        );
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let cancel = visual
+            .debug_bounds("cancel-confirm")
+            .expect("Restore confirmation");
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            !root.join("Projects/Plan.md").exists(),
+            "Cancel writes nothing"
+        );
+        // Cancel returns to the read-only preview with its notice.
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("recover-restore-notice").is_some());
+        let button = visual.debug_bounds("recover-source-original").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let confirm = visual.debug_bounds("confirm-action").unwrap();
+        visual.simulate_click(confirm.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(std::fs::read(root.join("Projects/Plan.md")).unwrap(), old);
+        assert_eq!(
+            std::fs::read(root.join("Projects/Renamed.md")).unwrap(),
+            old
+        );
+        assert_eq!(std::fs::read(root.join("Independent.md")).unwrap(), old);
+        assert_eq!(
+            std::fs::read(root.join(".stversions/Projects/Plan~20261102-120000.md")).unwrap(),
+            old,
+            "the archive is retained"
         );
     }
 }

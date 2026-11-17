@@ -127,6 +127,11 @@ impl Reader {
             && std::fs::symlink_metadata(&version.note)
                 .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             && !version.link_move;
+        // #2568: an archived old path may belong to a note renamed elsewhere.
+        // The preview states that and the exact destination before Restore.
+        let notice = can_restore
+            .then(|| source_history::restore_notice(&root, &version).ok())
+            .flatten();
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .language("markdown")
@@ -145,6 +150,15 @@ impl Reader {
                 .width(px(760.))
                 .child(version.label.clone())
                 .when(version.raw.is_some(), |dialog| dialog.child("Preview replaces unreadable characters. Recovery preserves the exact original bytes."))
+                .when_some(notice.clone(), |dialog, notice| {
+                    dialog.child(
+                        v_flex()
+                            .id("recover-restore-notice")
+                            .debug_selector(|| "recover-restore-notice".into())
+                            .gap_1()
+                            .children(notice.lines.into_iter().map(|line| div().text_sm().child(line))),
+                    )
+                })
                 .child(
                     Editor::new(&input)
                         .readonly(true)
@@ -153,33 +167,12 @@ impl Reader {
                         .h(px(320.)),
                 )
                 .footer(
-                    h_flex().gap_2().when(can_restore, |buttons| {
+                    h_flex().gap_2().when(notice.is_some(), |buttons| {
                         let reader = reader.clone(); let version = version.clone(); let root = root.clone();
-                        buttons.child(Button::new("recover-source-original").debug_selector(|| "recover-source-original".into()).primary().label("Restore to original path")
+                        buttons.child(Button::new("recover-source-original").debug_selector(|| "recover-source-original".into()).primary().label("Restore to original path…")
                             .on_click(move |_, window, cx| {
                                 window.close_dialog(cx);
-                                let _ = reader.update(cx, |r, cx| {
-                                    let result = (|| -> anyhow::Result<()> {
-                                        anyhow::ensure!(r.vault_root == root, "The open folder changed; open history again");
-                                        let relative = version.note.strip_prefix(&root)?;
-                                        let rel = relative.to_str().ok_or_else(|| anyhow::anyhow!("Unsupported note path"))?.to_string();
-                                        anyhow::ensure!(!r.source_is_dirty(cx), "Save or discard unsaved edits before restoring");
-                                        r.check_move_editors(std::slice::from_ref(&rel), cx)?;
-                                        if r.editing.is_some() {
-                                            anyhow::ensure!(r.leave_source(cx), "The editor is still saving; open history again");
-                                        }
-                                        let state = r.session_directory.as_ref().ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
-                                        source_history::save_copy_bytes(&root, relative, &state.join("editor-drafts"), version.bytes())?;
-                                        r.timeline = None;
-                                        r.prepare_document(&rel, None, None, window, cx);
-                                        Ok(())
-                                    })();
-                                    match result {
-                                        Ok(()) => reader_toast::transient("Note restored. The history version is retained.", window, cx),
-                                        Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}").into()),
-                                    }
-                                    cx.notify();
-                                });
+                                let _ = reader.update(cx, |r, cx| r.confirm_restore_source(version.clone(), root.clone(), window, cx));
                             }))
                     }).child(
                         Button::new("recover-source-copy")
@@ -199,6 +192,102 @@ impl Reader {
                     ),
                 )
         });
+    }
+
+    /// Restore writes nothing until the user confirms the notice naming the
+    /// destination (#2568). Cancel returns to the read-only preview.
+    pub(super) fn confirm_restore_source(
+        &mut self,
+        version: Version,
+        root: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let notice = match source_history::restore_notice(&root, &version) {
+            Ok(notice) => notice,
+            Err(error) => {
+                self.link_notice = Some(format!("Cannot restore: {error:#}").into());
+                cx.notify();
+                return;
+            }
+        };
+        let answer = reader_confirm::confirm(
+            window,
+            cx,
+            "Restore as a new note?",
+            reader_confirm::Body {
+                intro: notice.lines,
+                items: Vec::new(),
+                outro: Vec::new(),
+            },
+            "Restore",
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let confirmed = answer.recv().await == Ok(true);
+            let _ = this.update_in_own_window(cx, |r, window, cx| {
+                if confirmed {
+                    r.restore_source_original(&version, &root, window, cx);
+                } else {
+                    r.preview_source_version(version, root, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Exclusive creation at the original path. Every guard is checked after
+    /// confirmation, so an edit or a file appearing meanwhile still wins.
+    fn restore_source_original(
+        &mut self,
+        version: &Version,
+        root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = (|| -> anyhow::Result<()> {
+            anyhow::ensure!(
+                self.vault_root == root,
+                "The open folder changed; open history again"
+            );
+            let relative = version.note.strip_prefix(root)?;
+            let rel = relative
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Unsupported note path"))?
+                .to_string();
+            anyhow::ensure!(
+                !self.source_is_dirty(cx),
+                "Save or discard unsaved edits before restoring"
+            );
+            self.check_move_editors(std::slice::from_ref(&rel), cx)?;
+            if self.editing.is_some() {
+                anyhow::ensure!(
+                    self.leave_source(cx),
+                    "The editor is still saving; open history again"
+                );
+            }
+            let state = self
+                .session_directory
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
+            source_history::save_copy_bytes(
+                root,
+                relative,
+                &state.join("editor-drafts"),
+                version.bytes(),
+            )?;
+            self.timeline = None;
+            self.prepare_document(&rel, None, None, window, cx);
+            Ok(())
+        })();
+        match result {
+            Ok(()) => reader_toast::transient(
+                "Note restored. The history version is retained.",
+                window,
+                cx,
+            ),
+            Err(error) => self.link_notice = Some(format!("Cannot restore: {error:#}").into()),
+        }
+        cx.notify();
     }
 
     pub(super) fn save_source_copy(

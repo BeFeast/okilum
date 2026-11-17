@@ -179,7 +179,7 @@ fn visit(
                     text: String::from_utf8_lossy(&data).into_owned(),
                     raw: Some(data),
                     created,
-                    label: "From another device · Sync".into(),
+                    label: super::SYNC_ARCHIVE_LABEL.into(),
                     protected: false,
                     link_move: false,
                 });

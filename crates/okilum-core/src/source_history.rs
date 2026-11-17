@@ -1078,6 +1078,61 @@ pub fn save_copy_bytes(root: &Path, relative: &Path, drafts: &Path, bytes: &[u8]
     crate::note_files::create_with_source(root, relative, bytes)
 }
 
+/// Label of every version read from Syncthing's local archive (#2045).
+pub const SYNC_ARCHIVE_LABEL: &str = "From another device · Sync";
+
+/// What **Restore to original path** will create, stated before anything is
+/// written (#2568).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreNotice {
+    /// Vault-relative path of the new file, exactly as it will be created.
+    pub destination: String,
+    /// Paragraphs explaining the uncertainty, in display order.
+    pub lines: Vec<String>,
+}
+
+/// Explain restoring a version whose original path no longer exists.
+///
+/// Syncthing archives the old path of a remote rename or move exactly like a
+/// deletion, and a note's identity is its vault-relative path (PRD §4): there
+/// is no identity record that could tell the two apart. Identical bytes
+/// elsewhere in the vault are not evidence either, since independent notes can
+/// share text. So the notice never names another note as "the same" one; it
+/// states both possibilities and the exact file Restore will create. Restore
+/// itself stays an exclusive creation and never replaces a file.
+pub fn restore_notice(root: &Path, version: &Version) -> Result<RestoreNotice> {
+    let relative = version
+        .note
+        .strip_prefix(root)
+        .context("The recovered note is outside the open folder")?;
+    let destination = relative
+        .to_str()
+        .context("Unsupported note path")?
+        .replace('\\', "/");
+    let origin = if version.label == SYNC_ARCHIVE_LABEL {
+        "Sync kept this version when the note left this path on another computer. \
+         It was deleted there, or renamed or moved; Okilum cannot tell which."
+    } else {
+        "This note is no longer at this path. It was deleted, or renamed or moved; \
+         Okilum cannot tell which."
+    };
+    Ok(RestoreNotice {
+        lines: vec![
+            origin.into(),
+            format!("Restore creates a new note at {destination}."),
+            "If the note was renamed or moved, it still exists under its new name, \
+             and Restore makes a second, separate copy. Okilum identifies notes by \
+             their path, so matching text in another note is not treated as the \
+             same note."
+                .into(),
+            "Restore never replaces a file: if anything appears at this path first, \
+             nothing is written."
+                .into(),
+        ],
+        destination,
+    })
+}
+
 /// Old releases did not record which note a displaced inode belonged to.
 /// Offer exact copies, but never guess its owner or delete an unassigned file.
 pub fn legacy_preimages(drafts: &Path, root: &Path) -> Result<Listing> {
@@ -2088,5 +2143,73 @@ mod pending_input_tests {
         assert!(drafts(&state, &root).unwrap().versions.is_empty());
         prune_clean_journals(&state, u64::MAX).unwrap();
         assert!(!journal.exists(), "legacy clean-journal positive control");
+    }
+}
+
+#[cfg(test)]
+mod restore_notice_tests {
+    use super::*;
+
+    fn version(root: &Path, rel: &str, label: &str, bytes: &[u8]) -> Version {
+        Version {
+            note: root.join(rel),
+            text: String::from_utf8_lossy(bytes).into_owned(),
+            raw: Some(bytes.to_vec()),
+            created: 0,
+            label: label.into(),
+            protected: false,
+            link_move: false,
+        }
+    }
+
+    #[test]
+    fn issue2568_sync_archive_names_destination_and_possible_rename() {
+        let root = Path::new("/vault");
+        let notice = restore_notice(
+            root,
+            &version(root, "Projects/Plan.md", SYNC_ARCHIVE_LABEL, b"# Plan"),
+        )
+        .unwrap();
+        assert_eq!(notice.destination, "Projects/Plan.md");
+        let text = notice.lines.join("\n");
+        assert!(text.contains("another computer"), "{text}");
+        assert!(text.contains("renamed or moved"), "{text}");
+        assert!(text.contains("cannot tell which"), "{text}");
+        assert!(text.contains("second, separate copy"), "{text}");
+        assert!(
+            text.contains("creates a new note at Projects/Plan.md"),
+            "{text}"
+        );
+        assert!(text.contains("never replaces"), "{text}");
+    }
+
+    #[test]
+    fn issue2568_identical_bytes_elsewhere_never_change_the_notice() {
+        // Negative control: an independent note with exactly the same bytes is
+        // not evidence of a rename. The notice is a function of the path and
+        // origin only and never names the other note.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let bytes = b"\xef\xbb\xbf# Shared text\r\n";
+        let archive = version(&root, "Plan.md", SYNC_ARCHIVE_LABEL, bytes);
+        let before = restore_notice(&root, &archive).unwrap();
+        fs::write(root.join("Independent.md"), bytes).unwrap();
+        fs::write(root.join("Renamed.md"), bytes).unwrap();
+        let after = restore_notice(&root, &archive).unwrap();
+        assert_eq!(before, after);
+        let text = after.lines.join("\n");
+        assert!(!text.contains("Independent") && !text.contains("Renamed.md"));
+        assert_eq!(after.destination, "Plan.md");
+    }
+
+    #[test]
+    fn issue2568_local_history_states_the_same_uncertainty_without_sync() {
+        let root = Path::new("/vault");
+        let notice = restore_notice(root, &version(root, "a/b.md", "Before save", b"x")).unwrap();
+        let text = notice.lines.join("\n");
+        assert!(!text.contains("another computer"), "{text}");
+        assert!(text.contains("renamed or moved"), "{text}");
+        assert!(text.contains("creates a new note at a/b.md"), "{text}");
+        assert!(restore_notice(root, &version(Path::new("/other"), "x.md", "", b"")).is_err());
     }
 }
