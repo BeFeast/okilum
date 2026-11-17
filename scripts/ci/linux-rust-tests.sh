@@ -110,6 +110,8 @@ suite sidecar-supervisor-process-group 120 cargo test --locked -p okilum-sync-co
 suite enrollment 120 cargo test --locked -p okilum-sync-controller --lib enrollment:: --no-fail-fast
 suite enrollment-storage 120 cargo test --locked -p okilum-sync-controller --test enrollment_storage --no-fail-fast
 suite sidecar-store-tests-launch-authority 120 cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority:: --no-fail-fast
+# #3069: helper re-stage ordering, crash replay and the helper start window.
+suite sidecar-store-restage 120 cargo test --locked -p okilum-sync-controller --lib sidecar::store::restage:: --no-fail-fast
 suite sidecar-macos-recovery 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery:: --no-fail-fast
 suite sidecar-macos-registration 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration:: --no-fail-fast
 suite sidecar-macos-connect 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connect:: --no-fail-fast

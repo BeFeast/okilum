@@ -142,7 +142,7 @@ impl Reader {
         self.open_note(&note, None, window, cx);
         // Markdown restores after asynchronous publication; previews/empty views
         // are ready synchronously. The store restore is idempotent per root.
-        if note.is_empty() || self.file_preview.is_some() {
+        if note.is_empty() || self.pane.file_preview.is_some() {
             self.restore_ui_state(window, cx);
         }
     }

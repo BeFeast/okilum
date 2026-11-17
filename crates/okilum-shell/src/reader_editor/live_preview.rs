@@ -401,7 +401,7 @@ impl Reader {
         }) {
             return;
         }
-        if self.file_preview.is_some() {
+        if self.pane.file_preview.is_some() {
             return;
         }
         let colors = projection_colors(cx);
@@ -3260,7 +3260,8 @@ mod tests {
         assert!(note.len() >= 120 * 1024);
         let (reader, visual, _directory) = fixture(cx, &note);
         let block = reader.read_with(visual, |r, _| {
-            r.outline
+            r.pane
+                .outline
                 .iter()
                 .find(|h| h.text == "Landing")
                 .unwrap()

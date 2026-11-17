@@ -95,13 +95,13 @@ fn changes(old: &str, current: &str) -> String {
 
 impl Reader {
     pub(super) fn active_timeline(&self) -> Option<&Timeline> {
-        self.timeline.as_ref().filter(|t| {
+        self.pane.timeline.as_ref().filter(|t| {
             t.root == self.vault_root && t.rel == self.current_rel && !self.current_rel.is_empty()
         })
     }
 
     pub(super) fn open_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_rel.is_empty() || self.file_preview.is_some() {
+        if self.current_rel.is_empty() || self.pane.file_preview.is_some() {
             return;
         }
         let Some(state) = self.session_directory.clone() else {
@@ -110,7 +110,7 @@ impl Reader {
         let root = self.vault_root.clone();
         let rel = self.current_rel.clone();
         let id = uuid::Uuid::new_v4();
-        self.timeline = Some(Timeline {
+        self.pane.timeline = Some(Timeline {
             id,
             root: root.clone(),
             rel: rel.clone(),
@@ -165,7 +165,7 @@ impl Reader {
                 if r.active_timeline().is_none_or(|t| t.id != id) {
                     return;
                 }
-                let t = r.timeline.as_mut().unwrap();
+                let t = r.pane.timeline.as_mut().unwrap();
                 t.loading = false;
                 match loaded {
                     Ok((listing, current, current_bytes)) => {
@@ -185,7 +185,7 @@ impl Reader {
     }
 
     pub(super) fn back_from_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = self.timeline.as_mut() {
+        if let Some(t) = self.pane.timeline.as_mut() {
             t.selected = None;
             t.message = None;
             t.content = None;
@@ -213,7 +213,7 @@ impl Reader {
         let rel = t.rel.clone();
         let vault = self.vault.clone();
         let selection = uuid::Uuid::new_v4();
-        let t = self.timeline.as_mut().unwrap();
+        let t = self.pane.timeline.as_mut().unwrap();
         t.selected = Some(index);
         t.selection = selection;
         t.loading = true;
@@ -266,7 +266,7 @@ impl Reader {
                 }
                 match loaded {
                     Err(e) => {
-                        let t = r.timeline.as_mut().unwrap();
+                        let t = r.pane.timeline.as_mut().unwrap();
                         t.loading = false;
                         t.message = Some(format!("Cannot preview version: {e:#}"));
                     }
@@ -301,7 +301,7 @@ impl Reader {
                             source
                         });
                         let subscription = cx.observe(&content, |_, _, cx| cx.notify());
-                        let t = r.timeline.as_mut().unwrap();
+                        let t = r.pane.timeline.as_mut().unwrap();
                         t.loading = false;
                         if current.is_none() { t.message = Some("Current file is unavailable. Save as a recovered note to keep this version.".into()); }
                         t.current = current;
@@ -344,7 +344,7 @@ impl Reader {
     }
 
     pub(super) fn toggle_timeline_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = self.timeline.as_mut() {
+        if let Some(t) = self.pane.timeline.as_mut() {
             t.source_mode = !t.source_mode;
             if t.changes {
                 if let (Some(source), Some(index)) = (&t.source, t.selected) {
@@ -377,7 +377,7 @@ impl Reader {
         if let Some(source) = &t.source {
             source.update(cx, |s, cx| s.set_value(text, window, cx));
         }
-        let t = self.timeline.as_mut().unwrap();
+        let t = self.pane.timeline.as_mut().unwrap();
         t.changes = enabled;
         t.source_mode = enabled;
         cx.notify();
@@ -421,13 +421,13 @@ impl Reader {
         };
         match result {
             Err(e) => {
-                if let Some(t) = self.timeline.as_mut() {
+                if let Some(t) = self.pane.timeline.as_mut() {
                     t.message = Some(format!("Cannot restore: {e:#}"));
                 }
                 cx.notify();
             }
             Ok(()) => {
-                self.timeline = None;
+                self.pane.timeline = None;
                 let reader = cx.weak_entity();
                 reader_toast::push(Notification::success("Version restored")
                     .action(move |_,_,cx| {
@@ -474,7 +474,7 @@ impl Reader {
             .child(
                 reader_icon_button("history-close", IconName::ArrowLeft, "On this page", cx)
                     .on_click(cx.listener(|r, _, window, cx| {
-                        r.timeline = None;
+                        r.pane.timeline = None;
                         r.focus_handle.focus(window, cx);
                         cx.notify();
                     })),
@@ -907,7 +907,7 @@ mod tests {
         reader.update_in(visual, |r, w, cx| {
             std::fs::write(root.join("note.md"), current).unwrap();
             r.restore_timeline(w, cx);
-            assert!(r.timeline.is_none());
+            assert!(r.pane.timeline.is_none());
             assert!(!w.has_active_dialog(cx));
         });
         visual.run_until_parked();

@@ -38,7 +38,7 @@ impl View {
     /// The edit language Contents reads, or `None` for the private outline
     /// (Rust, Python, `.jsonc`) and for notes.
     pub(super) fn edit_contents_language(reader: &Reader) -> Option<&'static str> {
-        reader.file_preview.as_ref()?;
+        reader.pane.file_preview.as_ref()?;
         let rel = reader.selected_file();
         let ext = Path::new(rel).extension()?.to_str()?.to_ascii_lowercase();
         if ext == "json" {

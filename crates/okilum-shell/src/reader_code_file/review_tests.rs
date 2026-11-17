@@ -262,7 +262,14 @@ fn file2811_pending_read_restore_yields_to_a_new_view_choice(cx: &mut TestAppCon
         );
         settle(visual);
         let previous = reader.read_with(visual, |reader, _| {
-            reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+            reader
+                .pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .code
+                .clone()
+                .unwrap()
         });
         previous.update_in(visual, |code, window, cx| {
             code.set_view(View::Formatted, window, cx)
@@ -282,7 +289,14 @@ fn file2811_pending_read_restore_yields_to_a_new_view_choice(cx: &mut TestAppCon
         let restored = reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
             assert!(reader.editing.is_none());
-            let code = reader.file_preview.as_ref().unwrap().code.clone().unwrap();
+            let code = reader
+                .pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .code
+                .clone()
+                .unwrap();
             code.update(cx, |code, _| code.format_gate = Some(gate));
             code
         });
@@ -344,7 +358,14 @@ fn code2809_async_format_cannot_change_the_hidden_preview_after_real_edit_entry(
         reader_viewer_chrome::tests::fixture_with_files(cx, "data.json", &[("data.json", &source)]);
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     let (release, gate) = futures::channel::oneshot::channel();
     code.update_in(visual, |code, window, cx| {
@@ -487,7 +508,14 @@ fn code2809_header_mouse_and_view_keys_keep_live_reader_focus(cx: &mut TestAppCo
     visual.simulate_resize(size(px(1600.), px(900.)));
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     reader.update_in(visual, |reader, window, cx| {
         reader.focus_handle.focus(window, cx)
@@ -552,7 +580,14 @@ fn code2809_table_switch_does_not_focus_an_unmounted_text_input(cx: &mut TestApp
     visual.simulate_resize(size(px(1600.), px(900.)));
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     reader.update_in(visual, |reader, window, cx| {
         reader.focus_handle.focus(window, cx)
@@ -594,7 +629,14 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     let vault = temp.path().join("vault");
     let original = std::fs::read(vault.join("data.json")).unwrap();
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     assert!(code.read_with(visual, |preview, cx| preview.editable()
         && preview.chrome(code.clone(), cx).state.is_none()));
@@ -630,7 +672,14 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     });
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     let fresh_recovery = temp.path().join("fresh-recovery");
     reader.update(visual, |reader, _| {
@@ -730,6 +779,7 @@ fn code2809_file_identity_admission_precedes_any_storage_probe(cx: &mut TestAppC
             "existing identity policy wins before a folder probe"
         );
         let code = reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()

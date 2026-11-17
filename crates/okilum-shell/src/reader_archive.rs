@@ -869,6 +869,7 @@ mod tests {
         visual.run_until_parked();
         let archive = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -985,6 +986,7 @@ mod tests {
         visual.run_until_parked();
         let archive = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -1072,6 +1074,7 @@ mod tests {
         visual.run_until_parked();
         let archive = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -1172,7 +1175,8 @@ mod tests {
             });
             visual.run_until_parked();
             let archive = reader.read_with(visual, |r, _| {
-                r.file_preview
+                r.pane
+                    .file_preview
                     .as_ref()
                     .unwrap()
                     .archive
@@ -1292,7 +1296,13 @@ mod tests {
 
     fn archive_split_reset(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
         let archive = reader.read_with(visual, |r, _| {
-            r.file_preview.as_ref().unwrap().archive.clone().unwrap()
+            r.pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .unwrap()
         });
         archive.update(visual, |a, cx| {
             a.entry_split = reader_split::Split::new(
@@ -1336,6 +1346,7 @@ mod tests {
         visual.run_until_parked();
         let archive = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()

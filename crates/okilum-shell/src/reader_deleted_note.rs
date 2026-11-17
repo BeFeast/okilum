@@ -150,7 +150,7 @@ impl Reader {
         self.deleted_note.as_ref().filter(|deleted| {
             deleted.root == self.vault_root
                 && deleted.rel == self.current_rel
-                && self.file_preview.is_none()
+                && self.pane.file_preview.is_none()
         })
     }
 
@@ -176,7 +176,8 @@ impl Reader {
         if self.deleted_note.is_some() && self.deleted_current().is_none() {
             self.deleted_note = None;
         }
-        if self.current_rel.is_empty() || self.file_preview.is_some() || !self.document_ready() {
+        if self.current_rel.is_empty() || self.pane.file_preview.is_some() || !self.document_ready()
+        {
             return false;
         }
         let path = self.vault_root.join(&self.current_rel);
@@ -1418,14 +1419,14 @@ mod tests {
         });
         visual.run_until_parked();
         click(visual, "deleted-note-cancel");
-        reader.read_with(visual, |r, _| assert!(r.file_preview.is_none()));
+        reader.read_with(visual, |r, _| assert!(r.pane.file_preview.is_none()));
         reader.update_in(visual, |r, window, cx| {
             r.preview_file("asset.txt", window, cx)
         });
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "asset.txt")
+            assert_eq!(r.pane.file_preview.as_ref().unwrap().rel, "asset.txt")
         });
         assert!(!root.join("Start.md").exists());
     }
