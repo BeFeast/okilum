@@ -2686,7 +2686,7 @@ fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_c
 /// builds deliver it through the same gpui system notification as Windows.
 #[gpui::test]
 fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     cx.update(|cx| cx.set_app_identity("com.befeast.okilum", "Okilum"));
     let directory = tempfile::tempdir().unwrap();
     let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
@@ -2801,7 +2801,7 @@ enum Answer {
 /// Reject send exactly that request id; any answer, including a stale request
 /// the controller refuses as expired, retracts the OS notice.
 fn issue2490_answer(cx: &mut TestAppContext, answer: Answer) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let state = tempfile::tempdir().unwrap();
     cx.update(|cx| {
         reader_features::install(state.path(), cx);
@@ -2946,7 +2946,7 @@ fn issue2490_stale_request_refused_as_expired_retracts_the_notice(cx: &mut TestA
 /// waits, the line the approving computer's banner repeats.
 #[gpui::test]
 fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let (_root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
