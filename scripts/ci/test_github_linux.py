@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+import yaml
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
@@ -228,6 +229,33 @@ class LinuxBridgeTests(unittest.TestCase):
                      patch.object(linux.transport, 'wait_for_run', return_value=(result, 'test')):
                     self.assertEqual(linux.main(), code)
                 self.assertTrue(Path(env['GITHUB_OUTPUT']).read_text().endswith(f'result={result}\n'))
+
+    def test_daily_burst_queue_budget_fits_the_bridge_runner_ceiling(self):
+        # #3045 (run 28988): at 04:00 UTC the hosted Linux job queued past a 15-minute
+        # budget behind the other daily lanes and agent checks; main went red with no output.
+        # The waiter runs on `bridge`, whose primary runner stops jobs at 60 min, so queue
+        # and run share the 53 min deadline. Literal values: shrinking the queue budget
+        # or dropping the shared deadline fails here.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(MIRROR_TOKEN='test-token', PR_HEAD_SHA=SHA, PR_NUMBER='1', GITHUB_RUN_ID='2',
+                       GITHUB_OUTPUT=str(Path(tmp) / 'output'))
+            with patch.dict(os.environ, env), patch.object(linux.transport, 'push_head'), \
+                 patch.object(linux.transport, 'GitHub'), \
+                 patch.object(linux.time, 'monotonic', return_value=1000.0), \
+                 patch.object(linux.transport, 'wait_for_run', return_value=('success', 'test')) as wait:
+                self.assertEqual(linux.main(), 0)
+        limits = wait.call_args.kwargs
+        self.assertEqual(limits['queue_timeout'], 53 * 60)
+        self.assertEqual(limits['deadline'], 1000.0 + 53 * 60)
+        self.assertEqual(limits['run_timeout'], 5400)
+        workflow = yaml.safe_load((ROOT / '.forgejo/workflows/ci.yml').read_text())
+        job = workflow['jobs']['linux-github']
+        self.assertEqual(job['runs-on'], 'bridge')
+        step = next(step for step in job['steps'] if step.get('id') == 'remote')
+        # Budget + 120 s poll/cancel/cleanup fits the step; the job fits the 1h runner ceiling.
+        self.assertGreaterEqual(int(step['timeout-minutes']) * 60, 53 * 60 + 120)
+        self.assertGreater(int(job['timeout-minutes']), int(step['timeout-minutes']))
+        self.assertLessEqual(int(job['timeout-minutes']), 60)
 
     def test_aggregate_counts_actual_lanes_not_mutable_variable(self):
         # The hosted lane is the only Linux lane (Okilum left baldr, 14.11).
