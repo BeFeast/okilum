@@ -44,5 +44,5 @@ scripts/vendor-setup.sh --verify
 # scripts/ci/vendor-gpui.sh selects it for this run and restores the vendor lock.
 source scripts/ci/vendor-gpui.sh
 timeout "${OKILUM_VENDOR_TESTS_TIMEOUT:-40m}" \
-    cargo test --manifest-path vendor/gpui-component/Cargo.toml --config "$VENDOR_GPUI" \
+    cargo test --manifest-path vendor/gpui-component/Cargo.toml "${VENDOR_GPUI[@]}" \
     -p gpui-base -p gpui-component --lib
