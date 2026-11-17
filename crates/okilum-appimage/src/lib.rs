@@ -562,7 +562,7 @@ impl Staged {
         let mut note = log.try_clone()?;
         // Keep the flock across shutdown until the helper has finished.
         use std::os::fd::AsRawFd;
-        let mut command = helper_command(APPLY, self._lock.as_raw_fd());
+        let mut command = helper_command(APPLY);
         command
             .arg(std::process::id().to_string())
             .arg(&self.target.path)
@@ -572,8 +572,8 @@ impl Staged {
             .args(args)
             .stdout(log.try_clone()?)
             .stderr(log);
-        let (_helper, outcome) =
-            start_helper(command, true).context("Could not arm AppImage updater")?;
+        let (_helper, outcome) = start_helper(command, self._lock.as_raw_fd(), true)
+            .context("Could not arm AppImage updater")?;
         if let Some(outcome) = outcome {
             use std::io::Write;
             let _ = writeln!(note, "{outcome}");
@@ -584,11 +584,10 @@ impl Staged {
     }
 }
 
-/// The APPLY helper process: `/bin/sh -c <script> okilum-appimage-update`,
-/// with the transaction lock as fd 9 and no other inherited descriptor.
-/// Callers append the positional arguments and stdout/stderr.
-fn helper_command(script: &str, lock_fd: std::os::fd::RawFd) -> Command {
-    use std::os::unix::process::CommandExt;
+/// The APPLY helper process: `/bin/sh -c <script> okilum-appimage-update`.
+/// Callers append the positional arguments and stdout/stderr, then spawn it
+/// with [`start_helper`], which installs its descriptors.
+fn helper_command(script: &str) -> Command {
     let mut command = Command::new("/bin/sh");
     command
         .arg("-c")
@@ -598,23 +597,11 @@ fn helper_command(script: &str, lock_fd: std::os::fd::RawFd) -> Command {
         .env_remove("APPIMAGE")
         .env_remove("APPDIR")
         .env_remove("LD_LIBRARY_PATH");
-    unsafe {
-        command.pre_exec(move || {
-            // #3076: the AppImage runtime keeps its mount directory open as a
-            // non-CLOEXEC fd 1023 in this process. Inherited by the helper and
-            // from there by the relaunched build, it kept the replaced image's
-            // runtime and FUSE mount alive for the whole next session.
-            inherit_no_descriptors()?;
-            if libc::dup2(lock_fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
     command
 }
 
-/// Spawn the helper held at APPLY's gate (fd 8), place it outside the app's
+/// Spawn the helper with the transaction lock as fd 9, held at APPLY's gate
+/// (fd 8), and no other inherited descriptor; place it outside the app's
 /// systemd service unit when `leave_service` is set, then release the gate.
 /// Until released the helper runs shell builtins only, so it has no child
 /// process that a move of its PID would leave behind in the service (#3077).
@@ -623,6 +610,7 @@ fn helper_command(script: &str, lock_fd: std::os::fd::RawFd) -> Command {
 /// app open while the armed helper waits for it to exit.
 fn start_helper(
     mut command: Command,
+    lock_fd: std::os::fd::RawFd,
     leave_service: bool,
 ) -> Result<(std::process::Child, Option<String>)> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -637,10 +625,12 @@ fn start_helper(
     let gate_fd = gate.as_raw_fd();
     unsafe {
         command.pre_exec(move || {
-            if libc::dup2(gate_fd, 8) == -1 || libc::fcntl(8, libc::F_SETFD, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
+            // #3076: the AppImage runtime keeps its mount directory open as a
+            // non-CLOEXEC fd 1023 in this process. Inherited by the helper and
+            // from there by the relaunched build, it kept the replaced image's
+            // runtime and FUSE mount alive for the whole next session.
+            inherit_no_descriptors()?;
+            place_descriptors([(lock_fd, 9), (gate_fd, 8)])
         });
     }
     let helper = command.spawn()?;
@@ -658,6 +648,33 @@ fn start_helper(
     };
     drop(release);
     Ok((helper, outcome))
+}
+
+/// Install each `(source, target)` pair inheritable at its target, whatever
+/// the overlap between sources and targets (a source may already sit on its
+/// own or on another pair's target). Every source is first copied above all
+/// targets, so no `dup2` can overwrite a source still to be placed; the copies
+/// stay close-on-exec. Runs between fork and exec: async-signal-safe only.
+fn place_descriptors<const N: usize>(
+    pairs: [(std::os::fd::RawFd, std::os::fd::RawFd); N],
+) -> std::io::Result<()> {
+    let above = pairs.iter().map(|&(_, target)| target).max().unwrap_or(2) + 1;
+    let mut copies = [-1; N];
+    for (copy, &(source, _)) in copies.iter_mut().zip(&pairs) {
+        *copy = unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, above) };
+        if *copy == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    for (&copy, &(_, target)) in copies.iter().zip(&pairs) {
+        // dup2 leaves the new descriptor without FD_CLOEXEC; clear it anyway.
+        if unsafe { libc::dup2(copy, target) } == -1
+            || unsafe { libc::fcntl(target, libc::F_SETFD, 0) } == -1
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Mark every descriptor above stderr close-on-exec. Runs between fork and
@@ -1588,6 +1605,55 @@ sync() {
             }
         }
     }
+    /// Review of ff8823d5: the lock and the gate may already occupy each
+    /// other's targets (or their own) when the helper is spawned. Every
+    /// overlap must still end with the lock at fd 9 and the gate at fd 8.
+    #[test]
+    fn lock_and_gate_land_on_their_targets_whatever_their_source_descriptors() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("lock");
+        let gate_path = dir.path().join("gate");
+        let lock = File::create(&lock_path).unwrap();
+        let gate = File::create(&gate_path).unwrap();
+        // Park both well away from every slot a case arranges below.
+        let parked = |file: &File| {
+            let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100) };
+            assert!(fd >= 100);
+            fd
+        };
+        let (lock_parked, gate_parked) = (parked(&lock), parked(&gate));
+        // (lock source, gate source) as the child holds them before placement.
+        for (lock_at, gate_at) in [(8, 9), (9, 8), (9, 20), (20, 8), (20, 21)] {
+            let output = unsafe {
+                Command::new("/bin/sh")
+                    .args(["-c", "readlink /proc/$$/fd/8 /proc/$$/fd/9"])
+                    .pre_exec(move || {
+                        if libc::dup2(lock_parked, lock_at) == -1
+                            || libc::dup2(gate_parked, gate_at) == -1
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        place_descriptors([(lock_at, 9), (gate_at, 8)])
+                    })
+                    .output()
+                    .unwrap()
+            };
+            assert!(
+                output.status.success(),
+                "lock={lock_at} gate={gate_at}: {output:?}"
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}\n{}\n", gate_path.display(), lock_path.display()),
+                "fd 8 must be the gate and fd 9 the lock (lock={lock_at} gate={gate_at})"
+            );
+        }
+        close_fd(lock_parked);
+        close_fd(gate_parked);
+    }
+
     #[test]
     fn running_executable_is_replaceable_even_though_write_open_is_etxtbsy() {
         let path = std::env::current_exe().unwrap();
@@ -1773,7 +1839,7 @@ trace_stage shell-start
         traced.push_str(FILE_SYNC_ONLY);
         traced.push_str(&body);
         // The production spawn: lock as fd 9, no other inherited descriptor.
-        let mut command = helper_command(&traced, fd);
+        let mut command = helper_command(&traced);
         command
             .env("SYNC_CALLS", stage.join("sync-calls"))
             .arg("2147483647")
@@ -1783,9 +1849,8 @@ trace_stage shell-start
             .arg(sha(&target).unwrap())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
-        let mut helper = command
-            .spawn()
-            .expect("/bin/sh helper spawn/pre_exec failed");
+        let (mut helper, _) =
+            start_helper(command, fd, false).expect("/bin/sh helper spawn/pre_exec failed");
         eprintln!(
             "helper trace: spawn PASS pid={} at {:?}; lock_fd={fd}; log={:?}",
             helper.id(),
@@ -1920,7 +1985,7 @@ trace_stage shell-start
         let lock = File::create(&lockpath).unwrap();
         let log_path = dir.path().join("apply.log");
         let log = File::create(&log_path).unwrap();
-        let mut command = helper_command(&format!("{FILE_SYNC_ONLY}\n{APPLY}"), lock.as_raw_fd());
+        let mut command = helper_command(&format!("{FILE_SYNC_ONLY}\n{APPLY}"));
         command
             .env("SYNC_CALLS", stage.join("sync-calls"))
             .arg("2147483647")
@@ -1930,7 +1995,7 @@ trace_stage shell-start
             .arg(sha(&target).unwrap())
             .stdout(log.try_clone().unwrap())
             .stderr(log);
-        let (mut helper, _) = start_helper(command, false).unwrap();
+        let (mut helper, _) = start_helper(command, lock.as_raw_fd(), false).unwrap();
         let status = helper.wait().unwrap();
         close_fd(leaked);
         let log = fs::read_to_string(&log_path).unwrap();
@@ -2000,7 +2065,7 @@ trace_stage shell-start
             let lock = File::create(dir.join("lock")).unwrap();
             let log = File::create(stage.join("apply.log")).unwrap();
             let own = cgroup_of("self").unwrap().unwrap_or_default();
-            let mut command = helper_command(APPLY, lock.as_raw_fd());
+            let mut command = helper_command(APPLY);
             command
                 .arg(std::process::id().to_string())
                 .arg(&target)
@@ -2010,7 +2075,7 @@ trace_stage shell-start
                 .stdout(log.try_clone().unwrap())
                 .stderr(log);
             let detach = std::env::var("OKILUM_3077_DETACH").as_deref() == Ok("1");
-            let (helper, outcome) = start_helper(command, detach).unwrap();
+            let (helper, outcome) = start_helper(command, lock.as_raw_fd(), detach).unwrap();
             // Let APPLY reach its external `sleep` while the app is still alive.
             std::thread::sleep(Duration::from_millis(1500));
             let placed = cgroup_of(&helper.id().to_string())
