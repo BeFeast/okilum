@@ -188,7 +188,8 @@ class ContractHarness(unittest.TestCase):
             (output / 'schema.diff').write_text('-old\n+new\n')
             receipt['schema_drift'] = True
         with tempfile.TemporaryDirectory() as directory, \
-                patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted'), \
+                patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted',
+                           GITHUB_TOKEN='actions-token'), \
                 patch.object(nightly, 'command', return_value=''), \
                 patch.object(nightly, 'request', return_value=json.dumps([release]).encode()), \
                 patch.object(nightly, 'observe_schema', side_effect=schema), \
@@ -227,6 +228,24 @@ class ContractHarness(unittest.TestCase):
             self.assertEqual(inherited, [False])
             self.assertNotIn('actions-token', (Path(directory) / 'result.json').read_text())
 
+    def test_missing_or_empty_token_is_error_before_any_network_or_build(self):
+        for value in [None, '']:
+            env = {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted'}
+            if value is not None:
+                env['GITHUB_TOKEN'] = value
+            with self.subTest(token=value), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, env), \
+                    patch.object(nightly, 'request') as request, \
+                    patch.object(nightly, 'command') as command, \
+                    patch.object(nightly, 'build_client') as build:
+                if value is None:
+                    os.environ.pop('GITHUB_TOKEN', None)
+                result = nightly.run(Path(directory))
+                self.assertEqual(result['status'], 'ERROR')
+                self.assertIn('GITHUB_TOKEN is missing or empty', result['error'])
+                self.assertEqual(json.loads((Path(directory) / 'result.json').read_text()), result)
+                request.assert_not_called(); command.assert_not_called(); build.assert_not_called()
+
     def test_token_is_never_sent_outside_github_rest_api(self):
         with patch.object(nightly.urllib.request, 'urlopen') as urlopen:
             for url in ['https://codeload.github.com/pingdotgg/t3code/tar.gz/refs/tags/v1',
@@ -243,7 +262,7 @@ class ContractHarness(unittest.TestCase):
             headers['x-ratelimit-remaining'] = remaining
             return nightly.urllib.error.HTTPError('https://api.github.com/', 403,
                                                   'rate limit exceeded', headers, None)
-        for token, label in [(None, 'anonymous: no GITHUB_TOKEN'), ('t', 'authenticated')]:
+        for token, label in [(None, 'anonymous'), ('t', 'authenticated')]:
             with self.subTest(token=token), patch.object(nightly, 'request', side_effect=limited('0')):
                 with self.assertRaisesRegex(RuntimeError, 'rate limit exhausted \\(' + label):
                     nightly.upstream_releases(token)

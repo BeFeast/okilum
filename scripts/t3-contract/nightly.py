@@ -55,16 +55,15 @@ def request(url, *, data=None, token=None, method=None):
 
 def upstream_releases(token):
     # Anonymous REST reads share the hosted runner IP's 60/hour budget and failed on
-    # 2026-11-15 with 403 before any contract check ran. The read-only Actions token
-    # has its own per-repository budget and reads public upstream releases.
+    # 2026-11-15 with 403 before any contract check ran. run() requires the read-only
+    # Actions token, which has its own per-repository budget for public releases.
     try:
         return json.loads(request(f'{GITHUB_API}repos/{UPSTREAM}/releases?per_page=30', token=token))
     except urllib.error.HTTPError as error:
         if error.code in (403, 429) and (error.headers.get('x-ratelimit-remaining') == '0'
                                          or error.headers.get('retry-after')):
             raise RuntimeError('GitHub releases API rate limit exhausted ('
-                               + ('authenticated' if token else 'anonymous: no GITHUB_TOKEN')
-                               + '); no contract check ran') from None
+                               + ('authenticated' if token else 'anonymous') + '); no contract check ran') from None
         raise
 
 
@@ -302,6 +301,11 @@ def run(output):
                'deferred_operations': []}
     output.mkdir(parents=True, exist_ok=True)
     try:
+        if not token:
+            # The workflow always passes github.token; without it the inventory read
+            # would silently fall back to the shared anonymous budget.
+            raise RuntimeError('GITHUB_TOKEN is missing or empty; refusing an anonymous '
+                               'GitHub releases read')
         command(['python3', '-m', 'unittest', 'discover', '-s',
                  str(ROOT / 'scripts/t3-contract'), '-p', 'test_*.py', '-v'])
         receipt['harness_regressions'] = 'PASS'

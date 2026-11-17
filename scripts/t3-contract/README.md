@@ -107,7 +107,12 @@ T3 version, bootstrap/schema outcome, run URL and a bounded diff excerpt; the
 artifact contains the full diff. No Actions run polling or account token is
 used. Incident publication errors fail this standalone job visibly. Breaking protocol changes or runtime/harness failures remain FAIL in the
 result/summary and incident; additive-only drift is INFO with PASS. The hosted
-observation step remains report-only. No other CI gate is changed.
+observation step remains report-only: a FAIL/ERROR keeps the scheduled run green
+(it gates nothing and a flaky upstream nightly must not train people to ignore
+red), but is never silent. It opens/updates the incident and puts an `::error`
+annotation and a `FAIL`/`ERROR` headline on the run page. A missing or empty
+`GITHUB_TOKEN` is an immediate `ERROR`, not an anonymous fallback. No other CI
+gate is changed.
 
 Never upload the disposable server home or server logs: startup may print
 pairing credentials. The server process group is terminated before temporary
