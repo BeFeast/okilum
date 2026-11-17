@@ -23,6 +23,7 @@ TESTS = {
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
+    'issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again',
 }
 CHECKPOINTS = (
     'destination-prepared', 'source-staged', 'source-partial-blob', 'source-prepared',

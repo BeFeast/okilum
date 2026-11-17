@@ -915,6 +915,221 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     Ok(())
 }
 
+/// Confirm one complete lossless first-Sync review of `here` (#2043).
+fn first_merge(controller: &Controller, peer: Uuid, vault: &str, here: &Path) -> Result<()> {
+    let preview = controller.preview_remote_vault(peer, vault, here)?;
+    let plan = preview.plan().clone();
+    let mut backend = controller.first_sync_backend(preview);
+    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))
+}
+fn removed(controller: &Controller) -> Result<bool> {
+    Ok(controller.snapshot()?.status.contains("removed from Sync"))
+}
+fn member(api: &okilum_sync::Syncthing, vault: &str, device: &str) -> Result<bool> {
+    Ok(api.folder(vault)?["devices"]
+        .as_array()
+        .context("folder members")?
+        .iter()
+        .any(|d| d["deviceID"] == device))
+}
+fn reinvite(first: &Controller, second: &Controller, device: &str) -> Result<()> {
+    let url = first
+        .begin_pairing_at(
+            "Source fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("new invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let request = first.snapshot()?.pending.context("returning request")?;
+    assert_eq!(
+        request.device_id, device,
+        "the returning computer keeps its Syncthing device ID"
+    );
+    first.approve(request.request_id)?;
+    Ok(())
+}
+/// #3079: a removed computer comes back by a new invitation with the same
+/// Syncthing device ID; its kept, edited copy rejoins through the lossless first
+/// merge. An old removal delivered after the new approval must not remove it again.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again() -> Result<()> {
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture(root.path())?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    first_merge(&second, peer, vault, &here)?;
+    assert_eq!(first_sync_files(&here)?, first_sync_files(&there)?);
+
+    // 1. Remove the destination while it is online. It pauses its copy and keeps it.
+    let kept = first_sync_files(&here)?;
+    first.remove_computer(&target.device_id)?;
+    wait("removed computer applies its own removal", || {
+        first.refresh()?;
+        second.refresh()?;
+        Ok(removed(&second)? && b.folder(vault)?["paused"] == true)
+    })?;
+    assert!(!member(&a, vault, &target.device_id)?);
+    assert!(
+        second.catalog(peer).is_err(),
+        "old pairing keeps no authority"
+    );
+    assert_eq!(first_sync_files(&here)?, kept, "removed copy was modified");
+    // Both sides keep working while apart; the merge must keep every version.
+    fs::write(
+        here.join("while-removed-here.md"),
+        b"edited on the removed computer",
+    )?;
+    fs::write(
+        there.join("while-removed-there.md"),
+        b"edited on the remaining computer",
+    )?;
+    fs::write(here.join("same.md"), b"removed computer's version\n")?;
+
+    // 2. Re-invite the same computer. Approval readmits it.
+    reinvite(&first, &second, &target.device_id)?;
+    let rejoined = second.refresh()?;
+    ensure!(
+        !rejoined.status.contains("removed from Sync"),
+        "readmitted computer still reports removal: {}",
+        rejoined.status
+    );
+    let readmitted = rejoined
+        .peers
+        .iter()
+        .map(|p| p.id)
+        .find(|id| *id != peer)
+        .context("new pairing missing")?;
+    assert_eq!(second.catalog(readmitted)?.len(), 1);
+    assert_eq!(
+        first_sync_files(&here)?
+            .get("while-removed-here.md")
+            .map(Vec::as_slice),
+        Some(&b"edited on the removed computer"[..]),
+        "readmission must not touch the kept copy before review"
+    );
+    first_merge(&second, readmitted, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    for (path, bytes) in [
+        (
+            "while-removed-here.md",
+            &b"edited on the removed computer"[..],
+        ),
+        (
+            "while-removed-there.md",
+            &b"edited on the remaining computer"[..],
+        ),
+    ] {
+        assert_eq!(merged.get(path).map(Vec::as_slice), Some(bytes), "{path}");
+    }
+    for bytes in [&b"same\r\n"[..], &b"removed computer's version\n"[..]] {
+        assert!(
+            merged.values().any(|value| value == bytes),
+            "a version of same.md was lost"
+        );
+    }
+    assert!(member(&a, vault, &target.device_id)?);
+    fs::write(
+        here.join("after-rejoin-here.md"),
+        b"rejoined destination edit",
+    )?;
+    fs::write(there.join("after-rejoin-there.md"), b"rejoined source edit")?;
+    wait("rejoined computer transfers in both directions", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-rejoin-here.md"))
+            .is_ok_and(|bytes| bytes == b"rejoined destination edit")
+            && fs::read(here.join("after-rejoin-there.md"))
+                .is_ok_and(|bytes| bytes == b"rejoined source edit"))
+    })?;
+    println!("ISSUE3079_REJOIN_PASS: same device ID rejoined through the lossless first merge");
+
+    // 3. Remove it again while its controller is offline, then re-invite it
+    // before that removal is delivered. The delayed removal arrives after the
+    // new approval and must be acknowledged without removing it again.
+    second.shutdown();
+    drop(second);
+    first.remove_computer(&target.device_id)?;
+    assert!(
+        first.snapshot()?.pending_removals > 0,
+        "the offline computer keeps a durable delivery"
+    );
+    assert!(!member(&a, vault, &target.device_id)?);
+    fs::write(
+        here.join("offline-here.md"),
+        b"edited while removed offline",
+    )?;
+    let second = Controller::open(
+        root.path().join("target-controller"),
+        vec![target.config_file.clone()],
+    )?;
+    reinvite(&first, &second, &target.device_id)?;
+    wait("stale removal acknowledged without effect", || {
+        let snapshot = second.refresh()?;
+        ensure!(
+            !snapshot.status.contains("removed from Sync"),
+            "a stale removal removed the readmitted computer: {}",
+            snapshot.status
+        );
+        first.refresh()?;
+        Ok(first.snapshot()?.pending_removals == 0)
+    })?;
+    let current = second.snapshot()?.peers;
+    assert_eq!(current.len(), 1, "only the newest pairing stays live");
+    let newest = current[0].id;
+    assert!(newest != peer && newest != readmitted);
+    assert_eq!(
+        second.catalog(newest)?.len(),
+        1,
+        "stale removal revoked the new pairing"
+    );
+    assert!(!removed(&second)?);
+    first_merge(&second, newest, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(
+        merged.get("offline-here.md").map(Vec::as_slice),
+        Some(&b"edited while removed offline"[..])
+    );
+    fs::write(there.join("after-stale-there.md"), b"still syncing")?;
+    wait(
+        "readmitted computer keeps receiving after the stale removal",
+        || {
+            a.scan(vault)?;
+            b.scan(vault)?;
+            second.refresh()?;
+            Ok(fs::read(here.join("after-stale-there.md"))
+                .is_ok_and(|bytes| bytes == b"still syncing"))
+        },
+    )?;
+    assert!(!removed(&second)?);
+    println!("ISSUE3079_STALE_REMOVAL_PASS: delayed removal acknowledged without effect");
+    drop(first);
+    drop(second);
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart() -> Result<()> {
