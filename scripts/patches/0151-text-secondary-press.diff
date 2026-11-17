@@ -1,0 +1,178 @@
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -153,6 +153,34 @@
+ pub(crate) type LinkSecondaryPressFn =
+     dyn Fn(&LinkSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
+ 
++/// A secondary (right) press on rendered text outside a link: the text of the
++/// inline element that was hit and the UTF-8 offset of the press in it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TextSecondaryPress {
++    text: SharedString,
++    offset: usize,
++}
++
++impl TextSecondaryPress {
++    pub(crate) fn new(text: SharedString, offset: usize) -> Self {
++        Self { text, offset }
++    }
++
++    /// The displayed text of the pressed inline element (one paragraph,
++    /// heading or table cell), not the Markdown source.
++    pub fn text(&self) -> &SharedString {
++        &self.text
++    }
++
++    /// The UTF-8 byte offset of the press in [`Self::text`].
++    pub fn offset(&self) -> usize {
++        self.offset
++    }
++}
++
++pub(crate) type TextSecondaryPressFn =
++    dyn Fn(&TextSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
++
+ pub(crate) type CodeBlockSecondaryPressFn =
+     dyn Fn(&CodeBlock, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
+ 
+@@ -217,6 +245,7 @@
+     table_cell_press: Option<Arc<TableCellPressFn>>,
+     table_secondary_press: Option<Arc<TableSecondaryPressFn>>,
+     link_secondary_press: Option<Arc<LinkSecondaryPressFn>>,
++    text_secondary_press: Option<Arc<TextSecondaryPressFn>>,
+     code_block_secondary_press: Option<Arc<CodeBlockSecondaryPressFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
+@@ -268,6 +297,7 @@
+             table_cell_press: None,
+             table_secondary_press: None,
+             link_secondary_press: None,
++            text_secondary_press: None,
+             code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+@@ -296,6 +326,7 @@
+             table_cell_press: None,
+             table_secondary_press: None,
+             link_secondary_press: None,
++            text_secondary_press: None,
+             code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+@@ -324,6 +355,7 @@
+             table_cell_press: None,
+             table_secondary_press: None,
+             link_secondary_press: None,
++            text_secondary_press: None,
+             code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+@@ -479,6 +511,20 @@
+         self
+     }
+ 
++    /// Observe secondary (right) presses on rendered text that is not a link,
++    /// for a context menu that acts on the words under the pointer. The press
++    /// still propagates; layout is unchanged.
++    pub fn on_text_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&TextSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.text_secondary_press = Some(Arc::new(f));
++        self
++    }
++
+     /// Observe secondary (right) presses anywhere on a rendered code block,
+     /// for a code block context menu. The press still propagates; layout is
+     /// unchanged.
+@@ -766,6 +812,7 @@
+             state.table_cell_press = self.table_cell_press.clone();
+             state.table_secondary_press = self.table_secondary_press.clone();
+             state.link_secondary_press = self.link_secondary_press.clone();
++            state.text_secondary_press = self.text_secondary_press.clone();
+             state.code_block_secondary_press = self.code_block_secondary_press.clone();
+             state.link_click_handler = self.link_click_handler.clone();
+             state.link_hover_handler = self.link_hover_handler.clone();
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -128,6 +128,8 @@
+         Option<std::sync::Arc<super::text_view::TableSecondaryPressFn>>,
+     pub(super) link_secondary_press:
+         Option<std::sync::Arc<super::text_view::LinkSecondaryPressFn>>,
++    pub(super) text_secondary_press:
++        Option<std::sync::Arc<super::text_view::TextSecondaryPressFn>>,
+     pub(super) code_block_secondary_press:
+         Option<std::sync::Arc<super::text_view::CodeBlockSecondaryPressFn>>,
+     pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
+@@ -316,6 +318,7 @@
+             table_cell_press: None,
+             table_secondary_press: None,
+             link_secondary_press: None,
++            text_secondary_press: None,
+             code_block_secondary_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -807,6 +807,27 @@
+         }
+ 
+         if let Some(handler) = GlobalState::global(cx).text_view_state()
++            .and_then(|view| view.read(cx).text_secondary_press.clone())
++        {
++            let links = self.links.clone();
++            let layout = text_layout.clone();
++            let hitbox = hitbox.clone();
++            let text = self.text.clone();
++            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
++                if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
++                    return;
++                }
++                let Some(offset) = layout.index_for_position(event.position).ok() else { return; };
++                // A press on a link belongs to the link's own hook.
++                if links.iter().any(|(range, _)| range.contains(&offset)) {
++                    return;
++                }
++                let press = super::text_view::TextSecondaryPress::new(text.clone(), offset);
++                handler(&press, event, window, cx);
++            });
++        }
++
++        if let Some(handler) = GlobalState::global(cx).text_view_state()
+             .and_then(|view| view.read(cx).link_secondary_press.clone())
+         {
+             let links = self.links.clone();
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -9,7 +9,7 @@
+ pub use gpui_base::text::{
+     LinkPresentation, LinkSecondaryPress, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+     MarkdownInline, MarkdownInlineParserFn, MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData, TextMark,
+-    TableSecondaryPress, TextViewState, markdown_ast,
++    TableSecondaryPress, TextSecondaryPress, TextViewState, markdown_ast,
+ };
+ pub use style::TextViewStyle;
+ 
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -140,6 +140,17 @@
+         self.inner = self.inner.on_link_secondary_press(f);
+         self
+     }
++    /// Observes secondary (right) presses on rendered text outside links.
++    pub fn on_text_secondary_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&gpui_base::text::TextSecondaryPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.inner = self.inner.on_text_secondary_press(f);
++        self
++    }
+     /// Observes secondary (right) presses anywhere on a rendered code block.
+     pub fn on_code_block_secondary_press<F>(mut self, f: F) -> Self
+     where

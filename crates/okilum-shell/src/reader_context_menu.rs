@@ -7,13 +7,13 @@
 //! then stays closed so a single press never shows two menus.
 //!
 //! The renderer reports right presses on code blocks and links (vendor patch
-//! 0113). The press is kept with its position and the document generation, so
+//! 0113) and on other text (0151, for a date under the pointer). The press is kept with its position and the document generation, so
 //! a menu built later never acts on a block from another place or note.
 //! Nothing here runs while typing or rendering: work happens on the press.
 
 use super::*;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::text::LinkSecondaryPress;
+use gpui_component::text::{LinkSecondaryPress, TextSecondaryPress};
 use okilum_core::deep_link::Position;
 
 /// What a right press in the Reader landed on.
@@ -32,6 +32,8 @@ enum PressTarget {
         url: SharedString,
         text: SharedString,
     },
+    /// Displayed text outside a link, and the press offset in it (#724).
+    Text { text: SharedString, offset: usize },
 }
 
 /// Record right presses on links and code blocks in a Read-mode TextView.
@@ -49,10 +51,20 @@ pub(super) fn install(view: TextView, reader: Option<WeakEntity<Reader>>, live: 
             reader.record_press(event.position, PressTarget::Code(code))
         });
     })
-    .on_link_secondary_press(move |press: &LinkSecondaryPress, event, _, cx| {
-        let target = PressTarget::Link {
-            url: press.url().clone(),
+    .on_link_secondary_press({
+        let reader = reader.clone();
+        move |press: &LinkSecondaryPress, event, _, cx| {
+            let target = PressTarget::Link {
+                url: press.url().clone(),
+                text: press.text().clone(),
+            };
+            let _ = reader.update(cx, |reader, _| reader.record_press(event.position, target));
+        }
+    })
+    .on_text_secondary_press(move |press: &TextSecondaryPress, event, _, cx| {
+        let target = PressTarget::Text {
             text: press.text().clone(),
+            offset: press.offset(),
         };
         let _ = reader.update(cx, |reader, _| reader.record_press(event.position, target));
     })
@@ -95,7 +107,7 @@ pub(super) fn menu(
             }),
         );
     }
-    let menu = reader_reminder::menu(menu.separator(), reader, cx);
+    let menu = reader_reminder::menu_at(menu.separator(), reader, position, cx);
     match heading {
         Some(heading) => reader_deep_link::heading_link_item(menu, reader, heading),
         None => menu,
@@ -118,7 +130,19 @@ impl Reader {
         })?;
         match &press.target {
             PressTarget::Code(code) => Some(code.clone()),
-            PressTarget::Link { .. } => None,
+            PressTarget::Link { .. } | PressTarget::Text { .. } => None,
+        }
+    }
+
+    /// The displayed text pressed at `position` in this document and the
+    /// press offset in it, for a date under the pointer (#724).
+    pub(crate) fn pressed_text(&self, position: Point<Pixels>) -> Option<(SharedString, usize)> {
+        let press = self.read_press.as_ref().filter(|press| {
+            press.position == position && press.generation == self.navigation.preparation_generation
+        })?;
+        match &press.target {
+            PressTarget::Text { text, offset } => Some((text.clone(), *offset)),
+            _ => None,
         }
     }
 

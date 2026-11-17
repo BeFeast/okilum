@@ -3,6 +3,129 @@ use super::*;
 use gpui_component::input::projection::SourceStamp;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Resolve only a date span containing the actual UTF-8 hit, never a nearby date.
+/// Bound the work to this line and at most three words (the date grammar).
+pub(super) fn date_at(
+    text: &str,
+    offset: usize,
+    now: time::Date,
+) -> Option<(std::ops::Range<usize>, time::Date)> {
+    if !text.is_char_boundary(offset) || offset >= text.len() {
+        return None;
+    }
+    let mut start = offset.saturating_sub(MAX_DATE_BYTES);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut end = text.len().min(offset.saturating_add(MAX_DATE_BYTES));
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    start = text[start..offset]
+        .rfind('\n')
+        .map_or(start, |at| start + at + 1);
+    end = text[offset..end].find('\n').map_or(end, |at| offset + at);
+    let mut words = Vec::new();
+    let mut clipped = Vec::new();
+    let mut at = start;
+    for word in text[start..end].split_inclusive(char::is_whitespace) {
+        let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric());
+        // The bounded window must not turn part of a longer token into a date.
+        let continues_left = at == start
+            && start > 0
+            && text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace());
+        let continues_right = at + word.len() == end
+            && end < text.len()
+            && text[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace());
+        if !trimmed.is_empty() {
+            let left = at + word.find(trimmed)?;
+            // Ignore distant words without copying the document or scanning candidates there.
+            if left <= offset.saturating_add(MAX_DATE_BYTES)
+                && left + trimmed.len() + MAX_DATE_BYTES >= offset
+            {
+                let range = left..left + trimmed.len();
+                if continues_left || continues_right {
+                    clipped.push(range.clone());
+                }
+                words.push(range);
+            }
+        }
+        at += word.len();
+    }
+    let hit = words.iter().position(|word| word.contains(&offset))?;
+    let mut found = None;
+    for first in hit.saturating_sub(2)..=hit {
+        for last in hit..words.len().min(first + 3) {
+            let range = words[first].start..words[last].end;
+            if range.len() > MAX_DATE_BYTES
+                || clipped
+                    .iter()
+                    .any(|part| range.start < part.end && part.start < range.end)
+            {
+                continue;
+            }
+            // A numeric year belongs to the date, even when it is invalid.
+            // Do not silently reinterpret "1 November 20277" as next November.
+            if words
+                .get(last + 1)
+                .is_some_and(|next| text[next.clone()].chars().all(|c| c.is_ascii_digit()))
+            {
+                continue;
+            }
+            if let Some(date) = reminder_dates::parse(&text[range.clone()], now) {
+                if found
+                    .as_ref()
+                    .is_some_and(|(_, old_date)| *old_date != date)
+                {
+                    // A hit shared by different dates has no unambiguous intent.
+                    return None;
+                }
+                if found
+                    .as_ref()
+                    .is_none_or(|(old, _): &(std::ops::Range<usize>, time::Date)| {
+                        range.len() > old.len()
+                    })
+                {
+                    found = Some((range, date));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The caret's date in the editor source, read from a bounded window of the
+/// Rope around the caret: the document is never flattened for this.
+pub(super) fn date_at_caret(
+    text: &gpui_component::input::projection::SourceText,
+    caret: usize,
+    now: time::Date,
+) -> Option<(String, time::Date)> {
+    if !text.is_char_boundary(caret) {
+        return None;
+    }
+    // Wider than `date_at`'s own bound, so its token-clipping checks see the
+    // characters just outside it.
+    let reach = 2 * MAX_DATE_BYTES;
+    let mut start = caret.saturating_sub(reach);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut end = text.len().min(caret.saturating_add(reach));
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let window = text.rope().slice(start..end).to_string();
+    let (range, date) = date_at(&window, caret - start, now)?;
+    Some((window[range].to_owned(), date))
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct Owner {
     pub(super) root: PathBuf,
@@ -47,6 +170,11 @@ impl Owner {
 #[derive(Clone, PartialEq)]
 enum Evidence {
     Read,
+    /// A right press on displayed text without a selection: the TextView's
+    /// displayed document must still be the one the press hit.
+    ReadPress {
+        displayed: SharedString,
+    },
     Editor {
         input: Entity<EditorState>,
         stamp: SourceStamp,
@@ -71,14 +199,42 @@ impl Request {
         Some(Self::direct(reader, selection, date, None).with_evidence(Evidence::Read))
     }
 
+    /// A date under a right press in Read mode, when nothing is selected.
+    pub(super) fn read_at(reader: &Reader, position: Point<Pixels>, cx: &App) -> Option<Self> {
+        let content = reader.content.read(cx);
+        if !content.selected_text().is_empty() {
+            return Self::read(reader, cx);
+        }
+        if reader.single_file
+            || reader.file_preview.is_some()
+            || reader.current_rel.is_empty()
+            || reader.pointer_on_link()
+            || reader.editing.is_some()
+        {
+            return None;
+        }
+        let (text, offset) = reader.pressed_text(position)?;
+        let (range, date) = date_at(&text, offset, today())?;
+        let displayed = content.document_source()?;
+        Some(
+            Self::direct(reader, text[range].to_owned(), date, None)
+                .with_evidence(Evidence::ReadPress { displayed }),
+        )
+    }
+
     pub(super) fn editor(
         reader: &Reader,
         input: &Entity<EditorState>,
         state: &EditorState,
     ) -> Option<Self> {
-        let selection = state.selected_text().to_string();
-        let date = reminder_dates::parse(&selection, today())?;
         let source = state.source_snapshot();
+        let (selection, date) = if state.selected_range().is_empty() {
+            date_at_caret(&source.text, state.cursor(), today())?
+        } else {
+            let selection = state.selected_text().to_string();
+            let date = reminder_dates::parse(&selection, today())?;
+            (selection, date)
+        };
         Some(Self {
             owner: Owner::capture(reader),
             selection,
@@ -130,6 +286,15 @@ impl Request {
     fn current(&self, reader: &Reader, cx: &App) -> bool {
         self.owner.current(reader)
             && match &self.evidence {
+                Evidence::ReadPress { displayed } => {
+                    reader.editing.is_none()
+                        && reader.content.read(cx).document_source().as_ref() == Some(displayed)
+                        && reader
+                            .note_canonical_source
+                            .as_deref()
+                            .unwrap_or(&reader.note_source)
+                            == &*self.source
+                }
                 Evidence::Read => {
                     reader.editing.is_none()
                         // Root clears TextView selection on the menu item's
