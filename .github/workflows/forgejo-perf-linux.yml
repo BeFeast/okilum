@@ -1,8 +1,13 @@
 # #1662: same-runner shipped input A/B; measurement-only scroll is report-only.
+# Oleg 17.11: the A/B is strict (a confirmed regression is red) but never
+# required: neither `ci / check` nor gh-check.sh --fast waits on this workflow.
 name: forgejo-perf-linux
 on:
   push:
-    branches: ['forgejo-perf-linux-pr/**']
+    # forgejo-perf-linux-pr/**: the Forgejo bridge (nightly ci, commit-ci).
+    # agent-checks-fast/**: every PR head's pre-merge push; native-scope heads
+    # only, as a separate run the --fast helper never watches.
+    branches: ['forgejo-perf-linux-pr/**', 'agent-checks-fast/**']
   workflow_dispatch:
     inputs:
       calibration_runs:
@@ -10,18 +15,46 @@ on:
         type: choice
         options: ['1', '2', '3', '4', '5']
         default: '1'
-      strict:
-        description: 'One strict invocation without the identical-source guard (forced-red control)'
-        type: boolean
-        default: false
 permissions:
   contents: read
   actions: read
 concurrency:
   group: forgejo-perf-linux-${{ github.ref }}
-  cancel-in-progress: false
+  # A newer pre-merge push of the same branch supersedes its older A/B.
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
 jobs:
+  # Same selection as the Forgejo native-scope job: docs/web/other-OS-only
+  # heads build nothing. Bridged and dispatched runs were selected upstream.
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.scope.outputs.native }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select native-scope heads
+        id: scope
+        env:
+          PRE_MERGE: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
+        run: |
+          set -euo pipefail
+          if [ "$PRE_MERGE" != true ]; then echo "native=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git fetch --no-tags --deepen=300 origin "$GITHUB_SHA"
+          git fetch --no-tags --depth=300 origin main
+          # No merge-base within reach is unknown scope: measure, never skip.
+          if base=$(git merge-base HEAD origin/main); then
+            native=$(git diff --name-only -z "$base" HEAD | python3 scripts/ci/macos-scope.py)
+          else
+            native=true
+          fi
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+          echo "Editor A/B scope against main ${base:-<no merge-base>}: **$native**" >> "$GITHUB_STEP_SUMMARY"
+
   perf-linux:
+    needs: scope
+    if: needs.scope.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -73,23 +106,19 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1366x768x24 >/dev/null 2>&1 &
           sleep 2
+      # Strict exits (schema 2): a confirmed regression fails this job. It is
+      # not required anywhere, so red informs and never blocks a merge.
       - name: Check editor latency and the baseline ratchet
         env:
           CALIBRATION_RUNS: ${{ inputs.calibration_runs || '1' }}
-          STRICT: ${{ inputs.strict && 'true' || 'false' }}
         run: |
           set -euo pipefail
           export DISPLAY=:99
           case "$CALIBRATION_RUNS" in 1|2|3|4|5) ;; *) exit 2;; esac
-          if [ "$STRICT" = true ] && [ "$CALIBRATION_RUNS" != 1 ]; then
-            echo "strict is a single forced-red invocation; use calibration_runs for unchanged code" >&2; exit 2
-          fi
-          mode=()
-          if [ "$CALIBRATION_RUNS" = 1 ] && [ "$STRICT" != true ]; then mode+=(--report-only); fi
           for calibration_pass in $(seq 1 "$CALIBRATION_RUNS"); do
             timeout --signal=TERM --kill-after=5s 600s dbus-run-session -- \
               python3 scripts/perf/editor/ab.py "$RUNNER_TEMP/ab-binaries/main/okilum" \
-              "$RUNNER_TEMP/ab-binaries/pr/okilum" "$RUNNER_TEMP/editor/pass-$calibration_pass" "${mode[@]}"
+              "$RUNNER_TEMP/ab-binaries/pr/okilum" "$RUNNER_TEMP/editor/pass-$calibration_pass"
           done
           if [ "$CALIBRATION_RUNS" != 1 ]; then
             echo "Consecutive green input A/B calibration runs: **$CALIBRATION_RUNS**, identical pinned main/PR binaries in this job." >> "$GITHUB_STEP_SUMMARY"
@@ -109,7 +138,9 @@ jobs:
 
   # Report-only instrumentation must not consume the shipped input A/B deadline.
   # It retains its own source/CPU receipt and the same scroll measurements.
+  # Not on pre-merge pushes: it is a diagnostic, not a PR signal.
   scroll-report:
+    if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     continue-on-error: true

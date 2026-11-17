@@ -52,8 +52,11 @@ Use distinct local branch names for independent workers. The helper rejects a
 dirty worktree and detached HEAD. Everything pushed is public: source and tests
 must contain only public code and synthetic fixtures, never private/corporate data.
 
-Only `agent-checks.yml` listens to this namespace. It creates no GitHub PR, tags,
-release, signing or publication work. Forgejo remains primary; its existing main
+Only `agent-checks.yml` gates on this namespace. It creates no GitHub PR, tags,
+release, signing or publication work. The non-required editor latency A/B
+(`forgejo-perf-linux.yml`, #1662) also listens to `agent-checks-fast/**`, as a
+separate run on native-scope heads: strict, so a confirmed regression is red,
+but the helper never waits for it or reads its verdict. It carries no secrets. Forgejo remains primary; its existing main
 and release-tag mirror is unchanged. Push the implementation branch to Forgejo
 and open its PR there as usual. Before merge, require `gh-check.sh --fast`
 green on this exact HEAD; who may merge which PR is in `AGENTS.md`.
@@ -291,7 +294,8 @@ that an unscoped scratch-state binary cannot bypass the isolated QA launch guard
 even when its journal is Idle. Production launch/signature guards are unchanged.
 
 The supplementary perf workflow keeps shipped input A/B in its `perf-linux`
-job and runs measurement-only scroll in the independent `scroll-report` job.
+job (strict exits, never required) and runs measurement-only scroll in the
+independent `scroll-report` job (bridged runs only).
 Both retain their 60-minute ceilings. Run `42945853529` spent 36 minutes building
 the unpatched A/B pair and another 18 minutes building report-only scroll before
 starting editor measurements; its bridge/runner deadline interrupted those

@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -144,6 +145,11 @@ def find_run(branch, sha, event):
             r["event"] == event and r["path"] == ".github/workflows/" + WORKFLOW]
 
 
+def ab_runs_url(branch):
+    return (f"https://github.com/{REPO}/actions/workflows/forgejo-perf-linux.yml?query="
+            + urllib.parse.quote(f"branch:{branch}", safe=""))
+
+
 def summarize(info):
     print(f"{info['url']} attempt={info['attempt']} head={info['headSha']}")
     for job in info.get("jobs", []):
@@ -261,6 +267,10 @@ def main():
         if infrastructure_failure(logs.stdout):
             return 75
     print(f"Exact head {sha}: exit={result} {info['url']}")
+    if args.fast:
+        # #1662: the strict editor A/B runs beside this gate on native-scope heads.
+        # It is not required; this helper never waits for it or reads its verdict.
+        print(f"Editor latency A/B (strict, not required): {ab_runs_url(branch)}")
     return result
 
 
