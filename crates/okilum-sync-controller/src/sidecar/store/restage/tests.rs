@@ -17,6 +17,10 @@ struct Memory {
     cancel_on_stop: bool,
     /// Bumped whenever the scheduler starts the helper again.
     generation: u128,
+    /// Started by this pass and not yet ready: its managed-launch reads pin the
+    /// state directory without waiting (#3069).
+    starting: bool,
+    startup_violations: Vec<String>,
 }
 impl Memory {
     fn before(&mut self, name: &str) -> Result<()> {
@@ -48,6 +52,9 @@ impl StateDir for Dir {
     fn lock(self: &Arc<Self>, _: Instant) -> Result<Lock> {
         let mut m = self.0.borrow_mut();
         ensure!(!m.locked, "nested state lock");
+        if m.starting {
+            m.startup_violations.push("state transaction".into());
+        }
         m.locked = true;
         Ok(Lock(self.0.clone()))
     }
@@ -104,6 +111,7 @@ impl Platform for Fake {
         let mut m = self.0.borrow_mut();
         m.before("start")?;
         m.running = true;
+        m.starting = true;
         m.after()
     }
     fn stop(&mut self, _: &Binding) -> Result<()> {
@@ -145,6 +153,11 @@ impl Platform for Fake {
 impl Host for Fake {
     type Native = Fake;
     fn platform(&mut self, _: &Binding) -> Result<Fake> {
+        let mut m = self.0.borrow_mut();
+        if m.starting {
+            // The Windows guard reads the runtime selection under the state lock.
+            m.startup_violations.push("new platform".into());
+        }
         Ok(Fake(self.0.clone()))
     }
     fn select_helper(&mut self, b: &Binding, _: &str) -> Result<()> {
@@ -158,6 +171,7 @@ impl Host for Fake {
         m.before("authenticated ready identity")?;
         ensure!(m.running, "helper not running");
         m.ready = true;
+        m.starting = false;
         m.after()
     }
     fn cleanup(&mut self, _: &Binding) -> Result<()> {
@@ -241,6 +255,21 @@ fn planned(host: &Fake, step: &str) -> Envelope {
     serde_json::from_value(plan[step].clone()).unwrap()
 }
 
+/// #3069: from start to authenticated readiness the restage opens no state
+/// transaction and builds no new platform, so the starting helper's
+/// managed-launch reads never meet the exclusive state-directory lock.
+#[test]
+fn helper_startup_window_takes_no_state_lock_and_builds_no_platform() -> Result<()> {
+    let (store, mut host, _) = fixture();
+    assert!(run(&store, &mut host)?);
+    let m = host.0.borrow();
+    assert!(
+        m.events.iter().any(|e| e == "start") && m.ready,
+        "positive control: this pass started the new helper and waited for it"
+    );
+    assert_eq!(m.startup_violations, Vec::<String>::new());
+    Ok(())
+}
 #[test]
 fn every_crash_before_and_after_publication_or_native_effect_resumes_enabled() -> Result<()> {
     let (store, mut host, _) = fixture();
