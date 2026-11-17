@@ -88,6 +88,17 @@ the transaction and releases the helper lock. The confirmation is bounded to 60
 seconds; if the application remains open without confirming, the helper leaves it
 open and retains the previous copy for explicit recovery. Exit before confirmation
 restores the old executable only if installed bytes still match the replacement.
+The helper inherits no descriptor other than the lock and stdio (#3076): the
+AppImage runtime keeps its mount directory open as fd 1023 in the app, and
+passing that on kept the replaced image's runtime and FUSE mount alive for the
+whole next session. When Okilum runs inside a systemd user service
+(`systemd-run --user` without `--scope`, uwsm `-t service`), systemd stops that
+unit when Okilum quits and, with the default `ExitType=main`, kills every
+process in it. Arming therefore moves the helper into its own transient scope
+`okilum-update-<pid>.scope` through the user manager (#3077); the relaunched
+build runs there. The outcome is recorded in `apply.log`. If the move
+fails the helper stays where it is, as before, and a service launched without
+`ExitType=cgroup` can still lose it.
 A later session exit never rolls back a committed update. The recovery directory
 is printed in the diagnostic log; it contains `previous.AppImage` and `apply.log`.
 A successful replacement retains the previous file for manual recovery. Restore
