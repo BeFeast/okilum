@@ -420,6 +420,18 @@ pub(crate) fn parse_args(
                         });
                     continue;
                 }
+                Some("--restore-quick-window") => {
+                    let root = PathBuf::from(value()?);
+                    let note = value()?
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("Note path must be UTF-8"))?;
+                    opts.restart_windows
+                        .push(super::reader_update_restart::Window::Quick {
+                            root,
+                            note: Some(note).filter(|note| !note.is_empty()),
+                        });
+                    continue;
+                }
                 Some("--restore-file-window") => {
                     opts.restart_windows
                         .push(super::reader_update_restart::Window::File {

@@ -4753,8 +4753,9 @@ mod tests {
             };
             assert_eq!(
                 opts.restart_windows,
-                vec![crate::reader_update_restart::Window::File {
-                    path: root.join("note.md")
+                vec![crate::reader_update_restart::Window::Quick {
+                    root: root.clone(),
+                    note: Some("note.md".into()),
                 }]
             );
         });
@@ -5105,8 +5106,9 @@ mod tests {
         });
         assert_eq!(
             crate::reader_update_restart::take(&state).unwrap(),
-            vec![crate::reader_update_restart::Window::File {
-                path: root.join("note.md")
+            vec![crate::reader_update_restart::Window::Quick {
+                root: root.clone(),
+                note: Some("note.md".into()),
             }]
         );
         assert!(committed.get());

@@ -8862,8 +8862,9 @@ mod quick_view_tests {
                     );
                     assert_eq!(r.searcher.is_some(), !single_file);
                     let target = if single_file {
-                        reader_update_restart::Window::File {
-                            path: r.vault_root.join(name),
+                        reader_update_restart::Window::Quick {
+                            root: r.vault_root.clone(),
+                            note: Some(name.into()),
                         }
                     } else {
                         reader_update_restart::Window::Vault {
