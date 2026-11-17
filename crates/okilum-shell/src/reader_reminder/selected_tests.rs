@@ -5,10 +5,23 @@ use selection::test_hooks::{Harness, Hooks};
 use std::cell::RefCell;
 
 thread_local! {
-    static EDITOR_REQUEST: RefCell<Option<selection::Request>> = const { RefCell::new(None) };
+    /// `Some` only while a test waits for the editor menu's request. A request
+    /// holds entity handles; one retained here would outlive the test app and
+    /// fail its leak check (#3039).
+    static EDITOR_REQUEST: RefCell<Option<Option<selection::Request>>> = const { RefCell::new(None) };
 }
 pub(super) fn record_editor_request(request: Option<selection::Request>) {
-    EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = request);
+    EDITOR_REQUEST.with(|slot| {
+        if let Some(armed) = slot.borrow_mut().as_mut() {
+            *armed = request;
+        }
+    });
+}
+fn arm_editor_request() {
+    EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = Some(None));
+}
+fn take_editor_request() -> Option<selection::Request> {
+    EDITOR_REQUEST.with(|slot| slot.borrow_mut().take().flatten())
 }
 const SOURCE: &str = "# Winter\r\n\r\n1 November 2027\r\n";
 const LINE: &str = "- [ ] 1 November 2027 [[Source.md#Winter]] 📅 2027-11-01\n";
@@ -255,7 +268,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
 }
 
 fn editor_action(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> RemindOnSelection {
-    EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = None);
+    arm_editor_request();
     let input = reader.read_with(visual, |reader, _| {
         reader.editing.as_ref().unwrap().input().clone()
     });
@@ -292,8 +305,7 @@ fn editor_action(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Rem
         before + 1,
         "actual editor context builder ran"
     );
-    let request = EDITOR_REQUEST
-        .with(|slot| slot.borrow().clone())
+    let request = take_editor_request()
         .expect("actual menu retained the date request outside the input update");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -712,7 +724,7 @@ async fn reminder_724_editor_cursor_right_press_retains_revision_and_writes_once
     });
     input.update(visual, |state, cx| state.set_selected_range(0..0, cx));
     visual.run_until_parked();
-    EDITOR_REQUEST.with(|slot| *slot.borrow_mut() = None);
+    arm_editor_request();
     let before = MENU_BUILDS.with(|count| count.get());
     visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
@@ -726,9 +738,7 @@ async fn reminder_724_editor_cursor_right_press_retains_revision_and_writes_once
         assert!(state.selected_range().is_empty());
         assert!(state.cursor() > 0, "right press moved the actual caret");
     });
-    let request = EDITOR_REQUEST
-        .with(|slot| slot.borrow().clone())
-        .expect("date under actual press offered");
+    let request = take_editor_request().expect("date under actual press offered");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     input.update_in(visual, |state, window, cx| state.focus(window, cx));
