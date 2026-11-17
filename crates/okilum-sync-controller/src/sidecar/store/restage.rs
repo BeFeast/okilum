@@ -431,16 +431,24 @@ impl<D: StateDir> Store<D> {
                 continue;
             }
             let mut native = host.platform(current.binding())?;
-            {
+            let stopped = {
                 let tx = self.begin(deadline)?;
                 self.still_planned(&tx, &plan.enabled)?;
                 native.verify_payload(current.binding())?;
                 if native.inspect(current.binding())? == Registration::Absent {
                     native.register(current.binding())?;
                 }
-                if native.inspect(current.binding())? == Registration::Stopped {
-                    native.start(current.binding())?;
-                }
+                native.inspect(current.binding())? == Registration::Stopped
+            };
+            // Start only after the state lock is released (#3069): the
+            // launched helper opens the state directory (its working directory
+            // and startup reads) possibly before Task Scheduler returns, and the
+            // exclusive transaction refuses every other open. A Disable that
+            // commits in between still wins: the helper re-reads the journal
+            // under the lock and stays idle unless it is Enabled, and readiness
+            // rechecks the intent before this plan can finish.
+            if stopped {
+                native.start(current.binding())?;
             }
             host.ready(&mut native, current.binding(), deadline)?;
             let tx = self.begin(deadline)?;
