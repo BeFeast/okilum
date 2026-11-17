@@ -88,7 +88,7 @@ impl Workspace {
             .debug_selector(|| "k8s-triage".into())
             .id("k8s-triage")
             // Shrinks (and scrolls) before the list or the dock do.
-            .flex_shrink()
+            .flex_shrink(1.)
             .min_h(px(80.))
             .max_h(px(260.))
             .overflow_y_scroll()
@@ -269,7 +269,7 @@ impl Workspace {
         let band = v_flex()
             .debug_selector(|| "k8s-path".into())
             .id("k8s-path")
-            .flex_shrink()
+            .flex_shrink(1.)
             .min_h(px(80.))
             .max_h(px(260.))
             .overflow_y_scroll()
