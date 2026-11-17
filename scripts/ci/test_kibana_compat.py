@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -60,9 +61,19 @@ class KibanaCompatTests(unittest.TestCase):
     def test_containers_and_runner_are_bounded(self):
         self.assertIn('--memory', compat.ES_LIMITS)
         self.assertIn('--memory', compat.KIBANA_LIMITS)
-        self.assertLessEqual(compat.ES_START_SECONDS + compat.KIBANA_START_SECONDS + compat.RUNNER_SECONDS, 15 * 60)
+        self.assertLessEqual(compat.ES_START_SECONDS + compat.KIBANA_START_SECONDS + compat.RUNNER_SECONDS
+                             + 3 * compat.SETUP_RETRY_SECONDS, 15 * 60)
         self.assertTrue(compat.ES_URL.startswith('http://127.0.0.1:'))
         self.assertTrue(compat.KIBANA_URL.startswith('http://127.0.0.1:'))
+
+    def test_setup_requests_retry_only_transient_unavailability(self):
+        replies = iter([(503, ''), (None, ''), (200, '{"encoded": "k"}')])
+        with patch.object(compat, 'http', lambda *a, **k: next(replies)):
+            self.assertEqual(compat.expect('POST', 'http://x', 'p', pause=0), {'encoded': 'k'})
+        with patch.object(compat, 'http', lambda *a, **k: (400, '{}')), self.assertRaises(SystemExit):
+            compat.expect('POST', 'http://x', 'p', pause=0)
+        with patch.object(compat, 'http', lambda *a, **k: (503, '')), self.assertRaises(SystemExit):
+            compat.expect('POST', 'http://x', 'p', retry_seconds=0, pause=0)
 
     def test_status_and_summary_parsing(self):
         self.assertTrue(compat.kibana_available(json.dumps({'status': {'overall': {'level': 'available'}}})))

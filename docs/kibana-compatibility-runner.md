@@ -44,7 +44,7 @@ matrix. `scripts/ci/test_kibana_compat.py` checks that the two lists match.
 | Resource | Bound |
 |---|---|
 | Elasticsearch | 1.5 GiB container, 512 MiB heap, 2 CPUs, 3 min to become healthy |
-| Kibana | 2 GiB container, 1 GiB Node heap, 2 CPUs, 5 min to become available |
+| Kibana | 2 GiB container, 1 GiB Node heap, 2 CPUs, 4 min to become available; setup requests retry 503 for up to 1 min |
 | Runner | 4 min self-imposed (exit 3), 5 min hard limit; live phase 60 s |
 | Data | 600 documents plus 6 conflict rows and 1 late event |
 | Jobs | build 30 min, each version 20 min |
@@ -83,6 +83,45 @@ After merge: Actions → `kibana-compat` → Run workflow. Before merge, push th
 commit to a `kibana-compat/<topic>` branch on the GitHub mirror. Reports are
 kept as `kibana-compat-report-<version>` artifacts for 30 days.
 
-## Results
+## Results, 17 November 2026
 
-See the results section added with the implementing PR.
+The first runs ([GitHub run 44028166260](https://github.com/BeFeast/okilum/actions/runs/44028166260),
+diagnosed in [44035231123](https://github.com/BeFeast/okilum/actions/runs/44035231123))
+found one product defect. The transport sent `elastic-api-version: 1` on every
+request. On all four versions, Kibana rejected it on the public
+`/api/data_views/data_view/{id}` route with HTTP 400 `Invalid version. Received
+"1", expected a valid date string formatted as YYYY-MM-DD`. Every imported
+Discover source therefore fell back to asking for an index pattern. The
+transport now sends that header only to `/internal/` routes, and the fake
+server enforces the same rule.
+
+After the fix ([run 44040254238](https://github.com/BeFeast/okilum/actions/runs/44040254238),
+synthetic data; 9.5.5 re-run after the setup retry below):
+
+| Check | 8.17.10 | 8.19.25 | 9.5.4 | 9.5.5 |
+|---|---|---|---|---|
+| data view resolution | pass | pass | pass | see below |
+| `/api/status` version | pass | pass | info: redacted | see below |
+| history asc/desc, 600 rows, 250-row tie, nanoseconds | pass | pass | pass | see below |
+| server-side KQL ×3 vs DSL | **unsupported** (explicit 400) | pass | pass | see below |
+| invalid KQL | explicit 400 | explicit 400 | explicit 400 | see below |
+| shard failure | partial, 1/2 failed | partial, 1/2 failed | partial, 1/2 failed | see below |
+| field values | pass | pass | pass | see below |
+| unknown key | typed 401 | typed 401 | typed 401 | see below |
+| late arrival (searchable → visible) | 1.81 s | 1.68 s | 1.72 s | see below |
+
+Findings:
+
+- **KQL needs Elasticsearch 8.18 or later.** The connector sends KQL as the
+  Elasticsearch `kql` query. 8.17.10 rejects it, and the connector surfaces the
+  rejection as an error rather than empty rows. 8.19.25 and 9.5.x return
+  exactly the DSL-equivalent rows for keyword, conjunction/negation and phrase
+  queries. This is bounded sample agreement, not general Discover parity.
+- **Kibana 9.5 redacts `/api/status`** for a key without status privileges.
+  Only `{"status":…}` comes back, so the version is unavailable. That is
+  allowed: the version is optional and never gates the connection.
+- A shard-level query failure is reported as partial, with the failed shard
+  count, and stops following. It is never reported as complete.
+- On 9.5.5 Kibana reported `available` and then answered the first data-view
+  POST with 503 while its license was loading. Setup requests now retry 503
+  for up to a minute.

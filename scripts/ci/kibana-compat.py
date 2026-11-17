@@ -11,7 +11,7 @@ script publishes; credentials are random per run and passed to Docker and the
 runner through the environment, never argv or logs. Synthetic data only.
 
 Bounds: Elasticsearch 1.5 GiB (512 MiB heap), Kibana 2 GiB (1 GiB Node heap),
-2 CPUs each; 3 min for Elasticsearch, 5 min for Kibana, 5 min for the runner
+2 CPUs each; 3 min for Elasticsearch, 4 min for Kibana, 1 min per setup request, 5 min for the runner
 (which bounds itself to 4 min, and its live phase to 60 s); 600 documents.
 """
 import argparse
@@ -51,8 +51,9 @@ PATTERNS = ['okilum-compat-*', 'okilum-conflict-*']
 ES_LIMITS = ['--memory', '1536m', '--memory-swap', '1536m', '--cpus', '2']
 KIBANA_LIMITS = ['--memory', '2g', '--memory-swap', '2g', '--cpus', '2']
 ES_START_SECONDS = 180
-KIBANA_START_SECONDS = 300
+KIBANA_START_SECONDS = 240
 RUNNER_SECONDS = 300
+SETUP_RETRY_SECONDS = 60
 
 
 def images(version):
@@ -124,11 +125,20 @@ def http(method, url, password=None, body=None, headers=None, timeout=10):
         return None, ''
 
 
-def expect(method, url, password, body=None, headers=None):
-    status, text = http(method, url, password, body, headers)
-    if status is None or not 200 <= status < 300:
-        raise SystemExit(f'{method} {url.split("?")[0]} failed: HTTP {status}')
-    return json.loads(text) if text else {}
+def expect(method, url, password, body=None, headers=None, retry_seconds=SETUP_RETRY_SECONDS, pause=3):
+    """A setup request; 503 and connection errors retry within a bound.
+
+    Kibana can report `available` while its license is still loading and
+    answer 503 for a few seconds (observed on 9.5.5).
+    """
+    deadline = time.monotonic() + retry_seconds
+    while True:
+        status, text = http(method, url, password, body, headers)
+        if status is not None and 200 <= status < 300:
+            return json.loads(text) if text else {}
+        if status not in (None, 503) or time.monotonic() >= deadline:
+            raise SystemExit(f'{method} {url.split("?")[0]} failed: HTTP {status}')
+        time.sleep(pause)
 
 
 def wait(what, seconds, ready):
