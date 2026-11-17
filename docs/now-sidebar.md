@@ -51,6 +51,30 @@ Acceptance includes preserved Tree behavior, real-corpus counts and projection
 timings (full build <=150 ms; 20-file batch <=10 ms on maestro and M4), and
 beta delivery. Tree remains the default unless explicitly changed. Delivery
 alone does not prove human acceptance.
-P0 badges and Waiting for me share the later manager-state slice. Neither is
-inferred from activity. Unread state, origin filters, review queues, project Now mode,
-right-panel changes and Collections belong to later slices.
+
+## Waiting for me (#2346)
+
+**Waiting for me** sits above In progress. Its rows are the pending questions
+T3 reports for each discovered project's bound manager thread
+(`t3_pending_request`), never file times or activity. Each row keeps the exact
+source: project folder, T3 environment, manager project, manager thread and
+pending request ID (shown in the tooltip). At most 20 rows per thread are listed;
+the rest is one explicit `+N more` row. T3 exposes question IDs only, not
+approvals or question text, so a row says *Question* and opens its project. Entering
+the project opens that manager thread, where the question is answered.
+A row opens only while its question and manager binding are still current; a
+rebound or removed manager never keeps the old thread's questions.
+
+A read runs on project discovery, Rescan and when Now is shown, never per frame
+and never from Tree. A failed read keeps the last confirmed rows, marked stale
+with their confirmation time; an unreachable environment or an incomplete
+manifest is its own warning row, and the status line says how many sources are
+unavailable. Replies are accepted only for the vault root and read generation
+that dispatched them, so a reply for a previous vault, a superseded read, or one
+arriving after Now was disabled is discarded. Disabling Now (or Agents) revokes
+the in-flight network permission before the next request, forgets the rows and
+writes nothing to the vault.
+
+P0 badges are not part of this slice and are not inferred from activity. Unread
+state, origin filters, review queues, project Now mode, right-panel changes and
+Collections belong to later slices.

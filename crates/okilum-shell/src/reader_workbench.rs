@@ -102,7 +102,7 @@ pub(super) fn update_index(
     index.refresh(now, midnight, yesterday);
 }
 
-fn shown_time(seconds: u64) -> String {
+pub(super) fn shown_time(seconds: u64) -> String {
     chrono::Local
         .timestamp_opt(seconds.min(i64::MAX as u64) as i64, 0)
         .single()
@@ -224,6 +224,9 @@ impl Reader {
             self.focus_handle.focus(window, cx);
         }
         self.save_sidebar(cx);
+        if mode == LeftMode::Now {
+            self.refresh_waiting(window, cx);
+        }
         cx.notify();
     }
 
@@ -241,6 +244,12 @@ impl Reader {
             self.focus_handle.focus(window, cx);
         }
         self.save_sidebar(cx);
+        if enabled {
+            self.refresh_waiting(window, cx);
+        } else {
+            // Disabling Now stops Waiting reads at once; nothing is written.
+            self.waiting.cancel();
+        }
         cx.notify();
     }
 
@@ -335,7 +344,7 @@ impl Reader {
         cx.notify();
     }
 
-    fn now_heading(
+    pub(super) fn now_heading(
         &self,
         key: String,
         title: String,
@@ -604,7 +613,8 @@ impl Reader {
                                 true,
                                 window,
                                 cx,
-                            )
+                            );
+                            this.refresh_waiting(window, cx);
                         })),
                 )
                 .child(
@@ -633,7 +643,8 @@ impl Reader {
                                 move |_, _, cx| {
                                     let _ = collapse_reader.update(cx, |this, cx| {
                                         this.sidebar.now_collapsed.extend(
-                                            ["active", "changes", "pins"].map(str::to_owned),
+                                            ["waiting", "active", "changes", "pins"]
+                                                .map(str::to_owned),
                                         );
                                         this.save_sidebar(cx);
                                         cx.notify();
@@ -864,6 +875,7 @@ impl Reader {
             .min_h_0()
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
             .child(freshness)
+            .children(self.render_now_waiting(cx))
             .child(self.now_heading(
                 "active".into(),
                 "IN PROGRESS".into(),
@@ -1332,5 +1344,191 @@ mod tests {
         for activity in &index.view.active {
             diagnostic_println!("ACTIVE {}", activity.unit.path);
         }
+    }
+
+    fn waiting_source(
+        reader: &Reader,
+        name: &str,
+        thread: &str,
+    ) -> okilum_t3::projects::waiting::Source {
+        okilum_t3::projects::waiting::Source {
+            folder: reader.vault_root.join("Dev/Areas").join(name),
+            environment: "home".into(),
+            project_id: "managers".into(),
+            thread_id: thread.into(),
+        }
+    }
+
+    fn waiting_read(
+        source: &okilum_t3::projects::waiting::Source,
+        ids: Result<Vec<&str>, &str>,
+    ) -> (PathBuf, okilum_t3::projects::waiting::Read) {
+        (
+            source.folder.clone(),
+            okilum_t3::projects::waiting::Read {
+                source: Some(source.clone()),
+                ids: ids
+                    .map(|ids| ids.into_iter().map(str::to_owned).collect())
+                    .map_err(str::to_owned),
+            },
+        )
+    }
+
+    fn ready_now(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> u64 {
+        let now = reader_sidebar::now();
+        let mut index = Index::default();
+        index.observed_at = now;
+        index.refresh(now, now - 1000, now - workbench::DAY);
+        reader.update(visual, |r, cx| {
+            r.workbench = Arc::new(index);
+            r.workbench_ready = Some(r.workbench.clone());
+            r.workbench_clock_minute = now / 60;
+            cx.notify();
+        });
+        now
+    }
+
+    /// #2346: rows are T3's pending questions of an exact manager thread; a
+    /// failed read keeps the confirmed rows marked stale and names the source.
+    #[gpui::test]
+    fn waiting_for_me_shows_exact_questions_stale_rows_and_unavailable_sources(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, _temp) = fixture(cx);
+        let now = ready_now(&reader, visual);
+        reader.update(visual, |r, cx| {
+            let root = r.vault_root.clone();
+            let app = waiting_source(r, "App", "mcp:app");
+            let down = waiting_source(r, "Down", "mcp:down");
+            let titles = std::collections::BTreeMap::from([
+                (app.folder.clone(), "App".to_owned()),
+                (down.folder.clone(), "Down".to_owned()),
+            ]);
+            let (generation, permit) = r.waiting.begin(&root, titles);
+            assert!(permit.allowed() && r.waiting.checking());
+            let reads = std::collections::BTreeMap::from([
+                waiting_read(&app, Ok(vec!["q1"])),
+                waiting_read(&down, Err("T3 unreachable")),
+            ]);
+            assert!(r.accept_waiting(&root, generation, reads, now, "12:00".into(), cx));
+            assert!(!r.waiting.checking());
+        });
+        visual.run_until_parked();
+        let heading = visual.debug_bounds("now-heading-waiting").unwrap();
+        assert!(heading.origin.y < visual.debug_bounds("now-heading-active").unwrap().origin.y);
+        assert!(visual.debug_bounds("now-waiting-row").is_some());
+        assert!(visual.debug_bounds("now-waiting-unavailable").is_some());
+        assert!(visual.debug_bounds("now-waiting-status").is_some());
+        assert!(visual.debug_bounds("now-waiting-stale-row").is_none());
+
+        reader.update(visual, |r, cx| {
+            let root = r.vault_root.clone();
+            let app = waiting_source(r, "App", "mcp:app");
+            let down = waiting_source(r, "Down", "mcp:down");
+            let (generation, _) = r.waiting.begin(&root, Default::default());
+            let reads = std::collections::BTreeMap::from([
+                waiting_read(&app, Err("offline")),
+                waiting_read(&down, Err("T3 unreachable")),
+            ]);
+            assert!(r.accept_waiting(&root, generation, reads, now + 60, "12:01".into(), cx));
+            let view = r.waiting.view();
+            assert_eq!(view.rows.len(), 1);
+            assert!(view.rows[0].stale);
+            assert_eq!(
+                view.rows[0].observed_at, now,
+                "stale rows keep their own time"
+            );
+            assert_eq!(view.unavailable.len(), 2);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("now-waiting-stale-row").is_some());
+        assert!(visual.debug_bounds("now-waiting-row").is_none());
+    }
+
+    /// #2346: a reply belongs to the vault, generation and enabled Now that
+    /// dispatched it. Disabling Now revokes the in-flight dispatch.
+    #[gpui::test]
+    fn late_waiting_replies_from_another_vault_an_older_read_or_a_disabled_now_are_refused(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, _temp) = fixture(cx);
+        ready_now(&reader, visual);
+        reader.update_in(visual, |r, window, cx| {
+            let root = r.vault_root.clone();
+            let app = waiting_source(r, "App", "mcp:app");
+            let reads = || std::collections::BTreeMap::from([waiting_read(&app, Ok(vec!["q1"]))]);
+            let (old, old_permit) = r.waiting.begin(&root, Default::default());
+            r.vault_root = root.join("other-vault");
+            assert!(
+                !r.accept_waiting(&root, old, reads(), 1, "—".into(), cx),
+                "a reply for the previous vault"
+            );
+            r.vault_root = root.clone();
+            let (current, permit) = r.waiting.begin(&root, Default::default());
+            assert!(
+                !old_permit.allowed(),
+                "a newer read revokes the older dispatch"
+            );
+            assert!(
+                !r.accept_waiting(&root, old, reads(), 1, "—".into(), cx),
+                "a superseded reply"
+            );
+            r.set_now_enabled(false, window, cx);
+            assert!(!permit.allowed(), "disabling Now revokes the dispatch");
+            assert!(!r.waiting.checking());
+            assert!(
+                !r.accept_waiting(&root, current, reads(), 1, "—".into(), cx),
+                "a reply after Now was disabled"
+            );
+            assert!(r.waiting.view().rows.is_empty());
+            assert_eq!(r.waiting.view().sources, 0);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("now-heading-waiting").is_none());
+    }
+
+    /// #2346: a row opens only its exact, still-current manager binding.
+    #[gpui::test]
+    fn a_waiting_row_opens_only_its_current_manager_binding(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture(cx);
+        ready_now(&reader, visual);
+        visual.update(|_, cx| reader_features::enable_test_modules(cx));
+        reader.update_in(visual, |r, window, cx| {
+            let root = r.vault_root.clone();
+            let app = waiting_source(r, "App", "mcp:app");
+            r.project_navigation.discovery.projects = vec![okilum_t3::projects::Project {
+                folder: app.folder.clone(),
+                name: "App".into(),
+                kind: okilum_t3::projects::Kind::Code,
+                environment: Some(app.environment.clone()),
+                manager_project: Some(app.project_id.clone()),
+                manager: okilum_t3::projects::Manager::Thread(app.thread_id.clone()),
+                appearance: Default::default(),
+            }];
+            let (generation, _) = r.waiting.begin(&root, Default::default());
+            let reads = std::collections::BTreeMap::from([waiting_read(&app, Ok(vec!["q1"]))]);
+            assert!(r.accept_waiting(&root, generation, reads, 1, "—".into(), cx));
+            assert!(
+                !r.open_waiting(&app, Some("q2"), window, cx),
+                "unknown question"
+            );
+            let other = waiting_source(r, "App", "mcp:previous");
+            assert!(
+                !r.open_waiting(&other, Some("q1"), window, cx),
+                "another thread"
+            );
+            let opened = r.project_navigation.generation;
+            assert!(r.open_waiting(&app, Some("q1"), window, cx));
+            assert_ne!(
+                r.project_navigation.generation, opened,
+                "the project entry pipeline started"
+            );
+            r.project_navigation.discovery.projects[0].manager =
+                okilum_t3::projects::Manager::Thread("mcp:rebound".into());
+            assert!(
+                !r.open_waiting(&app, Some("q1"), window, cx),
+                "a rebound manager no longer owns the question"
+            );
+        });
     }
 }

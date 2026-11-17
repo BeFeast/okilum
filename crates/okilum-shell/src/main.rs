@@ -168,6 +168,7 @@ mod reader_t3_settings;
 mod reader_table_copy;
 mod reader_title_nav;
 mod reader_vaults;
+mod reader_now_waiting;
 mod reader_workbench;
 #[cfg(windows)]
 mod url_protocol;
@@ -2076,6 +2077,8 @@ struct Reader {
     workbench_clock_minute: u64,
     workbench_times: std::collections::BTreeMap<u64, String>,
     workbench_scroll: ScrollHandle,
+    /// Now's Waiting for me, read from bound manager threads (#2346).
+    waiting: reader_now_waiting::Waiting,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,
@@ -2431,6 +2434,7 @@ impl Reader {
             workbench_clock_minute: 0,
             workbench_times: Default::default(),
             workbench_scroll: ScrollHandle::new(),
+            waiting: Default::default(),
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
