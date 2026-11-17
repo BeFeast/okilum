@@ -69,7 +69,7 @@ foreach ($pe in $pes) {
 }
 
 $zip = Join-Path $Work 'Okilum-windows-portable.zip'
-try { Save-Url "$archive/Okilum-windows-portable.zip" $zip } catch { $zip = $null; Write-Host 'No portable ZIP for this build' }
+try { Save-Url "$Base/builds/0/Okilum-windows-portable.zip" $zip } catch { $zip = $null; Write-Host 'No portable ZIP for this build' }
 if ($zip) {
     $portable = Join-Path $Work 'portable'
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $portable)
