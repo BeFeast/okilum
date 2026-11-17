@@ -982,7 +982,7 @@ impl Workspace {
                     .small()
                     .ghost()
                     .label(label)
-                    .selected(self.tab == tab)
+                    .map(|b| segment(b, self.tab == tab, cx))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.tab = tab;
                         cx.notify();
