@@ -170,8 +170,6 @@ opt-in, off by default, with immediate UI/lifecycle changes and no disabled-modu
 requests. The existing managed Workspace is the Second brain surface; Now remains
 separate work in #1927.
 
-## 1. What Okilum is
-
 **Second brain module (#1927 / #2091, Oleg 2026-10-31):** [Now and Tree](now-sidebar.md)
 keeps Tree as the initial sidebar in every vault, with Now visible alongside it.
 Now is explicitly enabled by the user; link-rich or daily-note vaults receive
@@ -241,6 +239,16 @@ creates an empty `board.toml` explicitly and edits project cards and the selecte
 stage note. Existing boards retain their selected format, revision checks and
 atomic writes; this does not convert vault manifests or dispatch executor work.
 
+**Local project onboarding (#2033, path A, Oleg 2026-10-30):**
+[Local project start](local-project-start.md) lets any ordinary vault folder,
+including its root, become a local project and create an empty Board without
+mandatory goal/repository/executor/stage. Local cards use a separate portable
+TOML sidecar and explicit manual task state, independent of issue/build evidence.
+Verified local T3 Manager binding (#1801) follows in slice 3 and is not claimed
+by these local-start slices.
+
+## 1. What Okilum is
+
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
 
@@ -253,14 +261,6 @@ Product pillars, in the order they will be defended when they conflict:
 4. A transparent knowledge layer: raw → wiki → indexes → cited traversal. Vector and
    semantic retrieval only on measured need.
 5. A safe multi-device story.
-
-**Local project onboarding (#2033, path A, Oleg 2026-10-30):**
-[Local project start](local-project-start.md) lets any ordinary vault folder,
-including its root, become a local project and create an empty Board without
-mandatory goal/repository/executor/stage. Local cards use a separate portable
-TOML sidecar and explicit manual task state, independent of issue/build evidence.
-Verified local T3 Manager binding (#1801) follows in slice 3 and is not claimed
-by these local-start slices.
 
 ## 2. Canonical data
 
@@ -398,25 +398,26 @@ Judged on visual quality, correctness, latency, scroll smoothness, memory, CPU/G
 use, and input behaviour — not appearance alone.
 
 **First acceptance corpus = Oleg's vault, measured 2026-09-05 (3989 notes).** Feature
-frequency decides order; anything at zero waits for a trigger:
+frequency decides order; anything at zero waits for a trigger. The counts are that
+2026-09-05 measurement; the Status column describes the current Reader (#1943):
 
 | Feature | Notes | Status |
 |---|---|---|
 | tables | 1196 | rendered |
 | wikilink aliases `[[a\|b]]` | 980 | rendered |
 | task lists | 293 (2699 boxes) | parsed, checkbox rendering to verify |
-| callouts `> [!type]` | 111 (warning 79, note 31, info 30, tip 29, success 28, important 20, summary 14, danger 14) | literal, **#1 gap** |
+| callouts `> [!type]` | 111 (warning 79, note 31, info 30, tip 29, success 28, important 20, summary 14, danger 14) | rendered with typed accent and glyph (#46); `[!x]-` / `[!x]+` fold state honoured, session-only ([#651](obsidian-syntax.md)) |
 | strikethrough | 87 | rendered |
-| math `$…$` / `$$` | 79 real (613 raw `$` hits are shell and prices) | code-styled fallback |
-| highlight `==x==` | 60 | not rendered |
-| heading links `[[a#h]]` | 50 | resolve, no scroll-to |
-| note transclusion `![[note]]` | 37 | not rendered |
+| math `$…$` / `$$` | 79 real (613 raw `$` hits are shell and prices) | [native inline and display math](live-preview-inline-math.md) in Read and Live Preview; unsupported TeX shows its source with a diagnostic (#1645 / #2596) |
+| highlight `==x==` | 60 | rendered as `<mark>` (#47); code spans stay literal |
+| heading links `[[a#h]]` | 50 | resolve and land on the heading; a missing or duplicate heading is reported, never a silent note-top open ([document links](document-links.md)) |
+| note transclusion `![[note]]` | 37 | `![[note]]` / `![[note#Heading]]` alone on a line expand in Reader, depth 1 (#49); inline, ambiguous and nested embeds stay links; MCP `read_note` keeps the embed as written |
 | PDF links | 24 | plain link |
 | mermaid | 20 | [rendered diagrams](mermaid.md) in Reader and Live Preview with merman 0.9.2; highlighted-code fallback on failure; Source stays code. Oleg accepted 28.10; real-corpus measurement before Stable ([#1182](https://git.oklabs.uk/BeFeast/okilum/issues/1182)) |
 | html tags | 16 | passed through |
 | footnotes | 10 | rendered with back-links ([#651](obsidian-syntax.md)) |
 | block refs `^id` | 0 | hidden, links land, block embeds ([#651](obsidian-syntax.md)) |
-| audio | 0 | wait |
+| audio | 0 | MP3/WAV inline and file playback ([media viewers](media-viewers.md), #2687–#2690) |
 
 ## 6. Search
 
@@ -427,11 +428,15 @@ jump-to-match; note, heading, block, frontmatter, link and media-metadata indexi
 incremental watcher updates plus a full rebuild path; optional semantic retrieval that
 complements rather than obscures lexical results.
 
-**Decision (2026-09-02): the engine is still not chosen.** `tantivy` is the incumbent
-and indexes the 3874-note corpus today, but it was a spike-level pick. The choice is
-gated behind corpus and latency acceptance tests, written **before** any engine is
-measured against them — the same pre-registered-band discipline used for the framework
-probes. `tantivy` stays in place until a verdict exists.
+**Decision (2026-09-02): the engine is still not chosen.** `tantivy` is the incumbent,
+but it was a spike-level pick. The choice is gated behind corpus and latency acceptance
+tests whose bands were written **before** any engine was measured against them — the
+same pre-registered-band discipline used for the framework probes.
+
+**Gate result (2026-09-04):** [SEARCH-ACCEPTANCE.md](SEARCH-ACCEPTANCE.md) records
+tantivy 0.26 at **22/22 correctness and 6/6 latency PASS**, nothing gray. No alternative
+engine was measured, so this clears tantivy against the bar rather than selecting it;
+`tantivy` stays in place, and recording the v0 engine choice remains an open decision.
 
 ## 7. Framework
 
@@ -488,7 +493,8 @@ pacing was proven pre-existing by an unpatched baseline on the same hardware.
 ## 9. Non-goals for v0
 
 A Markdown editor as part of the v0 reader (source editing arrived later as the
-approved #354 phase, see §2). Plugin API. Canvas. Bases. Mobile. Web clipping. Vector search.
+approved #354 phase, see §2). Plugin API. Canvas editing (read-only Canvas viewing
+arrived later, see [media viewers](media-viewers.md)). Bases. Mobile. Web clipping. Vector search.
 Cloud sync service. Any feature whose absence is not currently costing something
 measurable.
 

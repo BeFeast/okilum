@@ -202,7 +202,9 @@ pub fn heading_matches(heading_text: &str, target: &str) -> bool {
     !t.is_empty() && norm(heading_text) == t
 }
 
-/// Full HTML pipeline used by the Qt and GPUI slices.
+/// Full HTML pipeline for a note read from disk: the `okilum-cored` JSON-lines
+/// `render` op and the MCP `render_note` tool. The shell renders an already
+/// captured source through [`render_html_from_source`].
 pub fn render_html(vault: &Vault, note_rel: &str, theme: &str) -> anyhow::Result<String> {
     render_html_from_source(vault, note_rel, &vault.read_note(note_rel)?, theme)
 }

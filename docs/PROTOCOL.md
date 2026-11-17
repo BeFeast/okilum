@@ -26,10 +26,22 @@ the sandbox.
 | `{"id":1,"op":"list"}` | `notes: [{path, title}]` |
 | `{"id":2,"op":"render","path":"Dev/x.md"}` | `html` (full document body HTML), `title` |
 | `{"id":3,"op":"doc","path":"Dev/x.md"}` | `doc` (block IR, see `crates/okilum-core/src/ir.rs`) |
-| `{"id":4,"op":"backlinks","path":"Dev/x.md"}` | `backlinks: [{path, title, context}]` |
+| `{"id":4,"op":"backlinks","path":"Dev/x.md"}` | `backlinks: [{path, title, context, link, ambiguous, property?}]` — see below |
 | `{"id":5,"op":"search","q":"maestro proxy"}` | `hits: [{path, title, score, snippet_html}]` |
 | `{"id":6,"op":"resolve","target":"Some Note"}` | `path` (or `null`) and `candidates: [path]` |
 | `{"id":7,"op":"explain","q":"maestro proxy","path":"Dev/x.md"}` | `explanation` (scoring tree as JSON text) or `null` when the note is not a hit |
+
+### `backlinks` entries
+
+Each entry is the serialized `Backlink` (`crates/okilum-core/src/vault.rs`):
+
+| Field | Meaning |
+|---|---|
+| `path`, `title` | The note that contains the link. |
+| `context` | The source line that contains the link, as written. |
+| `link` | The link target as written in that source (`[[target\|alias]]` records `target`), so a client can find it inside `context` without re-resolving. |
+| `ambiguous` | `true` when the link named several notes and this note is only one of them. A client must show it as ambiguous, never as an ordinary backlink (PRD §4). |
+| `property` | Present only when the link sits in the source's frontmatter (`related: [[x]]`): the property key (#386). Omitted otherwise. |
 
 ## Link conventions
 
@@ -46,12 +58,20 @@ Plus: backlinks panel, search with snippets + jump-to-match.
 
 ## Contract status
 
+**v0.3 documentation correction (#1943).** `backlinks` entries carry `link`,
+`ambiguous` and an optional `property` in addition to `path`, `title` and
+`context`. The daemon already serves them; this table previously listed only the
+first three. The fields are additive, so a client that reads only
+`path`, `title` and `context` keeps working, but it cannot tell an ambiguous
+backlink from an ordinary one. No version number was assigned when they shipped;
+whether this record warrants a v0.4 bump is the protocol owner's decision.
+
 **v0.3 (2026-09-04).** Adds `explain` — purely additive, nothing existing changes shape. A v0.2 client that never sends `explain` sees no difference.
 
 **v0.2 (2026-09-02).** v0.1 was frozen on 2026-08-31; the protocol outlives the
 spike by design, so the MCP adapter around `okilum-cored` and any future shell
-or client consume it as-is, and changes require a version bump. This is that
-bump, and the only one so far.
+or client consume it as-is, and changes require a version bump. This was the
+first bump; v0.3 above is the second.
 
 ### v0.1 → v0.2: `resolve` can say "several"
 

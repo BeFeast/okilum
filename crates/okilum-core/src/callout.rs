@@ -6,7 +6,9 @@
 //! re-derive: the header grammar, the type → kind aliasing table from the
 //! Obsidian docs, and turning a blockquote's source back into the body's
 //! Markdown so a client can render it with whatever it renders everything
-//! else with. Fold state is parsed but ignored by v0 (rendered open).
+//! else with. Fold state is parsed here and honoured by the Reader: `[!x]-`
+//! starts closed, `[!x]+` open, and the title row toggles it for the session
+//! only (`okilum-shell/src/reader_obsidian.rs`, #651).
 
 /// The visual family a callout type maps onto. Obsidian ships ~20 type names
 /// over a handful of looks; the aliases collapse here so a theme only needs
