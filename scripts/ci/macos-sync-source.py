@@ -67,6 +67,8 @@ def main():
         ("okilum-sync-controller", "--lib", "sidecar::macos::replaced::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::macos::bootstrap::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::authority::launch::tests::"),
+        ("okilum-sync-controller", "--lib", "sidecar::macos::uninstall::tests::"),
+        ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_refused_sync_stop_removes_nothing"),
         ("okilum-sync", "--lib", "tests::issue2752_"),
         ("okilum-write-authority", "--lib", "identity_macos_tests::"),
         ("okilum-sync-controller", "--lib", "direct::overview::tests::"),

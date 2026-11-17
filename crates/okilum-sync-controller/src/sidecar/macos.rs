@@ -28,6 +28,8 @@ pub mod recovery;
 pub mod registration;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 pub mod replaced;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub(crate) mod uninstall;
 pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {

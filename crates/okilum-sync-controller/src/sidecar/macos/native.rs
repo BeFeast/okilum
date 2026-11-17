@@ -136,7 +136,7 @@ fn service(plist: &str) -> Result<Retained<SMAppService>> {
     // Only our current app's fixed bundled plist, after checking runtime OS.
     Ok(unsafe { SMAppService::agentServiceWithPlistName(&NSString::from_str(plist)) })
 }
-fn service_status(plist: &str) -> Result<Status> {
+pub(super) fn service_status(plist: &str) -> Result<Status> {
     let status = unsafe { service(plist)?.status() };
     Ok(match status {
         SMAppServiceStatus::NotRegistered => Status::NotRegistered,
@@ -171,6 +171,13 @@ impl super::registration::RegistrationPort for RegistrationService {
         }
         Ok(())
     }
+}
+
+/// Uninstall only, when no journal exists and launchd runs no helper
+/// (`uninstall::stop`). Never a way to obtain another launch permission.
+pub(super) fn unregister_unowned() -> Result<()> {
+    unsafe { service(PLIST)?.unregisterAndReturnError() }
+        .map_err(|error| anyhow::anyhow!("ServiceManagement unregister failed: {error}"))
 }
 
 /// Only after the controller durably recorded both authenticated owned-tree
