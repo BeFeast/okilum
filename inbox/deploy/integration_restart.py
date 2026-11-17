@@ -93,8 +93,11 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
     builder_name = 'inbox-restart-fixture-builder'
     try:
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '--target', 'build', '-t', 'inbox-restart-builder', '.', cwd=repo)
-        run('docker', 'run', '--name', builder_name, '-e', 'RESTART_FIXTURE_DB=/tmp/restart-fixture.db',
-            'inbox-restart-builder', 'cargo', 'test', '--manifest-path', 'inbox/Cargo.toml', '--locked',
+        # rustup has no default toolchain in the build image: run where the
+        # Dockerfile copied inbox/rust-toolchain.toml, as its own cargo build does.
+        run('docker', 'run', '--name', builder_name, '-w', '/source/inbox',
+            '-e', 'RESTART_FIXTURE_DB=/tmp/restart-fixture.db',
+            'inbox-restart-builder', 'cargo', 'test', '--manifest-path', 'Cargo.toml', '--locked',
             '--release', '-p', 'okilum-inboxd', '--test', 'restart_fixture', '--', '--ignored', '--exact', 'create_restart_fixture')
         run('docker', 'cp', builder_name+':/tmp/restart-fixture.db', str(root/'fixture.db'))
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '-t', 'okilum-inbox-qa:local', '.', cwd=repo)
