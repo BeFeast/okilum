@@ -5,6 +5,7 @@ use super::*;
 use crate::reader_log_kubernetes::worker;
 use ::core::prelude::v1::test;
 use gpui::{TestAppContext, VisualTestContext};
+use okilum_core::kubernetes::Kind;
 use okilum_core::kubernetes::{Cleanup, Client, End, Limits, Raw, Transport};
 use okilum_core::log::kubernetes::Request;
 use okilum_core::log::stream::Assembler;
@@ -613,4 +614,334 @@ fn list_keys_navigate_only_while_the_list_has_focus(cx: &mut TestAppContext) {
         assert!(matches!(&ws.selected, Some(Key::Object { name, .. }) if name == "checkout-a"));
     });
     assert_eq!(h.calls().len(), 8, "keys never read the cluster");
+}
+
+// ---------- Triage and Service path (#3011) ----------
+
+/// Earlier routes win: the Fake takes the first route the argv contains.
+fn with(
+    mut routes: Vec<(&'static str, Raw)>,
+    key: &'static str,
+    raw: Raw,
+) -> Vec<(&'static str, Raw)> {
+    routes.insert(0, (key, raw));
+    routes
+}
+
+fn service_list() -> Raw {
+    ok(list(
+        "Service",
+        vec![json!({
+            "metadata": fixtures::meta("checkout", "svc-1", json!([]), json!({})),
+            "spec": {"type": "ClusterIP", "clusterIP": "10.96.0.10", "selector": {"app": "checkout"},
+                     "ports": [{"name": "http", "port": 80, "protocol": "TCP", "targetPort": 8080}]}
+        })],
+    ))
+}
+
+fn slice_list(endpoints: &[(&str, bool)]) -> Raw {
+    let endpoints: Vec<Value> = endpoints
+        .iter()
+        .enumerate()
+        .map(|(i, (uid, ready))| {
+            json!({"addresses": [format!("10.0.0.{}", i + 10)],
+                   "conditions": {"ready": ready, "serving": ready, "terminating": false},
+                   "targetRef": {"kind": "Pod", "name": format!("pod-{uid}"), "namespace": "shop", "uid": uid}})
+        })
+        .collect();
+    ok(list(
+        "EndpointSlice",
+        vec![json!({
+            "metadata": fixtures::meta("checkout-abc", "slice-1", json!([]),
+                                       json!({"kubernetes.io/service-name": "checkout"})),
+            "addressType": "IPv4",
+            "endpoints": endpoints,
+            "ports": [{"name": "http", "port": 8080, "protocol": "TCP"}]
+        })],
+    ))
+}
+
+fn path_routes(slices: Raw) -> Vec<(&'static str, Raw)> {
+    with(
+        with(
+            routes(standard_pods(), "pod-a"),
+            "/services?",
+            service_list(),
+        ),
+        "/endpointslices?",
+        slices,
+    )
+}
+
+#[gpui::test]
+fn triage_keeps_recovered_rows_stable_and_never_resolves_them_silently(cx: &mut TestAppContext) {
+    let mut h = open(
+        cx,
+        with(
+            routes(standard_pods(), "pod-a"),
+            "/pods/checkout-b",
+            ok(pod_json("checkout-b", "pod-b")),
+        ),
+    );
+    h.load("");
+    let reads = h.calls().len();
+    h.click("k8s-lens-triage");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert_eq!(ws.lens, Lens::Triage);
+        let titles: Vec<_> = ws
+            .rows
+            .iter()
+            .map(|r| (r.title.as_str(), r.status.as_str()))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                ("api", "Recovered · prior failure kept"),
+                ("api", "Recovered · prior failure kept")
+            ],
+            "Ready Pods keep their retained OOMKilled; healthy sidecars are not rows"
+        );
+        assert!(ws.rows[0].reasons[0].contains("Last termination: OOMKilled (exit 137)"));
+        assert!(ws.rows[0].subtitle.contains("3 restarts (cumulative)"));
+    });
+    assert!(h.visual.debug_bounds("k8s-triage").is_some());
+    assert!(h.visual.debug_bounds("k8s-triage-rules").is_some());
+    h.click("k8s-row-1");
+    let chosen = h
+        .workspace
+        .read_with(h.visual, |ws, _| ws.selected.clone().unwrap());
+    assert!(
+        matches!(&chosen, Key::Container { pod_uid, container, .. } if pod_uid == "pod-b" && container == "api")
+    );
+    // The shared inspector's explicit action pins the previous instance.
+    h.click("k8s-open-previous-api");
+    h.wait("previous logs start", |ws| ws.dock.worker_running());
+    {
+        let started = h.started.borrow();
+        let args = started.requests[0].args().unwrap();
+        assert!(args.contains(&"pod/checkout-b".to_string()));
+        assert!(args.contains(&"--previous=true".to_string()));
+    }
+    // Refresh: reordered, plus a new failing Pod listed first. The selected
+    // observation and the session stay; only the order of others changes.
+    h.update(|ws, _, cx| {
+        let data = ws.data.as_mut().unwrap();
+        fixtures::put(
+            &mut data.pods,
+            vec![
+                fixtures::crashing_pod("checkout-z", "pod-z", "rs-1"),
+                fixtures::recovered_pod("checkout-b", "pod-b", "rs-1"),
+                fixtures::recovered_pod("checkout-a", "pod-a", "rs-1"),
+            ],
+        );
+        ws.refresh_rows(cx);
+    });
+    h.settle();
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert_eq!(ws.rows[0].subtitle.split(" · ").next(), Some("checkout-z"));
+        assert_eq!(ws.selected.as_ref(), Some(&chosen));
+        assert!(ws.rows.iter().any(|r| r.key == chosen));
+        assert!(ws.dock.worker_running(), "refresh never stops the session");
+    });
+    assert!(h.visual.debug_bounds("k8s-triage-selection-note").is_none());
+    // The selected container stops matching any rule (lastState no longer
+    // reported). It stays selected, is not called resolved, and says so.
+    h.update(|ws, _, cx| {
+        let data = ws.data.as_mut().unwrap();
+        fixtures::put(
+            &mut data.pods,
+            vec![lenses::tests::healthy_pod("checkout-b", "pod-b", "rs-1")],
+        );
+        ws.refresh_rows(cx);
+    });
+    h.settle();
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.rows.is_empty());
+        assert_eq!(ws.selected.as_ref(), Some(&chosen));
+    });
+    assert!(h.visual.debug_bounds("k8s-triage-selection-note").is_some());
+    // Lens switches and selections read nothing; only the UID check did.
+    assert_eq!(h.calls().len(), reads + 1);
+}
+
+#[gpui::test]
+fn triage_denied_pods_is_unknown_not_zero(cx: &mut TestAppContext) {
+    let mut h = open(
+        cx,
+        routes(
+            fail("Error from server (Forbidden): pods is forbidden"),
+            "pod-a",
+        ),
+    );
+    h.load("");
+    h.click("k8s-lens-triage");
+    assert!(h.visual.debug_bounds("k8s-triage-unknown").is_some());
+    h.workspace
+        .read_with(h.visual, |ws, _| assert!(ws.rows.is_empty()));
+}
+
+#[gpui::test]
+fn service_path_follows_routing_and_selects_in_the_shared_inspector(cx: &mut TestAppContext) {
+    let mut h = open(
+        cx,
+        path_routes(slice_list(&[
+            ("pod-a", true),
+            ("pod-b", false),
+            ("pod-gone", false),
+        ])),
+    );
+    h.load("");
+    let reads = h.calls().len();
+    h.click("k8s-lens-service-path");
+    assert!(
+        h.visual.debug_bounds("k8s-path-empty").is_some(),
+        "no Service chosen yet"
+    );
+    h.click("k8s-row-0");
+    for id in [
+        "k8s-path-service",
+        "k8s-path-slice-0",
+        "k8s-path-endpoint-0-0",
+        "k8s-path-endpoint-0-1",
+        "k8s-path-endpoint-0-2",
+        "k8s-path-endpoint-0-0-api",
+        "k8s-path-endpoint-0-0-proxy",
+    ] {
+        assert!(h.visual.debug_bounds(id).is_some(), "{id} rendered");
+    }
+    let service = h
+        .workspace
+        .read_with(h.visual, |ws, _| ws.path_service.clone().unwrap());
+    // A target Pod opens in the same inspector; the path stays on its Service.
+    h.click("k8s-path-endpoint-0-1");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(
+            matches!(&ws.selected, Some(Key::Object { kind: Kind::Pod, uid, .. }) if uid == "pod-b")
+        );
+        assert_eq!(ws.path_service.as_ref(), Some(&service));
+        assert_eq!(ws.lens, Lens::ServicePath);
+    });
+    assert!(h.visual.debug_bounds("k8s-path-service").is_some());
+    // A container node selects that container; logs start only explicitly.
+    h.click("k8s-path-endpoint-0-0-api");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(matches!(&ws.selected, Some(Key::Container { pod_uid, container, .. }) if pod_uid == "pod-a" && container == "api"));
+        assert!(ws.dock.session.is_none(), "selecting never pins logs");
+    });
+    assert_eq!(h.calls().len(), reads, "path clicks read nothing");
+    h.click("k8s-open-logs-api");
+    h.wait("explicit pin", |ws| ws.dock.worker_running());
+    let args = h.started.borrow().requests[0].args().unwrap();
+    assert!(
+        args.contains(&"pod/checkout-a".to_string())
+            && args.contains(&"--container=api".to_string())
+    );
+    // Another endpoint's container: a retarget asks first, the session stays.
+    h.click("k8s-path-endpoint-0-1-api");
+    h.click("k8s-open-logs-api");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.dock.pending_retarget.is_some());
+        assert_eq!(ws.dock.session.as_ref().unwrap().target.pod, "checkout-a");
+    });
+    // Switching lens keeps the selection and the session.
+    h.click("k8s-lens-workspace");
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(matches!(&ws.selected, Some(Key::Container { pod_uid, .. }) if pod_uid == "pod-b"));
+        assert!(ws.dock.worker_running());
+    });
+}
+
+#[gpui::test]
+fn service_path_unknown_zero_and_missing_targets_read_differently(cx: &mut TestAppContext) {
+    let mut h = open(
+        cx,
+        path_routes(fail(
+            "Error from server (Forbidden): endpointslices.discovery.k8s.io is forbidden",
+        )),
+    );
+    h.load("");
+    h.click("k8s-lens-service-path");
+    h.click("k8s-row-0");
+    assert!(h.visual.debug_bounds("k8s-path-slices-unknown").is_some());
+    assert!(h.visual.debug_bounds("k8s-path-no-slices").is_none());
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert_eq!(ws.rows[0].status, "Endpoints unknown (forbidden)");
+    });
+    // A readable but empty slice list is zero endpoints, said as such.
+    h.update(|ws, _, cx| {
+        fixtures::put(&mut ws.data.as_mut().unwrap().slices, vec![]);
+        ws.refresh_rows(cx);
+    });
+    h.settle();
+    assert!(h.visual.debug_bounds("k8s-path-no-slices").is_some());
+    assert!(h.visual.debug_bounds("k8s-path-slices-unknown").is_none());
+}
+
+#[gpui::test]
+fn lenses_lay_out_in_light_and_dark_and_tabs_click_after_an_app_theme_switch(
+    cx: &mut TestAppContext,
+) {
+    let mut h = open(
+        cx,
+        path_routes(slice_list(&[("pod-a", true), ("pod-b", false)])),
+    );
+    h.load("");
+    h.click("k8s-row-0");
+    for mode in [
+        gpui_component::ThemeMode::Dark,
+        gpui_component::ThemeMode::Light,
+    ] {
+        // The app's own path (sync_appearance): change with the window, so
+        // it refreshes, then apply the brand tokens.
+        h.visual.update(|window, cx| {
+            gpui_component::Theme::change(mode, Some(window), cx);
+            brand::apply_theme(cx);
+        });
+        h.settle();
+        for (lens, band) in [
+            ("k8s-lens-triage", "k8s-triage"),
+            ("k8s-lens-service-path", "k8s-path"),
+        ] {
+            h.click(lens);
+            if lens == "k8s-lens-service-path" {
+                h.click("k8s-row-0");
+            }
+            let get = |h: &mut Harness, id: &'static str| {
+                h.visual
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{id} rendered in {mode:?}"))
+            };
+            let filter = get(&mut h, "k8s-lenses");
+            let band = get(&mut h, band);
+            let list = get(&mut h, "k8s-list");
+            let inspector = get(&mut h, "k8s-inspector");
+            let dock = get(&mut h, "k8s-dock");
+            let status = get(&mut h, "k8s-status");
+            assert!(filter.bottom() <= band.top() + px(1.), "{lens}");
+            assert!(
+                band.bottom() <= list.top() + px(1.),
+                "{lens}: band above the split"
+            );
+            assert!(list.right() <= inspector.left() + px(1.));
+            assert!(list.bottom() <= dock.top() + px(1.));
+            assert!(
+                status.bottom() <= px(900.) + px(1.),
+                "{lens}: status line stays in the window"
+            );
+            assert!(
+                list.size.height >= px(190.),
+                "{lens}: list keeps its height"
+            );
+            // An inspector tab still takes clicks after the theme switch.
+            h.click("k8s-tab-Manifest");
+            h.workspace.read_with(h.visual, |ws, _| {
+                assert_eq!(ws.tab, Tab::Manifest, "{lens} {mode:?}")
+            });
+            h.click("k8s-tab-Overview");
+            h.workspace.read_with(h.visual, |ws, _| {
+                assert_eq!(ws.tab, Tab::Overview, "{lens} {mode:?}")
+            });
+        }
+        h.click("k8s-lens-workspace");
+    }
 }

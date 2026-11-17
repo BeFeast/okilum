@@ -13,8 +13,11 @@ use okilum_core::kubernetes::{choose_namespace, Contexts, Failure, NamespaceOrig
 mod backend;
 mod dock;
 mod inspector;
+mod lens_view;
+pub(crate) mod lenses;
 pub(crate) mod model;
 
+use lenses::Lens;
 use model::{Data, Key, Row, Scope, Section, Tone};
 
 const CONTEXT: &str = "KubernetesWorkspaceList";
@@ -105,6 +108,11 @@ pub(crate) struct Workspace {
     loading: Option<okilum_core::kubernetes::Cancel>,
     load_generation: u64,
     section: Section,
+    /// Workspace, Triage or Service path: views over the same data,
+    /// selection, inspector and log dock.
+    lens: Lens,
+    /// The Service the Service path follows, by UID.
+    path_service: Option<Key>,
     selected: Option<Key>,
     tab: Tab,
     rows: Rc<Vec<Row>>,
@@ -168,6 +176,8 @@ impl Workspace {
             loading: None,
             load_generation: 0,
             section: Section::Pods,
+            lens: Lens::Workspace,
+            path_service: None,
             selected: None,
             tab: Tab::Overview,
             rows: Rc::new(Vec::new()),
@@ -331,10 +341,32 @@ impl Workspace {
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value().to_string();
         self.rows = Rc::new(match &self.data {
-            Some(data) => model::rows(data, self.section, &query),
+            Some(data) => match self.lens {
+                Lens::Workspace => model::rows(data, self.section, &query),
+                Lens::Triage => lenses::triage_rows(data, &query),
+                Lens::ServicePath => model::rows(data, Section::Services, &query),
+            },
             None => Vec::new(),
         });
         cx.notify();
+    }
+
+    /// Switching lens keeps the selection, the inspector tab and the pinned
+    /// log session; it only changes the list and the band above it.
+    pub(crate) fn set_lens(&mut self, lens: Lens, cx: &mut Context<Self>) {
+        self.lens = lens;
+        if lens == Lens::ServicePath {
+            if let Some(
+                key @ Key::Object {
+                    kind: okilum_core::kubernetes::Kind::Service,
+                    ..
+                },
+            ) = &self.selected
+            {
+                self.path_service = Some(key.clone());
+            }
+        }
+        self.refresh_rows(cx);
     }
 
     pub(crate) fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -345,9 +377,25 @@ impl Workspace {
     /// Selection only changes what the inspector shows. It never reads the
     /// cluster and never touches the pinned log session.
     pub(crate) fn select(&mut self, key: Key, cx: &mut Context<Self>) {
-        if key.section() != self.section {
-            self.section = key.section();
-            self.refresh_rows(cx);
+        match self.lens {
+            Lens::Workspace if key.section() != self.section => {
+                self.section = key.section();
+                self.refresh_rows(cx);
+            }
+            // The path stays on its Service while its Pods and containers
+            // are inspected; choosing another Service moves it.
+            Lens::ServicePath
+                if matches!(
+                    key,
+                    Key::Object {
+                        kind: okilum_core::kubernetes::Kind::Service,
+                        ..
+                    }
+                ) =>
+            {
+                self.path_service = Some(key.clone());
+            }
+            _ => {}
         }
         if let Some(ix) = self.rows.iter().position(|r| r.key == key) {
             self.list_scroll
@@ -570,6 +618,7 @@ impl Workspace {
             .items_center()
             .border_b_1()
             .border_color(tokens.border)
+            .child(self.render_lens_switch(cx))
             .child(
                 div().flex_1().min_w(px(180.)).child(
                     Input::new(&self.filter)
@@ -577,30 +626,34 @@ impl Workspace {
                         .prefix(Icon::new(IconName::Search).small()),
                 ),
             )
-            .child(
-                h_flex()
-                    .debug_selector(|| "k8s-sections".into())
-                    .flex_none()
-                    .p(px(2.))
-                    .rounded(px(6.))
-                    .bg(tokens.border_subtle.opacity(0.5))
-                    .children(Section::ALL.map(|section| {
-                        let label = match counts(section) {
-                            Some(n) => format!("{} {n}", section.label()),
-                            None => section.label().to_string(),
-                        };
-                        Button::new(SharedString::from(format!(
-                            "k8s-section-{}",
-                            section.label()
-                        )))
-                        .debug_selector(move || format!("k8s-section-{}", section.label()))
-                        .small()
-                        .ghost()
-                        .label(label)
-                        .selected(self.section == section)
-                        .on_click(cx.listener(move |this, _, _, cx| this.set_section(section, cx)))
-                    })),
-            )
+            .when(self.lens == Lens::Workspace, |bar| {
+                bar.child(
+                    h_flex()
+                        .debug_selector(|| "k8s-sections".into())
+                        .flex_none()
+                        .p(px(2.))
+                        .rounded(px(6.))
+                        .bg(tokens.border_subtle.opacity(0.5))
+                        .children(Section::ALL.map(|section| {
+                            let label = match counts(section) {
+                                Some(n) => format!("{} {n}", section.label()),
+                                None => section.label().to_string(),
+                            };
+                            Button::new(SharedString::from(format!(
+                                "k8s-section-{}",
+                                section.label()
+                            )))
+                            .debug_selector(move || format!("k8s-section-{}", section.label()))
+                            .small()
+                            .ghost()
+                            .label(label)
+                            .selected(self.section == section)
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.set_section(section, cx)),
+                            )
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -616,11 +669,29 @@ impl Workspace {
             .text_color(tokens.text_muted)
             .border_b_1()
             .border_color(tokens.border_subtle)
-            .child(self.section.label().to_uppercase())
+            .child(match self.lens {
+                Lens::Workspace => self.section.label().to_uppercase(),
+                Lens::Triage => "NEEDS ATTENTION".into(),
+                Lens::ServicePath => "SERVICES".into(),
+            })
             .child(format!("{}", self.rows.len()));
         let body: AnyElement = if self.rows.is_empty() {
             let text = match &self.data {
                 None => "Choose a context and namespace, then Load. Nothing reads the cluster before that.".to_string(),
+                Some(data) if self.lens == Lens::Triage => match lenses::triage(data) {
+                    lenses::Triage::Unread => "Pods not read yet.".into(),
+                    lenses::Triage::Unknown(why) => why,
+                    lenses::Triage::Ready { observations, .. } if observations.is_empty() => {
+                        format!(
+                            "No object in {} matches a triage rule in the latest read.",
+                            data.scope.label()
+                        )
+                    }
+                    lenses::Triage::Ready { .. } => "Nothing matches the filter.".into(),
+                },
+                Some(data) if self.lens == Lens::ServicePath => {
+                    model::empty_reason(&data.services, "Services", &data.scope)
+                }
                 Some(data) => {
                     let what = self.section.label();
                     match self.section {
@@ -882,6 +953,11 @@ impl Render for Workspace {
         let scope = self.render_scope(window, cx);
         let banner = self.render_banner(cx);
         let filterbar = self.render_filterbar(cx);
+        let lens_band = match self.lens {
+            Lens::Workspace => None,
+            Lens::Triage => Some(self.render_triage_band(cx)),
+            Lens::ServicePath => Some(self.render_path_band(cx)),
+        };
         let list = self.render_list(cx);
         let inspector = self.render_inspector(cx);
         let dock = self.render_dock(cx);
@@ -897,6 +973,7 @@ impl Render for Workspace {
             .child(scope)
             .children(banner)
             .child(filterbar)
+            .children(lens_band)
             .child(
                 h_flex()
                     .flex_1()
