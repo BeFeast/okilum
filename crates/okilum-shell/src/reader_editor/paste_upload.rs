@@ -218,6 +218,7 @@ fn failure_text(error: &UploadError, provider: &dyn note_upload::Provider) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn each_file_uploads_once_in_link_order() {
