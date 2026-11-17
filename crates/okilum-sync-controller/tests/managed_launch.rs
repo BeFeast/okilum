@@ -1052,9 +1052,6 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
     for path in [&selected, &second, &source_second, &unrelated] {
         fs::create_dir(path)?;
     }
-    for name in ["window-a.md", "window-b.md"] {
-        fs::write(selected.join(name), b"original")?;
-    }
     fs::write(unrelated.join("note.md"), b"unrelated original")?;
     let api = identity.connect()?;
     let address = api.config()?["options"]["listenAddresses"][0]
@@ -1082,6 +1079,10 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
         source.api.scan("second")?;
         Ok(selected.join("control.md").exists() && second.join("control.md").exists())
     })?;
+    // Enrollment only accepts an empty destination; Reader notes come after.
+    for name in ["window-a.md", "window-b.md"] {
+        fs::write(selected.join(name), b"original")?;
+    }
     private_json(
         &root.path().join("scoped-daemon.json"),
         &serde_json::to_value(&identity)?,
