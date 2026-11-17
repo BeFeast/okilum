@@ -59,7 +59,15 @@ jobs:
           git fetch --no-tags origin main
           main_sha=$(git rev-parse origin/main)
           calibration=()
-          if [ "$CALIBRATION_RUNS" != 1 ]; then calibration+=(--require-identical-source); fi
+          if [ "$CALIBRATION_RUNS" != 1 ]; then
+            # Unchanged-code calibration compares the head with its own main
+            # base, so main moving while the job is queued cannot refuse it.
+            # The identical-product-input guard below still applies.
+            git fetch --no-tags --deepen=300 origin "$GITHUB_SHA"
+            git fetch --no-tags --depth=300 origin main
+            main_sha=$(git merge-base HEAD origin/main)
+            calibration+=(--require-identical-source)
+          fi
           python3 scripts/perf/editor/build-ab.py "$main_sha" "$RUNNER_TEMP/ab-binaries" "${calibration[@]}"
       - name: Start the software display
         run: |

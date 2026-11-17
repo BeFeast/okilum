@@ -87,8 +87,9 @@ binary/provenance integrity errors remain `NO_EVIDENCE` with nonzero exit; they
 are never hidden as PASS. `ci / check` does not depend on perf; existing
 shared/macOS requirements remain.
 
-Multi-pass calibration (`calibration_runs` 2–5) keeps strict exits and the
-identical-product-input hash guard (all tracked inputs except explicitly listed
+Multi-pass calibration (`calibration_runs` 2–5) compares the head with its
+merge-base on main (so main moving while the job is queued cannot refuse it),
+and keeps strict exits and the identical-product-input hash guard (all tracked inputs except explicitly listed
 documentation, CI and measurement tooling; vendor setup, assets and unknown
 build inputs included), stopping on the first failed invocation. The `strict`
 dispatch input runs one invocation with strict exits and no source guard, for a
