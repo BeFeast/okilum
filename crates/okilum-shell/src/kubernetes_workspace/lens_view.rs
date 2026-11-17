@@ -28,6 +28,15 @@ fn yes_no(value: Option<bool>) -> &'static str {
     }
 }
 
+/// What a path box shows; its `id` is also its test selector.
+struct Node {
+    id: String,
+    heading: &'static str,
+    title: String,
+    lines: Vec<(String, Tone)>,
+    key: Option<Key>,
+}
+
 impl Workspace {
     pub(crate) fn render_lens_switch(&self, cx: &mut Context<Self>) -> AnyElement {
         let tokens = brand::palette(cx);
@@ -213,22 +222,24 @@ impl Workspace {
         band.into_any_element()
     }
 
-    fn node(
-        &self,
-        id: impl Into<ElementId>,
-        selector: String,
-        heading: &'static str,
-        title: String,
-        lines: Vec<(String, Tone)>,
-        key: Option<Key>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// One labelled box of the path. With a key it selects that object in
+    /// the shared inspector; `chips` are its own selectable children.
+    fn node(&self, spec: Node, chips: Vec<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
         let tokens = brand::palette(cx);
+        let Node {
+            id,
+            heading,
+            title,
+            lines,
+            key,
+        } = spec;
         let active = key.is_some() && key.as_ref() == self.selected.as_ref();
+        let selector = id.clone();
         let body = v_flex()
-            .id(id)
+            .id(SharedString::from(id))
             .debug_selector(move || selector.clone())
-            .min_w(px(180.))
+            .w(px(250.))
+            .flex_none()
             .gap(px(1.))
             .px_3()
             .py_2()
@@ -237,14 +248,23 @@ impl Workspace {
             .border_color(if active { tokens.focus } else { tokens.border })
             .bg(tokens.surface_raised)
             .child(caps(heading, cx))
-            .child(div().font_family(brand::MONO_FONT).text_sm().child(title))
+            .child(
+                div()
+                    .truncate()
+                    .font_family(brand::MONO_FONT)
+                    .text_sm()
+                    .child(title),
+            )
             .children(lines.into_iter().map(|(text, tone)| {
                 let color = match tone {
                     Tone::Neutral => tokens.text_muted,
                     tone => tone_color(tone, cx),
                 };
                 div().text_xs().text_color(color).child(text)
-            }));
+            }))
+            .when(!chips.is_empty(), |body| {
+                body.child(h_flex().pt_1().gap_1().flex_wrap().children(chips))
+            });
         match key {
             Some(key) => body
                 .cursor_pointer()
@@ -264,6 +284,158 @@ impl Workspace {
             .child("→")
     }
 
+    /// A container of a target Pod: selects that container (whose inspector
+    /// offers Open logs); it never pins logs itself.
+    fn container_chip(
+        &self,
+        id: String,
+        pod: &okilum_core::kubernetes::Pod,
+        c: &okilum_core::kubernetes::Container,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = model::container_row(pod, c);
+        let key = row.key.clone();
+        let selector = id.clone();
+        Button::new(SharedString::from(id))
+            .debug_selector(move || selector.clone())
+            .xsmall()
+            .ghost()
+            .label(format!("{} · {}", c.name, row.status))
+            .selected(self.selected.as_ref() == Some(&key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.select(key.clone(), cx);
+            }))
+            .into_any_element()
+    }
+
+    fn endpoint_node(
+        &self,
+        id: String,
+        e: &lenses::PathEndpoint,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let conditions = format!(
+            "{} · ready {} · serving {} · terminating {}",
+            e.addresses.join(", "),
+            yes_no(e.ready),
+            yes_no(e.serving),
+            yes_no(e.terminating)
+        );
+        let ctone = if e.ready == Some(true) {
+            Tone::Good
+        } else {
+            Tone::Warning
+        };
+        match &e.target {
+            Target::Pod(pod) => {
+                let info = model::pod_row(pod);
+                let mut lines = vec![
+                    (conditions, ctone),
+                    (
+                        format!(
+                            "{} · Ready {} · restarts {}",
+                            info.status,
+                            info.ready.clone().unwrap_or_default(),
+                            info.restarts
+                                .map_or_else(|| "unknown".into(), |n| n.to_string())
+                        ),
+                        info.tone,
+                    ),
+                ];
+                if e.not_selected {
+                    lines.push((
+                        "No longer matches the Service selector: membership is changing".into(),
+                        Tone::Warning,
+                    ));
+                }
+                let shown: Vec<_> = pod
+                    .containers
+                    .iter()
+                    .filter(|c| c.kind != okilum_core::kubernetes::ContainerKind::Ephemeral)
+                    .collect();
+                for c in &shown {
+                    if let Some(probe) = &c.probes.readiness {
+                        lines.push((
+                            format!("{} readiness {}", c.name, inspector::probe_text(probe)),
+                            Tone::Neutral,
+                        ));
+                    }
+                }
+                lines.push((self.ownership_line(pod), Tone::Neutral));
+                let chips = shown
+                    .iter()
+                    .map(|c| self.container_chip(format!("{id}-{}", c.name), pod, c, cx))
+                    .collect();
+                self.node(
+                    Node {
+                        id,
+                        heading: "TARGET POD",
+                        title: pod.meta.name.clone(),
+                        lines,
+                        key: Some(Key::object(Kind::Pod, &pod.meta)),
+                    },
+                    chips,
+                    cx,
+                )
+            }
+            Target::MissingPod {
+                name,
+                uid,
+                pods_complete,
+            } => self.node(
+                Node {
+                    id,
+                    heading: "TARGET POD",
+                    title: name.clone(),
+                    lines: vec![
+                        (conditions, ctone),
+                        (
+                            format!(
+                                "UID {} is not in the latest Pods read: {}",
+                                uid.as_deref().map(model::short_uid).unwrap_or("unknown"),
+                                if *pods_complete {
+                                    "deleted or replaced"
+                                } else {
+                                    "the Pods read was partial"
+                                }
+                            ),
+                            Tone::Warning,
+                        ),
+                    ],
+                    key: None,
+                },
+                Vec::new(),
+                cx,
+            ),
+            Target::Other { kind, name } => self.node(
+                Node {
+                    id,
+                    heading: "TARGET",
+                    title: format!("{kind}/{name}"),
+                    lines: vec![(conditions, ctone)],
+                    key: None,
+                },
+                Vec::new(),
+                cx,
+            ),
+            Target::None => self.node(
+                Node {
+                    id,
+                    heading: "ENDPOINT",
+                    title: e.addresses.join(", "),
+                    lines: vec![
+                        (conditions, ctone),
+                        ("No target reference".into(), Tone::Neutral),
+                    ],
+                    key: None,
+                },
+                Vec::new(),
+                cx,
+            ),
+        }
+    }
+
     pub(crate) fn render_path_band(&self, cx: &mut Context<Self>) -> AnyElement {
         let tokens = brand::palette(cx);
         let band = v_flex()
@@ -271,7 +443,7 @@ impl Workspace {
             .id("k8s-path")
             .flex_shrink(1.)
             .min_h(px(80.))
-            .max_h(px(260.))
+            .max_h(px(300.))
             .overflow_y_scroll()
             .gap_2()
             .px_4()
@@ -318,33 +490,49 @@ impl Workspace {
         };
         let mut service_lines = vec![(selector, Tone::Neutral)];
         service_lines.extend(path.ports.iter().map(|p| (p.clone(), Tone::Neutral)));
-        let service_node = self.node(
-            "k8s-path-service",
-            "k8s-path-service".into(),
-            "SERVICE",
-            service.meta.name.clone(),
-            service_lines,
-            Some(Key::object(Kind::Service, &service.meta)),
+        if let Some((ready, total)) = path.endpoint_counts() {
+            service_lines.push((
+                format!("{ready} / {total} endpoints ready"),
+                if total > 0 && ready == total {
+                    Tone::Good
+                } else if ready > 0 {
+                    Tone::Warning
+                } else if service.selector.is_empty() && total == 0 {
+                    Tone::Neutral
+                } else {
+                    Tone::Danger
+                },
+            ));
+        }
+        // Row 1: Service → EndpointSlices. Row 2: their endpoints' targets.
+        let mut routing = h_flex().gap_1().items_start().flex_wrap().child(self.node(
+            Node {
+                id: "k8s-path-service".into(),
+                heading: "SERVICE",
+                title: service.meta.name.clone(),
+                lines: service_lines,
+                key: Some(Key::object(Kind::Service, &service.meta)),
+            },
+            Vec::new(),
             cx,
-        );
-        let mut row = h_flex()
-            .gap_1()
-            .items_start()
-            .flex_wrap()
-            .child(service_node);
+        ));
+        let mut targets = h_flex().gap_2().items_start().flex_wrap();
+        let mut any_target = false;
         let mut notes: Vec<(String, Tone)> = Vec::new();
         match &path.routing {
             Routing::Unknown(why) => {
-                row = row.child(Self::arrow(cx)).child(self.node(
-                    "k8s-path-slices-unknown",
-                    "k8s-path-slices-unknown".into(),
-                    "ENDPOINTSLICES",
-                    "unknown".into(),
-                    vec![(
-                        format!("{why}: endpoints are unknown, not zero"),
-                        Tone::Warning,
-                    )],
-                    None,
+                routing = routing.child(Self::arrow(cx)).child(self.node(
+                    Node {
+                        id: "k8s-path-slices-unknown".into(),
+                        heading: "ENDPOINTSLICES",
+                        title: "unknown".into(),
+                        lines: vec![(
+                            format!("{why}: endpoints are unknown, not zero"),
+                            Tone::Warning,
+                        )],
+                        key: None,
+                    },
+                    Vec::new(),
                     cx,
                 ));
             }
@@ -363,27 +551,25 @@ impl Workspace {
                     ));
                 }
                 if slices.is_empty() {
-                    row = row.child(Self::arrow(cx)).child(self.node(
-                        "k8s-path-no-slices",
-                        "k8s-path-no-slices".into(),
-                        "ENDPOINTSLICES",
-                        "none".into(),
-                        vec![(
-                            "No EndpointSlice names this Service: zero endpoints".into(),
-                            if service.selector.is_empty() {
-                                Tone::Neutral
-                            } else {
-                                Tone::Danger
-                            },
-                        )],
-                        None,
+                    routing = routing.child(Self::arrow(cx)).child(self.node(
+                        Node {
+                            id: "k8s-path-no-slices".into(),
+                            heading: "ENDPOINTSLICES",
+                            title: "none".into(),
+                            lines: vec![(
+                                "No EndpointSlice names this Service: zero endpoints".into(),
+                                if service.selector.is_empty() {
+                                    Tone::Neutral
+                                } else {
+                                    Tone::Danger
+                                },
+                            )],
+                            key: None,
+                        },
+                        Vec::new(),
                         cx,
                     ));
                 }
-                let mut slice_col = v_flex().gap_1();
-                // Endpoints side by side, so the band stays short and every node
-                // stays inside its visible area.
-                let mut target_col = h_flex().gap_2().flex_wrap().items_start();
                 for (si, s) in slices.iter().enumerate() {
                     let ready = s.endpoints.iter().filter(|e| e.ready == Some(true)).count();
                     let total = s.endpoints.len();
@@ -408,180 +594,38 @@ impl Workspace {
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
-                    slice_col = slice_col.child(self.node(
-                        ("k8s-path-slice", si),
-                        format!("k8s-path-slice-{si}"),
-                        "ENDPOINTSLICE",
-                        s.slice.meta.name.clone(),
-                        vec![
-                            (format!("{ready} / {total} endpoints ready"), tone),
-                            (
-                                format!(
+                    routing = routing.child(Self::arrow(cx)).child(self.node(
+                        Node {
+                            id: format!("k8s-path-slice-{si}"),
+                            heading: "ENDPOINTSLICE",
+                            title: s.slice.meta.name.clone(),
+                            lines: vec![
+                                (format!("{ready} / {total} endpoints ready"), tone),
+                                (
+                                    format!(
                                         "{} · ports {}",
                                         s.slice
                                             .address_type
                                             .as_deref()
                                             .unwrap_or("address type unknown"),
-                                        if ports.is_empty() {
-                                            "none".into()
-                                        } else {
-                                            ports
-                                        }
+                                        if ports.is_empty() { "none".into() } else { ports }
                                     ),
-                                Tone::Neutral,
-                            ),
-                        ],
-                        None,
+                                    Tone::Neutral,
+                                ),
+                            ],
+                            key: None,
+                        },
+                        Vec::new(),
                         cx,
                     ));
                     for (ei, e) in s.endpoints.iter().enumerate() {
-                        let conditions = format!(
-                            "{} · ready {} · serving {} · terminating {}",
-                            e.addresses.join(", "),
-                            yes_no(e.ready),
-                            yes_no(e.serving),
-                            yes_no(e.terminating)
-                        );
-                        let ctone = if e.ready == Some(true) {
-                            Tone::Good
-                        } else {
-                            Tone::Warning
-                        };
-                        let id = format!("k8s-path-endpoint-{si}-{ei}");
-                        let node = match &e.target {
-                            Target::Pod(pod) => {
-                                let row_info = model::pod_row(pod);
-                                let mut lines = vec![
-                                    (conditions, ctone),
-                                    (
-                                        format!(
-                                            "Pod {} · Ready {} · restarts {}",
-                                            row_info.status,
-                                            row_info.ready.clone().unwrap_or_default(),
-                                            row_info.restarts.map_or_else(
-                                                || "unknown".into(),
-                                                |n| n.to_string()
-                                            )
-                                        ),
-                                        row_info.tone,
-                                    ),
-                                ];
-                                if e.not_selected {
-                                    lines.push((
-                                        "No longer matches the Service selector: membership is changing".into(),
-                                        Tone::Warning,
-                                    ));
-                                }
-                                lines.push((self.ownership_line(pod), Tone::Neutral));
-                                let mut col = v_flex().gap(px(2.)).child(self.node(
-                                    SharedString::from(id.clone()),
-                                    id.clone(),
-                                    "TARGET POD",
-                                    pod.meta.name.clone(),
-                                    lines,
-                                    Some(Key::object(Kind::Pod, &pod.meta)),
-                                    cx,
-                                ));
-                                let containers = h_flex().gap_1().flex_wrap().pl_3().children(
-                                    pod.containers
-                                        .iter()
-                                        .filter(|c| {
-                                            c.kind
-                                                != okilum_core::kubernetes::ContainerKind::Ephemeral
-                                        })
-                                        .map(|c| {
-                                            let crow = model::container_row(pod, c);
-                                            let mut lines = vec![(crow.status.clone(), crow.tone)];
-                                            if let Some(probe) = &c.probes.readiness {
-                                                lines.push((
-                                                    format!(
-                                                        "readiness {}",
-                                                        inspector::probe_text(probe)
-                                                    ),
-                                                    Tone::Neutral,
-                                                ));
-                                            }
-                                            let cid = format!("{id}-{}", c.name);
-                                            self.node(
-                                                SharedString::from(cid.clone()),
-                                                cid,
-                                                "CONTAINER",
-                                                c.name.clone(),
-                                                lines,
-                                                Some(crow.key.clone()),
-                                                cx,
-                                            )
-                                        }),
-                                );
-                                col = col.child(containers);
-                                col.into_any_element()
-                            }
-                            Target::MissingPod {
-                                name,
-                                uid,
-                                pods_complete,
-                            } => self.node(
-                                SharedString::from(id.clone()),
-                                id.clone(),
-                                "TARGET POD",
-                                name.clone(),
-                                vec![
-                                    (conditions, ctone),
-                                    (
-                                        format!(
-                                            "UID {} is not in the latest Pods read: {}",
-                                            uid.as_deref()
-                                                .map(model::short_uid)
-                                                .unwrap_or("unknown"),
-                                            if *pods_complete {
-                                                "deleted or replaced"
-                                            } else {
-                                                "the Pods read was partial"
-                                            }
-                                        ),
-                                        Tone::Warning,
-                                    ),
-                                ],
-                                None,
-                                cx,
-                            ),
-                            Target::Other { kind, name } => self.node(
-                                SharedString::from(id.clone()),
-                                id.clone(),
-                                "TARGET",
-                                format!("{kind}/{name}"),
-                                vec![(conditions, ctone)],
-                                None,
-                                cx,
-                            ),
-                            Target::None => self.node(
-                                SharedString::from(id.clone()),
-                                id.clone(),
-                                "ENDPOINT",
-                                e.addresses.join(", "),
-                                vec![
-                                    (conditions, ctone),
-                                    ("No target reference".into(), Tone::Neutral),
-                                ],
-                                None,
-                                cx,
-                            ),
-                        };
-                        target_col = target_col.child(node);
-                    }
-                    if s.endpoints.is_empty() {
-                        target_col = target_col.child(muted(
-                            format!("{} has no endpoints.", s.slice.meta.name),
+                        any_target = true;
+                        targets = targets.child(self.endpoint_node(
+                            format!("k8s-path-endpoint-{si}-{ei}"),
+                            e,
                             cx,
                         ));
                     }
-                }
-                if !slices.is_empty() {
-                    row = row
-                        .child(Self::arrow(cx))
-                        .child(slice_col)
-                        .child(Self::arrow(cx))
-                        .child(target_col);
                 }
             }
         }
@@ -598,7 +642,10 @@ impl Workspace {
                 Tone::Warning,
             ));
         }
-        band.child(row)
+        band.child(routing)
+            .when(any_target, |band| {
+                band.child(caps("TARGETS (targetRef UID)", cx)).child(targets)
+            })
             .child(muted(
                 "Routing: Service → EndpointSlice → target Pods (targetRef UID). Ownership is a separate relation: Deployment → ReplicaSet → Pod (ownerReferences UID).",
                 cx,
