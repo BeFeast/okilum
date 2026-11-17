@@ -405,16 +405,66 @@ pub(crate) fn triage_rows(data: &Data, query: &str) -> Vec<Row> {
 
 // ---------- Service path ----------
 
+/// What the Pods source says about Pods that are not in it. An endpoint's
+/// target missing from a complete, current read was deleted or replaced; any
+/// other state means only that the target is unknown here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PodsSource {
+    Complete,
+    /// First page only, or items that could not be decoded.
+    Partial,
+    /// The shown Pods are older than a failed read.
+    Stale(String),
+    /// Never read, or the read failed (forbidden, auth, ...) with nothing
+    /// earlier. EndpointSlices can still be readable in this state.
+    Unknown(String),
+}
+
+impl PodsSource {
+    pub(crate) fn of(data: &Data) -> Self {
+        match data.pods.view(SystemTime::now(), Duration::MAX) {
+            View::Unread => Self::Unknown("Pods not read".into()),
+            View::Failed { failure, .. } => Self::Unknown(format!(
+                "Pods could not be read: {}",
+                model::failure_kind(failure)
+            )),
+            View::Stale {
+                why: okilum_core::kubernetes::Staleness::Failed { failure, .. },
+                ..
+            } => Self::Stale(format!(
+                "Pods read failed since ({})",
+                model::failure_kind(failure)
+            )),
+            View::Fresh(o) | View::Stale { last: o, .. } => {
+                if o.value.is_complete() {
+                    Self::Complete
+                } else {
+                    Self::Partial
+                }
+            }
+        }
+    }
+    /// Why a target UID is not among the shown Pods.
+    pub(crate) fn absence(&self) -> String {
+        match self {
+            Self::Complete => "deleted or replaced".into(),
+            Self::Partial => "the Pods read was partial".into(),
+            Self::Stale(why) => format!("Pods are stale ({why})"),
+            Self::Unknown(why) => format!("unknown: {why}"),
+        }
+    }
+}
+
 /// What an EndpointSlice endpoint points at, by `targetRef` UID.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Target<'a> {
     Pod(&'a Pod),
-    /// A Pod UID the latest Pods read does not contain: deleted, replaced, or
-    /// beyond a partial list. Never matched by name.
+    /// A Pod UID not among the shown Pods. Whether that means deleted depends
+    /// on `pods`. Never matched by name.
     MissingPod {
         name: String,
         uid: Option<String>,
-        pods_complete: bool,
+        pods: PodsSource,
     },
     Other {
         kind: String,
@@ -493,8 +543,7 @@ pub(crate) fn service_path<'a>(data: &'a Data, service: &'a Service) -> ServiceP
             )
         })
         .collect();
-    let pods_observation = data.pod_observation();
-    let pods_complete = pods_observation.is_some_and(|o| o.value.is_complete());
+    let pods_source = PodsSource::of(data);
     let routing = match data.slices.view(SystemTime::now(), Duration::MAX) {
         View::Unread => Routing::Unknown("EndpointSlices not read".into()),
         View::Failed { failure, .. } => Routing::Unknown(format!(
@@ -537,7 +586,7 @@ pub(crate) fn service_path<'a>(data: &'a Data, service: &'a Service) -> ServiceP
                                         None => Target::MissingPod {
                                             name: t.name.clone(),
                                             uid: t.uid.clone(),
-                                            pods_complete,
+                                            pods: pods_source.clone(),
                                         },
                                     },
                                 };

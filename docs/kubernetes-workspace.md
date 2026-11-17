@@ -160,8 +160,12 @@ Choose a Service in the list. The band shows:
   an earlier one is marked stale.
 - **Endpoints** with addresses and ready/serving/terminating, and their
   `targetRef`, matched by UID: a target Pod with its status and its
-  containers (current state, readiness probe), or "UID … is not in the latest
-  Pods read: deleted or replaced" (or "the Pods read was partial"). Names are
+  containers, or a target that is not among the shown Pods. What that means
+  follows the Pods source: "deleted or replaced" only after a complete,
+  current Pods read; "the Pods read was partial" for a truncated list;
+  "Pods are stale" after a failed read with earlier data; otherwise "unknown"
+  (Pods not read, or denied: EndpointSlices can be readable while Pods are
+  forbidden). Names are
   never used to match. An endpoint Pod the selector no longer matches, and
   Pods the selector matches that are not endpoints, are listed as changing
   membership.

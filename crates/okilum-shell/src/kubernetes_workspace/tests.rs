@@ -956,3 +956,38 @@ fn lenses_lay_out_in_light_and_dark_and_tabs_click_after_an_app_theme_switch(
         h.click("k8s-lens-workspace");
     }
 }
+
+#[gpui::test]
+fn service_path_with_denied_pods_shows_unknown_targets(cx: &mut TestAppContext) {
+    let mut h = open(
+        cx,
+        with(
+            path_routes(slice_list(&[("pod-a", true), ("pod-b", false)])),
+            "/pods?limit=",
+            fail("Error from server (Forbidden): pods is forbidden"),
+        ),
+    );
+    h.load("");
+    h.click("k8s-lens-service-path");
+    h.click("k8s-row-0");
+    assert!(h.visual.debug_bounds("k8s-path-endpoint-0-0").is_some());
+    assert!(
+        h.visual.debug_bounds("k8s-path-facts").is_none(),
+        "no Pod facts to show"
+    );
+    h.workspace.read_with(h.visual, |ws, _| {
+        let data = ws.data.as_ref().unwrap();
+        let service = lenses::find_service(data, ws.path_service.as_ref().unwrap()).unwrap();
+        let path = lenses::service_path(data, service);
+        let lenses::Routing::Known { slices, .. } = &path.routing else {
+            panic!("EndpointSlices were readable")
+        };
+        for e in &slices[0].endpoints {
+            assert!(matches!(
+                &e.target,
+                lenses::Target::MissingPod { pods: lenses::PodsSource::Unknown(why), .. }
+                    if why.contains("forbidden")
+            ));
+        }
+    });
+}

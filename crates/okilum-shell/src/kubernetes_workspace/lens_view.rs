@@ -363,23 +363,15 @@ impl Workspace {
                     chips,
                 )
             }
-            Target::MissingPod {
-                name,
-                uid,
-                pods_complete,
-            } => (
+            Target::MissingPod { name, uid, pods } => (
                 name.clone(),
                 vec![
                     conditions,
                     (
                         format!(
-                            "UID {} not in the Pods read: {}",
+                            "UID {}: {}",
                             uid.as_deref().map(model::short_uid).unwrap_or("unknown"),
-                            if *pods_complete {
-                                "deleted or replaced"
-                            } else {
-                                "partial read"
-                            }
+                            pods.absence()
                         ),
                         Tone::Warning,
                     ),

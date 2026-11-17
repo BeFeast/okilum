@@ -207,7 +207,7 @@ fn service_path_separates_routing_membership_and_ownership() {
     // A UID the Pods read does not contain is shown as missing, never matched by name.
     assert!(matches!(
         &targets[2].target,
-        Target::MissingPod { uid: Some(uid), pods_complete: true, .. } if uid == "pod-gone"
+        Target::MissingPod { uid: Some(uid), pods: PodsSource::Complete, .. } if uid == "pod-gone"
     ));
     // Selected by labels but not an endpoint: membership still changing.
     let pending: Vec<_> = path
@@ -305,4 +305,101 @@ fn find_service_resolves_by_uid_only() {
         uid: "svc-old".into(),
     };
     assert!(find_service(&data, &other).is_none());
+}
+
+/// Known EndpointSlices with an unread, denied, partial or stale Pods source:
+/// a target that is not among the shown Pods is unknown, never "deleted" and
+/// never "partial" unless the Pods list itself was partial.
+#[test]
+fn missing_targets_follow_the_pods_source_state() {
+    let svc = model::latest(&fixture().services).unwrap().value.items[0].clone();
+    let missing = |data: &Data| -> Vec<PodsSource> {
+        let path = service_path(data, &svc);
+        let Routing::Known { slices, .. } = path.routing else {
+            panic!("slices are readable in every case")
+        };
+        slices[0]
+            .endpoints
+            .iter()
+            .map(|e| match &e.target {
+                Target::MissingPod { pods, .. } => pods.clone(),
+                other => panic!("expected a missing target, got {other:?}"),
+            })
+            .collect()
+    };
+    let slices = || {
+        vec![slice_of(
+            "checkout-abc",
+            &[("pod-a", true), ("pod-b", false)],
+        )]
+    };
+
+    // Pods never read.
+    let mut unread = Data::new(scope("prod-east", "shop"));
+    put(&mut unread.slices, slices());
+    assert_eq!(
+        missing(&unread),
+        [
+            PodsSource::Unknown("Pods not read".into()),
+            PodsSource::Unknown("Pods not read".into())
+        ]
+    );
+    // Pods denied while EndpointSlices are readable: a normal Load result.
+    let mut denied = Data::new(scope("prod-east", "shop"));
+    put(&mut denied.slices, slices());
+    fail(
+        &mut denied.pods,
+        Failure::Forbidden {
+            detail: "pods is forbidden".into(),
+        },
+    );
+    let states = missing(&denied);
+    assert_eq!(
+        states[0],
+        PodsSource::Unknown("Pods could not be read: forbidden".into())
+    );
+    assert_eq!(
+        states[0].absence(),
+        "unknown: Pods could not be read: forbidden"
+    );
+    assert!(states
+        .iter()
+        .all(|s| !s.absence().contains("partial") && !s.absence().contains("deleted")));
+    // A truncated Pods list is the only "partial".
+    let mut partial = Data::new(scope("prod-east", "shop"));
+    put(&mut partial.slices, slices());
+    let ticket = partial.pods.begin();
+    let observation = okilum_core::kubernetes::Observation {
+        source: partial.pods.source().clone(),
+        observed_at: SystemTime::now(),
+        value: okilum_core::kubernetes::List {
+            items: Vec::new(),
+            resource_version: None,
+            completeness: okilum_core::kubernetes::Completeness::Truncated {
+                remaining: Some(10),
+            },
+            rejected: Vec::new(),
+            rejected_total: 0,
+        },
+    };
+    assert!(partial
+        .pods
+        .record(ticket, Ok(observation), SystemTime::now()));
+    assert_eq!(missing(&partial)[0], PodsSource::Partial);
+    // Earlier Pods kept after a failed read: stale, not deleted.
+    let mut stale = Data::new(scope("prod-east", "shop"));
+    put(&mut stale.slices, slices());
+    put(&mut stale.pods, vec![]);
+    fail(
+        &mut stale.pods,
+        Failure::Unavailable {
+            detail: "network".into(),
+        },
+    );
+    assert!(matches!(&missing(&stale)[0], PodsSource::Stale(why) if why.contains("unavailable")));
+    // Positive control: a complete, current read means deleted or replaced.
+    let mut complete = Data::new(scope("prod-east", "shop"));
+    put(&mut complete.slices, slices());
+    put(&mut complete.pods, vec![]);
+    assert_eq!(missing(&complete)[0].absence(), "deleted or replaced");
 }
