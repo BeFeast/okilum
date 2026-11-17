@@ -26,30 +26,88 @@ def key(package):
     return package["name"], package["version"]
 
 
+class Ambiguous(ValueError):
+    pass
+
+
+def versions(packages):
+    found = {}
+    for package in packages:
+        found.setdefault(package["name"], []).append(package["version"])
+    return found
+
+
+def edge(dependency, index, origin):
+    """(name, version) of one `dependencies` entry, resolved in the lock it came
+    from: Cargo writes a bare name only when that lock has one version of it."""
+    name, *rest = dependency.split(" ")
+    if rest:
+        return name, rest[0]
+    found = index.get(name, [])
+    if len(found) != 1:
+        raise Ambiguous(f"{origin} lock: bare dependency {name!r} matches {len(found)} versions")
+    return name, found[0]
+
+
 def merge(root, vendor):
     """The vendor lock's packages with our gpui-pre family and its closure.
-    Family crates only the vendor uses (e.g. gpui-pre-reqwest-client) are left
-    out: their exact pins on the old family would conflict, and cargo resolves
-    the one release that matches ours."""
+
+    Every dependency edge is resolved to an exact (name, version) in the lock it
+    came from, so a bare name never comes to mean another version of the crate
+    after the merge; family edges of vendor packages point at our family. Family
+    crates only the vendor uses (e.g. gpui-pre-reqwest-client) are left out:
+    their exact pins on the old family would conflict, and cargo resolves the
+    one release that matches ours. `dump` writes each edge bare only when the
+    merged lock has exactly one version of that crate."""
+    root_index, vendor_index = versions(root["package"]), versions(vendor["package"])
     names = {p["name"] for p in root["package"] if family(p["name"])}
-    out = {key(p): p for p in vendor["package"] if not family(p["name"])}
-    out.update({key(p): p for p in root["package"] if p["name"] in names})
-    by_name = {}
-    for package in root["package"]:
-        by_name.setdefault(package["name"], []).append(package)
-    pending = [p for p in out.values() if p["name"] in names]
+    by_key = {key(p): p for p in root["package"]}
+    out, edges = {}, {}
+    for package in vendor["package"]:
+        if family(package["name"]):
+            continue
+        resolved = []
+        for dependency in package.get("dependencies", []):
+            name, version = edge(dependency, vendor_index, "vendor")
+            if family(name):
+                if name not in names:
+                    resolved.append((name, None))  # dropped: cargo resolves it
+                    continue
+                name, version = edge(name, root_index, "our")
+            resolved.append((name, version))
+        out[key(package)], edges[key(package)] = package, resolved
+    pending = [p for p in root["package"] if p["name"] in names]
     while pending:
         package = pending.pop()
-        for dependency in package.get("dependencies", []):
-            name, *rest = dependency.split(" ")
-            version = rest[0] if rest else None
-            if any(n == name and (version is None or v == version) for n, v in out):
-                continue
-            for candidate in by_name.get(name, []):
-                if version is None or candidate["version"] == version:
-                    out[key(candidate)] = candidate
-                    pending.append(candidate)
-    return [out[k] for k in sorted(out)]
+        if key(package) in edges:
+            continue
+        resolved = [edge(d, root_index, "our") for d in package.get("dependencies", [])]
+        out[key(package)], edges[key(package)] = package, resolved
+        for dependency in resolved:
+            if dependency not in by_key:
+                raise Ambiguous(f"our lock: {key(package)} depends on {dependency}, which it lacks")
+            if dependency in out:
+                # The vendor's entry stands in for ours only if it is the same package.
+                if out[dependency].get("source") != by_key[dependency].get("source"):
+                    raise Ambiguous(f"{dependency} has different sources in the two locks")
+            else:
+                pending.append(by_key[dependency])
+    merged = versions(out.values())
+    packages = []
+    for k in sorted(out):
+        package = dict(out[k])
+        written = []
+        for name, version in edges[k]:
+            if version is None:
+                written.append(name)
+            elif (name, version) not in out:
+                raise Ambiguous(f"{k} depends on {name} {version}, which the merged lock lacks")
+            else:
+                written.append(name if len(merged[name]) == 1 else f"{name} {version}")
+        if written:
+            package["dependencies"] = written
+        packages.append(package)
+    return packages
 
 
 def dump(version, packages):

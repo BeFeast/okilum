@@ -20,8 +20,11 @@ def package(name, version, *dependencies, source=REG):
     return entry
 
 
+# Bare names as Cargo writes them: our lock has one derive_more (2.0.1), the
+# vendor lock one (0.99.20), so after the merge both bare edges are ambiguous.
 ROOT = {"version": 4, "package": [
-    package("gpui-pre", "0.3.3", "gpui-pre-util", "smallvec 1.15.0", source=None),
+    package("derive_more", "2.0.1"),
+    package("gpui-pre", "0.3.3", "derive_more", "gpui-pre-util", "smallvec", source=None),
     package("gpui-pre-util", "0.3.3", "newdep"),
     package("newdep", "2.0.0"),
     package("okilum-core", "0.1.0", "gpui-pre", source=None),
@@ -29,7 +32,9 @@ ROOT = {"version": 4, "package": [
 ]}
 VENDOR = {"version": 4, "package": [
     package("crypto-bigint", "0.7.5"),
-    package("gpui-base", "0.6.0", "gpui-pre", "crypto-bigint", source=None),
+    package("derive_more", "0.99.20"),
+    package("gpui-base", "0.6.0", "derive_more", "gpui-pre", "gpui-pre-reqwest-client", "crypto-bigint",
+            source=None),
     package("gpui-pre", "0.3.2", "gpui-pre-util"),
     package("gpui-pre-util", "0.3.2"),
     package("gpui-pre-reqwest-client", "0.3.2", "gpui-pre-util"),
@@ -53,6 +58,34 @@ class VendorGpuiLock(unittest.TestCase):
         self.assertIn(("newdep", "2.0.0"), merged)
         self.assertNotIn(("okilum-core", "0.1.0"), merged)
         self.assertNotIn("source", merged[("gpui-pre", "0.3.3")])
+
+    def test_bare_names_keep_the_version_of_the_lock_they_came_from(self):
+        merged = {(p["name"], p["version"]): p for p in lock.merge(ROOT, VENDOR)}
+        self.assertIn(("derive_more", "2.0.1"), merged)
+        self.assertIn(("derive_more", "0.99.20"), merged)
+        # Two versions now: each edge is written with the version its lock meant.
+        self.assertEqual(merged[("gpui-pre", "0.3.3")]["dependencies"],
+                         ["derive_more 2.0.1", "gpui-pre-util", "smallvec"])
+        # A vendor package's family edge points at our family; the dropped
+        # vendor-only family crate stays bare for cargo to resolve.
+        self.assertEqual(merged[("gpui-base", "0.6.0")]["dependencies"],
+                         ["derive_more 0.99.20", "gpui-pre", "gpui-pre-reqwest-client", "crypto-bigint"])
+
+    def test_ambiguity_fails_loudly(self):
+        # A bare name with two versions in its own lock is not a valid edge.
+        broken = {"version": 4, "package": VENDOR["package"] + [package("derive_more", "1.0.0")]}
+        with self.assertRaisesRegex(lock.Ambiguous, "vendor lock: bare dependency 'derive_more' matches 2 versions"):
+            lock.merge(ROOT, broken)
+        # A versioned edge to a package neither lock has.
+        dangling = {"version": 4, "package": [package("gpui-pre", "0.3.3", "missing 1.0.0", source=None)]}
+        with self.assertRaisesRegex(lock.Ambiguous, "which it lacks"):
+            lock.merge(dangling, VENDOR)
+        # The same package from two different sources.
+        other = {"version": 4, "package": [
+            package("gpui-pre", "0.3.3", "smallvec", source=None),
+            package("smallvec", "1.15.0", source="git+https://example.test/smallvec#abc")]}
+        with self.assertRaisesRegex(lock.Ambiguous, "different sources"):
+            lock.merge(other, VENDOR)
 
     def test_dump_round_trips_through_toml(self):
         packages = lock.merge(ROOT, VENDOR)
