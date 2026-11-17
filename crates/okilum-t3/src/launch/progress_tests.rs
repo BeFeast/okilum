@@ -484,3 +484,81 @@ fn review2_a_duplicate_beyond_the_first_batch_keeps_the_outcome_provisional() {
         "every new thread is read exactly once: {reads:?}"
     );
 }
+
+#[test]
+fn review3_empty_new_threads_rotate_so_a_later_duplicate_is_found() {
+    // Ten new threads, newest first: the completed match, then eight threads
+    // still without a first message, then a second thread carrying the same
+    // marker. Re-reading the same empty threads every poll would never reach
+    // the duplicate and would hide the ambiguity forever.
+    let mut fixture = Recorded::new().fixture;
+    let mut rows = vec![fixture["frames"][0]["executors"][0].clone()];
+    let mut completed = fixture["frames"][4]["executors"][2].clone();
+    completed["updatedAt"] = json!("2026-11-17T12:00:00.000Z");
+    rows.push(completed);
+    for index in 0..8 {
+        let id = format!("mcp:fixture-empty-{index}");
+        let mut row = fixture["frames"][2]["executors"][1].clone();
+        row["threadId"] = json!(id);
+        row["status"] = json!("preparing");
+        row["updatedAt"] = json!(format!("2026-11-17T11:0{}:00.000Z", 8 - index));
+        rows.push(row);
+        fixture["timelines"][&id] = json!([]);
+    }
+    let mut duplicate = fixture["frames"][2]["executors"][2].clone();
+    duplicate["threadId"] = json!("mcp:fixture-executor-duplicate");
+    duplicate["updatedAt"] = json!("2026-11-17T10:30:00.000Z");
+    rows.push(duplicate);
+    fixture["timelines"]["mcp:fixture-executor-duplicate"] =
+        fixture["timelines"]["mcp:fixture-executor-new"].clone();
+    let t3 = Recorded {
+        fixture,
+        ..Recorded::new()
+    };
+    t3.executors(json!(rows));
+    let mut launch = tracker(&t3, true);
+
+    // First batch: the completed match and seven empty threads.
+    step(&mut launch, &t3);
+    assert!(
+        !launch.progress.finished(),
+        "nine new threads remain unchecked"
+    );
+    assert!(launch
+        .progress
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("checking 9 more new T3 threads"));
+    // Second batch starts with the never-read empty thread and the duplicate.
+    step(&mut launch, &t3);
+    assert!(
+        !launch.progress.finished(),
+        "an ambiguous launch never finishes"
+    );
+    assert!(launch.progress.executor.is_none());
+    let note = launch.progress.note.clone().unwrap();
+    assert!(
+        note.contains("mcp:fixture-executor-new")
+            && note.contains("mcp:fixture-executor-duplicate"),
+        "{note}"
+    );
+    let reads = t3.reads();
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|r| *r == "mcp:fixture-executor-duplicate")
+            .count(),
+        1
+    );
+    // Every empty thread is read once before any is read a second time.
+    let empty_reads = reads
+        .iter()
+        .filter(|r| r.starts_with("mcp:fixture-empty-"))
+        .collect::<Vec<_>>();
+    assert_eq!(empty_reads.len(), 14, "{reads:?}");
+    let distinct = empty_reads[..8].iter().collect::<BTreeSet<_>>();
+    assert_eq!(distinct.len(), 8, "{empty_reads:?}");
+    step(&mut launch, &t3);
+    assert!(!launch.progress.finished());
+}

@@ -10,13 +10,14 @@
 use super::Request;
 use crate::{ManagerGateway, SendReceipt, ThreadQuery, ThreadSummary};
 use anyhow::{Context, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The first line of the `t3_thread_launch` message the manager is asked to
 /// send. Okilum identifies the executor thread only by this line in T3's own
 /// timeline, never by title, registry prose or the manager's chat reply.
 pub const MARKER: &str = "Okilum launch request: ";
-/// New threads inspected per observation; each thread is read at most once.
+/// New threads read per observation. A thread with a first message is read
+/// once; an empty one stays unchecked and takes its turn again later.
 const MAX_READS_PER_OBSERVATION: usize = 8;
 /// Enough for the marker line; the brief itself is never read back.
 const FIRST_ITEM_CHARS: u32 = 256;
@@ -133,6 +134,8 @@ pub struct Observation {
     manager_status: Option<String>,
     listed: Vec<ThreadSummary>,
     inspected: Vec<String>,
+    /// New threads read without a first message yet.
+    empty: Vec<String>,
     matched: Vec<String>,
     /// New threads of this listing still unchecked after this observation.
     unchecked: usize,
@@ -149,6 +152,8 @@ pub struct Tracker {
     /// Executor-project threads that existed before the request was sent.
     baseline: Option<BTreeSet<String>>,
     inspected: BTreeSet<String>,
+    /// Unchecked threads last read empty, with the revision of that read.
+    empty_since: BTreeMap<String, u64>,
     matched: BTreeSet<String>,
     manager_run_ended: Option<String>,
     revision: u64,
@@ -171,6 +176,7 @@ impl Tracker {
             executor_project_id: request.executor_project_id.clone(),
             baseline: baseline.map(|threads| threads.iter().map(|t| t.thread_id.clone()).collect()),
             inspected: BTreeSet::new(),
+            empty_since: BTreeMap::new(),
             matched: BTreeSet::new(),
             manager_run_ended: None,
             revision: 0,
@@ -209,6 +215,7 @@ impl Tracker {
             manager_status: None,
             listed: Vec::new(),
             inspected: Vec::new(),
+            empty: Vec::new(),
             matched: Vec::new(),
             unchecked: 0,
         };
@@ -241,11 +248,12 @@ impl Tracker {
             })
             .map(|t| t.thread_id.clone())
             .collect::<Vec<_>>();
-        let candidates = unchecked
-            .iter()
-            .take(MAX_READS_PER_OBSERVATION)
-            .cloned()
-            .collect::<Vec<_>>();
+        // Fair rotation over every unchecked new thread: never-read threads
+        // first (newest first), then those read empty longest ago. Empty
+        // threads therefore cannot hold the batch and hide older candidates.
+        let mut candidates = unchecked.clone();
+        candidates.sort_by_key(|id| self.empty_since.get(id).map_or(0, |revision| revision + 1));
+        candidates.truncate(MAX_READS_PER_OBSERVATION);
         let marker = format!("{MARKER}{}", self.request_id);
         for id in candidates {
             // Explicitly from the first item: without a cursor T3 may answer
@@ -264,6 +272,7 @@ impl Tracker {
             // An empty new thread may not have its first message yet: read it
             // again on the next observation instead of ruling it out.
             let Some(first) = first else {
+                observation.empty.push(id);
                 continue;
             };
             if first.lines().next().map(str::trim_end) == Some(marker.as_str()) {
@@ -287,6 +296,12 @@ impl Tracker {
             return false;
         }
         let before = self.progress.clone();
+        for id in observation.empty {
+            self.empty_since.insert(id, observation.revision);
+        }
+        for id in &observation.inspected {
+            self.empty_since.remove(id);
+        }
         self.inspected.extend(observation.inspected);
         self.matched.extend(observation.matched);
         if observation.manager_run_active == Some(true) {
