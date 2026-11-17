@@ -1426,6 +1426,9 @@ fn existing_cache_ancestor(
     })
 }
 
+/// A document's outline and the milliseconds its scan took.
+type PreparedOutline = (Vec<okilum_core::document_links::HeadingEntry>, f64);
+
 pub(crate) struct PendingDocument {
     intent: reader_open::OpenIntent,
     vault: Vault,
@@ -1439,7 +1442,7 @@ pub(crate) struct PendingDocument {
     languages_prepared: bool,
     language_task: Option<Task<()>>,
     /// The outline, scanned while the TextView parses (#3073).
-    outline_task: Option<Task<Option<(Vec<okilum_core::document_links::HeadingEntry>, f64)>>>,
+    outline_task: Option<Task<Option<PreparedOutline>>>,
     /// When this document was staged, and when its parse was accepted: the
     /// open's `note_open_prepare` diagnostic (#3073).
     staged_at: std::time::Instant,
