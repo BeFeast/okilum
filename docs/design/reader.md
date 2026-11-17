@@ -1169,6 +1169,9 @@ rescanned” confirmation and retains the normal network Rescan control. A root 
 failure must not replace the last usable inventory with an empty success.
 Unreadable counts cover inventory entries only; watcher limitations and preparation
 warnings are separate. Native SMB acceptance uses only the disposable #516 fixture.
+Network roots are refreshed by the explicit polling fallback described in
+[reader startup diagnostics](../reader-startup-diagnostics.md#polling-fallback-for-network-roots);
+the header shows “Periodic refresh” with Rescan instead of “Auto-refresh limited”.
 
 ### Tree file preview (#704)
 

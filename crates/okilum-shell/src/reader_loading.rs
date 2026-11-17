@@ -9,6 +9,12 @@ const MAX_MEMORY_SEARCH_BYTES: usize = 128 * 1024 * 1024;
 /// How long a history write waits out another window's write before the
 /// failure is shown (#1325); writes take milliseconds.
 const HISTORY_LOCK_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Plain-words description of the network polling fallback (#516). The
+/// bounds are `okilum_core::watch::{MIN,MAX}_POLL_INTERVAL`.
+const NETWORK_POLL_TOOLTIP: &str =
+    "This vault is on a network drive. Okilum checks it for changes \
+     from other devices every 10 seconds to 5 minutes, depending on the drive's speed. \
+     Rescan checks now.";
 
 pub(super) struct SessionRecord {
     pub(super) root: PathBuf,
@@ -615,10 +621,10 @@ fn prepare_rest_with_snapshot(
         send,
         &mut |path| std::fs::read(path),
         |root| {
+            // Native events miss other clients' writes on a share (#516):
+            // walk metadata periodically instead, shown in the header.
             if network {
-                bail!(
-                    "Auto-refresh is limited on this network drive. Use Rescan to check changes made by other clients."
-                );
+                return VaultWatcher::polling(root).map_err(anyhow::Error::new);
             }
             VaultWatcher::new(root).map_err(anyhow::Error::new)
         },
@@ -3054,13 +3060,30 @@ impl Reader {
                                 .any(|warning| warning.operation.starts_with("watch vault")))
                 }),
                 |view| {
-                    view.child(div().text_color(muted).child("Auto-refresh limited"))
+                    // A network root is polled (#516); remote FUSE and a failed
+                    // watcher registration still depend on Rescan alone.
+                    let polled = self.loading.as_ref().is_some_and(|load| {
+                        load.network
+                            && !load
+                                .warnings
+                                .iter()
+                                .any(|warning| warning.operation.starts_with("watch vault"))
+                    });
+                    view.child(div().text_color(muted).child(if polled {
+                        "Periodic refresh"
+                    } else {
+                        "Auto-refresh limited"
+                    }))
                         .child(
                             Button::new("rescan-network-vault")
                                 .debug_selector(|| "rescan-network-vault".into())
                                 .small()
                                 .label("Rescan")
-                                .tooltip("Changes from other devices may need Rescan.")
+                                .tooltip(if polled {
+                                    NETWORK_POLL_TOOLTIP
+                                } else {
+                                    "Changes from other devices may need Rescan."
+                                })
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.refresh_inventory_with_read(
                                         okilum_core::Changes::default(),
