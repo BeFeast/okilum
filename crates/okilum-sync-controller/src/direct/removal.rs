@@ -5,6 +5,15 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 const HANDOFF_REFUSAL: &str = "This introducer still serves plain Syncthing computers. Their surviving relationships need an explicit handoff before removing this computer; no folder was changed";
+/// The folder a membership was removed from is gone or changed identity.
+#[derive(Debug)]
+struct FolderGone;
+impl std::fmt::Display for FolderGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("folder gone or changed identity")
+    }
+}
+impl std::error::Error for FolderGone {}
 #[derive(Debug)]
 struct NeedsHandoff;
 impl std::fmt::Display for NeedsHandoff {
@@ -244,7 +253,15 @@ fn admit(db: &mut Database, device: &str, admission: &Epoch) {
     for removal in db.removals.iter_mut().filter(|r| older.contains(&r.id)) {
         removal.close_learned(Uuid::nil());
     }
-    rebroadcast(db, &older);
+    // Every closed removal of the device carries the newer admission onward,
+    // also those closed here before, so peers behind this one learn it too.
+    let closed: Vec<Uuid> = db
+        .removals
+        .iter()
+        .filter(|r| r.device == device && r.superseded())
+        .map(|r| r.id)
+        .collect();
+    rebroadcast(db, &closed);
 }
 /// Deliver these closed removals to every peer that shares one of their
 /// vaults, the original sender included, so each computer that applied the
@@ -276,6 +293,23 @@ fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
                 removal.pending.entry(peer).or_insert(paired);
             }
         }
+    }
+}
+/// An epoch above every admission and removal of `device` known here, minted
+/// by this computer.
+fn next_epoch(db: &Database, device: &str) -> Epoch {
+    let counter = db
+        .removals
+        .iter()
+        .filter(|r| r.device == device)
+        .filter_map(|r| r.epoch.as_ref().map(|e| e.counter))
+        .chain([admitted(db, device).counter])
+        .max()
+        .unwrap_or(0)
+        + 1;
+    Epoch {
+        counter,
+        by: own_device(db),
     }
 }
 /// This computer's own device: the daemon of its associated vaults.
@@ -404,19 +438,7 @@ pub(super) fn readmit(
     }
     // The new admission epoch is above every removal of this device known
     // here, so each of them, delivered late anywhere, is closed (#3079).
-    let counter = db
-        .removals
-        .iter()
-        .filter(|r| r.device == device)
-        .filter_map(|r| r.epoch.as_ref().map(|e| e.counter))
-        .chain([admitted(db, device).counter])
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let epoch = Epoch {
-        counter,
-        by: own_device(db),
-    };
+    let epoch = next_epoch(db, device);
     let mut closed = vec![];
     for removal in db
         .removals
@@ -845,10 +867,11 @@ impl Controller {
             })
             .map(|(id, peer)| (*id, peer.clone()))
             .collect();
-        // A removal decided here removes the device's current epoch.
+        // A removal decided here takes an epoch above everything known here,
+        // so a concurrent readmission elsewhere can never close it (#3079).
         let current = admitted(&db, device);
         let epoch = if sender.is_none() {
-            Some(current.clone())
+            Some(next_epoch(&db, device))
         } else {
             epoch
         };
@@ -1341,17 +1364,28 @@ impl Controller {
                 }
                 self.save(&db)?;
             }
+            // A folder that is gone or changed identity is dropped; anything
+            // else (e.g. the runtime is down) stays pending and is retried.
+            let mut retry = vec![];
             for removed in &undo.members {
-                if let Err(error) = self.restore_member(&configs, &device, removed) {
-                    eprintln!(
-                        "okilum-sync: membership of {} not re-established: {error:#}",
-                        removed.vault.folder_id
-                    );
+                match self.restore_member(&configs, &device, removed) {
+                    Ok(()) => {}
+                    Err(error) if error.is::<FolderGone>() => {}
+                    Err(error) => {
+                        eprintln!(
+                            "okilum-sync: membership of {} not re-established yet: {error:#}",
+                            removed.vault.folder_id
+                        );
+                        retry.push(removed.clone());
+                    }
                 }
             }
             let mut db = self.shared.db.lock().unwrap();
             if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
-                saved.undo = None;
+                match (&mut saved.undo, retry.is_empty()) {
+                    (Some(undo), false) => undo.members = retry,
+                    _ => saved.undo = None,
+                }
             }
             self.save(&db)?;
         }
@@ -1363,11 +1397,20 @@ impl Controller {
         device: &str,
         removed: &RemovedMember,
     ) -> Result<()> {
-        let fresh = inspect_existing(configs, &removed.vault.path)?;
-        ensure!(
-            existing::same_binding(&removed.vault, &fresh),
-            "folder identity changed"
-        );
+        // Reachability first: a runtime that is down is retried later.
+        let api = removed.vault.daemon.connect()?;
+        let listed = api.config()?["folders"]
+            .as_array()
+            .context("Folder inventory missing")?
+            .iter()
+            .any(|f| f["id"] == removed.vault.folder_id.as_str());
+        if !listed || !removed.vault.path.exists() {
+            return Err(FolderGone.into());
+        }
+        let fresh = inspect_existing(configs, &removed.vault.path).map_err(|_| FolderGone)?;
+        if !existing::same_binding(&removed.vault, &fresh) {
+            return Err(FolderGone.into());
+        }
         let api = fresh.daemon.connect()?;
         let current = api.folder(&fresh.folder_id)?;
         let members = current["devices"]
@@ -2706,7 +2749,9 @@ mod tests {
         third.queue_removal(Uuid::new_v4(), &removed, BTreeSet::new(), None, None)?;
         let db = third.shared.db.lock().unwrap();
         let newest = db.removals.last().unwrap();
-        assert!(newest.epoch == Some(epoch(1, "AAAA")) && !newest.superseded());
+        assert!(
+            newest.epoch.as_ref().is_some_and(|e| *e > epoch(1, "AAAA")) && !newest.superseded()
+        );
         drop(db);
         third.shutdown();
         Ok(())
@@ -2857,7 +2902,7 @@ mod tests {
         third.queue_removal(Uuid::new_v4(), &removed, BTreeSet::new(), None, None)?;
         let db = third.shared.db.lock().unwrap();
         let newest = db.removals.last().unwrap();
-        assert_eq!(newest.epoch, Some(epoch(1, "AAAA")));
+        assert!(newest.epoch.as_ref().is_some_and(|e| *e > epoch(1, "AAAA")));
         assert!(!newest.superseded(), "a new decision was closed as stale");
         drop(db);
         third.shutdown();
@@ -3077,6 +3122,139 @@ mod tests {
         );
         drop(db);
         controller.shutdown();
+        Ok(())
+    }
+
+    /// Round 6: a removal decided here after a readmission takes an epoch
+    /// above everything known here, so a concurrent readmission minted
+    /// elsewhere with the same counter can never close it.
+    #[test]
+    fn issue3079_new_removal_outranks_a_concurrent_readmission() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let alice = Controller::open(root.path().join("alice"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let returning = pairing(&bob, wire::public(&wire::random()?)?)?;
+        {
+            let mut db = alice.shared.db.lock().unwrap();
+            db.peers.insert(returning.peer.id, returning.clone());
+            // Alice readmitted Bob at (1, Alice).
+            db.admissions.insert(bob.clone(), epoch(1, "AAAA"));
+        }
+        let id = Uuid::new_v4();
+        alice.queue_removal(id, &bob, BTreeSet::new(), None, None)?;
+        let mut db = alice.shared.db.lock().unwrap();
+        let mine = db
+            .removals
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .epoch
+            .clone()
+            .unwrap();
+        assert!(
+            mine > epoch(1, "CCCC"),
+            "a new removal reused a readmission epoch"
+        );
+        // Carol's concurrent readmission arrives afterwards.
+        admit(&mut db, &bob, &epoch(1, "CCCC"));
+        assert!(
+            !db.removals
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .superseded(),
+            "a concurrent readmission closed a removal decided after it"
+        );
+        drop(db);
+        alice.shutdown();
+        Ok(())
+    }
+    /// Round 6: a newer admission learned through an already-closed removal
+    /// is passed on to every peer of its vault as well.
+    #[test]
+    fn issue3079_newer_admission_on_a_closed_removal_is_passed_on() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let sender = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let behind = pairing(&["EEEEEEE"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let id = Uuid::new_v4();
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.peers.insert(sender.peer.id, sender.clone());
+            db.peers.insert(behind.peer.id, behind.clone());
+            let mut closed = removal(id, &removed);
+            closed.readmitted = Some(Uuid::new_v4());
+            db.removals.push(closed);
+            db.admissions.insert(removed.clone(), epoch(1, "AAAA"));
+        }
+        third.receive_removal(
+            sender.peer.id,
+            id,
+            removed.clone(),
+            BTreeSet::from(["vault".into()]),
+            None,
+            Version {
+                superseded: true,
+                epoch: Some(Epoch::default()),
+                admission: Some(epoch(2, "CCCC")),
+            },
+        )?;
+        let db = third.shared.db.lock().unwrap();
+        assert_eq!(admitted(&db, &removed), epoch(2, "CCCC"));
+        let record = db.removals.iter().find(|r| r.id == id).unwrap();
+        assert!(
+            record.pending.contains_key(&behind.peer.id),
+            "the newer admission stayed here"
+        );
+        let onward = requests(&db, behind.peer.id);
+        assert!(onward[0].admission == Some(epoch(2, "CCCC")));
+        drop(db);
+        third.shutdown();
+        Ok(())
+    }
+    /// Round 6: a membership that cannot be re-established yet (runtime
+    /// down) stays pending and is retried; the pairing comes back at once.
+    #[test]
+    fn issue3079_unreachable_membership_restore_stays_pending() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let returning = pairing(&removed, wire::public(&wire::random()?)?)?;
+        let id = Uuid::new_v4();
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.revoked_peers
+                .insert(returning.peer.id, returning.clone());
+            let mut closed = removal(id, &removed);
+            closed.readmitted = Some(Uuid::nil());
+            closed.undo = Some(Undo {
+                pairings: BTreeMap::from([(returning.peer.id, returning.clone())]),
+                grants: vec![],
+                members: vec![RemovedMember {
+                    vault: existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?,
+                    member: json!({"deviceID": removed}),
+                }],
+                pending: true,
+            });
+            db.removals.push(closed);
+        }
+        third.compensate_removals()?;
+        let db = third.shared.db.lock().unwrap();
+        assert!(db.peers.contains_key(&returning.peer.id));
+        let undo = db
+            .removals
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .undo
+            .clone();
+        assert!(
+            undo.is_some_and(|u| u.pending && u.members.len() == 1),
+            "an unreachable membership restore was dropped instead of retried"
+        );
+        drop(db);
+        third.shutdown();
         Ok(())
     }
 }
