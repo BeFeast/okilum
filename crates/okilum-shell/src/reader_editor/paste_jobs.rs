@@ -46,6 +46,18 @@ fn retarget(follow_up: &mut FollowUp, anchor: Anchor) {
     }
 }
 
+/// Where a drop onto rendered block `block` goes in the editor's `source`:
+/// the start of the block's first line, the end of the note below the last
+/// block (`block == None`), or `None` when the Reader's blocks and the
+/// note's do not match and the block cannot be placed.
+fn block_drop_offset(source: &str, rendered: &str, block: Option<usize>) -> Option<usize> {
+    match block {
+        None => Some(source.len()),
+        Some(block) => okilum_core::deep_link::block_line(source, rendered, block)
+            .and_then(|line| line_start(source, line)),
+    }
+}
+
 /// The byte offset where 1-based `line` starts in `text`; `None` past its
 /// last line.
 fn line_start(text: &str, line: u32) -> Option<usize> {
@@ -90,7 +102,35 @@ impl Target {
             .path
             .as_deref()
             .is_some_and(|path| editing.store.path() == path);
-        (editing.input == self.input || same_note).then(|| editing.input.clone())
+        // A block drop's place belongs to the editor it was dropped on
+        // (#1615): a reopened editor of the same note gets nothing.
+        (editing.input == self.input || (same_note && !self.slot)).then(|| editing.input.clone())
+    }
+}
+
+/// Why a background result was not inserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Missed {
+    /// The note is no longer being edited (or its editor is read-only).
+    Closed,
+    /// #1615: a block drop's place in the note could no longer be found.
+    Moved,
+}
+
+/// Say why a background result was not inserted, naming what was saved.
+fn not_inserted(missed: Missed, saved: &str, window: &mut Window, cx: &mut App) {
+    match missed {
+        Missed::Closed => note_closed(saved, window, cx),
+        Missed::Moved => {
+            let text = if saved.is_empty() {
+                "The note changed where the drop went, so nothing was inserted.".to_string()
+            } else {
+                format!(
+                    "The note changed where the drop went, so nothing was inserted. Saved: {saved}"
+                )
+            };
+            reader_toast::error(text, window, cx);
+        }
     }
 }
 
@@ -199,14 +239,7 @@ impl Reader {
             let (snapshot, offset) = cx
                 .background_executor()
                 .spawn(async move {
-                    let line = block.and_then(|block| {
-                        okilum_core::deep_link::block_line(&snapshot, &rendered, block)
-                    });
-                    // Below the last block, or a block the mapping cannot
-                    // place: the end of the note.
-                    let offset = line
-                        .and_then(|line| line_start(&snapshot, line))
-                        .unwrap_or(snapshot.len());
+                    let offset = block_drop_offset(&snapshot, &rendered, block);
                     (snapshot, offset)
                 })
                 .await;
@@ -219,6 +252,18 @@ impl Reader {
                     diagnostic_error!("Drop: not inserted (the editor closed first)");
                     return;
                 }
+                let Some(offset) = offset else {
+                    // The Reader's blocks and the note's no longer match (a
+                    // rewritten note): the block cannot be told reliably.
+                    diagnostic_error!("Drop: not inserted (block {block:?} has no source line)");
+                    reader_toast::error(
+                        "Okilum couldn’t tell where that block starts in the note, so nothing \
+                         was inserted. Drop it in Edit at the place you want.",
+                        window,
+                        cx,
+                    );
+                    return;
+                };
                 let offset = {
                     let state = input.read(cx);
                     if state.source_stamp() == stamp {
@@ -512,8 +557,10 @@ fn ask_then_copy(
                     .collect::<Vec<_>>()
                     .join("\n");
                 let block = plan.items.len() > 1;
-                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
-                    note_closed("", window, cx);
+                if let Err(missed) =
+                    insert_at_anchor(&input, &anchor, &text, block, false, window, cx)
+                {
+                    not_inserted(missed, "", window, cx);
                 }
             }
             _ => diagnostic_error!("Paste: file copy cancelled"),
@@ -611,8 +658,10 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             if !links.is_empty() {
                 let block = links.len() > 1;
                 let text = links.join("\n");
-                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
-                    note_closed(&links.join("  "), window, cx);
+                if let Err(missed) =
+                    insert_at_anchor(&input, &anchor, &text, block, false, window, cx)
+                {
+                    not_inserted(missed, &links.join("  "), window, cx);
                 }
             }
             if !errors.is_empty() {
@@ -649,8 +698,10 @@ fn run_job(
         let _ = cx.update_window(handle, |_, window, cx| match result {
             Ok((text, files)) => {
                 input.files_saved(&files, window, cx);
-                if insert_at_anchor(&input, &anchor, &text, false, false, window, cx).is_none() {
-                    note_closed(&text, window, cx);
+                if let Err(missed) =
+                    insert_at_anchor(&input, &anchor, &text, false, false, window, cx)
+                {
+                    not_inserted(missed, &text, window, cx);
                 }
             }
             Err(text) => reader_toast::error(text, window, cx),
@@ -701,8 +752,8 @@ fn fetch_title(input: Target, url: String, anchor: Anchor, window: &mut Window, 
 /// Insert finished text where the paste was; at the caret, with a toast,
 /// when that place can no longer be found. `markdown`: converted Markdown,
 /// fitted like a paste of it (blank lines around a block). The region of the
-/// inserted text, if it went in; `None` when the note is no longer being
-/// edited (or its editor is read-only), and the caller says so.
+/// inserted text, if it went in; otherwise why not ([`Missed`]), and the
+/// caller says so.
 fn insert_at_anchor(
     target: &Target,
     anchor: &Anchor,
@@ -711,16 +762,23 @@ fn insert_at_anchor(
     markdown: bool,
     window: &mut Window,
     cx: &mut App,
-) -> Option<Region> {
+) -> Result<Region, Missed> {
     let Some(input) = target.live(cx) else {
         diagnostic_error!(
             "Paste: background result not inserted (the note is no longer being edited)"
         );
-        return None;
+        return Err(Missed::Closed);
     };
+    let located = anchor.locate(input.read(cx).value().as_ref());
+    if located.is_none() && target.slot {
+        // A block drop never goes to the caret: that could be inside any
+        // block of the note (#1615).
+        diagnostic_error!("Drop: background result not inserted (the drop point is gone)");
+        return Err(Missed::Moved);
+    }
     let (moved, region) = input.update(cx, |state, cx| {
         let current = state.value().to_string();
-        let (at, moved) = match anchor.locate(&current) {
+        let (at, moved) = match located {
             Some(at) => (at, false),
             None => (state.cursor(), true),
         };
@@ -757,7 +815,7 @@ fn insert_at_anchor(
             cx,
         );
     }
-    region
+    region.ok_or(Missed::Closed)
 }
 
 /// Rich text too large for the UI thread (#1611): converted (and its
@@ -819,17 +877,20 @@ fn convert_in_background(
                 window,
                 cx,
             );
-            let Some(region) = region else {
-                // Not inserted: its saved images would be linked from nowhere.
-                if let Some(lease) = &done.admission {
-                    if let Ok(_admission) = lease.enter() {
-                        for file in &done.files {
-                            let _ = std::fs::remove_file(file);
+            let region = match region {
+                Ok(region) => region,
+                Err(missed) => {
+                    // Not inserted: its saved images would be linked from nowhere.
+                    if let Some(lease) = &done.admission {
+                        if let Ok(_admission) = lease.enter() {
+                            for file in &done.files {
+                                let _ = std::fs::remove_file(file);
+                            }
                         }
                     }
+                    not_inserted(missed, "", window, cx);
+                    return;
                 }
-                note_closed("", window, cx);
-                return;
             };
             if done.deferred > 0 {
                 reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
@@ -1576,6 +1637,135 @@ mod reader_drop_tests {
             reader.read_with(visual, |r, _| r.editing.is_some()),
             "the note stays in Edit"
         );
+    }
+
+    /// A drop onto a rendered block whose source line cannot be told: the
+    /// Reader's blocks no longer match the note's (here, the rendered text
+    /// is replaced by a one-block document). Nothing is inserted; the note
+    /// is not appended to.
+    #[gpui::test]
+    fn an_unmappable_block_refuses_instead_of_appending(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.update(visual, |r, cx| {
+            let bounds = r.content.read(cx).list_state().bounds_for_item(2).unwrap();
+            r.note_source = "# Only one block\n".to_string();
+            bounds
+        });
+        drop_at(
+            visual,
+            next.center(),
+            temp.path().join("vault/docs/spec.txt"),
+        );
+        let (source, link) = source_and_line(&reader, visual, "spec.txt");
+        assert!(link.is_none(), "nothing was inserted: {source:?}");
+        assert_eq!(source, NOTE, "and nothing was appended");
+    }
+
+    /// Open the copy question for a drop onto block 2 (ask threshold 1 MB,
+    /// a 2 MB file): the result is still pending.
+    fn pending_copy(
+        reader: &Entity<Reader>,
+        visual: &mut VisualTestContext,
+        temp: &tempfile::TempDir,
+    ) {
+        let ui_state = temp.path().join("ui-state");
+        std::fs::create_dir_all(&ui_state).unwrap();
+        visual.update(|_, cx| {
+            crate::reader_ui_state::install(&ui_state, cx);
+            crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
+        });
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        let large = temp.path().join("large.bin");
+        std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
+        drop_at(visual, next.center(), large);
+        assert!(
+            visual.has_pending_prompt(),
+            "positive control: Copy into Vault? is asked"
+        );
+    }
+
+    fn copied_into_vault(temp: &tempfile::TempDir) -> bool {
+        fn walk(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("large")
+                }
+            })
+        }
+        walk(&temp.path().join("vault"))
+    }
+
+    /// The note was rewritten while the copy question was open: the drop
+    /// point is gone, so the copied file is not inserted anywhere (never at
+    /// the caret, which could be inside any block); it stays saved.
+    #[gpui::test]
+    fn a_lost_drop_point_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let rewritten = "Rewritten.\n\nAnother paragraph.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let end = state.value().len();
+                assert!(state.replace_source_range(0..end, rewritten, window, cx));
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, rewritten, "nothing was inserted");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
+    }
+
+    /// The note left Edit and came back while the copy question was open:
+    /// the result belonged to the closed editor and goes nowhere.
+    #[gpui::test]
+    fn a_reopened_editor_does_not_take_a_pending_drop(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let first = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let second = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        assert!(
+            first != second,
+            "positive control: a new editor of the same note"
+        );
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "the reopened editor got nothing");
+    }
+
+    #[test]
+    fn block_drop_offset_places_or_refuses() {
+        let source = "---\ntags: [a]\n---\n# Title\n\nPara.\n";
+        let rendered = "# Title\n\nPara.\n";
+        assert_eq!(
+            block_drop_offset(source, rendered, Some(0)),
+            source.find("# Title")
+        );
+        assert_eq!(
+            block_drop_offset(source, rendered, Some(1)),
+            source.find("Para.")
+        );
+        assert_eq!(
+            block_drop_offset(source, rendered, None),
+            Some(source.len())
+        );
+        // Rendered blocks that do not match the note's: refused, not the end.
+        assert_eq!(block_drop_offset(source, "# Title\n", Some(1)), None);
+        assert_eq!(block_drop_offset(source, rendered, Some(9)), None);
     }
 
     #[test]
