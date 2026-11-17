@@ -1,0 +1,87 @@
+diff --git a/crates/component/src/menu/context_menu.rs b/crates/component/src/menu/context_menu.rs
+--- a/crates/component/src/menu/context_menu.rs
++++ b/crates/component/src/menu/context_menu.rs
+@@ -316,10 +316,19 @@
+                                     menu.set_previous_focus(previous_focus_handle, cx);
+                                 });
+ 
+-                                // Set up the subscription for dismiss handling
++                                // Set up the subscription for dismiss handling.
++                                //
++                                // The shared state owns this subscription, and the
++                                // subscription keeps its subscriber set alive, so the
++                                // callback must not own the shared state: that cycle
++                                // kept the last menu, and everything its items
++                                // captured, alive after the window and the app.
+                                 let _subscription = window.subscribe(&menu, cx, {
+-                                    let shared_state = shared_state.clone();
++                                    let shared_state = Rc::downgrade(&shared_state);
+                                     move |_, _: &DismissEvent, window, _cx| {
++                                        let Some(shared_state) = shared_state.upgrade() else {
++                                            return;
++                                        };
+                                         shared_state.borrow_mut().open = false;
+                                         window.refresh();
+                                     }
+@@ -442,4 +451,61 @@
+             assert_eq!(window.focused(cx).as_ref(), Some(&content_focus));
+         });
+     }
++
++    /// A built menu must not outlive the window that showed it. The element
++    /// state owns the dismiss subscription; a callback owning that state back
++    /// formed an `Rc` cycle the window's teardown never broke.
++    #[gpui::test]
++    fn menu_is_released_with_its_window(cx: &mut TestAppContext) {
++        cx.update(|cx| {
++            cx.set_global(Theme::default());
++            super::super::popup_menu::init(cx);
++        });
++
++        let (_, cx) = cx.add_window_view(|window, cx| {
++            let content_focus = cx.focus_handle();
++            content_focus.focus(window, cx);
++            TestRoot {
++                content_focus,
++                received: Rc::new(Cell::new(false)),
++            }
++        });
++        let cx: &mut VisualTestContext = cx;
++        cx.run_until_parked();
++        cx.update(|window, cx| {
++            _ = window.draw(cx);
++        });
++
++        let menus = Rc::new(RefCell::new(Vec::new()));
++        cx.update({
++            let menus = menus.clone();
++            move |_, cx| {
++                cx.observe_new::<PopupMenu>(move |_, _, cx| {
++                    menus.borrow_mut().push(cx.entity().downgrade());
++                })
++                .detach();
++            }
++        });
++        cx.simulate_event(MouseDownEvent {
++            button: MouseButton::Right,
++            position: point(px(50.), px(70.)),
++            modifiers: Default::default(),
++            click_count: 1,
++            first_mouse: false,
++        });
++        cx.run_until_parked();
++        cx.update(|window, cx| {
++            _ = window.draw(cx);
++        });
++        assert_eq!(menus.borrow().len(), 1, "the right click must build one menu");
++        assert!(menus.borrow()[0].upgrade().is_some());
++
++        cx.update(|window, _| window.remove_window());
++        cx.run_until_parked();
++
++        assert!(
++            menus.borrow()[0].upgrade().is_none(),
++            "the menu outlived its window"
++        );
++    }
+ }
