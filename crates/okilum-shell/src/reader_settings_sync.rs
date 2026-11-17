@@ -562,6 +562,8 @@ impl SyncSettings {
                                     snapshot.offer_url = None;
                                     snapshot.status = "Pairing did not complete".into();
                                 }
+                                #[cfg(any(windows, test))]
+                                this.retract_approval_notice(None, cx);
                             }
                             let message = user_error(&error);
                             if let Some(vault) = destination_vault {
@@ -590,6 +592,18 @@ impl SyncSettings {
         })
         .detach();
     }
+    /// Answered, expired or replaced: no stale request stays in Action Center.
+    #[cfg(any(windows, test))]
+    fn retract_approval_notice(&mut self, current: Option<uuid::Uuid>, cx: &mut Context<Self>) {
+        if let Some(shown) = self
+            .presentation
+            .notice
+            .filter(|shown| current != Some(*shown))
+        {
+            cx.dismiss_system_notification(&presentation::approval_tag(shown));
+            self.presentation.notice = None;
+        }
+    }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
         self.publish_first_sync(output.first_sync, cx);
         self.health
@@ -604,15 +618,29 @@ impl SyncSettings {
             self.presentation.error_details = Some(diagnostic);
         }
         self.presentation.overview = output.overview;
-        if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
+        let incoming = output.snapshot.pending.as_ref().filter(|p| p.incoming);
+        #[cfg(any(windows, test))]
+        self.retract_approval_notice(incoming.map(|p| p.request_id), cx);
+        if let Some(pending) = incoming {
             if self.presentation.notified != Some(pending.request_id) {
                 self.presentation.notified = Some(pending.request_id);
-                let name = pending.name.clone();
-                cx.background_executor()
-                    .spawn(async move {
-                        presentation::notify_approval(&name);
-                    })
-                    .detach();
+                #[cfg(any(windows, test))]
+                {
+                    cx.show_system_notification(presentation::approval_notification(
+                        pending.request_id,
+                        &pending.name,
+                    ));
+                    self.presentation.notice = Some(pending.request_id);
+                }
+                #[cfg(all(not(test), unix))]
+                {
+                    let name = pending.name.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            presentation::notify_approval(&name);
+                        })
+                        .detach();
+                }
             }
         }
         if self.presentation.wizard.is_some()

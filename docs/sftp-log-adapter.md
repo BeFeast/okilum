@@ -59,8 +59,19 @@ or changes host keys. Inputs and loaded rows are session-only.
 The worker feeds complete lines into the shared leased stream assembler and the
 ordinary LogView, with local filters, selection and export. History stops at
 8 MiB / 20,000 lines or a 64 KiB line. Errors and continuity loss retain the
-previously loaded rows. Retry/rotation recovery starts a new session explicitly;
-there is no automatic retry or gap-free rotation claim.
+previously loaded rows.
+
+A dropped connection reconnects automatically once the session has read
+successfully. The worker keeps the same `Follow`, so each retry re-proves the
+consumed prefix and appends only unseen bytes, including the rest of a partial
+record: no duplicate or missing records. While the connection is down the status
+reads `Disconnected: … Reconnecting in Ns (retry k of 4)` in the error colour
+with Stop enabled, and the loaded rows stay as they are. Backoff matches the
+HTTPS adapter (1/2/4/8 s, cancellable by Stop); the fifth consecutive failure
+stops with rows retained, and any successful poll resets the budget. A failure
+before the first successful read (host alias, trust, authentication) is reported
+at once without retrying. Rotation recovery still needs a new session; there is
+no gap-free rotation claim.
 
 Stop and window close set a session-specific cancellation flag. The worker checks
 it before every positional operation, including each prefix proof read; it does

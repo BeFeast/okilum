@@ -147,11 +147,20 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
         okilum_sync::NetworkAccess::current().allowed(),
         "Sync is disabled"
     );
-    let sources = super::preparation::Sources::installed()?;
     let state = active_state_directory()?;
+    if state.join("restage.json").try_exists()? {
+        // Finish an interrupted helper replacement, or settle one a user Disable
+        // cancelled, before this explicit Connect reads preparation.
+        super::restage::refresh(state.clone(), super::preparation::Sources::installed()?)?;
+    }
+    let sources = super::preparation::Sources::installed()?;
     let prepared =
         super::preparation::prepare(&state, &sources, Instant::now() + Duration::from_secs(90))?;
     let store = store(&state)?;
+    ensure!(
+        !store.helper_restage_pending()?,
+        "Sync helper replacement is pending; retry after recovery"
+    );
     let guard = super::guard::Guard::new(&prepared, &sources, store.clone(), &state)?;
     let mut platform = super::TaskScheduler(super::native::NativeTasks::connect(guard)?);
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -210,7 +219,7 @@ pub fn connect_current_app(confirmed: bool) -> Result<DaemonIdentity> {
     Ok(identity)
 }
 
-fn wait_for_native_ready(
+pub(super) fn wait_for_native_ready(
     store: &WindowsStore,
     binding: &crate::sidecar::Binding,
     deadline: Instant,
@@ -259,6 +268,16 @@ pub fn disable_current_app() -> Result<()> {
     let prepared =
         super::preparation::prepare(&state, &sources, Instant::now() + Duration::from_secs(30))?;
     let store = store(&state)?;
+    // Before reading the binding: no helper replacement step may commit after
+    // this, and none may re-enable Sync over the Disable below.
+    store.cancel_helper_restage(Instant::now() + Duration::from_secs(5))?;
+    let binding = store
+        .begin(Instant::now() + Duration::from_secs(5))?
+        .current()?
+        .context("Sync journal missing")?
+        .binding()
+        .clone();
+    let prepared = super::preparation::for_binding(prepared, &binding)?;
     let guard = super::guard::Guard::new(&prepared, &sources, store.clone(), &state)?;
     let platform = super::TaskScheduler(super::native::NativeTasks::connect(guard)?);
     let mut controller = crate::sidecar::Controller::new(store, platform);

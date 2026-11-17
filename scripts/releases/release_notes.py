@@ -62,16 +62,23 @@ def key(source, platform, channel):
     return f'{PREFIX}/{source}/{platform}/{channel}/notes.json'
 
 
-def predecessor(store, platform, channel='beta'):
-    """Read the actual published channel head BEFORE publication changes it."""
+def predecessor(store, platform, channel='beta', below=None):
+    """Read the actual published channel head BEFORE publication changes it.
+
+    `below` (macOS only) reads the newest item older than a build that is already
+    in the appcast: a resumed publication keeps its first attempt's predecessor.
+    """
     if channel not in ('beta', 'stable'):
         raise ValueError('Unknown notes channel')
+    if below is not None and platform != 'macos':
+        raise ValueError('Only the macOS appcast keeps older channel items')
     if platform == 'macos':
         raw = store.call('GET', 'okilum/appcast.xml')
         if raw is None:
             return None
         items = ET.fromstring(raw).findall('./channel/item')
-        beta = [i for i in items if i.findtext(SPARKLE + 'channel') == channel]
+        beta = [i for i in items if i.findtext(SPARKLE + 'channel') == channel
+                and (below is None or int(i.findtext(SPARKLE + 'version')) < below)]
         if not beta:
             return None
         item = max(beta, key=lambda i: int(i.findtext(SPARKLE + 'version')))

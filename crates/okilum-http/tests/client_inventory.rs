@@ -1,0 +1,321 @@
+//! #1944: pins the TLS/proxy policy of every outbound HTTP/WebSocket client in
+//! the workspace. A production client either builds through `okilum_http`
+//! (explicit SChannel + WinHTTP static/PAC/WPAD on Windows) or is listed here
+//! with the reason it deliberately keeps another policy. A new raw
+//! `reqwest`/`tungstenite` client, or a listed one that moves, fails this test,
+//! so the Windows policy can no longer depend on Cargo feature unification.
+//! Design and follow-ups: docs/windows-network-policy.md.
+use std::{collections::BTreeMap, fs, path::Path};
+
+/// Construction sites that pick a TLS backend or proxy policy on their own.
+const PATTERNS: &[&str] = &[
+    "Client::builder()",
+    "Client::new()",
+    "ClientBuilder::new(",
+    "reqwest::get(",
+    "blocking::get(",
+    "client_tls_with_config(",
+    "tungstenite::connect(",
+];
+
+/// Path, raw construction sites in that file, and why it stays outside the policy.
+const EXCEPTIONS: &[(&str, usize, &str)] = &[
+    (
+        "crates/okilum-http/src/lib.rs",
+        2,
+        "the shared policy itself",
+    ),
+    (
+        "crates/okilum-core/src/remote_log/transport.rs",
+        1,
+        "cfg(test) synthetic-clock client, loopback HTTP only",
+    ),
+    (
+        "crates/okilum-sync/src/lib.rs",
+        1,
+        "Syncthing REST: literal loopback, no proxy",
+    ),
+    (
+        "crates/okilum-sync-controller/src/pairing.rs",
+        1,
+        "sync pairing: pinned root, explicitly direct",
+    ),
+    (
+        "crates/okilum-sync-controller/src/sidecar/macos/connect.rs",
+        1,
+        "macOS-only sidecar on loopback",
+    ),
+    (
+        "crates/okilum-appimage/src/lib.rs",
+        1,
+        "Linux AppImage updater, not in the Windows package",
+    ),
+    (
+        "crates/okilum-shell/src/reader_project_navigation.rs",
+        1,
+        "cfg(test) loopback WebSocket probe",
+    ),
+    // Follow-ups: multi-origin clients need per-request proxy resolution
+    // (arbitrary URLs and cross-host redirects); one PAC answer does not fit.
+    (
+        "crates/okilum-shell/src/note_paste/fetch.rs",
+        1,
+        "follow-up: paste page title, arbitrary URL with redirects",
+    ),
+    (
+        "crates/okilum-shell/src/note_paste/download.rs",
+        1,
+        "follow-up: paste image download, one client for every host",
+    ),
+    (
+        "crates/okilum-t3/src/projects/icon.rs",
+        1,
+        "follow-up: project logo, arbitrary URL with redirects",
+    ),
+    (
+        "crates/okilum-t3/src/board/delivery/read.rs",
+        1,
+        "follow-up: delivery feeds on configured, arbitrary origins",
+    ),
+    // Follow-up: tungstenite has no proxy support and uses bundled webpki
+    // roots; needs HTTP CONNECT plus an OS-trust connector.
+    (
+        "crates/okilum-t3/src/stream.rs",
+        1,
+        "follow-up: T3 WebSocket, direct TCP + webpki roots",
+    ),
+    // okilum-brain links into okilum-cored, not into the Windows package.
+    (
+        "crates/okilum-brain/src/t3.rs",
+        2,
+        "okilum-cored only: T3 ticket + WebSocket",
+    ),
+    (
+        "crates/okilum-brain/src/chat.rs",
+        1,
+        "okilum-cored only: model provider",
+    ),
+    (
+        "crates/okilum-brain/src/retrieval.rs",
+        1,
+        "okilum-cored only: retrieval provider",
+    ),
+    (
+        "crates/okilum-brain/src/settings.rs",
+        1,
+        "okilum-cored only: provider settings probe",
+    ),
+    (
+        "crates/okilum-brain/src/todoist.rs",
+        1,
+        "okilum-cored only: Todoist",
+    ),
+];
+
+fn test_only(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or_default();
+    relative.split('/').any(|part| {
+        matches!(
+            part,
+            "tests" | "test_support" | "examples" | "benches" | "testing"
+        )
+    }) || name == "tests.rs"
+        || name == "testing.rs"
+        || name.ends_with("_tests.rs")
+        || name.ends_with("_test.rs")
+}
+
+fn scan(dir: &Path, root: &Path, found: &mut BTreeMap<String, usize>) {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
+            scan(&path, root, found);
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if test_only(&relative) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        let count: usize = PATTERNS.iter().map(|p| text.matches(p).count()).sum();
+        if count > 0 {
+            found.insert(relative, count);
+        }
+    }
+}
+
+fn workspace() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf()
+}
+
+#[test]
+fn every_outbound_client_takes_the_shared_policy_or_a_recorded_exception() {
+    let root = workspace();
+    let mut found = BTreeMap::new();
+    scan(&root.join("crates"), &root, &mut found);
+    // Positive control: the scanner really sees the shared builder's sites.
+    assert_eq!(found.get("crates/okilum-http/src/lib.rs"), Some(&2));
+    let expected: BTreeMap<String, usize> = EXCEPTIONS
+        .iter()
+        .map(|(path, count, _)| ((*path).to_owned(), *count))
+        .collect();
+    let unexpected: Vec<_> = found
+        .iter()
+        .filter(|(path, count)| expected.get(*path) != Some(count))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "raw HTTP/WebSocket clients outside okilum_http (build through \
+         okilum_http::builder/async_builder, or record the exception and its \
+         reason in this file and docs/windows-network-policy.md): {unexpected:?}"
+    );
+    let stale: Vec<_> = expected
+        .keys()
+        .filter(|path| !found.contains_key(*path))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "exceptions no longer present; drop them here and in the doc: {stale:?}"
+    );
+}
+
+/// The paths this issue moved must keep building through the shared policy, and
+/// each keeps its own pre-#1944 connect budget instead of the shared 5 s default
+/// (which also applies on macOS/Linux). `None`: the policy's default is the
+/// client's own, unchanged budget.
+const MIGRATED: &[(&str, &str, Option<&str>)] = &[
+    (
+        "crates/okilum-core/src/remote_log/transport.rs",
+        "okilum_http::async_builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+    (
+        "crates/okilum-core/src/log/http/mod.rs",
+        "okilum_http::builder(",
+        None,
+    ),
+    (
+        "crates/okilum-shell/src/reader_feedback/model.rs",
+        "okilum_http::async_client(",
+        None,
+    ),
+    (
+        "crates/okilum-shell/src/updater/whats_new/model.rs",
+        "okilum_http::builder(",
+        Some(".connect_timeout(profile.first_connect)"),
+    ),
+    (
+        "crates/okilum-t3/src/network.rs",
+        "okilum_http::local_network_builder(",
+        None,
+    ),
+    (
+        "crates/okilum-t3/src/mcp.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/session.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(CONNECT_TIMEOUT)"),
+    ),
+    (
+        "crates/okilum-t3/src/oauth.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/stream/auth.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(timeout)"),
+    ),
+    (
+        "crates/okilum-t3/src/projects.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(std::time::Duration::from_secs(10))"),
+    ),
+    // Board issue reads had a 10 s total and no connect cap before #1944.
+    (
+        "crates/okilum-t3/src/board.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(10))"),
+    ),
+    (
+        "crates/okilum-t3/src/board/live.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+    (
+        "crates/okilum-t3/src/board/peek.rs",
+        "crate::network::builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
+];
+
+#[test]
+fn migrated_clients_build_through_okilum_http_with_their_own_connect_budget() {
+    let root = workspace();
+    for (path, marker, connect) in MIGRATED {
+        let text = fs::read_to_string(root.join(path)).unwrap();
+        let sites: Vec<_> = text.match_indices(marker).map(|(at, _)| at).collect();
+        assert!(!sites.is_empty(), "{path} no longer uses {marker}");
+        let Some(connect) = connect else { continue };
+        for at in sites {
+            // The builder chain runs from the policy call to its `.build()`.
+            let chain = &text[at..];
+            let chain = &chain[..chain.find(".build()").unwrap_or(chain.len())];
+            assert!(
+                chain.contains(connect),
+                "{path}: client from {marker} lost its connect budget {connect}"
+            );
+        }
+    }
+}
+
+/// T3 and Board peers on a LAN/tailnet literal stay direct on Windows.
+#[test]
+fn t3_and_board_use_the_local_network_policy() {
+    let root = workspace();
+    let network = fs::read_to_string(root.join("crates/okilum-t3/src/network.rs")).unwrap();
+    assert!(network.contains("okilum_http::local_network_builder("));
+    assert!(!network.contains("okilum_http::builder("));
+    let lib = fs::read_to_string(root.join("crates/okilum-http/src/lib.rs")).unwrap();
+    assert!(lib.contains("blocking_builder(endpoint, version, timeout, is_private_literal)"));
+}
+
+/// Crate-only Windows test builds must link the same backend as okilum.exe:
+/// each crate that owns a migrated client depends on okilum-http directly.
+#[test]
+fn client_crates_depend_on_okilum_http_directly() {
+    let root = workspace();
+    for krate in ["okilum-core", "okilum-t3", "okilum-shell"] {
+        let manifest =
+            fs::read_to_string(root.join("crates").join(krate).join("Cargo.toml")).unwrap();
+        let dependencies = manifest
+            .split("[dev-dependencies]")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            dependencies.contains("okilum-http = { path = \"../okilum-http\" }"),
+            "{krate} must depend on okilum-http outside dev-dependencies"
+        );
+    }
+}

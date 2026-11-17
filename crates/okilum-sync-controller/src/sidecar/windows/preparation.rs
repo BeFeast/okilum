@@ -462,9 +462,144 @@ pub(super) fn prepare(state: &Path, sources: &Sources, deadline: Instant) -> Res
     })
 }
 
+/// Select only a verified staged helper. All other preparation bytes, especially
+/// the runtime, identities and launch reference, survive helper replacement.
+pub(super) fn restage_helper(
+    state: &Path,
+    sources: &Sources,
+    binding: &Binding,
+    digest: &str,
+) -> Result<()> {
+    restage_helper_checked(state, sources, binding, digest, |_| Ok(()))
+}
+fn restage_helper_checked(
+    state: &Path,
+    sources: &Sources,
+    binding: &Binding,
+    digest: &str,
+    mut checkpoint: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid helper restage hash"
+    );
+    sources.verify()?;
+    let lock = private::managed_lock(&state.join("prepare.lock"), true)?;
+    lock.try_lock()
+        .context("another Sync preparation is in progress")?;
+    let mut record: Record =
+        serde_json::from_slice(&private::read(&state.join("preparation.json"))?)?;
+    ensure!(
+        record.schema == 1
+            && record.phase == Phase::Ready
+            && record.installation == binding.installation
+            && record.instance == binding.instance
+            && record.owner == binding.owner
+            && record.owner == super::security::current_sid()?
+            && record
+                .identity
+                .as_ref()
+                .is_some_and(|id| id.device_id == binding.device_identity),
+        "helper restage preparation identity changed"
+    );
+    let parent = state.join("helper").join(digest);
+    ensure!(
+        text(&parent.join("okilum-sync-supervisor.exe"))? == binding.supervisor,
+        "helper restage binding is outside its hash directory"
+    );
+    private::directory(&state.join("helper"))?;
+    private::directory(&parent)?;
+    let helper = parent.join("okilum-sync-supervisor.exe");
+    checkpoint("before stage")?;
+    stage(&sources.helper, &helper, digest)?;
+    checkpoint("after stage")?;
+    sources.policy.verify_image(&helper)?;
+    let identity = record
+        .identity
+        .as_ref()
+        .context("prepared identity missing")?;
+    identity.verify_local()?;
+    let launch = record.launch.as_ref().context("prepared launch missing")?;
+    // Runtime selection, config and peers are never published by this path.
+    private::write(
+        &state.join("prepared-identity.json"),
+        &serde_json::to_vec(&Receipt {
+            identity: identity.clone(),
+            launch: launch.clone(),
+        })?,
+    )?;
+    checkpoint("after receipt")?;
+    record.helper_hash = digest.into();
+    save(state, &record)?;
+    checkpoint("after preparation")
+}
+
+/// A crash may publish preparation before the journal rebind. Native Stop must
+/// still authenticate the journal's old helper, never the newly staged one.
+pub(super) fn for_binding(mut prepared: Prepared, binding: &Binding) -> Result<Prepared> {
+    let mut expected = prepared.binding.clone();
+    expected.supervisor = binding.supervisor.clone();
+    ensure!(&expected == binding, "retained Sync identity changed");
+    prepared.helper_hash = hash(Path::new(&binding.supervisor))?;
+    prepared.binding = binding.clone();
+    Ok(prepared)
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    pub(crate) fn restage_crash_controls(
+        state: &Path,
+        sources: &Sources,
+        old: &Binding,
+        digest: &str,
+    ) -> Result<()> {
+        let preparation = private::read(&state.join("preparation.json"))?;
+        let receipt = private::read(&state.join("prepared-identity.json"))?;
+        let selection = private::read(&state.join("runtime.json"))?;
+        let config = ["config.xml", "cert.pem", "key.pem"]
+            .map(|name| private::public_file(&state.join("config").join(name)).unwrap());
+        let old_hash = hash(Path::new(&old.supervisor))?;
+        let mut new = old.clone();
+        new.supervisor = text(
+            &state
+                .join("helper")
+                .join(digest)
+                .join("okilum-sync-supervisor.exe"),
+        )?;
+        for point in [
+            "before stage",
+            "after stage",
+            "after receipt",
+            "after preparation",
+        ] {
+            let error = restage_helper_checked(state, sources, &new, digest, |step| {
+                ensure!(step != point, "injected preparation crash {point}");
+                Ok(())
+            })
+            .err()
+            .context("preparation crash did not fire")?;
+            assert!(error.to_string().contains("injected preparation crash"));
+            restage_helper(state, sources, &new, digest)?;
+            let changed: Record =
+                serde_json::from_slice(&private::read(&state.join("preparation.json"))?)?;
+            assert_eq!(changed.helper_hash, digest);
+            assert_eq!(selection, private::read(&state.join("runtime.json"))?);
+            assert_eq!(
+                receipt,
+                private::read(&state.join("prepared-identity.json"))?
+            );
+            for (index, name) in ["config.xml", "cert.pem", "key.pem"].iter().enumerate() {
+                assert_eq!(
+                    config[index],
+                    private::public_file(&state.join("config").join(name))?
+                );
+            }
+            restage_helper(state, sources, old, &old_hash)?;
+            assert_eq!(preparation, private::read(&state.join("preparation.json"))?);
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "requires pinned signed runtime and isolated LOCALAPPDATA from the native runner"]
     fn windows_offline_preparation_preserves_identity_and_refuses_uncertain_regeneration(

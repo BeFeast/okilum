@@ -271,11 +271,20 @@ fn load_on_track(
             ..Range::default()
         };
     };
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .connect_timeout(profile.first_connect)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    else {
+    // Every notes request stays on notes_root, so its Windows TLS/proxy policy
+    // (#1944) is resolved once per load. PAC discovery failure fails closed as
+    // NoClient; the next load retries discovery.
+    let Ok(client) = okilum_http::builder(
+        &profile.notes_root,
+        env!("OKILUM_RELEASE_VERSION"),
+        profile.budget,
+    )
+    .and_then(|builder| {
+        Ok(builder
+            .connect_timeout(profile.first_connect)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?)
+    }) else {
         return Range {
             unavailable: Some(Unavailable::NoClient),
             ..Range::default()

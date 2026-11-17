@@ -11,6 +11,9 @@ description = "Okilum's remote control for an area manager in T3 Code: ManagerGa
 okilum-core = { path = "../okilum-core", default-features = false }
 okilum-write-authority = { path = "../okilum-write-authority" }
 okilum-network-access = { path = "../okilum-network-access" }
+# #1944: explicit per-origin TLS/proxy policy (SChannel + WinHTTP on Windows),
+# never inherited through Cargo feature unification with okilum-shell.
+okilum-http = { path = "../okilum-http" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 serde.workspace = true

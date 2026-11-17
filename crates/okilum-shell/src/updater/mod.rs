@@ -219,6 +219,11 @@ pub(crate) fn install(_cx: &mut App) {
     #[cfg(windows)]
     {
         windows::start();
+        #[cfg(not(test))]
+        windows::refresh_sync_helper(crate::reader_features::access(
+            crate::reader_features::Feature::Sync,
+            _cx,
+        ));
         _cx.spawn(async move |cx| {
             let mut previous = None;
             let mut checked = status::generation();

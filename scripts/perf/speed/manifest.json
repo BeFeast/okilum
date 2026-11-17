@@ -1,0 +1,14 @@
+{
+  "ten-mib.md": {
+    "bytes": 10485760,
+    "lines": 204802,
+    "sections": 10240,
+    "sha256": "86b1b4785d2e9991a70368aee819ba7ca2ee0b1751954bb1fd25e746d8ef614a"
+  },
+  "tiny.md": {
+    "bytes": 3072,
+    "lines": 62,
+    "sections": 4,
+    "sha256": "b1a9434c1ee7cbec6e18d1f3e6c94a57476e0814073ec49eb19571dda54f739f"
+  }
+}

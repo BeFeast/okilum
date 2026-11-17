@@ -28,16 +28,18 @@ pub fn comments(repository: &str, number: u64) -> Result<Vec<Comment>, String> {
             repo.origin().ascii_serialization(),
             repo.path().trim_end_matches('/')
         );
-        let response = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(10))
-            .user_agent("Okilum-Board/1")
-            .build()?
-            .get(endpoint)
-            .header("Accept", "application/json")
-            .send()?
-            .error_for_status()?;
+        let response = crate::network::builder(
+            &repo.origin().ascii_serialization(),
+            Duration::from_secs(10),
+        )?
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .user_agent(super::BOARD_USER_AGENT)
+        .build()?
+        .get(endpoint)
+        .header("Accept", "application/json")
+        .send()?
+        .error_for_status()?;
         ensure!(
             response.status() == reqwest::StatusCode::OK,
             "Incomplete comments response"

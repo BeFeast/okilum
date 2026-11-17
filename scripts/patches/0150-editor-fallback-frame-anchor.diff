@@ -1,0 +1,380 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index f36c9278..16c31524 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -100,6 +100,81 @@ fn anchored_scroll_y(scroll: Pixels, delta: Pixels, content: Pixels, viewport: P
+     (requested, (viewport - requested - natural).max(px(0.)))
+ }
+ 
++/// The source position `state` holds across a frame, and its content y in
++/// `last`, drawn at scroll `scroll_y`: the start of the edit since `last`, the
++/// caret, or the first visible row, whichever is on screen first.
++fn source_anchor_in<M: InputModeKind>(
++    state: &InputBaseState<M>,
++    last: &LastLayout,
++    scroll_y: Pixels,
++    viewport: Pixels,
++) -> Option<(usize, Pixels, bool, &'static str)> {
++    if last.source_stamp == state.source_stamp()
++        && last.presentation_epoch == state.presentation_epoch() {
++        return None;
++    }
++    if last.source_stamp.document != state.source_stamp().document { return None; }
++    let current = state.source_snapshot();
++    let edit = current.text.edit_steps(current.stamp.generation.checked_sub(last.source_stamp.generation)?)?;
++    // S1: hold the edit's old source row. S2 maps the caret or first
++    // visible source row with the same revision-bound receipt.
++    if !edit.old.is_empty() || edit.inserted != 0 {
++        let start = edit.old.start;
++        if let Some(offset) = last.project(start, ConcealBias::Left) {
++            let mut y = last.visible_top;
++            for (line, line_start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                if offset >= *line_start {
++                    if let Some(pos) = line.position_for_index(offset - line_start, last, false) {
++                        let content_y = y + pos.y;
++                        let screen_y = content_y + scroll_y;
++                        if screen_y >= px(0.) && screen_y < viewport {
++                            return Some((start, content_y, false, "edit"));
++                        }
++                        break;
++                    }
++                }
++                y += line.size(&last.rows).height;
++            }
++        }
++    }
++    let current_offset = state.cursor();
++    let old_offset = edit.backward(current_offset);
++    let offset = last.project(old_offset, ConcealBias::Right)?;
++    let mut y = last.visible_top;
++    for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++        if offset >= *start {
++            if let Some(pos) = line.position_for_index(offset - start, last, state.cursor_line_end_affinity) {
++                let content_y = y + pos.y;
++                let screen_y = content_y + scroll_y;
++                if screen_y >= px(0.) && screen_y < viewport {
++                    return Some((current_offset, content_y, state.cursor_line_end_affinity, "caret"));
++                }
++                break;
++            }
++        }
++        y += line.size(&last.rows).height;
++    }
++    // With the caret outside the viewport, retain the first visible
++    // shaped row's source anchor instead. This also works inside one
++    // very long wrapped source line.
++    let mut y = last.visible_top;
++    for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++        let mut projected = *start;
++        let line_rows = line.rows(&last.rows);
++        for (row_index, row) in line.wrapped_lines.iter().enumerate() {
++            let screen_y = y + scroll_y;
++            if screen_y >= px(0.) && screen_y < viewport {
++                let old = last.source(projected, ConcealBias::Right)?;
++                let current = edit.forward(old);
++                return Some((current, y, false, "row"));
++            }
++            projected += row.len;
++            y += line_rows.row_height(row_index);
++        }
++    }
++    None
++}
++
+ fn compose_decorations(
+     mut styles: Vec<(Range<usize>, HighlightStyle)>,
+     decorations: impl IntoIterator<Item = (Range<usize>, HighlightStyle)>,
+@@ -2099,81 +2174,35 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let manually_scrolled = initial.typewriter_paused
+             || initial.typewriter_last_scroll.is_some_and(|last| last != scroll_before.y)
+             || initial.deferred_scroll_offset.is_some_and(|offset| offset != scroll_before);
+-        let source_anchor = initial.zoom_anchor.or_else(|| {
++        let anchor_allowed = initial.zoom_anchor.is_none()
+             // Centring uses this frame's row metrics; avoid scanning/copying a
+             // source anchor that it would immediately replace.
+-            if initial.typewriter && !initial.selecting && !manually_scrolled { return None; }
+-            if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
+-                || initial.text.len() > crate::input::projection::MAX_SOURCE_BYTES { return None; }
++            && !(initial.typewriter && !initial.selecting && !manually_scrolled)
++            && initial.projection.enabled && !initial.selecting
++            && !initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
++            && initial.text.len() <= crate::input::projection::MAX_SOURCE_BYTES;
++        let source_anchor = initial.zoom_anchor.or_else(|| {
++            if !anchor_allowed { return None; }
+             let last = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())?;
+-            if last.source_stamp == initial.source_stamp()
+-                && last.presentation_epoch == initial.presentation_epoch() {
+-                return None;
+-            }
+-            if last.source_stamp.document != initial.source_stamp().document { return None; }
+-            let current = initial.source_snapshot();
+-            let edit = current.text.edit_steps(current.stamp.generation.checked_sub(last.source_stamp.generation)?)?;
+-            // S1: hold the edit's old source row. S2 maps the caret or first
+-            // visible source row with the same revision-bound receipt.
+-            if !edit.old.is_empty() || edit.inserted != 0 {
+-                let start = edit.old.start;
+-                if let Some(offset) = last.project(start, ConcealBias::Left) {
+-                    let mut y = last.visible_top;
+-                    for (line, line_start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+-                        if offset >= *line_start {
+-                            if let Some(pos) = line.position_for_index(offset - line_start, last, false) {
+-                                let content_y = y + pos.y;
+-                                let screen_y = content_y + initial.scroll_handle.offset().y;
+-                                if screen_y >= px(0.) && screen_y < bounds.size.height {
+-                                    anchor_kind = "edit";
+-                                    return Some((start, content_y, false));
+-                                }
+-                                break;
+-                            }
+-                        }
+-                        y += line.size(&last.rows).height;
+-                    }
+-                }
+-            }
+-            let current_offset = initial.cursor();
+-            let old_offset = edit.backward(current_offset);
+-            let offset = last.project(old_offset, ConcealBias::Right)?;
+-            let mut y = last.visible_top;
+-            for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+-                if offset >= *start {
+-                    if let Some(pos) = line.position_for_index(offset - start, last, initial.cursor_line_end_affinity) {
+-                        let content_y = y + pos.y;
+-                        let screen_y = content_y + initial.scroll_handle.offset().y;
+-                        if screen_y >= px(0.) && screen_y < bounds.size.height {
+-                            anchor_kind = "caret";
+-                            return Some((current_offset, content_y, initial.cursor_line_end_affinity));
+-                        }
+-                        break;
+-                    }
+-                }
+-                y += line.size(&last.rows).height;
+-            }
+-            // With the caret outside the viewport, retain the first visible
+-            // shaped row's source anchor instead. This also works inside one
+-            // very long wrapped source line.
+-            let mut y = last.visible_top;
+-            for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+-                let mut projected = *start;
+-                let line_rows = line.rows(&last.rows);
+-                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
+-                    let screen_y = y + initial.scroll_handle.offset().y;
+-                    if screen_y >= px(0.) && screen_y < bounds.size.height {
+-                        let old = last.source(projected, ConcealBias::Right)?;
+-                        let current = edit.forward(old);
+-                        anchor_kind = "row";
+-                        return Some((current, y, false));
+-                    }
+-                    projected += row.len;
+-                    y += line_rows.row_height(row_index);
+-                }
+-            }
+-            None
++            let (offset, y, affinity, kind) = source_anchor_in(initial, last,
++                initial.scroll_handle.offset().y, bounds.size.height)?;
++            anchor_kind = kind;
++            Some((offset, y, affinity))
+         });
++        // #1304: the same anchor taken in the last classified layout, from
++        // before a Live Preview fallback drew the note raw. Used only if this
++        // frame is classified again: the raw rows of the frames between are
++        // not a reference, because the clamp at the document top kept only
++        // part of their correction (or an Undo's raw frame recorded none),
++        // and the full reverse correction from them scrolled the note. The
++        // scroll they compensated is taken back out of the base.
++        let reference_anchor = initial.fallback_anchor.as_ref()
++            .filter(|_| anchor_allowed)
++            .and_then(|reference| {
++                let base = initial.scroll_handle.offset().y - reference.compensation;
++                source_anchor_in(initial, &reference.layout, base, bounds.size.height)
++                    .map(|(offset, y, affinity, _)| ((offset, y, affinity), base))
++            });
+         let style = window.text_style();
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
+@@ -2242,6 +2271,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let mut frame_rows = None;
+         let mut reshape = (std::time::Duration::ZERO, 0);
+         let mut frame_raw = false;
++        // The anchor this frame holds: `source_anchor`, or the reference's.
++        let mut held_anchor = source_anchor;
+         self.state.update(cx, |state, cx| {
+             let changed = state.last_layout.as_ref().is_none_or(|last| {
+                 last.font != font
+@@ -2262,14 +2293,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             }
+             state.refresh_projection();
+             // These transformations do not yet have a source/projected mapping.
+-            if !M::projection_compatible(state)
++            let forced_source = !M::projection_compatible(state)
+                 || !state.pending_vertical_projection_compatible()
+                 || state.masked
+                 || !state.soft_wrap
+                 || state.searchable
+                 || state.mode.is_folding()
+-                || state.wrapping_indent != super::WrappingIndent::None
+-            {
++                || state.wrapping_indent != super::WrappingIndent::None;
++            if forced_source {
+                 state.projection.current = None;
+             }
+             state
+@@ -2286,6 +2317,45 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             frame_raw = state.projection.enabled
+                 && state.projection.provider.is_some()
+                 && state.projection.current.is_none();
++            // #1304: a frame drawn raw only while the classification is
++            // pending, not a mode that never projects.
++            let fallback = frame_raw && !forced_source;
++            if fallback && state.fallback_anchor.is_none() {
++                // The first fallback frame: the layout painted before it is
++                // the reference, if it was classified.
++                state.fallback_anchor = state.last_layout.as_ref()
++                    .or(state.projection_anchor_layout.as_ref())
++                    .filter(|last| last.projection.is_some())
++                    .map(|last| super::layout::FallbackAnchor {
++                        layout: last.clone(),
++                        compensation: px(0.),
++                    });
++            }
++            // The reference holds only for the geometry it was laid out in,
++            // and only at a source boundary of this frame's projection: an
++            // edit start from before the raw frames can fall inside a CRLF
++            // that was typed during them (a lone `\r`, then its `\n`).
++            let reference_anchor = reference_anchor.filter(|((offset, _, _), _)| {
++                !fallback
++                && state.projection.pin().is_none_or(|pinned| pinned.projection
++                    .to_projected(super::projection::SourceByte(*offset), ConcealBias::Right)
++                    .is_some())
++                && state.fallback_anchor.as_ref().is_some_and(|reference| {
++                    let last = &reference.layout;
++                    last.font == font && last.font_size == text_size
++                        && last.line_height == window.line_height()
++                        && last.scale_factor == window.scale_factor()
++                        && last.wrap_width == wrap_width
++                        && last.wrapping_indent == wrapping_indent
++                        && last.content_width == bounds.size.width
++                })
++            });
++            if reference_anchor.is_some() {
++                anchor_kind = "reference";
++            }
++            held_anchor = reference_anchor.map(|(anchor, _)| anchor).or(source_anchor);
++            let source_anchor = held_anchor;
++            let scroll_before_compensation = state.scroll_handle.offset().y;
+             let rows = Self::row_metrics(state, window.line_height());
+             // A block above the viewport grew or shrank when it was measured:
+             // scroll by the same amount with the new rows, so the view holds.
+@@ -2312,7 +2382,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     let extra = empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
+                         bounds.size.height, window.line_height());
+                     let height = rows.rows_height(state.display_map.wrap_row_count()) + extra;
+-                    let (offset, tail) = anchored_scroll_y(scroll.y, delta, height, bounds.size.height);
++                    // From the reference, the delta applies to the scroll it
++                    // was drawn at, not to the fallback frames' compensation.
++                    let base = reference_anchor.map_or(scroll.y, |(_, base)| base);
++                    let (offset, tail) = anchored_scroll_y(base, delta, height, bounds.size.height);
+                     scroll.y = offset;
+                     state.projection_anchor_tail = tail;
+                     state.scroll_handle.set_offset(scroll);
+@@ -2323,6 +2396,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             } else if !state.projection.enabled {
+                 state.projection_anchor_tail = px(0.);
+             }
++            // A fallback frame's own anchor and block compensation hold rows
++            // that are raw: the classified frame takes them back.
++            if fallback {
++                let moved = state.scroll_handle.offset().y - scroll_before_compensation;
++                if let Some(reference) = state.fallback_anchor.as_mut() {
++                    reference.compensation += moved;
++                }
++            } else {
++                state.fallback_anchor = None;
++            }
+             // User scroll toward the natural extent retires the lease. Never
+             // grow it from scroll alone or retain it after disabling projection.
+             let natural = (rows
+@@ -2340,6 +2423,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     let scroll = point(state.scroll_handle.offset().x, -rows.row_top(row));
+                     state.scroll_handle.set_offset(scroll);
+                     state.deferred_scroll_offset = Some(scroll);
++                    state.fallback_anchor = None;
+                 }
+                 // The same request, kept within this frame's scroll range:
+                 // the extent `scroll_size` gets below, on these rows. It
+@@ -2362,6 +2446,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     state.deferred_scroll_offset = Some(scroll);
+                     state.projection_anchored = false;
+                     state.projection_anchor_tail = px(0.);
++                    state.fallback_anchor = None;
+                 }
+             }
+             let caret = state.ime_marked_range.as_ref().map_or(state.cursor(), |range| range.end);
+@@ -2395,6 +2480,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 state.deferred_scroll_offset = Some(scroll);
+                 state.projection_anchored = false;
+                 state.projection_anchor_tail = px(0.);
++                state.fallback_anchor = None;
+                 anchor_kind = "typewriter";
+             }
+             // Focus mode (#1643): the lines kept bright this frame.
+@@ -2801,7 +2887,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             elements: block_elements,
+             hits: block_hits,
+         } = self.prepaint_blocks(&last_layout, &bounds,
+-            source_anchor.map(|(source, _, affinity)| (source, affinity)),
++            held_anchor.map(|(source, _, affinity)| (source, affinity)),
+             cursor_scroll_offset, window, cx);
+         let state = self.state.read(cx);
+         let marker_source = super::marker_paint::source_for_markers(
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index 06ce4882..45fc1275 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -428,6 +428,16 @@ pub(super) struct LastLayout {
+     pub(super) content_width: Pixels,
+ }
+ 
++/// The last classified layout painted before Live Preview drew the note raw
++/// while a classification was pending (#1304), and the scroll the raw frames'
++/// own anchors and block compensation applied since. The frame that is
++/// classified again anchors from this layout at the scroll without that
++/// compensation, never from the raw rows in between.
++pub(super) struct FallbackAnchor {
++    pub(super) layout: LastLayout,
++    pub(super) compensation: Pixels,
++}
++
+ /// One retained layout, sharing shaped lines with the last painted frame. No
+ /// duplicate source string. Popup hover/caret blink must not shape a multi-MB
+ /// unwrapped line again when source and paint inputs are unchanged.
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index b7dffabb..76133304 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -507,6 +507,10 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) source_shape_cache: std::cell::RefCell<Option<super::layout::SourceShapeCache>>,
+     // Previous painted geometry for anchoring only; never used for hit testing.
+     pub(super) projection_anchor_layout: Option<LastLayout>,
++    /// While Live Preview draws raw frames for a pending classification: the
++    /// classified layout before them, the reference of the next classified
++    /// frame's anchor (#1304).
++    pub(super) fallback_anchor: Option<super::layout::FallbackAnchor>,
+     pub(super) zoom_anchor: Option<(usize, Pixels, bool)>,
+     // Temporary scroll extent required by a presentation anchor, never source rows.
+     pub(super) projection_anchor_tail: Pixels,
+@@ -967,6 +971,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             last_layout: None,
+             source_shape_cache: Default::default(),
+             projection_anchor_layout: None,
++            fallback_anchor: None,
+             zoom_anchor: None,
+             projection_anchor_tail: px(0.),
+             projection_anchored: false,
+@@ -1438,6 +1443,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             // while the edit drew raw moved the view (#1621).
+             if matches!(reason, SourceMutationReason::Reset) {
+                 self.projection_anchor_layout = None;
++                self.fallback_anchor = None;
+             } else if painted.is_some() {
+                 self.projection_anchor_layout = painted;
+             }

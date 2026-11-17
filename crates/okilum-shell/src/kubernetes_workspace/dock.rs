@@ -640,7 +640,11 @@ impl Workspace {
         v_flex()
             .debug_selector(|| "k8s-dock".into())
             .flex_none()
-            .h(relative(0.4))
+            .h(relative(if self.lens == Lens::Workspace {
+                0.4
+            } else {
+                0.32
+            }))
             .min_h(px(220.))
             .w_full()
             .border_t_1()

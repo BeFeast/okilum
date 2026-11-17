@@ -403,12 +403,34 @@ impl Envelope {
                 ensure!(
                     next.journal_epoch == current.journal_epoch
                         && current.revision.checked_add(1) == Some(next.revision)
-                        && next.binding == current.binding,
+                        && (next.binding == current.binding || current.is_supervisor_restage(next)),
                     "stale or non-sequential journal revision"
                 );
             }
         }
         Ok(())
+    }
+
+    /// Windows helper replacement only, after authenticated Stop and task removal.
+    /// No identity, runtime update or native launch authority is renewed here.
+    pub fn restage_supervisor(&self, path: String) -> Result<Self> {
+        ensure!(
+            self.intent == Intent::Disabled && self.stop.is_none() && self.update.is_none(),
+            "supervisor restage requires Disabled without pending stop/update"
+        );
+        super::safe_text(&path)?;
+        let mut next = self.next()?;
+        next.binding.supervisor = path;
+        Ok(next)
+    }
+
+    fn is_supervisor_restage(&self, next: &Self) -> bool {
+        // Compare the entire envelope, including both native launch authorities.
+        // This exception cannot piggyback an Enable or another binding mutation.
+        self.binding.supervisor != next.binding.supervisor
+            && self
+                .restage_supervisor(next.binding.supervisor.clone())
+                .is_ok_and(|expected| expected == *next)
     }
 
     /// Legacy `{binding, intent}` plus optional `update.json` into one envelope.

@@ -344,3 +344,66 @@ fn begin_update_and_phase_changes_are_new_revisions_that_kill_stale_stops() {
         .begin_update(runtime("old"), runtime("new"))
         .is_err());
 }
+
+#[test]
+fn supervisor_restage_changes_only_supervisor_while_disabled_without_pending_work() -> Result<()> {
+    let first = Envelope::first(binding());
+    assert!(first.restage_supervisor("new-helper".into()).is_err());
+    assert!(first
+        .set_intent(Intent::Removed)?
+        .restage_supervisor("new-helper".into())
+        .is_err());
+    let (stopping, token) = first.disable(scope(9))?;
+    assert!(stopping.restage_supervisor("new-helper".into()).is_err());
+    for phase in [Phase::Stop, Phase::Select, Phase::Rollback] {
+        assert!(with_update(phase)
+            .set_intent(Intent::Disabled)?
+            .restage_supervisor("new-helper".into())
+            .is_err());
+    }
+    let disabled = stopping.complete_stop(&token, &scope(9))?;
+    let next = disabled.restage_supervisor("new-helper".into())?;
+    Envelope::check_successor(&Stored::Current(disabled.clone()), &next)?;
+    assert_eq!(next.binding.supervisor, "new-helper");
+    let mut expected = disabled.clone();
+    expected.revision += 1;
+    expected.binding.supervisor = "new-helper".into();
+    assert_eq!(next, expected);
+    // Every other binding field remains immutable even on the new transition.
+    for key in [
+        "instance",
+        "installation",
+        "owner",
+        "state_directory",
+        "device_identity",
+    ] {
+        let mut value = serde_json::to_value(&next)?;
+        value["binding"][key] = if matches!(key, "instance" | "installation") {
+            Uuid::new_v4().to_string().into()
+        } else {
+            "foreign".into()
+        };
+        let forged = Envelope::from_slice(&serde_json::to_vec(&value)?)?;
+        assert!(
+            Envelope::check_successor(&Stored::Current(disabled.clone()), &forged).is_err(),
+            "{key}"
+        );
+    }
+    // Nor can an enabled/removed/stop/update successor carry a rebind.
+    for mut forged in [
+        disabled.enable()?,
+        disabled.set_intent(Intent::Removed)?,
+        disabled.disable(scope(10))?.0,
+    ] {
+        forged.binding.supervisor = "new-helper".into();
+        assert!(Envelope::check_successor(&Stored::Current(disabled.clone()), &forged).is_err());
+    }
+    let mut forged = next.clone();
+    forged.launch = first_with_launch_for_restage_test().launch;
+    assert!(Envelope::check_successor(&Stored::Current(disabled), &forged).is_err());
+    Ok(())
+}
+
+fn first_with_launch_for_restage_test() -> Envelope {
+    Envelope::first_with_launch(binding())
+}

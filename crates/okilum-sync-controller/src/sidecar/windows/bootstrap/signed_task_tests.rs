@@ -119,6 +119,64 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         before.generation, resumed.generation,
         "package update restarted the retained native task"
     );
+    eprintln!("WINDOWS_TASK_PHASE helper refresh after update");
+    let store = store(&state)?;
+    let old_journal = store
+        .begin(Instant::now() + Duration::from_secs(5))?
+        .current()?
+        .context("old helper journal missing")?
+        .clone();
+    let old = old_journal.binding().clone();
+    let selection = private::read(&state.join("runtime.json"))?;
+    let configuration = private::public_file(&state.join("config").join("config.xml"))?;
+    let installed_hash =
+        crate::managed_launch::digest(&super::super::preparation::Sources::installed()?.helper)?;
+    assert_ne!(
+        crate::managed_launch::digest(Path::new(&old.supervisor))?,
+        installed_hash,
+        "native helper update control must change the image"
+    );
+    super::super::preparation::tests::restage_crash_controls(
+        &state,
+        &super::super::preparation::Sources::installed()?,
+        &old,
+        &installed_hash,
+    )?;
+    // The first plan arms its Stop for a generation that is no longer live.
+    assert!(super::super::restage::refresh_after_generation_change()?);
+    let refreshed = observed(managed_source_identity(&state)?, &controller)?;
+    same_identity(&before, &refreshed);
+    assert_ne!(before.generation.id, refreshed.generation.id);
+    assert_eq!(selection, private::read(&state.join("runtime.json"))?);
+    // Each helper start re-serializes config.xml with its own attribute order;
+    // devices, folders and options must be the same document.
+    assert_eq!(
+        xmltree::Element::parse(configuration.as_slice())?,
+        xmltree::Element::parse(
+            private::public_file(&state.join("config").join("config.xml"))?.as_slice()
+        )?
+    );
+    let new_journal = store
+        .begin(Instant::now() + Duration::from_secs(5))?
+        .current()?
+        .context("new helper journal missing")?
+        .clone();
+    // stale Stop, re-armed Stop, stopped, rebound, enabled: the re-arm happened.
+    assert_eq!(new_journal.revision(), old_journal.revision() + 5);
+    assert_eq!(new_journal.journal_epoch(), old_journal.journal_epoch());
+    assert_eq!(new_journal.intent(), Intent::Enabled);
+    let new = new_journal.binding().clone();
+    let mut expected = old.clone();
+    expected.supervisor = new.supervisor.clone();
+    assert_eq!(new, expected);
+    assert_eq!(
+        crate::managed_launch::digest(Path::new(&new.supervisor))?,
+        installed_hash
+    );
+    assert!(!Path::new(&old.supervisor).exists());
+    assert!(!state.join("restage.json").exists());
+    assert!(!super::super::restage::refresh_current_app()?);
+    eprintln!("WINDOWS_TASK_HELPER_RESTAGE_PASS: new signed helper/task after a re-armed authenticated Stop, same identity/config/peers/runtime");
     eprintln!("WINDOWS_TASK_PHASE retained Disable");
     disable_current_app()?;
     eprintln!("WINDOWS_TASK_PHASE retained Disable complete");

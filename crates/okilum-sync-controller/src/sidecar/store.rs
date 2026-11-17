@@ -22,6 +22,9 @@ mod windows_dir;
 #[cfg(target_os = "windows")]
 pub use windows_dir::{WindowsDir, WindowsStore};
 
+#[cfg(any(windows, test))]
+pub(crate) mod restage;
+
 mod hint;
 mod selection;
 pub use hint::Hint;

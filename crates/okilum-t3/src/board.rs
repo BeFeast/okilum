@@ -482,27 +482,38 @@ impl Issue {
         self.labels.iter().any(|label| label.name == name)
     }
 }
+/// Board reads identify themselves apart from the T3 gateways.
+pub(crate) const BOARD_USER_AGENT: &str = "Okilum-Board/1";
+
 /// Public requests only: no token, client credential store or GitHub bridge.
 pub fn read_issues(binding: &Binding) -> Vec<(u64, Result<Issue, String>)> {
     if binding.issues.is_empty() {
         return Vec::new();
     }
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Okilum-Board/1")
-        .build()
-    {
+    let repo = url::Url::parse(&binding.repository).expect("validated Board URL");
+    // Every read below stays on the repository origin (#1944 per-origin policy).
+    let client = match crate::network::builder(
+        &repo.origin().ascii_serialization(),
+        Duration::from_secs(10),
+    )
+    .and_then(|builder| {
+        // Pre-#1944 budget: connect bounded only by the 10 s total, never by
+        // the shared 5 s default.
+        Ok(builder
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(BOARD_USER_AGENT)
+            .build()?)
+    }) {
         Ok(c) => c,
         Err(e) => {
             return binding
                 .issues
                 .iter()
-                .map(|s| (s.number, Err(e.to_string())))
+                .map(|s| (s.number, Err(format!("{e:#}"))))
                 .collect()
         }
     };
-    let repo = url::Url::parse(&binding.repository).expect("validated Board URL");
     let pulls = read_open_pulls(&client, &repo);
     binding
         .issues

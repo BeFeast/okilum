@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
@@ -178,6 +179,28 @@ def one(root, pattern):
     return str(files[0])
 
 
+def resumable_notes(store, client, build, source):
+    """Mac beta notes; a retried publication of the same build keeps its first range (#1559).
+
+    An attempt that already recorded notes for this build reuses them. One that
+    stopped after the appcast write (this build is already the beta head) takes
+    the newest older beta as its predecessor, never itself.
+    """
+    raw = store.call('GET', release_notes.key(source, 'macos', 'beta'))
+    if raw is not None:
+        existing = json.loads(raw)
+        if (existing['build'], existing['source'], existing['platform'], existing['channel']) == (
+                build, source, 'macos', 'beta'):
+            return existing
+    notes = release_notes.prepare(store, client, 'macos', build, source)
+    if notes['previous_build'] != build:
+        return notes
+    previous = release_notes.predecessor(store, 'macos', below=build)
+    return {**notes, 'previous_build': previous['build'] if previous else None,
+            'previous_source': previous['source'] if previous else None,
+            'items': release_notes.merged_items(client, previous['source'] if previous else None, source)}
+
+
 def publish(client, platform, run_id):
     # Dispatch is the build's final step. Wait only for its final success record;
     # a newer push cancelling it must never authorize publication.
@@ -262,6 +285,7 @@ def publish(client, platform, run_id):
         # Capture the same-platform beta predecessor before ANY publisher writes.
         # Sidecars never alter descriptor, artifact, signing or promotion contracts.
         notes = (release_notes.prepare_preview(R2(), preview, build, source) if preview
+                 else resumable_notes(R2(), client, build, source) if platform == 'macos'
                  else release_notes.prepare(R2(), client, platform, build, source))
         # Selection and publication are separated by compilation/notarization.
         # A racing hourly/manual producer may have published this source in that
@@ -295,17 +319,134 @@ def publish(client, platform, run_id):
         prepare.complete(R2(), client, source)
 
 
+# A failed publication of a completed build is re-run from the same artifacts
+# (reuse, no rebuild), a bounded number of times (#1559). Before this, one
+# failed publisher step left the beta at the previous build until a human
+# noticed or the next main push rebuilt. Only a failed publish job is retried:
+# a successful one, or one that decided "nothing to publish", never repeats.
+PUBLISH_PLATFORMS = (*WORKFLOWS, 'appimage')
+MAX_PUBLICATION_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 60
+DISPATCH_ATTEMPTS = 3
+FAILED_ISSUE_TITLE = 'Beta publication failed'
+
+
+def dispatch_publication(client, platform, run_id, attempt=1, sleep=time.sleep):
+    """Start release-publish for a completed build; a transient API error is retried.
+
+    A lost dispatch is a missing publication, as silent as a failed one. A
+    duplicate dispatch is harmless: the publisher refuses an already published
+    source or an older build under its lock.
+    """
+    if platform not in PUBLISH_PLATFORMS or int(run_id) < 1 or int(attempt) < 1:
+        raise ValueError('Invalid publication request')
+    inputs = {'platform': platform, 'run_id': str(run_id)}
+    if int(attempt) > 1:
+        inputs['attempt'] = str(attempt)
+    for tries in range(1, DISPATCH_ATTEMPTS + 1):
+        try:
+            client.call('POST', '/actions/workflows/release-publish.yml/dispatches',
+                        {'ref': 'main', 'inputs': inputs})
+            return
+        except (OSError, SystemExit) as error:  # Forgejo.call exits on an HTTP error
+            if tries == DISPATCH_ATTEMPTS:
+                raise SystemExit(f'Could not dispatch {platform} publication of run {run_id} '
+                                 f'after {tries} tries: {error}')
+            print(f'Publication dispatch failed ({error}); retrying')
+            sleep(10 * tries)
+
+
+FEED_PLATFORM = {'macos': 'macos', 'windows': 'windows', 'linux': 'linux', 'appimage': 'linux-appimage'}
+
+
+def feed_state(client, platform, run_id, feeds=None):
+    """What the public beta feed serves now, said against this run's build."""
+    try:
+        if feeds is None:
+            import hourly_beta
+            feeds = hourly_beta.PublicFeeds()
+        head = release_notes.predecessor(feeds, FEED_PLATFORM[platform])
+        build = None
+        if platform != 'appimage':  # AppImage numbers its builds in its own handoff
+            build = 5000 + int(client.call('GET', f'/actions/runs/{run_id}')['index_in_repo'])
+    except (Exception, SystemExit) as error:
+        return f'The {platform} beta feed could not be read ({type(error).__name__}); its state is unknown.'
+    if head is None:
+        return f'The {platform} beta feed serves no build.'
+    serves = f"build {head['build']} (source {head['source'][:8]})"
+    if build is None:
+        return f'The {platform} beta feed serves {serves}.'
+    if head['build'] == build:
+        return (f'The {platform} beta feed already serves this {serves}; '
+                'a later publication step did not complete.')
+    if head['build'] > build:
+        return f'The {platform} beta feed serves newer {serves}; build {build} is superseded.'
+    return f'The {platform} beta feed still serves previous {serves}; build {build} is not published.'
+
+
+def report_exhausted(client, platform, run_id, attempts, run_url, state):
+    """Leave a visible trace for the manager: one open issue, one comment per stuck build."""
+    body = (f'The {platform} beta publication of completed build run {run_id} failed '
+            f'{attempts} times. {state}\n\n'
+            f'Last publication run: {run_url}\n\n'
+            'Recovery without a rebuild: dispatch `release-publish` on main with '
+            f'`platform={platform}` and `run_id={run_id}` once the cause is fixed '
+            '(or the next main push builds and publishes a newer beta). '
+            'Close this issue when the beta is current again.')
+    issues = client.call('GET', '/issues?state=open&type=issues&limit=50&q='
+                         + urllib.parse.quote(FAILED_ISSUE_TITLE)) or []
+    existing = next((i for i in issues if i.get('title') == FAILED_ISSUE_TITLE), None)
+    if existing:
+        client.call('POST', f"/issues/{existing['number']}/comments", {'body': body})
+    else:
+        client.call('POST', '/issues', {'title': FAILED_ISSUE_TITLE, 'body': body})
+
+
+def retry(client, platform, run_id, attempt, *, run_url='', summary=None, sleep=time.sleep, feeds=None):
+    """Called only after a failed publish job of attempt `attempt`.
+
+    Re-dispatches the same completed build until MAX_PUBLICATION_ATTEMPTS, then
+    fails visibly: an error annotation, the job summary and a tracking issue,
+    each stating what the public feed actually serves.
+    """
+    if platform not in PUBLISH_PLATFORMS or run_id < 1 or attempt < 1:
+        raise ValueError('Invalid publication retry request')
+    if attempt < MAX_PUBLICATION_ATTEMPTS:
+        sleep(RETRY_DELAY_SECONDS * attempt)
+        dispatch_publication(client, platform, run_id, attempt + 1, sleep=sleep)
+        print(f'Publication attempt {attempt} of {platform} run {run_id} failed; '
+              f'dispatched attempt {attempt + 1}/{MAX_PUBLICATION_ATTEMPTS} (reuse, no rebuild)')
+        return
+    state = feed_state(client, platform, run_id, feeds)
+    message = (f'{platform} beta publication of run {run_id} failed {attempt} times; '
+               f'no further automatic retry. {state}')
+    if summary:
+        with Path(summary).open('a') as handle:
+            handle.write(message + '\n')
+    try:
+        report_exhausted(client, platform, run_id, attempt, run_url, state)
+    except (Exception, SystemExit) as error:  # the red job below stays the primary signal
+        print(f'Could not record the failure in an issue: {error}')
+    print('::error::' + message)
+    raise SystemExit(message)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['dispatch', 'publish'])
-    parser.add_argument('platform', choices=WORKFLOWS)
+    parser.add_argument('command', choices=['dispatch', 'publish', 'retry'])
+    parser.add_argument('platform', choices=PUBLISH_PLATFORMS)
     parser.add_argument('--run', type=int)
+    parser.add_argument('--attempt', type=int, default=1)
     args = parser.parse_args()
     client = Forgejo()
     if args.command == 'dispatch':
-        client.call('POST', '/actions/workflows/release-publish.yml/dispatches',
-                    {'ref': 'main', 'inputs': {'platform': args.platform, 'run_id': os.environ['GITHUB_RUN_ID']}})
+        dispatch_publication(client, args.platform, int(os.environ['GITHUB_RUN_ID']))
+    elif args.run is None or args.run < 1:
+        parser.error('--run must identify the source build')
+    elif args.command == 'retry':
+        retry(client, args.platform, args.run, args.attempt,
+              run_url=os.environ.get('RUN_URL', ''), summary=os.environ.get('GITHUB_STEP_SUMMARY'))
+    elif args.platform == 'appimage':
+        parser.error('AppImage publication is appimage_handoff.py publish')
     else:
-        if args.run is None or args.run < 1:
-            parser.error('--run must identify the source build')
         publish(client, args.platform, args.run)

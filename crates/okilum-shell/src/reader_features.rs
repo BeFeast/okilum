@@ -272,6 +272,7 @@ impl Reader {
             self.project_navigation.t3_gateways.clear();
             self.project_navigation.statuses.clear();
             self.project_navigation.status_managers.clear();
+            self.waiting.cancel();
 
             for project in self.project_views.values() {
                 project.update(cx, |view, cx| view.suspend_module(window, cx));

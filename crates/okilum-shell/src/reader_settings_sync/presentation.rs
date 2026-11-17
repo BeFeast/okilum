@@ -23,6 +23,9 @@ pub(super) struct Presentation {
     pub error_details: Option<String>,
     pub retry: Option<Operation>,
     pub notified: Option<uuid::Uuid>,
+    /// The request whose Windows approval toast is still shown.
+    #[cfg(any(windows, test))]
+    pub notice: Option<uuid::Uuid>,
     pub overview: direct::Overview,
     pub managing: Option<PathBuf>,
     pub picking_vault: bool,
@@ -169,33 +172,70 @@ pub(super) fn last_seen(value: &str) -> String {
     }
 }
 
-pub(super) fn notify_approval(name: &str) {
-    #[cfg(all(not(test), unix))]
-    {
-        use std::process::{Command, Stdio};
-        let title = format!("{name} wants to connect");
-        let body =
-            "Open Okilum to approve or reject this computer. No files are shared before approval.";
-        #[cfg(target_os = "linux")]
-        let result = Command::new("notify-send")
-            .args(["--app-name=Okilum", "--", &title, body])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        #[cfg(target_os = "macos")]
-        let result = Command::new("osascript").args(["-e", "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run", &title, body])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
-        match result {
-            Err(error) => diagnostic_error!("okilum-sync: approval notification failed: {error}"),
-            Ok(status) if !status.success() => {
-                diagnostic_error!("okilum-sync: approval notification failed: {status}")
-            }
-            _ => {}
-        }
+/// Title and body of the OS notification for an incoming pairing request. It
+/// only sends the user back to Okilum: the decision needs the device ID there.
+pub(super) fn approval_text(name: &str) -> (String, &'static str) {
+    (
+        format!("{name} wants to connect"),
+        "Open Okilum and check this computer's device ID before you approve or reject it. No files are shared before approval.",
+    )
+}
+
+/// The requester's identity as both computers show it: the Syncthing device ID,
+/// or the pairing key fingerprint when no Syncthing device is attached yet.
+pub(super) fn device_line(pending: &direct::Pending) -> String {
+    format!("Device ID {}", pending.device_id)
+}
+
+/// Shown under the approval banner's device ID (#2490 review).
+pub(super) fn approval_check(name: &str) -> String {
+    format!(
+        "Approve only if it matches the device ID shown on {name}. Approval lets it choose your shared vaults."
+    )
+}
+
+/// One notification per incoming request: a repeat replaces it, and an
+/// answered, expired or cancelled request retracts it (#2490).
+#[cfg(any(windows, test))]
+pub(super) fn approval_tag(request: uuid::Uuid) -> SharedString {
+    format!("okilum/sync/approval/{request}").into()
+}
+
+/// Windows has no `notify-send`: the toast goes through gpui's system
+/// notification under the app's AUMID, the same delivery reminders use.
+/// Test builds take this path on every platform so the policy is checked.
+#[cfg(any(windows, test))]
+pub(super) fn approval_notification(request: uuid::Uuid, name: &str) -> gpui::SystemNotification {
+    let (title, body) = approval_text(name);
+    gpui::SystemNotification {
+        tag: approval_tag(request),
+        title: title.into(),
+        body: body.into(),
+        actions: Vec::new(),
     }
-    #[cfg(any(test, windows))]
-    let _ = name;
+}
+
+#[cfg(all(not(test), unix))]
+pub(super) fn notify_approval(name: &str) {
+    use std::process::{Command, Stdio};
+    let (title, body) = approval_text(name);
+    #[cfg(target_os = "linux")]
+    let result = Command::new("notify-send")
+        .args(["--app-name=Okilum", "--", &title, body])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    #[cfg(target_os = "macos")]
+    let result = Command::new("osascript").args(["-e", "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run", &title, body])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    match result {
+        Err(error) => diagnostic_error!("okilum-sync: approval notification failed: {error}"),
+        Ok(status) if !status.success() => {
+            diagnostic_error!("okilum-sync: approval notification failed: {status}")
+        }
+        _ => {}
+    }
 }
 
 /// Shared approval banner, visible even when Settings is on another section.
