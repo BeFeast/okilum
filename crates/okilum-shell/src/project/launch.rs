@@ -618,7 +618,7 @@ mod tests {
             serde_json::from_str(&LAUNCH_FIXTURE.replace("{{REQUEST_ID}}", request_id)).unwrap();
         *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
             "frame": recorded["frames"][index],
-            "firstItems": recorded["firstItems"],
+            "timelines": recorded["timelines"],
             "receipt": recorded["receipt"],
         }));
     }
@@ -757,10 +757,10 @@ mod tests {
         thread["threadId"] = "mcp:fixture-executor-second".into();
         thread["updatedAt"] = "2026-11-17T11:00:00.000Z".into();
         frame["executors"].as_array_mut().unwrap().push(thread);
-        recorded["firstItems"]["mcp:fixture-executor-second"] =
-            recorded["firstItems"]["mcp:fixture-executor-new"].clone();
+        recorded["timelines"]["mcp:fixture-executor-second"] =
+            recorded["timelines"]["mcp:fixture-executor-new"].clone();
         *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
-            "frame": frame, "firstItems": recorded["firstItems"], "receipt": recorded["receipt"],
+            "frame": frame, "timelines": recorded["timelines"], "receipt": recorded["receipt"],
         }));
         next_poll(visual);
         assert_eq!(

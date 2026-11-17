@@ -1,5 +1,5 @@
 {
- "_comment": "Wire shape of T3 MCP structuredContent for t3_thread_send, t3_thread_read (view=messages) and t3_thread_list (packages/contracts/src/orchestratorMcp.ts), in the order T3 reports one manager-mediated executor launch. Identifiers and text are synthetic; {{REQUEST_ID}} is replaced with the request under test. Used by okilum-t3 McpGateway tests and the okilum-shell fake gateway.",
+ "_comment": "Wire shape of T3 MCP structuredContent for t3_thread_send, t3_thread_read (view=messages; oldest first from afterPosition=-1, newest first when afterPosition is omitted in a thread-scoped session, as in T3 0.1.10-nightly.20261116) and t3_thread_list (packages/contracts/src/orchestratorMcp.ts), in the order T3 reports one manager-mediated executor launch. Identifiers and text are synthetic; {{REQUEST_ID}} is replaced with the request under test. Used by okilum-t3 McpGateway tests and the okilum-shell fake gateway.",
  "receipt": {
   "threadId": "mcp:fixture-manager",
   "messageId": "message:launch-request",
@@ -7,39 +7,75 @@
   "status": "queued",
   "delivery": "queued"
  },
- "firstItems": {
-  "mcp:fixture-executor-new": {
-   "position": 0,
-   "itemId": "item:new-0",
-   "messageId": "message:new-0",
-   "runId": "run:executor-1",
-   "type": "user_message",
-   "status": "completed",
-   "text": "Okilum launch request: {{REQUEST_ID}}\nBootstrap: read the area rules and brief on the server before work.",
-   "textTruncated": true,
-   "nextTextOffset": 256,
-   "updatedAt": "2026-11-17T10:00:30.000Z"
-  },
-  "mcp:fixture-executor-unrelated": {
-   "position": 0,
-   "itemId": "item:unrelated-0",
-   "messageId": "message:unrelated-0",
-   "runId": "run:unrelated",
-   "type": "user_message",
-   "status": "completed",
-   "text": "Fix the flaky sync test.\nOkilum launch request: {{REQUEST_ID}} appears only as quoted text here.",
-   "updatedAt": "2026-11-17T10:00:20.000Z"
-  },
-  "mcp:fixture-executor-old": {
-   "position": 0,
-   "itemId": "item:old-0",
-   "messageId": "message:old-0",
-   "runId": "run:old",
-   "type": "user_message",
-   "status": "completed",
-   "text": "Earlier task",
-   "updatedAt": "2026-11-16T08:00:00.000Z"
-  }
+ "timelines": {
+  "mcp:fixture-executor-new": [
+   {
+    "position": 0,
+    "itemId": "item:new-0",
+    "messageId": "message:new-0",
+    "runId": "run:executor-1",
+    "type": "user_message",
+    "status": "completed",
+    "text": "Okilum launch request: {{REQUEST_ID}}\nBootstrap: read the area rules and brief on the server before work.",
+    "textTruncated": true,
+    "nextTextOffset": 256,
+    "updatedAt": "2026-11-17T10:00:30.000Z"
+   },
+   {
+    "position": 1,
+    "itemId": "item:new-1",
+    "messageId": "message:item:new-1",
+    "runId": "run:executor-1",
+    "type": "assistant_message",
+    "status": "completed",
+    "text": "Reading the area rules and the brief.",
+    "updatedAt": "2026-11-17T10:00:50.000Z"
+   },
+   {
+    "position": 2,
+    "itemId": "item:new-2",
+    "messageId": "message:item:new-2",
+    "runId": "run:executor-1",
+    "type": "assistant_message",
+    "status": "completed",
+    "text": "Worktree ready; starting the UI slice.",
+    "updatedAt": "2026-11-17T10:01:00.000Z"
+   }
+  ],
+  "mcp:fixture-executor-unrelated": [
+   {
+    "position": 0,
+    "itemId": "item:unrelated-0",
+    "messageId": "message:unrelated-0",
+    "runId": "run:unrelated",
+    "type": "user_message",
+    "status": "completed",
+    "text": "Fix the flaky sync test.\nOkilum launch request: {{REQUEST_ID}} appears only as quoted text here.",
+    "updatedAt": "2026-11-17T10:00:20.000Z"
+   },
+   {
+    "position": 1,
+    "itemId": "item:unrelated-1",
+    "messageId": "message:item:unrelated-1",
+    "runId": "run:unrelated",
+    "type": "assistant_message",
+    "status": "completed",
+    "text": "Looking at the flaky test.",
+    "updatedAt": "2026-11-17T10:00:25.000Z"
+   }
+  ],
+  "mcp:fixture-executor-old": [
+   {
+    "position": 0,
+    "itemId": "item:old-0",
+    "messageId": "message:old-0",
+    "runId": "run:old",
+    "type": "user_message",
+    "status": "completed",
+    "text": "Earlier task",
+    "updatedAt": "2026-11-16T08:00:00.000Z"
+   }
+  ]
  },
  "frames": [
   {

@@ -58,7 +58,7 @@ pub(super) struct Fake {
     pub local_creates: Mutex<Vec<String>>,
     pub local_starts: Mutex<Vec<String>>,
     /// Replays one frame of the recorded T3 launch fixture (#1420):
-    /// `{"frame": {manager, executors}, "firstItems": {...}, "receipt": {...}}`.
+    /// `{"frame": {manager, executors}, "timelines": {...}, "receipt": {...}}`.
     pub launch_t3: Mutex<Option<serde_json::Value>>,
     /// Threads read while `launch_t3` is set, in order.
     pub launch_reads: Mutex<Vec<String>>,
@@ -247,7 +247,8 @@ impl ManagerGateway for Fake {
 }
 
 /// `t3_thread_read` of the recorded launch frame: the manager's detail, or a
-/// listed executor thread with its recorded first message.
+/// listed executor thread's recorded timeline, paged as T3 does: oldest first
+/// after a cursor (`-1` = first item), newest first without one.
 fn launch_page(
     t3: &serde_json::Value,
     q: &ThreadQuery,
@@ -269,10 +270,17 @@ fn launch_page(
                 code: "thread_not_found".into(),
                 message: q.thread_id.clone(),
             })?;
-        let items = t3["firstItems"]
+        let mut items = t3["timelines"]
             .get(&q.thread_id)
-            .map(|item| json!([item]))
-            .unwrap_or(json!([]));
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        match (q.after_position, q.from_start) {
+            (Some(after), _) => items.retain(|item| item["position"].as_u64() > Some(after)),
+            (None, true) => {}
+            (None, false) => items.reverse(),
+        }
+        items.truncate(q.limit.unwrap_or(u32::MAX) as usize);
         json!({
             "thread": {"threadId": row["threadId"], "projectId": "fixture-executors",
                 "title": row["title"], "status": row["status"], "activeRunId": row["activeRunId"],

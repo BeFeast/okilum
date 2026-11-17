@@ -134,6 +134,8 @@ pub struct Observation {
     listed: Vec<ThreadSummary>,
     inspected: Vec<String>,
     matched: Vec<String>,
+    /// New threads of this listing still unchecked after this observation.
+    unchecked: usize,
 }
 
 /// In-memory progress of one delivered launch request.
@@ -208,6 +210,7 @@ impl Tracker {
             listed: Vec::new(),
             inspected: Vec::new(),
             matched: Vec::new(),
+            unchecked: 0,
         };
         if self.matched.is_empty() {
             let mut query = ThreadQuery::messages(&self.manager_thread_id);
@@ -226,7 +229,7 @@ impl Tracker {
             .context("Cannot list the executor project's T3 threads")?;
         // Newest first, so a fresh launch is inspected before older threads.
         listed.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        let candidates = listed
+        let unchecked = listed
             .iter()
             .filter(|t| t.thread_id != self.manager_thread_id)
             .filter(|t| !self.inspected.contains(&t.thread_id))
@@ -236,12 +239,18 @@ impl Tracker {
                     .as_ref()
                     .is_some_and(|ids| ids.contains(&t.thread_id))
             })
-            .take(MAX_READS_PER_OBSERVATION)
             .map(|t| t.thread_id.clone())
+            .collect::<Vec<_>>();
+        let candidates = unchecked
+            .iter()
+            .take(MAX_READS_PER_OBSERVATION)
+            .cloned()
             .collect::<Vec<_>>();
         let marker = format!("{MARKER}{}", self.request_id);
         for id in candidates {
-            let mut query = ThreadQuery::messages(&id);
+            // Explicitly from the first item: without a cursor T3 may answer
+            // with the newest message, which is the executor's own reply.
+            let mut query = ThreadQuery::messages(&id).from_start();
             query.limit = Some(1);
             query.max_chars_per_item = Some(FIRST_ITEM_CHARS);
             let page = gateway
@@ -262,6 +271,7 @@ impl Tracker {
             }
             observation.inspected.push(id);
         }
+        observation.unchecked = unchecked.len() - observation.inspected.len();
         observation.listed = listed;
         Ok(Some(observation))
     }
@@ -305,7 +315,18 @@ impl Tracker {
                             Some(Ok(stage)) => {
                                 self.progress.reached = self.progress.reached.max(stage)
                             }
-                            Some(Err(outcome)) => self.progress.outcome = Some(outcome),
+                            // Final only once every new thread of this listing
+                            // was checked: a later batch may hold a duplicate.
+                            Some(Err(outcome)) if observation.unchecked == 0 => {
+                                self.progress.outcome = Some(outcome)
+                            }
+                            Some(Err(outcome)) => {
+                                note = Some(format!(
+                                    "T3 reports {} for this executor; checking {} more new T3 threads for this request before confirming it.",
+                                    outcome.label(),
+                                    observation.unchecked
+                                ))
+                            }
                             None => {
                                 note = Some(format!(
                                     "T3 reports an unknown executor status \"{}\".",

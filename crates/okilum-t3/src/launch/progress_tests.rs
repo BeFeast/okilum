@@ -95,6 +95,7 @@ impl ManagerGateway for Recorded {
         assert!(query.after_position.is_none());
         self.reads.lock().unwrap().push(query.thread_id.clone());
         if query.thread_id == "mcp:fixture-manager" {
+            assert!(!query.from_start, "only the manager's detail is read");
             assert_eq!(query.max_chars_per_item, Some(1));
             return Ok(serde_json::from_value(json!({
                 "thread": self.manager.lock().unwrap().clone(), "items": [], "hasMore": true
@@ -111,14 +112,18 @@ impl ManagerGateway for Recorded {
             .find(|row| row["threadId"] == query.thread_id.as_str())
             .cloned()
             .expect("only listed threads are read");
-        let item = &self.fixture["firstItems"][&query.thread_id];
+        assert!(
+            query.from_start,
+            "executor threads are read from the first item"
+        );
+        let items = timeline_page(&self.fixture["timelines"][&query.thread_id], query);
         Ok(serde_json::from_value(json!({
             "thread": {"threadId": row["threadId"], "projectId": "fixture-executors", "title": row["title"],
                 "status": row["status"], "activeRunId": row["activeRunId"], "providerInstanceId": "codex",
                 "model": "gpt-6.1-sol", "runtimeMode": "full-access", "linkedPullRequest": null,
                 "updatedAt": row["updatedAt"]},
-            "items": if item.is_null() { json!([]) } else { json!([item]) },
-            "nextPosition": if item.is_null() { Value::Null } else { json!(0) }, "hasMore": false
+            "nextPosition": items.last().map(|item| item["position"].clone()),
+            "items": items, "hasMore": false
         }))
         .unwrap())
     }
@@ -137,6 +142,19 @@ impl ManagerGateway for Recorded {
     fn configure_model(&self, _: &str, _: &ModelSelection) -> GatewayResult<ThreadConfiguration> {
         panic!("launch progress never configures")
     }
+}
+
+/// T3's `t3_thread_read` paging: after a cursor (`-1` = from the first item)
+/// oldest first; with no cursor in a thread-scoped session, newest first.
+pub(crate) fn timeline_page(timeline: &Value, query: &ThreadQuery) -> Vec<Value> {
+    let mut items = timeline.as_array().cloned().unwrap_or_default();
+    match (query.after_position, query.from_start) {
+        (Some(after), _) => items.retain(|item| item["position"].as_u64() > Some(after)),
+        (None, true) => {}
+        (None, false) => items.reverse(),
+    }
+    items.truncate(query.limit.unwrap_or(u32::MAX) as usize);
+    items
 }
 
 fn step(tracker: &mut Tracker, t3: &Recorded) -> bool {
@@ -284,7 +302,7 @@ fn ambiguity_missing_threads_and_an_ended_manager_run_stay_visible() {
     let t3 = Recorded::new();
     let mut launch = tracker(&t3, false);
     let mut fixture = t3.fixture.clone();
-    fixture["firstItems"]["mcp:fixture-executor-old"]["text"] =
+    fixture["timelines"]["mcp:fixture-executor-old"][0]["text"] =
         json!(format!("{MARKER}{REQUEST_ID}"));
     let t3 = Recorded {
         fixture,
@@ -345,7 +363,7 @@ fn unknown_statuses_and_empty_new_threads_advance_nothing() {
     let t3 = Recorded::new();
     let mut launch = tracker(&t3, true);
     let mut fixture = t3.fixture.clone();
-    fixture["firstItems"]["mcp:fixture-executor-new"] = Value::Null;
+    fixture["timelines"]["mcp:fixture-executor-new"] = json!([]);
     let t3 = Recorded {
         fixture,
         ..Recorded::new()
@@ -376,4 +394,93 @@ fn unknown_statuses_and_empty_new_threads_advance_nothing() {
         .as_deref()
         .unwrap()
         .contains("hibernating"));
+}
+
+#[test]
+fn review1_an_executor_with_several_messages_is_matched_by_its_first_one() {
+    // The first inspection happens when the executor already replied twice:
+    // a newest-first read would see its reply, never the marker line.
+    let t3 = Recorded::new();
+    let mut launch = tracker(&t3, true);
+    let newest = timeline_page(
+        &t3.fixture["timelines"]["mcp:fixture-executor-new"],
+        &ThreadQuery {
+            limit: Some(1),
+            ..ThreadQuery::messages("mcp:fixture-executor-new")
+        },
+    );
+    assert_eq!(
+        newest[0]["position"], 2,
+        "the fake keeps T3's newest-first default"
+    );
+    t3.frame(3);
+    assert!(step(&mut launch, &t3));
+    assert_eq!(launch.progress.reached, Stage::Running);
+    assert_eq!(
+        launch.progress.executor.as_ref().unwrap().thread_id,
+        "mcp:fixture-executor-new"
+    );
+}
+
+#[test]
+fn review2_a_duplicate_beyond_the_first_batch_keeps_the_outcome_provisional() {
+    // Nine new threads: the completed match is newest, a second thread with
+    // the same marker is ninth and falls outside the first batch of eight.
+    let mut fixture = Recorded::new().fixture;
+    let mut rows = vec![fixture["frames"][0]["executors"][0].clone()];
+    let mut completed = fixture["frames"][4]["executors"][2].clone();
+    completed["updatedAt"] = json!("2026-11-17T12:00:00.000Z");
+    rows.push(completed);
+    for index in 0..7 {
+        let id = format!("mcp:fixture-busy-{index}");
+        let mut row = fixture["frames"][2]["executors"][1].clone();
+        row["threadId"] = json!(id);
+        row["updatedAt"] = json!(format!("2026-11-17T11:0{index}:00.000Z"));
+        rows.push(row);
+        fixture["timelines"][&id] = fixture["timelines"]["mcp:fixture-executor-unrelated"].clone();
+    }
+    let mut duplicate = fixture["frames"][2]["executors"][2].clone();
+    duplicate["threadId"] = json!("mcp:fixture-executor-duplicate");
+    duplicate["updatedAt"] = json!("2026-11-17T10:30:00.000Z");
+    rows.push(duplicate);
+    fixture["timelines"]["mcp:fixture-executor-duplicate"] =
+        fixture["timelines"]["mcp:fixture-executor-new"].clone();
+    let t3 = Recorded {
+        fixture,
+        ..Recorded::new()
+    };
+    t3.executors(json!(rows));
+    let mut launch = tracker(&t3, true);
+    step(&mut launch, &t3);
+    assert!(
+        !launch.progress.finished(),
+        "a final outcome waits until the ninth new thread is checked"
+    );
+    assert!(launch
+        .progress
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("checking 1 more new T3 threads"));
+    step(&mut launch, &t3);
+    assert!(
+        !launch.progress.finished(),
+        "polling continues while ambiguous"
+    );
+    assert!(launch.progress.executor.is_none());
+    let note = launch.progress.note.clone().unwrap();
+    assert!(
+        note.contains("mcp:fixture-executor-new")
+            && note.contains("mcp:fixture-executor-duplicate"),
+        "{note}"
+    );
+    let reads = t3.reads();
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|r| r.starts_with("mcp:fixture-busy-"))
+            .count(),
+        7,
+        "every new thread is read exactly once: {reads:?}"
+    );
 }
