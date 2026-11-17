@@ -28,9 +28,15 @@ CARGO_TARGET_DIR="$ROOT/target/gpui-macos-vendor-tests" cargo test \
 # A green run must have executed the patch's own test and the whole suite.
 grep -q 'window::tests::tab_group_is_queried_once_tabbing_may_be_active_and_stays_queried \.\.\. ok' "$log" \
     || { echo "gpui-macos-vendor-tests: tabbing-flag test did not run" >&2; exit 1; }
+# #1615: the data-drop patch's own tests (type rules, a real pasteboard read).
+for test in data_drags_are_told_by_type_and_promises_are_never_read \
+            a_data_drop_reads_the_dragging_pasteboard_contents; do
+    grep -q "window::tests::$test \.\.\. ok" "$log" \
+        || { echo "gpui-macos-vendor-tests: $test did not run" >&2; exit 1; }
+done
 passed="$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$log" | tail -1)"
-[ "${passed:-0}" -ge 8 ] \
-    || { echo "gpui-macos-vendor-tests: expected at least 8 passing tests, got ${passed:-0}" >&2; exit 1; }
+[ "${passed:-0}" -ge 10 ] \
+    || { echo "gpui-macos-vendor-tests: expected at least 10 passing tests, got ${passed:-0}" >&2; exit 1; }
 
 python3 scripts/gpui-pre-apple-setup.py --verify
 echo "GPUI_MACOS_VENDOR_TESTS_PASS passed=$passed"
