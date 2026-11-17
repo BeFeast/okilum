@@ -505,6 +505,9 @@ pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shif
 pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
 pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shift-j");
 pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
+/// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
+/// Bar records the screen there and the key never reaches Okilum (#3110).
+pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
@@ -647,7 +650,7 @@ fn bind_keys(cx: &mut App) {
     ]);
     cx.bind_keys([
         KeyBinding::new(TOGGLE_PROJECT_KEY, ToggleProject, Some(READER_CONTEXT)),
-        KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
+        KeyBinding::new(REVEAL_FILE_KEY, RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
