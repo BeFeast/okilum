@@ -1248,6 +1248,262 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
     Ok(())
 }
 
+/// Drain local writers for `root` under `operation` (no writer is admitted).
+fn drained(root: &Path, operation: &str) -> Result<okilum_write_authority::Hold> {
+    let mut hold = Authority::for_root(root)?.begin_drain(operation)?;
+    let token = hold.token().clone();
+    ensure!(hold.try_hold(&token)?, "fixture writer still admitted");
+    Ok(hold)
+}
+/// Explicitly recover and release an abandoned local hold.
+fn clear(root: &Path) -> Result<()> {
+    let authority = Authority::for_root(root)?;
+    let observed = authority.snapshot()?;
+    if observed.phase != Phase::Open {
+        let mut hold = authority.recover(&observed)?;
+        let token = hold.token().clone();
+        ensure!(hold.try_hold(&token)?, "fixture writer still admitted");
+        let token = hold.token().clone();
+        hold.release(&token)?;
+    }
+    ensure!(authority.operation().is_ok(), "admission did not reopen");
+    Ok(())
+}
+/// Fault injection on the durable receipt intent: emulate a holder that died
+/// at an earlier boundary than the one it actually reached.
+fn rewind_receipt(record: &Path, phase: &str) -> Result<Value> {
+    let mut value: Value = serde_json::from_slice(&fs::read(record)?)?;
+    value["phase"] = json!(phase);
+    value["paused_event"] = Value::Null;
+    fs::write(record, serde_json::to_vec(&value)?)?;
+    Ok(value)
+}
+
+/// #2508: the scoped receipt refuses every unproven state and recovers each
+/// holder-death boundary only through explicit, operation-bound recovery.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary() -> Result<()> {
+    use okilum_sync_controller::managed_launch::ScopedHold;
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let services = Services::default();
+    let rest = TcpListener::bind("127.0.0.1:0")?;
+    let listen = TcpListener::bind("127.0.0.1:0")?;
+    let request = Preparation {
+        executable: binary()?,
+        rest_address: rest.local_addr()?,
+        listen_address: listen.local_addr()?,
+    };
+    drop((rest, listen));
+    let runtime = Runtime::with_services(
+        root.path().join("runtime"),
+        root.path().join("units"),
+        services.clone(),
+        launcher(),
+    );
+    let identity = runtime
+        .enable(Selection::Managed(request), &[])?
+        .identity
+        .unwrap();
+    let home = identity.config_file.parent().unwrap();
+    services.remember_pid(home)?;
+    let source = Peer::new(root.path(), "source", binary()?)?;
+    let selected = root.path().join("selected");
+    let second = root.path().join("second");
+    let source_second = root.path().join("source-second");
+    for path in [&selected, &second, &source_second] {
+        fs::create_dir(path)?;
+    }
+    let api = identity.connect()?;
+    let address = api.config()?["options"]["listenAddresses"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    source
+        .api
+        .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+    for (id, path, source_path) in [
+        ("selected", &selected, &source.vault),
+        ("second", &second, &source_second),
+    ] {
+        FolderController::new(root.path().join(format!("{id}-state"))).enroll(
+            &identity,
+            std::slice::from_ref(&identity.config_file),
+            &approval(&identity, &source, id),
+            path,
+        )?;
+        add_source(&source, &identity, id, source_path)?;
+        fs::write(source_path.join("control.md"), format!("{id} before"))?;
+    }
+    wait("positive control transfers", || {
+        source.api.scan("selected")?;
+        source.api.scan("second")?;
+        Ok(selected.join("control.md").exists() && second.join("control.md").exists())
+    })?;
+    let record = home
+        .parent()
+        .unwrap()
+        .join("managed-launch/scoped-holds")
+        .join(format!("{:x}", sha2::Sha256::digest(b"selected")) + ".json");
+    let original_label = api.folder("selected")?["label"].clone();
+
+    // External runtime: the source peer's own daemon cannot grant ownership.
+    let external = DaemonIdentity {
+        config_file: source.home.join("config.xml"),
+        device_id: source.id.clone(),
+        certificate_hash: format!(
+            "{:x}",
+            sha2::Sha256::digest(fs::read(source.home.join("cert.pem"))?)
+        ),
+    };
+    assert!(
+        ScopedHold::acquire(external, "selected", drained(&selected, "external")?, false).is_err()
+    );
+    assert_eq!(source.api.folder("selected")?["paused"], false);
+    clear(&selected)?;
+
+    // Transport and local ownership must name the same root.
+    assert!(ScopedHold::acquire(
+        identity.clone(),
+        "selected",
+        drained(&second, "wrong")?,
+        false
+    )
+    .is_err());
+    assert_eq!(api.folder("selected")?["paused"], false);
+    assert_eq!(api.folder("second")?["paused"], false);
+    clear(&second)?;
+
+    // A folder someone else paused has no proof of THIS drain.
+    api.patch_folder("selected", &json!({"paused":true}))?;
+    assert!(ScopedHold::acquire(
+        identity.clone(),
+        "selected",
+        drained(&selected, "paused")?,
+        false
+    )
+    .is_err());
+    assert!(!record.exists(), "a refused pause persisted no intent");
+    assert_eq!(api.folder("selected")?["paused"], true);
+    clear(&selected)?;
+    api.patch_folder("selected", &json!({"paused":false}))?;
+
+    // Lost PATCH: intent and cursor were durable, the request never arrived.
+    let hold = drained(&selected, "lost-patch")?;
+    drop(ScopedHold::acquire(
+        identity.clone(),
+        "selected",
+        hold,
+        false,
+    )?);
+    let rewound = rewind_receipt(&record, "Pausing")?;
+    api.patch_folder(
+        "selected",
+        &json!({"paused":false,"label":rewound["before"]["label"]}),
+    )?;
+    assert_eq!(api.folder("selected")?, rewound["before"]);
+    let authority = Authority::for_root(&selected)?;
+    assert!(
+        authority.begin_drain("other").is_err(),
+        "an unfinished hold refuses a fresh operation"
+    );
+    let observed = authority.snapshot()?;
+    assert_eq!(observed.phase, Phase::RecoveryPending);
+    let mut hold = authority.recover(&observed)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    // Recovery re-submits the lost PATCH and waits for its labelled receipt.
+    let scope = ScopedHold::acquire(identity.clone(), "selected", hold, true)?;
+    scope.validate()?;
+    assert_eq!(api.folder("selected")?["paused"], true);
+    fs::write(source.vault.join("withheld.md"), b"withheld")?;
+    for _ in 0..10 {
+        source.api.scan("selected")?;
+        assert!(
+            !selected.join("withheld.md").exists(),
+            "transport published under a recovered receipt"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    scope.release_and_resume()?;
+    wait("withheld change publishes after release", || {
+        source.api.scan("selected")?;
+        Ok(selected.join("withheld.md").exists())
+    })?;
+
+    // Lost acknowledgement: PATCH applied, the holder died before the event.
+    let hold = drained(&selected, "lost-ack")?;
+    let operation = hold.token().operation_id.clone();
+    drop(ScopedHold::acquire(
+        identity.clone(),
+        "selected",
+        hold,
+        false,
+    )?);
+    rewind_receipt(&record, "Pausing")?;
+    assert_eq!(api.folder("selected")?["paused"], true);
+    let observed = authority.snapshot()?;
+    assert_eq!(observed.phase, Phase::RecoveryPending);
+    let mut hold = authority.recover(&observed)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let scope = ScopedHold::acquire(identity.clone(), "selected", hold, true)?;
+    scope.validate()?;
+    // Holder dies again at quiescence: resume only for the exact operation.
+    drop(scope);
+    assert!(ScopedHold::resume_committed(&identity, "selected", "not-this-operation").is_err());
+    assert_eq!(api.folder("selected")?["paused"], true);
+    ScopedHold::resume_committed(&identity, "selected", &operation)?;
+    assert_eq!(api.folder("selected")?["paused"], false);
+    assert_eq!(api.folder("selected")?["label"], original_label);
+    ScopedHold::resume_committed(&identity, "selected", &operation)?;
+    assert!(authority.operation().is_ok());
+
+    // A completed receipt is never a recovery proof for a later operation.
+    let late = drained(&selected, "late")?;
+    assert!(ScopedHold::acquire(identity.clone(), "selected", late, true).is_err());
+    assert_eq!(api.folder("selected")?["paused"], false);
+    clear(&selected)?;
+
+    // Configuration tampering under a live receipt invalidates it.
+    let hold = drained(&selected, "tampered")?;
+    let operation = hold.token().operation_id.clone();
+    let scope = ScopedHold::acquire(identity.clone(), "selected", hold, false)?;
+    api.patch_folder("selected", &json!({"paused":false}))?;
+    assert!(
+        scope.validate().is_err(),
+        "an external resume voids the receipt"
+    );
+    assert!(scope.release_and_resume().is_err());
+    let observed = authority.snapshot()?;
+    let mut hold = authority.recover(&observed)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    assert!(
+        ScopedHold::acquire(identity.clone(), "selected", hold, true).is_err(),
+        "a changed configuration is never re-adopted as quiescent"
+    );
+    clear(&selected)?;
+    api.patch_folder("selected", &json!({"paused":true,"label":"someone else"}))?;
+    assert!(
+        ScopedHold::resume_committed(&identity, "selected", &operation).is_err(),
+        "resume refuses a configuration it did not pause"
+    );
+    api.patch_folder("selected", &json!({"paused":false,"label":original_label}))?;
+    ScopedHold::resume_committed(&identity, "selected", &operation)?;
+
+    // The second folder on the shared runtime was never stopped.
+    assert_eq!(api.folder("second")?["paused"], false);
+    fs::write(source_second.join("progress.md"), b"second folder progress")?;
+    wait("second folder transfers", || {
+        source.api.scan("second")?;
+        Ok(second.join("progress.md").exists())
+    })?;
+    runtime.disable()?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() -> Result<()> {
