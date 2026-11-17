@@ -219,12 +219,15 @@ class HookTests(unittest.TestCase):
 
 
 class BridgeReceiptTests(unittest.TestCase):
-    def bridge_env(self, tmp, lane='shared'):
+    def bridge_env(self, tmp, lane='shared', attempt='1'):
+        # The attempt is part of the fixture: a GitHub re-run of these tests sets
+        # GITHUB_RUN_ATTEMPT>=2 in the real environment, which must not leak in.
         return dict(CI_LANE=lane, MIRROR_TOKEN='test', PR_HEAD_SHA=SHA, PR_NUMBER='12', GITHUB_RUN_ID='345',
-                    GITHUB_OUTPUT=str(Path(tmp) / 'output'), OKILUM_HOSTED_RECEIPT=str(Path(tmp) / 'receipt.json'))
+                    GITHUB_RUN_ATTEMPT=attempt, GITHUB_OUTPUT=str(Path(tmp) / 'output'),
+                    OKILUM_HOSTED_RECEIPT=str(Path(tmp) / 'receipt.json'))
 
-    def run_pr_bridge(self, tmp, wait, lane='shared'):
-        with patch.dict(os.environ, self.bridge_env(tmp, lane)), \
+    def run_pr_bridge(self, tmp, wait, lane='shared', attempt='1'):
+        with patch.dict(os.environ, self.bridge_env(tmp, lane, attempt)), \
                 patch.object(pr_bridge.transport, 'push_head'), patch.object(pr_bridge.transport, 'GitHub'), \
                 patch.object(pr_bridge.transport, 'wait_for_run', side_effect=wait) as waiter, \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -239,11 +242,14 @@ class BridgeReceiptTests(unittest.TestCase):
         def wait(api, branch, sha, **kwargs):
             kwargs['on_run'](run(branch=branch))
             return 'failure', 'red'
-        with tempfile.TemporaryDirectory() as tmp:
-            waiter, receipt = self.run_pr_bridge(tmp, wait)
-        branch = waiter.call_args.args[1]
-        self.assertEqual(receipt, dict(version=1, branch=branch, sha=SHA, workflow=WORKFLOW, run_id=7, finished=True))
-        self.assertEqual(transport.owned_identity(branch, SHA, WORKFLOW), ('345', '1'))
+        # An empty attempt is the first one; re-runs bind the receipt to their own attempt.
+        for attempt, expected in (('1', '1'), ('', '1'), ('3', '3')):
+            with self.subTest(attempt=attempt), tempfile.TemporaryDirectory() as tmp:
+                waiter, receipt = self.run_pr_bridge(tmp, wait, attempt=attempt)
+                branch = waiter.call_args.args[1]
+                self.assertEqual(receipt, dict(version=1, branch=branch, sha=SHA, workflow=WORKFLOW,
+                                               run_id=7, finished=True))
+                self.assertEqual(transport.owned_identity(branch, SHA, WORKFLOW), ('345', expected))
 
     def test_unavailable_verdict_is_finished_and_keeps_the_live_run_policy(self):
         def wait(api, branch, sha, **kwargs):
