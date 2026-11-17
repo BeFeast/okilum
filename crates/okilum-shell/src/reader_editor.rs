@@ -1435,16 +1435,26 @@ impl Reader {
                 }
                 // #1073: remote image downloads rewrite text inside this
                 // paste, so its uploads wait for them instead of racing.
-                let applied = matches!(event, ClipboardPasteEvent::Applied { .. });
                 let downloads = matches!(
                     pending.follow_up,
                     Some(crate::note_paste::router::FollowUp::RemoteImages { .. })
                 );
                 if let Some(follow_up) = pending.follow_up {
-                    let upload_after = if applied && downloads {
-                        pending.saved_files.clone()
-                    } else {
-                        Vec::new()
+                    // Decided and tracked at the paste, run after the downloads.
+                    let upload_after = match event {
+                        ClipboardPasteEvent::Applied { bytes, .. } if downloads => {
+                            let caret = input.read(cx).cursor();
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::track(
+                                target,
+                                input,
+                                caret.saturating_sub(*bytes)..caret,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            )
+                        }
+                        _ => None,
                     };
                     this.run_paste_follow_up(input.clone(), follow_up, upload_after, window, cx);
                 }

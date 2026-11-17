@@ -34,37 +34,92 @@ pub(super) fn start(
     window: &mut Window,
     cx: &mut App,
 ) {
-    if paths.is_empty() || !reader_ui_state::upload_pasted_files(cx) {
+    if paths.is_empty() {
         return;
+    }
+    if let Some(pending) = track(target, input, span, paths, window, cx) {
+        pending.start(cx);
+    }
+}
+
+/// An upload decided when the paste went in, run later: a paste whose remote
+/// images are still downloading (#1073). Its links are tracked from the
+/// insert on, the setting and its generation are those of the paste, and the
+/// downloads add the links they write ([`Pending::add`]). Dropped without
+/// [`Pending::start`], it uploads nothing.
+pub(super) struct Pending {
+    job: Job,
+    watch: gpui::Subscription,
+}
+
+/// Begin tracking the links to `paths` in `span` of `input`, when the setting
+/// is on now. `None` when it is off: nothing of this paste will upload.
+pub(super) fn track(
+    target: Target,
+    input: &Entity<EditorState>,
+    span: Range<usize>,
+    paths: &[PathBuf],
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Pending> {
+    if !reader_ui_state::upload_pasted_files(cx) {
+        return None;
     }
     let generation = reader_ui_state::upload_pasted_generation(cx);
-    let snapshot = input.read(cx).source_snapshot();
-    let found = note_upload::inserted_links(
-        &snapshot.text,
-        snapshot.text.id(),
-        span,
-        target.root(),
-        paths,
-    );
-    if found.is_empty() {
-        return;
-    }
-    let links: Links = Rc::new(RefCell::new(found));
-    // Follow every edit of this editor while the job runs.
+    let links: Links = Rc::new(RefCell::new(Vec::new()));
+    // Follow every edit of this editor until the job ends.
     let followed = links.clone();
     let watch = cx.observe(input, move |input, cx| follow(&followed, &input, cx));
-    let job = Job {
-        target,
-        input: input.clone(),
-        links,
-        generation,
-        handle: window.window_handle(),
+    let pending = Pending {
+        job: Job {
+            target,
+            input: input.clone(),
+            links,
+            generation,
+            handle: window.window_handle(),
+        },
+        watch,
     };
-    cx.spawn(async move |cx| {
-        run(job, cx).await;
-        drop(watch);
-    })
-    .detach();
+    pending.add(span, paths, cx);
+    Some(pending)
+}
+
+impl Pending {
+    /// Track the links to `paths` that the text now at `span` of the paste's
+    /// editor holds (a download's embed, written just now).
+    pub(super) fn add(&self, span: Range<usize>, paths: &[PathBuf], cx: &App) {
+        if paths.is_empty() {
+            return;
+        }
+        follow(&self.job.links, &self.job.input, cx);
+        let snapshot = self.job.input.read(cx).source_snapshot();
+        let found = note_upload::inserted_links(
+            &snapshot.text,
+            snapshot.text.id(),
+            span,
+            self.job.target.root(),
+            paths,
+        );
+        self.job.links.borrow_mut().extend(found);
+    }
+
+    /// The editor whose text the paste went into.
+    pub(super) fn input(&self) -> &Entity<EditorState> {
+        &self.job.input
+    }
+
+    /// Upload now. Nothing to do when no tracked link remains.
+    pub(super) fn start(self, cx: &mut App) {
+        if self.job.links.borrow().is_empty() {
+            return;
+        }
+        let Pending { job, watch } = self;
+        cx.spawn(async move |cx| {
+            run(job, cx).await;
+            drop(watch);
+        })
+        .detach();
+    }
 }
 
 struct Job {

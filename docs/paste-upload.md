@@ -31,10 +31,14 @@ default.
   for good, even if it is turned on again before the job notices: nothing
   more is sent, and an upload already under way no longer changes the note.
 - Remote image downloads of pasted rich text rewrite text inside the paste,
-  so that paste's uploads (its saved `data:`/`file://` images and the
-  downloaded files) start only after every download is done.
+  so that paste's upload is decided when the paste goes in (setting and
+  generation at that moment) and its links are tracked from then on; each
+  download adds the embed it writes, and the uploads run only after every
+  download is done.
 - A token read from the credential store is applied only if no token was
   saved or removed while the read ran.
+- A token saved or removed in Settings updates the session's token as soon
+  as the credential store confirms, even if Settings was closed meanwhile.
 - Images and other files both upload (Q3).
 
 ## Privacy and rendering (Q1)

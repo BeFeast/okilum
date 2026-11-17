@@ -59,6 +59,21 @@ impl Target {
         &self.root
     }
 
+    /// #1073: as [`Self::upload_inserted`], but only tracked now; the caller
+    /// starts it later.
+    fn track_inserted(
+        &self,
+        region: &Region,
+        saved: &[PathBuf],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<super::paste_upload::Pending> {
+        let input = self.live(cx)?;
+        let text = input.read(cx).value().to_string();
+        let span = region.locate(&text)?;
+        super::paste_upload::track(self.clone(), &input, span, saved, window, cx)
+    }
+
     /// #1073: after text went into this note at `region`, upload the saved
     /// files it links (only when the setting is on). Never another note.
     fn upload_inserted(
@@ -198,20 +213,36 @@ impl Reader {
     ) {
         self.publish_saved_attachments(&routed.saved_files, window, cx);
         // #1073: remote image downloads replace text inside this insert, so
-        // its uploads wait for them (one job at a time per pasted region).
+        // its upload is decided and tracked now but runs after them.
         let downloads = matches!(routed.follow_up, Some(FollowUp::RemoteImages { .. }));
-        let mut upload_after = Vec::new();
+        let mut upload_after = None;
         if let Some(text) = &routed.insert {
             let inserted = input.update(cx, |state, cx| {
                 state.replace_source_range(offset..offset, text, window, cx)
             });
-            if inserted && downloads {
-                upload_after = routed.saved_files.clone();
-            } else if inserted && !routed.saved_files.is_empty() {
+            if inserted {
                 // Exactly the dropped text, in this note.
                 let target = self.paste_target(input.clone(), cx);
                 let span = offset..offset + text.len();
-                super::paste_upload::start(target, &input, span, &routed.saved_files, window, cx);
+                if downloads {
+                    upload_after = super::paste_upload::track(
+                        target,
+                        &input,
+                        span,
+                        &routed.saved_files,
+                        window,
+                        cx,
+                    );
+                } else {
+                    super::paste_upload::start(
+                        target,
+                        &input,
+                        span,
+                        &routed.saved_files,
+                        window,
+                        cx,
+                    );
+                }
             }
         }
         if let Some(notice) = routed.notice {
@@ -237,14 +268,14 @@ impl Reader {
         }
     }
 
-    /// Start the background part of a paste. `upload_after` are files the paste
-    /// already linked in the text that remote image downloads rewrite. They
-    /// upload once those downloads are done (#1073), never alongside them.
+    /// Start the background part of a paste. `upload_after` is the paste's
+    /// upload (#1073), tracked since the insert; remote image downloads add
+    /// their links to it and start it once they are done, never alongside.
     pub(super) fn run_paste_follow_up(
         &mut self,
         input: Entity<EditorState>,
         follow_up: FollowUp,
-        upload_after: Vec<PathBuf>,
+        upload_after: Option<super::paste_upload::Pending>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -674,10 +705,14 @@ fn convert_in_background(
                 return;
             };
             // #1073: the images saved from `data:`/`file://` sources upload
-            // now, or after the remote downloads that rewrite this region.
-            if done.remote.is_empty() {
+            // now, or after the remote downloads that rewrite this region;
+            // either way their links are tracked from this insert on.
+            let upload_after = if done.remote.is_empty() {
                 input.upload_inserted(&region, &done.files, window, cx);
-            }
+                None
+            } else {
+                input.track_inserted(&region, &done.files, window, cx)
+            };
             if done.deferred > 0 {
                 reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
             } else if done.failed > 0 {
@@ -692,7 +727,7 @@ fn convert_in_background(
                     vault_root,
                     stamp,
                     image_options,
-                    done.files.clone(),
+                    upload_after,
                     window,
                     cx,
                 );
@@ -707,7 +742,8 @@ fn convert_in_background(
 /// inside the pasted text with the saved file's embed as it arrives. Text the
 /// user changed is left alone (the remote image stays), and so is a failed
 /// download; a file whose text is gone is removed again. With the upload
-/// setting on (#1073), the downloaded files and `upload_after` upload once
+/// setting on at paste time (#1073), `upload_after` tracks each embed written
+/// and uploads once every download is done.
 /// every download is done.
 #[allow(clippy::too_many_arguments)]
 fn download_images(
@@ -718,13 +754,15 @@ fn download_images(
     vault_root: PathBuf,
     stamp: String,
     image_options: crate::note_paste::image_import::Options,
-    upload_after: Vec<PathBuf>,
+    upload_after: Option<super::paste_upload::Pending>,
     window: &mut Window,
     cx: &mut App,
 ) {
     let total = images.len();
     if total == 0 {
-        input.upload_inserted(&region, &upload_after, window, cx);
+        if let Some(upload) = upload_after {
+            upload.start(cx);
+        }
         return;
     }
     let done = Arc::new(AtomicU64::new(0));
@@ -804,8 +842,8 @@ fn download_images(
     cx.spawn(async move |cx| {
         let mut region = region;
         let (mut saved, mut failed, mut replaced) = (0usize, 0usize, 0usize);
-        // #1073: files whose embed went into the note, uploaded at the end.
-        let mut linked_files = upload_after;
+        // #1073: tracks each embed as it is written, uploads at the end.
+        let upload = upload_after;
         while let Ok((index, result)) = receiver.recv().await {
             done.fetch_add(1, Ordering::Relaxed);
             let image = &images[index];
@@ -825,21 +863,30 @@ fn download_images(
                     let Some(input) = input.live(cx) else {
                         return 0;
                     };
-                    input.update(cx, |state, cx| {
+                    let hits = input.update(cx, |state, cx| {
                         let before = state.value().to_string();
                         let hits = region.occurrences(&before, &image.placeholder);
                         for hit in hits.iter().rev() {
                             if !state.replace_source_range(hit.clone(), &embed, window, cx) {
                                 // Read-only: nothing was replaced.
-                                return 0;
+                                return Vec::new();
                             }
                         }
                         if !hits.is_empty() {
                             let after = state.value().to_string();
                             region = region.after_replacing(&before, &hits, &embed, &after);
                         }
-                        hits.len()
-                    })
+                        hits
+                    });
+                    // #1073: the embeds just written, at their exact places,
+                    // in the editor the paste's upload follows.
+                    if let Some(upload) = upload.as_ref().filter(|u| u.input() == &input) {
+                        for (k, hit) in hits.iter().enumerate() {
+                            let start = hit.start + k * embed.len() - k * hit.len();
+                            upload.add(start..start + embed.len(), &name.paths, cx);
+                        }
+                    }
+                    hits.len()
                 })
                 .unwrap_or(0);
             if hits == 0 {
@@ -849,16 +896,12 @@ fn download_images(
                         let _ = std::fs::remove_file(path);
                     }
                 }
-            } else {
-                linked_files.extend(name.paths);
             }
             replaced += hits;
         }
         finished.store(true, Ordering::Relaxed);
-        if !linked_files.is_empty() {
-            let _ = cx.update_window(handle, |_, window, cx| {
-                input.upload_inserted(&region, &linked_files, window, cx)
-            });
+        if let Some(upload) = upload {
+            cx.update(|cx| upload.start(cx));
         }
         diagnostic_error!(
             "Paste: images downloaded={saved} failed={failed} replaced={replaced} ms={}",
@@ -1005,7 +1048,7 @@ mod attachment_refresh_tests {
                     plan.image_options = options;
                     FollowUp::Files { plan, anchor }
                 };
-                reader.run_paste_follow_up(input, follow_up, Vec::new(), window, cx);
+                reader.run_paste_follow_up(input, follow_up, None, window, cx);
             });
             visual.run_until_parked();
             let (input, pasted) = reader.read_with(visual, |r, cx| {

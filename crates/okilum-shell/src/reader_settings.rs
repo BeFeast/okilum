@@ -1420,12 +1420,16 @@ impl Settings {
         let write = cx.write_credentials(key, "Okilum", token.as_bytes());
         cx.spawn_in(window, async move |this, cx| {
             let result = write.await;
+            // The session's token follows the store even if Settings closed
+            // meanwhile (#1073); only the field and message need the window.
+            if result.is_ok() {
+                gpui::AsyncApp::update(cx, |cx| crate::note_upload::set_token(Some(token), cx));
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
                         input.update(cx, |input, cx| input.set_value("", window, cx));
                         this.upload_token_error = None;
-                        crate::note_upload::set_token(Some(token), cx);
                     }
                     Err(error) => {
                         diagnostic_error!("Upload: token not saved ({error:#})");
@@ -1445,11 +1449,13 @@ impl Settings {
         let delete = cx.delete_credentials(key);
         cx.spawn_in(window, async move |this, cx| {
             let result = delete.await;
+            if result.is_ok() {
+                gpui::AsyncApp::update(cx, |cx| crate::note_upload::set_token(None, cx));
+            }
             let _ = this.update_in(cx, |this, _, cx| {
                 match result {
                     Ok(()) => {
                         this.upload_token_error = None;
-                        crate::note_upload::set_token(None, cx);
                     }
                     Err(error) => {
                         diagnostic_error!("Upload: token not removed ({error:#})");
