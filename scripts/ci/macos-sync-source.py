@@ -73,6 +73,8 @@ def main():
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_symlinked_config_root_is_never_followed_or_emptied"),
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::kept_paths_match_a_config_root_reached_through_a_symlinked_home"),
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::an_unresolvable_kept_path_refuses_the_plan"),
+        ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_kept_symlink_into_another_root_keeps_that_root"),
+        ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_dangling_symlink_on_a_root_or_kept_path_refuses_the_plan"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::admission_tests::"),
         ("okilum-sync", "--lib", "tests::issue2752_"),
         ("okilum-write-authority", "--lib", "identity_macos_tests::"),

@@ -284,9 +284,9 @@ pub(crate) struct Plan {
 #[derive(Debug, PartialEq)]
 enum Step {
     Remove,
-    /// A symlinked root where Sync's identity may live: never followed,
-    /// never enumerated, left in place.
-    LeaveLink,
+    /// A symlinked root where Sync's identity may live, or a root that is
+    /// itself (inside) a kept folder: never followed, enumerated or removed.
+    Leave,
     /// Empty this resolved directory around the kept paths.
     EmptyAround(PathBuf),
 }
@@ -308,14 +308,33 @@ impl Plan {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn keeping(roots: &[PathBuf], keep: &[PathBuf]) -> anyhow::Result<Self> {
         use anyhow::Context as _;
-        let resolved_keep = keep
-            .iter()
-            .map(|kept| {
-                resolve_final(kept).with_context(|| format!("cannot resolve {}", kept.display()))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        // Each kept path in two forms: the path itself (final component not
+        // followed) and, when it is a symlink, the folder it leads to. A kept
+        // `Sync` linked into another root keeps that root too.
+        let mut resolved_keep = Vec::new();
+        for kept in keep {
+            resolved_keep.push(
+                resolve_final(kept)
+                    .with_context(|| format!("cannot resolve {}", kept.display()))?,
+            );
+            match std::fs::symlink_metadata(kept) {
+                Ok(metadata) if metadata.file_type().is_symlink() => resolved_keep.push(
+                    std::fs::canonicalize(kept)
+                        .with_context(|| format!("cannot resolve {}", kept.display()))?,
+                ),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("cannot inspect {}", kept.display()))
+                }
+            }
+        }
         let mut steps = Vec::new();
         for root in roots {
+            // Also for a missing root: a dangling symlink among its ancestors
+            // (a broken XDG_CONFIG_HOME, say) cannot be resolved and refuses.
+            let resolved = resolve_final(root)
+                .with_context(|| format!("cannot resolve {}", root.display()))?;
             let metadata = match std::fs::symlink_metadata(root) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     steps.push((root.clone(), Step::Remove));
@@ -326,24 +345,23 @@ impl Plan {
                 }
                 Ok(metadata) => metadata,
             };
-            let resolved = resolve_final(root)
-                .with_context(|| format!("cannot resolve {}", root.display()))?;
-            let step = if metadata.file_type().is_symlink() {
+            let within_kept = resolved_keep
+                .iter()
+                .any(|kept| inside(&resolved, kept, IGNORE_CASE));
+            let holds_kept = resolved_keep
+                .iter()
+                .any(|kept| inside(kept, &resolved, IGNORE_CASE));
+            let step = if within_kept {
+                Step::Leave
+            } else if metadata.file_type().is_symlink() {
                 // Removing a link never touches its target; keep the link when
                 // Sync's identity is reached through it.
-                let holds = keep.iter().any(|kept| inside(kept, root, IGNORE_CASE))
-                    || resolved_keep
-                        .iter()
-                        .any(|kept| inside(kept, &resolved, IGNORE_CASE));
-                if holds {
-                    Step::LeaveLink
+                if holds_kept || keep.iter().any(|kept| inside(kept, root, IGNORE_CASE)) {
+                    Step::Leave
                 } else {
                     Step::Remove
                 }
-            } else if resolved_keep
-                .iter()
-                .any(|kept| inside(kept, &resolved, IGNORE_CASE))
-            {
+            } else if holds_kept {
                 Step::EmptyAround(resolved)
             } else {
                 Step::Remove
@@ -407,7 +425,7 @@ pub(crate) fn purge_planned(
         export_unsaved_drafts(state, &documents.join(DRAFT_EXPORT_FOLDER), &mut report);
     }
     for (root, step) in &plan.roots {
-        if *step == Step::LeaveLink {
+        if *step == Step::Leave {
             report.kept_for_sync.push(root.clone());
             continue;
         }
@@ -1331,6 +1349,60 @@ mod tests {
             );
             assert!(config.join("SyncDirect/journal.json").exists());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_symlink_into_another_root_keeps_that_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let config = fixture.path().join("Application Support/okilum");
+        write(&config.join("reader-layout.json"), "{}");
+        // XDG_CONFIG_HOME's okilum is another root; Sync links into it.
+        let xdg = fixture.path().join("xdg/okilum");
+        write(&xdg.join("config/key.pem"), "key");
+        std::os::unix::fs::symlink(&xdg, config.join("Sync")).unwrap();
+        let keep = vec![config.join("Sync"), config.join("SyncDirect")];
+        let roots = vec![config.clone(), xdg.clone()];
+        let documents = fixture.path().join("Documents");
+        let plan = Plan::keeping(&roots, &keep).unwrap();
+        let report = purge_planned(&plan, None, &documents, &documents);
+        assert!(report.failed.is_empty(), "{report:?}");
+        assert!(!config.join("reader-layout.json").exists());
+        assert!(std::fs::symlink_metadata(config.join("Sync"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(xdg.join("config/key.pem")).unwrap(),
+            "key"
+        );
+        assert!(report.kept_for_sync.contains(&xdg), "{report:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_on_a_root_or_kept_path_refuses_the_plan() {
+        let fixture = tempfile::tempdir().unwrap();
+        let config = fixture.path().join("Application Support/okilum");
+        write(&config.join("reader-layout.json"), "{}");
+        let keep = vec![config.join("Sync")];
+        // XDG_CONFIG_HOME is a dangling symlink: its okilum root is missing
+        // but cannot be resolved either.
+        let xdg = fixture.path().join("xdg");
+        std::os::unix::fs::symlink(fixture.path().join("gone"), &xdg).unwrap();
+        let roots = vec![config.clone(), xdg.join("okilum")];
+        assert!(Plan::keeping(&roots, &keep).is_err());
+        // A kept path that is a dangling symlink cannot be resolved either.
+        std::os::unix::fs::symlink(fixture.path().join("gone"), config.join("Sync")).unwrap();
+        assert!(Plan::keeping(std::slice::from_ref(&config), &keep).is_err());
+        // Control: an ordinary missing root is fine.
+        std::fs::remove_file(config.join("Sync")).unwrap();
+        let missing = vec![config.clone(), fixture.path().join("absent/okilum")];
+        assert!(Plan::keeping(&missing, &keep).is_ok());
+        assert!(
+            config.join("reader-layout.json").exists(),
+            "planning changes nothing"
+        );
     }
 
     #[cfg(unix)]
