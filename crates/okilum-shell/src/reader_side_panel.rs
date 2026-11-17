@@ -344,7 +344,7 @@ pub(super) mod tests {
         });
         visual.run_until_parked();
         frame(visual);
-        view.read_with(visual, |v, _| assert_eq!(v.current_rel, "other.md"));
+        view.read_with(visual, |v, _| assert_eq!(v.pane.current_rel, "other.md"));
         let switched = renders();
         assert!(
             switched[0] > moved[0] && switched[1] > moved[1],

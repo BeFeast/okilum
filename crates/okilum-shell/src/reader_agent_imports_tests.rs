@@ -180,7 +180,8 @@ fn issue1588_line_click_and_inline_nested_expansion(cx: &mut TestAppContext) {
     assert!(f.visual.debug_bounds("agent-expanded-nested.md").is_some());
     f.click("agent-line-nested.md");
     assert_eq!(
-        f.reader.read_with(f.visual, |r, _| r.current_rel.clone()),
+        f.reader
+            .read_with(f.visual, |r, _| r.pane.current_rel.clone()),
         "project/imports/nested.md"
     );
     assert_eq!(std::fs::read_to_string(f.root.join("project/AGENTS.md")).unwrap(), "# Agent instructions\n\nBefore import.\n\n@imports/rules.md\n\nAfter import.\n\n```text\n@not-an-import.md\n```\n");
@@ -211,7 +212,8 @@ fn issue1588_expanded_markdown_link_uses_imported_origin(cx: &mut TestAppContext
         );
         f.draw();
         assert_eq!(
-            f.reader.read_with(f.visual, |r, _| r.current_rel.clone()),
+            f.reader
+                .read_with(f.visual, |r, _| r.pane.current_rel.clone()),
             "project/imports/target.md"
         );
     }
@@ -273,7 +275,8 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
     );
     f.draw();
     assert_eq!(
-        f.reader.read_with(f.visual, |r, _| r.current_rel.clone()),
+        f.reader
+            .read_with(f.visual, |r, _| r.pane.current_rel.clone()),
         "project/imports/rules.md"
     );
     f.reader.update_in(f.visual, |r, window, cx| {

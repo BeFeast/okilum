@@ -12,7 +12,7 @@ struct Selection {
 impl Selection {
     fn current(reader: &Reader) -> Option<Self> {
         if !reader.document_ready()
-            || reader.current_rel.is_empty()
+            || reader.pane.current_rel.is_empty()
             || reader.pane.file_preview.is_some()
             || reader
                 .loading
@@ -23,7 +23,7 @@ impl Selection {
         }
         Some(Self {
             root: reader.vault_root.clone(),
-            rel: reader.current_rel.clone(),
+            rel: reader.pane.current_rel.clone(),
             navigation: reader.navigation.generation,
             watcher: reader.watcher_generation,
             input: reader.editing.as_ref().map(|e| e.input.entity_id()),
@@ -123,7 +123,7 @@ impl Reader {
         // that subscription or revoking its authority to reread current bytes.
         self.open_note_watch
             .as_ref()
-            .is_some_and(|(root, rel)| *root == self.vault_root && *rel == self.current_rel)
+            .is_some_and(|(root, rel)| *root == self.vault_root && *rel == self.pane.current_rel)
     }
 
     pub(crate) fn watch_open_note(&mut self, cx: &mut Context<Self>) {
@@ -385,11 +385,11 @@ mod tests {
                 visual,
                 &reader,
                 "in-place append positive control",
-                |r, _| r.note_source.contains("append positive control"),
+                |r, _| r.pane.note_source.contains("append positive control"),
             );
             replace(&root, "# Note\n\nremote line\n");
             settle(visual, &reader, "reading rename-over", |r, _| {
-                r.note_source.contains("remote line")
+                r.pane.note_source.contains("remote line")
             });
             assert_eq!(
                 std::fs::read_to_string(root.join("note.md")).unwrap(),
@@ -413,7 +413,7 @@ mod tests {
                 );
                 replace(&root, &original);
                 settle(visual, &reader, "long note positive control", |r, _| {
-                    r.note_source.contains("line 119")
+                    r.pane.note_source.contains("line 119")
                 });
                 reader.update_in(visual, |r, window, cx| {
                     r.toggle_source(window, cx);
@@ -844,7 +844,7 @@ mod tests {
                         assert_eq!(e.conflict_copy, before);
                         assert_eq!(input(r).read(cx).value().as_ref(), latest);
                         assert_eq!(
-                            r.current_rel, "note.md",
+                            r.pane.current_rel, "note.md",
                             "conflicting navigation stays open"
                         );
                     });
@@ -976,7 +976,7 @@ mod tests {
                     if edit {
                         input(r).read(cx).value().contains("remote during indexing")
                     } else {
-                        r.note_source.contains("remote during indexing")
+                        r.pane.note_source.contains("remote during indexing")
                     }
                 };
                 settle(

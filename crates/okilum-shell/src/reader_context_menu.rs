@@ -152,7 +152,7 @@ impl Reader {
         let action = state
             .and_then(|state| state.action_url.as_deref())
             .unwrap_or(url);
-        link_address(&self.current_rel, action)
+        link_address(&self.pane.current_rel, action)
     }
 }
 

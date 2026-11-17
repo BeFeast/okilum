@@ -1534,7 +1534,10 @@ pub(crate) fn duplicate_window(
             reader.record_ui_state(true, cx);
             let opts = super::Opts {
                 vault: Some(reader.vault_root.clone()),
-                note: Some(note.clone().unwrap_or_else(|| reader.current_rel.clone())),
+                note: Some(
+                    note.clone()
+                        .unwrap_or_else(|| reader.pane.current_rel.clone()),
+                ),
                 session_directory: reader.session_directory.clone(),
                 use_html: reader.pane.use_html,
                 defer_loading: true,
@@ -2355,7 +2358,7 @@ mod entry_tests {
             let readers = &cx.global::<Readers>().0;
             assert_eq!(readers.len(), 1);
             let reader = readers[0].0.upgrade().unwrap();
-            assert_eq!(reader.read(cx).current_rel, "last.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "last.md");
             assert_eq!(reader.read(cx).vault_root, root);
             assert!(reader.read(cx).document_ready());
         });
@@ -2465,7 +2468,7 @@ mod entry_tests {
             let reader = readers[0].0.upgrade().unwrap();
             assert!(reader.read(cx).single_file);
             assert!(reader.read(cx).document_ready());
-            assert_eq!(reader.read(cx).current_rel, "last.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "last.md");
         });
         assert!(!cache.exists());
         std::fs::remove_dir_all(fixture).unwrap();
@@ -2525,7 +2528,7 @@ mod entry_tests {
             assert_eq!(readers.len(), 1);
             let reader = readers[0].0.upgrade().unwrap();
             assert_eq!(
-                reader.read(cx).current_rel,
+                reader.read(cx).pane.current_rel,
                 "explicit.md",
                 "positive delivery control"
             );
@@ -2614,7 +2617,7 @@ mod entry_tests {
                 .find_map(|(r, _)| r.upgrade())
                 .expect("a Reader was opened");
             assert_eq!(reader.read(cx).vault_root, root);
-            assert_eq!(reader.read(cx).current_rel, "Plan.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "Plan.md");
         });
         // Positive control: a reopen while a window exists opens nothing new.
         cx.update(reader_startup::reopen);
@@ -2680,7 +2683,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect();
@@ -3659,7 +3662,7 @@ mod entry_tests {
                 other.searcher.as_ref().unwrap(),
                 &searcher
             ));
-            assert_eq!(other.current_rel, "note.md");
+            assert_eq!(other.pane.current_rel, "note.md");
             let saved = reader_open_windows::load_session_windows(&state);
             assert_eq!(saved.len(), 2);
             assert_eq!(saved.iter().filter(|(_, quick)| *quick).count(), 1);
@@ -3760,7 +3763,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect();
@@ -4063,7 +4066,7 @@ mod entry_tests {
                 let reader = reader.read(cx);
                 let top = reader.content.read(cx).list_state().logical_scroll_top();
                 (
-                    reader.current_rel.clone(),
+                    reader.pane.current_rel.clone(),
                     top.item_ix,
                     reader.link_notice.clone(),
                 )
@@ -4265,7 +4268,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -4411,7 +4414,11 @@ mod entry_tests {
                     .iter()
                     .map(|r| {
                         let r = r.read(cx);
-                        (r.single_file, r.vault_root.clone(), r.current_rel.clone())
+                        (
+                            r.single_file,
+                            r.vault_root.clone(),
+                            r.pane.current_rel.clone(),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -4843,7 +4850,7 @@ mod entry_tests {
                 .upgrade()
                 .unwrap();
             assert_ne!(first.entity_id(), second.entity_id());
-            assert_eq!(second.read(cx).current_rel, "a.md");
+            assert_eq!(second.read(cx).pane.current_rel, "a.md");
             assert!(
                 second.read(cx).pane.properties_open,
                 "snapshot reaches duplicate restore"
@@ -4872,8 +4879,8 @@ mod entry_tests {
         });
         cx.run_until_parked();
         cx.update(|cx| {
-            assert_eq!(first.read(cx).current_rel, "a.md");
-            assert_eq!(second.read(cx).current_rel, "b.md");
+            assert_eq!(first.read(cx).pane.current_rel, "a.md");
+            assert_eq!(second.read(cx).pane.current_rel, "b.md");
             assert_eq!(first.read(cx).navigation.history, vec!["a.md".to_string()]);
             assert_eq!(
                 second.read(cx).navigation.history,
@@ -4931,7 +4938,7 @@ mod entry_tests {
                 .upgrade()
                 .unwrap();
             assert_eq!(
-                third.read(cx).current_rel,
+                third.read(cx).pane.current_rel,
                 "b.md",
                 "attachment during a held worker uses the last published snapshot"
             );
@@ -4966,6 +4973,7 @@ mod entry_tests {
                 assert!(
                     second
                         .read(cx)
+                        .pane
                         .note_source
                         .contains("Changed after first window closed"),
                     "published document refresh cannot depend on worker-owned baseline"
@@ -4978,6 +4986,7 @@ mod entry_tests {
         cx.update(|cx| {
             assert!(second
                 .read(cx)
+                .pane
                 .note_source
                 .contains("Changed after first window closed"));
             dispatch_path(&root, cx);
@@ -5043,7 +5052,7 @@ mod entry_tests {
             assert_eq!(cx.global::<Readers>().0.len(), 1);
             let first = cx.global::<Readers>().0[0].0.upgrade().unwrap();
             let reader = first.read(cx);
-            assert_eq!(reader.current_rel, "start.md");
+            assert_eq!(reader.pane.current_rel, "start.md");
             assert_eq!(reader.vault_root, root);
             first.clone()
         });
@@ -5066,7 +5075,7 @@ mod entry_tests {
         cx.run_until_parked();
         cx.update(|cx| {
             assert_eq!(cx.global::<Readers>().0.len(), 1);
-            assert_eq!(first.read(cx).current_rel, "sub/Ю.md");
+            assert_eq!(first.read(cx).pane.current_rel, "sub/Ю.md");
             assert_eq!(first.read(cx).vault_root, root);
             assert!(!first.read(cx).single_file);
         });
@@ -5131,7 +5140,7 @@ mod entry_tests {
             assert_eq!(reused.entity_id(), first.entity_id());
             let reader = first.read(cx);
             assert_eq!(reader.vault_root, root);
-            assert_eq!(reader.current_rel, "missing.md");
+            assert_eq!(reader.pane.current_rel, "missing.md");
             assert!(
                 reader.editing.is_some(),
                 "the newly created file opens its editor"
@@ -5165,7 +5174,7 @@ mod entry_tests {
                 1,
                 "refusal must not open a namesake"
             );
-            assert_eq!(first.read(cx).current_rel, "missing.md");
+            assert_eq!(first.read(cx).pane.current_rel, "missing.md");
             let error = cx
                 .windows()
                 .iter()
@@ -5220,7 +5229,7 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
         .filter_map(|(reader, root)| {
             reader
                 .upgrade()
-                .map(|reader| (root.clone(), reader.read(cx).current_rel.clone()))
+                .map(|reader| (root.clone(), reader.read(cx).pane.current_rel.clone()))
         })
         .collect()
 }

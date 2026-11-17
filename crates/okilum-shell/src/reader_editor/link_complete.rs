@@ -814,7 +814,7 @@ impl Reader {
         let emoji = reader_ui_state::emoji_completion(cx);
         let show_hidden = self.sidebar.show_hidden;
         let vault = self.vault.clone();
-        let from = self.current_rel.clone();
+        let from = self.pane.current_rel.clone();
         let Some(editing) = self.editing.as_mut() else {
             return;
         };
@@ -971,7 +971,7 @@ impl Reader {
                 let _ = this.update_in_own_window(cx, |this, window, cx| {
                     if !Arc::ptr_eq(&this.vault, &expected_vault)
                         || this.source_publication_epoch != expected_publication
-                        || this.current_rel != from_expected
+                        || this.pane.current_rel != from_expected
                     {
                         return;
                     }
@@ -1097,7 +1097,7 @@ impl Reader {
             seen,
             query: open.query.clone(),
             root: self.vault.root.clone(),
-            from: self.current_rel.clone(),
+            from: self.pane.current_rel.clone(),
             show_hidden: self.sidebar.show_hidden,
             rows: MetadataPage::rows(open),
         };
@@ -1131,7 +1131,7 @@ impl Reader {
                 );
                 if Arc::ptr_eq(&this.vault, &expected_vault)
                     && this.source_publication_epoch == expected_publication
-                    && this.current_rel == page.from
+                    && this.pane.current_rel == page.from
                     && this.sidebar.show_hidden == page.show_hidden
                     && current == page.seen
                     && editing.link_complete.seen.as_ref() == Some(&page.seen)
@@ -1173,7 +1173,7 @@ impl Reader {
         );
         if !editing.markdown
             || editing.link_complete.seen.as_ref() != Some(&current)
-            || editing.link_complete.from != self.current_rel
+            || editing.link_complete.from != self.pane.current_rel
             || !editing
                 .link_complete
                 .index
@@ -1315,7 +1315,7 @@ impl Reader {
             let target = item.target.clone();
             let vault = self.vault.clone();
             let expected_publication = self.source_publication_epoch;
-            let from = self.current_rel.clone();
+            let from = self.pane.current_rel.clone();
             let show_hidden = self.sidebar.show_hidden;
             let input_entity = input.clone();
             #[cfg(test)]
@@ -1336,7 +1336,7 @@ impl Reader {
                 let _ = this.update_in_own_window(cx, |reader, window, cx| {
                     if !Arc::ptr_eq(&reader.vault, &vault)
                         || reader.source_publication_epoch != expected_publication
-                        || reader.current_rel != from
+                        || reader.pane.current_rel != from
                         || reader.sidebar.show_hidden != show_hidden
                     {
                         return;

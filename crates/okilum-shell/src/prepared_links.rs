@@ -338,7 +338,7 @@ impl Reader {
             );
             return;
         }
-        if self.deleted_current().is_some() && rel == self.current_rel {
+        if self.deleted_current().is_some() && rel == self.pane.current_rel {
             self.reshow_deleted_notice(cx);
             return;
         }
@@ -364,7 +364,7 @@ impl Reader {
                     if location.0.is_some() || location.1.is_some() || landing.is_some() {
                         return None;
                     }
-                    if rel == self.current_rel {
+                    if rel == self.pane.current_rel {
                         return Some(self.content.read(cx).list_state().logical_scroll_top());
                     }
                     self.navigation
@@ -626,7 +626,7 @@ impl Reader {
         self.invalidate_links();
         let generation = self.pane.link_preparation_generation;
         let navigation = self.navigation.generation;
-        let from = self.current_rel.clone();
+        let from = self.pane.current_rel.clone();
         let vault = self.vault.clone();
         let source_stamp = match &source {
             LinkSource::Editing(_, stamp) => Some(*stamp),
@@ -864,7 +864,7 @@ mod tests {
         });
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(
                 v.link_notice.as_deref(),
                 Some(LinkState::unknown().reason.as_str())
@@ -886,7 +886,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.pane.prepared_links.is_empty() && v.pane.link_presentations.is_empty());
         });
         PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
@@ -1296,7 +1296,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(
-                v.current_rel, "target.md",
+                v.pane.current_rel, "target.md",
                 "same-position pointer navigation positive control"
             );
             v.history_move(-1, window, cx);
@@ -1335,12 +1335,12 @@ mod tests {
             (
                 v.content.read(cx).selected_text(),
                 v.content.entity_id(),
-                v.current_rel.clone(),
+                v.pane.current_rel.clone(),
                 v.navigation.history.clone(),
                 v.navigation.history_ix,
                 v.link_notice.clone(),
                 v.content.read(cx).list_state().logical_scroll_top(),
-                v.note_source.clone(),
+                v.pane.note_source.clone(),
             )
         });
         assert!(
@@ -1367,14 +1367,14 @@ mod tests {
                     "down={down}, bounds={bounds:?}, link={link:?}"
                 );
                 assert_eq!(v.content.entity_id(), before.1);
-                assert_eq!(v.current_rel, before.2);
+                assert_eq!(v.pane.current_rel, before.2);
                 assert_eq!(v.navigation.history, before.3);
                 assert_eq!(v.navigation.history_ix, before.4);
                 assert_eq!(v.link_notice, before.5);
                 let scroll = v.content.read(cx).list_state().logical_scroll_top();
                 assert_eq!(scroll.item_ix, before.6.item_ix);
                 assert_eq!(scroll.offset_in_item, before.6.offset_in_item);
-                assert_eq!(v.note_source, before.7);
+                assert_eq!(v.pane.note_source, before.7);
             });
         }
         // Multi-click on the same inert link still performs ordinary word selection.
@@ -1394,7 +1394,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert_eq!(v.content.read(cx).selected_text().trim(), "Target");
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(v.link_notice, before.5);
         });
         // A lost release on an exempt link cannot exempt the next ordinary press.
@@ -1521,7 +1521,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "target.md", "the first click opens the link");
+            assert_eq!(
+                v.pane.current_rel, "target.md",
+                "the first click opens the link"
+            );
         });
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1615,7 +1618,7 @@ mod tests {
                     "frames_between={frames_between}: positive control, the drag selected text"
                 );
                 assert_eq!(
-                    v.current_rel, "start.md",
+                    v.pane.current_rel, "start.md",
                     "frames_between={frames_between}: a drag ending on a link must not open it"
                 );
             });
@@ -1704,7 +1707,7 @@ mod tests {
         );
         visual.update(|window, cx| handle_link(&reader.downgrade(), url, window, cx));
         reader.update_in(visual, |v, _, _| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(v.navigation.history, ["start.md"]);
             assert_eq!(v.navigation.history_ix, 0);
             assert_eq!(v.link_notice.as_deref(), Some("Retain notice"));
@@ -1795,18 +1798,18 @@ mod tests {
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
                 v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );
-            assert!(okilum_core::document_links::heading(&v.note_source, "Landing").is_ok());
+            assert!(okilum_core::document_links::heading(&v.pane.note_source, "Landing").is_ok());
             v.history_move(-1, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |v, _, _| assert_eq!(v.current_rel, "start.md"));
+        reader.update_in(visual, |v, _, _| assert_eq!(v.pane.current_rel, "start.md"));
         // Read failure remains unknown, never a fabricated missing heading.
         std::fs::write(root.join("target.md"), [0xff, 0xfe]).unwrap();
         reader.update_in(visual, |v, _, cx| v.refresh_link_preparation(cx));
@@ -1863,18 +1866,18 @@ mod tests {
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
                 v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );
-            assert!(okilum_core::document_links::heading(&v.note_source, "Landing").is_ok());
+            assert!(okilum_core::document_links::heading(&v.pane.note_source, "Landing").is_ok());
             v.history_move(-1, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |v, _, _| assert_eq!(v.current_rel, "start.md"));
+        reader.update_in(visual, |v, _, _| assert_eq!(v.pane.current_rel, "start.md"));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[gpui::test]
@@ -1920,18 +1923,18 @@ mod tests {
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
                 v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );
-            assert!(okilum_core::document_links::heading(&v.note_source, "Landing").is_ok());
+            assert!(okilum_core::document_links::heading(&v.pane.note_source, "Landing").is_ok());
             v.history_move(-1, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |v, _, _| assert_eq!(v.current_rel, "start.md"));
+        reader.update_in(visual, |v, _, _| assert_eq!(v.pane.current_rel, "start.md"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

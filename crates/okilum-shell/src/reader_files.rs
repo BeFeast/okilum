@@ -494,7 +494,7 @@ impl Reader {
             .file_preview
             .as_ref()
             .map(|p| p.rel.as_str())
-            .unwrap_or(&self.current_rel)
+            .unwrap_or(&self.pane.current_rel)
     }
     pub(crate) fn preview_file(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
         // A deleted note asks before its contents are left behind (#1986).

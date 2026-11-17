@@ -236,7 +236,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
             assert_eq!(r.navigation.history, history);
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.pane.file_preview.is_none());
             assert!(r.tree_preview.is_open());
             assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin");
@@ -296,7 +296,7 @@ mod tests {
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.pane.file_preview.is_none());
             assert!(!r.tree_preview.is_open());
         });

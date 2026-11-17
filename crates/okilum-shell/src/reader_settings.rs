@@ -2675,9 +2675,9 @@ mod tests {
                         },
                         "LABEL1834: Settings must update existing tree rows and their sort live"
                     );
-                    assert_eq!(reader.current_rel, "a.md");
+                    assert_eq!(reader.pane.current_rel, "a.md");
                     assert_eq!(
-                        reader.current_title,
+                        reader.pane.current_title,
                         if *folder { "a" } else { "Zebra heading" }
                     );
                     assert_eq!(

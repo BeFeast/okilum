@@ -1880,7 +1880,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "24q4.md");
+            assert_eq!(v.pane.current_rel, "24q4.md");
             let props = v.pane.properties.as_ref().unwrap();
             assert_eq!(
                 reader_properties::summary(props),
@@ -1919,7 +1919,7 @@ mod tests {
         });
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        reader.read_with(visual, |v, _| assert_eq!(v.current_rel, "24q4.md"));
+        reader.read_with(visual, |v, _| assert_eq!(v.pane.current_rel, "24q4.md"));
         assert_eq!(
             std::fs::read_to_string(root.join("24q4.md")).unwrap(),
             source,
@@ -1948,7 +1948,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             let link = v
                 .pane
                 .link_identities
@@ -2361,7 +2361,7 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open, "the held Enter was applied");
-            assert_eq!(v.current_rel, "Reading list.md");
+            assert_eq!(v.pane.current_rel, "Reading list.md");
         });
 
         // A reset after the held Enter cancels it: Escape on text, another
@@ -2405,7 +2405,7 @@ mod tests {
             visual.run_until_parked();
             reader.update(visual, |v, _| {
                 assert!(v.quick_open.open, "{name}: palette stays open");
-                assert_eq!(v.current_rel, "Home.md", "{name}: nothing opened");
+                assert_eq!(v.pane.current_rel, "Home.md", "{name}: nothing opened");
             });
             reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
         }
@@ -2503,7 +2503,7 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, before[1]);
+            assert_eq!(v.pane.current_rel, before[1]);
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
@@ -3051,7 +3051,7 @@ canaryhidden [[Target]]",
         reader.update(visual, |v, _| {
             assert_eq!(v.quick_open.rows.len(), 1);
             assert_eq!(v.quick_open.rows[0].title, "Memory");
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
         });
         let bounds = visual
             .debug_bounds("quick-open-result-0")
@@ -3060,7 +3060,7 @@ canaryhidden [[Target]]",
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, "Memory/@index.md");
+            assert_eq!(v.pane.current_rel, "Memory/@index.md");
         });
         for mouse in [false, true] {
             reader.update_in(visual, |v, window, cx| {
@@ -3134,7 +3134,7 @@ canaryhidden [[Target]]",
             visual.run_until_parked();
             reader.update(visual, |v, cx| {
                 assert!(!v.quick_open.open);
-                assert_eq!(v.current_rel, "Memory/@index.md");
+                assert_eq!(v.pane.current_rel, "Memory/@index.md");
                 assert_eq!(v.content.read(cx).search_status().1, 1);
                 assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
             });
@@ -3688,7 +3688,7 @@ canaryhidden [[Target]]",
         click(visual, "quick-open-result-0");
         reader.read_with(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, "Skills/review/SKILL.md");
+            assert_eq!(v.pane.current_rel, "Skills/review/SKILL.md");
         });
 
         // Content search: every open starts in the default view.
@@ -3768,7 +3768,7 @@ canaryhidden [[Target]]",
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert!(v.quick_open.open, "the held Enter was not applied");
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(
                 v.quick_open.input.read(cx).value().to_string(),
                 "zephyrcanary agents"
@@ -3780,7 +3780,7 @@ canaryhidden [[Target]]",
         click(visual, "quick-open-result-0");
         reader.read_with(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert!(is_agent_file(&v.current_rel), "{}", v.current_rel);
+            assert!(is_agent_file(&v.pane.current_rel), "{}", v.pane.current_rel);
         });
 
         // A held agent-view query answering after a vault switch is dropped.

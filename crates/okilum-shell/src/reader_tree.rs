@@ -1152,7 +1152,7 @@ mod tests {
         visual.simulate_click(row.center(), gpui::Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "duplicate.md")
+            assert_eq!(reader.pane.current_rel, "duplicate.md")
         });
 
         // Updating metadata and adding a sibling exercises the topology refresh
@@ -1178,7 +1178,7 @@ mod tests {
             assert_eq!(reader.note_label("legacy.md"), "A revised title");
             assert_eq!(reader.note_label("24q4.md"), "Quarterly plans");
             assert_eq!(reader.tree.rows[0].label, "A revised title");
-            assert_eq!(reader.current_rel, "duplicate.md");
+            assert_eq!(reader.pane.current_rel, "duplicate.md");
         });
         assert_eq!(
             std::fs::read_to_string(root.join("24q4.md")).unwrap(),
