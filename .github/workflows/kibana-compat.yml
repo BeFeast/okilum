@@ -1,0 +1,81 @@
+# #1440: bounded compatibility of the Remote Log view connector with real,
+# digest-pinned Kibana + Elasticsearch releases (docs/kibana-compatibility-runner.md).
+# Opt-in and non-blocking: weekly, on manual dispatch, or by pushing a
+# `kibana-compat/**` branch to the mirror. Containers run only on GitHub's
+# disposable hosted runners; synthetic data, ephemeral credentials minted
+# inside the containers, no repository secrets, no caches saved.
+name: kibana-compat
+'on':
+  schedule:
+    - cron: '35 1 * * 0'
+  workflow_dispatch:
+  push:
+    branches: ['kibana-compat/**']
+permissions:
+  contents: read
+concurrency:
+  group: kibana-compat-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build tools
+        timeout-minutes: 10
+        run: sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config curl git mold
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      # Cargo resolves the whole workspace, and okilum-shell points at vendor.
+      - name: Resolve pinned workspace path dependencies
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      - name: Build the debug-only compatibility runner
+        run: cargo build --locked -p okilum-core --example kibana_compat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kibana-compat-runner
+          path: target/debug/examples/kibana_compat
+          retention-days: 1
+          if-no-files-found: error
+  compat:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['8.17.10', '8.19.25', '9.5.4', '9.5.5']
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kibana-compat-runner
+          path: ${{ runner.temp }}/runner
+      - name: Check Kibana ${{ matrix.version }} against the product transport
+        timeout-minutes: 15
+        run: |
+          chmod +x "$RUNNER_TEMP/runner/kibana_compat"
+          python3 scripts/ci/kibana-compat.py --version '${{ matrix.version }}' \
+            --runner "$RUNNER_TEMP/runner/kibana_compat" \
+            --report "$RUNNER_TEMP/kibana-compat-${{ matrix.version }}.json"
+      - name: Keep the per-version report (synthetic results only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kibana-compat-report-${{ matrix.version }}
+          path: ${{ runner.temp }}/kibana-compat-${{ matrix.version }}.json
+          retention-days: 30
+          if-no-files-found: ignore
