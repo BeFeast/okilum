@@ -57,7 +57,7 @@ push runs each have their own group (`linux-beta-<commit sha>`,
 `windows-beta-<commit sha>`; Forgejo has no run id yet when it evaluates the
 group), so a merge starts its beta at once instead of queueing behind the
 previous merge's whole run (14.11: queueing added up to 23 minutes on Linux and
-25 on Windows); release-publish still serializes feed writes and never publishes
+25 on Windows); release-publish still serializes each feed's writes and never publishes
 an older build over a newer one. Mac push runs share the concurrency group
 `macos-beta-main` without
 `cancel-in-progress`: a newer push waits for the running one. When a queued push run starts and main
@@ -306,7 +306,13 @@ Versions retain the source build's original
 `5000 + run number`; the publication workflow's number is never used.
 
 Forgejo concurrency is workflow-wide. Publication therefore runs in a separate,
-serialized workflow with cancellation disabled, sharing the stable-promotion lock.
+serialized workflow with cancellation disabled. macOS, Windows and Arch
+publications share the stable-promotion lock (`okilum-macos-release`): the
+appcast, the per-source catalog, the #1040 promotion request and the beta objects
+stable promotion copies are cross-platform state, and R2 has no compare-and-swap.
+The AppImage beta touches none of it and holds its own `okilum-publish-appimage`
+group (#3043), so it never waits for other platforms; publications of one platform
+never overlap (`publication.publication_group`).
 A main push during an already-started publication lets that short transaction
 finish; the newer successful build follows it. Automatic cancellation cannot
 interrupt public metadata writes. Existing feed-last/hash/signature checks remain;
@@ -327,8 +333,8 @@ Provision this runner before deploying the workflows. Use its own service user,
 registration, work directory and container resource slice (1 CPU / 2 GiB per
 container; 2304 MiB slice ceiling), independently of the build pool. Disable its
 runner cache: publication does not compile. Merely adding a label to an existing
-capacity-1 build runner does not reserve a slot. Publication jobs still serialize
-with each other and retain their existing feed locks and monotonic guards.
+capacity-1 build runner does not reserve a slot. Publication jobs keep their
+concurrency groups (see above), feed locks and monotonic guards.
 
 Verify the runner advertises only `publish`, then observe a main mirror and a
 release publisher start while a build runner remains occupied. Record queue wait

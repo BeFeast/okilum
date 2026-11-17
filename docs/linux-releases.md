@@ -260,8 +260,9 @@ cannot block accepted AppImage bytes. Arch dispatch still requires its successfu
 it consumes only `arch-publication`. Reuse runs on every main tick even when the
 Arch descriptor already exists, so later accepted AppImage evidence can publish
 on the next tick without compiling another source. Cancellation still blocks publication.
-Only the existing protected `publish` runner imports the Linux key and R2 credentials,
-under the unchanged cross-platform publication/promotion lock.
+Only the existing protected `publish` runner imports the Linux key and R2 credentials.
+Arch publication holds the cross-platform publication/promotion lock; the AppImage
+beta holds its own `okilum-publish-appimage` lock (#3043, see below).
 
 AppImage build **N** is its original embedded `5000 + GitHub run_number`;
 Forgejo's `5000 + run number` is separate `publication_build` metadata. The
@@ -371,8 +372,16 @@ That helper checks trusted main `linux-release.yml` origin, exactly one unexpire
 source/first attempt, executed Ubuntu/Fedora smoke, archive digest and original
 payload provenance, and source ancestry on main before importing the existing
 Linux signing key. Neither the Forgejo aggregate nor the GitHub Linux aggregate,
-Arch artifacts or Arch feeds authorize this lane. Publication retains the shared
+Arch artifacts or Arch feeds authorize this lane. Publication retains a
 non-cancellable lock, pinned signer, immutable storage and monotonic beta guard.
+Since #3043 that lock is `okilum-publish-appimage`, not the cross-platform
+`okilum-macos-release`: the AppImage beta reads and writes only
+`okilum/linux/{builds,beta}` and its own release notes, never the appcast, the
+catalog, a promotion request or another platform's feed, so it no longer queues
+behind Windows and macOS publications (17.11: 6–7 minutes per AppImage beta).
+Two AppImage publications, a retry attempt included, still never overlap. AppImage
+Stable promotion stays under the cross-platform lock and reads only the signed
+immutable `builds/<n>` objects, which a concurrent beta never rewrites.
 Explicit AppImage sources can advance beta; the legacy archive-only Arch path
 and all Stable behavior remain unchanged.
 

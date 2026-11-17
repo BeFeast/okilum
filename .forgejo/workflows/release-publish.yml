@@ -13,10 +13,15 @@ on:
         description: 'Publication attempt for this build; set only by the bounded retry (#1559)'
         required: false
         default: '1'
-# Also shares the unified stable promotion's lock. Publication is short and
-# serialized across platforms; compilation uses independent cancellable groups.
+# One group per run (#3043). macOS, Windows and Arch publications keep the
+# lock they share with stable promotion (releases.yml): the appcast, the
+# per-source catalog and the #1040 promotion request are cross-platform state.
+# The AppImage beta writes only okilum/linux/{builds,beta} and its own notes, so
+# it serializes only with itself and never queues behind other platforms.
+# Grouped by platform alone: a retry attempt queues behind the run it retries.
+# Mirrors publication.publication_group; compilation uses its own groups.
 concurrency:
-  group: okilum-macos-release
+  group: ${{ inputs.platform == 'appimage' && 'okilum-publish-appimage' || 'okilum-macos-release' }}
   cancel-in-progress: false
 jobs:
   publish:

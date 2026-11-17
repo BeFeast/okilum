@@ -224,7 +224,8 @@ def publish(client, platform, run_id):
     else:
         raise ValueError('Source build did not finish successfully')
     build = 5000 + run['index_in_repo']
-    # Serialized with every platform publisher and stable promotion. Complete
+    # Serialized with the other shared-lock publishers and stable promotion
+    # (SHARED_PUBLICATION_GROUP; the AppImage beta has its own group). Complete
     # trusted snapshots remain useful after a merge, but never roll back a feed.
     # Only a manual run can carry an explicit older source (#1040), which goes to the
     # archive instead; it is decided after reading the artifact.
@@ -325,6 +326,27 @@ def publish(client, platform, run_id):
 # noticed or the next main push rebuilt. Only a failed publish job is retried:
 # a successful one, or one that decided "nothing to publish", never repeats.
 PUBLISH_PLATFORMS = (*WORKFLOWS, 'appimage')
+
+# release-publish concurrency (#3043); the workflow's group expression mirrors
+# this. Forgejo gives a run exactly one group, so a platform either shares the
+# lock or has its own. The shared lock is also the one stable promotion holds
+# (releases.yml). It covers state more than one platform touches: the macOS
+# appcast (stable promotion rewrites it), the per-source catalog and the #1040
+# promotion request (prepare.complete reads every platform's entry, then marks
+# and promotes; R2 has no compare-and-swap), and the Windows/Arch beta objects
+# stable promotion copies. The AppImage beta touches none of these: it writes
+# only okilum/linux/{builds,beta} and its own release notes, and AppImage stable
+# promotion reads only signed immutable builds/<n> objects. A group keyed on the
+# platform alone still keeps two publications of one platform (a retry attempt
+# included) from overlapping, which the per-feed monotonic checks rely on.
+SHARED_PUBLICATION_GROUP = 'okilum-macos-release'
+OWN_PUBLICATION_GROUP = {'appimage': 'okilum-publish-appimage'}
+
+
+def publication_group(platform):
+    return OWN_PUBLICATION_GROUP.get(platform, SHARED_PUBLICATION_GROUP)
+
+
 MAX_PUBLICATION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 60
 DISPATCH_ATTEMPTS = 3
