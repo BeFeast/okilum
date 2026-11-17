@@ -6139,6 +6139,7 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "bzip2",
+ "chrono",
  "comrak",
  "crc32fast",
  "csv",
@@ -6192,6 +6193,23 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tungstenite",
+]
+
+[[package]]
+name = "okilum-gpui"
+version = "0.1.0"
+dependencies = [
+ "gpui-pre",
+ "okilum-gpui-test-macro",
+]
+
+[[package]]
+name = "okilum-gpui-test-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6263,7 +6281,6 @@ dependencies = [
  "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
- "gpui-pre",
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "hayro",
@@ -6279,6 +6296,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "okilum-appimage",
  "okilum-core",
+ "okilum-gpui",
  "okilum-http",
  "okilum-paste",
  "okilum-sync-controller",

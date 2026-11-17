@@ -128,6 +128,15 @@ Enter/Tab or a row click inserts the target once. Escape leaves the authored
 text unchanged. The shared `HeadingInventory` excludes ambiguous or unsupported
 heading destinations; completion does not guess between duplicate note names.
 
+Fence language completion (#2340) opens as a language name is typed after an
+opening ```` ``` ````. With nothing typed it stays closed, so Enter still enters
+the block; Ctrl+Space (also Option+Esc on macOS, where Ctrl+Space usually
+switches the input source) opens the same popup with every language, or reopens
+a typed name's filtered list after Escape. The key does nothing new anywhere
+else. Choosing a language puts the caret on the block's first line, adding an
+empty one when the next line is the closing fence or the note ends; it is one
+edit and one Undo step.
+
 Completion refresh copies at most 1 KiB before the caret on its current line,
 clips the window to UTF-8 boundaries, and shares an immutable Rope snapshot. Ranking and full Markdown-context checks run on the
 background executor; code spans, code blocks and frontmatter publish no rows.
@@ -252,6 +261,18 @@ negotiation, deadline and limits (#2006); GPUI core stays unpatched. Okilum's
 own copy (owner process named by the X-Resource extension), servers without
 X-Resource, self-owned Wayland selections and unsupported compositors use
 GPUI's typed clipboard on the UI thread.
+On both Linux protocols Ctrl+V reads the offer's type list first and then only
+the flavors the router asks for (#1618): a file copy that also offers a picture
+transfers the file list alone, and a paste into a code fence transfers the plain
+text alone. `text/uri-list` is preferred over `x-special/gnome-copied-files`
+(a file manager's cut pastes as a copy; KDE's cut marker is ignored).
+`chromium/x-source-url` and Firefox's `text/x-moz-url-priv` give relative links
+their page, `vscode-editor-data` names an IDE fence's language, and Firefox's
+UTF-16 HTML or source URL is decoded first. Every flavor of one paste comes from
+the same owner (X11) or offer (Wayland); a change, timeout or oversized flavor
+midway refuses the paste, and a flavor the owner will not convert reroutes the
+whole paste through GPUI's clipboard. The paste log line names the native types
+offered and the flavors read.
 Plain text containing HTML syntax stays literal instead of being guessed as an
 HTML clipboard offer. Windows note HTML uses the bounded path described above.
 Completed local attachment writes publish their exact saved paths to inventory, so a

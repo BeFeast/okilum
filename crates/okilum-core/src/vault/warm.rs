@@ -9,7 +9,8 @@ use std::io::{Read, Write};
 use std::time::UNIX_EPOCH;
 
 // v3 adds alias identities and removes alias declarations from relationship edges.
-const SCHEMA: u32 = 4;
+// v5 resolves links to non-Markdown files (#2905); old derived graphs must be rebuilt.
+const SCHEMA: u32 = 5;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2437,6 +2438,35 @@ mod tests {
         assert_eq!((stats.read, stats.reused), (1, 1));
         let (_, _, stats) = reconcile(&root, Some(&moved), true, &mut |_, _| Ok(())).unwrap();
         assert_eq!((stats.read, stats.reused), (2, 0));
+    }
+
+    // #2905: an incremental refresh keeps other notes' edges to a data file
+    // and to its `.md` namesake.
+    #[test]
+    fn warm_refresh_keeps_data_file_and_md_namesake_backlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("data.json"), "{}").unwrap();
+        std::fs::write(root.join("data.json.md"), "# Data").unwrap();
+        std::fs::write(root.join("a.md"), "[[data.json]]\n[[data.json.md]]").unwrap();
+        std::fs::write(root.join("b.md"), "[[data.json.md]]\n[d](data.json)").unwrap();
+        let (vault, cold, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(vault.backlinks("data.json").len(), 2);
+        assert_eq!(vault.backlinks("data.json.md").len(), 2);
+        std::fs::write(root.join("a.md"), "[[data.json]] edited\n[[data.json.md]]").unwrap();
+        let (vault, _, stats) = reconcile(&root, Some(&cold), false, &mut |_, _| Ok(())).unwrap();
+        assert!(stats.graph_reused, "positive control: incremental refresh");
+        assert_eq!(stats.affected.len(), 1);
+        let paths = |target: &str| -> Vec<String> {
+            vault
+                .backlinks(target)
+                .iter()
+                .map(|b| b.path.clone())
+                .collect()
+        };
+        assert_eq!(paths("data.json"), ["a.md", "b.md"]);
+        assert_eq!(paths("data.json.md"), ["a.md", "b.md"]);
     }
 
     #[cfg(any(unix, windows))]

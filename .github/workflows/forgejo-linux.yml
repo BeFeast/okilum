@@ -18,9 +18,11 @@ concurrency:
   # One group per ref. Every write-once beta ref has its own group, so a newer
   # main push never cancels the producer of an older one: each Forgejo push beta
   # runs to completion in parallel (manager 13.11) and the publisher files an
-  # older build as archive-only. A re-push of a PR proxy ref still supersedes.
+  # older build as archive-only. A re-dispatch of the same beta source queues
+  # behind its running producer and reuses its bytes (#2891); a re-push of a PR
+  # proxy ref still supersedes.
   group: forgejo-linux-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-') }}
 jobs:
   linux-checks:
     if: (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')) || github.event_name == 'workflow_dispatch'

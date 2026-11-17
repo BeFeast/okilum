@@ -49,7 +49,8 @@ def receipt():
                 "Run native Windows delta console controls", "Run native Windows Sync identity controls",
                 "Run native Windows atlas upload controls",
                 "Run native Windows terminal console controls",
-                "Run native Windows Kubernetes transport controls")]}]}
+                "Run native Windows Kubernetes transport controls",
+                "Run native Windows okilum-cored CLI and MCP suites")]}]}
 
 
 
@@ -561,6 +562,27 @@ class VerdictTests(unittest.TestCase):
         self.assertNotIn("if", step)
         self.assertIn("windows_job_ends_a_grandchild_holding_the_pipes", step["run"])
         self.assertIn("exit $LASTEXITCODE", step["run"])
+
+    def test_windows_cored_cli_and_mcp_suites_are_required_in_the_routine_gate(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA), 0)
+        native = data["jobs"][1]["steps"]
+        step = next(s for s in native if s["name"] == "Run native Windows okilum-cored CLI and MCP suites")
+        for state in ("skipped", "failure"):
+            step["conclusion"] = state
+            self.assertEqual(helper.verdict(data, SHA), 75)
+        native.remove(step)
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        steps = workflow["jobs"]["windows-recovery"]["steps"]
+        step = next(step for step in steps
+                    if step.get("name") == "Run native Windows okilum-cored CLI and MCP suites")
+        self.assertNotIn("if", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertIn("python scripts/ci/windows-cored-suites.py", step["run"])
+        self.assertIn("exit $LASTEXITCODE", step["run"])
+        # The whole windows-recovery job must still fit its own deadline.
+        self.assertLess(step["timeout-minutes"], workflow["jobs"]["windows-recovery"]["timeout-minutes"])
 
     def test_vault_regression_control_must_run_for_normal_worker_checks(self):
         info = receipt()

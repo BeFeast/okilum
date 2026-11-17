@@ -5,6 +5,7 @@ mod code_comforts;
 mod code_operations;
 pub(crate) use code_operations::file_chrome::FileChrome;
 pub(crate) use code_operations::{FormatCode, RepairCode, ValidateCode};
+pub(crate) use link_complete::ShowCodeLanguages;
 mod context_menu;
 mod external_edit;
 mod focus_save;

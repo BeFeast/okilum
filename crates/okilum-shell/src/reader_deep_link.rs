@@ -249,23 +249,25 @@ impl Reader {
             .map(|heading| heading.text.clone())
     }
 
-    /// «Copy link to heading»: this note at `#heading` (#1049).
+    /// «Copy link to heading»: this note at `#heading` (#1049); in a
+    /// single-file view, this file's own link (#1439).
     pub(crate) fn copy_heading_link(
         &mut self,
         heading: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let link = crate::reader_files::okilum_link(
+        crate::reader_files::copy_link_to_clipboard(
             &self.vault_root,
             &self.current_rel,
+            self.link_scope(),
             &Position {
                 heading: Some(heading),
                 ..Default::default()
             },
+            window,
+            cx,
         );
-        cx.write_to_clipboard(ClipboardItem::new_string(link));
-        crate::reader_toast::transient("Link copied", window, cx);
     }
 
     /// «Copy link to line»: the caret's line and column in this note (#1049).
@@ -274,17 +276,18 @@ impl Reader {
             return;
         };
         let caret = input.read(cx).cursor_position();
-        let link = crate::reader_files::okilum_link(
+        crate::reader_files::copy_link_to_clipboard(
             &self.vault_root,
             self.selected_file(),
+            self.link_scope(),
             &Position {
                 line: Some(caret.line + 1),
                 column: Some(caret.character + 1),
                 ..Default::default()
             },
+            window,
+            cx,
         );
-        cx.write_to_clipboard(ClipboardItem::new_string(link));
-        crate::reader_toast::transient("Link copied", window, cx);
     }
 
     /// Caret at a 1-based `line:column` (column in characters), scrolled into
@@ -410,16 +413,181 @@ mod tests {
                 "positive control: off the link"
             );
         });
+        let identity = root.join(okilum_core::vault_link_identity::FILE);
+        assert!(
+            !root.join(".okilum").exists(),
+            "finding the heading writes nothing"
+        );
         reader.update_in(visual, |v, window, cx| {
             v.copy_heading_link("Next steps & risks".into(), window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert_eq!(link, "okilum://v/Notes/Plan.md#Next%20steps%20%26%20risks");
+            // #1414: the folder name for older Okilum, the identity for this one.
+            let id = okilum_core::vault_link_identity::read(&root)
+                .unwrap()
+                .expect("the first Copy creates the identity");
+            assert_eq!(
+                link,
+                format!("okilum://v/Notes/Plan.md?vault_id={id}#Next%20steps%20%26%20risks")
+            );
             let parsed = okilum_core::deep_link::parse(&link).unwrap();
             assert_eq!(
                 parsed.position.heading.as_deref(),
                 Some("Next steps & risks")
             );
+            // Broken identity metadata: refused, clipboard and bytes kept.
+            std::fs::write(&identity, "broken identity").unwrap();
+            cx.write_to_clipboard(ClipboardItem::new_string("keep clipboard".into()));
+            v.copy_heading_link("Plan".into(), window, cx);
+            v.copy_document_link(window, cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("keep clipboard")
+            );
+            assert_eq!(
+                std::fs::read_to_string(&identity).unwrap(),
+                "broken identity"
+            );
         });
+    }
+
+    /// #1439: every Copy in a single-file view (the note, a heading, the
+    /// caret, a link's address) copies `okilum://file/…` for this folder's
+    /// files, which resolves to the file on its own; in a vault the same
+    /// Copies carry the vault's identity. Nothing is written beside the file.
+    #[gpui::test]
+    fn every_copy_names_the_file_in_a_single_file_view_and_the_vault_otherwise(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_core::deep_link::{parse, resolve, Address, Resolution};
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("Outside");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(
+            folder.join("Landing.md"),
+            "# Landing\n\nSee [[Other]].\n\n## Distant checkpoint\n\nBody.\n",
+        )
+        .unwrap();
+        std::fs::write(folder.join("Other.md"), "# Other\n").unwrap();
+        let folder = folder.canonicalize().unwrap();
+        fn open<'a>(
+            cx: &'a mut TestAppContext,
+            folder: &Path,
+            state: &Path,
+            single_file: bool,
+        ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(folder.to_path_buf()),
+                            note: Some("Landing.md".into()),
+                            single_file,
+                            index_dir: Some(state.join(format!("cache-{single_file}"))),
+                            session_directory: Some(state.join(format!("state-{single_file}"))),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            visual.simulate_resize(size(px(1000.), px(600.)));
+            visual.run_until_parked();
+            (reader.unwrap(), visual)
+        }
+        // Every Copy entry point, as its menu item or command calls it.
+        let copies = |reader: &Entity<Reader>, visual: &mut gpui::VisualTestContext| {
+            reader.update_in(visual, |v, window, cx| {
+                let mut copied = Vec::new();
+                let take =
+                    |cx: &mut Context<Reader>| cx.read_from_clipboard().unwrap().text().unwrap();
+                v.copy_document_link(window, cx);
+                copied.push(("note", take(cx)));
+                v.copy_heading_link("Distant checkpoint".into(), window, cx);
+                copied.push(("heading", take(cx)));
+                let target = crate::reader_context_menu::LinkTarget::Document {
+                    rel: "Other.md".into(),
+                    position: Default::default(),
+                };
+                target.copy(&v.vault_root, v.link_scope(), window, cx);
+                copied.push(("link address", take(cx)));
+                v.toggle_source(window, cx);
+                copied
+            })
+        };
+        let caret = |reader: &Entity<Reader>, visual: &mut gpui::VisualTestContext| {
+            visual.run_until_parked();
+            reader.update_in(visual, |v, window, cx| {
+                assert!(v.editing.is_some(), "the caret needs the editor");
+                v.copy_link_to_line(window, cx);
+                cx.read_from_clipboard().unwrap().text().unwrap()
+            })
+        };
+
+        let (reader, visual) = open(cx, &folder, temp.path(), true);
+        assert!(reader.read_with(visual, |v, _| v.single_file));
+        let mut copied = copies(&reader, &mut *visual);
+        copied.push(("caret", caret(&reader, &mut *visual)));
+        for (entry, link) in &copied {
+            let parsed = parse(link).unwrap_or_else(|e| panic!("{entry}: {link}: {e:?}"));
+            assert!(
+                matches!(parsed.address, Address::File(_)),
+                "{entry}: {link}"
+            );
+            let want = if *entry == "link address" {
+                "Other.md"
+            } else {
+                "Landing.md"
+            };
+            match resolve(&parsed, &[], &|p| p.is_file()) {
+                Resolution::SingleFile { file, position } => {
+                    assert_eq!(file, folder.join(want), "{entry}");
+                    match *entry {
+                        "heading" => {
+                            assert_eq!(position.heading.as_deref(), Some("Distant checkpoint"))
+                        }
+                        "caret" => assert!(position.line.is_some(), "{link}"),
+                        _ => assert_eq!(position, Default::default(), "{entry}"),
+                    }
+                }
+                other => panic!("{entry}: {link}: {other:?}"),
+            }
+        }
+        assert!(
+            !folder.join(".okilum").exists(),
+            "a single-file view writes nothing beside its file"
+        );
+
+        // Positive control: the same Copies in a vault window carry its identity.
+        let (reader, visual) = open(cx, &folder, temp.path(), false);
+        let mut copied = copies(&reader, &mut *visual);
+        copied.push(("caret", caret(&reader, &mut *visual)));
+        let id = okilum_core::vault_link_identity::read(&folder)
+            .unwrap()
+            .unwrap();
+        for (entry, link) in &copied {
+            match parse(link).unwrap().address {
+                Address::VaultId {
+                    id: copied_id,
+                    vault,
+                    ..
+                } => {
+                    assert_eq!(
+                        (copied_id.as_str(), vault.as_str()),
+                        (id.as_str(), "Outside"),
+                        "{entry}"
+                    )
+                }
+                other => panic!("{entry}: {link}: {other:?}"),
+            }
+        }
     }
 
     #[gpui::test]

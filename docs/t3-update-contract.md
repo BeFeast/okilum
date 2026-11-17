@@ -14,6 +14,8 @@ Upstream commit `553203c57b780cef9fb30ad835d759befe0dcb7c` removed `payloadBudge
 
 `inbox/bridge/t3_questions.py:58–59` requires the removed `payloadBudgetExceeded` to be explicitly `False`; modern omission becomes `None` and deterministically yields `partial_source`. Proposed fix: validate modern `hasMoreHistory == false` plus an explicitly present null history cursor, validate the legacy flag only when present, and preserve request/item joins and fail-closed withdrawal safeguards. This is a source-level diagnosis; no live pilot poll, restart, repair or deployment was performed.
 
+Fixed by #2344: the question bridge applies exactly this completeness rule and recovers or holds question rows outside the bounded window (see `inbox/bridge/README.md`). The launch observer in `t3_launch.py` still requires the legacy flag.
+
 ## Safety and evidence
 
 Use an isolated candidate state directory and matching official binary. The probe creates its own idle scratch thread, validates its identity before any metadata mutation, and never asks for a provider/model run. Credentials are private inputs, not command arguments, logs or receipt fields. Every required operation needs actual runtime success; an unexecuted operation is not PASS. Exact usage is in [the probe README](../scripts/t3-contract/README.md).

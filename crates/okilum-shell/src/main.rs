@@ -37,6 +37,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(target_os = "macos")]
 mod folder_service;
+mod kubernetes_workspace;
 mod linux_sprint;
 #[cfg(windows)]
 mod markdown_handler;
@@ -595,6 +596,7 @@ fn bind_keys(cx: &mut App) {
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
+    kubernetes_workspace::bind_keys(cx);
     reader_delimited::bind_keys(cx);
     reader_har::bind_keys(cx);
     reader_code_file::bind_keys(cx);
@@ -755,6 +757,20 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(
             OPEN_BLOCK_EXTERNALLY_KEY,
             reader_editor::OpenBlockExternally,
+            Some("ReaderSource > Input"),
+        ),
+        // #2340: the code block languages after ```, before anything is typed.
+        // macOS usually takes Ctrl+Space for the input source, so Option+Esc
+        // (Xcode's completion key) is bound there too.
+        KeyBinding::new(
+            "ctrl-space",
+            reader_editor::ShowCodeLanguages,
+            Some("ReaderSource > Input"),
+        ),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new(
+            "alt-escape",
+            reader_editor::ShowCodeLanguages,
             Some("ReaderSource > Input"),
         ),
         // #1611: Paste as Plain Text / as Titled Link, in the note editor.
@@ -4498,6 +4514,7 @@ impl Reader {
         let current = self.selected_file().to_owned();
         let current_menu = current.clone();
         let file_root = self.vault_root.clone();
+        let link_scope = self.link_scope();
         let title_reader = cx.entity().downgrade();
         let root = self.selected_title();
         let parent_menu = folders.clone();
@@ -4564,6 +4581,7 @@ impl Reader {
                                     menu,
                                     menu_root.clone(),
                                     menu_path.clone(),
+                                    link_scope,
                                     window,
                                     cx,
                                 )
@@ -4612,6 +4630,7 @@ impl Reader {
                             menu,
                             file_root.clone(),
                             current_menu.clone(),
+                            link_scope,
                             window,
                             cx,
                         )
@@ -13534,7 +13553,8 @@ fn reader_item_menu(
         return menu;
     }
     let root = reader.read(cx).vault_root.clone();
-    let menu = reader_files::menu(menu, root, relative.clone(), window, cx);
+    let scope = reader.read(cx).link_scope();
+    let menu = reader_files::menu(menu, root, relative.clone(), scope, window, cx);
     #[cfg(any(unix, windows))]
     let menu =
         {
@@ -13727,3 +13747,6 @@ mod issue2957_tests;
 
 #[cfg(test)]
 mod issue2957_focus_kept_tests;
+
+#[cfg(test)]
+mod issue1669_test_teardown_tests;

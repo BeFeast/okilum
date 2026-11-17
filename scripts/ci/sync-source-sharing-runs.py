@@ -34,6 +34,28 @@ TESTS = {
     "managed_receiver_meshes_through_its_share_peer_introducer",
     "remote_inventory::managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes",
 }
+# #2567: archive stamps are local wall times. The suite runs in UTC; the
+# retention/history scenario runs again with both daemons and the reader in a
+# DST zone, against the same pinned runtime.
+ZONE_TEST = "managed_history_2045_restore_retention_and_migration"
+ZONE = "Asia/Jerusalem"
+
+
+ZONE_EVIDENCE = "issue2567-retention-zone"
+
+
+def ran_in(work, *zones):
+    """The retention control records `date '+%Z %z'` in its own TMPDIR."""
+    evidence = work / ZONE_EVIDENCE
+    return evidence.is_file() and evidence.read_text().strip() in zones
+
+
+def zone_passed(exit_code, output, work):
+    """The DST-zone trial ran exactly the retention test, in that zone."""
+    return (exit_code == 0
+            and f"test source_sharing::{ZONE_TEST} ... ok" in output.splitlines()
+            and "test result: ok. 1 passed;" in output
+            and ran_in(work, "IST +0200", "IDT +0300"))
 
 
 def main():
@@ -70,37 +92,52 @@ def run_trials(args, evidence, processes):
     for start in range(0, args.runs, args.parallel):
         batch = []
         for number in range(start + 1, min(start + args.parallel, args.runs) + 1):
-            work = evidence / f"run-{number}"
-            work.mkdir()
-            log = evidence / f"run-{number}.log"
-            env = dict(os.environ, RUST_BACKTRACE="1", TMPDIR=str(work))
-            with log.open("w") as output:
-                process = subprocess.Popen(
-                    [str(args.executable.resolve()), "source_sharing::", "--ignored",
-                     "--nocapture", "--test-threads=1",
-                     "--skip", "source_sharing::fixture_lifecycle_control"],
-                    env=env, stdout=output, stderr=subprocess.STDOUT,
-                    preexec_fn=lifecycle["parent_death_signal"](),
-                )
-            processes.append(process)
-            trial = {"run": number, "pid": process.pid, "started": time.time(), "log": str(log)}
-            batch.append((process, trial))
+            def launch(name, zone, selection):
+                work = evidence / name
+                work.mkdir()
+                log = evidence / f"{name}.log"
+                env = dict(os.environ, RUST_BACKTRACE="1", TMPDIR=str(work), TZ=zone)
+                with log.open("w") as output:
+                    process = subprocess.Popen(
+                        [str(args.executable.resolve()), *selection, "--ignored",
+                         "--nocapture", "--test-threads=1"],
+                        env=env, stdout=output, stderr=subprocess.STDOUT,
+                        preexec_fn=lifecycle["parent_death_signal"](),
+                    )
+                processes.append(process)
+                return process, log, work
+            process, log, work = launch(f"run-{number}", "UTC", [
+                "source_sharing::", "--skip", "source_sharing::fixture_lifecycle_control"])
+            zone, zone_log, zone_work = launch(f"run-{number}-zone", ZONE, [
+                f"source_sharing::{ZONE_TEST}", "--exact"])
+            trial = {"run": number, "pid": process.pid, "started": time.time(), "log": str(log),
+                     "work": str(work), "zone_pid": zone.pid, "zone_log": str(zone_log),
+                     "zone_work": str(zone_work)}
+            batch.append((process, zone, trial))
         # Launch the entire batch before waiting: no shared Cargo build lock can
         # turn the requested concurrency into a sequence of isolated successes.
-        for process, trial in batch:
+        for process, zone, trial in batch:
             trial["exit"] = process.wait()
+            trial["zone_exit"] = zone.wait()
             trial["finished"] = time.time()
             output = Path(trial["log"]).read_text()
+            zone_output = Path(trial["zone_log"]).read_text()
             passed = {name for name in TESTS if f"test source_sharing::{name} ... ok" in output.splitlines()}
             trial["passed"] = len(passed)
-            trial["ok"] = trial["exit"] == 0 and passed == TESTS and f"test result: ok. {len(TESTS)} passed;" in output
+            trial["zone_ok"] = zone_passed(trial["zone_exit"], zone_output, Path(trial["zone_work"]))
+            trial["ok"] = (trial["exit"] == 0 and passed == TESTS
+                           and f"test result: ok. {len(TESTS)} passed;" in output
+                           and ran_in(Path(trial["work"]), "UTC +0000") and trial["zone_ok"])
             failed |= not trial["ok"]
             trials.append(trial)
-            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}", flush=True)
+            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}; "
+                  f"{ZONE} exit={trial['zone_exit']} ok={trial['zone_ok']}", flush=True)
             if trial["ok"]:
                 print("#2045/#2568 passed: pinned two-runtime delete/restore and rename-recovery hashes, overwrite/stale guards, managed migrations, external preservation and time-shifted retention controls", flush=True)
+                print(f"#2567 passed: retention order/age and DST ambiguity controls in UTC and {ZONE}", flush=True)
             if not trial["ok"]:
                 print(output, flush=True)
+                print(zone_output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")
     failed |= bool(check(evidence))
     lifecycle["reap"]()

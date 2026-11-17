@@ -273,7 +273,8 @@ fn pin_row_menu(
         return menu;
     };
     let root = target.read(cx).vault_root.clone();
-    reader_files::menu(menu.separator(), root, path.to_owned(), window, cx)
+    let scope = target.read(cx).link_scope();
+    reader_files::menu(menu.separator(), root, path.to_owned(), scope, window, cx)
 }
 
 #[cfg(test)]

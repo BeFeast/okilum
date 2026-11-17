@@ -283,15 +283,32 @@ class Admission(unittest.TestCase):
             self.assertEqual(self.writes()[-1], ('/actions/workflows/' + workflow + '/dispatches',
                 dict(ref='main', inputs={'hourly_source': SOURCE})))
 
+    def mac_attempts(self, request, timeout=None):
+        # The Mac selector reads its (read-only) attempt inventory (#2891).
+        url = request.full_url
+        self.assertEqual(request.get_method(), 'GET')
+        self.assertIn('/api/v1/repos/BeFeast/okilum/actions/runs?workflow_id=macos-release.yml', url)
+        self.mac_attempt_reads.append(url)
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            dict(total_count=0, workflow_runs=[])).encode()
+        return response
+
     def run_coalesce(self, platform, **env):
+        self.mac_attempt_reads = []
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
             env = {**self.env, 'GITHUB_OUTPUT': str(output), 'OKILUM_SOURCE': '', 'OKILUM_RESIGN_BUILD': '',
-                   'MACOS_PREVIEW_PR': '', 'HOURLY_SOURCE': '', **env}
+                   'MACOS_PREVIEW_PR': '', 'HOURLY_SOURCE': '', 'GITHUB_REPOSITORY': 'BeFeast/okilum',
+                   'FORGEJO_TOKEN': 'fixture', **env}
             with patch.dict(os.environ, env), patch.object(sys, 'argv', ['coalesce.py', platform]), \
-                    patch.object(hourly, 'published_beta', self.descriptor):
+                    patch.object(hourly, 'published_beta', self.descriptor), \
+                    patch('urllib.request.urlopen', side_effect=self.mac_attempts):
                 runpy.run_path(str(ROOT / 'scripts/releases/coalesce.py'), run_name='__main__')
-            return dict(line.split('=', 1) for line in output.read_text().splitlines())
+            values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            # Only a Mac build decision consults the attempt inventory.
+            self.assertEqual(bool(self.mac_attempt_reads), platform == 'macos' and values['build'] == 'true')
+            return values
 
     def test_coalesce_push_entrypoint_emits_the_pushed_commit_for_each_platform(self):
         newer = 'c' * 40
@@ -729,21 +746,25 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(data['on']['push']['branches'], [branch])
             self.assertNotIn({'cron': '17 * * * *'}, data['on'].get('schedule', []))
             self.assertIn('workflow_dispatch', data['on'])
-            self.assertEqual(data['concurrency']['cancel-in-progress'], 'true')
             self.assertIn('hourly_beta.py', (ROOT / path).read_text())
+        self.assertEqual(self.load('.github/workflows/forgejo-macos.yml')['concurrency']['cancel-in-progress'], 'true')
         linux = self.load('.github/workflows/forgejo-linux.yml')
         self.assertEqual(linux['on']['schedule'], [{'cron': '5 22 * * 2,6'}])  # nightly acceptance only
-        # Per-ref: every write-once beta ref finishes even when a newer one starts.
+        # Per-ref: every write-once beta ref finishes even when a newer one starts,
+        # and a second same-source producer (push + manual race) queues behind the
+        # running one instead of cancelling it (#2891). PR proxies still supersede.
         self.assertEqual(linux['concurrency']['group'], 'forgejo-linux-${{ github.ref }}')
+        self.assertEqual(linux['concurrency']['cancel-in-progress'],
+                         "${{ !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-') }}")
         self.assertNotIn('schedule', self.load('.github/workflows/forgejo-macos.yml')['on'])
         shipping = self.load('.github/workflows/forgejo-macos-shipping.yml')
         self.assertEqual(set(shipping['on']), {'workflow_dispatch'})
-        # Beta signing runs share one group: a newer push supersedes an older one.
-        # Verify-only PR artifacts keep per-source groups and always finish.
+        # Source groups keep delayed older dispatches from cancelling newer betas.
+        # Verify-only artifacts have a separate namespace; all running work finishes.
         self.assertEqual(shipping['concurrency']['group'],
-                         "macos-shipping-${{ inputs.verify_only == 'true' && inputs.source || 'beta' }}")
-        self.assertEqual(shipping['concurrency']['cancel-in-progress'], "${{ inputs.verify_only != 'true' }}")
-        # The keychain cleanup still runs when a superseded signing run is cancelled.
+                         "macos-shipping-${{ inputs.verify_only == 'true' && 'verify' || 'beta' }}-${{ inputs.source }}")
+        self.assertEqual(shipping['concurrency']['cancel-in-progress'], 'false')
+        # Cleanup remains unconditional, including failure or explicit cancellation.
         cleanup = [s for s in shipping['jobs']['shipping']['steps'] if 'okilum-keychain-cleanup.py' in s.get('run', '')
                    and 'cleanup' in s.get('run', '').split('okilum-keychain-cleanup.py', 1)[1]]
         self.assertTrue(cleanup)

@@ -1082,7 +1082,18 @@ impl Vault {
         for incoming in retained.values_mut() {
             incoming.retain(|link| !selected.contains(&link.path));
         }
-        let identities: HashSet<_> = self.notes.iter().map(|note| &note.path).collect();
+        // Data files are backlink targets too (#2905).
+        let identities: HashSet<_> = self
+            .notes
+            .iter()
+            .map(|note| &note.path)
+            .chain(
+                self.entries
+                    .iter()
+                    .filter(|entry| entry.kind == EntryKind::Attachment)
+                    .map(|entry| &entry.path),
+            )
+            .collect();
         retained.retain(|target, incoming| identities.contains(target) && !incoming.is_empty());
         let result = self.build_backlinks_selected(Some(selected), checkpoint, source);
         if result.is_ok() {
@@ -1787,6 +1798,7 @@ impl Vault {
         resolver: &Self,
         mut source: impl FnMut(&str) -> Option<Vec<GraphLink>>,
     ) -> Result<()> {
+        let indexed = crate::document_links::IndexedResolver::new(resolver);
         let mut map: HashMap<String, Vec<Backlink>> = HashMap::new();
         for (count, note) in self
             .notes
@@ -1809,13 +1821,21 @@ impl Vault {
                 // marked. The alternatives are both dishonest: giving it to
                 // one candidate is the "duplicate stems steal backlinks"
                 // bug, and dropping it hides a link that really was written.
-                let targets: Vec<(String, bool)> = match if wiki {
+                //
+                // A link to a non-Markdown file (#2905) resolves through the
+                // same index the Reader opens it with, so «Linked from» and
+                // click-through can never name different files.
+                let file = indexed.file_link(&target, wiki);
+                let targets: Vec<(String, bool)> = match if wiki && !file {
                     self.resolve_from(&target, &note.path)
                 } else {
-                    let resolved =
-                        crate::document_links::resolve(&target, false, resolver, &note.path);
+                    let resolved = if file {
+                        indexed.resolve(&target, wiki, &note.path)
+                    } else {
+                        crate::document_links::resolve(&target, false, resolver, &note.path)
+                    };
                     match resolved.status {
-                        "resolved" => Resolution::Resolved {
+                        "resolved" | "attachment" => Resolution::Resolved {
                             path: resolved.candidates[0].clone(),
                         },
                         "ambiguous" => Resolution::Ambiguous {

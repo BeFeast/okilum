@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/okilum-write-authority", "crates/okilum-network-access", "crates/okilum-appimage", "crates/okilum-core", "crates/okilum-cored", "crates/okilum-shell", "crates/okilum-brain", "crates/okilum-sync", "crates/okilum-sync-controller", "crates/okilum-sync-supervisor", "crates/okilum-macos-bundle-tools", "crates/okilum-t3", "crates/okilum-paste", "crates/okilum-http"]
+members = ["crates/okilum-write-authority", "crates/okilum-network-access", "crates/okilum-appimage", "crates/okilum-core", "crates/okilum-cored", "crates/okilum-shell", "crates/okilum-gpui", "crates/okilum-gpui-test-macro", "crates/okilum-brain", "crates/okilum-sync", "crates/okilum-sync-controller", "crates/okilum-sync-supervisor", "crates/okilum-macos-bundle-tools", "crates/okilum-t3", "crates/okilum-paste", "crates/okilum-http"]
 # The vendored gpui-kit clone is its own Cargo workspace. Excluding it
 # keeps its members inheriting from their own root while we path-depend into it.
 exclude = ["vendor", "inbox"]
@@ -46,6 +46,13 @@ gpui-kit-assets = { path = "vendor/gpui-component/crates/assets" }
 
 [profile.release]
 debug = false
+
+# Dev/test builds keep file:line in panic backtraces but drop variable/type
+# debuginfo: the okilum-shell unittest binary shrinks ~2.5x and links faster
+# (#1851). [profile.test] inherits this. Full debuginfo for a debugger session:
+# CARGO_PROFILE_DEV_DEBUG=true cargo build (or test).
+[profile.dev]
+debug = "line-tables-only"
 
 # gpui is unusably slow in a debug profile; keep it optimised even there.
 [profile.dev.package]

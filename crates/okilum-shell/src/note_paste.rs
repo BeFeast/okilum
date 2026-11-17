@@ -400,7 +400,12 @@ impl ExactClipboardProvider for NotePaste {
                 }
             }
             Err(error) => {
-                diagnostic_error!("Paste: clipboard read failed ({error:?})");
+                // A refused paste logs its one line too (#1618).
+                diagnostic_error!(
+                    "Paste: mode={:?} route=None error={error:?} ms={:.1}",
+                    context.mode,
+                    elapsed.as_secs_f64() * 1000.0
+                );
                 Err(error)
             }
         })

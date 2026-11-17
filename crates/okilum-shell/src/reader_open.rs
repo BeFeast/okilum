@@ -921,10 +921,17 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 }
 
 /// Vault roots this machine knows: open windows first, then reading history.
+/// A single-file view's folder is not a vault (#1439): a link to its file
+/// opens the file on its own again, never the folder as a vault.
 fn known_roots(cx: &App) -> Vec<PathBuf> {
+    known_roots_from(super::reader_history::state_directory().ok().as_deref(), cx)
+}
+
+/// [`known_roots`] with the reading history in `directory`.
+fn known_roots_from(directory: Option<&Path>, cx: &App) -> Vec<PathBuf> {
     let mut roots = reusable_roots(cx);
-    if let Ok(directory) = super::reader_history::state_directory() {
-        if let Ok((_, history)) = super::reader_history::ReadingHistory::startup_roots(&directory) {
+    if let Some(directory) = directory {
+        if let Ok(history) = super::reader_history::ReadingHistory::known_vault_roots(directory) {
             for root in history {
                 if !roots.contains(&root) {
                     roots.push(root);
@@ -984,6 +991,33 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
             let open_now = opts.reusable_roots.contains(&root)
                 || super::reader_ui_state::link_trusted(&root, cx);
             if open_now {
+                if let Err(error) = open_window(opts, cx) {
+                    show_error(error, cx);
+                }
+            } else {
+                confirm_link_vault(root, opts, cx);
+            }
+        }
+        // Outside every known vault (#1414, #1439): the file on its own, as
+        // a single-file view. Its folder is asked about once, like a vault,
+        // and never becomes one.
+        Resolution::SingleFile { file, position } => {
+            let (Some(root), Some(note)) = (
+                file.parent().map(Path::to_path_buf),
+                file.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned),
+            ) else {
+                return show_error(anyhow::anyhow!("This file couldn\u{2019}t be opened."), cx);
+            };
+            let opts = super::Opts {
+                vault: Some(root.clone()),
+                note: Some(note),
+                single_file: true,
+                landing: Some(position),
+                ..Default::default()
+            };
+            if super::reader_ui_state::link_trusted(&root, cx) {
                 if let Err(error) = open_window(opts, cx) {
                     show_error(error, cx);
                 }
@@ -1560,6 +1594,7 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
     // A prompt closed with its window button left a stale entry.
     cx.global_mut::<LinkPrompts>().0.remove(&root);
     let name = super::vault_name::shown(&root, cx);
+    let single_file = opts.single_file;
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
             size(px(560.), px(240.)),
@@ -1574,6 +1609,7 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
         let view = cx.new(|cx| LinkConfirm {
             root: view_root,
             name,
+            single_file,
             focus: cx.focus_handle(),
         });
         // Focused from the start, so Enter and Esc answer it (#1271).
@@ -1619,7 +1655,8 @@ fn open_from_prompt(root: &Path, opts: super::Opts, window: &mut Window, cx: &mu
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(50))
                 .await;
-            if cx.update(|cx| reusable_roots(cx).contains(&root)) {
+            // A single-file view counts too: it is not a reusable vault.
+            if cx.update(|cx| readers(cx).iter().any(|r| r.read(cx).vault_root == root)) {
                 break;
             }
         }
@@ -1742,6 +1779,8 @@ impl Render for LinkVaultChoice {
 struct LinkConfirm {
     root: PathBuf,
     name: String,
+    /// A file outside every vault (#1414): its folder is asked about, not a vault.
+    single_file: bool,
     focus: FocusHandle,
 }
 impl Render for LinkConfirm {
@@ -1762,10 +1801,14 @@ impl Render for LinkConfirm {
             .p_4()
             .gap_3()
             .child(TitleBar::new().child("Open link"))
-            .child(format!(
-                "A link asks to open vault \u{201c}{}\u{201d}.",
-                self.name
-            ))
+            .child(if self.single_file {
+                format!(
+                    "A link asks to open a file in folder \u{201c}{}\u{201d}.",
+                    self.name
+                )
+            } else {
+                format!("A link asks to open vault \u{201c}{}\u{201d}.", self.name)
+            })
             .child(
                 div()
                     .text_sm()
@@ -1773,7 +1816,11 @@ impl Render for LinkConfirm {
                     // Without Windows' `\\?\` prefix (#1270).
                     .child(okilum_core::vault::display_path(&self.root)),
             )
-            .child("Links only open notes. Okilum asks once per vault.")
+            .child(if self.single_file {
+                "The file opens on its own; the folder does not become a vault. Okilum asks once per folder."
+            } else {
+                "Links only open notes. Okilum asks once per vault."
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -3084,17 +3131,30 @@ mod entry_tests {
             Some("Okilum — Plan — Gate1"),
             "the other vault's window keeps its name"
         );
+        let copy = || {
+            super::super::reader_files::copy_link(
+                &roots[1],
+                "Plan.md",
+                super::super::reader_files::LinkScope::Vault,
+                &Default::default(),
+            )
+            .unwrap()
+        };
+        let display_name = std::fs::read(roots[1].join(".okilum/vault.json")).unwrap();
         cx.update(|cx| {
             assert_eq!(vault_name::shown(&roots[1], cx), "Work");
             // The link still names the folder, never the display name.
-            let link =
-                super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+            let link = copy();
             assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
         });
+        // #1414: the identity lives beside the display name, never in it.
+        assert_eq!(
+            std::fs::read(roots[1].join(".okilum/vault.json")).unwrap(),
+            display_name
+        );
         // The link opens the renamed vault: its window comes forward, no
         // new window and no error.
-        let link =
-            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+        let link = copy();
         cx.update(|cx| open_deep_link_among(&link, &roots, cx));
         cx.run_until_parked();
         assert_eq!(
@@ -4052,6 +4112,351 @@ mod entry_tests {
             (false, 1, true),
             "Enter opens and trusts"
         );
+    }
+
+    /// #1414 native gate (link-identity-native, hosted macOS and Windows):
+    /// a failed first Copy leaves everything as it was, the next Copy creates
+    /// the vault's identity once without touching other metadata, the synced
+    /// identity reopens the vault under another folder name (and a reopened
+    /// vault copies the same id without rewriting it), a different identity is
+    /// refused without opening or writing anything, and the legacy
+    /// folder-name link still opens.
+    #[gpui::test]
+    fn issue1414_identity_first_copy_write_failure_reopen_and_mismatch(cx: &mut TestAppContext) {
+        use super::super::reader_files::{copy_link, LinkScope};
+        use okilum_core::vault_link_identity::{read, FILE};
+        let fixture = tempfile::tempdir().unwrap();
+        let make = |path: std::path::PathBuf| {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("Plan.md"), "# Plan\n\nBody.\n").unwrap();
+            path.canonicalize().unwrap()
+        };
+        // The same synced vault under two folder names, and an unrelated namesake.
+        let first = make(fixture.path().join("machine-a").join("Obsidian Vault"));
+        let second = make(fixture.path().join("machine-b").join("Brain"));
+        // Named like the copying machine's folder, with its own identity.
+        let namesake = make(fixture.path().join("machine-c").join("Obsidian Vault"));
+        let identity = |root: &Path| root.join(FILE);
+        let entries = |root: &Path| {
+            let mut names: Vec<_> = std::fs::read_dir(root.join(".okilum"))
+                .map(|dir| dir.map(|e| e.unwrap().file_name()).collect())
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+
+        // Forced write failure: a file where the metadata folder belongs.
+        std::fs::write(first.join(".okilum"), "not a folder").unwrap();
+        let failed = copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default());
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(
+            std::fs::read(first.join(".okilum")).unwrap(),
+            b"not a folder",
+            "the obstruction is left as it was"
+        );
+        std::fs::remove_file(first.join(".okilum")).unwrap();
+
+        // Other metadata with fields from a newer Okilum is never touched.
+        std::fs::create_dir(first.join(".okilum")).unwrap();
+        let display = br#"{"name":"Work","future":{"keep":[1,2]}}"#;
+        std::fs::write(first.join(".okilum/vault.json"), display).unwrap();
+        // A failure inside the folder: a directory where the identity belongs.
+        std::fs::create_dir(identity(&first)).unwrap();
+        assert!(copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).is_err());
+        assert!(identity(&first).is_dir(), "nothing replaced it");
+        std::fs::remove_dir(identity(&first)).unwrap();
+        assert_eq!(read(&first).unwrap(), None, "the failures created nothing");
+
+        // First Copy: one identity file, the display name byte-identical.
+        let link = copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        let id = read(&first).unwrap().expect("the first Copy created it");
+        assert!(link.contains(&format!("vault_id={id}")), "{link}");
+        assert_eq!(
+            entries(&first),
+            vec![
+                std::ffi::OsString::from("link-identity.json"),
+                std::ffi::OsString::from("vault.json")
+            ],
+            "no temporary leftovers"
+        );
+        assert_eq!(
+            std::fs::read(first.join(".okilum/vault.json")).unwrap(),
+            display
+        );
+        // A newer Okilum adds a field; every later Copy keeps the bytes.
+        let synced = format!(r#"{{"version":1,"id":"{id}","future":"keep"}}"#);
+        std::fs::write(identity(&first), &synced).unwrap();
+        assert_eq!(
+            copy_link(&first, "Plan.md", LinkScope::Vault, &Default::default()).unwrap(),
+            link,
+            "the same id again"
+        );
+        assert_eq!(std::fs::read_to_string(identity(&first)).unwrap(), synced);
+
+        // Sync: the other machine's folder is named differently.
+        std::fs::create_dir(second.join(".okilum")).unwrap();
+        std::fs::write(identity(&second), &synced).unwrap();
+        // A namesake with its own, different identity (the losing first Copy).
+        let losing =
+            copy_link(&namesake, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        assert!(!losing.contains(&id));
+        let namesake_bytes = std::fs::read(identity(&namesake)).unwrap();
+
+        cx.update(|cx| {
+            crate::test_init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            super::super::reader_ui_state::trust_for_links(&second, cx);
+            super::super::reader_ui_state::trust_for_links(&namesake, cx);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        let open = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.read(cx).vault_root.clone(),
+                            r.read(cx).current_rel.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let error_text = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.windows().iter().find_map(|handle| {
+                    Some(
+                        handle
+                            .downcast::<Root>()?
+                            .read(cx)
+                            .ok()?
+                            .view()
+                            .clone()
+                            .downcast::<OpenError>()
+                            .ok()?
+                            .read(cx)
+                            .0
+                            .clone(),
+                    )
+                })
+            })
+        };
+
+        // Mismatch: only the namesake with another identity is known.
+        cx.update(|cx| open_deep_link_among(&link, std::slice::from_ref(&namesake), cx));
+        settle(cx);
+        assert!(open(cx).is_empty(), "no vault is selected");
+        let refusal = error_text(cx).expect("a clear refusal is shown");
+        assert!(refusal.contains("different identity"), "{refusal}");
+        assert_eq!(std::fs::read(identity(&namesake)).unwrap(), namesake_bytes);
+
+        // Reopen: the synced identity finds the vault under its other name.
+        cx.update(|cx| open_deep_link_among(&link, &[namesake.clone(), second.clone()], cx));
+        settle(cx);
+        assert_eq!(open(cx), vec![(second.clone(), "Plan.md".to_string())]);
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        // Copy on the reopened vault: the same id, nothing rewritten.
+        let again = copy_link(&second, "Plan.md", LinkScope::Vault, &Default::default()).unwrap();
+        assert!(again.contains(&format!("vault_id={id}")), "{again}");
+        assert!(again.starts_with("okilum://v/Brain/"), "{again}");
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        // The legacy folder-name link still opens, in the same window.
+        cx.update(|cx| {
+            open_deep_link_among(
+                "okilum://v/Brain/Plan.md",
+                std::slice::from_ref(&second),
+                cx,
+            )
+        });
+        settle(cx);
+        assert_eq!(open(cx), vec![(second.clone(), "Plan.md".to_string())]);
+        assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
+        assert_eq!(std::fs::read(identity(&namesake)).unwrap(), namesake_bytes);
+        assert_eq!(
+            std::fs::read(first.join(".okilum/vault.json")).unwrap(),
+            display
+        );
+    }
+
+    /// #1439: a folder seen only through a single-file view is not a known
+    /// vault, so a link to its file can never open the folder as one.
+    #[gpui::test]
+    fn single_file_folders_are_not_known_vaults(cx: &mut TestAppContext) {
+        use super::super::reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Journey");
+        let outside = fixture.path().join("Outside");
+        for (root, note) in [(&vault, "Start.md"), (&outside, "Landing.md")] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join(note), "# Note\n").unwrap();
+        }
+        let vault = vault.canonicalize().unwrap();
+        let outside = outside.canonicalize().unwrap();
+        ReadingHistory::record_document_mode(&state, &vault, "Start.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &outside, "Landing.md", true).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            let known = known_roots_from(Some(&state), cx);
+            assert!(known.contains(&vault), "positive control: {known:?}");
+            assert!(!known.contains(&outside), "{known:?}");
+            // The copied file link of the quick file opens it on its own.
+            let link = okilum_core::deep_link::build_file_copy(
+                &outside.join("Landing.md"),
+                &Default::default(),
+            )
+            .unwrap();
+            assert!(matches!(
+                okilum_core::deep_link::resolve(
+                    &okilum_core::deep_link::parse(&link).unwrap(),
+                    &known,
+                    &|p| p.is_file()
+                ),
+                okilum_core::deep_link::Resolution::SingleFile { .. }
+            ));
+        });
+    }
+
+    /// #1414, #1439: in a single-file view, «Copy Okilum link» and «Copy
+    /// link to heading» copy links that reopen this file on its own and land
+    /// on the heading; its folder never becomes a vault and nothing is
+    /// written next to the file. The file link asks once for its folder.
+    #[gpui::test]
+    fn single_file_copied_links_reopen_the_file_and_land(cx: &mut TestAppContext) {
+        use okilum_core::deep_link::{parse, resolve, Address, Position, Resolution};
+        let fixture = tempfile::tempdir().unwrap();
+        let journey = fixture.path().join("Journey");
+        let outside = fixture.path().join("Outside");
+        std::fs::create_dir_all(&journey).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(journey.join("Start.md"), "# Start\n").unwrap();
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        std::fs::write(
+            outside.join("Landing.md"),
+            // Text after the heading too, so landing can put it at the top.
+            format!("# Landing\n\n{body}## Distant checkpoint\n\nQA1414_HEADING_LANDING_MARKER\n\n{body}"),
+        )
+        .unwrap();
+        let journey = journey.canonicalize().unwrap();
+        let outside = outside.canonicalize().unwrap();
+        let file = outside.join("Landing.md");
+        let known = [journey.clone()];
+        cx.update(|cx| {
+            crate::test_init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        let views = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .iter()
+                    .map(|r| {
+                        let r = r.read(cx);
+                        (r.single_file, r.vault_root.clone(), r.current_rel.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let quick = (true, outside.clone(), "Landing.md".to_string());
+
+        // The absolute file link asks once for the folder, then opens the file.
+        let first = okilum_core::deep_link::build_file_copy(&file, &Position::default()).unwrap();
+        cx.update(|cx| open_deep_link_among(&first, &known, cx));
+        settle(cx);
+        assert!(views(cx).is_empty(), "nothing opens before consent");
+        let prompt = cx.update(|cx| {
+            let (handle, opts) = cx.global::<LinkPrompts>().0.get(&outside).unwrap();
+            assert!(opts.single_file, "the folder is asked about, not a vault");
+            *handle
+        });
+        gpui::VisualTestContext::from_window(prompt, cx).simulate_keystrokes("enter");
+        settle(cx);
+        assert_eq!(views(cx), vec![quick.clone()]);
+        cx.update(|cx| assert!(!cx.windows().contains(&prompt), "the prompt closes"));
+
+        // Copy from the quick view, as the menus do.
+        let reader = cx.update(|cx| readers(cx)[0].clone());
+        let window = cx.update(|cx| reader.read(cx).reader_window);
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        let (note, heading) = reader.update_in(&mut visual, |r, window, cx| {
+            r.copy_document_link(window, cx);
+            let note = cx.read_from_clipboard().unwrap().text().unwrap();
+            r.copy_heading_link("Distant checkpoint".into(), window, cx);
+            let heading = cx.read_from_clipboard().unwrap().text().unwrap();
+            (note, heading)
+        });
+        for (link, position) in [
+            (&note, Position::default()),
+            (
+                &heading,
+                Position {
+                    heading: Some("Distant checkpoint".into()),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let parsed = parse(link).unwrap();
+            assert!(matches!(parsed.address, Address::File(_)), "{link}");
+            assert_eq!(
+                resolve(&parsed, &known, &|p| p.is_file()),
+                Resolution::SingleFile {
+                    file: file.clone(),
+                    position,
+                },
+                "{link}"
+            );
+        }
+
+        // Redelivered exactly as copied: the file opens on its own again,
+        // without asking twice, and the heading link lands on the heading.
+        for (count, link) in [(2, &note), (3, &heading)] {
+            cx.update(|cx| open_deep_link_among(link, &known, cx));
+            settle(cx);
+            let opened = views(cx);
+            assert_eq!(opened.len(), count, "{link}");
+            assert!(opened.iter().all(|view| *view == quick), "{opened:?}");
+        }
+        let landed = cx.update(|cx| {
+            let reader = readers(cx).last().unwrap().clone();
+            let reader = reader.read(cx);
+            let block = reader
+                .outline
+                .iter()
+                .find(|h| h.text == "Distant checkpoint")
+                .map(|h| h.target.block);
+            let top = reader.content.read(cx).list_state().logical_scroll_top();
+            (block, top.item_ix)
+        });
+        assert!(landed.0.is_some_and(|block| block > 30), "{landed:?}");
+        assert_eq!(Some(landed.1), landed.0, "the heading link lands on it");
+        assert!(
+            cx.update(|cx| !reusable_roots(cx).contains(&outside)),
+            "the folder never opens as a vault"
+        );
+        assert!(
+            !outside.join(".okilum").exists(),
+            "nothing is written next to the file"
+        );
+        assert!(!journey.join(".okilum").exists(), "nor in the other vault");
     }
 
     /// #1110: on a clean first run, choosing a vault folder on the start

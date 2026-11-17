@@ -67,7 +67,7 @@ jobs:
   windows-recovery:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -124,6 +124,13 @@ jobs:
           $discovered = & cargo test --locked -p okilum-core --lib kubernetes:: -- --list
           if ($LASTEXITCODE -ne 0 -or !($discovered -match 'windows_job_ends_a_grandchild_holding_the_pipes: test')) { throw 'Windows Kubernetes transport control was not discovered' }
           & cargo test --locked -p okilum-core --lib kubernetes:: -- --nocapture --test-threads=1
+          exit $LASTEXITCODE
+      - name: Run native Windows okilum-cored CLI and MCP suites
+        # Exact counts and named controls; build/run time and disk per suite (#2060).
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-cored-suites.py
           exit $LASTEXITCODE
   # Pre-merge gate (Oleg 13.11 ~14:20, ~15:10): formatting, Python and script
   # checks plus workspace clippy, which compiles the Linux workspace. No Rust
@@ -203,6 +210,7 @@ jobs:
           bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
+          bash scripts/ci/test-group.sh agent-qa-python 60 python3 -I -m unittest discover -s scripts/qa -p 'test_*.py' -v
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
@@ -325,6 +333,7 @@ jobs:
           bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
+          bash scripts/ci/test-group.sh agent-qa-python 60 python3 -I -m unittest discover -s scripts/qa -p 'test_*.py' -v
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py

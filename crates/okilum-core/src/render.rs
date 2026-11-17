@@ -214,7 +214,7 @@ pub fn render_html_from_source(
     raw: &str,
     theme: &str,
 ) -> anyhow::Result<String> {
-    let mut text = preprocess(raw);
+    let mut text = preprocess(without_frontmatter(raw));
     for (link, destination) in crate::document_links::fallback_links(&text, vault, note_rel)
         .into_iter()
         .rev()
@@ -537,24 +537,28 @@ pub fn block_html(source: &str) -> String {
     out.trim_end().replace('\n', " ")
 }
 
-/// Strip leading YAML frontmatter for rendering without normalizing source bytes.
-/// Accept LF/CRLF and a UTF-8 BOM. An unterminated block remains visible.
-pub fn without_frontmatter(s: &str) -> &str {
+/// Split leading YAML frontmatter at its first document boundary. Both `---`
+/// and YAML's explicit `...` end are accepted; later Markdown fences cannot
+/// extend the envelope. Slices retain the authored LF/CRLF and BOM bytes.
+pub(crate) fn split_frontmatter(s: &str) -> Option<(&str, &str)> {
     let candidate = s.strip_prefix('\u{feff}').unwrap_or(s);
-    let Some(rest) = candidate
+    let rest = candidate
         .strip_prefix("---\r\n")
-        .or_else(|| candidate.strip_prefix("---\n"))
-    else {
-        return s;
-    };
+        .or_else(|| candidate.strip_prefix("---\n"))?;
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
-        if line == "---\n" || line == "---\r\n" {
-            return &rest[offset + line.len()..];
+        if matches!(line, "---\n" | "---\r\n" | "...\n" | "...\r\n") {
+            return Some((&rest[..offset], &rest[offset + line.len()..]));
         }
         offset += line.len();
     }
-    s
+    None
+}
+
+/// Strip leading YAML frontmatter for rendering without normalizing source bytes.
+/// Accept LF/CRLF and a UTF-8 BOM. An unterminated block remains visible.
+pub fn without_frontmatter(s: &str) -> &str {
+    split_frontmatter(s).map_or(s, |(_, body)| body)
 }
 
 #[cfg(test)]
@@ -657,6 +661,92 @@ pub fn reader_document_from_source(vault: &Vault, from: &str, raw: &str) -> Read
 #[cfg(test)]
 mod reader_document_tests {
     use super::*;
+
+    #[test]
+    fn yaml_document_end_retains_reader_body_properties_and_contents() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut vault = Vault::from_note_paths(["note.md".into()]);
+        vault.root = fixture.path().to_owned();
+        let body = "\n# Introduction\n\nEarly body.\n\nWhat is Markdown?\n=================\n\n```markdown\n---\n# Fenced example\n```\n\n# Later section\n";
+        for newline in ["\n", "\r\n"] {
+            for bom in ["", "\u{feff}"] {
+                // The ordinary delimiter is a positive control for the YAML end.
+                for closing in ["---", "..."] {
+                    let yaml = format!("title: CommonMark{newline}");
+                    let source = format!("{bom}---{newline}{yaml}{closing}{newline}{body}");
+                    std::fs::write(fixture.path().join("note.md"), &source).unwrap();
+                    let document = reader_document(&vault, "note.md").unwrap();
+                    assert_eq!(document.canonical_source.as_ref(), source);
+                    assert_eq!(document.original_body, body);
+                    assert_eq!(document.rendered, body);
+                    assert_eq!(document.frontmatter.as_deref(), Some(yaml.as_str()));
+                    let properties =
+                        crate::properties::parse(document.frontmatter.as_deref().unwrap()).unwrap();
+                    assert_eq!(properties.len(), 1);
+                    assert_eq!(properties[0].key, "title");
+                    let facets = crate::facets::extract(&source);
+                    assert_eq!(
+                        facets.frontmatter.get("title").map(String::as_str),
+                        Some("CommonMark")
+                    );
+                    assert_eq!(facets.headings, ["Introduction", "Later section"]);
+                    let headings = crate::document_links::HeadingInventory::new(&document.rendered);
+                    assert_eq!(
+                        headings
+                            .entries
+                            .iter()
+                            .map(|h| h.text.as_str())
+                            .collect::<Vec<_>>(),
+                        ["Introduction", "What is Markdown?", "Later section"]
+                    );
+                    let html =
+                        render_html_from_source(&vault, "note.md", &source, "InspiredGitHub")
+                            .unwrap();
+                    assert!(html.contains("<h1>Introduction</h1>"), "{html}");
+                    assert!(html.contains("Early body."), "{html}");
+                    assert!(html.contains("<h1>What is Markdown?</h1>"), "{html}");
+                    assert_eq!(
+                        std::fs::read(fixture.path().join("note.md")).unwrap(),
+                        source.as_bytes()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn yaml_document_end_reports_invalid_properties_without_hiding_the_body() {
+        let vault = Vault::from_note_paths(["note.md".into()]);
+        let body = "# Introduction\n\nEarly body.\n\n```markdown\n---\n```\n";
+        for yaml in ["broken: [\n", "- unsupported sequence\n"] {
+            for closing in ["---", "..."] {
+                let source = format!("---\n{yaml}{closing}\n{body}");
+                let document = reader_document_from_source(&vault, "note.md", &source);
+                assert_eq!(document.canonical_source.as_ref(), source);
+                assert_eq!(document.original_body, body);
+                assert_eq!(document.rendered, body);
+                assert!(
+                    crate::properties::parse(document.frontmatter.as_deref().unwrap()).is_err()
+                );
+                assert_eq!(
+                    crate::document_links::HeadingInventory::new(&document.rendered).entries[0]
+                        .text,
+                    "Introduction"
+                );
+            }
+        }
+        let source = "---\nbroken: [\n\n# Introduction\n\nEarly body.\n";
+        let document = reader_document_from_source(&vault, "note.md", source);
+        assert_eq!(document.canonical_source.as_ref(), source);
+        assert_eq!(document.original_body, source);
+        assert_eq!(document.rendered, source);
+        assert!(document.frontmatter.is_none());
+        assert!(
+            render_html_from_source(&vault, "note.md", source, "InspiredGitHub")
+                .unwrap()
+                .contains("Introduction")
+        );
+    }
 
     #[test]
     fn a_block_resolves_reference_links_defined_elsewhere_in_the_note() {

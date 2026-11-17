@@ -15,6 +15,11 @@ import urllib.request
 import uuid
 
 LIMIT = 4 * 1024 * 1024
+# Older question rows are recovered from bounded T3 history only. Exhausting a
+# budget leaves the affected questions held; it never closes them.
+HISTORY_PAGES = 20
+HISTORY_BYTES = 8 * 1024 * 1024
+HISTORY_CURSOR_BYTES = 4096
 NAMESPACE = uuid.UUID('67e761b6-fc1c-4eb5-b170-633015602705')
 
 
@@ -52,11 +57,39 @@ def unique(rows, key):
     return result
 
 
-def project(snapshot, config, thread):
-    """Only complete protocol snapshots; partial data never closes a question."""
+def history_complete(snapshot):
+    """Modern T3 ends history with an explicit null cursor. The removed legacy
+    budget flag is honoured only when present; its absence proves nothing."""
+    return (snapshot.get('hasMoreHistory') is False and
+            snapshot.get('payloadBudgetExceeded', False) is False and
+            (('historyCursor' in snapshot and snapshot['historyCursor'] is None) or
+             ('historyCursor' not in snapshot and snapshot.get('payloadBudgetExceeded') is False)))
+
+
+def missing_items(snapshot):
+    """User-input requests whose question row is outside the bounded window."""
     require(isinstance(snapshot, dict))
-    require(snapshot.get('hasMoreHistory') is False and
-            snapshot.get('payloadBudgetExceeded') is False, 'partial_source')
+    p = snapshot.get('projection', {})
+    require(isinstance(p, dict) and isinstance(p.get('turnItems', []), list))
+    present = {item.get('requestId') for item in p.get('turnItems', [])
+               if isinstance(item, dict) and item.get('type') == 'user_input_request'}
+    requests = p.get('runtimeRequests')
+    require(isinstance(requests, list))
+    return {text(r.get('id')) for r in requests
+            if isinstance(r, dict) and r.get('kind') == 'user_input' and r.get('id') not in present}
+
+
+def project(snapshot, config, thread, history=None):
+    """Request state comes only from the snapshot's complete control state.
+
+    T3 bounds turn items, not runtime requests, and always retains rows of
+    pending requests. A request whose question row is neither in the window
+    nor in recovered `history` is returned in `incomplete`: it is held, never
+    withdrawn or acknowledged. Truncated control state fails the whole thread.
+    """
+    require(isinstance(snapshot, dict))
+    require(snapshot.get('payloadBudgetExceeded', False) is False, 'partial_source')
+    require(history_complete(snapshot) or snapshot.get('hasMoreHistory') is True, 'partial_source')
     sequence = snapshot.get('snapshotSequence')
     require(type(sequence) is int and 0 < sequence < 2**63)
     p = snapshot.get('projection', {})
@@ -72,17 +105,29 @@ def project(snapshot, config, thread):
             key = text(item.get('requestId'))
             require(key not in items)
             items[key] = item
-    result = {}
+    for key, item in (history or {}).items():
+        items.setdefault(key, item)
+    complete = history_complete(snapshot)
+    result, incomplete = {}, set()
     for identity, request in requests.items():
         if request.get('kind') != 'user_input':
             continue
-        item = items.get(identity)
-        require(item is not None, 'partial_source')
-        require(item.get('threadId') == thread and item.get('nodeId') == request.get('nodeId'))
         turn_id = text(request.get('providerTurnId'))
-        require(item.get('providerTurnId') == turn_id and turn_id in turns)
+        require(turn_id in turns)
         generation = text(turns[turn_id].get('runAttemptId'))
-        require(generation in attempts and attempts[generation].get('runId') == item.get('runId'))
+        require(generation in attempts)
+        source = {'kind': 't3', 'instance_id': config['instance_id'],
+                  'project_id': config['source_project_id'], 'thread_id': thread,
+                  'question_id': identity, 'generation': generation}
+        item = items.get(identity)
+        if item is None:
+            # A complete snapshot must contain every row; a bounded one may not.
+            require(not complete, 'partial_source')
+            incomplete.add(str(uuid.uuid5(NAMESPACE, canonical(source))))
+            continue
+        require(item.get('threadId') == thread and item.get('nodeId') == request.get('nodeId'))
+        require(item.get('providerTurnId') == turn_id)
+        require(attempts[generation].get('runId') == item.get('runId'))
         fields = []
         native = unique(item.get('questions'), 'id')
         require(0 < len(native) <= 10)
@@ -112,9 +157,6 @@ def project(snapshot, config, thread):
         require(len(canonical(fields).encode()) <= 65536)
         status = request.get('status')
         require(status in ('pending', 'resolved', 'expired', 'cancelled'))
-        source = {'kind': 't3', 'instance_id': config['instance_id'],
-                  'project_id': config['source_project_id'], 'thread_id': thread,
-                  'question_id': identity, 'generation': generation}
         capability = request.get('responseCapability', {})
         live = capability.get('type') == 'live' and isinstance(capability.get('providerSessionId'), str)
         q = {'id': str(uuid.uuid5(NAMESPACE, canonical(source))),
@@ -129,7 +171,66 @@ def project(snapshot, config, thread):
         if isinstance(title, str) and title.strip() and len(title.encode()) <= 1024:
             q['thread_title'] = title
         result[q['id']] = (q, request.get('answers'))
-    return sequence, result
+    return sequence, result, incomplete
+
+
+def recover_history(source, thread, snapshot, wanted):
+    """Find question rows for `wanted` request IDs in bounded older history.
+
+    Stops as soon as every row is found. Page count, total bytes and cursor
+    size are finite; a repeated cursor, an exhausted budget or a page read
+    against a different snapshot leaves the rest unrecovered (held). Rows are
+    used only if the snapshot is unchanged afterwards, so an old question body
+    is never combined with newer request/attempt state.
+    """
+    found = {}
+    if not wanted or snapshot.get('hasMoreHistory') is not True:
+        return found
+    sequence = snapshot.get('snapshotSequence')
+    cursor, seen, size = snapshot.get('historyCursor'), set(), 0
+    for _ in range(HISTORY_PAGES):
+        if not (isinstance(cursor, str) and 0 < len(cursor.encode()) <= HISTORY_CURSOR_BYTES
+                and cursor not in seen):
+            break
+        seen.add(cursor)
+        try:
+            page = source.history(thread, cursor)
+        except Unavailable:
+            break  # Older history is unreachable; keep the rest held.
+        if not isinstance(page, dict):
+            break
+        size += len(canonical(page).encode())
+        if (size > HISTORY_BYTES or not isinstance(page.get('items'), list) or
+                type(page.get('hasMoreHistory')) is not bool or 'nextCursor' not in page or
+                page.get('snapshotSequence', sequence) != sequence):
+            break
+        for row in page['items']:
+            require(isinstance(row, dict) and isinstance(row.get('item'), dict), 'source_scope')
+            item = row['item']
+            require(row.get('visibility') in ('local', 'inherited') and
+                    row.get('sourceThreadId') == text(item.get('threadId')) and
+                    row.get('sourceItemId') == text(item.get('id')), 'source_scope')
+            if item['threadId'] != thread:
+                # Inherited history cannot answer a request in this thread.
+                require(row['visibility'] == 'inherited', 'source_scope')
+                continue
+            if item.get('type') != 'user_input_request':
+                continue
+            key = text(item.get('requestId'))
+            require(found.get(key, item) == item, 'source_scope')
+            if key in wanted:
+                found[key] = item
+        if wanted <= found.keys():
+            break
+        cursor = page['nextCursor']
+        if not page['hasMoreHistory']:
+            break
+    if not found:
+        return found
+    current = source.snapshot(thread)
+    if not isinstance(current, dict) or current.get('snapshotSequence') != sequence:
+        return {}
+    return found
 
 
 def answers(operation):
@@ -174,6 +275,7 @@ class Journal:
         CREATE TABLE IF NOT EXISTS binding(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS observations(thread TEXT PRIMARY KEY, sequence INTEGER NOT NULL, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS intents(id TEXT PRIMARY KEY, body TEXT NOT NULL, command TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dispatch_attempts(id TEXT PRIMARY KEY, command TEXT NOT NULL);
         ''')
         binding = canonical({k: config[k] for k in ('instance_id','source_project_id','project_id','t3_url','inbox_url')})
         with self.db:
@@ -193,7 +295,12 @@ class Journal:
                 for question, _ in rows.values():
                     question.pop('thread_title', None)
                 return rows
-            require(sequence != old[0] or without_titles(body) == without_titles(old[1]), 'source_cursor_conflict')
+            if sequence == old[0]:
+                # One cursor is one source state. Recovery may add or lose
+                # older rows between polls, but never change a known question.
+                now, before = without_titles(body), without_titles(old[1])
+                require(all(now[k] == before[k] for k in now.keys() & before.keys()),
+                        'source_cursor_conflict')
         with self.db:
             self.db.execute('INSERT INTO observations VALUES(?,?,?) ON CONFLICT(thread) DO UPDATE SET sequence=excluded.sequence,body=excluded.body', (thread, sequence, body))
 
@@ -207,6 +314,21 @@ class Journal:
         with self.db:
             self.db.execute('INSERT INTO intents VALUES(?,?,?)', (key, payload, canonical(command)))
         return True
+
+    def attempted(self, op, command):
+        """True only if this journal committed a dispatch attempt for `op`."""
+        row = self.db.execute('SELECT command FROM dispatch_attempts WHERE id=?',
+                              (op['request']['operation_id'],)).fetchone()
+        require(row is None or row[0] == canonical(command), 'operation_payload_changed')
+        return row is not None
+
+    def mark_attempt(self, op, command):
+        # Committed after Inbox holds `uncertain` and before source I/O. A crash
+        # here allows only observation-based recovery, never a second send.
+        require(op['state'] == 'uncertain', 'invalid_intent')
+        with self.db:
+            self.db.execute('INSERT INTO dispatch_attempts VALUES(?,?)',
+                            (op['request']['operation_id'], canonical(command)))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -241,6 +363,10 @@ class T3(Http):
         descriptor = self.request('GET', '/.well-known/t3/environment')
         require(descriptor.get('orchestrationProtocolVersion') == 2, 'unsupported_protocol')
         return self.request('GET', '/api/orchestration/threads/' + urllib.parse.quote(thread, safe='') + '/bounded')
+
+    def history(self, thread, cursor):
+        return self.request('GET', '/api/orchestration/threads/' + urllib.parse.quote(thread, safe='') +
+                            '/history?' + urllib.parse.urlencode({'cursor': cursor}))
 
     def respond(self, command):
         # Transport is deliberately limited to native question answers.
@@ -305,26 +431,62 @@ class Inbox(Http):
 class Runner:
     def __init__(self, config, journal, source, inbox):
         self.config, self.journal, self.source, self.inbox = config, journal, source, inbox
-        self.ready = False
+        # Operations queued before this process first listed them are never
+        # released automatically; neither is work on a thread not yet observed.
+        self.quarantine = None
+        self.ready_threads = set()
+        self.partial = {}
 
     def observe(self, thread):
-        sequence, records = project(self.source.snapshot(thread), self.config, thread)
+        snapshot = self.source.snapshot(thread)
+        missing = missing_items(snapshot)
+        history = recover_history(self.source, thread, snapshot, missing) if missing else {}
+        sequence, records, incomplete = project(snapshot, self.config, thread, history)
         self.journal.observe(thread, sequence, records)
         for question, _ in records.values():
             self.inbox.observe(question, sequence)
-        return records
+        if incomplete:
+            self.partial[thread] = incomplete
+        else:
+            self.partial.pop(thread, None)
+        return records, incomplete
 
     def step(self):
-        # Establish a baseline after every process start. Existing queued commands
-        # are recovery work, never automatically released after backup restore.
+        """One poll. Returns threads whose source is partial (held, not failed).
+
+        A partial thread never blocks healthy threads. Its unrecoverable
+        questions are not re-observed, so Inbox shows them as stale and locks
+        replies; their operations are left untouched until a full refresh.
+        """
         operations = list(self.inbox.operations())
+        if self.quarantine is None:
+            self.quarantine = {o['request']['operation_id'] for o in operations if o['state'] == 'queued'}
+        observed = set()
         for thread in self.config['thread_ids']:
-            self.observe(thread)
+            try:
+                self.observe(thread)
+                observed.add(thread)
+            except Unavailable as error:
+                if str(error) != 'partial_source':
+                    raise
+                self.partial[thread] = None
         for operation in operations:
             if operation['state'] in ('delivered', 'rejected'):
                 continue
-            self.reconcile(operation, recovery=not self.ready)
-        self.ready = True
+            thread = operation['question']['source'].get('thread_id')
+            if thread in self.config['thread_ids'] and thread not in observed:
+                continue  # Partial thread: held until a full refresh.
+            try:
+                self.reconcile(operation, recovery=operation['request']['operation_id'] in self.quarantine
+                               or thread not in self.ready_threads)
+            except Unavailable as error:
+                # The pre-dispatch read can turn partial too: hold this thread only.
+                if str(error) != 'partial_source':
+                    raise
+                self.partial[thread] = None
+                observed.discard(thread)
+        self.ready_threads |= observed
+        return sorted(self.partial)
 
     def reconcile(self, op, recovery):
         q = op['question']
@@ -334,10 +496,15 @@ class Runner:
                 q['project_id'] == self.config['project_id'] and
                 source['thread_id'] in self.config['thread_ids'], 'operation_scope')
         # Fresh authoritative snapshot immediately before any attempted response.
-        records = self.observe(source['thread_id'])
+        records, incomplete = self.observe(source['thread_id'])
+        if q['id'] in incomplete:
+            # The request exists but its question row is unrecoverable right
+            # now. Partial data neither withdraws nor acknowledges it.
+            return
         record = records.get(q['id'])
         if record is None:
-            # Absence is not evidence of cancellation; no external action.
+            # Absence is not evidence of cancellation; no external action. A
+            # replacement attempt is a different identity and never receives it.
             if op['state'] == 'queued':
                 self.inbox.advance(op, 'uncertain', 'source_request_unavailable')
             return
@@ -348,19 +515,26 @@ class Runner:
                    'answers':answers(op)}
         require(current['source'] == source, 'source_identity_changed')
         fresh = self.journal.intent(op, command)
-        if current['state'] == 'answered':
-            # T3 persists resolved before provider callback: prove acceptance only.
-            if native_answers == command['answers']:
+        # The revision covers source identity, attempt, fields and the response
+        # capability (provider session). T3 keeps it unchanged on resolve.
+        exact = current['source_revision'] == q['source_revision']
+        if current['state'] == 'answered' and exact:
+            # T3 persists resolved before provider callback: prove acceptance
+            # only, and only for a dispatch this journal actually attempted.
+            if native_answers != command['answers']:
+                self.inbox.advance(op, 'rejected', 'source_answer_differs')
+            elif not self.journal.attempted(op, command):
+                if op['state'] == 'queued':
+                    self.inbox.advance(op, 'uncertain', 'source_outcome_unconfirmed')
+            else:
                 if op['state'] == 'queued':
                     self.inbox.advance(op, 'uncertain')
                 if op['state'] == 'uncertain':
                     self.inbox.advance(op, 'accepted')
-            else:
-                self.inbox.advance(op, 'rejected', 'source_answer_differs')
             return
-        if current['state'] == 'withdrawn' or current['source_revision'] != q['source_revision'] or not current['can_reply']:
-            # For an already attempted operation, source expiry cannot prove that
-            # the earlier command wasn't applied. Keep it uncertain.
+        if current['state'] != 'pending' or not exact or not current['can_reply']:
+            # For an already attempted operation, a changed revision or source
+            # expiry cannot prove that the earlier command wasn't applied.
             if op['state'] == 'queued' and fresh and not recovery:
                 self.inbox.advance(op, 'rejected', 'source_stale')
             elif op['state'] == 'queued':
@@ -371,6 +545,7 @@ class Runner:
         self.inbox.advance(op, 'uncertain', 'recovery_required' if recovery or not fresh else None)
         if recovery or not fresh:
             return
+        self.journal.mark_attempt(op, command)
         self.source.respond(command)
         # A receipt means accepted, not delivered. Lost receipts are reconciled
         # on a later step without invoking respond again.
@@ -428,10 +603,14 @@ def main():
     launches = LaunchRunner(config,journal,source,inbox) if config.get('launch_targets') else None
     while True:
         try:
-            runner.step()
+            partial = runner.step()
             if launches:
                 launches.step()
-            print('{"event":"bridge_sync","status":"ok"}', flush=True)
+            if partial:
+                print(canonical({'event':'bridge_sync','status':'partial','code':'partial_source',
+                                 'partial_threads':partial}), flush=True)
+            else:
+                print('{"event":"bridge_sync","status":"ok"}', flush=True)
         except Unavailable as error:
             print(canonical({'event':'bridge_sync','status':'unavailable','code':str(error)}), flush=True)
         if args.once:

@@ -69,6 +69,13 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_log::SelectNextRecord>("Next log record", Navigation),
         entry::<reader_log::ExtendPreviousRecord>("Extend log selection up", Navigation),
         entry::<reader_log::ExtendNextRecord>("Extend log selection down", Navigation),
+        entry::<kubernetes_workspace::SelectNextResource>("Next Kubernetes resource", Navigation),
+        entry::<kubernetes_workspace::SelectPreviousResource>(
+            "Previous Kubernetes resource",
+            Navigation,
+        ),
+        entry::<kubernetes_workspace::OpenSelectedLogs>("Open Kubernetes logs", Navigation),
+        entry::<kubernetes_workspace::FocusResourceFilter>("Filter Kubernetes resources", Search),
         entry::<ListNext>("Next note in list", Navigation),
         entry::<ListPrev>("Previous note in list", Navigation),
         entry::<ReaderScrollDown>("Scroll down", Navigation),
@@ -93,6 +100,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleTask>("Toggle task", Notes),
         entry::<reader_editor::OpenRenderedBlock>("Edit table, image or callout", Notes),
         entry::<reader_editor::OpenBlockExternally>("Open code block in external editor", Notes),
+        entry::<reader_editor::ShowCodeLanguages>("Code block languages", Notes),
         entry::<gpui_component::input::Paste>("Paste", Notes),
         entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
         entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
@@ -688,6 +696,41 @@ mod tests {
             assert!(
                 keymap.bindings_for_input(&key, &contexts).0.is_empty(),
                 "Command-Shift-C has no code-view binding on Mac"
+            );
+        }
+    }
+
+    /// #1618: on Linux, Ctrl+Shift+V and Ctrl+Alt+V in a note's editor are
+    /// Paste as Plain Text and Paste as Titled Link, and no Okilum or toolkit
+    /// binding claims either chord anywhere else.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_paste_variants_own_their_chords(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let keymap = reader_keymap(cx);
+        let editor: Vec<_> = ["Reader ReaderSource", "Input"]
+            .into_iter()
+            .map(|value| KeyContext::parse(value).unwrap())
+            .collect();
+        for (chord, action) in [
+            (
+                "ctrl-shift-v",
+                note_paste::PasteAsPlainText::name_for_type(),
+            ),
+            ("ctrl-alt-v", note_paste::PasteAsTitledLink::name_for_type()),
+        ] {
+            let key = KeyBinding::new(chord, note_paste::PasteAsPlainText, None);
+            let bound: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| binding.keystrokes() == key.keystrokes())
+                .map(|binding| binding.action().name())
+                .collect();
+            assert_eq!(bound, [action], "{chord}");
+            let resolved = keymap.bindings_for_input(key.keystrokes(), &editor).0;
+            assert_eq!(
+                resolved.first().map(|binding| binding.action().name()),
+                Some(action),
+                "{chord} in a note editor"
             );
         }
     }
