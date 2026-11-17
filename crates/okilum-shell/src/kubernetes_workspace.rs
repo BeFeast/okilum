@@ -13,6 +13,8 @@ use okilum_core::kubernetes::{choose_namespace, Contexts, Failure, NamespaceOrig
 mod backend;
 mod dock;
 pub(crate) mod evidence;
+#[cfg(feature = "kubernetes-ui-harness")]
+pub(crate) mod harness;
 mod inspector;
 mod lens_view;
 pub(crate) mod lenses;

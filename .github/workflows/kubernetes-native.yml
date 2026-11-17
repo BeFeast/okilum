@@ -1,0 +1,101 @@
+# Native visual evidence for the Kubernetes Workspace (#3012): builds the real
+# binary with the non-publishing kubernetes-ui-harness feature and captures
+# Workspace, Triage and Service path in light and dark on hosted runners.
+# Synthetic in-process data only; no kubectl, cluster or credentials.
+name: kubernetes-native
+on:
+  push:
+    branches: ['kubernetes-native/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kubernetes-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install Linux libraries and software display
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config mold \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev \
+            libvulkan1 mesa-vulkan-drivers xvfb imagemagick dbus
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-kubernetes-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Prepare and verify pinned vendor
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Prepare Mac framework
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Prepare Windows icon resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $icon = python -c "import pathlib,tempfile; print(pathlib.Path(tempfile.mkdtemp(prefix='k8s-icon-')) / 'test.ico')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/ci/test-icon.py $icon
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build the real app with the Kubernetes visual harness
+        shell: bash
+        run: cargo build --locked -p okilum-shell --bin okilum --features kubernetes-ui-harness
+      - name: Capture Workspace, Triage and Service path in light and dark
+        shell: bash
+        run: |
+          python -m pip install --quiet Pillow==11.0.0
+          binary=target/debug/okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
+          out="$RUNNER_TEMP/kubernetes-screens"
+          if [[ "$RUNNER_OS" = Linux ]]; then
+            Xvfb :99 -screen 0 1440x960x24 >/dev/null 2>&1 &
+            sleep 2
+            export DISPLAY=:99
+            dbus-run-session -- python scripts/ci/kubernetes-native-screens.py "$binary" "$out"
+          else
+            python scripts/ci/kubernetes-native-screens.py "$binary" "$out"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kubernetes-native-${{ runner.os }}
+          path: ${{ runner.temp }}/kubernetes-screens/
+          if-no-files-found: ignore
+          retention-days: 14

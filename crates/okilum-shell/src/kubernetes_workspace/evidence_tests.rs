@@ -246,5 +246,9 @@ fn write_creates_a_new_directory_whole_and_never_replaces_one() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(leftovers, [b.name.clone()], "no partial directory remains");
+    assert_eq!(
+        leftovers,
+        std::slice::from_ref(&b.name),
+        "no partial directory remains"
+    );
 }

@@ -9470,6 +9470,10 @@ fn main() {
         if project::open_harness(cx) {
             return;
         }
+        #[cfg(feature = "kubernetes-ui-harness")]
+        if kubernetes_workspace::harness::open(cx) {
+            return;
+        }
         // A theme can swap the fonts behind a run; shaped lines start over.
         cx.observe_global::<Theme>(|_| {
             platform::shaped_line_cache::ShapedLineCache::clear_installed()
