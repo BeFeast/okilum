@@ -34,12 +34,16 @@ const CODEC_MISSING: i32 = 3;
 /// The first frame is WIC's primary image. WIC returns pixels unrotated and
 /// reports orientation as `System.Photo.Orientation`, which the script
 /// applies (EXIF values 2–8). Microsoft does not document how its HEIF codec
-/// maps `irot`/`imir`; hosted CI has no codec, so that mapping is unverified. 0x88982F50 (WINCODEC_ERR_COMPONENTNOTFOUND),
-/// 0x88982F07 (WINCODEC_ERR_UNKNOWNIMAGEFORMAT; the bytes already passed the
-/// `ftyp` check) and Media Foundation errors (0xC00D…, no HEVC decoder) mean
-/// the extensions are missing.
+/// maps `irot`/`imir`; hosted CI has no codec, so that mapping is unverified.
+/// These mean the extensions are missing: 0x88982F50
+/// (WINCODEC_ERR_COMPONENTNOTFOUND), 0x88982F8B
+/// (WINCODEC_ERR_COMPONENTINITIALIZEFAILURE: the inbox HEIF container decoder
+/// without the Store codec; observed on windows-2022), 0x88982F07
+/// (WINCODEC_ERR_UNKNOWNIMAGEFORMAT; the bytes already passed the `ftyp`
+/// check) and Media Foundation errors (0xC00D…, no HEVC decoder).
 const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $code = 1
 try {
     Add-Type -AssemblyName PresentationCore
@@ -80,7 +84,7 @@ try {
     while ($null -ne $e) {
         $hr = '{0:X8}' -f $e.HResult
         [Console]::Error.WriteLine("$($e.GetType().FullName) 0x${hr}: $($e.Message)")
-        if ($hr -eq '88982F50' -or $hr -eq '88982F07' -or $hr.StartsWith('C00D')) { $code = 3 }
+        if ($hr -in '88982F50', '88982F8B', '88982F07' -or $hr.StartsWith('C00D')) { $code = 3 }
         $e = $e.InnerException
     }
 }

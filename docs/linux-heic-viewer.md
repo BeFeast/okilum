@@ -27,7 +27,9 @@ user CPU, kill on close, no error dialogs) and only then resumed; the 30 s
 wall deadline kills it. The script checks the frame size before decoding
 pixels (same 16384/64,000,000 limits), applies `System.Photo.Orientation`
 and writes `preview.png`; Okilum repeats the PNG checks below.
-`WINCODEC_ERR_COMPONENTNOTFOUND`, `WINCODEC_ERR_UNKNOWNIMAGEFORMAT` (after the
+`WINCODEC_ERR_COMPONENTNOTFOUND`, `WINCODEC_ERR_COMPONENTINITIALIZEFAILURE`
+(the inbox HEIF container decoder without the Store codec, as seen on the
+hosted `windows-2022` runner), `WINCODEC_ERR_UNKNOWNIMAGEFORMAT` (after the
 `ftyp` check) and Media Foundation errors exit with code 3, shown as the
 missing-extensions message.
 
