@@ -4589,7 +4589,7 @@ mod entry_tests {
         cx.run_until_parked();
         cx.update(|cx| {
             assert!(
-                cx.global::<LinkPrompts>().0.get(&root).is_none(),
+                !cx.global::<LinkPrompts>().0.contains_key(&root),
                 "no second prompt"
             );
             assert_eq!(
