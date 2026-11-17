@@ -3,7 +3,10 @@
 Linux, macOS and Windows open `.heic`/`.heif` in the image viewer with the
 platform's own codec, always in a separate bounded process and off the UI
 thread. Before any decoder runs, the snapshot must start with an ISO-BMFF
-`ftyp` box; other bytes are an ordinary unreadable image.
+`ftyp` box; other bytes are an ordinary unreadable image. On macOS, other
+raster file previews come from a Quick Look thumbnail; HEIC/HEIF skip it, so
+an edited file refreshes through this decoder and a broken one shows the
+viewer's message (#3064).
 
 | Platform | Decoder | Missing decoder message |
 |---|---|---|
