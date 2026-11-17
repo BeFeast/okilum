@@ -108,6 +108,74 @@ the viewport.
   line, never a log row. Filter, marks, export and the parser are the
   ordinary LogView's.
 
+## Lenses: Triage and Service path (#3011)
+
+A switch at the start of the filter bar selects **Workspace**, **Triage** or
+**Service path**. They are views over the same data, selection, inspector and
+log dock: switching reads nothing, keeps the selection and the inspector tab,
+and never touches the pinned session. Relations in both lenses select objects
+in the shared inspector; logs start only from its explicit Open logs /
+Previous logs, with the usual retarget confirmation.
+
+### Triage
+
+Rows are reviewable observations, one per container, Pod or Deployment, each
+listing the rules it matches with the object's own timestamp when it reports
+one. The rules are shown in the view:
+
+1. A container waits with a reason other than ContainerCreating or
+   PodInitializing.
+2. A container's current instance terminated with a non-zero exit code.
+3. A regular or sidecar container runs but is not ready.
+4. A container's last termination was non-zero. This stays while the kubelet
+   reports `lastState`, also after the container is Ready again.
+5. A Pod's phase is Failed, Unknown or Pending.
+6. A Deployment reports unavailable replicas or Available=False.
+
+Order: failing now, not ready, recovered with a prior failure kept; then the
+newest reported time; then name. Selection is by object key (container =
+Pod UID + name), so a refresh that reorders rows keeps the selected one. There
+is no acknowledge or dismiss lifecycle: a row leaves only when a later read no
+longer matches a rule. If the selected object no longer matches, it stays
+selected and the band says it is not marked resolved.
+
+The summary states its scope, the Pods read time and denominators: Pods
+Ready `r / n` (readiness, not application health; `n` is marked "first page"
+for a truncated list), Pods with observations `a of n`, Restarts as a
+cumulative counter (not incidents) and Metrics "Not read" (no metrics API is
+used). A failed Pods read with nothing earlier is "attention unknown, not
+zero"; a failed read after an earlier one keeps those observations and says
+they are stale.
+
+### Service path
+
+Choose a Service in the list. The band shows:
+
+- **Service**: selector (or "no selector: endpoints are managed outside this
+  Service") and each `port/protocol → targetPort`.
+- **EndpointSlices** of that Service (`kubernetes.io/service-name`), with
+  ready/total, address type and ports. An unreadable EndpointSlices source is
+  *unknown, not zero*; a readable list without a slice is *zero endpoints*;
+  a first page or undecodable items are marked partial; a failed read after
+  an earlier one is marked stale.
+- **Endpoints** with addresses and ready/serving/terminating, and their
+  `targetRef`, matched by UID: a target Pod with its status and its
+  containers, or a target that is not among the shown Pods. What that means
+  follows the Pods source: "deleted or replaced" only after a complete,
+  current Pods read; "the Pods read was partial" for a truncated list;
+  "Pods are stale" after a failed read with earlier data; otherwise "unknown"
+  (Pods not read, or denied: EndpointSlices can be readable while Pods are
+  forbidden). Names are never used to match. An endpoint Pod the selector no longer matches, and
+  Pods the selector matches that are not endpoints, are listed as changing
+  membership.
+- **Ownership**, labelled separately from routing: Deployment → ReplicaSet →
+  Pod through `ownerReferences` with matching UIDs, and the Deployment's HPA
+  facts (or "HPA unknown (not readable)").
+
+The path stays on its Service while its Pods and containers are inspected. A
+Service that disappears from a later read is reported, not replaced by a
+same-named one. There is no general graph canvas.
+
 ## Keys
 
 Only while the resource list has focus: `J`/`↓` next, `K`/`↑` previous, `L`
@@ -131,6 +199,18 @@ replaced Pod starts nothing; a replacement after start is disclosed; Follow
 bottom and receiving are independent; retarget needs confirmation and keeps
 old rows until new data; forbidden vs empty; interactive sign-in stops reads;
 layout regions in light and dark.
+
+`kubernetes_workspace/lenses_tests.rs` covers the Triage rules, order and
+denominators (a recovered Ready Pod keeps its OOMKilled; restarts are
+cumulative; a healthy namespace has none; unread/denied/stale differ; keys
+survive reordering) and the Service path (ports, ready/total, a missing target
+by UID, selected-but-not-endpoint, endpoint-no-longer-selected, zero vs
+unknown vs stale endpoints, no selector, ownership through UIDs). The GPUI
+tests drive both lenses: a stable Triage selection across refresh, a row that
+stops matching is not resolved silently, Previous logs from Triage; path
+clicks select in the shared inspector, read nothing and never pin logs; the
+explicit pin and retarget; layout of both lenses in light and dark after the
+app's own theme path, with inspector tab clicks after the switch.
 
 Not established by these tests: a real API server, an exec credential plugin,
 native visual review on macOS/Windows/Linux builds, accessibility and

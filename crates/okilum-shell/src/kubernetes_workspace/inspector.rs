@@ -7,7 +7,7 @@ use okilum_core::kubernetes::{
     Container, Deployment, Pod, Probe, ProbeHandler, ReplicaSet, Service, State,
 };
 
-fn probe_text(probe: &Probe) -> String {
+pub(super) fn probe_text(probe: &Probe) -> String {
     let handler = match &probe.handler {
         ProbeHandler::Http { path, port, scheme } => format!(
             "{} GET {}:{port}",
