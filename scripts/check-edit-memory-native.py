@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Native #1237/#1256: memory does not grow across repeated rapid edits in Live
-Preview. Run on an exclusive X11 display (never maestro); the hosted Arch
-package job runs it on the installed package.
+Preview. Run on an exclusive X11 display (never maestro). The nightly hosted
+Arch job (.github/workflows/rss-nightly.yml, Oleg 17.11) runs it on the
+installed package of main, report-only: scripts/ci/rss-probe-report.py turns
+the verdict into a summary and annotation, and nothing depends on it.
 Usage: DISPLAY=:1034 python3 scripts/check-edit-memory-native.py OKILUM_BINARY WORK_DIR LABEL [CYCLES=40] [live|source]
 Run it in Source as well: the same cycles without Live Preview's projection
 separate growth that belongs to Live Preview from the editor's own.

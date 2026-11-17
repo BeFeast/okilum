@@ -1,0 +1,62 @@
+# #2037 (Oleg 17.11): the arch-live RSS no_growth probe, nightly and report-only.
+# Only the probe from forgejo-arch.yml, which has not been dispatched since
+# 31.10: build and install the unsigned Arch package of main, then 40 Live
+# Preview edit cycles with the measurement allocator settings (#3048). No
+# package validation, smoke or artifact publication. A failed or inconclusive
+# probe is reported in the job summary and as an annotation; the job stays
+# green and nothing depends on it. A build failure is not a probe verdict and
+# stays red.
+name: rss-nightly
+'on':
+  schedule:
+    # 01:20 UTC: after the 22:30 agent-checks cache run, before the 04:00 Forgejo ci.
+    - cron: '20 1 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rss-nightly-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  arch-live-rss:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    timeout-minutes: 90
+    steps:
+    - name: Install Arch build and probe tools
+      run: |
+        pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
+          wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb alsa-lib \
+          vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Prepare build user
+      run: useradd -m builder
+    - name: Build package as an unprivileged user
+      run: |
+        chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+        # The production package, without the QA harness, as forgejo-arch.yml built it.
+        runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+    - name: Install the package
+      run: pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
+    - name: Probe RSS over 40 Live Preview edit cycles
+      id: probe
+      continue-on-error: true
+      run: |
+        set -o pipefail
+        # In the workspace: runner.temp is a host path inside a container job.
+        xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
+          python scripts/check-edit-memory-native.py /usr/bin/okilum "$(mktemp -d)" arch-live 40 live \
+          2>&1 | tee rss-probe.log
+    - name: Report the probe verdict
+      if: ${{ !cancelled() && steps.probe.outcome != 'skipped' }}
+      run: python scripts/ci/rss-probe-report.py rss-probe.log arch-live
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() && steps.probe.outcome != 'skipped' }}
+      with:
+        name: rss-probe-${{ github.sha }}
+        path: rss-probe.log
+        retention-days: 14
+        if-no-files-found: warn
