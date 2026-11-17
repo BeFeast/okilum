@@ -347,7 +347,7 @@ impl Reader {
             self.reshow_deleted_notice(cx);
             return;
         }
-        if !self.leave_source(cx) {
+        if self.guard_pane_exit(self.pane.id(), cx).is_err() {
             return;
         }
         self.cancel_pending_landing();

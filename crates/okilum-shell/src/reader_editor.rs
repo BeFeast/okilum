@@ -480,6 +480,11 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 }
 
 impl Editing {
+    /// The file this editor owns through its FileEditor (#773 ownership).
+    pub(super) fn path(&self) -> &std::path::Path {
+        self.store.path()
+    }
+
     fn replace_clean_source(
         &mut self,
         text: String,
@@ -887,6 +892,16 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|l| l.active && !l.published)
         {
+            return;
+        }
+        // One editing owner per file across this window's panes (#773). A
+        // sibling window is refused by FileEditor's own lock below.
+        // Checked before anything below hands over ownership, so a refused
+        // Edit changes nothing.
+        let path = self.vault_root.join(self.selected_file());
+        if self.claim_editor(self.pane.id(), &path).is_err() {
+            self.link_notice = Some(reader_pane::EDITED_ELSEWHERE.into());
+            cx.notify();
             return;
         }
         // The typed definition view shares this exact editor/recovery namespace.

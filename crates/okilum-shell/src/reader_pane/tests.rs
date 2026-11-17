@@ -1,6 +1,7 @@
 //! Stage 2 of #773: late document work stays bound to its pane and generation.
 //! One pane is visible; replacing its note and closing it (a fresh surface in
 //! its place) are the two ways a completion becomes stale.
+use super::PaneExit;
 use crate::*;
 use ::core::prelude::v1::test;
 
@@ -313,4 +314,151 @@ fn pane773_quit_protection_visits_every_pane(cx: &mut gpui::TestAppContext) {
         std::fs::read_to_string(&a).unwrap().starts_with("unsaved "),
         "the pane's edit is saved through the per-pane quit path"
     );
+}
+
+// Stage 3: one editing owner per file, and pane exits through the existing
+// save/protect/conflict lifecycle. One pane is visible; the hooks are driven
+// directly.
+
+fn note_path(reader: &Entity<Reader>, visual: &mut gpui::VisualTestContext, rel: &str) -> PathBuf {
+    reader.read_with(visual, |r, _| r.vault_root.join(rel))
+}
+
+fn start_editing(reader: &Entity<Reader>, visual: &mut gpui::VisualTestContext, typed: &str) {
+    reader.update_in(visual, |r, window, cx| {
+        window.activate_window();
+        r.toggle_source(window, cx);
+        let input = r
+            .pane
+            .editing
+            .as_ref()
+            .expect("Edit opened")
+            .input()
+            .clone();
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..0), typed, window, cx)
+        });
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn pane773_one_editing_owner_per_file(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    let b = note_path(&reader, visual, "B.md");
+    let other = reader_panes::PaneId::next();
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.editor_owner(&a), None, "Read mode owns nothing");
+        assert_eq!(
+            r.claim_editor(other, &a),
+            Ok(()),
+            "positive control: free file"
+        );
+    });
+    start_editing(&reader, visual, "mine ");
+    reader.read_with(visual, |r, _| {
+        let pane = r.pane.id();
+        assert_eq!(r.editor_owner(&a), Some(pane));
+        assert_eq!(
+            r.claim_editor(pane, &a),
+            Ok(()),
+            "the owner may keep editing"
+        );
+        assert_eq!(
+            r.claim_editor(other, &a),
+            Err(pane),
+            "another pane is refused"
+        );
+        assert_eq!(
+            r.claim_editor(other, &b),
+            Ok(()),
+            "a different file is free"
+        );
+    });
+    reader.update(visual, |r, cx| assert!(r.leave_source(cx)));
+    visual.run_until_parked();
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.editor_owner(&a),
+            None,
+            "leaving the editor releases ownership"
+        );
+        assert_eq!(r.claim_editor(other, &a), Ok(()));
+    });
+}
+
+#[gpui::test]
+fn pane773_last_pane_close_and_unsplit_keep_editor_and_draft(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    let saved = std::fs::read_to_string(&a).unwrap();
+    start_editing(&reader, visual, "draft ");
+    reader.update(visual, |r, cx| {
+        let pane = r.pane.id();
+        assert_eq!(
+            r.close_pane(reader_panes::PaneId::next(), cx),
+            Err(PaneExit::Missing)
+        );
+        assert_eq!(r.close_pane(pane, cx), Err(PaneExit::LastPane));
+        assert_eq!(r.unsplit(cx), Err(PaneExit::LastPane));
+        let editing = r.pane.editing.as_ref().expect("editor kept");
+        assert!(editing
+            .input()
+            .read(cx)
+            .value()
+            .to_string()
+            .starts_with("draft "));
+        assert_eq!(r.editor_owner(&a), Some(pane));
+    });
+    assert_eq!(
+        std::fs::read_to_string(&a).unwrap(),
+        saved,
+        "a refused close saves nothing"
+    );
+}
+
+#[gpui::test]
+fn pane773_pane_exit_saves_or_refuses_through_the_lifecycle(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    // Conflict: the file changed on disk under a dirty editor. The guard
+    // refuses and keeps the pane, the editor and the draft.
+    start_editing(&reader, visual, "mine ");
+    std::fs::write(&a, "external\n").unwrap();
+    reader.update(visual, |r, cx| {
+        let pane = r.pane.id();
+        assert_eq!(
+            r.guard_pane_exit(reader_panes::PaneId::next(), cx),
+            Err(PaneExit::Missing)
+        );
+        assert_eq!(r.guard_pane_exit(pane, cx), Err(PaneExit::Refused));
+        let editing = r.pane.editing.as_ref().expect("editor kept on refusal");
+        assert!(editing
+            .input()
+            .read(cx)
+            .value()
+            .to_string()
+            .starts_with("mine "));
+    });
+    visual.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "external\n");
+    // Resolved to the disk version and edited again: the guard saves and
+    // releases the editor.
+    reader.update_in(visual, |r, window, cx| {
+        r.resolve_source(true, window, cx);
+        let input = r.pane.editing.as_ref().unwrap().input().clone();
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..0), "saved-", window, cx)
+        });
+    });
+    visual.run_until_parked();
+    reader.update(visual, |r, cx| {
+        let pane = r.pane.id();
+        assert_eq!(r.guard_pane_exit(pane, cx), Ok(()));
+        assert!(r.pane.editing.is_none());
+        assert_eq!(r.editor_owner(&a), None);
+    });
+    visual.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "saved-external\n");
 }
