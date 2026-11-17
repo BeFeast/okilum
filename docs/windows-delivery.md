@@ -84,6 +84,49 @@ Stable promotion separately verifies signed metadata and the signer fingerprint.
 The unsigned Beta feed relies on HTTPS and the update host; package hashes provide
 integrity, not independent publisher authentication.
 
+## Authenticode signing (#1104)
+
+Stable builds are signed with the Certum Open Source code-signing certificate
+(subject `CN=Open Source Developer Oleg Kossoy`, SHA-256
+`5fe45be3a5ea5207fbc8ab89f7f6edd8412409f3746ff09e4f0a012c2022db0e`, valid until
+2027-10-10). Beta stays unsigned. The certificate is for Okilum only; it must not
+sign commercially distributed software.
+
+- **Signer:** the `windows-signer` runner on CT 142 runs `scripts/windows/sign.sh`,
+  the only signing entry point. It refuses `pull_request` runs. The production backend
+  is `certum-ssign`: the pinned `ssign` build (`scripts/windows/ssign.sha256`) signs over
+  Certum's HTTPS API. Only the Authenticode digest leaves the host, and Certum
+  timestamps it (RFC 3161, `time.certum.pl`).
+  `okilum-sign-code` ([sign-code.md](../scripts/windows/sign-code.md)) opens the session
+  from the owner's 6-digit SimplySign code. There is no OTP seed, password or PIN on the
+  host or in CI.
+- **What is signed:** `okilum.exe` and `okilum-sync-supervisor.exe` before packing,
+  then `Update.exe`, the execution stub and `Setup.exe` through Velopack's sign template.
+  That is five signatures per build. `scripts/windows/verify-signatures.py` checks every
+  PE in Setup.exe, the full nupkg and the portable ZIP. Each one needs one valid
+  signature, an RFC 3161 timestamp and the pinned signer; one failure stops publication.
+  `release.json` and the catalog then record `signed` and `signer_sha256`, and the
+  Stable promotion refuses anything else.
+- **Session and PIN, measured:** the token never asked for a PIN or password. A login
+  needs only the e-mail and the one-time code (pilot 2026-10-10). SimplySign Desktop on
+  Linux is not a usable CI client: its PKCS#11 handshake races (2026-10-12), so the
+  `certum-pkcs11` backend is kept only as a fallback. An `ssign` access token lives
+  1800 s and can be refreshed without a code for less than 3 hours. A refresh at
+  +25 min worked; one at +2 h 46 min was refused (2026-10-13). So every signing day
+  needs a fresh code from the owner, and no session outlives that day.
+- **Quota:** Certum allows 5000 signatures a month. Only promotable builds are signed
+  (five each), not every hourly beta.
+- **Native check:** `.github/workflows/windows-signature-native.yml` on the GitHub mirror,
+  `windows-2022`, no secrets. Dispatch it with the build number, or push any commit to
+  `windows-signature-native/<build>`. It downloads the public `release.json`, Setup.exe,
+  full nupkg and portable ZIP of that build and checks their hashes. Then
+  `scripts/windows/verify-signatures-native.ps1` requires, for every PE, `signtool verify
+  /pa /all /v /tw` exit 0 (2, a warning, fails), `Get-AuthenticodeSignature` Valid with
+  a timestamper, and the pinned signer SHA-256. Run it for each build before Stable
+  promotion.
+- The numeric VERSIONINFO (`FILEVERSION`/`PRODUCTVERSION`) of both executables carries
+  the release version, e.g. `0,1,33094,0`, so file properties show the build.
+
 ## Owner acceptance on bragi
 
 1. Install build N with Setup.exe. Select Beta in Settings → Updates. Open the
@@ -114,4 +157,4 @@ When Enable exists it copies the helper out of the application folder to
 `<private state>/supervisor/<version>/` (`sidecar::stage`), because Velopack replaces the
 application folder on every update and a background process running from it would block
 the update and the uninstall. The Beta helper is unsigned, like the Beta app;
-signed Stable packaging must sign it through the same Velopack signing hook.
+signed Stable builds sign it together with `okilum.exe` before packing (see above).
