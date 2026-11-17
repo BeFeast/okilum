@@ -253,7 +253,7 @@ fn code(
     visual: &VisualTestContext,
 ) -> Entity<reader_code_file::CodePreview> {
     reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     })
 }
 
@@ -594,9 +594,12 @@ fn linked2905_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
         assert_eq!(r.selected_file(), "data.json");
     });
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.backlinks.len(), 1);
-        assert_eq!(r.backlinks[0].path, "note.md");
-        assert_eq!(r.backlinks[0].context, "See [[data.json]] for the numbers.");
+        assert_eq!(r.pane.backlinks.len(), 1);
+        assert_eq!(r.pane.backlinks[0].path, "note.md");
+        assert_eq!(
+            r.pane.backlinks[0].context,
+            "See [[data.json]] for the numbers."
+        );
     });
     settle(visual);
     assert!(visual.debug_bounds("file-contents-heading").is_some());
@@ -611,7 +614,7 @@ fn linked2905_a_linked_data_file_keeps_linked_from(cx: &mut TestAppContext) {
     reader.update_in(visual, |r, w, cx| r.open_note("other.json", None, w, cx));
     settle(visual);
     reader.read_with(visual, |r, _| {
-        assert!(r.backlinks.is_empty(), "positive: unlinked")
+        assert!(r.pane.backlinks.is_empty(), "positive: unlinked")
     });
     assert!(visual.debug_bounds("file-contents-heading").is_some());
     assert!(

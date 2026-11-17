@@ -236,11 +236,12 @@ impl Reader {
     /// bounds; `None` off a heading.
     pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
         // A right-click on a link belongs to the link's own menu (#943).
-        if self.editing.is_some() || self.file_preview.is_some() || self.pointer_on_link() {
+        if self.editing.is_some() || self.pane.file_preview.is_some() || self.pointer_on_link() {
             return None;
         }
         let list = self.content.read(cx).list_state();
-        self.outline
+        self.pane
+            .outline
             .iter()
             .find(|heading| {
                 list.bounds_for_item(heading.target.block)
@@ -376,6 +377,7 @@ mod tests {
         let (heading, paragraph) = reader.read_with(visual, |v, cx| {
             let list = v.content.read(cx).list_state();
             let heading = v
+                .pane
                 .outline
                 .iter()
                 .find(|h| h.text == "Next steps & risks")

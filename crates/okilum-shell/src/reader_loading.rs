@@ -1540,7 +1540,7 @@ impl Reader {
                 .map(|trace| trace.phase("text_state_stage"))
         });
         let content = cx.new(|cx| {
-            let mut state = if self.use_html {
+            let mut state = if self.pane.use_html {
                 TextViewState::html("", cx)
             } else {
                 TextViewState::markdown("", cx)
@@ -1562,7 +1562,7 @@ impl Reader {
         });
         // The outline scan is linear but slow on a long note; run it beside
         // the parse rather than on the UI thread at publication (#3073).
-        let outline_task = (!self.use_html).then(|| {
+        let outline_task = (!self.pane.use_html).then(|| {
             let source = document.source.clone();
             cx.background_executor().spawn(async move {
                 let started = std::time::Instant::now();
@@ -1690,7 +1690,7 @@ impl Reader {
         let switching_mode = self.single_file != pending.intent.single_file
             && self.vault_root == pending.intent.root;
         let preserve_preview = switching_mode
-            && self.file_preview.as_ref().is_some_and(|preview| {
+            && self.pane.file_preview.as_ref().is_some_and(|preview| {
                 pending.intent.note.as_deref() == Some(preview.rel.as_str())
             });
         let preserve_document = switching_mode
@@ -1813,7 +1813,8 @@ impl Reader {
                 .unwrap_or_default();
             if let (false, Some(view)) = (
                 extra.is_empty(),
-                self.file_preview
+                self.pane
+                    .file_preview
                     .as_ref()
                     .and_then(|preview| preview.log.clone()),
             ) {
@@ -1983,7 +1984,7 @@ impl Reader {
         let root = self.vault_root.clone();
         let navigation = self.navigation.generation;
         let generation = self.navigation.preparation_generation;
-        let html = self.use_html;
+        let html = self.pane.use_html;
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         let reconciliation = self.navigation.reconciliation_generation;
@@ -2319,7 +2320,7 @@ impl Reader {
             return;
         }
         // A log in the quick viewer is the document to restore (#602).
-        let document = match &self.file_preview {
+        let document = match &self.pane.file_preview {
             Some(preview)
                 if preview.log.is_some() || reader_delimited::previewable(&preview.rel) =>
             {
@@ -2413,7 +2414,7 @@ impl Reader {
             return;
         }
         if !switching_current_file {
-            self.file_preview = None;
+            self.pane.file_preview = None;
         }
         self.file_menu = None;
         if opts.vault.as_ref() != Some(&self.vault_root)
@@ -2486,7 +2487,7 @@ impl Reader {
                 .and_then(|load| load.opts.diagnostics.clone()),
             index_dir: self.index_dir.clone(),
             cache_lease: self.cache_lease.clone(),
-            use_html: self.use_html,
+            use_html: self.pane.use_html,
             ..Default::default()
         };
         // A stalled filesystem call cannot be cancelled by dropping its task.
@@ -3514,6 +3515,7 @@ mod tests {
             assert_eq!(r.selected_file(), "sheet.tsv");
             assert!(r.searcher.is_none() && r.watcher.is_some());
             assert!(r
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -3537,6 +3539,7 @@ mod tests {
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
             assert!(r
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -3634,7 +3637,7 @@ mod tests {
                 "retained evidence stays immutable"
             );
             assert_eq!(
-                r.properties,
+                r.pane.properties,
                 okilum_core::properties::parse(
                     okilum_core::properties::frontmatter_block(&changed).unwrap()
                 )
@@ -3993,13 +3996,14 @@ mod tests {
             assert_eq!(r.current_rel, "first.md");
             // The background outline is the one published, container filter included.
             assert_eq!(
-                r.outline
+                r.pane
+                    .outline
                     .iter()
                     .map(|h| h.text.as_str())
                     .collect::<Vec<_>>(),
                 ["Outline control", "Second section"]
             );
-            assert_eq!(r.outline, crate::note_outline(&r.note_source));
+            assert_eq!(r.pane.outline, crate::note_outline(&r.note_source));
         });
     }
 
@@ -7990,7 +7994,7 @@ impl Reader {
                 vault: Some(self.vault_root.clone()),
                 note: Some(self.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 single_file: !self.single_file,
-                use_html: self.use_html,
+                use_html: self.pane.use_html,
                 index_dir: self
                     .loading
                     .as_ref()
@@ -8823,7 +8827,11 @@ mod quick_view_tests {
             let reader = entity.unwrap();
             visual.run_until_parked();
             let preview_ids = |r: &Reader| {
-                let preview = r.file_preview.as_ref().expect("typed file is displayed");
+                let preview = r
+                    .pane
+                    .file_preview
+                    .as_ref()
+                    .expect("typed file is displayed");
                 (
                     preview.text.as_ref().map(Entity::entity_id),
                     preview.log.as_ref().map(Entity::entity_id),
@@ -8994,7 +9002,7 @@ mod quick_view_tests {
         visual.run_until_parked();
         let previous_vault = reader.read_with(visual, |reader, _| {
             assert!(
-                !reader.backlinks.is_empty(),
+                !reader.pane.backlinks.is_empty(),
                 "positive control: full-vault backlinks"
             );
             assert!(
@@ -9023,7 +9031,7 @@ mod quick_view_tests {
             assert!(reader.single_file && reader.vault.single_file);
             assert!(reader.index_dir.is_none() && reader.searcher.is_none());
             assert!(reader.shared_session.is_none() && reader.incremental_state.is_none());
-            assert!(reader.backlinks.is_empty() && reader.backlink_groups.is_empty());
+            assert!(reader.pane.backlinks.is_empty() && reader.pane.backlink_groups.is_empty());
             assert!(reader.backlink_titles.is_empty());
             assert!(reader.inbox.is_empty() && reader.inbox_source.is_none());
             assert_eq!(reader.current_rel, "start.md");

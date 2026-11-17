@@ -237,7 +237,7 @@ mod tests {
         reader.update_in(visual, |r, window, _| {
             assert_eq!(r.navigation.history, history);
             assert_eq!(r.current_rel, "Start.md");
-            assert!(r.file_preview.is_none());
+            assert!(r.pane.file_preview.is_none());
             assert!(r.tree_preview.is_open());
             assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin");
             assert!(r.tree_focus.is_focused(window));
@@ -264,7 +264,7 @@ mod tests {
             assert!(!r.tree_preview.is_open());
             assert_eq!(r.tree.cursor.as_deref(), Some("Beta.bin"));
             assert!(r.tree_preview.preview.is_none());
-            assert!(r.file_preview.is_none(), "preview must not navigate");
+            assert!(r.pane.file_preview.is_none(), "preview must not navigate");
         });
         visual.simulate_keystrokes("space escape");
         visual.run_until_parked();
@@ -297,7 +297,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.current_rel, "Start.md");
-            assert!(r.file_preview.is_none());
+            assert!(r.pane.file_preview.is_none());
             assert!(!r.tree_preview.is_open());
         });
     }

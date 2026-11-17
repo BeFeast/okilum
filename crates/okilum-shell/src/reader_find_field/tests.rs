@@ -364,6 +364,7 @@ fn archive_extract_enablement_and_entry_focus_follow_the_hosted_pane(cx: &mut Te
     });
     let archive = reader.read_with(visual, |reader, _| {
         reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()

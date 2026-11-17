@@ -869,7 +869,7 @@ impl Reader {
                     ("copy as rich text", PaletteItem::CopyWithFormatting),
                 ] {
                     if label.contains(&query)
-                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.use_html)
+                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.pane.use_html)
                     {
                         items.push((PaletteSection::Files, item));
                     }
@@ -1882,7 +1882,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "24q4.md");
-            let props = v.properties.as_ref().unwrap();
+            let props = v.pane.properties.as_ref().unwrap();
             assert_eq!(
                 reader_properties::summary(props),
                 "Quarter · 1 relation",
@@ -2962,11 +2962,14 @@ canaryhidden [[Target]]",
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
             assert_eq!(
-                v.file_preview.as_ref().map(|preview| preview.rel.as_str()),
+                v.pane
+                    .file_preview
+                    .as_ref()
+                    .map(|preview| preview.rel.as_str()),
                 Some("tg.log")
             );
             assert!(!v.single_file, "vault-mode positive control");
-            let preview = v.file_preview.as_ref().unwrap();
+            let preview = v.pane.file_preview.as_ref().unwrap();
             assert!(
                 preview.log.is_some(),
                 "Quick Open mounts the structured log viewer"

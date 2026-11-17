@@ -9,7 +9,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             return;
         };
         if preview.code.is_some()
@@ -35,6 +35,7 @@ impl Reader {
             let association = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 let Some(preview) = this
+                    .pane
                     .file_preview
                     .as_mut()
                     .filter(|p| Arc::ptr_eq(&p.live_identity, &identity))

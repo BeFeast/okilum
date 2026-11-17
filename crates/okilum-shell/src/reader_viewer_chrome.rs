@@ -114,6 +114,7 @@ impl HeaderKey {
                 reader.selected_title(),
             ),
             viewers: reader
+                .pane
                 .file_preview
                 .as_ref()
                 .map(|preview| {
@@ -137,6 +138,7 @@ impl HeaderKey {
                 .unwrap_or_default(),
             overflow_order: chrome.overflow_order,
             drawing_revision: reader
+                .pane
                 .file_preview
                 .as_ref()
                 .and_then(|preview| preview.drawing.as_ref())
@@ -205,7 +207,7 @@ impl Render for Header {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reader
             .update(cx, |reader, cx| {
-                if reader.file_preview.is_some() {
+                if reader.pane.file_preview.is_some() {
                     reader.render_file_header(window, cx).into_any_element()
                 } else {
                     div().into_any_element()
@@ -732,6 +734,7 @@ impl Reader {
             return Some(target);
         }
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .filter(|_| self.editing.is_none())
@@ -750,6 +753,7 @@ impl Reader {
             return chrome;
         }
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .filter(|_| self.editing.is_none())
@@ -762,7 +766,7 @@ impl Reader {
     }
     /// A HAR file's Source view is its JSON viewer plus a way back (#2836).
     fn with_har_views(&self, chrome: ViewerChrome, cx: &App) -> ViewerChrome {
-        match self.file_preview.as_ref().and_then(|p| p.har.as_ref()) {
+        match self.pane.file_preview.as_ref().and_then(|p| p.har.as_ref()) {
             Some(har) => reader_har::with_requests_view(chrome, har, cx),
             None => chrome,
         }
@@ -773,7 +777,7 @@ impl Reader {
         if let Some(chrome) = self.file_editor_chrome(cx, true) {
             return chrome;
         }
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             return ViewerChrome::default();
         };
         if let Some(log) = &preview.log {
@@ -899,6 +903,7 @@ impl Reader {
         let editing = self.editing.is_some();
         let editable = self.file_is_source() && self.code_file_editable(cx);
         let width_applies = self
+            .pane
             .file_preview
             .as_ref()
             .is_some_and(|p| p.log.is_none() && (p.code.is_some() || p.text.is_some()));
@@ -1319,6 +1324,7 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
 
 pub(crate) fn copy_content_available(reader: &Reader) -> bool {
     reader
+        .pane
         .file_preview
         .as_ref()
         .is_some_and(|p| p.code.is_some() || p.text.is_some() || p.log.is_some())

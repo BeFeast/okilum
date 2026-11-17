@@ -107,6 +107,7 @@ fn draw(visual: &mut VisualTestContext) {
 fn har(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Entity<HarView> {
     reader.read_with(visual, |reader, _| {
         reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()
@@ -383,7 +384,14 @@ fn har2836_switching_files_cancels_indexing_and_releases_the_view(cx: &mut TestA
     // Switch away before the worker has read anything.
     let (cancel, weak) = reader.update_in(visual, |reader, window, cx| {
         reader.preview_file("big.har", window, cx);
-        let har = reader.file_preview.as_ref().unwrap().har.as_ref().unwrap();
+        let har = reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .har
+            .as_ref()
+            .unwrap();
         let state = (har.read(cx).cancel.clone(), har.downgrade());
         reader.preview_file("data.json", window, cx);
         state
@@ -407,7 +415,7 @@ fn har2836_source_is_the_json_viewer_and_requests_come_back(cx: &mut TestAppCont
     visual.simulate_click(source.center(), Modifiers::default());
     draw(visual);
     let ids: Vec<_> = reader.read_with(visual, |reader, cx| {
-        assert!(reader.file_preview.as_ref().unwrap().code.is_some());
+        assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some());
         assert!(!reader.code_file_editable(cx), "Source is read-only");
         reader
             .viewer_chrome(cx)
@@ -427,7 +435,7 @@ fn har2836_source_is_the_json_viewer_and_requests_come_back(cx: &mut TestAppCont
     visual.simulate_click(requests.center(), Modifiers::default());
     draw(visual);
     reader.read_with(visual, |reader, _| {
-        assert!(reader.file_preview.as_ref().unwrap().code.is_none())
+        assert!(reader.pane.file_preview.as_ref().unwrap().code.is_none())
     });
     assert_eq!(
         har(&reader, visual).entity_id(),
@@ -475,7 +483,7 @@ fn har2836_damaged_and_foreign_files_explain_and_offer_source(cx: &mut TestAppCo
     visual.simulate_click(button.center(), Modifiers::default());
     draw(visual);
     reader.read_with(visual, |reader, _| {
-        assert!(reader.file_preview.as_ref().unwrap().code.is_some())
+        assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some())
     });
 }
 
@@ -1284,13 +1292,13 @@ fn issue2932_right_panel_shows_the_capture_overview(cx: &mut TestAppContext) {
     // Source keeps the Overview; a row there goes back to the requests.
     click(visual, "har-view-source");
     reader.read_with(visual, |reader, _| {
-        assert!(reader.file_preview.as_ref().unwrap().code.is_some())
+        assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some())
     });
     assert!(measured_bounds(visual, "har-overview-heading").is_some());
     assert!(measured_bounds(visual, "file-contents-heading").is_none());
     click(visual, "har-overview-status-4xx");
     reader.read_with(visual, |reader, _| {
-        assert!(reader.file_preview.as_ref().unwrap().code.is_none())
+        assert!(reader.pane.file_preview.as_ref().unwrap().code.is_none())
     });
     assert_eq!(rows(&har, visual), [1]);
     assert!(measured_bounds(visual, "har-list").is_some());

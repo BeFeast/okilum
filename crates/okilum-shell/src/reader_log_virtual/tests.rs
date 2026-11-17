@@ -23,6 +23,7 @@ fn toolbar2808_embedded_okilog_plans_from_its_docked_pane(cx: &mut TestAppContex
     let bounds = reader_viewer_chrome::tests::measured_bounds;
     let panel = reader.read_with(visual, |reader, _| {
         reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()
@@ -315,6 +316,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         visual.run_until_parked();
         if reader.read_with(visual, |reader, cx| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .and_then(|preview| preview.virtual_log.as_ref())
@@ -330,7 +332,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     }
     reader.read_with(visual, |reader, cx| {
         assert_eq!(reader.selected_file(), "view.okilog");
-        let preview = reader.file_preview.as_ref().unwrap();
+        let preview = reader.pane.file_preview.as_ref().unwrap();
         assert!(preview.log.is_none() && preview.code.is_none() && preview.text.is_none());
         let panel = preview.virtual_log.as_ref().unwrap().read(cx);
         assert!(panel.embedded);
@@ -355,6 +357,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
             "explicit .okilog Source must open"
         );
         let panel = reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()
@@ -371,6 +374,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         visual.run_until_parked();
         if reader.read_with(visual, |reader, cx| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -391,6 +395,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     }
     let inline = reader.read_with(visual, |reader, _| {
         reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()
@@ -420,7 +425,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     });
     std::fs::remove_file(&path).unwrap();
     reader.update(visual, |reader, cx| {
-        reader.file_preview.as_mut().unwrap().unavailable = Some("Deleted original".into());
+        reader.pane.file_preview.as_mut().unwrap().unavailable = Some("Deleted original".into());
         cx.notify();
     });
     visual.run_until_parked();
@@ -438,6 +443,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         visual.run_until_parked();
         if reader.read_with(visual, |reader, cx| {
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -457,7 +463,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     }
     visual.update(|window, cx| window.draw(cx).clear(cx));
     reader.read_with(visual, |reader, cx| {
-        let preview = reader.file_preview.as_ref().unwrap();
+        let preview = reader.pane.file_preview.as_ref().unwrap();
         let panel = preview.virtual_log.as_ref().unwrap().read(cx);
         assert!(panel.loaded.is_none() && panel.worker.is_none());
         assert_eq!(
@@ -471,7 +477,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     });
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
-        let preview = reader.file_preview.as_ref().unwrap();
+        let preview = reader.pane.file_preview.as_ref().unwrap();
         assert!(
             preview.log.is_some() && preview.virtual_log.is_none(),
             "ordinary log route stays intact"

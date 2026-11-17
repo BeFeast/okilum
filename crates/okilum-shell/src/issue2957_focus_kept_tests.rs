@@ -149,7 +149,11 @@ fn issue2957_find_keeps_focus_and_query_through_maximize_and_panel_hide_in_forma
 ) {
     let (fixture, visual) = open(cx, "test1.json");
     fixture.reader.read_with(visual, |r, _| {
-        let preview = r.file_preview.as_ref().expect("JSON opens as a preview");
+        let preview = r
+            .pane
+            .file_preview
+            .as_ref()
+            .expect("JSON opens as a preview");
         assert!(preview.code.is_some(), "JSON opens in the code viewer");
         assert!(r.editing.is_none(), "read-only Formatted view");
     });
@@ -228,7 +232,7 @@ fn issue2957_sidebar_rename_keeps_focus_when_the_toolbar_hides_the_right_panel_o
     settle(visual);
     let rename = fixture.reader.read_with(visual, |r, _| {
         assert_eq!(
-            r.file_preview.as_ref().map(|p| p.rel.as_str()),
+            r.pane.file_preview.as_ref().map(|p| p.rel.as_str()),
             Some("test1.json"),
             "positive control: the JSON stays shown"
         );
@@ -269,7 +273,10 @@ fn issue2957_rename_field_and_note_find_keep_focus_and_a_hidden_field_hands_it_t
 ) {
     let (fixture, visual) = open(cx, "note.md");
     fixture.reader.update_in(visual, |r, window, cx| {
-        assert!(r.file_preview.is_none() && r.editing.is_none(), "a note");
+        assert!(
+            r.pane.file_preview.is_none() && r.editing.is_none(),
+            "a note"
+        );
         r.begin_rename("note.md".into(), window, cx);
     });
     settle(visual);

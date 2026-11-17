@@ -98,14 +98,14 @@ fn issue2988_return_opens_focused_attachments_and_retains_note_folder_rename(
     reader.update_in(visual, |r, window, _| {
         assert_eq!(r.tree.cursor.as_deref(), Some("Beta.jpg"));
         assert_eq!(r.current_rel, "Start.md", "arrows only move the cursor");
-        assert!(r.file_preview.is_none());
+        assert!(r.pane.file_preview.is_none());
         assert!(r.tree_focus.is_focused(window));
     });
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     reader.update_in(visual, |r, window, cx| {
         assert_eq!(r.selected_file(), "Beta.jpg");
-        assert!(r.file_preview.as_ref().unwrap().image);
+        assert!(r.pane.file_preview.as_ref().unwrap().image);
         assert!(r.renaming.is_none());
         assert!(r.tree_focus.is_focused(window));
         assert!(Root::read(window, cx)
@@ -119,7 +119,7 @@ fn issue2988_return_opens_focused_attachments_and_retains_note_folder_rename(
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert_eq!(r.selected_file(), "Unknown.bin");
-        assert!(!r.file_preview.as_ref().unwrap().image);
+        assert!(!r.pane.file_preview.as_ref().unwrap().image);
         assert!(r.renaming.is_none());
     });
     assert!(
@@ -204,7 +204,7 @@ fn issue2988_system_quick_look_refusal_falls_back_and_arrows_preview_without_nav
         assert!(r.tree_preview.is_open());
         assert!(r.tree_focus.is_focused(window));
         assert_eq!(r.current_rel, "Start.md");
-        assert!(r.file_preview.is_none());
+        assert!(r.pane.file_preview.is_none());
         assert_eq!(r.navigation.history, history);
         assert!(Root::read(window, cx)
             .notification

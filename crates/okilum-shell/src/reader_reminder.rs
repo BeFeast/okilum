@@ -433,7 +433,7 @@ impl Reader {
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
         // A right-click on a link belongs to the link's own menu (#943).
         if self.single_file
-            || self.file_preview.is_some()
+            || self.pane.file_preview.is_some()
             || self.current_rel.is_empty()
             || self.pointer_on_link()
         {

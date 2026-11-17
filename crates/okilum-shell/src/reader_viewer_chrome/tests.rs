@@ -394,7 +394,7 @@ fn pdf_header_buttons_and_erased_overflow_callbacks_zoom_the_active_pdf(cx: &mut
     cx.executor().allow_parking();
     let (reader, visual, _temp) = fixture(cx, "document.pdf");
     let pdf = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().pdf.clone().unwrap()
     });
     let start = std::time::Instant::now();
     loop {
@@ -530,7 +530,14 @@ fn read_mode_find_keystrokes_do_not_notify_cached_side_panels(cx: &mut TestAppCo
     });
     visual.run_until_parked();
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     let start = std::time::Instant::now();
     while code.read_with(visual, |code, _| code.document_snapshot().is_none()) {
@@ -588,7 +595,14 @@ fn async_editable_flip_refreshes_header_on_the_next_reader_render(cx: &mut TestA
     let (reader, visual, _temp) = fixture(cx, "note.md");
     let code = reader.update_in(visual, |reader, window, cx| {
         reader.preview_file("source.rs", window, cx);
-        let code = reader.file_preview.as_ref().unwrap().code.clone().unwrap();
+        let code = reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap();
         assert!(
             code.read(cx).loading(),
             "exercise the asynchronous loading state"
@@ -648,7 +662,14 @@ fn code2809_warning_badge_consumes_breadcrumb_spare_width(cx: &mut TestAppContex
     let (reader, visual, _temp) = fixture_with_files(cx, name, &[(name, "{broken}")]);
     visual.run_until_parked();
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     code.update(visual, |code, cx| {
         code.source_bytes_for_layout_test(5_200_000);
@@ -682,7 +703,14 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
     cx.executor().allow_parking();
     let (reader, visual, temp) = fixture(cx, "document.pdf");
     let first = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .pdf
+            .clone()
+            .unwrap()
     });
     let start = std::time::Instant::now();
     while first.read_with(visual, |pdf, _| pdf.page_count().is_none()) {
@@ -720,7 +748,7 @@ fn pdf_reopen_rebinds_cached_header_zoom_to_the_new_viewer(cx: &mut TestAppConte
         reader.viewer_header.borrow().as_ref().unwrap().entity_id()
     });
     reader.update(visual, |reader, cx| {
-        reader.file_preview.as_mut().unwrap().pdf = Some(second.clone());
+        reader.pane.file_preview.as_mut().unwrap().pdf = Some(second.clone());
         cx.notify();
     });
     visual.run_until_parked();
@@ -1069,7 +1097,7 @@ fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut 
     // to /private/var, while tempfile can retain the /var spelling.
     let (reader, visual, temp) = fixture(cx, "columns.log");
     let log_path = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().path.clone()
+        reader.pane.file_preview.as_ref().unwrap().path.clone()
     });
     assert_eq!(
         log_path.canonicalize().unwrap(),
@@ -1171,7 +1199,14 @@ fn toolbar2808_real_log_overflow_order_and_columns_submenu_work_at_700(cx: &mut 
 fn code2809_view_changes_invalidate_the_cached_header_without_refresh(cx: &mut TestAppContext) {
     let (reader, visual, _temp) = fixture(cx, "data.json");
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     let draw = |visual: &mut VisualTestContext| {
         for _ in 0..3 {
@@ -1296,7 +1331,7 @@ fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext)
     visual.simulate_resize(size(px(1700.), px(800.)));
     visual.run_until_parked();
     let code = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     code.update_in(visual, |p, w, cx| {
         p.set_view(reader_code_file::View::Formatted, w, cx)

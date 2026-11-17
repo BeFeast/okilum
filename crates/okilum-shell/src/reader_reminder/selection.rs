@@ -154,7 +154,7 @@ impl Owner {
 
     pub(super) fn current(&self, reader: &Reader) -> bool {
         !reader.single_file
-            && reader.file_preview.is_none()
+            && reader.pane.file_preview.is_none()
             && !self.document.is_empty()
             && self.root == reader.vault_root
             && self.state == reader.session_directory
@@ -206,7 +206,7 @@ impl Request {
             return Self::read(reader, cx);
         }
         if reader.single_file
-            || reader.file_preview.is_some()
+            || reader.pane.file_preview.is_some()
             || reader.current_rel.is_empty()
             || reader.pointer_on_link()
             || reader.editing.is_some()

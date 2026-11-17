@@ -109,8 +109,8 @@ impl Target {
         self.matches(reader)
             && self.accepted_source.as_ref().is_none_or(|source| {
                 reader.editing.is_none()
-                    && reader.file_preview.is_none()
-                    && !reader.use_html
+                    && reader.pane.file_preview.is_none()
+                    && !reader.pane.use_html
                     && reader.content.read(cx).document_source().as_ref() == Some(source)
             })
     }
@@ -325,7 +325,7 @@ impl Reader {
         if !target.matches(self) {
             return;
         }
-        if self.editing.is_none() && self.file_preview.is_none() && !self.use_html {
+        if self.editing.is_none() && self.pane.file_preview.is_none() && !self.pane.use_html {
             target.accepted_source = self.content.read(cx).document_source();
         }
         let selection = reader_read_menu::snapshot(self, cx);
@@ -382,7 +382,12 @@ impl Reader {
     }
 
     pub(super) fn copy_preview_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(preview) = self.file_preview.as_ref().filter(|preview| preview.image) else {
+        let Some(preview) = self
+            .pane
+            .file_preview
+            .as_ref()
+            .filter(|preview| preview.image)
+        else {
             return;
         };
         let Ok(url) = url::Url::from_file_path(&preview.path) else {

@@ -1103,8 +1103,8 @@ impl Reader {
         self.sidebar.properties_collapsed = saved.properties_collapsed;
         self.sidebar.show_hidden = saved.show_hidden;
         self.recent_expanded = saved.recent_expanded;
-        self.properties_open = saved.properties_open;
-        self.show_hidden_properties = saved.hidden_properties;
+        self.pane.properties_open = saved.properties_open;
+        self.pane.show_hidden_properties = saved.hidden_properties;
         self.ui_state.tree = Some(saved.clone());
         self.ui_state.live_preview = saved.live_preview;
         if saved.source {
@@ -1242,7 +1242,10 @@ impl Reader {
         let Some(offset) = self.ui_state.source.take() else {
             return;
         };
-        if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
+        if self.editing.is_none()
+            && !self.current_rel.is_empty()
+            && self.pane.file_preview.is_none()
+        {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
             if self.editing.is_none() {
@@ -1389,9 +1392,10 @@ impl Reader {
                 )
             }),
             recent_expanded: self.recent_expanded,
-            properties_open: self.properties_open,
-            hidden_properties: self.show_hidden_properties,
+            properties_open: self.pane.properties_open,
+            hidden_properties: self.pane.show_hidden_properties,
             note: self
+                .pane
                 .file_preview
                 .as_ref()
                 .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
