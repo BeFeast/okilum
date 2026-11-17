@@ -1139,7 +1139,10 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
 
     // 2. Under the hold: the competing inbound change is withheld, other
     //    folders and vaults keep working, Reader drafts are retained.
-    fs::write(source.vault.join("withheld.md"), b"competing inbound change")?;
+    fs::write(
+        source.vault.join("withheld.md"),
+        b"competing inbound change",
+    )?;
     fs::write(source_second.join("progress.md"), b"second folder progress")?;
     let mut other = FileEditor::open(&unrelated.join("note.md"), &drafts)?;
     other.set_text("unrelated vault save".into())?;
@@ -1189,7 +1192,10 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
         .contains(&"selected".into()));
     let api = identity.connect()?;
     wait("REST after restart", || Ok(api.folder("selected").is_ok()))?;
-    fs::write(source_second.join("after-restart.md"), b"second after restart")?;
+    fs::write(
+        source_second.join("after-restart.md"),
+        b"second after restart",
+    )?;
     wait("second folder transfers after runtime restart", || {
         source.api.scan("second")?;
         Ok(second.join("after-restart.md").exists())
@@ -1208,7 +1214,10 @@ fn issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold() -
     //    retained drafts save, and the recovered snapshot cannot replay.
     let mut hold = authority.recover(&observed)?;
     let token = hold.token().clone();
-    assert!(hold.try_hold(&token)?, "no writer is admitted during recovery");
+    assert!(
+        hold.try_hold(&token)?,
+        "no writer is admitted during recovery"
+    );
     let scope = ScopedHold::acquire(identity.clone(), "selected", hold, true)?;
     scope.validate()?;
     assert!(!selected.join("withheld.md").exists());
