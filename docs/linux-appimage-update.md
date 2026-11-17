@@ -96,9 +96,11 @@ whole next session. When Okilum runs inside a systemd user service
 unit when Okilum quits and, with the default `ExitType=main`, kills every
 process in it. Arming therefore moves the helper into its own transient scope
 `okilum-update-<pid>.scope` through the user manager (#3077); the relaunched
-build runs there. The outcome is recorded in `apply.log`. If the move
-fails the helper stays where it is, as before, and a service launched without
-`ExitType=cgroup` can still lose it.
+build runs there. Until the move is done the helper waits at a gate (a pipe on
+fd 8) and runs shell builtins only, so no child of it is left in the service.
+The outcome is recorded in `apply.log`. If the move fails the helper stays
+where it is, as before, and a service launched without `ExitType=cgroup` can
+still lose it.
 A later session exit never rolls back a committed update. The recovery directory
 is printed in the diagnostic log; it contains `previous.AppImage` and `apply.log`.
 A successful replacement retains the previous file for manual recovery. Restore
