@@ -326,7 +326,7 @@ fn selection_and_scope_changes_never_start_or_retarget_logs(cx: &mut TestAppCont
         ] {
             assert!(args.iter().any(|a| a == expected), "{expected} in {args:?}");
         }
-        assert!(!args.iter().any(|a| a == "--previous"));
+        assert!(args.iter().any(|a| a == "--previous=false"));
     }
     h.send(0, b"first line\nsecond line\n", worker::Status::Reading);
     let view = h.workspace.read_with(h.visual, |ws, cx| {
@@ -398,7 +398,7 @@ fn selection_and_scope_changes_never_start_or_retarget_logs(cx: &mut TestAppCont
         assert!(started.requests[1]
             .args()
             .unwrap()
-            .contains(&"--previous".to_string()));
+            .contains(&"--previous=true".to_string()));
     }
     // Old rows stay until the new session sends.
     h.workspace.read_with(h.visual, |ws, _| {
@@ -569,9 +569,16 @@ fn workspace_layout_keeps_regions_apart_in_light_and_dark(cx: &mut TestAppContex
         assert!(h.visual.debug_bounds("k8s-dock-empty").is_some());
     }
     // Inspector tabs: Events and the typed Manifest.
+    let diag = format!(
+        "tab {:?} tabs {:?} inspector {:?} title {:?}",
+        h.visual.debug_bounds("k8s-tab-Manifest"),
+        h.visual.debug_bounds("k8s-inspector-tabs"),
+        h.visual.debug_bounds("k8s-inspector"),
+        h.visual.debug_bounds("k8s-inspector-title"),
+    );
     h.click("k8s-tab-Manifest");
     h.workspace.read_with(h.visual, |ws, _| {
-        assert_eq!(ws.tab, Tab::Manifest, "tab click")
+        assert_eq!(ws.tab, Tab::Manifest, "tab click: {diag}")
     });
     assert!(h.visual.debug_bounds("k8s-manifest").is_some());
     h.click("k8s-tab-Events");
