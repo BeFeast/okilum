@@ -10,10 +10,12 @@
 //! Okilum shows such images itself with the saved token ([`image_source`]);
 //! other apps get pomoi's sign-in answer (401). The token lives in the OS
 //! credential store, never in the vault or the settings file.
+use crate::note_paste::anchor::Anchor;
 use gpui::{
     App, Asset, Global, Image, ImageCacheError, ImageFormat, ImageSource, RenderImage, Window,
 };
-use std::path::Path;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -233,7 +235,7 @@ pub(crate) fn remote_link(name: &str, url: &str) -> String {
 /// Where `links` stand in `source`, last first, so replacing them in order
 /// keeps the earlier ranges valid. `[[x.zip]]` inside `![[x.zip]]` is not a
 /// match: that embed is not what the paste wrote.
-pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<std::ops::Range<usize>> {
+pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     for link in links {
         let mut from = 0;
@@ -244,7 +246,7 @@ pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<std::ops::Range
             if !embedded
                 && !ranges
                     .iter()
-                    .any(|r: &std::ops::Range<usize>| r.start < end && start < r.end)
+                    .any(|r: &Range<usize>| r.start < end && start < r.end)
             {
                 ranges.push(start..end);
             }
@@ -253,6 +255,76 @@ pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<std::ops::Range
     }
     ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
     ranges
+}
+
+/// One link a paste wrote to a file it saved, remembered by its own place
+/// in the note ([`Anchor`]) and exact text. Only this link is ever rewritten,
+/// and only while it is still there unchanged: never a copy elsewhere in the
+/// note, in a code block or in another note.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InsertedLink {
+    pub path: PathBuf,
+    pub anchor: Anchor,
+    pub link: String,
+}
+
+/// The links to `paths` inside `span`, the text a paste has just inserted
+/// into `text` (the whole note). A saved file the inserted text does not link
+/// (a "keep original" copy) has none and is not uploaded.
+pub(crate) fn inserted_links(
+    text: &str,
+    span: Range<usize>,
+    vault_root: &Path,
+    paths: &[PathBuf],
+) -> Vec<InsertedLink> {
+    let Some(inserted) = text.get(span.clone()) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for path in paths {
+        let links = local_links(vault_root, path);
+        for range in link_ranges(inserted, &links).into_iter().rev() {
+            let start = span.start + range.start;
+            found.push(InsertedLink {
+                path: path.clone(),
+                anchor: Anchor::at(text, start),
+                link: inserted[range].to_owned(),
+            });
+        }
+    }
+    found.sort_by_key(|link| link.anchor.offset);
+    found
+}
+
+impl InsertedLink {
+    /// Where this link stands now, if it is still intact.
+    pub(crate) fn locate(&self, current: &str) -> Option<Range<usize>> {
+        let at = self.anchor.locate_text(current, &self.link)?;
+        Some(at..at + self.link.len())
+    }
+}
+
+/// Keep the other links' anchors exact after one range of `before` was
+/// replaced, giving `after`; a link that can no longer be found is left as
+/// it is (it will not be rewritten).
+pub(crate) fn reanchor(
+    links: &mut [InsertedLink],
+    before: &str,
+    replaced: Range<usize>,
+    replacement_len: usize,
+    after: &str,
+) {
+    for link in links {
+        let Some(at) = link.anchor.locate_text(before, &link.link) else {
+            continue;
+        };
+        let moved = if at >= replaced.end {
+            at + replacement_len - replaced.len()
+        } else {
+            at
+        };
+        link.anchor = Anchor::at(after, moved);
+    }
 }
 
 /// The token as Okilum knows it this session. Read from the credential store
@@ -493,6 +565,51 @@ mod tests {
         assert_eq!(&source[ranges[0].clone()], "[[a/data.zip]]");
         assert_eq!(&source[ranges[1].clone()], "[[data.zip]]");
         assert!(link_ranges("nothing here", &links).is_empty());
+    }
+
+    /// Review of #3114: only the link the paste inserted is rewritten, never
+    /// the same link elsewhere in the note (a code block, an older copy).
+    #[test]
+    fn only_the_inserted_link_is_found_and_only_while_unchanged() {
+        let root = Path::new("/vault");
+        let file = PathBuf::from("/vault/attachments/shot.png");
+        let pasted = "![[shot.png]]";
+        let note = format!("```\n{pasted}\n```\nintro {pasted} outro\n{pasted}\n");
+        let start = note.find("intro ").unwrap() + "intro ".len();
+        let links = inserted_links(&note, start..start + pasted.len(), root, &[file.clone()]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].locate(&note), Some(start..start + pasted.len()));
+        // Typed elsewhere: the same link is found where it moved to.
+        let moved = format!("new line\n{note}");
+        let shift = "new line\n".len();
+        assert_eq!(
+            links[0].locate(&moved),
+            Some(start + shift..start + shift + pasted.len())
+        );
+        // The inserted link edited: nothing to rewrite, though copies remain.
+        let edited = note.replacen("intro ![[shot.png]]", "intro ![[shot.png|300]]", 1);
+        assert_eq!(links[0].locate(&edited), None);
+        // A saved file the inserted text does not link is not uploaded.
+        let other = PathBuf::from("/vault/attachments/shot.original.png");
+        assert!(inserted_links(&note, start..start + pasted.len(), root, &[other]).is_empty());
+    }
+
+    #[test]
+    fn rewriting_one_link_keeps_the_next_ones_exact() {
+        let root = Path::new("/vault");
+        let a = PathBuf::from("/vault/a.pdf");
+        let b = PathBuf::from("/vault/b.zip");
+        let inserted = "![[a.pdf]]\n[[b.zip]]";
+        let note = format!("x\n{inserted}\ny");
+        let mut links = inserted_links(&note, 2..2 + inserted.len(), root, &[a, b]);
+        assert_eq!(links.len(), 2);
+        let range = links[0].locate(&note).unwrap();
+        let remote = "[a.pdf](https://pomoi.co/f/1/a.pdf)";
+        let mut after = note.clone();
+        after.replace_range(range.clone(), remote);
+        reanchor(&mut links[1..], &note, range, remote.len(), &after);
+        let next = links[1].locate(&after).unwrap();
+        assert_eq!(&after[next], "[[b.zip]]");
     }
 
     #[test]

@@ -24,7 +24,7 @@ const PROGRESS_AFTER: Duration = Duration::from_millis(300);
 
 /// The note a background paste result belongs to (#1611).
 #[derive(Clone)]
-struct Target {
+pub(super) struct Target {
     reader: WeakEntity<Reader>,
     input: Entity<EditorState>,
     root: PathBuf,
@@ -45,7 +45,7 @@ impl Target {
     /// The editor to insert into now: the one pasted into while its session
     /// lasts, else the same note's current editor. `None` once the note is
     /// no longer being edited (left for Reader, another note, parked).
-    fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
+    pub(super) fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
         let reader = self.reader.upgrade()?;
         let editing = reader.read(cx).editing.as_ref()?;
         let same_note = self
@@ -53,6 +53,32 @@ impl Target {
             .as_deref()
             .is_some_and(|path| editing.store.path() == path);
         (editing.input == self.input || same_note).then(|| editing.input.clone())
+    }
+
+    pub(super) fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// #1073: after text went into this note at `region`, upload the saved
+    /// files it links (only when the setting is on). Never another note.
+    fn upload_inserted(
+        &self,
+        region: &Region,
+        saved: &[PathBuf],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if saved.is_empty() {
+            return;
+        }
+        let Some(input) = self.live(cx) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let Some(span) = region.locate(&text) else {
+            return;
+        };
+        super::paste_upload::start(self.clone(), &text, span, saved, window, cx);
     }
 }
 
@@ -77,8 +103,6 @@ impl Reader {
     ) {
         self.pasted_attachments_saved(paths, cx);
         reader_toast::saved_attachments(&self.vault_root, paths, window, cx);
-        // #1073: optional upload, then the note links the uploaded copy.
-        super::paste_upload::start(self, paths, window, cx);
     }
 
     /// Paste as Plain Text and Paste as Titled Link, from keys and menus.
@@ -174,15 +198,37 @@ impl Reader {
     ) {
         self.publish_saved_attachments(&routed.saved_files, window, cx);
         if let Some(text) = &routed.insert {
-            input.update(cx, |state, cx| {
-                state.replace_source_range(offset..offset, text, window, cx);
+            let inserted = input.update(cx, |state, cx| {
+                state.replace_source_range(offset..offset, text, window, cx)
             });
+            if inserted && !routed.saved_files.is_empty() {
+                // #1073: exactly the dropped text, in this note.
+                let target = self.paste_target(input.clone(), cx);
+                let note = input.read(cx).value().to_string();
+                let span = offset..offset + text.len();
+                super::paste_upload::start(target, &note, span, &routed.saved_files, window, cx);
+            }
         }
         if let Some(notice) = routed.notice {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
             self.run_paste_follow_up(input, follow_up, window, cx);
+        }
+    }
+
+    /// The note a paste into `input` belongs to, for its background results.
+    pub(super) fn paste_target(&self, input: Entity<EditorState>, cx: &Context<Self>) -> Target {
+        let path = self
+            .editing
+            .as_ref()
+            .filter(|editing| editing.input == input)
+            .map(|editing| editing.store.path().to_path_buf());
+        Target {
+            reader: cx.entity().downgrade(),
+            input,
+            root: self.vault_root.clone(),
+            path,
         }
     }
 
@@ -194,17 +240,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = self
-            .editing
-            .as_ref()
-            .filter(|editing| editing.input == input)
-            .map(|editing| editing.store.path().to_path_buf());
-        let input = Target {
-            reader: cx.entity().downgrade(),
-            input,
-            root: self.vault_root.clone(),
-            path,
-        };
+        let input = self.paste_target(input, cx);
         match follow_up {
             FollowUp::Files { plan, anchor } => {
                 if plan.ask {
@@ -417,8 +453,9 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             if !links.is_empty() {
                 let block = links.len() > 1;
                 let text = links.join("\n");
-                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
-                    note_closed(&links.join("  "), window, cx);
+                match insert_at_anchor(&input, &anchor, &text, block, false, window, cx) {
+                    Some(region) => input.upload_inserted(&region, &saved_files, window, cx),
+                    None => note_closed(&links.join("  "), window, cx),
                 }
             }
             if !errors.is_empty() {
@@ -455,8 +492,9 @@ fn run_job(
         let _ = cx.update_window(handle, |_, window, cx| match result {
             Ok((text, files)) => {
                 input.files_saved(&files, window, cx);
-                if insert_at_anchor(&input, &anchor, &text, false, false, window, cx).is_none() {
-                    note_closed(&text, window, cx);
+                match insert_at_anchor(&input, &anchor, &text, false, false, window, cx) {
+                    Some(region) => input.upload_inserted(&region, &files, window, cx),
+                    None => note_closed(&text, window, cx),
                 }
             }
             Err(text) => reader_toast::error(text, window, cx),
@@ -626,6 +664,8 @@ fn convert_in_background(
                 note_closed("", window, cx);
                 return;
             };
+            // #1073: the images saved from `data:`/`file://` sources.
+            input.upload_inserted(&region, &done.files, window, cx);
             if done.deferred > 0 {
                 reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
             } else if done.failed > 0 {
@@ -747,6 +787,8 @@ fn download_images(
     cx.spawn(async move |cx| {
         let mut region = region;
         let (mut saved, mut failed, mut replaced) = (0usize, 0usize, 0usize);
+        // #1073: files whose embed went into the note, uploaded at the end.
+        let mut linked_files = Vec::new();
         while let Ok((index, result)) = receiver.recv().await {
             done.fetch_add(1, Ordering::Relaxed);
             let image = &images[index];
@@ -790,10 +832,17 @@ fn download_images(
                         let _ = std::fs::remove_file(path);
                     }
                 }
+            } else {
+                linked_files.extend(name.paths);
             }
             replaced += hits;
         }
         finished.store(true, Ordering::Relaxed);
+        if !linked_files.is_empty() {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                input.upload_inserted(&region, &linked_files, window, cx)
+            });
+        }
         diagnostic_error!(
             "Paste: images downloaded={saved} failed={failed} replaced={replaced} ms={}",
             started.elapsed().as_millis()

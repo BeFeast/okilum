@@ -1438,6 +1438,24 @@ impl Reader {
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
+                        // #1073: the pasted text ends at the caret; its links
+                        // to the files this paste saved may be uploaded.
+                        if !pending.saved_files.is_empty() {
+                            let (note, caret) = {
+                                let state = input.read(cx);
+                                (state.value().to_string(), state.cursor())
+                            };
+                            let span = caret.saturating_sub(*bytes)..caret;
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::start(
+                                target,
+                                &note,
+                                span,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            );
+                        }
                         if let Some(editing) = this
                             .editing
                             .as_ref()

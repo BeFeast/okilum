@@ -7,17 +7,25 @@ default.
 
 - A paste or drop saves its images and files into the vault's attachment
   folder exactly as before. Nothing about that path changes.
-- With the setting on, each saved file that the note links (`![[…]]` or
-  `[[…]]`, by name or vault path, as the paste wrote it) is then uploaded.
-  A "keep original" copy beside a converted image is not linked, so it is
-  not uploaded. A pasted note (`.md`) is never uploaded.
-- When the provider confirms the upload, every link the paste wrote to that
-  file is replaced, in the note's live editor, with the uploaded copy:
+- With the setting on, the upload starts only after the inserted text went
+  into its note's editor: a paste, a drop, a background file copy or image
+  save, a large rich-text paste (its `data:`/`file://` images) and images
+  downloaded from pasted rich text. Each link that inserted text holds to a
+  file the paste saved is remembered by its own place in the note (an
+  `Anchor`) and exact text. A saved file the text does not link (a "keep
+  original" copy) is not uploaded; a pasted note (`.md`) never is.
+- When the provider confirms the upload, only those links are rewritten to
+  the uploaded copy, only while each is still there unchanged, and only in
+  the editor of the note the paste went into (never the note the user moved
+  to, never a copy elsewhere in the note or inside a code block):
   `![name](https://pomoi.co/f/<id>/<name>)` for images, `[name](…)` for
   other files (Okilum renders a remote embed only as an image).
 - The local file always stays (decision Q2, 17.11). A failed upload, a
   closed note or a link the user changed meanwhile leaves the local link,
   and a toast says which.
+- The setting is checked again before every file is sent. Turning it off
+  stops the job: nothing more is sent, and an upload already under way no
+  longer changes the note.
 - Images and other files both upload (Q3).
 
 ## Privacy and rendering (Q1)
