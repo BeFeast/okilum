@@ -159,3 +159,18 @@ inbound change and publishes it after release. For a lost acknowledgement
 another operation ID, restores the original label, and is idempotent. A fresh
 operation cannot start while an unfinished hold is pending. The second folder on
 the shared runtime is never paused.
+
+### A missing folder root fences only that folder (#2582)
+
+A folder whose configured root no longer exists (moved, deleted or on an
+unmounted disk) no longer stops every vault on the managed runtime. The upgrade
+registration (`initialize`) binds the folders that are present and leaves the
+missing one unbound. Each launch pauses the missing folder in the offline
+configuration and records it in `paused_at_start`; the runtime starts and the
+other folders keep syncing. Runtime-wide effects such as network policy and
+device addresses need no writer lease for a root that is absent. While the root
+is missing, its own `FolderController` resume is refused. After it returns,
+launch keeps the fence, and only an explicit admitted resume (which binds an
+unbound folder under a writer lease) lifts it. A root that exists but has a
+different filesystem identity is still a replaced root and fails closed. An
+empty mount point left by an unmounted disk counts as such a replaced root.

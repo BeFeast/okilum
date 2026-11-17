@@ -19,6 +19,7 @@ CRASH_TEST = 'issue2043_crash_recovery_retains_versions_and_rejects_third_versio
 TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
+    'issue2582_missing_root_fences_only_that_folder_across_restart',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',

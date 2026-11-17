@@ -1032,6 +1032,40 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn issue2582_upgrade_binds_present_folders_and_skips_a_missing_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let instance = instance(root.path())?;
+        let present = root.path().join("present");
+        fs::create_dir(&present)?;
+        let missing = root.path().join("unmounted/vault");
+        fs::write(
+            instance.home.join("config.xml"),
+            format!(
+                r#"<configuration><folder id="present" path="{}"></folder><folder id="missing" path="{}"></folder></configuration>"#,
+                present.display(),
+                missing.display()
+            ),
+        )?;
+        // Before #2582's follow-up one unavailable root failed the upgrade
+        // of every vault on the runtime.
+        crate::managed_launch::initialize(&instance)?;
+        let binding: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("managed-launch/binding.json"))?)?;
+        let folders = binding["folders"].as_object().unwrap();
+        assert!(folders.contains_key("present"));
+        assert!(
+            !folders.contains_key("missing"),
+            "a missing root has no identity to bind"
+        );
+        assert!(
+            !missing.exists(),
+            "the upgrade never creates a missing root"
+        );
+        // Repeated initialization reuses the same registration.
+        crate::managed_launch::initialize(&instance)?;
+        Ok(())
+    }
+    #[test]
     fn issue2582_exact_legacy_unit_migrates_and_changed_definition_is_refused() -> Result<()> {
         for changed in [false, true] {
             let root = tempfile::tempdir()?;
