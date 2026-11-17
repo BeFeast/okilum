@@ -30,6 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 
 REPO = os.environ.get('GITHUB_REPOSITORY', 'BeFeast/okilum')
 FEED_TAG = 'macos-stable'
@@ -140,52 +141,110 @@ def update_appcast(app, r2, forgejo, appcast_args):
         data = new.read_bytes()
     # Clients re-check every hour; keep edge caches from serving a stale feed.
     r2.put(f'{app}/appcast.xml', data, 'application/xml', 'no-cache')
-    # Mirror to the old feed, so builds that still point there move to this one.
-    feed = forgejo.release(FEED_TAG)
-    if feed is not None:
-        # Forgejo cannot replace an asset in place; the old feed is briefly absent.
-        for asset in feed['assets']:
-            if asset['name'] == 'appcast.xml':
-                forgejo.call('DELETE', f'/releases/{feed["id"]}/assets/{asset["id"]}')
-        forgejo.upload(feed, 'appcast.xml', data)
+    mirror_feed(forgejo, data)
     print(data.decode())
+
+
+def mirror_feed(forgejo, data, *, only_if_changed=False):
+    """Mirror to the old feed, so builds that still point there move to this one."""
+    feed = forgejo.release(FEED_TAG)
+    if feed is None:
+        return
+    current = [asset for asset in feed['assets'] if asset['name'] == 'appcast.xml']
+    if only_if_changed and len(current) == 1 and forgejo.download(FEED_TAG, 'appcast.xml') == data:
+        return
+    # Forgejo cannot replace an asset in place; the old feed is briefly absent.
+    for asset in current:
+        forgejo.call('DELETE', f'/releases/{feed["id"]}/assets/{asset["id"]}')
+    forgejo.upload(feed, 'appcast.xml', data)
+
+
+# A retried publication of the same build (#1559) resumes where an earlier
+# attempt stopped instead of failing on its own release tag: a crash between
+# the release POST and the appcast write must not leave the beta stuck. Only
+# the exact build and source resume; every byte already published is verified
+# and a newer feed head is never replaced.
+def resumable_release(forgejo, tag, a):
+    release = forgejo.release(tag)
+    if release is None:
+        return None
+    if (release.get('tag_name') != tag or release.get('target_commitish') != a.source
+            or f'build {a.build} from {a.source}.' not in (release.get('body') or '')):
+        sys.exit(f'Release {tag} already exists')
+    return release
+
+
+def put_asset(forgejo, release, name, data):
+    """Upload once; a resumed publication verifies the copy an earlier attempt left."""
+    present = [asset for asset in release.get('assets') or [] if asset['name'] == name]
+    if not present:
+        forgejo.upload(release, name, data)
+        return
+    if len(present) != 1 or forgejo.download(release['tag_name'], name) != data:
+        sys.exit(f'Release {release["tag_name"]} already has a different {name}')
+
+
+def resume_appcast(app, r2, forgejo, a, url, length):
+    """True when this exact build already is in the feed (then only the mirror is synced)."""
+    current = r2.call('GET', f'{app}/appcast.xml')
+    if current is None:
+        return False
+    sparkle, okilum = release_notes.SPARKLE, release_notes.OKILUM
+    items = ET.fromstring(current).findall('./channel/item')
+    newest = max((int(i.findtext(sparkle + 'version')) for i in items), default=0)
+    if newest > a.build:
+        sys.exit(f'Newer build {newest} already published; not resuming {a.build}')
+    item = next((i for i in items if i.findtext(sparkle + 'version') == str(a.build)), None)
+    if item is None:
+        return False
+    enclosure = item.find('enclosure')
+    if (item.findtext(okilum + 'source') != a.source or enclosure is None
+            or enclosure.get('url') != url or enclosure.get('length') != str(length)
+            or enclosure.get(sparkle + 'edSignature') != a.signature):
+        sys.exit(f'Build {a.build} is already in the appcast with different contents')
+    mirror_feed(forgejo, current, only_if_changed=True)
+    return True
 
 
 def publish(a):
     forgejo, r2 = Forgejo(), R2()
     tag = f'macos-stable-{a.build}'
     archive = pathlib.Path(a.archive)
-    if forgejo.release(tag) is not None:
-        sys.exit(f'Release {tag} already exists')
-    body = (f'Signed and notarized macOS arm64 build {a.build} from {a.source}.\n'
-            f'Channel at publication: {a.channel}.')
-    if a.app == 'okilum':
-        notes_path = os.environ.get('OKILUM_RELEASE_NOTES')
-        notes = (json.loads(pathlib.Path(notes_path).read_text()) if notes_path else
-                 release_notes.prepare(r2, forgejo, 'macos', a.build, a.source, a.channel))
-        if (notes['build'], notes['source'], notes['platform'], notes['channel']) != (
-                a.build, a.source, 'macos', a.channel):
-            raise ValueError('Release notes do not belong to this Forgejo release')
-        body = release_notes.forgejo_body(notes, body)
-    release = forgejo.call('POST', '/releases', {
-        'tag_name': tag, 'target_commitish': a.source, 'name': f'Okilum {a.short_version} ({a.build})',
-        'body': body,
-        'draft': False, 'prerelease': a.channel != 'stable'})
+    release = resumable_release(forgejo, tag, a)
+    resumed = release is not None
+    if resumed:
+        print(f'Resuming publication of existing release {tag}')
+    else:
+        body = (f'Signed and notarized macOS arm64 build {a.build} from {a.source}.\n'
+                f'Channel at publication: {a.channel}.')
+        if a.app == 'okilum':
+            notes_path = os.environ.get('OKILUM_RELEASE_NOTES')
+            notes = (json.loads(pathlib.Path(notes_path).read_text()) if notes_path else
+                     release_notes.prepare(r2, forgejo, 'macos', a.build, a.source, a.channel))
+            if (notes['build'], notes['source'], notes['platform'], notes['channel']) != (
+                    a.build, a.source, 'macos', a.channel):
+                raise ValueError('Release notes do not belong to this Forgejo release')
+            body = release_notes.forgejo_body(notes, body)
+        release = forgejo.call('POST', '/releases', {
+            'tag_name': tag, 'target_commitish': a.source, 'name': f'Okilum {a.short_version} ({a.build})',
+            'body': body,
+            'draft': False, 'prerelease': a.channel != 'stable'})
     data = archive.read_bytes()
-    forgejo.upload(release, archive.name, data)
+    put_asset(forgejo, release, archive.name, data)
     key = f'{a.app}/{a.build}/{archive.name}'
     r2.put(key, data, 'application/zip')
-    update_appcast(a.app, r2, forgejo, ['add', '--build', str(a.build), '--short-version', a.short_version,
-                             '--channel', a.channel, '--url', f'{PUBLIC}/{key}',
-                             '--length', str(archive.stat().st_size), '--signature', a.signature,
-                             '--source', a.source, '--tree', a.tree])
+    if not (resumed and resume_appcast(a.app, r2, forgejo, a, f'{PUBLIC}/{key}', archive.stat().st_size)):
+        update_appcast(a.app, r2, forgejo, ['add', '--build', str(a.build), '--short-version', a.short_version,
+                                 '--channel', a.channel, '--url', f'{PUBLIC}/{key}',
+                                 '--length', str(archive.stat().st_size), '--signature', a.signature,
+                                 '--source', a.source, '--tree', a.tree])
     if a.app == 'okilum':
         # The zip stays first: it is the appcast enclosure that stable promotion checks.
         assets = [catalog.asset(key, 'Okilum-macos.zip', data)]
         dmg = pathlib.Path(a.dmg) if getattr(a, 'dmg', None) else None
         if dmg is not None:
             image = dmg.read_bytes()
-            forgejo.upload(release, dmg.name, image)
+            put_asset(forgejo, release, dmg.name, image)
             dmg_key = f'{a.app}/{a.build}/{dmg.name}'
             r2.put(dmg_key, image, 'application/x-apple-diskimage')
             assets.append(catalog.asset(dmg_key, dmg.name, image))

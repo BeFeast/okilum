@@ -9,6 +9,10 @@ on:
       run_id:
         required: true
         type: string
+      attempt:
+        description: 'Publication attempt for this build; set only by the bounded retry (#1559)'
+        required: false
+        default: '1'
 # Also shares the unified stable promotion's lock. Publication is short and
 # serialized across platforms; compilation uses independent cancellable groups.
 concurrency:
@@ -69,15 +73,105 @@ jobs:
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
         run: if [ "$PLATFORM" = appimage ]; then python scripts/releases/appimage_handoff.py publish --run "$SOURCE_RUN"; else python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"; fi
+
+  # Its own job: a failed refresh is visible but never re-runs a publication
+  # that already succeeded (only a failed publish job is retried, #1559).
+  refresh:
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: bridge
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
       - name: Refresh GitHub rolling Beta after platform publication
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import sys
           sys.path.insert(0, 'scripts/updater')
           from release import Forgejo
           Forgejo().call('POST', '/actions/workflows/releases.yml/dispatches',
                          {'ref': 'main', 'inputs': {}})
           PY
+
+  # A failed publication of a completed build is re-dispatched from the same
+  # artifacts (reuse, no rebuild), at most 3 attempts in all; the last failure
+  # turns red and records itself, with the actual feed state, in the "Beta
+  # publication failed" issue (#1559). A Mac publication resumes an attempt
+  # that stopped part-way. A successful, cancelled or skipped publication, and
+  # a failed refresh job, are never retried.
+  retry:
+    needs: publish
+    if: always() && github.ref == 'refs/heads/main' && needs.publish.result == 'failure'
+    runs-on: bridge
+    timeout-minutes: 8
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the exact source from the runner server
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout source is not a full commit SHA: ${CHECKOUT_SHA:-<empty>}" >&2
+            exit 1
+          fi
+          trap 'echo "::error::Source checkout failed at line $LINENO (exit $?)" >&2' ERR
+          echo "Checking out exact source $CHECKOUT_SHA from runner origin"
+          : "${CHECKOUT_SERVER_URL:?}" "${CHECKOUT_REPOSITORY:?}"
+          [ -d .git ] || git init -q .
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "${CHECKOUT_SERVER_URL%/}/${CHECKOUT_REPOSITORY}.git"
+          # Keep origin/main and complete ancestry for source/provenance checks.
+          shallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then shallow=(--unshallow); fi
+          git fetch -q --force --prune --tags "${shallow[@]}" origin '+refs/heads/*:refs/remotes/origin/*' "$CHECKOUT_SHA"
+          git checkout -q -f --detach "$CHECKOUT_SHA"
+          git clean -q -ffdx
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+
+      - name: Re-dispatch the failed publication of the same build
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          SOURCE_RUN: ${{ inputs.run_id }}
+          ATTEMPT: ${{ inputs.attempt || '1' }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: python3 scripts/releases/publication.py retry "$PLATFORM" --run "$SOURCE_RUN" --attempt "$ATTEMPT"
