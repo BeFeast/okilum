@@ -252,6 +252,18 @@ negotiation, deadline and limits (#2006); GPUI core stays unpatched. Okilum's
 own copy (owner process named by the X-Resource extension), servers without
 X-Resource, self-owned Wayland selections and unsupported compositors use
 GPUI's typed clipboard on the UI thread.
+On both Linux protocols Ctrl+V reads the offer's type list first and then only
+the flavors the router asks for (#1618): a file copy that also offers a picture
+transfers the file list alone, and a paste into a code fence transfers the plain
+text alone. `text/uri-list` is preferred over `x-special/gnome-copied-files`
+(a file manager's cut pastes as a copy; KDE's cut marker is ignored).
+`chromium/x-source-url` and Firefox's `text/x-moz-url-priv` give relative links
+their page, `vscode-editor-data` names an IDE fence's language, and Firefox's
+UTF-16 HTML or source URL is decoded first. Every flavor of one paste comes from
+the same owner (X11) or offer (Wayland); a change, timeout or oversized flavor
+midway refuses the paste, and a flavor the owner will not convert reroutes the
+whole paste through GPUI's clipboard. The paste log line names the native types
+offered and the flavors read.
 Plain text containing HTML syntax stays literal instead of being guessed as an
 HTML clipboard offer. Windows note HTML uses the bounded path described above.
 Completed local attachment writes publish their exact saved paths to inventory, so a
