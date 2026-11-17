@@ -266,6 +266,8 @@ fn unique(folder: &Path, name: &str) -> PathBuf {
 }
 
 /// Remove `roots` and stale search sessions in `temp`, keeping vaults.
+// The Windows hook and Linux `--uninstall-data`; macOS uses `purge_planned`.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 pub(crate) fn purge(
     roots: &[PathBuf],
     state: Option<&Path>,
@@ -291,6 +293,7 @@ enum Step {
     EmptyAround(PathBuf),
 }
 impl Plan {
+    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
     fn remove_all(roots: &[PathBuf]) -> Self {
         Self {
             roots: roots
