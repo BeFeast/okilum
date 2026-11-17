@@ -109,7 +109,6 @@ fn platform_text(cx: &App) -> Result<Option<String>, Error> {
 /// A stable native offer read for a text-only field: its plain text.
 #[cfg(target_os = "linux")]
 pub(super) enum Selection {
-    Empty,
     Own,
     Data(Vec<(String, Vec<u8>)>),
 }
@@ -576,7 +575,6 @@ mod linux {
         match receive_selection(&mimes, own, |mime, limit| {
             live.receive(mime, limit, deadline, request)
         })? {
-            Selection::Empty => Ok(Exact::Text(None)),
             Selection::Own => Ok(Exact::Own),
             Selection::Data(mut data) => decode(data.remove(0).1).map(Exact::Text),
         }
