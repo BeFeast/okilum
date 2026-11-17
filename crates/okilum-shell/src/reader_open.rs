@@ -4252,7 +4252,7 @@ mod entry_tests {
         };
 
         // Mismatch: only the namesake with another identity is known.
-        cx.update(|cx| open_deep_link_among(&link, &[namesake.clone()], cx));
+        cx.update(|cx| open_deep_link_among(&link, std::slice::from_ref(&namesake), cx));
         settle(cx);
         assert!(open(cx).is_empty(), "no vault is selected");
         let refusal = error_text(cx).expect("a clear refusal is shown");
@@ -4270,7 +4270,13 @@ mod entry_tests {
         assert!(again.starts_with("okilum://v/Brain/"), "{again}");
         assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);
         // The legacy folder-name link still opens, in the same window.
-        cx.update(|cx| open_deep_link_among("okilum://v/Brain/Plan.md", &[second.clone()], cx));
+        cx.update(|cx| {
+            open_deep_link_among(
+                "okilum://v/Brain/Plan.md",
+                std::slice::from_ref(&second),
+                cx,
+            )
+        });
         settle(cx);
         assert_eq!(open(cx), vec![(second.clone(), "Plan.md".to_string())]);
         assert_eq!(std::fs::read_to_string(identity(&second)).unwrap(), synced);

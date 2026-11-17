@@ -853,10 +853,25 @@ mod tests {
                 position: Position::default(),
             }
         );
+        // A missing file is refused; `/work/…` has no drive on Windows, so
+        // there it is not a path on this computer at all.
+        let missing = |link: &str| resolve(&parse(link).unwrap(), &known, &|_| false);
+        #[cfg(unix)]
         assert!(matches!(
-            resolve(&parse("okilum://file//work/Notes/Plan.md").unwrap(), &known, &|_| false),
+            missing("okilum://file//work/Notes/Plan.md"),
             Resolution::Unavailable(m) if m.contains("no longer exists")
         ));
+        #[cfg(windows)]
+        {
+            assert!(matches!(
+                missing("okilum://file//work/Notes/Plan.md"),
+                Resolution::Unavailable(m) if m.contains("not a path on this computer")
+            ));
+            assert!(matches!(
+                missing("okilum://file/C:/work/Notes/Plan.md"),
+                Resolution::Unavailable(m) if m.contains("no longer exists")
+            ));
+        }
         // Reserved ids answer with the newer-Okilum message.
         assert!(
             matches!(r("okilum://project/p1", &known), Resolution::Unavailable(m) if m.contains("newer"))
