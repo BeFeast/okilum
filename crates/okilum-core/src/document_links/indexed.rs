@@ -138,6 +138,26 @@ impl<'a> IndexedResolver<'a> {
         }
     }
 
+    /// Whether `resolve` treats `target` as a non-Markdown vault file. The
+    /// link graph routes exactly these links through `resolve` (#2905).
+    pub(crate) fn file_link(&self, target: &str, wiki: bool) -> bool {
+        if !wiki && is_external_url(target) {
+            return false;
+        }
+        let raw = target.split('#').next().unwrap_or(target);
+        let raw = if wiki {
+            raw.trim().to_owned()
+        } else {
+            decode(raw)
+        };
+        let path = self.path(&raw);
+        let native_absolute = !wiki && Path::new(&raw).is_absolute();
+        (native_absolute || !path.contains([':', '\\']))
+            && Path::new(path.as_ref())
+                .extension()
+                .is_some_and(|ext| !ext.eq_ignore_ascii_case("md"))
+    }
+
     pub fn resolve(&self, target: &str, wiki: bool, from: &str) -> ResolvedLink {
         let _phase = crate::open_diagnostics::phase("resolve_links");
         crate::open_diagnostics::count(
@@ -171,10 +191,7 @@ impl<'a> IndexedResolver<'a> {
             .iter()
             .chain(std::iter::once(&self.vault.root))
             .any(|root| !root.as_os_str().is_empty() && Path::new(&raw).starts_with(root));
-        let attachment = (native_absolute || !path.contains([':', '\\']))
-            && Path::new(path.as_ref())
-                .extension()
-                .is_some_and(|ext| !ext.eq_ignore_ascii_case("md"));
+        let attachment = self.file_link(target, wiki);
         let (resolution, heading) = if attachment {
             (self.asset(&path, wiki, from), None)
         } else {
