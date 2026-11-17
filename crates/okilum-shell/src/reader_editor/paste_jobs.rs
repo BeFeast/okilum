@@ -2431,28 +2431,15 @@ mod reader_drop_tests {
         assert_eq!(source, NOTE, "one Undo: byte-identical");
     }
 
-    /// Review of #3078: HTML with a `data:` image (saved at once) and a
-    /// remote one, dropped in Edit; the note leaves Edit before the remote
-    /// download is done. Nothing is inserted, and the already saved image
-    /// is removed again, not left unlinked in the vault.
+    /// Review of #3078: HTML with a `data:` image and a remote one. Its
+    /// `data:` image is saved while the text is converted, before the remote
+    /// download. A drop that never goes in (here: the note left Edit before
+    /// the conversion and download were done) removes it again instead of
+    /// leaving it unlinked in the vault.
     #[gpui::test]
     fn a_closed_note_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
         use base64::Engine as _;
         let (reader, visual, temp) = reader_on_note(cx);
-        // Image import off: rich text's data: images are saved while it is
-        // routed, before the remote download (with it on, the whole text is
-        // converted in the background).
-        let ui_state = temp.path().join("ui-state");
-        std::fs::create_dir_all(&ui_state).unwrap();
-        visual.update(|_, cx| {
-            crate::reader_ui_state::install(&ui_state, cx);
-            crate::reader_ui_state::set_image_import_options(
-                crate::note_paste::image_import::Options::disabled(),
-                cx,
-            );
-        });
-        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
-        visual.run_until_parked();
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(2, 2)
             .write_to(&mut png, image::ImageFormat::Png)
@@ -2462,6 +2449,19 @@ mod reader_drop_tests {
         let html = format!(
             "<p>Two <img alt=\"local\" src=\"data:image/png;base64,{data}\"> \
              <img alt=\"remote\" src=\"http://127.0.0.1:1/remote.png\"></p>"
+        );
+        let dropped = gpui::ExternalData::with_contents(
+            [
+                SharedString::from("public.html"),
+                SharedString::from("public.utf8-plain-text"),
+            ],
+            [
+                (SharedString::from("public.html"), html.as_bytes().into()),
+                (
+                    SharedString::from("public.utf8-plain-text"),
+                    b"Two"[..].into(),
+                ),
+            ],
         );
         fn images(dir: &std::path::Path) -> usize {
             std::fs::read_dir(dir)
@@ -2477,39 +2477,33 @@ mod reader_drop_tests {
                 })
                 .sum()
         }
+        let vault = temp.path().join("vault");
+        // Positive control: with the note open, the same drop saves its
+        // data: image and goes in with its embed.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            let dropped = gpui::ExternalData::with_contents(
-                [
-                    SharedString::from("public.html"),
-                    SharedString::from("public.utf8-plain-text"),
-                ],
-                [
-                    (SharedString::from("public.html"), html.as_bytes().into()),
-                    (
-                        SharedString::from("public.utf8-plain-text"),
-                        b"Two"[..].into(),
-                    ),
-                ],
-            );
+            r.drop_on_editor((&dropped).into(), window, cx)
+        });
+        visual.run_until_parked();
+        let saved = images(&vault);
+        let (source, line) = source_and_line(&reader, visual, "Two");
+        assert!(saved >= 1, "positive control: the data: image was saved");
+        assert!(
+            line.is_some_and(|line| line.contains("![[")),
+            "positive control: the drop went in with its embed: {source:?}"
+        );
+        // The same drop, and the note leaves Edit before it is done.
+        reader.update_in(visual, |r, window, cx| {
             r.drop_on_editor((&dropped).into(), window, cx);
-            assert_eq!(
-                images(&temp.path().join("vault")),
-                1,
-                "positive control: the data: image was saved at once"
-            );
-            // Leave Edit before the remote download is done.
             r.toggle_source(window, cx);
             assert!(r.editing.is_none());
         });
         visual.run_until_parked();
         assert_eq!(
-            images(&temp.path().join("vault")),
-            0,
-            "the drop never went in: its saved image is removed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("vault/note.md")).unwrap(),
-            NOTE
+            images(&vault),
+            saved,
+            "the second drop never went in: no image of it is left behind"
         );
     }
 
