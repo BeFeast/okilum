@@ -373,7 +373,13 @@ service-path, attachment and bulk rules stay identical. The header names the
 mode and its bounds in the Rescan tooltip; it is not a silent substitute.
 
 - Interval: at least 10 s and at least four times the previous walk, at most
-  5 min. The first walk records the baseline two seconds after registration.
+  5 min.
+- Baseline before inventory: registration walks the vault once on the
+  preparation worker, before inventory enumeration, so a note deleted after the
+  inventory captured it is still reported as removed. If the share cannot be
+  listed at registration, the first later successful walk requests one full
+  reconciliation instead of silently adopting a baseline. On a slow share this
+  registration walk adds one metadata listing to preparation.
 - Coarse server timestamps: an entry stamped within 3 s of the walk that
   recorded it (or in the future) is reported once more on the next walk, so a
   same-size rewrite inside one 2 s SMB tick is not lost. The caller rereads and
@@ -382,8 +388,10 @@ mode and its bounds in the Rescan tooltip; it is not a silent substitute.
 - Renames, including case-only renames, surface as removal plus creation;
   folder renames also report both folder hints.
 - A root that cannot be listed skips the round and keeps the baseline: a
-  disconnect is never published as every note removed. A subfolder that cannot
-  be listed keeps its previous entries. After reconnection the next walk
+  disconnect is never published as every note removed. A listing that fails,
+  even partway, keeps that folder's previous entries; an entry whose type or
+  metadata cannot be read keeps its previous stamp and subtree. Only confirmed
+  absence becomes a removal. After reconnection the next walk
   reports what actually changed while offline.
 - Dropping the watcher stops the thread; a walk blocked inside the OS ends
   after that call returns. Remote FUSE keeps its native watcher and the
@@ -391,8 +399,10 @@ mode and its bounds in the Rescan tooltip; it is not a silent substitute.
   native per-folder watches.
 
 Tests in `watch/polling.rs` simulate the share with an injected lister that
-delivers no native events, rounds stamps to 2 s, and can fail the root or one
-folder. Native SMB/NFS acceptance of the fallback is still owner QA.
+delivers no native events, rounds stamps to 2 s, and can fail the root, one
+folder or one entry; walks are stepped with a simulated clock, and the thread
+is driven through a gated lister without sleeps. Native SMB/NFS acceptance of
+the fallback is still owner QA.
 
 Windows error 123 keeps the OS cause and explains invalid server names or SMB
 short aliases. An original name is shown only if `GetLongPathNameW` supplies it.

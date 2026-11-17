@@ -20,8 +20,16 @@
 //!   in the next walk is the truth; directory stamp changes add a folder hint.
 //! - **Unavailable share.** A root that cannot be listed skips the round and
 //!   keeps the previous baseline: a disconnect is never reported as every
-//!   note being removed. A subfolder that cannot be listed keeps its previous
-//!   entries. After reconnection the next walk reports what really changed.
+//!   note being removed. A subfolder whose listing fails, even partway,
+//!   keeps its previous entries; an entry whose type or metadata cannot be
+//!   read keeps its previous stamp and subtree. Only confirmed absence is a
+//!   removal. After reconnection the next walk reports what really changed.
+//! - **Baseline before inventory.** Registration walks the vault once on the
+//!   caller's (preparation) thread, before the reader enumerates its
+//!   inventory, so a note deleted after the inventory captured it is still
+//!   reported. If the share cannot be listed then, the first later successful
+//!   walk asks for one full reconciliation instead of adopting a baseline that
+//!   could hide such a deletion.
 //!
 //! The walk never reads note bodies and never writes to the vault. Its
 //! interval adapts to the drive: at least [`Config::min`], and at least
@@ -71,9 +79,6 @@ pub(crate) struct Config {
     pub load: u32,
     /// Stamps this close to the walk (or later) are not trusted as revisions.
     pub racy: Duration,
-    /// The first walk only records the baseline; it waits this long so it
-    /// does not compete with the reader's own startup scan.
-    pub first: Duration,
     pub list: Lister,
 }
 
@@ -84,7 +89,6 @@ impl Default for Config {
             max: MAX_POLL_INTERVAL,
             load: 4,
             racy: Duration::from_secs(3),
-            first: Duration::from_secs(2),
             list: Arc::new(list_dir),
         }
     }
@@ -94,6 +98,12 @@ impl Default for Config {
 #[derive(Debug, Clone)]
 pub(crate) struct Listed {
     pub name: std::ffi::OsString,
+    /// `None`: the entry exists but its type or metadata could not be read.
+    pub known: Option<Meta>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Meta {
     pub dir: bool,
     pub len: u64,
     pub modified: Option<SystemTime>,
@@ -102,31 +112,50 @@ pub(crate) struct Listed {
 pub(crate) type Lister = Arc<dyn Fn(&Path) -> std::io::Result<Vec<Listed>> + Send + Sync>;
 
 fn list_dir(dir: &Path) -> std::io::Result<Vec<Listed>> {
+    collect(std::fs::read_dir(dir)?, |entry| {
+        let name = entry.file_name();
+        let meta = (|| {
+            let kind = entry.file_type()?;
+            // A symlinked note is followed like the inventory does; a symlinked
+            // folder is not descended, so a link cycle cannot loop the walk.
+            let metadata = if kind.is_symlink() {
+                match std::fs::metadata(entry.path()) {
+                    Ok(metadata) if metadata.is_file() => metadata,
+                    // Dangling or folder link: never part of the walk.
+                    Ok(_) => return Ok(None),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error),
+                }
+            } else {
+                entry.metadata()?
+            };
+            Ok::<_, std::io::Error>(Some(Meta {
+                dir: metadata.is_dir(),
+                len: if metadata.is_dir() { 0 } else { metadata.len() },
+                modified: metadata.modified().ok(),
+            }))
+        })();
+        match meta {
+            Ok(Some(meta)) => Some(Listed {
+                name,
+                known: Some(meta),
+            }),
+            Ok(None) => None,
+            Err(_) => Some(Listed { name, known: None }),
+        }
+    })
+}
+
+/// A listing is complete or an error: an iterator failure leaves unknown
+/// which entries were not returned, so none of them may become a removal.
+/// Per-entry failures stay entries of unknown state.
+fn collect<E>(
+    entries: impl IntoIterator<Item = std::io::Result<E>>,
+    mut describe: impl FnMut(E) -> Option<Listed>,
+) -> std::io::Result<Vec<Listed>> {
     let mut listed = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let Ok(entry) = entry else { continue };
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        // A symlinked note is followed like the inventory does; a symlinked
-        // folder is not descended, so a link cycle cannot loop the walk.
-        let metadata = if kind.is_symlink() {
-            match std::fs::metadata(entry.path()) {
-                Ok(metadata) if metadata.is_file() => metadata,
-                _ => continue,
-            }
-        } else {
-            match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            }
-        };
-        listed.push(Listed {
-            name: entry.file_name(),
-            dir: metadata.is_dir(),
-            len: if metadata.is_dir() { 0 } else { metadata.len() },
-            modified: metadata.modified().ok(),
-        });
+    for entry in entries {
+        listed.extend(describe(entry?));
     }
     Ok(listed)
 }
@@ -167,6 +196,9 @@ impl Drop for Poller {
 }
 
 impl Poller {
+    /// Records the baseline on the calling thread before returning, so it
+    /// precedes the caller's inventory enumeration, then walks periodically
+    /// on its own thread.
     pub fn start(
         root: &Path,
         tx: mpsc::Sender<notify::Result<Event>>,
@@ -174,17 +206,20 @@ impl Poller {
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let (wake, sleep) = mpsc::channel::<()>();
+        let mut walker = Walker::new(root, config.clone());
+        let started = Instant::now();
+        let baseline = walker.step(SystemTime::now(), &stop);
+        let elapsed = started.elapsed();
         let status = Arc::new(Mutex::new(PollStatus {
-            interval: config.min,
-            last_walk: None,
-            unavailable: false,
+            interval: next_interval(elapsed, &config),
+            last_walk: baseline.is_some().then_some(elapsed),
+            unavailable: baseline.is_none(),
         }));
-        let root = root.to_path_buf();
         let thread_stop = stop.clone();
         let thread_status = status.clone();
         std::thread::Builder::new()
             .name("okilum-vault-poll".into())
-            .spawn(move || run(&root, &tx, &config, &thread_stop, &sleep, &thread_status))?;
+            .spawn(move || run(walker, &tx, &config, &thread_stop, &sleep, &thread_status))?;
         Ok(Self {
             stop,
             _wake: wake,
@@ -198,15 +233,14 @@ impl Poller {
 }
 
 fn run(
-    root: &Path,
+    mut walker: Walker,
     tx: &mpsc::Sender<notify::Result<Event>>,
     config: &Config,
     stop: &AtomicBool,
     sleep: &mpsc::Receiver<()>,
     status: &Mutex<PollStatus>,
 ) {
-    let mut walker = Walker::new(root, config.clone(), SystemTime::now());
-    let mut pause = config.first;
+    let mut pause = status.lock().unwrap().interval;
     loop {
         match sleep.recv_timeout(pause) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -245,42 +279,38 @@ fn run(
 pub(crate) struct Walker {
     root: PathBuf,
     config: Config,
-    registered: SystemTime,
     baseline: Option<Manifest>,
+    /// The registration walk failed: whatever changed between the reader's
+    /// inventory and a later baseline (deletions included) is unknown.
+    missed_baseline: bool,
 }
 
 impl Walker {
-    pub fn new(root: &Path, config: Config, registered: SystemTime) -> Self {
+    pub fn new(root: &Path, config: Config) -> Self {
         Self {
             root: root.to_path_buf(),
             config,
-            registered,
             baseline: None,
+            missed_baseline: false,
         }
     }
 
     /// One walk at time `now`. `None` when the share is unavailable (or the
-    /// watcher stopped); the baseline is then kept. The first successful
-    /// walk only records the baseline and returns no events.
+    /// watcher stopped); the baseline is then kept. The registration walk
+    /// only records the baseline; a baseline recorded later asks for one full
+    /// reconciliation.
     pub fn step(&mut self, now: SystemTime, stop: &AtomicBool) -> Option<Vec<Event>> {
-        // The baseline also distrusts stamps written since registration: the
-        // reader's inventory may have read those files before they changed.
-        let since = match &self.baseline {
-            None => self.registered.min(now),
-            Some(_) => now,
+        let Some(next) = walk(&self.root, self.baseline.as_ref(), &self.config, now, stop) else {
+            self.missed_baseline |= self.baseline.is_none();
+            return None;
         };
-        let next = walk(
-            &self.root,
-            self.baseline.as_ref(),
-            &self.config,
-            since,
-            stop,
-        )?;
-        let events = self
-            .baseline
-            .as_ref()
-            .map(|previous| diff(&self.root, previous, &next))
-            .unwrap_or_default();
+        let events = match &self.baseline {
+            Some(previous) => diff(&self.root, previous, &next),
+            None if self.missed_baseline => {
+                vec![Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan)]
+            }
+            None => Vec::new(),
+        };
         self.baseline = Some(next);
         Some(events)
     }
@@ -301,7 +331,8 @@ fn skipped(name: &std::ffi::OsStr, dir: bool) -> bool {
 }
 
 /// One metadata walk. `None` when the root itself cannot be listed or the
-/// watcher stopped; a failed subfolder keeps its entries from `previous`.
+/// watcher stopped; a failed subfolder keeps its entries from `previous`,
+/// and an entry of unknown state keeps its stamp and subtree.
 fn walk(
     root: &Path,
     previous: Option<&Manifest>,
@@ -323,39 +354,49 @@ fn walk(
             Err(_) if relative.as_os_str().is_empty() => return None,
             Err(_) => {
                 // Unknown is not removed: keep what this folder held.
-                if let Some(previous) = previous {
-                    manifest.extend(
-                        previous
-                            .range(relative.clone()..)
-                            .take_while(|(path, _)| path.starts_with(&relative))
-                            .filter(|(path, _)| **path != relative)
-                            .map(|(path, stamp)| (path.clone(), *stamp)),
-                    );
-                }
+                keep_previous(previous, &relative, false, &mut manifest);
                 continue;
             }
         };
         for entry in listed {
-            if skipped(&entry.name, entry.dir) {
+            if skipped(&entry.name, entry.known.is_none_or(|meta| meta.dir)) {
                 continue;
             }
             let path = relative.join(&entry.name);
-            let racy = entry.modified.is_none_or(|modified| modified >= threshold);
+            let Some(meta) = entry.known else {
+                // It exists, its state is unknown: keep its stamp and subtree.
+                keep_previous(previous, &path, true, &mut manifest);
+                continue;
+            };
+            let racy = meta.modified.is_none_or(|modified| modified >= threshold);
             manifest.insert(
                 path.clone(),
                 Stamp {
-                    dir: entry.dir,
-                    len: entry.len,
-                    modified: entry.modified,
+                    dir: meta.dir,
+                    len: meta.len,
+                    modified: meta.modified,
                     racy,
                 },
             );
-            if entry.dir {
+            if meta.dir {
                 pending.push(path);
             }
         }
     }
     Some(manifest)
+}
+
+/// Copy `path`'s previously recorded descendants (and, with `itself`, its
+/// own stamp) into the new manifest unchanged.
+fn keep_previous(previous: Option<&Manifest>, path: &Path, itself: bool, manifest: &mut Manifest) {
+    let Some(previous) = previous else { return };
+    manifest.extend(
+        previous
+            .range(path.to_path_buf()..)
+            .take_while(|(entry, _)| entry.starts_with(path))
+            .filter(|(entry, _)| itself || entry.as_path() != path)
+            .map(|(entry, stamp)| (entry.clone(), *stamp)),
+    );
 }
 
 /// Synthetic events for everything that differs, one event per kind.
@@ -434,11 +475,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// A share that never delivers native events, rounds stamps down to
-    /// 2 s like FAT/SMB, and can be "disconnected" or have one folder fail.
+    /// 2 s like FAT/SMB, and can be "disconnected", have one folder listing
+    /// fail, or one entry whose type/metadata cannot be read.
     #[derive(Default)]
     struct Share {
         offline: AtomicBool,
         failing: Mutex<Option<PathBuf>>,
+        unknown: Mutex<Option<PathBuf>>,
     }
 
     fn coarse(time: SystemTime) -> SystemTime {
@@ -458,10 +501,16 @@ mod tests {
             if share.failing.lock().unwrap().as_deref() == Some(dir) {
                 return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
             }
+            let unknown = share.unknown.lock().unwrap().clone();
             Ok(list_dir(dir)?
                 .into_iter()
                 .map(|mut entry| {
-                    entry.modified = entry.modified.map(coarse);
+                    if unknown.as_deref() == Some(dir.join(&entry.name).as_path()) {
+                        entry.known = None;
+                    }
+                    if let Some(meta) = &mut entry.known {
+                        meta.modified = meta.modified.map(coarse);
+                    }
                     entry
                 })
                 .collect())
@@ -497,6 +546,11 @@ mod tests {
 
     impl Harness {
         fn new() -> Self {
+            Self::registered(true)
+        }
+
+        /// `reachable`: whether the share answers the registration walk.
+        fn registered(reachable: bool) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("vault");
             std::fs::create_dir_all(root.join("Notes")).unwrap();
@@ -510,9 +564,9 @@ mod tests {
                 list: shared_lister(&share),
                 ..Config::default()
             };
-            // Registered after the fixture: its folders are not racy.
-            let now = SystemTime::now() + Duration::from_secs(60);
-            let walker = Walker::new(&root, config, now);
+            // A minute after the fixture: its folders are not racy.
+            let now = SystemTime::now();
+            let walker = Walker::new(&root, config);
             // Coalescing only: native events go to a detached channel.
             let mut watcher = VaultWatcher::new(&root).unwrap();
             let (tx, rx) = mpsc::channel();
@@ -527,7 +581,11 @@ mod tests {
                 now,
                 stop: AtomicBool::new(false),
             };
-            assert_eq!(harness.walk(), Some(crate::Changes::default()), "baseline");
+            harness.share.offline.store(!reachable, Ordering::SeqCst);
+            let baseline = harness.walk();
+            assert_eq!(baseline.is_some(), reachable, "registration walk");
+            assert_eq!(baseline.unwrap_or_default(), crate::Changes::default());
+            harness.share.offline.store(false, Ordering::SeqCst);
             harness
         }
 
@@ -676,24 +734,90 @@ mod tests {
         );
     }
 
-    /// The thread is driven by a gate in the lister: each root listing
-    /// announces itself and waits for permission, so the test knows exactly
-    /// which walk has finished. Blocking channel handoffs, no sleeps.
     #[test]
-    fn background_thread_delivers_walks_and_stops_on_drop() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        std::fs::write(root.join("a.md"), "# a\n").unwrap();
+    fn baseline_missed_at_registration_requests_full_reconciliation() {
+        // The share did not answer when the reader registered, so nothing
+        // recorded what the inventory saw; a later baseline alone would hide
+        // a deletion made in between.
+        let mut share = Harness::registered(false);
+        std::fs::remove_file(share.path("a.md")).unwrap();
+        let changes = share.walk().unwrap();
+        assert!(changes.rescan, "{changes:?}");
+        // From then on, ordinary differences.
+        std::fs::remove_file(share.path("Notes/c.md")).unwrap();
+        let changes = share.walk().unwrap();
+        assert!(!changes.rescan);
+        assert_eq!(changes.removed, set(&["Notes/c.md"]));
+    }
+
+    #[test]
+    fn entries_of_unknown_state_keep_their_stamp_and_subtree() {
+        let mut share = Harness::new();
+        // A note whose metadata fails is neither removed nor reported.
+        *share.share.unknown.lock().unwrap() = Some(share.path("a.md"));
+        std::fs::write(share.path("Notes/b.md"), "# positive control, longer\n").unwrap();
+        let changes = share.walk().unwrap();
+        assert_eq!(changes.changed, set(&["Notes/b.md"]));
+        assert!(changes.removed.is_empty(), "{changes:?}");
+        // A folder whose type fails keeps every descendant, unlisted.
+        *share.share.unknown.lock().unwrap() = Some(share.path("Notes"));
+        std::fs::remove_file(share.path("Notes/c.md")).unwrap();
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
+        // Known again: the real state, including what changed meanwhile.
+        *share.share.unknown.lock().unwrap() = None;
+        assert_eq!(share.walk().unwrap().removed, set(&["Notes/c.md"]));
+    }
+
+    #[test]
+    fn interrupted_listing_is_an_error_and_failed_entries_stay_entries() {
+        let entry = |name: &str| Listed {
+            name: name.into(),
+            known: None,
+        };
+        let interrupted = collect(
+            [
+                Ok("a.md"),
+                Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+                Ok("b.md"),
+            ],
+            |name| Some(entry(name)),
+        );
+        assert!(
+            interrupted.is_err(),
+            "partial listing must not look complete"
+        );
+        let complete = collect([Ok("a.md"), Ok("b.md")], |name| Some(entry(name))).unwrap();
+        assert_eq!(complete.len(), 2);
+
+        // A walk over a subfolder whose listing breaks partway keeps it whole.
+        let mut share = Harness::new();
+        *share.share.failing.lock().unwrap() = Some(share.path("Notes"));
+        assert_eq!(share.walk(), Some(crate::Changes::default()));
+    }
+
+    /// The thread is driven by a gate in the lister: each root listing after
+    /// registration announces itself and waits for permission, so the test
+    /// knows exactly which walk has finished. Blocking handoffs, no sleeps.
+    struct Gated {
+        watcher: VaultWatcher,
+        gate: mpsc::SyncSender<()>,
+        entered: mpsc::Receiver<()>,
+    }
+
+    const LIMIT: Duration = Duration::from_secs(30);
+
+    fn gated(root: &Path) -> Gated {
         let (gate, gate_rx) = mpsc::sync_channel::<()>(0);
         let (entered_tx, entered) = mpsc::channel::<()>();
         let (gate_rx, entered_tx) = (Mutex::new(gate_rx), Mutex::new(entered_tx));
-        let listed_root = root.clone();
+        let registration = AtomicBool::new(true);
+        let listed_root = root.to_path_buf();
         let config = Config {
             min: Duration::ZERO,
             max: Duration::ZERO,
-            first: Duration::ZERO,
             list: Arc::new(move |dir: &Path| {
-                if dir == listed_root {
+                // The registration walk runs on the caller's thread, ungated.
+                if dir == listed_root && !registration.swap(false, Ordering::SeqCst) {
                     let _ = entered_tx.lock().unwrap().send(());
                     gate_rx
                         .lock()
@@ -705,20 +829,64 @@ mod tests {
             }),
             ..Config::default()
         };
-        const LIMIT: Duration = Duration::from_secs(30);
-        let mut watcher = VaultWatcher::polling_with(&root, config).unwrap();
+        let watcher = VaultWatcher::polling_with(root, config).unwrap();
+        // The thread's first walk is waiting at the gate.
         entered.recv_timeout(LIMIT).unwrap();
-        gate.send(()).unwrap(); // baseline walk
-        entered.recv_timeout(LIMIT).unwrap(); // baseline done, next walk waits
-        assert_eq!(watcher.drain_preparation_changes(), None);
+        Gated {
+            watcher,
+            gate,
+            entered,
+        }
+    }
+
+    impl Gated {
+        /// Let exactly one walk run; its events are sent when this returns.
+        fn walk(&mut self) -> Option<crate::Changes> {
+            self.gate.send(()).unwrap();
+            self.entered.recv_timeout(LIMIT).unwrap();
+            self.watcher.drain_preparation_changes()
+        }
+    }
+
+    #[test]
+    fn note_deleted_after_registration_before_any_thread_walk_is_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for note in ["kept.md", "deleted.md"] {
+            std::fs::write(root.join(note), "# note\n").unwrap();
+            stamp(&root.join(note), epoch());
+        }
+        // Registration returns with the baseline recorded; the reader's
+        // inventory then captures both notes.
+        let mut share = gated(&root);
+        assert!(!share.watcher.polling_status().unwrap().unavailable);
+        // Deleted before the polling thread has walked even once, with no
+        // other filesystem activity.
+        std::fs::remove_file(root.join("deleted.md")).unwrap();
+        let changes = share.walk().expect("the deletion must be reported");
+        assert_eq!(changes.removed, set(&["deleted.md"]));
+        assert!(changes.changed.is_empty() && !changes.rescan, "{changes:?}");
+    }
+
+    #[test]
+    fn background_thread_delivers_walks_and_stops_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "# a\n").unwrap();
+        stamp(&root.join("a.md"), epoch());
+        let mut share = gated(&root);
+        assert_eq!(share.walk(), None, "unchanged vault");
         std::fs::write(root.join("new.md"), "# new\n").unwrap();
-        gate.send(()).unwrap(); // second walk
-        entered.recv_timeout(LIMIT).unwrap(); // its events are already sent
-        let changes = watcher.drain_preparation_changes().unwrap();
+        let changes = share.walk().unwrap();
         assert!(changes.changed.contains("new.md"), "{changes:?}");
-        let status = watcher.polling_status().unwrap();
+        let status = share.watcher.polling_status().unwrap();
         assert!(!status.unavailable && status.last_walk.is_some());
 
+        let Gated {
+            watcher,
+            gate,
+            entered,
+        } = share;
         drop(watcher);
         // Closing the gate fails the blocked listing; the stopped thread then
         // exits and drops the lister, which disconnects `entered`.

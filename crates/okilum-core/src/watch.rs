@@ -207,10 +207,12 @@ impl VaultWatcher {
     }
 
     /// Watch a network root by periodic metadata walks instead of native
-    /// events, which do not report other clients' writes (#516). The first
-    /// walk records a baseline off the caller's thread; changes then arrive
-    /// through [`poll`](Self::poll) like native ones. Never fails on an
-    /// unreachable share: walks skip until it answers again.
+    /// events, which do not report other clients' writes (#516). The
+    /// baseline walk runs on the calling (preparation) thread before this
+    /// returns, so register before enumerating the inventory; later walks run
+    /// on their own thread and arrive through [`poll`](Self::poll) like native
+    /// events. Never fails on an unreachable share: walks skip until it
+    /// answers, and a baseline missed at registration requests one rescan.
     pub fn polling(root: &Path) -> std::io::Result<VaultWatcher> {
         Self::polling_with(root, polling::Config::default())
     }
