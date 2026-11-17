@@ -22,9 +22,9 @@ impl Owner {
             state: reader.session_directory.clone(),
             index_directory: reader.index_dir.clone(),
             document: reader.pane.current_rel.clone(),
-            navigation: reader.navigation.generation,
-            preparation: reader.navigation.preparation_generation,
-            content: reader.content.clone(),
+            navigation: reader.pane.navigation.generation,
+            preparation: reader.pane.navigation.preparation_generation,
+            content: reader.pane.content.clone(),
             destination: reader.reminder_prefs.note.clone(),
         }
     }
@@ -37,9 +37,9 @@ impl Owner {
             && self.state == reader.session_directory
             && self.index_directory == reader.index_dir
             && self.document == reader.pane.current_rel
-            && self.navigation == reader.navigation.generation
-            && self.preparation == reader.navigation.preparation_generation
-            && self.content == reader.content
+            && self.navigation == reader.pane.navigation.generation
+            && self.preparation == reader.pane.navigation.preparation_generation
+            && self.content == reader.pane.content
             && self.destination == reader.reminder_prefs.note
     }
 }

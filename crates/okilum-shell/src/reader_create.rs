@@ -558,8 +558,8 @@ impl Reader {
                 // below.
                 self.dismiss_sidebar_after_selection(window, cx);
                 self.editing = None;
-                self.navigation.preparation_generation =
-                    self.navigation.preparation_generation.wrapping_add(1);
+                self.pane.navigation.preparation_generation =
+                    self.pane.navigation.preparation_generation.wrapping_add(1);
                 let document =
                     okilum_core::render::reader_document_from_source(&self.vault, &rel, &source);
                 self.accept_prepared_document(
@@ -1736,10 +1736,11 @@ mod tests {
                     && entry.kind == okilum_core::vault::EntryKind::Directory));
             assert!(reader.editing.is_some());
             assert_eq!(
-                reader.navigation.history.last().map(String::as_str),
+                reader.pane.navigation.history.last().map(String::as_str),
                 Some("Selected/Target/a/Новая 🧠.md")
             );
             assert!(reader
+                .pane
                 .navigation
                 .history
                 .iter()

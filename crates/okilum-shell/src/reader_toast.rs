@@ -200,7 +200,7 @@ impl Reader {
             .then(|| {
                 (
                     self.selected_file().to_owned(),
-                    self.navigation.preparation_generation,
+                    self.pane.navigation.preparation_generation,
                 )
             });
         if recovery != self.displayed_recovery {
@@ -247,7 +247,7 @@ impl Reader {
                                     .on_click(move |_, window, cx| {
                                         let _ = reader.update(cx, |this, cx| {
                                             if this.selected_file() == path
-                                                && this.navigation.preparation_generation
+                                                && this.pane.navigation.preparation_generation
                                                     == generation
                                                 && this.recovery_offer
                                                 && this.editing.is_none()

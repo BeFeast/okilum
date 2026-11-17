@@ -968,7 +968,7 @@ impl Reader {
                 }
                 drop(pending.guard);
                 drop(pending.destination_guard);
-                for path in &mut self.navigation.history {
+                for path in &mut self.pane.navigation.history {
                     *path = okilum_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
                 }
                 self.remap_move_sidebar(&pending.from, &pending.to, cx);
@@ -1014,8 +1014,8 @@ impl Reader {
                     return;
                 }
                 self.editing = None;
-                self.navigation.preparation_generation =
-                    self.navigation.preparation_generation.wrapping_add(1);
+                self.pane.navigation.preparation_generation =
+                    self.pane.navigation.preparation_generation.wrapping_add(1);
                 let success_message =
                     move_message(&pending.from, &pending.to, update.then_some(&pending.links));
                 let document = okilum_core::render::reader_document(&self.vault, &next_current)
@@ -1417,7 +1417,7 @@ mod tests {
                     if crate::reader_layout::overlay(width) {
                         assert!(!r.panels.visible(crate::reader_layout::Panel::Notes, width));
                         assert!(!r.tree_focus.is_focused(window));
-                        assert!(r.content.read(cx).focus_handle().is_focused(window));
+                        assert!(r.pane.content.read(cx).focus_handle().is_focused(window));
                         // Rename remains available after explicitly reopening the tree.
                         r.reveal_in_tree("start.md", window, cx);
                     } else {
@@ -1425,7 +1425,7 @@ mod tests {
                             r.tree_focus.is_focused(window),
                             "docked tree focus after load"
                         );
-                        assert!(!r.content.read(cx).focus_handle().is_focused(window));
+                        assert!(!r.pane.content.read(cx).focus_handle().is_focused(window));
                     }
                 });
                 visual.run_until_parked();

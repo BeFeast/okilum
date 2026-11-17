@@ -81,7 +81,7 @@ fn select_date(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Point
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         assert_eq!(
-            reader.content.read(cx).selected_text().trim(),
+            reader.pane.content.read(cx).selected_text().trim(),
             "1 November 2027",
             "painted date drag positive control"
         )
@@ -170,6 +170,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
     // A non-date selection offers nothing; the same mounted menu below is its positive control.
     reader.update(visual, |reader, cx| {
         reader
+            .pane
             .content
             .update(cx, |content, cx| content.select_all(cx))
     });
@@ -359,7 +360,7 @@ async fn reminder_724_stale_reader_and_editor_menu_refuse_without_retarget(
     ready(&reader, visual).await;
     open_menu(&reader, visual);
     reader.update(visual, |reader, cx| {
-        reader.navigation.generation += 1;
+        reader.pane.navigation.generation += 1;
         cx.notify();
     });
     click_item(visual);
@@ -453,7 +454,7 @@ async fn reminder_724_held_worker_and_completion_refuse_rebound_owner(cx: &mut T
         }
         reader.update(visual, |reader, cx| {
             reader.vault_root = temp.path().join("replacement");
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             cx.notify();
         });
         visual.run_until_parked();
@@ -468,7 +469,7 @@ async fn reminder_724_held_worker_and_completion_refuse_rebound_owner(cx: &mut T
         );
         reader.update(visual, |reader, cx| {
             reader.vault_root = root.clone();
-            reader.navigation.generation += 1;
+            reader.pane.navigation.generation += 1;
             cx.notify();
         });
         visual.run_until_parked();

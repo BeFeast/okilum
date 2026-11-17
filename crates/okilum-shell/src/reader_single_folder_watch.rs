@@ -17,8 +17,8 @@ impl Selection {
             root: reader.vault_root.clone(),
             rel: reader.pane.current_rel.clone(),
             watcher: reader.watcher_generation,
-            navigation: reader.navigation.generation,
-            refresh: reader.navigation.reconciliation_generation,
+            navigation: reader.pane.navigation.generation,
+            refresh: reader.pane.navigation.reconciliation_generation,
         }
     }
 
@@ -27,8 +27,8 @@ impl Selection {
             && reader.vault_root == self.root
             && reader.pane.current_rel == self.rel
             && reader.watcher_generation == self.watcher
-            && reader.navigation.generation == self.navigation
-            && reader.navigation.reconciliation_generation == self.refresh
+            && reader.pane.navigation.generation == self.navigation
+            && reader.pane.navigation.reconciliation_generation == self.refresh
     }
 }
 
@@ -51,8 +51,11 @@ impl Reader {
             return;
         }
         // Invalidate older reads immediately, before starting the next worker.
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
         let selected = Selection::capture(self);
         cx.spawn_in(window, async move |this, cx| {
             let read = selected.clone();

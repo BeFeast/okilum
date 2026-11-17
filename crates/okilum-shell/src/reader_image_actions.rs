@@ -92,7 +92,7 @@ impl Target {
         Self {
             root: reader.vault_root.clone(),
             note: reader.pane.current_rel.clone(),
-            generation: reader.navigation.preparation_generation,
+            generation: reader.pane.navigation.preparation_generation,
             url: (relative.is_some() || remote).then(|| url.unwrap().to_owned()),
             local,
             relative: relative.or(missing),
@@ -103,7 +103,7 @@ impl Target {
     fn matches(&self, reader: &Reader) -> bool {
         self.root == reader.vault_root
             && self.note == reader.pane.current_rel
-            && self.generation == reader.navigation.preparation_generation
+            && self.generation == reader.pane.navigation.preparation_generation
     }
     fn matches_accepted(&self, reader: &Reader, cx: &App) -> bool {
         self.matches(reader)
@@ -111,7 +111,7 @@ impl Target {
                 reader.editing.is_none()
                     && reader.pane.file_preview.is_none()
                     && !reader.pane.use_html
-                    && reader.content.read(cx).document_source().as_ref() == Some(source)
+                    && reader.pane.content.read(cx).document_source().as_ref() == Some(source)
             })
     }
     fn entries(&self) -> Vec<(&'static str, Command, bool)> {
@@ -326,7 +326,7 @@ impl Reader {
             return;
         }
         if self.editing.is_none() && self.pane.file_preview.is_none() && !self.pane.use_html {
-            target.accepted_source = self.content.read(cx).document_source();
+            target.accepted_source = self.pane.content.read(cx).document_source();
         }
         let selection = reader_read_menu::snapshot(self, cx);
         let reader = cx.entity().downgrade();
@@ -648,7 +648,7 @@ impl SourceFacts {
         if snapshot.stamp != Some(stamp)
             || snapshot.root != reader.vault_root
             || snapshot.note != reader.pane.current_rel
-            || snapshot.generation != reader.navigation.preparation_generation
+            || snapshot.generation != reader.pane.navigation.preparation_generation
         {
             snapshot.ranges = if source.text.len() <= okilum_core::source_classifier::MAX_BYTES {
                 okilum_core::render::image_reference::references(
@@ -662,7 +662,7 @@ impl SourceFacts {
             snapshot.stamp = Some(stamp);
             snapshot.root = reader.vault_root.clone();
             snapshot.note = reader.pane.current_rel.clone();
-            snapshot.generation = reader.navigation.preparation_generation;
+            snapshot.generation = reader.pane.navigation.preparation_generation;
         }
         snapshot.selected = snapshot
             .ranges

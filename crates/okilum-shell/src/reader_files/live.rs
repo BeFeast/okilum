@@ -410,7 +410,7 @@ mod native_tests {
         });
         reader.read_with(visual, |r, _| {
             assert_eq!(r.selected_file(), "doc.pdf");
-            assert_eq!(r.navigation.history, ["doc.pdf"]);
+            assert_eq!(r.pane.navigation.history, ["doc.pdf"]);
             assert_eq!(
                 *r.pdf_viewer().unwrap(),
                 viewer,

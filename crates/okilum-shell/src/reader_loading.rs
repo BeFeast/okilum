@@ -1570,8 +1570,8 @@ impl Reader {
             cx.notify();
             return;
         }
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         #[cfg(any(unix, windows))]
         {
             self.creation = None;
@@ -1649,9 +1649,9 @@ impl Reader {
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
-            self.navigation.history.clear();
-            self.navigation.history_positions.clear();
-            self.navigation.history_ix = 0;
+            self.pane.navigation.history.clear();
+            self.pane.navigation.history_positions.clear();
+            self.pane.navigation.history_ix = 0;
         }
         self.loading.as_mut().unwrap().published = true;
         let plain_file = pending
@@ -1750,8 +1750,11 @@ impl Reader {
         if self.current_document_is_cloud_pending() {
             // A previously queued refresh must not publish a late read failure
             // after metadata has identified the document as merely pending.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1784,8 +1787,11 @@ impl Reader {
         // Supersede inventory work without cancelling a user navigation that
         // may already be preparing another note. Even a source equal to the
         // displayed snapshot cancels an older, different in-flight snapshot.
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
         // Note and block embeds both wait for the inventory; an unchanged
         // source must still be rendered again to resolve them (#932). So does
         // an image the incomplete inventory did not know yet (#1126).
@@ -1827,20 +1833,22 @@ impl Reader {
     /// A hidden document's list may have been reset by a derived replacement.
     /// Its stored place, or a still-pending landing, remains authoritative.
     pub(super) fn retained_document_position(&self, cx: &App) -> ListOffset {
-        self.navigation
+        self.pane
+            .navigation
             .pending_landing
             .or_else(|| {
                 self.project_navigation
                     .board_visible
                     .then(|| {
-                        self.navigation
+                        self.pane
+                            .navigation
                             .places
                             .get(&(self.vault_root.clone(), self.pane.current_rel.clone()))
                             .copied()
                     })
                     .flatten()
             })
-            .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
+            .unwrap_or_else(|| self.pane.content.read(cx).list_state().logical_scroll_top())
     }
 
     pub(super) fn reconcile_document_source(
@@ -1855,8 +1863,11 @@ impl Reader {
         if self.current_document_is_cloud_pending() {
             // A previously queued refresh must not publish a late read failure
             // after metadata has identified the document as merely pending.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1876,12 +1887,15 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = self.pane.current_rel.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation.generation;
-        let generation = self.navigation.preparation_generation;
+        let navigation = self.pane.navigation.generation;
+        let generation = self.pane.navigation.preparation_generation;
         let html = self.pane.use_html;
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
-        let reconciliation = self.navigation.reconciliation_generation;
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
+        let reconciliation = self.pane.navigation.reconciliation_generation;
         let previous_canonical = self.pane.note_canonical_source.clone();
         let previous_rendered = self.pane.link_rendered_source.clone();
         let previous_original = self.pane.link_original_source.clone();
@@ -1941,9 +1955,9 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.pane.current_rel != rel
-                    || this.navigation.generation != navigation
-                    || this.navigation.preparation_generation != generation
-                    || this.navigation.reconciliation_generation != reconciliation
+                    || this.pane.navigation.generation != navigation
+                    || this.pane.navigation.preparation_generation != generation
+                    || this.pane.navigation.reconciliation_generation != reconciliation
                 {
                     return;
                 }
@@ -1972,7 +1986,7 @@ impl Reader {
                     rel,
                     jump: None,
                     heading: None,
-                    history_index: Some(this.navigation.history_ix),
+                    history_index: Some(this.pane.navigation.history_ix),
                     restore_position: Some(position),
                 };
                 // A watcher refresh updates the retained document, not the
@@ -1983,7 +1997,7 @@ impl Reader {
                 if board_visible {
                     // Its TextView is unmounted behind Board. Keep the reading
                     // place for an explicit return without polling an invisible layout.
-                    this.navigation.places.insert(
+                    this.pane.navigation.places.insert(
                         (this.vault_root.clone(), this.pane.current_rel.clone()),
                         position,
                     );
@@ -2189,7 +2203,7 @@ impl Reader {
             });
         };
         // Small notes parse synchronously: they are ready already.
-        if self.content.read(cx).preparation_status().is_some() {
+        if self.pane.content.read(cx).preparation_status().is_some() {
             report(window, trace);
             return;
         }
@@ -2197,7 +2211,7 @@ impl Reader {
         let reported = std::rc::Rc::new(std::cell::Cell::new(false));
         self.note_body_trace =
             Some(
-                cx.observe_in(&self.content, window, move |_, content, window, cx| {
+                cx.observe_in(&self.pane.content, window, move |_, content, window, cx| {
                     if reported.get() || content.read(cx).preparation_status().is_none() {
                         return;
                     }
@@ -2209,7 +2223,10 @@ impl Reader {
 
     pub(crate) fn record_usable_document(&mut self, cx: &Context<Self>) {
         if !self.document_ready()
-            || !matches!(self.content.read(cx).preparation_status(), Some(Ok(())))
+            || !matches!(
+                self.pane.content.read(cx).preparation_status(),
+                Some(Ok(()))
+            )
         {
             return;
         }
@@ -2225,7 +2242,7 @@ impl Reader {
         let identity = (
             self.vault_root.clone(),
             document,
-            self.navigation.generation,
+            self.pane.navigation.generation,
         );
         if self.last_recorded_document.as_ref() == Some(&identity) {
             return;
@@ -2269,8 +2286,8 @@ impl Reader {
             load.active = false;
             load.phase = "Preparation cancelled".into();
             load.opts.cache_lease = None;
-            self.navigation.preparation_generation =
-                self.navigation.preparation_generation.wrapping_add(1);
+            self.pane.navigation.preparation_generation =
+                self.pane.navigation.preparation_generation.wrapping_add(1);
             cx.notify();
         }
     }
@@ -2486,8 +2503,8 @@ impl Reader {
             self.loading.as_mut().unwrap().phase = "Checking search data".into();
             self.delay_warm_progress(cx);
         }
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         if refresh.is_none() {
             self.cancel_pending_landing();
         }
@@ -3789,7 +3806,7 @@ mod tests {
                     "full cached tree before reconcile"
                 );
                 assert!(v.vault.inventory_scanned);
-                assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+                assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
                 let own = if index == 0 {
                     "orchardvaultsentinel"
                 } else {
@@ -4847,15 +4864,15 @@ mod tests {
                 1,
                 "old search positive control"
             );
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 5,
                 offset_in_item: px(3.),
             });
-            window.focus(&v.content.read(cx).focus_handle().clone(), cx);
+            window.focus(&v.pane.content.read(cx).focus_handle().clone(), cx);
             v.watcher_poll_hold = Some(hold_poll);
             v.poll_vault(window, cx);
             assert!(v.watcher.is_none(), "worker really borrowed the watcher");
-            let identity = (v.content.entity_id(), v.watcher_generation);
+            let identity = (v.pane.content.entity_id(), v.watcher_generation);
             v.start_loading(
                 Opts {
                     vault: Some(temp.path().join("b")),
@@ -4876,7 +4893,7 @@ mod tests {
             );
             assert_eq!(v.watcher_generation, epoch);
             v.cancel_loading(cx);
-            assert_eq!(v.content.entity_id(), content);
+            assert_eq!(v.pane.content.entity_id(), content);
             assert_eq!(
                 v.searcher
                     .as_ref()
@@ -4886,7 +4903,7 @@ mod tests {
                     .len(),
                 1
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
         });
         release_validation.try_send(()).unwrap();
         visual.run_until_parked();
@@ -4905,7 +4922,7 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
             assert!(v.watcher.is_some());
-            assert_eq!(v.content.entity_id(), content);
+            assert_eq!(v.pane.content.entity_id(), content);
             assert_eq!(v.vault_root, temp.path().join("a"));
             assert_eq!(v.index_dir, published_cache);
             assert!(
@@ -4913,10 +4930,15 @@ mod tests {
                 "failed candidate no longer pins an unused cache"
             );
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 5
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
             assert_eq!(
                 v.searcher
                     .as_ref()
@@ -5222,17 +5244,17 @@ mod tests {
             assert!(v.searcher.is_none());
             assert!(v.pane.note_source.contains("pending target"));
             assert!(!v.pane.note_source.contains("missing target"));
-            assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+            assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
             let configured = reader_plugins(
                 v.vault_root.clone(),
-                TextView::new(&v.content),
+                TextView::new(&v.pane.content),
                 cx.entity().downgrade(),
                 v.sel_format,
                 v.pane.prepared_links.clone(),
                 &v.pane.link_identities,
                 v.agent_document_enabled(cx),
             );
-            v.content.update(cx, |state, cx| {
+            v.pane.content.update(cx, |state, cx| {
                 configured.prepare_state(state, cx);
                 assert_eq!(
                     state.preparation_status(),
@@ -5245,8 +5267,8 @@ mod tests {
                     "parsed custom callout positive control"
                 );
             });
-            window.focus(&v.content.read(cx).focus_handle().clone(), cx);
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            window.focus(&v.pane.content.read(cx).focus_handle().clone(), cx);
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 10,
                 offset_in_item: px(3.),
             });
@@ -5254,8 +5276,8 @@ mod tests {
         visual.run_until_parked();
         let (history, position) = reader.read_with(visual, |v, cx| {
             (
-                v.navigation.history.clone(),
-                v.content.read(cx).list_state().logical_scroll_top(),
+                v.pane.navigation.history.clone(),
+                v.pane.content.read(cx).list_state().logical_scroll_top(),
             )
         });
         // This edit happens before watcher registration, independently of the
@@ -5276,8 +5298,8 @@ mod tests {
                 .note_source
                 .contains("EmbeddedPositiveControl changed before watcher"));
             assert!(!v.pane.note_source.contains("pending target"));
-            assert_eq!(v.navigation.history, history);
-            let now = v.content.read(cx).list_state().logical_scroll_top();
+            assert_eq!(v.pane.navigation.history, history);
+            let now = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(now.item_ix, position.item_ix);
             assert_eq!(now.offset_in_item, position.offset_in_item);
             assert!(v
@@ -5299,7 +5321,7 @@ mod tests {
             assert!(v.deleted_current().is_some(), "{:?}", v.link_notice);
             assert!(v.pane.note_source.contains("ScanTimePositiveControl"));
             assert_eq!(v.pane.current_rel, "start.md");
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.navigation.history, history);
         });
     }
 
@@ -5589,7 +5611,7 @@ mod tests {
                 opts.force_source_read = true;
                 v.start_preparation(opts, Some(Default::default()), window, cx);
                 (
-                    v.content.entity_id(),
+                    v.pane.content.entity_id(),
                     v.loading.as_ref().unwrap().generation,
                 )
             });
@@ -5603,7 +5625,7 @@ mod tests {
                 assert!(load.active);
                 assert_eq!(load.network_waiting, network);
                 assert_eq!(
-                    v.content.entity_id(),
+                    v.pane.content.entity_id(),
                     content,
                     "last readable document retained"
                 );
@@ -5793,8 +5815,8 @@ mod tests {
             v.tree.toggle("folder");
             v.tree.cursor = Some("stable-30.md".into());
             v.tree_scroll.scroll_to_item_strict(20, ScrollStrategy::Top);
-            v.content.update(cx, |state, cx| state.select_all(cx));
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.update(cx, |state, cx| state.select_all(cx));
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 20,
                 offset_in_item: px(6.),
             });
@@ -5819,7 +5841,7 @@ mod tests {
         let (content, selected, tree_offset) = reader.read_with(visual, |v, cx| {
             assert!(v.loading.as_ref().unwrap().show_progress);
             assert_eq!(v.loading.as_ref().unwrap().phase, "Checking search data");
-            let selected = v.content.read(cx).selected_text();
+            let selected = v.pane.content.read(cx).selected_text();
             assert!(
                 !selected.is_empty(),
                 "selection established before reconciliation"
@@ -5829,7 +5851,7 @@ mod tests {
                 tree_offset < px(-100.),
                 "nonzero tree-scroll positive control"
             );
-            (v.content.entity_id(), selected, tree_offset)
+            (v.pane.content.entity_id(), selected, tree_offset)
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
@@ -5845,14 +5867,20 @@ mod tests {
             );
             assert_eq!(v.tree.cursor.as_deref(), Some("stable-30.md"));
             assert_eq!(v.tree_scroll.0.borrow().base_handle.offset().y, tree_offset);
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.content.read(cx).selected_text(), selected);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.content.read(cx).selected_text(), selected);
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 20
             );
             assert_eq!(
-                v.content
+                v.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .logical_scroll_top()
@@ -6053,7 +6081,7 @@ mod tests {
                         Some(primary.as_str())
                     );
                     assert!(v.tree.rows.iter().any(|row| row.path == "last.md"));
-                    v.content.update(cx, |state, cx| {
+                    v.pane.content.update(cx, |state, cx| {
                         state.set_search_query("searchcanary", cx);
                         assert!(
                             state.search_status().1 > 0,
@@ -6387,14 +6415,14 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.current_rel, deep);
             assert!(v.pane.note_source.contains("Fresh 299"));
-            assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+            assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
             assert!(v.searcher.is_none());
             v.open_find(window, cx);
             v.pane
                 .find_input
                 .update(cx, |input, cx| input.set_value("Uncached", window, cx));
             v.run_find(window, cx);
-            assert_eq!(v.content.read(cx).search_status().1, 300);
+            assert_eq!(v.pane.content.read(cx).search_status().1, 300);
         });
         // Find intentionally reveals its first match on the next layout.
         // Settle that user action before establishing the scroll baseline.
@@ -6404,7 +6432,7 @@ mod tests {
             visual.run_until_parked();
         }
         reader.update_in(visual, |v, _, cx| {
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 10,
                 offset_in_item: px(7.),
             });
@@ -6412,32 +6440,38 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         visual.run_until_parked();
         let content = reader.read_with(visual, |v, cx| {
-            let position = v.content.read(cx).list_state().logical_scroll_top();
+            let position = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(
                 position.item_ix, 10,
                 "nonzero baseline established BEFORE inventory release"
             );
             assert_eq!(position.offset_in_item, px(7.));
             assert!(!v.vault.inventory_complete);
-            v.content.entity_id()
+            v.pane.content.entity_id()
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert_eq!(v.pane.current_rel, deep);
             assert_eq!(
-                v.content.entity_id(),
+                v.pane.content.entity_id(),
                 content,
                 "inventory must not replace unchanged selected document"
             );
             assert!(v.vault.inventory_complete);
             assert!(v.searcher.is_some());
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 10
             );
             assert_eq!(
-                v.content
+                v.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .logical_scroll_top()
@@ -6508,13 +6542,25 @@ mod tests {
                 .find_input
                 .update(cx, |input, cx| input.set_value("Readable", window, cx));
             v.run_find(window, cx);
-            v.content.read(cx).list_state().scroll_to_reveal_item(100);
+            v.pane
+                .content
+                .read(cx)
+                .list_state()
+                .scroll_to_reveal_item(100);
         });
         visual.run_until_parked();
         let input = start.elapsed();
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.find_input.read(cx).value().as_ref(), "Readable");
-            assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
+            assert!(
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix
+                    > 0
+            );
             v.dismiss(window, cx);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.document_ready());
@@ -6580,8 +6626,8 @@ mod tests {
         visual.run_until_parked();
         let (late_release, late_hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
-            let content = v.content.entity_id();
-            let history = v.navigation.history.clone();
+            let content = v.pane.content.entity_id();
+            let history = v.pane.navigation.history.clone();
             v.start_loading(
                 Opts {
                     vault: Some(root.join("missing")),
@@ -6592,8 +6638,8 @@ mod tests {
                 cx,
             );
             v.cancel_loading(cx);
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert_eq!(v.vault_root, root.join("a"));
             assert!(v.document_ready());
         });
@@ -6617,7 +6663,7 @@ mod tests {
         reader.update_in(visual, |v, _, cx| {
             assert_eq!(v.pane.current_rel, "second.md");
             assert_eq!(v.vault_root, root.join("b"));
-            assert_eq!(v.navigation.history, ["second.md"]);
+            assert_eq!(v.pane.navigation.history, ["second.md"]);
             assert!(v.link_notice.is_none());
             assert!(v.loading.as_ref().unwrap().active);
             v.cancel_loading(cx);
@@ -7507,14 +7553,17 @@ mod tests {
         visual.run_until_parked();
         let (content, history) = reader.update_in(visual, |v, _, _| {
             assert_eq!(v.pane.current_rel, "second.md");
-            (v.content.entity_id(), v.navigation.history.clone())
+            (
+                v.pane.content.entity_id(),
+                v.pane.navigation.history.clone(),
+            )
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.pane.current_rel, "second.md");
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert!(v.vault.inventory_complete);
             assert!(
                 v.searcher.is_some(),
@@ -7541,8 +7590,8 @@ mod tests {
         reader.update_in(visual, |v, _, _| {
             assert!(v.document_ready(), "previous document remains usable");
             assert_eq!(v.pane.current_rel, "second.md");
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert!(!v.loading.as_ref().unwrap().published);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().phase.contains("no readable"));
@@ -8751,11 +8800,16 @@ mod quick_view_tests {
             assert!(reader.single_file);
             assert!(reader.pane.note_source.contains("file://"));
             assert!(reader.pane.note_source.contains("img.png"));
-            reader.content.read(cx).list_state().scroll_to(ListOffset {
-                item_ix: 12,
-                offset_in_item: px(3.),
-            });
-            (reader.content.clone(), reader.pane.note_source.clone())
+            reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .scroll_to(ListOffset {
+                    item_ix: 12,
+                    offset_in_item: px(3.),
+                });
+            (reader.pane.content.clone(), reader.pane.note_source.clone())
         });
         assert_eq!(
             crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
@@ -8803,7 +8857,7 @@ mod quick_view_tests {
                     assert!(reader.pane.note_source.contains("img.png"));
                 } else {
                     assert_eq!(
-                        reader.content, content,
+                        reader.pane.content, content,
                         "upgrade retains the rendered document"
                     );
                     assert_eq!(
@@ -8811,7 +8865,12 @@ mod quick_view_tests {
                         "relative image survives publication and inventory"
                     );
                 }
-                let position = reader.content.read(cx).list_state().logical_scroll_top();
+                let position = reader
+                    .pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top();
                 assert_eq!(position.item_ix, 12);
                 assert_eq!(position.offset_in_item, px(3.));
             });
@@ -8860,7 +8919,12 @@ mod quick_view_tests {
             assert!(reader.inbox.is_empty() && reader.inbox_source.is_none());
             assert_eq!(reader.pane.current_rel, "start.md");
             assert!(reader.pane.note_source.contains("img.png"));
-            let position = reader.content.read(cx).list_state().logical_scroll_top();
+            let position = reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .logical_scroll_top();
             assert_eq!(position.item_ix, 12);
             assert_eq!(position.offset_in_item, px(3.));
             assert!(reader

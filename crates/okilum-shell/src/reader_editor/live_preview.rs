@@ -3271,8 +3271,8 @@ mod tests {
         reader.update_in(visual, |r, _, cx| {
             // Session restoration can publish a prepared replacement while the
             // editor is already visible. This new list has never been painted.
-            r.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
-            assert_eq!(r.content.read(cx).list_state().item_count(), 0);
+            r.pane.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
+            assert_eq!(r.pane.content.read(cx).list_state().item_count(), 0);
             r.scroll_to_block(block, cx);
         });
         for _ in 0..105 {
@@ -3281,7 +3281,7 @@ mod tests {
         }
         reader.read_with(visual, |r, cx| {
             assert!(
-                r.navigation.pending_landing.is_none(),
+                r.pane.navigation.pending_landing.is_none(),
                 "reachable heading must finish"
             );
             assert!(
@@ -3290,7 +3290,12 @@ mod tests {
                 r.link_notice
             );
             assert_eq!(
-                r.content.read(cx).list_state().logical_scroll_top().item_ix,
+                r.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 block
             );
         });
@@ -3352,7 +3357,7 @@ mod tests {
                 Some(line),
                 "Back restores the large-note heading"
             );
-            assert!(r.navigation.pending_landing.is_none());
+            assert!(r.pane.navigation.pending_landing.is_none());
             assert!(
                 r.link_notice.is_none(),
                 "Back must not time out: {:?}",

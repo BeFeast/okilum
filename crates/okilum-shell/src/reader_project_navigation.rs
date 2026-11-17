@@ -1151,7 +1151,7 @@ impl Reader {
         // landing must not keep polling its now-hidden TextView.
         if !self.pane.current_rel.is_empty() {
             let position = self.retained_document_position(cx);
-            self.navigation.places.insert(
+            self.pane.navigation.places.insert(
                 (self.vault_root.clone(), self.pane.current_rel.clone()),
                 position,
             );
@@ -1159,8 +1159,8 @@ impl Reader {
         self.cancel_pending_landing();
         // A note requested before this explicit project selection cannot
         // replace its Board when its asynchronous preparation finishes later.
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         self.tree.scope_to(relative.as_str());
         self.tree_revealed = self.selected_file().to_owned();
         if let Some(layout) = &self.project_navigation.layout {

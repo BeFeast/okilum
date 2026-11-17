@@ -24,7 +24,7 @@ impl Selection {
         Some(Self {
             root: reader.vault_root.clone(),
             rel: reader.pane.current_rel.clone(),
-            navigation: reader.navigation.generation,
+            navigation: reader.pane.navigation.generation,
             watcher: reader.watcher_generation,
             input: reader.editing.as_ref().map(|e| e.input.entity_id()),
         })

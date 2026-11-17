@@ -833,7 +833,7 @@ mod tests {
         assert!(visual.debug_bounds("source-save").is_none());
         let preview = visual.debug_bounds("history-preview").unwrap();
         let live_offset = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().logical_scroll_top()
+            r.pane.content.read(cx).list_state().logical_scroll_top()
         });
         visual.simulate_event(ScrollWheelEvent {
             position: point(preview.center().x, preview.top() + px(160.)),
@@ -842,7 +842,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let offset = r.content.read(cx).list_state().logical_scroll_top();
+            let offset = r.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(
                 (offset.item_ix, offset.offset_in_item),
                 (live_offset.item_ix, live_offset.offset_in_item)

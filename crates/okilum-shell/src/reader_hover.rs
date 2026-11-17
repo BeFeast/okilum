@@ -350,7 +350,7 @@ impl Reader {
         };
         let vault = self.vault.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation.generation;
+        let navigation = self.pane.navigation.generation;
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let proceed = this
@@ -408,7 +408,7 @@ impl Reader {
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.pane.hover_preview.generation != generation
-                    || this.navigation.generation != navigation
+                    || this.pane.navigation.generation != navigation
                     || this.vault_root != root
                 {
                     return;
@@ -1218,7 +1218,7 @@ mod tests {
     fn delayed_preview_lands_without_navigating_and_closes(cx: &mut gpui::TestAppContext) {
         let (reader, visual, root) = fixture(cx);
         let original = reader.read_with(visual, |v, _| {
-            (v.pane.current_rel.clone(), v.navigation.history.len())
+            (v.pane.current_rel.clone(), v.pane.navigation.history.len())
         });
         reader.update_in(visual, |v, window, cx| {
             let url = v
@@ -1264,7 +1264,7 @@ mod tests {
                 "heading landing"
             );
             assert_eq!(
-                (v.pane.current_rel.clone(), v.navigation.history.len()),
+                (v.pane.current_rel.clone(), v.pane.navigation.history.len()),
                 original
             );
         });

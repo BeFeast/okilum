@@ -527,7 +527,12 @@ impl Reader {
                     && this.pane.file_preview.is_none()
                     && !this.pane.current_rel.is_empty()
                     && under(&this.pane.current_rel, &relative))
-                .then(|| (this.pane.current_rel.clone(), this.navigation.generation));
+                .then(|| {
+                    (
+                        this.pane.current_rel.clone(),
+                        this.pane.navigation.generation,
+                    )
+                });
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
                 } else {
@@ -590,7 +595,7 @@ impl Reader {
                             this.editing = None;
                             if clear_document.as_ref().is_some_and(|(rel, generation)| {
                                 rel == &this.pane.current_rel
-                                    && *generation == this.navigation.generation
+                                    && *generation == this.pane.navigation.generation
                             }) {
                                 // The confirmed move has a successful Trash
                                 // receipt. Authorize only this document's close;

@@ -13,6 +13,12 @@
 use super::*;
 
 pub(super) struct Surface {
+    // The rendered document and this note's history, positions and pending
+    // landing.
+    pub content: Entity<TextViewState>,
+    pub _content_sub: Subscription,
+    pub navigation: reader_navigation::State,
+
     // Which note this surface shows and its source.
     pub current_rel: String,
     pub current_title: String,
@@ -63,8 +69,16 @@ pub(super) struct Surface {
 }
 
 impl Surface {
-    pub(super) fn new(find_input: Entity<InputState>, use_html: bool) -> Self {
+    pub(super) fn new(
+        content: Entity<TextViewState>,
+        content_sub: Subscription,
+        find_input: Entity<InputState>,
+        use_html: bool,
+    ) -> Self {
         Self {
+            content,
+            _content_sub: content_sub,
+            navigation: Default::default(),
             current_rel: String::new(),
             current_title: String::new(),
             note_source: String::new(),

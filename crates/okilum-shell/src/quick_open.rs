@@ -3135,8 +3135,16 @@ canaryhidden [[Target]]",
             reader.update(visual, |v, cx| {
                 assert!(!v.quick_open.open);
                 assert_eq!(v.pane.current_rel, "Memory/@index.md");
-                assert_eq!(v.content.read(cx).search_status().1, 1);
-                assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
+                assert_eq!(v.pane.content.read(cx).search_status().1, 1);
+                assert!(
+                    v.pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix
+                        > 0
+                );
             });
         }
         std::fs::remove_dir_all(root).unwrap();

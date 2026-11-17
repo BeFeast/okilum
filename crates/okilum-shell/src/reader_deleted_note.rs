@@ -257,8 +257,11 @@ impl Reader {
         }
         if held {
             // A previously prepared refresh must not replace the retained copy.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
         }
         cx.notify();
         held
@@ -273,9 +276,12 @@ impl Reader {
     ) {
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
-        let generation = self.navigation.reconciliation_generation;
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
+        let generation = self.pane.navigation.reconciliation_generation;
         let vault = self.vault.clone();
         let selected = rel.clone();
         let task = cx.background_executor().spawn(async move {
@@ -300,7 +306,7 @@ impl Reader {
                 if this.vault_root != root
                     || this.pane.current_rel != rel
                     || this.editing.is_some()
-                    || this.navigation.reconciliation_generation != generation
+                    || this.pane.navigation.reconciliation_generation != generation
                 {
                     return;
                 }
@@ -548,7 +554,7 @@ impl Reader {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Note.md".into());
-        let generation = self.navigation.preparation_generation;
+        let generation = self.pane.navigation.preparation_generation;
         let picker = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = picker.await else {
@@ -562,7 +568,7 @@ impl Reader {
                 // Never mark newer contents saved or replay stale navigation.
                 if this.vault_root != root
                     || this.pane.current_rel != rel
-                    || this.navigation.preparation_generation != generation
+                    || this.pane.navigation.preparation_generation != generation
                 {
                     return;
                 }
@@ -1199,7 +1205,7 @@ mod tests {
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
         // Same path/root after a new document request is a different document.
         reader.update_in(visual, |r, _, _| {
-            r.navigation.preparation_generation += 1;
+            r.pane.navigation.preparation_generation += 1;
         });
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, _| {
@@ -1212,7 +1218,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.did_prompt_for_new_path());
         reader.update_in(visual, |r, _, _| {
-            r.navigation.preparation_generation += 1;
+            r.pane.navigation.preparation_generation += 1;
         });
         let path = root.join("StaleGeneration.md");
         visual.simulate_new_path_selection(move |_| Some(path));
