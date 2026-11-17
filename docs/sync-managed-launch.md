@@ -199,14 +199,16 @@ Such a folder starts unpaused, because only a startup pause recreates a root.
 Before the child starts, the launch command fences it in the offline
 configuration. It replaces the folder's `markerName` with a unique
 `.okilum-missing-root-<uuid>` and records the original in
-`fenced-folders.json`. Pinned v2.1.6 `CheckPath` requires
+`fenced-folders.json` before `config.xml` is written, so a launcher killed in
+between still knows the marker it replaced. Pinned v2.1.6 `CheckPath` requires
 `<root>/<markerName>`, and `CreateMarker` never creates a non-default marker.
 So no directory that appears at the path, before or after child start and
 including a foreign one with `.stfolder`, can be scanned or synced, and a
 folder with history is never recreated. The original marker is restored, never
 through a pause, only when the saved root identity is back and the authority
-admits a writer. That happens at readiness under the startup leases, in the
-launcher's 2-second supervision loop, or offline at the next launch. The
+admits a writer through an Open admission. That happens at readiness (a drain
+that began during startup keeps it fenced), in the launcher's 2-second
+supervision loop, or offline at the next launch. The
 folder's pause state is never touched, so a user's Disable stays as it is. A
 held folder whose root returns gets its real marker back and stays closed by
 the hold fence until explicit recovery. Supervision takes the launch gate only
@@ -234,6 +236,10 @@ Pinned-runtime controls:
   the root is never recreated and no deletion propagates. While the runtime
   runs, a foreign directory with a `.stfolder` marker at the path stays fenced
   and receives nothing. When the saved root returns, it is unfenced and syncs.
+- `issue2582_launcher_killed_after_fencing_keeps_the_original_marker`: the
+  launch command is killed after fencing `config.xml` and before the child
+  starts, then started again. Once the root returns, `.stfolder` is restored
+  and the folder transfers.
 - `issue2582_root_swapped_before_start_never_syncs`: a foreign Syncthing
   directory takes the missing path between the launch decision and child start
   (fixture-only launch pause). No byte moves in either direction while the
@@ -246,9 +252,10 @@ Pinned-runtime controls:
   after explicit recovery and resume.
 - `issue2582_missing_root_admission_is_held_through_startup`: a fixture-only
   pause holds the launcher between its decision and child start while the root
-  returns and a drain begins. The drain stays pinned until startup completes.
-  After its holder dies, the next generation fences the folder, withholds the
-  competing change while the sibling transfers, and publishes after recovery.
+  returns and a drain begins. The drain stays pinned until startup completes,
+  and readiness keeps the folder fenced. The competing change is withheld while
+  the sibling transfers, before and after the holder dies. The next
+  generation fences the held folder by pause and publishes after recovery.
 - `issue2582_redirected_missing_root_is_refused`: an indexed folder ID whose
   configured path is redirected to another absent path is refused twice
   without creating it. Once that destination appears with its own hold, the

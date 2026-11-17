@@ -2083,6 +2083,14 @@ impl MissingRootFixture {
         }
         Ok(())
     }
+    /// Kill a launch command paused at the fixture hook (no runtime started).
+    fn kill_launcher(&self) -> Result<()> {
+        let mut state = self.services.0.lock().unwrap();
+        let mut child = state.child.take().context("no launch helper")?;
+        child.kill()?;
+        child.wait()?;
+        Ok(())
+    }
     /// The autonomous launch command must exit unsuccessfully before any runtime
     /// starts, so nothing can recreate the missing root.
     fn launch_refused(&self) -> Result<()> {
@@ -2296,16 +2304,25 @@ fn issue2582_missing_root_admission_is_held_through_startup() -> Result<()> {
     }
     fs::write(pause.join("launch-go"), "start")?;
     f.services.remember_pid(f.home())?;
+    // The drain began during startup: readiness keeps the returned root
+    // fenced (no Open admission), so this generation publishes nothing.
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("gone").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"sibling runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("gone", "withheld.md")?;
     wait("drain completes after startup", || hold.try_hold(&token))?;
     drop(hold); // the holder dies before any transport pause
-                // The next generation fences the held folder; the sibling keeps going.
+    f.withheld("gone", "withheld.md")?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    // The next generation fences the held folder; the sibling keeps going.
     f.relaunch()?;
     assert!(live_generation(f.home())?
         .paused_at_start
         .contains(&"gone".into()));
-    fs::write(f.origin("gone").join("withheld.md"), b"competing change")?;
-    fs::write(f.origin("kept").join("progress.md"), b"sibling runs")?;
-    f.transfers("kept", "progress.md")?;
+    assert_eq!(f.marker("gone")?, ".stfolder");
+    fs::write(f.origin("kept").join("progress-2.md"), b"sibling runs")?;
+    f.transfers("kept", "progress-2.md")?;
     f.withheld("gone", "withheld.md")?;
     let mut hold = authority.recover(&authority.snapshot()?)?;
     let token = hold.token().clone();
@@ -2367,6 +2384,49 @@ fn issue2582_root_swapped_before_start_never_syncs() -> Result<()> {
         Ok(f.marker("gone")? == ".stfolder")
     })?;
     f.transfers("gone", "vault-data.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: the original marker is durable before config.xml carries the
+/// unique fence marker. A launch command killed in between, then started
+/// again, still restores `.stfolder` once the saved root returns.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_launcher_killed_after_fencing_keeps_the_original_marker() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("config.xml fenced, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    let xml = fs::read_to_string(&f.identity.config_file)?;
+    assert!(
+        xml.contains(".okilum-missing-root-"),
+        "config.xml is fenced"
+    );
+    let record: Value =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("fenced-folders.json"))?)?;
+    assert_eq!(record["gone"], ".stfolder", "original recorded first");
+    f.kill_launcher()?;
+    // systemd starts the command again.
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || {
+        Ok(f.marker("gone")? == ".stfolder")
+    })?;
+    fs::write(f.origin("gone").join("after-restart.md"), b"syncs again")?;
+    f.transfers("gone", "after-restart.md")?;
     f.runtime.disable()?;
     Ok(())
 }

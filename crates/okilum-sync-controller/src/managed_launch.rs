@@ -189,6 +189,7 @@ const INDEXED: &str = "indexed-folders.json";
 /// saved root identity with an admitted authority restores the original.
 const FENCED: &str = "fenced-folders.json";
 const DEFAULT_MARKER: &str = ".stfolder";
+const FENCE_PREFIX: &str = ".okilum-missing-root-";
 fn read_fenced(r: &Reference) -> Result<BTreeMap<String, String>> {
     let path = r.directory.join(FENCED);
     if !path.try_exists()? {
@@ -740,6 +741,10 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     } else {
         BTreeMap::new()
     };
+    // Every original marker this launch may overwrite or restore stays on disk
+    // until the configuration that depends on it is durable (#2582 review): the
+    // previous records plus the folders fenced now. Readiness shrinks it.
+    let mut persist = fenced.clone();
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
     let mut paused_at_start = Vec::new();
@@ -783,12 +788,16 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             leases.push(lease);
             // Fence before the child starts: no directory that appears at this
             // path can be scanned or synced until the saved root is verified.
+            // The recorded original wins; a leftover fence marker with no
+            // record (never written by this version) falls back to Syncthing's
+            // default rather than being mistaken for the original.
             let original = fenced
                 .get(&id)
                 .cloned()
-                .or_else(|| marker_of(e))
+                .or_else(|| marker_of(e).filter(|m| !m.starts_with(FENCE_PREFIX)))
                 .unwrap_or_else(|| DEFAULT_MARKER.into());
-            set_marker(e, &format!(".okilum-missing-root-{}", Uuid::new_v4()));
+            set_marker(e, &format!("{FENCE_PREFIX}{}", Uuid::new_v4()));
+            persist.insert(id.clone(), original.clone());
             returning.push((id, saved.unwrap().clone(), original));
             continue;
         }
@@ -831,6 +840,9 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     }
     let mut bytes = Vec::new();
     xml.write(&mut bytes)?;
+    // Record the originals before config.xml carries the unique markers: a
+    // launcher killed in between must not lose the marker it replaced.
+    write_fenced(r, &persist)?;
     #[cfg(unix)]
     private::write(&b.home.join("config.xml"), &bytes)?;
     #[cfg(windows)]
@@ -965,16 +977,24 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                     let mut still_fenced = BTreeMap::new();
                     for (id, saved, original) in &returning {
                         let root = Path::new(saved.root.as_path());
-                        if root.try_exists()?
+                        let admitted = root.try_exists()?
                             && root.canonicalize()? == saved.root
-                            && identity(root)? == saved.identity
-                        {
+                            && identity(root)? == saved.identity;
+                        // Same Open admission as supervision: a drain that began
+                        // during startup (pinned by the startup lease) keeps it
+                        // fenced.
+                        let lease = if admitted {
+                            saved.authority.open().and_then(|a| a.admit()).ok()
+                        } else {
+                            None
+                        };
+                        if let Some(_lease) = lease {
                             api.patch_folder(id, &serde_json::json!({"markerName": original}))?;
                         } else {
                             ensure!(
                                 api.folder(id)?["markerName"]
                                     .as_str()
-                                    .is_some_and(|m| m.starts_with(".okilum-missing-root-")),
+                                    .is_some_and(|m| m.starts_with(FENCE_PREFIX)),
                                 "missing-root fence readback failed"
                             );
                             still_fenced.insert(id.clone(), original.clone());
