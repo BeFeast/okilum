@@ -472,7 +472,22 @@ const IGNORE_CASE: bool = cfg!(any(windows, target_os = "macos"));
 /// paths in `keep` and their ancestors. Symlinks are removed as links and
 /// never followed; a symlink on the way to a kept path is left alone.
 fn remove_except(dir: &Path, keep: &[PathBuf], report: &mut Report) {
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+    // An unreadable folder fails safe (nothing is removed) but is reported.
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.failed.push((dir.to_path_buf(), error.to_string()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                report.failed.push((dir.to_path_buf(), error.to_string()));
+                continue;
+            }
+        };
         let path = entry.path();
         if keep.iter().any(|kept| inside(&path, kept, IGNORE_CASE)) {
             continue;
@@ -1406,6 +1421,35 @@ mod tests {
             config.join("reader-layout.json").exists(),
             "planning changes nothing"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_root_is_reported_not_silently_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let config = fixture.path().join("Application Support/okilum");
+        write(&config.join("reader-layout.json"), "{}");
+        write(&config.join("Sync/journal.json"), "{}");
+        let keep = vec![config.join("Sync")];
+        let documents = fixture.path().join("Documents");
+        let plan = Plan::keeping(std::slice::from_ref(&config), &keep).unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::read_dir(&config).is_err();
+        let report = purge_planned(&plan, None, &documents, &documents);
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A privileged runner can read anything; the report needs a real denial.
+        if unreadable {
+            assert!(
+                report
+                    .failed
+                    .iter()
+                    .any(|(path, _)| path.ends_with("okilum")),
+                "{report:?}"
+            );
+            assert!(config.join("reader-layout.json").exists(), "fails safe");
+        }
+        assert!(config.join("Sync/journal.json").exists());
     }
 
     #[cfg(unix)]
