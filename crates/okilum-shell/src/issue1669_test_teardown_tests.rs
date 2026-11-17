@@ -7,8 +7,11 @@
 //! `#[gpui::test]` functions; the drivers call them in sequence and count
 //! what is still alive afterwards. The control runs the same probe under
 //! gpui-pre's unchanged macro and must still see the leak, so a probe that
-//! measures nothing cannot pass.
-use gpui::{Context, Empty, IntoElement, Render, TestAppContext, Window};
+//! measures nothing cannot pass. GPUI's entity leak detector must keep
+//! failing a test whose app gpui-pre's teardown already dropped.
+use gpui::{
+    AnyEntity, AppContext as _, Context, Empty, IntoElement, Render, TestAppContext, Window,
+};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
@@ -26,6 +29,8 @@ struct Probe {
 
 thread_local! {
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
+    /// An entity handle kept outside its app: what the leak detector reports.
+    static HELD_OUTSIDE: RefCell<Option<AnyEntity>> = const { RefCell::new(None) };
 }
 
 /// Window root that holds an open descriptor for as long as it lives.
@@ -82,6 +87,15 @@ fn issue1669_probe_wrapped_sync(cx: &mut TestAppContext) {
 async fn issue1669_probe_wrapped_async(cx: &mut TestAppContext) {
     open_probe_window(cx);
     cx.run_until_parked();
+}
+
+/// A window-less app: gpui-pre's teardown dropped it and ran the detector.
+#[gpui::test]
+fn issue1669_probe_windowless_leak(cx: &mut TestAppContext) {
+    if PROBE.with(|probe| probe.borrow().is_some()) {
+        let entity = cx.new(|_| ());
+        HELD_OUTSIDE.with(|held| *held.borrow_mut() = Some(entity.into_any()));
+    }
 }
 
 #[gpui::upstream_test]
@@ -149,4 +163,19 @@ fn issue1669_upstream_gpui_test_macro_still_retains_the_app() {
     assert_eq!(probe.released.get(), 0, "control window root was dropped");
     #[cfg(target_os = "linux")]
     assert_eq!(open_descriptors(&probe), 1, "control descriptor closed");
+}
+
+#[test]
+fn issue1669_leak_detector_still_fails_apps_it_already_checked() {
+    let (_probe, _directory) = observe(|| {
+        let outcome = std::panic::catch_unwind(issue1669_probe_windowless_leak);
+        HELD_OUTSIDE.with(|held| held.borrow_mut().take());
+        let payload = outcome.expect_err("leaked entity handle passed");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(message.contains("leaked handles"), "{message}");
+    });
 }
