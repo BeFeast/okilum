@@ -1053,6 +1053,10 @@ fn a_refused_or_unmatched_icon_save_is_an_error_and_writes_nothing() {
     let error = icon::save_icon(&vault, &okilum, Some(gateway.as_ref()), Some(&icon)).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("capability_denied"), "{message}");
+    assert!(
+        message.contains("only a full-access client change project icons"),
+        "#1765: the refusal says what Okilum lacks: {message}"
+    );
     assert!(message.contains("the icon was not changed"), "{message}");
     let error = icon::save_icon(&vault, &stale, Some(gateway.as_ref()), Some(&icon)).unwrap_err();
     assert!(

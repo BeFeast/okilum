@@ -39,5 +39,10 @@ fi
 
 scripts/vendor-setup.sh --verify
 # Patches may change vendor manifests, so the vendor lockfile is not --locked here.
+# The vendor tests build against the gpui-pre our workspace ships (Cargo.toml
+# [patch.crates-io]): vendor patches use its API, e.g. Copy glyphs (#2803).
+# scripts/ci/vendor-gpui.sh selects it for this run and restores the vendor lock.
+source scripts/ci/vendor-gpui.sh
 timeout "${OKILUM_VENDOR_TESTS_TIMEOUT:-40m}" \
-    cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base -p gpui-component --lib
+    cargo test --manifest-path vendor/gpui-component/Cargo.toml "${VENDOR_GPUI[@]}" \
+    -p gpui-base -p gpui-component --lib

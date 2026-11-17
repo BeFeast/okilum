@@ -1,5 +1,7 @@
 # Scroll probe (#1290 Windows, #1004 Intel Mac)
 
+Open time, scroll and outline jumps of one 10,000-line note, with budgets: [large-note/](large-note/README.md) (#653).
+
 Answers two questions about scrolling a large note: **how fast** (frames per second, the same
 notes on the same host before and after a change) and **where the frame time goes** (view
 render, layout, text shaping, paint, present). Measurement only: the product code is not

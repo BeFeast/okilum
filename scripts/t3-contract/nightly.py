@@ -35,9 +35,15 @@ NATIVE_STAGES = frozenset({
 })
 
 
+GITHUB_API = 'https://api.github.com/'
+
+
 def request(url, *, data=None, token=None, method=None):
     headers = {'User-Agent': 'okilum-t3-contract', 'Accept': 'application/vnd.github+json'}
     if token:
+        # The Actions token never goes to downloads, redirects or the disposable T3 server.
+        if not url.startswith(GITHUB_API):
+            raise ValueError('GitHub token is sent only to the GitHub REST API')
         headers['Authorization'] = 'Bearer ' + token
     if data is not None:
         headers['Content-Type'] = 'application/json'
@@ -45,6 +51,20 @@ def request(url, *, data=None, token=None, method=None):
     with urllib.request.urlopen(urllib.request.Request(
             url, data=data, headers=headers, method=method), timeout=60) as response:
         return response.read()
+
+
+def upstream_releases(token):
+    # Anonymous REST reads share the hosted runner IP's 60/hour budget and failed on
+    # 2026-11-15 with 403 before any contract check ran. run() requires the read-only
+    # Actions token, which has its own per-repository budget for public releases.
+    try:
+        return json.loads(request(f'{GITHUB_API}repos/{UPSTREAM}/releases?per_page=30', token=token))
+    except urllib.error.HTTPError as error:
+        if error.code in (403, 429) and (error.headers.get('x-ratelimit-remaining') == '0'
+                                         or error.headers.get('retry-after')):
+            raise RuntimeError('GitHub releases API rate limit exhausted ('
+                               + ('authenticated' if token else 'anonymous') + '); no contract check ran') from None
+        raise
 
 
 def latest(releases):
@@ -271,6 +291,9 @@ def contract_status(receipt):
 
 
 def run(output):
+    # Read the token once and drop it from the environment, so unit tests, rustup,
+    # vendor setup, cargo and every T3 child process inherit no credential.
+    token = os.environ.pop('GITHUB_TOKEN', None) or None
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         raise RuntimeError('Server contract probe runs only on GitHub-hosted Actions')
     receipt = {'enabled_operations': ['NativeToken::pair', 'subscribeThread snapshot', 'subscribeThread resume',
@@ -278,10 +301,15 @@ def run(output):
                'deferred_operations': []}
     output.mkdir(parents=True, exist_ok=True)
     try:
+        if not token:
+            # The workflow always passes github.token; without it the inventory read
+            # would silently fall back to the shared anonymous budget.
+            raise RuntimeError('GITHUB_TOKEN is missing or empty; refusing an anonymous '
+                               'GitHub releases read')
         command(['python3', '-m', 'unittest', 'discover', '-s',
                  str(ROOT / 'scripts/t3-contract'), '-p', 'test_*.py', '-v'])
         receipt['harness_regressions'] = 'PASS'
-        release = latest(json.loads(request(f'https://api.github.com/repos/{UPSTREAM}/releases?per_page=30')))
+        release = latest(upstream_releases(token))
         receipt['version'] = release['tag_name']
         receipt['release_url'] = release['html_url']
         with tempfile.TemporaryDirectory(prefix='okilum-t3-contract-') as temporary:

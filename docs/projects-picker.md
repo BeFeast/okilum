@@ -15,6 +15,10 @@ vault-relative) and calls `record_opened`, so recents survive relaunch. Live
 statuses from `projects::statuses` are fed through `update_statuses`; the dot
 tooltip carries the live reason (for example "not connected to T3").
 
+The section header carries a **Help** button beside the title (#2356). It opens
+the bundled Projects guide (`docs/help/projects/`) in the shared contextual Help
+sheet, also before the first project exists; reading it writes no vault files.
+
 Manifest problems never print raw red text: a folder whose `ops/project.toml` (legacy `ops/project.yaml` while TOML is absent)
 cannot be read is a muted row with a small warning sign inside its domain, the
 reason in a tooltip (hidden under a kind filter, since its kind is unknown). A

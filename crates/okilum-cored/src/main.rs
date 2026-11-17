@@ -96,7 +96,8 @@ fn main() -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    // readiness marker for the Qt client
+    // Readiness marker for JSON-lines clients (docs/PROTOCOL.md): one
+    // `{"ready":true,"notes":N}` line before the first response.
     writeln!(
         out,
         "{}",

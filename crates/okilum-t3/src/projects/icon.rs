@@ -698,7 +698,7 @@ pub fn save_icon_with_logos(
             if let Some(t3_project) = t3_counterpart(project, &relative, &listing) {
                 let updated = gateway
                     .set_project_icon(&t3_project.id, icon)
-                    .map_err(|e| anyhow::anyhow!("{e}; the icon was not changed"))?;
+                    .map_err(icon_refusal)?;
                 return Ok(Saved::T3(Counterpart::new(
                     alias,
                     &project.folder,
@@ -725,6 +725,20 @@ pub fn save_icon_with_logos(
     Ok(Saved::Manifest(Box::new(super::Project::read(
         &project.folder,
     )?)))
+}
+
+/// Why T3 did not take an icon or a reset. T3 changes project settings,
+/// the icon included, only for a full-access client; its own message
+/// speaks of calling threads, which Okilum is not, so a `capability_denied`
+/// says what applies to Okilum and keeps T3's code for diagnostics.
+fn icon_refusal(error: crate::GatewayError) -> anyhow::Error {
+    match &error {
+        crate::GatewayError::Tool { code, .. } if code == "capability_denied" => anyhow::anyhow!(
+            "T3 lets only a full-access client change project icons, and Okilum's T3 sign-in \
+             does not have full access (capability_denied); the icon was not changed"
+        ),
+        _ => anyhow::anyhow!("{error}; the icon was not changed"),
+    }
 }
 
 /// Lines ending in `\r\n` keep that ending.

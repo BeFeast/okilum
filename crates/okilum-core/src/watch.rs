@@ -1,7 +1,9 @@
 //! Vault change watcher (#6).
 //!
-//! v0 is a reader while editing happens elsewhere, so this is not a
-//! convenience — it is the only way the reader ever sees a change.
+//! Okilum edits notes only through explicit, approved actions (source editing,
+//! rename/move, Tasks, Board); most changes still come from other editors, a
+//! `git checkout` or Syncthing. Those reach the reader only through this
+//! watcher, so it is not a convenience.
 //!
 //! Design, stated so it is not rediscovered:
 //!
@@ -12,8 +14,9 @@
 //!   over one batch. Ignored activity does not extend it; repeated writes to an
 //!   already-pending note do. A 2 s maximum age bounds continuous-write batches.
 //! - **The watcher does not rescan or reindex.** It reports which notes
-//!   changed; the caller decides whether that is a handful of `update_note`
-//!   calls or a full rescan. A vault scan is 0.8–1.6 s on ~4000 notes, and only
+//!   changed; the caller decides whether that is an incremental index update
+//!   (the shell batches it through `Searcher::update_snapshot_batch`) or a
+//!   full rescan. A vault scan is 0.8–1.6 s on ~4000 notes, and only
 //!   the caller knows whether it is worth paying.
 //! - **Notes and directory topology matter.** Service directories and non-note
 //!   file writes are excluded; ordinary dot/underscore folders remain searchable.

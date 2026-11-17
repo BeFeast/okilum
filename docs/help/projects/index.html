@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects: organize a folder and use its Board · Okilum Help</title>
+<meta name="description" content="Turn a vault folder into a local project, move between its Board, records and your notes, and save a first task. A complete captioned walkthrough from Linux beta 7838.">
+<meta property="og:title" content="Organize a folder as a project · Okilum Projects Help">
+<meta property="og:description" content="A real setup-to-saved-task walkthrough and matching written steps.">
+<meta property="og:type" content="article"><meta property="og:image" content="https://okilum.app/help/projects/assets/projects-board.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%232563eb'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+@font-face{font-family:Manrope;src:url("assets/Manrope.ttf") format("truetype");font-weight:200 800;font-display:swap}
+:root{color-scheme:light dark;font-family:Manrope,sans-serif;background:#fff;color:#182b4e;line-height:1.5;font-size:16px}
+*{box-sizing:border-box}body{margin:0}header,main,footer{max-width:1120px;margin:auto;padding:24px 32px}
+header{display:flex;justify-content:space-between;gap:24px;align-items:center}nav{display:flex;flex-wrap:wrap;gap:24px}
+a{color:#1d4ed8;text-underline-offset:4px}a:hover{opacity:.8}a:active{opacity:.6}a:focus-visible,video:focus-visible,summary:focus-visible{outline:3px solid #2563eb;outline-offset:4px}
+.brand{font-size:20px;font-weight:600;text-decoration:none}.skip{position:absolute;top:-80px;left:16px;background:#fff;padding:12px}.skip:focus{top:8px}
+h1,h2,h3{text-wrap:balance}p,li{text-wrap:pretty}h1{font-size:48px;line-height:1;max-width:680px;font-weight:600;margin:32px 0 24px}h2{font-size:24px;line-height:32px;margin:40px 0 16px;font-weight:600}h3{font-size:20px;line-height:28px}
+p{margin:16px 0}.lede{font-size:20px;line-height:28px;max-width:680px}.meta,time{font-size:14px;color:#526a93}video,img{width:100%;height:auto;display:block;border-radius:8px;background:#181818}video{margin-top:24px}figcaption{font-size:14px;margin-top:12px}figure{margin:24px 0}article{max-width:800px;margin-top:48px}li{margin:12px 0}code{font-size:14px;overflow-wrap:anywhere}time{display:inline-block;min-width:48px}summary{cursor:pointer;padding:16px 0}footer{font-size:14px;margin-top:48px}.transcript p{margin:12px 0}
+@media(prefers-color-scheme:dark){:root{background:#181818;color:#eee}a{color:#93b4ff}.meta,time{color:#b6c8e5}.skip{background:#272727;color:#eee}}
+@media(max-width:650px){header,main,footer{padding:16px}header{align-items:flex-start;flex-direction:column}h1{font-size:36px;line-height:40px}nav{gap:16px}}
+</style></head><body><a class="skip" href="#main">Skip to content</a>
+<header><a class="brand" href="https://okilum.app/">Okilum · Help</a><nav aria-label="On this page"><a href="#watch">Watch</a><a href="#steps">Written guide</a><a href="#transcript">Transcript</a></nav></header>
+<main id="main"><h1>Organize a folder<br>as a project</h1><p class="lede">Turn a vault folder into a local project, move between its Board, records and your notes, and save a first task.</p>
+<section id="watch" aria-label="Projects walkthrough"><video controls preload="metadata" poster="assets/projects-board.png" aria-describedby="recording"><source src="assets/projects-tutorial.mp4" type="video/mp4"><track kind="captions" src="captions.vtt" srclang="en" label="English" default>Your browser cannot play this video. Follow the written guide below.</video>
+<p id="recording" class="meta">2:15 · Real Linux beta 7838 · Private practice vault · Visible cursor and English captions. No audio. Captions are also embedded below the recorded UI for offline playback.</p>
+<p><a href="assets/projects-tutorial.mp4" download>Download the video</a></p></section>
+<article id="steps" aria-label="Written Projects guide">
+<p>A project gives a vault folder a Board for tasks and tabs for its decisions,
+reports and handovers. Notes stay ordinary Markdown files. A local project
+needs no account, repository or T3 connection.</p>
+<h2>Before you start</h2>
+<p>You need a vault folder you can write to. For a first try, use a separate
+practice vault. Open <strong>Settings → Features</strong> and turn on <strong>Agents</strong>. This
+reveals Projects; it does not connect T3 or start a Manager.</p>
+<h2>Create a project</h2>
+<ol start="1">
+<li>Open the app menu and choose <strong>Projects</strong>. The page lists the projects found
+in this vault. Search and <strong>All / Code / Knowledge / Hybrid</strong> narrow the list.</li>
+<li>Choose <strong>New project…</strong>. Enter <strong>Folder</strong> as a path inside the vault; an
+existing folder keeps its notes. Enter <strong>Name</strong> and choose <strong>Code</strong>,
+<strong>Knowledge</strong> or <strong>Hybrid</strong>.</li>
+<li>Leave <strong>Create the project in T3</strong> unchecked for local work, then choose
+<strong>Create project</strong>. The manifest is saved as <code>.okilum/project.toml</code> in that
+folder, and an <code>@index.md</code> note is added only when the folder has none.</li>
+</ol>
+<h2>Open the project and move around</h2>
+<ol start="4">
+<li>Select the project in the list. Tabs are on the left; the Manager panel is
+on the right.</li>
+<li><strong>Board</strong> holds local cards and, after you add a repository, linked issues.
+<strong>Decisions</strong>, <strong>Reports</strong> and <strong>Handovers</strong> show read-only Markdown records
+from the project's <code>decisions</code>, <code>reports</code> and <code>handovers</code> folders (or their
+<code>ops/</code> versions; Reports also reads <code>ops/daily</code>). Select a record to read it.
+Create or edit records in Files, then choose <strong>Refresh</strong> on that tab.</li>
+<li>The project name in the top bar switches projects. It lists recent and all
+projects, <strong>New project…</strong> and <strong>Leave project</strong>.</li>
+<li>Choose <strong>Files</strong> at the top left to return to the vault tree and your notes.
+<strong>Projects</strong> in the top bar opens a project again.</li>
+</ol>
+<h2>Put a first task on the Board</h2>
+<ol start="8">
+<li>On the <strong>Board</strong> tab choose <strong>Create board</strong>. Keep the title; Goal,
+Repository and Stage note are optional. Choose <strong>Create board</strong> to save.
+Manage board opens.</li>
+<li>Choose <strong>Local cards → Add card</strong>. Enter a title such as “Order tile
+samples”, keep <strong>Todo</strong> and choose <strong>Save card</strong>.</li>
+<li>Choose <strong>Back to Manage board</strong>, then close it. The card is listed under
+<strong>Очередь / Queue</strong>; click that heading if the group is collapsed.</li>
+</ol>
+<p>Cards are saved in <code>.okilum/board-local.toml</code> and are still there after you
+leave and reopen the project. The Board's own <strong>Help</strong> covers card states,
+views, search and linked issues.</p>
+<h2>What a local project does not do</h2>
+<p>The Manager panel says <strong>This area is not connected to T3</strong> until you choose
+<strong>Set up local Manager</strong>. Manager, T3 projects and agents are optional and are
+not part of this guide or its video.</p>
+<p>Decisions, Reports and Handovers only read records that already exist; they do
+not create them. A local Board shows no pull request or CI status until you add
+a repository in <strong>Manage board → Board details</strong>.</p>
+<p>Opening Help changes no files and starts no service. Creating a project, a
+Board or a card writes files in the project folder.</p>
+<h2>If something is missing</h2>
+<p><strong>Projects is not in the app menu:</strong> turn on <strong>Agents</strong> in <strong>Settings →
+Features</strong>.</p>
+<p><strong>No projects are listed:</strong> a folder becomes a project only through its
+manifest. Create one with <strong>New project…</strong>. A manifest Okilum cannot read is
+listed with a warning sign; hover it for the reason.</p>
+<p><strong>A new record does not appear:</strong> save it in one of the record folders above,
+then choose <strong>Refresh</strong> on that tab.</p>
+<p>The bundled video shows a real Linux beta 7838, source
+<code>aef9f091571c5c1367509b05ef6fe0ce2ea5052e</code>, using a private practice vault.
+Its cursor and captions show every step from turning on Agents to the reopened
+project with its saved card. It is a tutorial, not a timing measurement or
+human acceptance.</p>
+
+<figure><img src="assets/projects-board.png" width="1440" height="960" alt="Kitchen remodel project reopened on its Board tab, with Order tile samples saved under Очередь, Queue, and marked Local. The Manager panel says this area is not connected to T3."><figcaption>The reopened project keeps its saved card. Local work does not need a connected Manager.</figcaption></figure></article>
+<details id="transcript"><summary>Read the complete video transcript</summary><div class="transcript"><p><time>0:00</time> Start in an ordinary vault. A project adds a Board and records beside your notes.</p>
+<p><time>0:04</time> Open Settings.</p>
+<p><time>0:07</time> Choose Features.</p>
+<p><time>0:11</time> Enable Agents to reveal Projects. No T3 connection is needed.</p>
+<p><time>0:15</time> Close Settings.</p>
+<p><time>0:18</time> Open the app menu.</p>
+<p><time>0:22</time> Choose Projects.</p>
+<p><time>0:26</time> Projects lists the project folders in this vault. None yet.</p>
+<p><time>0:29</time> Choose New project.</p>
+<p><time>0:33</time> Folder: use an existing folder, Kitchen remodel.</p>
+<p><time>0:37</time> Name the project.</p>
+<p><time>0:42</time> Keep Knowledge. Leave Create the project in T3 unchecked.</p>
+<p><time>0:47</time> Choose Create project.</p>
+<p><time>0:52</time> The folder is now a project. Open it.</p>
+<p><time>0:56</time> Board, Decisions, Reports and Handovers are the project tabs. Manager is optional.</p>
+<p><time>1:02</time> Choose Create board.</p>
+<p><time>1:05</time> Keep the title, then Create board. Repository is optional.</p>
+<p><time>1:10</time> Open Local cards.</p>
+<p><time>1:14</time> Choose Add card.</p>
+<p><time>1:17</time> Enter a task. Todo is the default state.</p>
+<p><time>1:21</time> Choose Save card.</p>
+<p><time>1:25</time> Return to Manage board.</p>
+<p><time>1:29</time> Close Manage board.</p>
+<p><time>1:33</time> Expand the queue: the saved card is on the Board.</p>
+<p><time>1:39</time> Open Decisions: read-only notes from the decisions folder.</p>
+<p><time>1:43</time> Select a decision to read it.</p>
+<p><time>1:49</time> Reports reads the reports folder the same way.</p>
+<p><time>1:54</time> Return to Board.</p>
+<p><time>1:58</time> Choose Files to return to your notes.</p>
+<p><time>2:02</time> Projects in the top bar reopens a project.</p>
+<p><time>2:06</time> Select Kitchen remodel. Its Board kept the card.</p></div></details>
+</main><footer><nav aria-label="Related pages"><a href="https://okilum.app/">Okilum home</a><a href="https://okilum.app/help/board/">Board help</a><a href="https://okilum.app/download/">Download</a><a href="https://okilum.app/privacy/">Privacy</a><a href="https://okilum.app/terms/">Terms</a></nav><p>Okilum by BeFeast. Recorded 17 November 2026. The desktop Help bundles this same page, video and written instructions.</p></footer>
+</body></html>
