@@ -1140,7 +1140,7 @@ impl Reader {
             .loading
             .as_ref()
             .is_some_and(|load| load.opts.restore_workspace);
-        if known && (!explicit || replay) && !interacted && self.queued_open_note.is_none() {
+        if known && (!explicit || replay) && !interacted && self.pane.queued_open_note.is_none() {
             self.ui_state.workspace = saved
                 .project
                 .as_ref()

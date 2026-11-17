@@ -354,6 +354,9 @@ impl Reader {
         self.pane.navigation.preparation_generation =
             self.pane.navigation.preparation_generation.wrapping_add(1);
         let generation = self.pane.navigation.preparation_generation;
+        let ticket = self.pane.preparation_ticket();
+        #[cfg(test)]
+        let hold = self.pane.preparation_hold.take();
         let request = DocumentRequest {
             rel: rel.to_owned(),
             jump: location.0.map(str::to_owned),
@@ -408,7 +411,7 @@ impl Reader {
                 }
                 let current = this
                     .update_in_own_window(cx, |this, _, cx| {
-                        if this.pane.navigation.preparation_generation != generation {
+                        if !this.pane.holds_preparation(ticket) {
                             return false;
                         }
                         if this.link_notice.as_deref() != Some(reader_icloud::DOWNLOADING) {
@@ -523,8 +526,12 @@ impl Reader {
                 }
                 document
             });
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                let _ = hold.recv().await;
+            }
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.pane.navigation.preparation_generation != generation {
+                if !this.pane.holds_preparation(ticket) {
                     return;
                 }
                 if let Some(trace) = reader_diagnostics::trace(cx) {
@@ -633,7 +640,7 @@ impl Reader {
     fn prepare_links(&mut self, source: LinkSource, cx: &mut Context<Self>) {
         self.invalidate_links();
         let generation = self.pane.link_preparation_generation;
-        let navigation = self.pane.navigation.generation;
+        let ticket = self.pane.navigation_ticket();
         let from = self.pane.current_rel.clone();
         let vault = self.vault.clone();
         let source_stamp = match &source {
@@ -684,7 +691,7 @@ impl Reader {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.pane.link_preparation_generation != generation
-                    || this.pane.navigation.generation != navigation
+                    || !this.pane.holds_navigation(ticket)
                     || source_stamp.is_some_and(|stamp| {
                         this.editing
                             .as_ref()
