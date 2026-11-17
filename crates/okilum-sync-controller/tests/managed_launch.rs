@@ -958,6 +958,10 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
 
 /// #3080: a private, small tmpfs mounted by scripts/ci/sync-disk-full.sh. The
 /// control proves it is that volume before filling it for a real ENOSPC.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
 fn disk_full_volume(variable: &str) -> Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let path = PathBuf::from(std::env::var_os(variable).with_context(|| {
@@ -986,6 +990,10 @@ fn disk_full_volume(variable: &str) -> Result<PathBuf> {
     );
     Ok(path)
 }
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
 fn free_bytes(path: &Path) -> Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
