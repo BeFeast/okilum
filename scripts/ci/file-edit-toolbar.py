@@ -195,6 +195,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
                 assert 'same-font native batching preserves exact geometry' in result.stdout, result.stdout
             elif control == 'restore-overrides-choice':
                 assert 'pending Read restoration never overrides a newer header view choice' in result.stdout, result.stdout
+            elif control == 'bom-body':
+                assert 'the BOM stays outside the Format span' in result.stdout, result.stdout
             elif control == 'cancel-status':
                 assert 'Cancel restores the live invalid JSON bottom line' in result.stdout, result.stdout
             print('FILE2811_COMPILED_NEGATIVE_FIRED', control, flush=True)

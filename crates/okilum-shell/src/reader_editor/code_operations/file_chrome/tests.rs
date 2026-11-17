@@ -948,6 +948,17 @@ fn file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host(
 fn file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo(cx: &mut TestAppContext) {
     let original = "\u{feff}{\"a\":1,\"a\":2e3,\"str\":\"\\u0041\"}\r\n";
     let (reader, _file, input, visual, temp) = open(cx, "tokens.json", original);
+    // Minimal-edit apply leaves an unchanged BOM alone, so the span itself
+    // must keep the BOM out of the operation (Undo would restore a second one
+    // through any path that replaces it).
+    reader.read_with(visual, |r, cx| {
+        let target = r.code_target(cx).unwrap();
+        assert_eq!(
+            target.range.start, 3,
+            "the BOM stays outside the Format span"
+        );
+        assert!(!target.text.starts_with('\u{feff}'));
+    });
     click(visual, "file-format");
     let formatted = text(&input, visual);
     assert_eq!(
