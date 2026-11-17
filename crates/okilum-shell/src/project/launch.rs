@@ -18,6 +18,9 @@ pub(super) struct Form {
     /// Owner of the running status loop: request and connection generation.
     /// A reconnect or a newer request makes any other loop stale.
     pub(super) polling: Option<(String, u64)>,
+    /// A request is being prepared or sent. It survives reconnects: the send
+    /// may still be delivered, so no second request may start meanwhile.
+    sending: bool,
     status_error: Option<String>,
     error: Option<String>,
     _inputs: Vec<Subscription>,
@@ -47,6 +50,7 @@ impl Form {
             requested: None,
             tracker: None,
             polling: None,
+            sending: false,
             status_error: None,
             error: None,
             _inputs: subscriptions,
@@ -111,6 +115,7 @@ impl ProjectView {
     fn submit_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy
             || self.model_busy
+            || self.launch.sending
             || !self.can_send()
             || self.unresolved_launch()
             || self.launch.requested.is_some()
@@ -142,6 +147,7 @@ impl ProjectView {
             model_override: self.launch.model.clone(),
         };
         self.busy = true;
+        self.launch.sending = true;
         self.launch.error = None;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
@@ -171,8 +177,18 @@ impl ProjectView {
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
+                this.launch.sending = false;
+                // A reconnect during the send changes the generation, but the
+                // request may still have been delivered to the same manager:
+                // keep its tracker and journal state, and resume tracking.
+                let same_manager = retained.as_ref().is_some_and(|tracker| {
+                    this.chat.as_ref().map(|chat| chat.thread_id.as_str())
+                        == Some(tracker.manager_thread_id())
+                });
                 if this.generation == generation {
+                    this.busy = false;
+                }
+                if this.generation == generation || same_manager {
                     if let Some(tracker) = retained {
                         this.launch.requested = Some(tracker.client_request_id.clone());
                         this.launch.tracker = Some(tracker);
@@ -325,7 +341,11 @@ impl ProjectView {
 
     pub(super) fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
         let unresolved = self.unresolved_launch();
-        let locked = self.busy || self.model_busy || self.launch.requested.is_some() || unresolved;
+        let locked = self.busy
+            || self.model_busy
+            || self.launch.sending
+            || self.launch.requested.is_some()
+            || unresolved;
         let mut panel = v_flex()
             .id("project-launch-panel")
             .debug_selector(|| "project-launch-panel".into())
@@ -922,5 +942,112 @@ mod tests {
             assert_eq!(v.records.len(), 1);
         });
         assert_eq!(gateway.sends.lock().unwrap().len(), 1, "nothing is resent");
+    }
+
+    #[gpui::test]
+    fn review_reconnect_during_the_send_keeps_the_delivered_request_and_blocks_a_second(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\nFixture request\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        launch_frame(&gateway, "not-yet-requested", 0);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":view.binding})).unwrap(),
+                )
+                .unwrap();
+                for (input, value) in [
+                    (&view.launch.role, "UI"),
+                    (&view.launch.brief, "brief.md"),
+                    (&view.launch.worktree, "/server/worktrees/ui"),
+                    (&view.launch.branch, "feature/ui"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_launch(window, cx)));
+        visual.run_until_parked();
+
+        // The send is still in flight (its background work has not run) when
+        // the connection to the same manager is replaced.
+        view.update_in(visual, |v, window, cx| {
+            v.submit_launch(window, cx);
+            assert!(v.launch.sending);
+            let environment = v.environment.clone().unwrap();
+            v.clear_connection(cx);
+            let restored: Arc<dyn ManagerGateway> = gateway.clone();
+            v.finish_connection(Ok((environment, restored)), window, cx);
+            assert!(!v.busy, "the reconnect cleared the busy state");
+            // The form stays locked: the first request may still be delivered.
+            v.submit_launch(window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            gateway.sends.lock().unwrap().len(),
+            1,
+            "no second request while the first is in flight"
+        );
+        let request = view.read_with(visual, |v, _| {
+            assert!(!v.launch.sending);
+            assert_eq!(v.records.len(), 1);
+            assert!(
+                v.records[0].receipt.is_some(),
+                "the delayed send was delivered"
+            );
+            let tracker = v
+                .launch
+                .tracker
+                .as_ref()
+                .expect("the delivered request keeps its tracker across the reconnect");
+            assert_eq!(
+                v.launch.requested.as_ref(),
+                Some(&tracker.client_request_id)
+            );
+            assert_eq!(
+                v.launch
+                    .polling
+                    .as_ref()
+                    .map(|(id, generation)| (id, *generation)),
+                Some((&tracker.request_id, v.generation)),
+                "tracking runs on the new connection"
+            );
+            tracker.request_id.clone()
+        });
+        view.update_in(visual, |v, window, cx| v.submit_launch(window, cx));
+        visual.run_until_parked();
+        assert_eq!(gateway.sends.lock().unwrap().len(), 1);
+
+        for (index, expected) in [
+            (
+                1,
+                "requested → [accepted] → preparing → running → completed",
+            ),
+            (
+                2,
+                "requested → accepted → [preparing] → running → completed",
+            ),
+            (4, "requested → accepted → preparing → [completed]"),
+        ] {
+            launch_frame(&gateway, &request, index);
+            next_poll(visual);
+            assert_eq!(status_line(&view, visual), expected, "frame {index}");
+        }
+        assert!(visual.debug_bounds("project-launch-status-line").is_some());
     }
 }

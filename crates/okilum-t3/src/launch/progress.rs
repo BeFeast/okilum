@@ -93,6 +93,10 @@ pub struct Progress {
     /// The furthest non-final step T3 has confirmed. Never moves back.
     pub reached: Stage,
     pub outcome: Option<Outcome>,
+    /// The outcome is T3's confirmed status of the matched executor, but new
+    /// threads of the listing are still unchecked for a duplicate launch.
+    /// Shown, never final: polling continues.
+    pub provisional: bool,
     pub executor: Option<ExecutorThread>,
     /// Facts that do not advance a step: ambiguity, a missing thread, a manager
     /// run that ended without a matching executor, an unknown status.
@@ -114,6 +118,7 @@ impl Progress {
             }
         }
         parts.push(match self.outcome {
+            Some(outcome) if self.provisional => format!("[{}, provisional]", outcome.label()),
             Some(outcome) => format!("[{}]", outcome.label()),
             None => Outcome::Completed.label().to_owned(),
         });
@@ -121,7 +126,7 @@ impl Progress {
     }
 
     pub fn finished(&self) -> bool {
-        self.outcome.is_some()
+        self.outcome.is_some() && !self.provisional
     }
 }
 
@@ -183,6 +188,7 @@ impl Tracker {
             progress: Progress {
                 reached: Stage::Requested,
                 outcome: None,
+                provisional: false,
                 executor: None,
                 note: None,
             },
@@ -328,19 +334,24 @@ impl Tracker {
                         self.progress.reached = self.progress.reached.max(Stage::Accepted);
                         match classify(&thread.status) {
                             Some(Ok(stage)) => {
+                                // A provisional outcome follows T3 back to work.
+                                self.progress.outcome = None;
+                                self.progress.provisional = false;
                                 self.progress.reached = self.progress.reached.max(stage)
                             }
                             // Final only once every new thread of this listing
                             // was checked: a later batch may hold a duplicate.
-                            Some(Err(outcome)) if observation.unchecked == 0 => {
-                                self.progress.outcome = Some(outcome)
-                            }
+                            // Until then T3's outcome is shown as provisional.
                             Some(Err(outcome)) => {
-                                note = Some(format!(
-                                    "T3 reports {} for this executor; checking {} more new T3 threads for this request before confirming it.",
-                                    outcome.label(),
-                                    observation.unchecked
-                                ))
+                                self.progress.outcome = Some(outcome);
+                                self.progress.provisional = observation.unchecked > 0;
+                                if self.progress.provisional {
+                                    note = Some(format!(
+                                        "T3 reports {} for this executor; still checking {} more new T3 threads for a possible duplicate launch of this request.",
+                                        outcome.label(),
+                                        observation.unchecked
+                                    ));
+                                }
                             }
                             None => {
                                 note = Some(format!(
@@ -366,6 +377,8 @@ impl Tracker {
                 // Never pick a winner between two launches of one request.
                 self.progress.reached = self.progress.reached.max(Stage::Accepted);
                 self.progress.executor = None;
+                self.progress.outcome = None;
+                self.progress.provisional = false;
                 note = Some(format!(
                     "More than one T3 thread carries this request: {}. Resolve it in the manager chat.",
                     self.matched.iter().cloned().collect::<Vec<_>>().join(", ")

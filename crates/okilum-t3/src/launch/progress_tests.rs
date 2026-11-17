@@ -462,12 +462,20 @@ fn review2_a_duplicate_beyond_the_first_batch_keeps_the_outcome_provisional() {
         .as_deref()
         .unwrap()
         .contains("checking 1 more new T3 threads"));
+    assert_eq!(
+        launch.progress.line(),
+        "requested → accepted → [completed, provisional]"
+    );
     step(&mut launch, &t3);
     assert!(
         !launch.progress.finished(),
         "polling continues while ambiguous"
     );
     assert!(launch.progress.executor.is_none());
+    assert!(
+        launch.progress.outcome.is_none(),
+        "a duplicate withdraws the provisional outcome"
+    );
     let note = launch.progress.note.clone().unwrap();
     assert!(
         note.contains("mcp:fixture-executor-new")
@@ -561,4 +569,57 @@ fn review3_empty_new_threads_rotate_so_a_later_duplicate_is_found() {
     assert_eq!(distinct.len(), 8, "{empty_reads:?}");
     step(&mut launch, &t3);
     assert!(!launch.progress.finished());
+}
+
+#[test]
+fn review4_an_unrelated_empty_thread_shows_the_confirmed_outcome_as_provisional() {
+    // An unrelated thread created after the request never gets a first
+    // message. The matched executor completes: T3's outcome is shown at once
+    // as provisional, with the duplicate warning, and polling continues.
+    let mut fixture = Recorded::new().fixture;
+    let mut rows = fixture["frames"][4]["executors"].clone();
+    let mut empty = fixture["frames"][2]["executors"][1].clone();
+    empty["threadId"] = json!("mcp:fixture-empty-unrelated");
+    empty["status"] = json!("idle");
+    empty["updatedAt"] = json!("2026-11-17T12:00:00.000Z");
+    rows.as_array_mut().unwrap().push(empty);
+    fixture["timelines"]["mcp:fixture-empty-unrelated"] = json!([]);
+    let t3 = Recorded {
+        fixture,
+        ..Recorded::new()
+    };
+    t3.executors(rows);
+    let mut launch = tracker(&t3, true);
+    for _ in 0..3 {
+        step(&mut launch, &t3);
+        assert_eq!(
+            launch.progress.line(),
+            "requested → accepted → [completed, provisional]"
+        );
+        assert!(launch.progress.provisional && !launch.progress.finished());
+        assert_eq!(
+            launch.progress.executor.as_ref().unwrap().thread_id,
+            "mcp:fixture-executor-new"
+        );
+        let note = launch.progress.note.clone().unwrap();
+        assert!(
+            note.contains("T3 reports completed")
+                && note.contains("checking 1 more new T3 threads")
+                && note.contains("possible duplicate"),
+            "{note}"
+        );
+    }
+    // The thread gets an unrelated first message: the outcome becomes final.
+    let mut fixture = t3.fixture.clone();
+    fixture["timelines"]["mcp:fixture-empty-unrelated"] =
+        fixture["timelines"]["mcp:fixture-executor-old"].clone();
+    let rows = t3.executors.lock().unwrap().clone();
+    let t3 = Recorded {
+        fixture,
+        ..Recorded::new()
+    };
+    t3.executors(rows);
+    step(&mut launch, &t3);
+    assert_eq!(launch.progress.line(), "requested → accepted → [completed]");
+    assert!(launch.progress.finished() && launch.progress.note.is_none());
 }
