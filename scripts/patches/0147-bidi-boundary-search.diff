@@ -134,7 +134,7 @@
 +                index,
 +                is_emoji: false,
 +            };
-+            glyphs.push(glyph);
++            glyphs.push(glyph.clone());
 +            // Distinct glyph at an interior codepoint in one grapheme, in a
 +            // separate fallback run; from_layout must coalesce it as before.
 +            if let Some((offset, _)) = text[index..starts.get(n + 1).copied().unwrap_or(text.len())]
