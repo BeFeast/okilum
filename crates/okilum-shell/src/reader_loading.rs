@@ -1443,10 +1443,9 @@ pub(crate) struct PendingDocument {
     language_task: Option<Task<()>>,
     /// The outline, scanned while the TextView parses (#3073).
     outline_task: Option<Task<Option<PreparedOutline>>>,
-    /// When this document was staged, and when its parse was accepted: the
-    /// open's `note_open_prepare` diagnostic (#3073).
+    /// When this document was staged: the open's `note_open_prepare`
+    /// diagnostic (#3073).
     staged_at: std::time::Instant,
-    parsed_at: Option<std::time::Instant>,
 }
 
 impl Reader {
@@ -1537,7 +1536,6 @@ impl Reader {
             language_task: None,
             outline_task,
             staged_at: std::time::Instant::now(),
-            parsed_at: None,
         });
         self.publish_pending_document(window, cx);
     }
@@ -1559,7 +1557,6 @@ impl Reader {
             if !pending.languages_prepared {
                 if pending.language_task.is_none() {
                     let parsed_at = std::time::Instant::now();
-                    pending.parsed_at = Some(parsed_at);
                     if let Some(trace) = &trace {
                         trace.event(
                             "note_open_parse",
