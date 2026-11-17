@@ -976,7 +976,7 @@ mod apply_session {
 
         // Keep mine: the edit replaces the reviewed outside version.
         assert_eq!(
-            session.keep_mine(0).unwrap(),
+            session.keep_mine(0, &outside).unwrap(),
             Applied::Saved { revision: 1 }
         );
         assert_eq!(vault.read(), mine);

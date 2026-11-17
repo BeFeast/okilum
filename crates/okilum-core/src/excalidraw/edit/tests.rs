@@ -215,15 +215,25 @@ fn keep_mine_writes_the_edit_over_the_reviewed_version_and_undo_restores_it() {
     let again = outside.replace("\"x\":7", "\"x\":8");
     session.store.disk = again.clone();
     assert_eq!(
-        session.keep_mine(0).unwrap(),
+        session.keep_mine(0, &outside).unwrap(),
         Applied::Conflict {
             disk: again.clone()
         }
     );
     assert_eq!(session.store.disk, again);
+    // A repeated Keep mine that reviewed only the first outside version
+    // cannot overwrite the second one.
+    assert_eq!(
+        session.keep_mine(0, &outside).unwrap(),
+        Applied::Conflict {
+            disk: again.clone()
+        }
+    );
+    assert_eq!(session.store.disk, again);
+    assert_eq!(session.store.saves, 0);
 
     assert_eq!(
-        session.keep_mine(0).unwrap(),
+        session.keep_mine(0, &again).unwrap(),
         Applied::Saved { revision: 1 }
     );
     assert_eq!(session.store.disk, mine);
@@ -477,4 +487,45 @@ fn vault_images_are_shown_but_never_written_and_formulas_do_not_block() {
         &compressed[..section],
         "Markdown, Text Elements and Embedded Files unchanged"
     );
+}
+
+#[test]
+fn undo_shows_the_vault_images_of_the_restored_file() {
+    use base64::Engine as _;
+    let compressed = include_str!("../../../tests/fixtures/excalidraw/board.excalidraw.md");
+    let mut fixture = session_for("Board.excalidraw.md", compressed);
+    let root = fixture.session.root.clone();
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    std::fs::write(root.join("assets/diagram.png"), b"\x89PNG image a").unwrap();
+    std::fs::write(root.join("assets/other.png"), b"\x89PNG image b").unwrap();
+    assert_eq!(fixture.session.reload(0).unwrap(), 1);
+    let session = &mut fixture.session;
+    let image = "5f4c2a0d9b8e7f6a1c3b5d7e9f0a2c4e6b8d0f1a";
+    let data = |bytes: &[u8]| {
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    };
+    let shown = |session: &DrawingEdit<MemoryStore>| {
+        session.editor_scene().unwrap()["files"][image]["dataURL"].clone()
+    };
+    assert_eq!(shown(session), data(b"\x89PNG image a"));
+
+    // Outside, the same file id now embeds another image.
+    let outside = compressed.replace("[[assets/diagram.png]]", "[[assets/other.png]]");
+    assert_ne!(outside, compressed);
+    session.store.disk = outside.clone();
+    let baseline = load(session);
+    assert!(matches!(
+        session.apply(1, &moved(&baseline, 0, 77)).unwrap(),
+        Applied::Conflict { .. }
+    ));
+    assert_eq!(
+        session.keep_mine(1, &outside).unwrap(),
+        Applied::Saved { revision: 2 }
+    );
+    assert_eq!(session.undo(2).unwrap(), Undone::Restored { revision: 3 });
+    assert_eq!(session.store.disk, outside);
+    assert_eq!(shown(session), data(b"\x89PNG image b"));
 }

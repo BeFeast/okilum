@@ -273,16 +273,23 @@ impl<S: DrawingStore> DrawingEdit<S> {
         Ok(self.saved(previous, edited.clone()))
     }
 
-    /// Conflict choice: write this edit over the outside version the user saw.
-    /// If the file changed again, that is a new conflict and nothing is written.
-    pub fn keep_mine(&mut self, revision: u64) -> Result<Applied> {
+    /// Conflict choice: write this edit over `reviewed`, the outside version
+    /// the user saw in the conflict. Consent covers that version only: if the
+    /// file is no longer `reviewed`, nothing is written and the conflict shows
+    /// the version now on disk, which needs its own Keep mine.
+    pub fn keep_mine(&mut self, revision: u64, reviewed: &str) -> Result<Applied> {
         self.check_revision(revision)?;
         let pending = self
             .conflict
             .as_ref()
             .ok_or_else(|| anyhow!("There is no conflict to resolve"))?;
+        if pending.disk != reviewed {
+            return Ok(Applied::Conflict {
+                disk: pending.disk.clone(),
+            });
+        }
         self.store.stage(pending.mine.clone())?;
-        if self.store.keep_mine(&pending.disk)? == Save::Conflict {
+        if self.store.keep_mine(reviewed)? == Save::Conflict {
             let disk = self.store.current()?;
             let pending = self.conflict.as_mut().expect("checked conflict");
             pending.disk = disk.clone();
@@ -302,10 +309,7 @@ impl<S: DrawingStore> DrawingEdit<S> {
         self.undo = None;
         self.baseline = None;
         self.revision += 1;
-        let path = self.root.join(&self.rel);
-        self.display_files = Scene::parse(&self.opened)
-            .map(|scene| display_images(&self.root, &path, &scene))
-            .unwrap_or_default();
+        self.refresh_display_files();
         Ok(self.revision)
     }
 
@@ -359,9 +363,19 @@ impl<S: DrawingStore> DrawingEdit<S> {
         self.undo = None;
         self.baseline = None;
         self.revision += 1;
+        // The restored file may embed other vault images than the edit did.
+        self.refresh_display_files();
         Ok(Undone::Restored {
             revision: self.revision,
         })
+    }
+
+    /// Vault images for the file the editor will load next.
+    fn refresh_display_files(&mut self) {
+        let path = self.root.join(&self.rel);
+        self.display_files = Scene::parse(&self.opened)
+            .map(|scene| display_images(&self.root, &path, &scene))
+            .unwrap_or_default();
     }
 
     fn saved(&mut self, previous: String, edited: Value) -> Applied {
