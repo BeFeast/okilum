@@ -121,12 +121,12 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
     );
     eprintln!("WINDOWS_TASK_PHASE helper refresh after update");
     let store = store(&state)?;
-    let old = store
+    let old_journal = store
         .begin(Instant::now() + Duration::from_secs(5))?
         .current()?
         .context("old helper journal missing")?
-        .binding()
         .clone();
+    let old = old_journal.binding().clone();
     let selection = private::read(&state.join("runtime.json"))?;
     let configuration = private::public_file(&state.join("config").join("config.xml"))?;
     let installed_hash =
@@ -142,7 +142,8 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         &old,
         &installed_hash,
     )?;
-    assert!(super::super::restage::refresh_current_app()?);
+    // The first plan arms its Stop for a generation that is no longer live.
+    assert!(super::super::restage::refresh_after_generation_change()?);
     let refreshed = observed(managed_source_identity(&state)?, &controller)?;
     same_identity(&before, &refreshed);
     assert_ne!(before.generation.id, refreshed.generation.id);
@@ -151,12 +152,16 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
         configuration,
         private::public_file(&state.join("config").join("config.xml"))?
     );
-    let new = store
+    let new_journal = store
         .begin(Instant::now() + Duration::from_secs(5))?
         .current()?
         .context("new helper journal missing")?
-        .binding()
         .clone();
+    // stale Stop, re-armed Stop, stopped, rebound, enabled: the re-arm happened.
+    assert_eq!(new_journal.revision(), old_journal.revision() + 5);
+    assert_eq!(new_journal.journal_epoch(), old_journal.journal_epoch());
+    assert_eq!(new_journal.intent(), Intent::Enabled);
+    let new = new_journal.binding().clone();
     let mut expected = old.clone();
     expected.supervisor = new.supervisor.clone();
     assert_eq!(new, expected);
@@ -167,7 +172,7 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
     assert!(!Path::new(&old.supervisor).exists());
     assert!(!state.join("restage.json").exists());
     assert!(!super::super::restage::refresh_current_app()?);
-    eprintln!("WINDOWS_TASK_HELPER_RESTAGE_PASS: new signed helper/task, same identity/config/peers/runtime");
+    eprintln!("WINDOWS_TASK_HELPER_RESTAGE_PASS: new signed helper/task after a re-armed authenticated Stop, same identity/config/peers/runtime");
     eprintln!("WINDOWS_TASK_PHASE retained Disable");
     disable_current_app()?;
     eprintln!("WINDOWS_TASK_PHASE retained Disable complete");

@@ -72,6 +72,14 @@ pub fn refresh_current_app() -> Result<bool> {
 
 /// Resume an unfinished plan, settle a cancelled one, or begin a new one.
 pub(super) fn refresh(state: PathBuf, sources: preparation::Sources) -> Result<bool> {
+    refresh_with(state, sources, |installed| installed)
+}
+
+fn refresh_with<H: Host>(
+    state: PathBuf,
+    sources: preparation::Sources,
+    host: impl FnOnce(Installed) -> H,
+) -> Result<bool> {
     let store = WindowsStore::open_existing(state.to_str().context("Sync path is not Unicode")?)?;
     // Separate from prepare.lock: preparation takes that lock for each phase.
     let operation = crate::private::managed_lock(&state.join("restage.lock"), true)?;
@@ -83,18 +91,81 @@ pub(super) fn refresh(state: PathBuf, sources: preparation::Sources) -> Result<b
         .join("helper")
         .join(&hash)
         .join("okilum-sync-supervisor.exe");
-    let mut host = Installed {
+    let target = target
+        .to_str()
+        .context("helper path is not Unicode")?
+        .into();
+    let mut host = host(Installed {
         state,
         sources,
         store: store.clone(),
-    };
+    });
     store.restage_helper(
         &mut host,
-        target
-            .to_str()
-            .context("helper path is not Unicode")?
-            .into(),
+        target,
         hash,
         Instant::now() + Duration::from_secs(120),
+    )
+}
+
+/// Native control: the helper the plan armed its Stop for is no longer the
+/// live generation (as after a scheduler restart between reading its scope and
+/// committing the Stop). The real guard, Task Scheduler and authenticated Stop
+/// must re-arm for the live generation; nothing is killed.
+#[cfg(test)]
+pub(super) fn refresh_after_generation_change() -> Result<bool> {
+    use crate::sidecar::{authority::StopToken, supervisor::ipc::Scope};
+    struct Stale<P>(P, bool);
+    impl<P: Platform> Platform for Stale<P> {
+        fn inspect(&mut self, b: &Binding) -> Result<Registration> {
+            self.0.inspect(b)
+        }
+        fn verify_payload(&mut self, b: &Binding) -> Result<()> {
+            self.0.verify_payload(b)
+        }
+        fn register(&mut self, b: &Binding) -> Result<()> {
+            self.0.register(b)
+        }
+        fn start(&mut self, b: &Binding) -> Result<()> {
+            self.0.start(b)
+        }
+        fn stop(&mut self, b: &Binding) -> Result<()> {
+            self.0.stop(b)
+        }
+        fn supervisor_scope(&mut self, b: &Binding) -> Result<Option<Scope>> {
+            let mut scope = self.0.supervisor_scope(b)?;
+            if std::mem::take(&mut self.1) {
+                let scope = scope.as_mut().context("helper not running for control")?;
+                scope.generation = uuid::Uuid::new_v4();
+            }
+            Ok(scope)
+        }
+        fn stop_supervisor(&mut self, b: &Binding, token: &StopToken) -> Result<()> {
+            self.0.stop_supervisor(b, token)
+        }
+        fn unregister(&mut self, b: &Binding) -> Result<()> {
+            self.0.unregister(b)
+        }
+    }
+    struct Once(Installed, bool);
+    impl Host for Once {
+        type Native = Stale<Native>;
+        fn platform(&mut self, b: &Binding) -> Result<Self::Native> {
+            Ok(Stale(self.0.platform(b)?, std::mem::take(&mut self.1)))
+        }
+        fn select_helper(&mut self, b: &Binding, hash: &str) -> Result<()> {
+            self.0.select_helper(b, hash)
+        }
+        fn ready(&mut self, b: &Binding, deadline: Instant) -> Result<()> {
+            self.0.ready(b, deadline)
+        }
+        fn cleanup(&mut self, old: &Binding) -> Result<()> {
+            self.0.cleanup(old)
+        }
+    }
+    refresh_with(
+        bootstrap::active_state_directory()?,
+        preparation::Sources::installed()?,
+        |installed| Once(installed, true),
     )
 }

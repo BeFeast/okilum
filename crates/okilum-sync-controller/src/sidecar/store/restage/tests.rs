@@ -15,6 +15,8 @@ struct Memory {
     ready: bool,
     cleaned: bool,
     cancel_on_stop: bool,
+    /// Bumped whenever the scheduler starts the helper again.
+    generation: u128,
 }
 impl Memory {
     fn before(&mut self, name: &str) -> Result<()> {
@@ -66,11 +68,11 @@ impl StateDir for Dir {
     }
 }
 struct Fake(Rc<RefCell<Memory>>);
-fn scope(binding: &Binding) -> Scope {
+fn scope(binding: &Binding, generation: u128) -> Scope {
     Scope {
         installation: binding.installation,
         instance: binding.instance,
-        generation: Uuid::from_u128(3),
+        generation: Uuid::from_u128(3 + generation),
     }
 }
 impl Platform for Fake {
@@ -108,13 +110,14 @@ impl Platform for Fake {
         panic!("no scheduler or PID kill")
     }
     fn supervisor_scope(&mut self, b: &Binding) -> Result<Option<Scope>> {
-        Ok(self.0.borrow().running.then(|| scope(b)))
+        let m = self.0.borrow();
+        Ok(m.running.then(|| scope(b, m.generation)))
     }
     fn stop_supervisor(&mut self, b: &Binding, token: &StopToken) -> Result<()> {
         let mut m = self.0.borrow_mut();
         ensure!(!m.locked, "Stop must release the state lock");
         let saved = Envelope::from_slice(&m.files[super::super::NAME])?;
-        saved.authorize(token, &scope(b))?;
+        saved.authorize(token, &scope(b, m.generation))?;
         m.before("authenticated Stop and owned-tree exit")?;
         m.running = false;
         if m.cancel_on_stop {
@@ -166,6 +169,9 @@ impl Host for Fake {
     }
 }
 fn fixture() -> (Store<Dir>, Fake, Envelope) {
+    fixture_with(true)
+}
+fn fixture_with(running: bool) -> (Store<Dir>, Fake, Envelope) {
     let b = Binding {
         installation: Uuid::from_u128(1),
         instance: Uuid::from_u128(2),
@@ -178,19 +184,45 @@ fn fixture() -> (Store<Dir>, Fake, Envelope) {
     let m = Rc::new(RefCell::new(Memory {
         files: BTreeMap::from([(super::super::NAME.into(), first.to_vec().unwrap())]),
         task: Some(b.clone()),
-        running: true,
+        running,
         selected: b.supervisor,
         ..Default::default()
     }));
     (Store::new(Dir(m.clone())), Fake(m), first)
 }
 fn run(store: &Store<Dir>, host: &mut Fake) -> Result<bool> {
+    run_to(store, host, "new")
+}
+fn run_to(store: &Store<Dir>, host: &mut Fake, hash: &str) -> Result<bool> {
     store.restage_helper(
         host,
-        "/state/helper/new/helper.exe".into(),
-        "new".into(),
+        format!("/state/helper/{hash}/helper.exe"),
+        hash.into(),
         Instant::now() + Duration::from_secs(5),
     )
+}
+/// Logon trigger / RestartOnFailure: any still-registered task may run again,
+/// and a running helper may come back as a new generation.
+fn scheduler_restart(host: &Fake) {
+    let mut m = host.0.borrow_mut();
+    if m.task.is_some() {
+        m.running = true;
+        m.generation += 1;
+    }
+}
+fn assert_enabled_on(host: &Fake, original: &Envelope, hash: &str, context: &str) {
+    let now = current(host);
+    assert_eq!(now.intent(), Intent::Enabled, "{context}");
+    let mut expected = original.binding().clone();
+    expected.supervisor = format!("/state/helper/{hash}/helper.exe");
+    assert_eq!(now.binding(), &expected, "{context}");
+    assert_eq!(now.journal_epoch(), original.journal_epoch());
+    assert!(now.stop().is_none() && now.update().is_none());
+    let m = host.0.borrow();
+    assert!(m.running && m.ready && m.cleaned, "{context}");
+    assert_eq!(m.task.as_ref(), Some(&expected), "{context}");
+    assert_eq!(m.selected, expected.supervisor, "{context}");
+    assert!(!m.files.contains_key(MARKER), "{context}");
 }
 fn current(host: &Fake) -> Envelope {
     Envelope::from_slice(&host.0.borrow().files[super::super::NAME]).unwrap()
@@ -242,6 +274,73 @@ fn every_crash_before_and_after_publication_or_native_effect_resumes_enabled() -
             assert_eq!(m.task.as_ref(), Some(&expected));
             assert!(!m.files.contains_key(MARKER));
         }
+    }
+    Ok(())
+}
+#[test]
+fn scheduler_restart_after_every_crash_point_reacquires_stop_and_resumes_enabled() -> Result<()> {
+    // Running: the plan holds an armed Stop whose generation the restart kills.
+    // Stopped but registered: the plan has no Stop and commits a bare Disabled
+    // before unregister, the step the logon trigger can race.
+    for initially_running in [true, false] {
+        let (store, mut host, _) = fixture_with(initially_running);
+        assert!(run(&store, &mut host)?);
+        let events = host.0.borrow().events.clone();
+        for point in 1..=events.len() {
+            for after in [false, true] {
+                let context = format!(
+                    "running={initially_running} crash {point} after={after}: {}",
+                    events[point - 1]
+                );
+                let (store, mut host, original) = fixture_with(initially_running);
+                host.0.borrow_mut().fail = Some((point, after));
+                assert!(run(&store, &mut host).is_err(), "unfired {context}");
+                host.0.borrow_mut().fail = None;
+                scheduler_restart(&host);
+                // A second restart between launches: the re-armed plan is
+                // superseded too, and resume must re-arm once more.
+                let _ = run(&Store::new(Dir(host.0.clone())), &mut host);
+                scheduler_restart(&host);
+                assert!(
+                    run(&Store::new(Dir(host.0.clone())), &mut host).is_ok(),
+                    "{context}"
+                );
+                assert_enabled_on(&host, &original, "new", &context);
+            }
+        }
+    }
+    Ok(())
+}
+#[test]
+fn helper_generation_change_after_armed_stop_rearms_without_kill() -> Result<()> {
+    let (store, mut host, original) = fixture();
+    // Plan written and Stop armed in the journal, then the helper is replaced
+    // by a new generation before the authenticated Stop is sent.
+    host.0.borrow_mut().fail = Some((2, true));
+    assert!(run(&store, &mut host).is_err());
+    host.0.borrow_mut().fail = None;
+    let armed = current(&host);
+    assert!(armed.stop().is_some() && armed.intent() == Intent::Disabled);
+    host.0.borrow_mut().generation += 1;
+    assert!(run(&store, &mut host)?);
+    assert_enabled_on(&host, &original, "new", "generation change");
+    assert!(host
+        .0
+        .borrow()
+        .events
+        .iter()
+        .any(|e| e == "authenticated Stop and owned-tree exit"));
+    Ok(())
+}
+#[test]
+fn newer_installed_helper_before_rebind_retargets_instead_of_failing() -> Result<()> {
+    for point in [2, 3, 4] {
+        let (store, mut host, original) = fixture();
+        host.0.borrow_mut().fail = Some((point, true));
+        assert!(run(&store, &mut host).is_err());
+        host.0.borrow_mut().fail = None;
+        assert!(run_to(&store, &mut host, "newer")?, "crash {point}");
+        assert_enabled_on(&host, &original, "newer", &format!("crash {point}"));
     }
     Ok(())
 }

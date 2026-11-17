@@ -4,6 +4,13 @@
 //! tell every user Disable apart: with no live helper, `set_intent(Disabled)` is
 //! byte-identical to a planned step. So user lifecycle actions first mark the
 //! marker cancelled under the state lock, and every planned commit rechecks it.
+//!
+//! The plan never strands Sync in its own Disabled steps. The logon trigger or
+//! RestartOnFailure may start the old helper again before its task is removed,
+//! and its generation may change after a Stop was armed. Resume then re-arms:
+//! it takes the live helper's authenticated scope and rewrites the plan from
+//! the current planned step (`origin` keeps the Enabled state it started from).
+//! A newer installed helper re-targets the steps that are not yet committed.
 use super::{StateDir, Store};
 use crate::sidecar::{
     authority::{Envelope, StopToken},
@@ -25,6 +32,10 @@ struct Plan {
     rebound: Envelope,
     enabled: Envelope,
     hash: String,
+    /// The Enabled journal this replacement started from, once `from` is a
+    /// re-armed planned Disabled step. None while `from` is that origin.
+    #[serde(default)]
+    origin: Option<Envelope>,
     /// Set by an explicit user lifecycle action before it commits. Never cleared.
     #[serde(default)]
     cancelled: bool,
@@ -33,13 +44,25 @@ struct Plan {
 impl Plan {
     fn validate(&self) -> Result<()> {
         ensure!(self.schema == 1, "unknown helper restage schema");
+        let origin = self.origin.as_ref().unwrap_or(&self.from);
         ensure!(
-            self.from.intent() == Intent::Enabled
-                && self.from.stop().is_none()
-                && self.from.update().is_none(),
+            origin.intent() == Intent::Enabled
+                && origin.stop().is_none()
+                && origin.update().is_none(),
             "invalid helper restage origin"
         );
+        if self.origin.is_some() {
+            ensure!(
+                self.from.intent() == Intent::Disabled
+                    && self.from.update().is_none()
+                    && self.from.journal_epoch() == origin.journal_epoch()
+                    && self.from.revision() > origin.revision()
+                    && self.from.binding() == origin.binding(),
+                "invalid re-armed helper restage"
+            );
+        }
         for step in [
+            origin,
             &self.from,
             &self.stopping,
             &self.stopped,
@@ -144,6 +167,70 @@ impl<D: StateDir> Store<D> {
         Ok(())
     }
 
+    /// The old helper runs again at a planned Disabled step (scheduler restart)
+    /// or under another generation than the armed Stop. Rewrite the plan from
+    /// `current` with that live, authenticated scope. Same target and origin.
+    fn rearm(
+        &self,
+        plan: &Plan,
+        current: &Envelope,
+        scope: Option<crate::sidecar::supervisor::ipc::Scope>,
+        deadline: Instant,
+    ) -> Result<Plan> {
+        let (stopping, stopped) = match scope {
+            Some(scope) => {
+                let (stopping, token) = current.arm_recovery(scope.clone())?;
+                let stopped = stopping.complete_stop(&token, &scope)?;
+                (stopping, stopped)
+            }
+            None => {
+                let stopped = current.set_intent(Intent::Disabled)?;
+                (stopped.clone(), stopped)
+            }
+        };
+        let rebound = stopped.restage_supervisor(plan.rebound.binding().supervisor.clone())?;
+        let next = Plan {
+            schema: 1,
+            origin: Some(plan.origin.clone().unwrap_or_else(|| plan.from.clone())),
+            from: current.clone(),
+            stopping,
+            stopped,
+            enabled: rebound.enable()?,
+            rebound,
+            hash: plan.hash.clone(),
+            cancelled: false,
+        };
+        next.validate()?;
+        let tx = self.begin(deadline)?;
+        self.still_planned(&tx, current)?;
+        self.dir.write(MARKER, &serde_json::to_vec(&next)?)?;
+        Ok(next)
+    }
+
+    /// Another update installed a newer helper before the rebind committed.
+    /// Staging the old hash would fail forever; aim the uncommitted steps at it.
+    fn retarget(
+        &self,
+        plan: &Plan,
+        current: &Envelope,
+        target: &str,
+        hash: &str,
+        deadline: Instant,
+    ) -> Result<Plan> {
+        let rebound = plan.stopped.restage_supervisor(target.into())?;
+        let next = Plan {
+            enabled: rebound.enable()?,
+            rebound,
+            hash: hash.into(),
+            ..plan.clone()
+        };
+        next.validate()?;
+        let tx = self.begin(deadline)?;
+        self.still_planned(&tx, current)?;
+        self.dir.write(MARKER, &serde_json::to_vec(&next)?)?;
+        Ok(next)
+    }
+
     pub(crate) fn restage_helper(
         &self,
         host: &mut impl Host,
@@ -153,7 +240,7 @@ impl<D: StateDir> Store<D> {
     ) -> Result<bool> {
         // Caller serializes refresh attempts with prepare's separate operation
         // lock. User lifecycle actions remain free to cancel during IPC waits.
-        let plan = {
+        let mut plan = {
             let tx = self.begin(deadline)?;
             if let Some(plan) = self.plan()? {
                 plan
@@ -190,16 +277,17 @@ impl<D: StateDir> Store<D> {
                     let stopped = from.set_intent(Intent::Disabled)?;
                     (stopped.clone(), stopped)
                 };
-                let rebound = stopped.restage_supervisor(target)?;
+                let rebound = stopped.restage_supervisor(target.clone())?;
                 let enabled = rebound.enable()?;
                 let plan = Plan {
                     schema: 1,
+                    origin: None,
                     from,
                     stopping,
                     stopped,
                     rebound,
                     enabled,
-                    hash,
+                    hash: hash.clone(),
                     cancelled: false,
                 };
                 self.dir.write(MARKER, &serde_json::to_vec(&plan)?)?;
@@ -247,6 +335,11 @@ impl<D: StateDir> Store<D> {
                 self.dir.remove(MARKER)?;
                 return Ok(false);
             }
+            if plan.hash != hash && [&plan.from, &plan.stopping, &plan.stopped].contains(&&current)
+            {
+                plan = self.retarget(&plan, &current, &target, &hash, deadline)?;
+                continue;
+            }
             if current == plan.from {
                 let mut tx = self.begin(deadline)?;
                 self.still_planned(&tx, &current)?;
@@ -260,16 +353,22 @@ impl<D: StateDir> Store<D> {
                     operation: current.stop().context("helper Stop missing")?.clone(),
                 };
                 match native.inspect(current.binding())? {
-                    Registration::Running => {
-                        ensure!(
-                            native.supervisor_scope(current.binding())?
-                                == Some(token.operation.scope.clone()),
-                            "helper generation changed; retry after lifecycle recovery"
-                        );
+                    Registration::Running => match native.supervisor_scope(current.binding())? {
                         // Same authenticated Stop path as Controller::disable:
                         // no state lock while the server takes its Stop lease.
-                        native.stop_supervisor(current.binding(), &token)?;
-                    }
+                        Some(scope) if scope == token.operation.scope => {
+                            native.stop_supervisor(current.binding(), &token)?
+                        }
+                        // Restarted by the scheduler: a new generation, so a new Stop.
+                        Some(scope) => {
+                            plan = self.rearm(&plan, &current, Some(scope), deadline)?;
+                            continue;
+                        }
+                        None => {
+                            starting();
+                            continue;
+                        }
+                    },
                     Registration::Stopped | Registration::Absent => (),
                     Registration::ApprovalRequired => {
                         anyhow::bail!("helper task requires approval")
@@ -278,24 +377,32 @@ impl<D: StateDir> Store<D> {
                 let mut tx = self.begin(deadline)?;
                 self.still_planned(&tx, &current)?;
                 // Guard discovery must confirm absence, even after a crash that
-                // lost the authenticated Stop reply. No scheduler/PID kill.
-                ensure!(
-                    native.inspect(current.binding())? != Registration::Running,
-                    "old helper has not exited"
-                );
+                // lost the authenticated Stop reply. No scheduler/PID kill. If
+                // the scheduler started it again, the next pass re-arms.
+                if native.inspect(current.binding())? == Registration::Running {
+                    continue;
+                }
                 native.unregister(current.binding())?;
                 tx.commit(plan.stopped.clone())?;
                 continue;
             }
             if current == plan.stopped {
                 let mut native = host.platform(current.binding())?;
+                if native.inspect(current.binding())? == Registration::Running {
+                    // Started again by the logon trigger or RestartOnFailure
+                    // before its task was removed: re-acquire Stop authority.
+                    match native.supervisor_scope(current.binding())? {
+                        Some(scope) => plan = self.rearm(&plan, &current, Some(scope), deadline)?,
+                        None => starting(),
+                    }
+                    continue;
+                }
                 {
                     let tx = self.begin(deadline)?;
                     self.still_planned(&tx, &current)?;
-                    ensure!(
-                        native.inspect(current.binding())? != Registration::Running,
-                        "old helper still running; retry next launch"
-                    );
+                    if native.inspect(current.binding())? == Registration::Running {
+                        continue;
+                    }
                     native.unregister(current.binding())?;
                 }
                 host.select_helper(plan.rebound.binding(), &plan.hash)?;
@@ -329,11 +436,20 @@ impl<D: StateDir> Store<D> {
             host.ready(current.binding(), deadline)?;
             let tx = self.begin(deadline)?;
             self.still_planned(&tx, &plan.enabled)?;
-            host.cleanup(plan.from.binding())?;
+            // An update back to the retained image keeps its directory.
+            if plan.from.binding().supervisor != plan.enabled.binding().supervisor {
+                host.cleanup(plan.from.binding())?;
+            }
             self.dir.remove(MARKER)?;
             return Ok(true);
         }
     }
+}
+
+/// A helper started by the scheduler has no authenticated endpoint yet. Wait
+/// within the caller's deadline; never stop it any other way.
+fn starting() {
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 #[cfg(test)]
