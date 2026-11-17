@@ -95,20 +95,22 @@ Discover source therefore fell back to asking for an index pattern. The
 transport now sends that header only to `/internal/` routes, and the fake
 server enforces the same rule.
 
-After the fix ([run 44040254238](https://github.com/BeFeast/okilum/actions/runs/44040254238),
-synthetic data; 9.5.5 re-run after the setup retry below):
+After the fix ([run 44044143320](https://github.com/BeFeast/okilum/actions/runs/44044143320),
+all four versions green, synthetic data):
 
 | Check | 8.17.10 | 8.19.25 | 9.5.4 | 9.5.5 |
 |---|---|---|---|---|
-| data view resolution | pass | pass | pass | see below |
-| `/api/status` version | pass | pass | info: redacted | see below |
-| history asc/desc, 600 rows, 250-row tie, nanoseconds | pass | pass | pass | see below |
-| server-side KQL ×3 vs DSL | **unsupported** (explicit 400) | pass | pass | see below |
-| invalid KQL | explicit 400 | explicit 400 | explicit 400 | see below |
-| shard failure | partial, 1/2 failed | partial, 1/2 failed | partial, 1/2 failed | see below |
-| field values | pass | pass | pass | see below |
-| unknown key | typed 401 | typed 401 | typed 401 | see below |
-| late arrival (searchable → visible) | 1.81 s | 1.68 s | 1.72 s | see below |
+| data view resolution | pass | pass | pass | pass |
+| `/api/status` version | pass | pass | info: redacted | info: redacted |
+| history asc/desc, 600 rows, 250-row tie, nanoseconds | pass | pass | pass | pass |
+| server-side KQL ×3 vs DSL | **unsupported** (explicit 400) | pass | pass | pass |
+| invalid KQL | explicit 400 | explicit 400 | explicit 400 | explicit 400 |
+| shard failure | partial, 1/2 failed | partial, 1/2 failed | partial, 1/2 failed | partial, 1/2 failed |
+| field values | pass | pass | pass | pass |
+| unknown key | typed 401 | typed 401 | typed 401 | typed 401 |
+| late arrival (searchable → visible) | 1.55 s | 2.10 s | 2.67 s | 1.42 s |
+
+Each version took about 1.5 minutes, including container start.
 
 Findings:
 
