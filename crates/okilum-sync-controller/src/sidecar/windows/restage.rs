@@ -32,8 +32,7 @@ impl Host for Installed {
     fn select_helper(&mut self, binding: &Binding, hash: &str) -> Result<()> {
         preparation::restage_helper(&self.state, &self.sources, binding, hash)
     }
-    fn ready(&mut self, binding: &Binding, deadline: Instant) -> Result<()> {
-        let mut native = self.platform(binding)?;
+    fn ready(&mut self, native: &mut Native, binding: &Binding, deadline: Instant) -> Result<()> {
         bootstrap::wait_for_native_ready(&self.store, binding, deadline, || {
             Ok(native.inspect(binding)? == Registration::Running)
         })?;
@@ -156,8 +155,13 @@ pub(super) fn refresh_after_generation_change() -> Result<bool> {
         fn select_helper(&mut self, b: &Binding, hash: &str) -> Result<()> {
             self.0.select_helper(b, hash)
         }
-        fn ready(&mut self, b: &Binding, deadline: Instant) -> Result<()> {
-            self.0.ready(b, deadline)
+        fn ready(
+            &mut self,
+            native: &mut Self::Native,
+            b: &Binding,
+            deadline: Instant,
+        ) -> Result<()> {
+            self.0.ready(&mut native.0, b, deadline)
         }
         fn cleanup(&mut self, old: &Binding) -> Result<()> {
             self.0.cleanup(old)

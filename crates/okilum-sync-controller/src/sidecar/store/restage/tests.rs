@@ -17,6 +17,12 @@ struct Memory {
     cancel_on_stop: bool,
     /// Bumped whenever the scheduler starts the helper again.
     generation: u128,
+    /// Started by this pass and not yet ready: its managed-launch reads pin the
+    /// state directory without waiting (#3069).
+    starting: bool,
+    startup_violations: Vec<String>,
+    /// A user Disable commits after the last planned check, before the start.
+    disable_before_start: bool,
 }
 impl Memory {
     fn before(&mut self, name: &str) -> Result<()> {
@@ -48,6 +54,9 @@ impl StateDir for Dir {
     fn lock(self: &Arc<Self>, _: Instant) -> Result<Lock> {
         let mut m = self.0.borrow_mut();
         ensure!(!m.locked, "nested state lock");
+        if m.starting {
+            m.startup_violations.push("state transaction".into());
+        }
         m.locked = true;
         Ok(Lock(self.0.clone()))
     }
@@ -102,8 +111,27 @@ impl Platform for Fake {
     }
     fn start(&mut self, _: &Binding) -> Result<()> {
         let mut m = self.0.borrow_mut();
+        if std::mem::take(&mut m.disable_before_start) {
+            // disable_current_app: cancel the marker, then commit its Disable.
+            let mut plan: serde_json::Value = serde_json::from_slice(&m.files[MARKER])?;
+            plan["cancelled"] = true.into();
+            m.files.insert(MARKER.into(), serde_json::to_vec(&plan)?);
+            let saved = Envelope::from_slice(&m.files[super::super::NAME])?;
+            let next = saved.set_intent(Intent::Disabled)?;
+            m.files.insert(super::super::NAME.into(), next.to_vec()?);
+        }
         m.before("start")?;
-        m.running = true;
+        // The launched helper opens the state directory before Task Scheduler
+        // returns; the exclusive transaction would refuse it (0x80070020).
+        ensure!(
+            !m.locked,
+            "the helper's startup read met the exclusive state lock"
+        );
+        // Its startup reads the journal under the lock and idles unless Enabled.
+        let enabled =
+            Envelope::from_slice(&m.files[super::super::NAME])?.intent() == Intent::Enabled;
+        m.running = enabled;
+        m.starting = enabled;
         m.after()
     }
     fn stop(&mut self, _: &Binding) -> Result<()> {
@@ -145,6 +173,11 @@ impl Platform for Fake {
 impl Host for Fake {
     type Native = Fake;
     fn platform(&mut self, _: &Binding) -> Result<Fake> {
+        let mut m = self.0.borrow_mut();
+        if m.starting {
+            // The Windows guard reads the runtime selection under the state lock.
+            m.startup_violations.push("new platform".into());
+        }
         Ok(Fake(self.0.clone()))
     }
     fn select_helper(&mut self, b: &Binding, _: &str) -> Result<()> {
@@ -153,11 +186,12 @@ impl Host for Fake {
         m.selected = b.supervisor.clone();
         m.after()
     }
-    fn ready(&mut self, _: &Binding, _: Instant) -> Result<()> {
+    fn ready(&mut self, _: &mut Fake, _: &Binding, _: Instant) -> Result<()> {
         let mut m = self.0.borrow_mut();
         m.before("authenticated ready identity")?;
         ensure!(m.running, "helper not running");
         m.ready = true;
+        m.starting = false;
         m.after()
     }
     fn cleanup(&mut self, _: &Binding) -> Result<()> {
@@ -241,6 +275,45 @@ fn planned(host: &Fake, step: &str) -> Envelope {
     serde_json::from_value(plan[step].clone()).unwrap()
 }
 
+/// #3069: from start to authenticated readiness the restage opens no state
+/// transaction and builds no new platform, so the starting helper's
+/// managed-launch reads never meet the exclusive state-directory lock.
+#[test]
+fn helper_startup_window_takes_no_state_lock_and_builds_no_platform() -> Result<()> {
+    let (store, mut host, _) = fixture();
+    assert!(run(&store, &mut host)?);
+    let m = host.0.borrow();
+    assert!(
+        m.events.iter().any(|e| e == "start") && m.ready,
+        "positive control: this pass started the new helper and waited for it"
+    );
+    assert_eq!(m.startup_violations, Vec::<String>::new());
+    Ok(())
+}
+/// #3069: a Disable that commits between the last planned check and the start
+/// wins. The started helper idles, the pass cannot report readiness, and the
+/// next launch settles the cancelled plan without re-enabling or serving.
+#[test]
+fn disable_between_the_last_check_and_the_start_wins() -> Result<()> {
+    let (store, mut host, _) = fixture();
+    host.0.borrow_mut().disable_before_start = true;
+    assert!(
+        run(&store, &mut host).is_err(),
+        "no readiness under Disabled"
+    );
+    assert!(
+        host.0.borrow().events.iter().any(|e| e == "start"),
+        "positive control: the start ran after the Disable"
+    );
+    assert!(!host.0.borrow().running && !host.0.borrow().ready);
+    assert_eq!(current(&host).intent(), Intent::Disabled);
+    let reopened = Store::new(Dir(host.0.clone()));
+    assert!(!run(&reopened, &mut host)?);
+    assert_eq!(current(&host).intent(), Intent::Disabled);
+    let m = host.0.borrow();
+    assert!(!m.running && !m.ready && !m.files.contains_key(MARKER));
+    Ok(())
+}
 #[test]
 fn every_crash_before_and_after_publication_or_native_effect_resumes_enabled() -> Result<()> {
     let (store, mut host, _) = fixture();
