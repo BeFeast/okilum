@@ -181,11 +181,26 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 #[cfg(test)]
 impl Global for TestWorker {}
 
+#[cfg(test)]
+fn sync_fixture_init(cx: &mut App) {
+    crate::test_init(cx);
+    cx.set_reduce_motion(true);
+}
+
 // Draining executor tasks does not promise a frame: hitboxes and debug bounds
 // come from draw, which the GPUI event-simulation API requires before input.
 // First-sync fixtures compile on Windows too; keep this outside Unix-only tests.
 #[cfg(test)]
 fn draw_sync_fixture(visual: &mut gpui::VisualTestContext) {
+    // The wizard is a gpui-component Dialog whose slide-in is timed by the
+    // wall clock, not the test executor. Test support redraws a dirty window
+    // after every simulated input event, so on a slow runner the target can
+    // move between mouse-down and mouse-up and the click is lost (#3069).
+    // Fixtures that click into the mounted layer render its resting frame.
+    assert!(
+        visual.update(|_, cx| cx.reduce_motion()),
+        "Sync UI fixtures must start through sync_fixture_init"
+    );
     // SyncSettings can mount its wizard in Root while rendering. The first
     // draw publishes that layer; drain its notifications and draw the mounted
     // layer before consuming its hitboxes. Neither pass advances worker time.
