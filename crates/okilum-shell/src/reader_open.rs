@@ -2184,6 +2184,14 @@ mod entry_tests {
                 root.canonicalize().unwrap()
             })
             .collect();
+        // Dock deliveries below open folders that already are vaults; a folder
+        // that is not yet one opens as a folder view without the prompt (#3098).
+        for root in &roots {
+            super::super::reader_history::ReadingHistory::record_usable_document(
+                &state, root, "note.md",
+            )
+            .unwrap();
+        }
         let opts = |index: usize| Opts {
             vault: Some(roots[index].clone()),
             session_directory: Some(state.clone()),
