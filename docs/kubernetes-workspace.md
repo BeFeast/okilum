@@ -165,8 +165,7 @@ Choose a Service in the list. The band shows:
   current Pods read; "the Pods read was partial" for a truncated list;
   "Pods are stale" after a failed read with earlier data; otherwise "unknown"
   (Pods not read, or denied: EndpointSlices can be readable while Pods are
-  forbidden). Names are
-  never used to match. An endpoint Pod the selector no longer matches, and
+  forbidden). Names are never used to match. An endpoint Pod the selector no longer matches, and
   Pods the selector matches that are not endpoints, are listed as changing
   membership.
 - **Ownership**, labelled separately from routing: Deployment → ReplicaSet →
