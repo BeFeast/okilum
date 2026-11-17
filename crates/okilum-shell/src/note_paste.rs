@@ -256,13 +256,14 @@ fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
             _ => (false, bytes),
         };
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
-                let pair = [pair[0], pair[1]];
                 if big_endian {
-                    u16::from_be_bytes(pair)
+                    u16::from_be_bytes(*pair)
                 } else {
-                    u16::from_le_bytes(pair)
+                    u16::from_le_bytes(*pair)
                 }
             })
             .collect();
