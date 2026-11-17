@@ -5,6 +5,7 @@ pub mod icon;
 pub mod local_binding;
 pub mod local_manager;
 pub mod picker;
+pub mod waiting;
 
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;

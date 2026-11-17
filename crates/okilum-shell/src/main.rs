@@ -151,6 +151,7 @@ mod reader_viewer_tests;
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
+mod reader_now_waiting;
 mod reader_segmented;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
@@ -2078,6 +2079,8 @@ struct Reader {
     workbench_clock_minute: u64,
     workbench_times: std::collections::BTreeMap<u64, String>,
     workbench_scroll: ScrollHandle,
+    /// Now's Waiting for me, read from bound manager threads (#2346).
+    waiting: reader_now_waiting::Waiting,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,
@@ -2433,6 +2436,7 @@ impl Reader {
             workbench_clock_minute: 0,
             workbench_times: Default::default(),
             workbench_scroll: ScrollHandle::new(),
+            waiting: Default::default(),
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),

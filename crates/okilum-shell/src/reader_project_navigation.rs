@@ -367,6 +367,7 @@ impl Reader {
         self.cancel_workspace_restore();
         self.close_project(window, cx);
         self.title_nav.close();
+        self.waiting.cancel();
         let generation = self.project_navigation.generation.wrapping_add(1);
         self.project_navigation = State {
             generation,
@@ -446,6 +447,7 @@ impl Reader {
                 this.project_navigation.loading = false;
                 this.sync_projects_picker(cx);
                 this.refresh_project_statuses(window, cx);
+                this.refresh_waiting(window, cx);
                 this.refresh_palette_sections(cx);
                 cx.notify();
             });
@@ -2127,6 +2129,8 @@ mod local_reader_without_t3_tests {
     struct UnreachableT3 {
         calls: Mutex<Vec<&'static str>>,
         delay: Mutex<Option<Duration>>,
+        /// When set, pending questions answer with these ids (#2346).
+        pending: Mutex<Option<Vec<String>>>,
     }
     impl UnreachableT3 {
         fn attempt(&self, operation: &'static str) {
@@ -2188,7 +2192,14 @@ mod local_reader_without_t3_tests {
             self.fail("send_message")
         }
         fn pending_requests(&self, _: &str) -> GatewayResult<Vec<String>> {
-            self.fail("pending_requests")
+            let pending = self.pending.lock().unwrap().clone();
+            match pending {
+                Some(ids) => {
+                    self.attempt("pending_requests");
+                    Ok(ids)
+                }
+                None => self.fail("pending_requests"),
+            }
         }
         fn capabilities(&self) -> GatewayResult<okilum_t3::Capabilities> {
             self.fail("capabilities")
@@ -2903,5 +2914,97 @@ mod local_reader_without_t3_tests {
         assert_eq!(super::libc_boundary::spawns(), 0);
         let _ = std::process::Command::new("true").status();
         assert!(super::libc_boundary::spawns() > 0, "a spawn is seen");
+    }
+
+    /// #2346: Waiting for me asks T3 for the bound manager's pending questions
+    /// only while Now is shown, with the exact source identity. Disabling Now
+    /// sends nothing, also for a read already waiting to connect.
+    #[gpui::test]
+    fn now_waiting_reads_pending_questions_only_while_now_is_shown(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        local_vault(&root);
+        let endpoint = Endpoint::new();
+        let state = temp.path().join("state");
+        configured_project(&root, &state, &endpoint.origin());
+        let t3 = Arc::new(UnreachableT3::default());
+        *t3.pending.lock().unwrap() = Some(vec!["q1".into()]);
+        let probe = probe(&t3);
+        let _installed = t3_probe::install(probe.clone());
+        init(cx);
+        let (reader, visual) = open_reader(cx, &root, &state);
+        visual.run_until_parked();
+        let files = |root: &Path| {
+            let mut files = Vec::new();
+            let mut pending = vec![root.to_owned()];
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let entry = entry.unwrap();
+                    let metadata = entry.metadata().unwrap();
+                    if metadata.is_dir() {
+                        pending.push(entry.path());
+                    } else {
+                        files.push((entry.path(), metadata.len(), metadata.modified().ok()));
+                    }
+                }
+            }
+            files.sort();
+            files
+        };
+        let before = files(&root);
+        let asked = |t3: &UnreachableT3| {
+            t3.calls()
+                .iter()
+                .filter(|call| **call == "pending_requests")
+                .count()
+        };
+
+        reader.update_in(visual, |r, window, cx| {
+            r.refresh_service_metadata(window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.project_navigation.discovered);
+            assert_eq!(r.project_navigation.discovery.projects.len(), 1);
+            assert_eq!(r.waiting.view().sources, 0);
+        });
+        assert_eq!(asked(&t3), 0, "Tree never reads Waiting");
+
+        reader.update_in(visual, |r, window, cx| r.set_now_enabled(true, window, cx));
+        visual.run_until_parked();
+        assert_eq!(asked(&t3), 1, "showing Now reads once; no poller");
+        reader.read_with(visual, |r, _| {
+            let view = r.waiting.view();
+            assert!(!view.partial(), "{view:?}");
+            assert_eq!(view.rows.len(), 1, "{view:?}");
+            let row = &view.rows[0];
+            assert_eq!(row.request_id, "q1");
+            assert_eq!(row.source.thread_id, "mcp:manager");
+            assert_eq!(row.source.environment, "test");
+            assert_eq!(row.source.project_id, "okilum");
+            assert!(row.source.folder.ends_with("Dev/Areas/okilum"));
+            assert!(!row.stale);
+        });
+
+        let (release, gate) = async_channel::bounded(1);
+        *probe.gate.lock().unwrap() = Some(gate);
+        reader.update_in(visual, |r, window, cx| r.refresh_waiting(window, cx));
+        reader.update_in(visual, |r, window, cx| r.set_now_enabled(false, window, cx));
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        *probe.gate.lock().unwrap() = None;
+        assert_eq!(asked(&t3), 1, "a disabled Now dispatches no Waiting read");
+        reader.read_with(visual, |r, _| assert_eq!(r.waiting.view().sources, 0));
+
+        reader.update_in(visual, |r, window, cx| {
+            r.refresh_service_metadata(window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(asked(&t3), 1, "discovery with Now disabled reads nothing");
+        assert_eq!(
+            files(&root),
+            before,
+            "Now and Waiting never write to the vault"
+        );
     }
 }
