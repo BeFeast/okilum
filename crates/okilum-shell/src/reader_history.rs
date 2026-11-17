@@ -308,9 +308,8 @@ impl ReadingHistory {
                     .insert(0, (file, crate::reader_sidebar::now()));
                 state.quick_files.truncate(QUICK_FILES);
             }
-            if !full_vault {
-                state.quick_roots.insert(root.to_owned());
-            }
+            let _ = full_vault;
+            state.quick_roots.insert(root.to_owned());
         } else {
             state.quick_roots.remove(root);
         }
