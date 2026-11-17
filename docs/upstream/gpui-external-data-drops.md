@@ -32,12 +32,23 @@ the same paths-only event.
 - The window also registers plain text (UTF-8, UTF-16), HTML, RTF, RTFD, URL
   and common image types (PNG, JPEG, TIFF, GIF, WebP, HEIC).
 - A drag with file names is unchanged (`Entered`/`Submit`). A drag without
-  file names is announced as `DataEntered` with the pasteboard's types; at
-  `performDragOperation:` the contents of every type are read and sent as
-  `DataSubmit`. Dynamic (`dyn.*`) types and file promises are not read: a
-  promise is received on request, never by reading the pasteboard.
-- Unit tests for the type rules and for reading a real (uniquely named)
-  pasteboard; `scripts/ci/gpui-macos-vendor-tests.sh` requires them to run.
+  file names is announced as `DataEntered` with the pasteboard's types. At
+  `performDragOperation:` only the accepted flavors are read and sent as
+  `DataSubmit`: every accepted text type, small metadata (`public.url-name`,
+  `org.chromium.source-url`, `vscode-editor-data`) and the first offered image
+  type (PNG before JPEG, GIF, WebP, HEIC, TIFF; a browser often adds a far
+  larger TIFF of the same image). Private and dynamic types, file promises
+  and further image representations are never read; a promise is received
+  on request, never by reading the pasteboard.
+- Byte limits: text 32 MiB, image 64 MiB, metadata 64 KiB per representation,
+  128 MiB for all reads of one drop. A representation over its limit is
+  skipped (not truncated) and released at once by its own autorelease pool.
+  `ExternalData::types` still lists everything offered; only read flavors
+  have contents, and Okilum's `DroppedData` offers only those to the router.
+- Unit tests for the type selection and for bounded reads of a real (uniquely
+  named) pasteboard: an oversized representation, a second image and a
+  private flavor are not copied, and the aggregate limit holds.
+  `scripts/ci/gpui-macos-vendor-tests.sh` requires both to run.
 
 Backends that never emit the new variants (Linux, Windows) behave as before.
 

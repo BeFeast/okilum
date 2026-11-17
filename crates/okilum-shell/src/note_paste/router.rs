@@ -2160,4 +2160,25 @@ mod tests {
             assert_eq!(routed.insert.as_deref(), Some(expected));
         }
     }
+
+    /// A representation GPUI listed but did not read (over its size limit, a
+    /// second image) is not offered: the drop takes what was read.
+    #[test]
+    fn skipped_dropped_representations_are_not_offered() {
+        use crate::note_paste::offer::Pasteboard as _;
+        let note = Note::new();
+        let cx = note.cx(Mode::Smart, "", 0..0);
+        let kinds = ["public.tiff", offer::UTF8_TEXT, "public.html"];
+        let board = crate::note_paste::DroppedData(gpui::ExternalData::with_contents(
+            kinds.map(gpui::SharedString::from),
+            [(
+                gpui::SharedString::from(offer::UTF8_TEXT),
+                b"read text"[..].into(),
+            )],
+        ));
+        assert_eq!(board.types(), [offer::UTF8_TEXT]);
+        let routed = route(&board, &cx).unwrap();
+        assert_eq!(routed.route, Route::Text);
+        assert_eq!(routed.insert.as_deref(), Some("read text"));
+    }
 }

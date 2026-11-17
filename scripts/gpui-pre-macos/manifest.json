@@ -14,10 +14,10 @@
     },
     {
       "path": "../patches/gpui-pre-macos/0003-external-data-drops.diff",
-      "sha256": "870e865d618f7be23ee3140558cb70ec596e893f869d7d9fb04e102795553854"
+      "sha256": "88b949007ae28dd7128ae0649805a0121ef06b6e1cd160735ba6b791dea42ceb"
     }
   ],
-  "tree_sha256": "1c62d988e221f1d1fa781c7f72d6e0b878e5f7b83ecb5153f951e182444d46b7",
+  "tree_sha256": "a74bdb4a35f9fa369f1a1adb896cc18ac8210c355c9aeb12e7fc79a01df4aa12",
   "generated_path": "vendor/gpui-pre-macos-0.3.3",
   "changed_files": [
     "src/platform.rs",
