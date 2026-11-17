@@ -16,42 +16,92 @@ buffer and changed pixels. Input starts before external key injection and ends
 at the product's matching post-frame diagnostic; this includes OS queue time,
 and does not establish physical display/scanout latency.
 
-Only input medians determine the A/B result. A scenario fails when the PR is
-worse than main **both by more than 15% and by more than 3 ms**. These are
-**configurable defaults**, stored once in `ab-policy.json`; no environment
-variable silently changes them. p90 and all raw samples remain in the report.
-A valid regression permits one complete paired remeasurement of the same two
-SHA-verified binaries. Infrastructure/missing evidence never retries. Both
-attempts share the configured 590-second deadline.
+## Verdict (schema 2)
 
-There is **no absolute CI latency ceiling**. The product's app-key-event to
-post-frame limits (33 ms Linux / 16 ms M4) belong in acceptance on real hardware,
-not on bimodal hosted CPUs. The old static baseline is retained as historical
-evidence; A/B does not rewrite or relax it.
+A scenario is a **regression** only when all three hold on this runner:
+
+1. **Effect size.** The PR input median is worse than main's by more than 15%
+   **and** by more than 3 ms, or the PR median exceeds the explicit
+   **absolute ceiling of 250 ms** while main's median stays within it.
+2. **Rank evidence.** An exact one-sided Mann-Whitney test over the five main
+   and five PR samples gives p ≤ 0.05 / 6 (family-wise 5% across the six
+   scenarios, Bonferroni). With five repetitions this means at most one of the
+   25 main/PR sample pairs may have main slower than the PR. The test
+   enumerates all 252 relabelings and assumes no distribution.
+3. **Confirmation.** A valid regression permits one complete paired
+   remeasurement of the same two SHA-verified binaries, and that remeasurement
+   must regress **the same scenario**. A finding that moves to another scenario
+   is not confirmed; both attempts stay visible with per-scenario verdicts.
+
+All thresholds live once in `ab-policy.json`; no environment variable changes
+them. The policy is rejected if its repetitions leave the rank test unable to
+reject at `family_alpha`. p90, all raw samples, U (PR-slower pairs out of 25),
+p and the per-scenario verdict (`pass`, `not-significant`, `regression`,
+`main-over-ceiling`) are in `result.json` and the job summary. Infrastructure
+and missing evidence never retry. Both attempts share the 590-second deadline.
+
+If **main's** median exceeds the ceiling on this runner, the ceiling cannot
+judge the PR: the run is `NO_EVIDENCE` (infrastructure), never a regression.
+The ceiling is about twice the slowest hosted input median observed so far
+(132 ms, #1639 run 40159269222; largest single A/B sample 144 ms). The
+product's real-hardware app-key-event → post-frame acceptance (33 ms Linux /
+16 ms M4) stays outside hosted CI. The old static #1639 baseline is retained as
+historical evidence; A/B neither rewrites nor relaxes it.
+
+### Why schema 1 produced false reds
+
+Hosted input samples are **bimodal**: on a given runner they cluster at two
+levels about one frame-scheduling step apart (for example ~36 and ~45 ms). A
+median of five flips between the levels, so an unchanged binary moves by
++20–60%. Schema 1 (median delta only) reported a regression in at least one
+attempt on 9 of 22 hosted report-only runs between 10 and 16 November 2026,
+and a final FAIL on 5. Those five were two runs with identical main/PR source,
+one test-only Rust change and two non-editor changes; in every case the
+failing scenario differed between the two attempts. There is no direction
+bias: the median main→PR delta was −0.3% over 192 scenario comparisons, 47%
+of them positive.
+
+`hosted-false-reds.json` keeps the samples of all nine runs (the artifacts
+expire after seven days) and `test_ab.py` replays them. All nine pass schema
+2. The same sessions with **+15 ms** added to the PR samples fail with
+confirmation on all nine runs; +10 ms is confirmed on five of nine. Effects
+smaller than one frame-scheduling step are not resolvable on hosted software
+rendering with five repetitions.
+
+Hosted Windows runners render with WARP (no GPU), whose threads inflate wall
+time the same way (#2845). The rule that follows from both: only same-runner
+paired evidence judges a change, and only reproduced, rank-significant
+differences count.
+
+## Scroll, running modes and activation
 
 Scroll is excluded from A/B. The legacy scroll diagnostic continues separately
 with a **measurement build, not shipped**, using the existing trace patch. Its
 result and provenance remain visible and report-only. Neither an absent scroll
 trace nor a scroll failure is represented as input regression.
 
-Required activation is **deferred**, and #1662 remains open. EPYC calibration
-run `40223917116` produced five valid green invocations, and forced-red run
-`40220173487` detected the diagnostic 120 ms delay. However, Xeon run
-`40230405638` produced two valid FAIL attempts with identical main/PR product
-input hashes. The source of this unchanged-product false rejection is unknown.
-Hardware, both failures and all positive controls/provenance remain in reports.
-
 Ordinary CI invokes `ab.py --report-only`: performance FAIL stays FAIL in JSON
 and the job summary (including both attempts), while the process exits zero.
-Missing controls, collector/harness failures and binary/provenance integrity
-errors remain `NO_EVIDENCE` with nonzero exit; they are never hidden as PASS.
-`ci / check` does not depend on perf; existing shared/macOS requirements remain.
-Multi-pass calibration keeps strict exits and the identical-product-input
-hash guard (all tracked inputs except explicitly listed documentation, CI and
-measurement tooling; vendor setup, assets and unknown build inputs included), stopping on the first failed invocation. No automatic calibration
-loop or runner selection is performed. Defaults 15% / 3 ms and one paired
-remeasurement are unchanged. A future activation needs its own decision and
-resolution of the Xeon blocker, not a waiver for future perf failures.
+Missing controls, collector/harness failures, main over the ceiling and
+binary/provenance integrity errors remain `NO_EVIDENCE` with nonzero exit; they
+are never hidden as PASS. `ci / check` does not depend on perf; existing
+shared/macOS requirements remain.
+
+Multi-pass calibration (`calibration_runs` 2–5) keeps strict exits and the
+identical-product-input hash guard (all tracked inputs except explicitly listed
+documentation, CI and measurement tooling; vendor setup, assets and unknown
+build inputs included), stopping on the first failed invocation. The `strict`
+dispatch input runs one invocation with strict exits and no source guard, for a
+forced-red control on a throwaway commit. No automatic calibration loop or
+runner selection is performed.
+
+Under schema 1, EPYC calibration run `40223917116` produced five valid green
+invocations and forced-red run `40220173487` detected a diagnostic 120 ms
+delay, but Xeon run `40230405638` produced two valid FAIL attempts with
+identical product inputs, in a different scenario per attempt. Required
+activation needs its own decision on schema-2 calibration evidence: at least
+five consecutive valid green unchanged-code invocations and one artificially
+slowed commit that fails with valid measurements.
 
 The sections below document the original static collector and measurement
 boundary, retained for diagnostics and historical evidence.
