@@ -4564,10 +4564,11 @@ mod entry_tests {
         visual.simulate_keystrokes("enter");
         cx.run_until_parked();
         let (pending, message) = kibana(cx, &root).expect("Enter opens the vault's Kibana window");
+        // The window consumed this link, and the Stop acknowledgement of
+        // switching to it did not replace the link notice.
         assert!(
-            pending.as_ref() == Some(&link)
-                || message.contains("Linked query and fixed time range"),
-            "the window received this exact link: {pending:?} / {message}"
+            pending.is_none() && message.contains("Linked query and fixed time range"),
+            "the window applied the link: {pending:?} / {message}"
         );
         assert!(
             kibana(cx, &other).is_none(),

@@ -111,6 +111,9 @@ struct Panel {
     guided: Guided,
     _chips: Option<Subscription>,
     pending_link: Option<remote_log::link::RemoteLink>,
+    /// A link was just applied: the Stop acknowledgement of that change keeps
+    /// the link notice instead of claiming retained rows (#1441).
+    link_notice: bool,
     generation: u64,
     following: bool,
     credential_pending: bool,
@@ -196,7 +199,7 @@ impl Panel {
             });
         });
         let guided = Guided::new(window, cx);
-        Self{credentials:Default::default(),_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{credentials:Default::default(),_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,link_notice:false,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     /// Copy an `okilum://logs` link that reopens this view: applied query and
     /// filters over the loaded absolute range. No endpoint, key or events.
@@ -676,6 +679,7 @@ impl Panel {
         if update.generation != self.generation || self.credential_pending {
             return;
         }
+        let link_notice = std::mem::take(&mut self.link_notice);
         self.following = update.following;
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| {
@@ -844,7 +848,9 @@ impl Panel {
                 if warning.is_some() {
                     self.error = warning;
                 }
-                self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
+                if !link_notice {
+                    self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
+                }
             }
         }
         self.configure_server_counts(cx);
@@ -1302,6 +1308,7 @@ impl Render for Panel {
                         }
                         self.choose(source, window, cx);
                         self.message="Linked query and fixed time range loaded. Apply re-queries the server; this is not an immutable snapshot.".into();
+                        self.link_notice = true;
                     }
                     Err(error) => self.error = Some(error.to_string()),
                 }
