@@ -99,7 +99,7 @@ fn open_snooze(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Entit
             .unwrap()
     });
     reader.read_with(visual, |reader, _| {
-        assert_eq!(reader.current_rel, "Dashboard.md")
+        assert_eq!(reader.pane.current_rel, "Dashboard.md")
     });
     calendar
 }
@@ -180,7 +180,7 @@ async fn snooze_calendar_exact_occurrence_preserves_due_and_undo_then_reopen_fil
                 .tasks_index
                 .as_ref()
                 .is_some_and(|i| i.note_tasks("Work.md").len() == 2)
-                && reader.current_rel == "Dashboard.md"
+                && reader.pane.current_rel == "Dashboard.md"
         })
         .await;
     reader.update_in(visual, |reader, _, _| {
@@ -246,7 +246,7 @@ async fn snooze_calendar_exact_occurrence_preserves_due_and_undo_then_reopen_fil
     });
     visual
         .condition(&reader, |reader, _| {
-            reader.current_rel == "Dashboard.md" && result_task(reader).is_some()
+            reader.pane.current_rel == "Dashboard.md" && result_task(reader).is_some()
         })
         .await;
     visual.run_until_parked();
@@ -277,7 +277,7 @@ async fn snooze_calendar_stale_menu_navigation_root_and_index_refuse_without_ret
                     .tasks_index
                     .as_ref()
                     .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
-                    && reader.current_rel == "Dashboard.md"
+                    && reader.pane.current_rel == "Dashboard.md"
             })
             .await;
         reader.update_in(visual, |reader, _, _| {
@@ -341,7 +341,7 @@ async fn snooze_calendar_storage_failure_keeps_canonical_source_and_fresh_retry(
                 .tasks_index
                 .as_ref()
                 .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
-                && reader.current_rel == "Dashboard.md"
+                && reader.pane.current_rel == "Dashboard.md"
         })
         .await;
     reader.update_in(visual, |reader, _, _| {
@@ -394,7 +394,7 @@ async fn snooze_calendar_held_worker_and_completion_reject_rebound_reader(cx: &m
                     .tasks_index
                     .as_ref()
                     .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
-                    && reader.current_rel == "Dashboard.md"
+                    && reader.pane.current_rel == "Dashboard.md"
             })
             .await;
         reader.update_in(visual, |reader, _, _| {
@@ -529,7 +529,7 @@ async fn snooze_calendar_undo_refuses_intervening_source_and_preserves_recovery(
                     .tasks_index
                     .as_ref()
                     .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
-                    && reader.current_rel == "Dashboard.md"
+                    && reader.pane.current_rel == "Dashboard.md"
             })
             .await;
         reader.update_in(visual, |reader, _, _| {

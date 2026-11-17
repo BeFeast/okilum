@@ -57,7 +57,7 @@ fn mount<'a>(
 async fn ready(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
     visual
         .condition(reader, |reader, _| {
-            reader.current_rel == "Source.md"
+            reader.pane.current_rel == "Source.md"
                 && reader.document_ready()
                 && reader.tasks_index.is_some()
                 && !reader.incremental_initializing
@@ -233,7 +233,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
     });
     visual
         .condition(&reader, |reader, _| {
-            reader.current_rel == "Dashboard.md" && reader.document_ready()
+            reader.pane.current_rel == "Dashboard.md" && reader.document_ready()
         })
         .await;
     visual.run_until_parked();

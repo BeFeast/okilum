@@ -49,7 +49,7 @@ fn open(
     let handle = reader.read_with(cx, |r, _| r.reader_window);
     let mut visual = VisualTestContext::from_window(handle, cx);
     settle(&mut visual, &reader, "real window loaded", |r| {
-        r.document_ready() && r.note_source.contains("only copy")
+        r.document_ready() && r.pane.note_source.contains("only copy")
     });
     if let Some(live) = mode {
         reader.update_in(&mut visual, |r, window, cx| {

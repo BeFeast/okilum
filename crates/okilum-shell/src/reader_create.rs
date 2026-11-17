@@ -1466,7 +1466,7 @@ mod tests {
         visual.simulate_input("Body");
         visual.run_until_parked();
         reader.update_in(visual, |r, _, cx| {
-            assert_eq!(r.current_rel, "Friend new note.md");
+            assert_eq!(r.pane.current_rel, "Friend new note.md");
             let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
             // Positive control: the keystrokes reached the new note's editor.
             assert_eq!(value.as_ref(), "# Friend new note\nBody");
@@ -1535,7 +1535,7 @@ mod tests {
             visual.simulate_keystrokes("enter");
             visual.run_until_parked();
             reader.read_with(visual, |r, _| {
-                assert_eq!(r.current_rel, format!("{name}.md"));
+                assert_eq!(r.pane.current_rel, format!("{name}.md"));
                 assert!(r.source_live_preview(), "{name} opens in Live Preview");
                 assert_eq!(notes_visible(r), docked, "{name}: sidebar after create");
             });
@@ -1707,7 +1707,7 @@ mod tests {
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Selected/Target/a/Новая 🧠.md");
+            assert_eq!(reader.pane.current_rel, "Selected/Target/a/Новая 🧠.md");
             assert_eq!(
                 reader.loading.as_ref().unwrap().generation,
                 generation,
@@ -1717,7 +1717,7 @@ mod tests {
                 .vault
                 .notes
                 .iter()
-                .any(|note| note.path == reader.current_rel));
+                .any(|note| note.path == reader.pane.current_rel));
             assert_eq!(
                 reader
                     .searcher
@@ -1784,7 +1784,7 @@ mod tests {
             input.update(cx, |input, cx| input.set_value("start", window, cx));
             reader.commit_creation(window, cx);
             assert!(reader.creation.as_ref().unwrap().error.is_some());
-            assert_eq!(reader.current_rel, "Selected/Target/a/Новая 🧠.md");
+            assert_eq!(reader.pane.current_rel, "Selected/Target/a/Новая 🧠.md");
             reader.cancel_creation(window, cx);
             reader.new_folder(Some("Selected"), window, cx);
             let input = reader.creation.as_ref().unwrap().input.clone();
@@ -1809,7 +1809,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             // The open note is the tree selection: template creation goes
             // next to it.
-            reader.tree.cursor = Some(reader.current_rel.clone());
+            reader.tree.cursor = Some(reader.pane.current_rel.clone());
             reader.new_from_template(window, cx)
         });
         visual.run_until_parked();
@@ -1853,7 +1853,7 @@ mod tests {
             "# {{title}}\n\nTemplate body"
         );
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Selected/Target/a/Meeting.md");
+            assert_eq!(reader.pane.current_rel, "Selected/Target/a/Meeting.md");
             assert!(reader.editing.is_some());
         });
         std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
@@ -1878,7 +1878,7 @@ mod tests {
             let input = reader.creation.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| input.set_value("Planning", window, cx));
             reader.commit_creation(window, cx);
-            assert_eq!(reader.current_rel, "Planning.md");
+            assert_eq!(reader.pane.current_rel, "Planning.md");
             reader.new_note(None, window, cx);
             assert_eq!(
                 reader

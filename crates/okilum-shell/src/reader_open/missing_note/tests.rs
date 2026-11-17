@@ -99,7 +99,7 @@ fn missing_cli_markdown_opens_an_empty_editor_without_a_vault(cx: &mut gpui::Tes
             r.single_file,
             "outside a vault follows the existing quick-view path"
         );
-        assert_eq!(r.current_rel, "new-note.MD");
+        assert_eq!(r.pane.current_rel, "new-note.MD");
         assert!(r.editing.is_some(), "a newly created note opens its editor");
         assert!(r.source_input().unwrap().read(cx).value().is_empty());
         assert_eq!(
@@ -172,7 +172,7 @@ fn running_vault_accepts_missing_cli_and_os_paths_without_overwriting(
                 windows,
                 "the existing vault window is reused"
             );
-            assert_eq!(r.current_rel, rel);
+            assert_eq!(r.pane.current_rel, rel);
             assert!(!r.single_file);
             assert!(r.editing.is_some());
             assert_eq!(std::fs::read(&path).unwrap(), b"");

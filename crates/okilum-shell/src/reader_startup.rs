@@ -766,7 +766,7 @@ mod tests {
                 .iter()
                 .map(|reader| {
                     let reader = reader.read(cx);
-                    assert_eq!(reader.current_rel, "note.md");
+                    assert_eq!(reader.pane.current_rel, "note.md");
                     reader.single_file
                 })
                 .collect();
@@ -831,7 +831,7 @@ mod tests {
                 reader.document_ready(),
                 "positive control: usable note opened"
             );
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
         });
         assert_eq!(
             ReadingHistory::default_vault(&state).unwrap(),

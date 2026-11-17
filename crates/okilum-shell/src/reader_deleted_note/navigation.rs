@@ -46,7 +46,7 @@ impl Reader {
             .as_ref()
             .is_some_and(|(root, rel, generation)| {
                 root == &self.vault_root
-                    && rel == &self.current_rel
+                    && rel == &self.pane.current_rel
                     && *generation == self.navigation.generation
             })
         {
@@ -57,7 +57,7 @@ impl Reader {
         if self.deleted_note.is_some() && self.deleted_current().is_none() {
             self.deleted_note = None;
         }
-        self.deleted_note.is_some() && target != Some(self.current_rel.as_str())
+        self.deleted_note.is_some() && target != Some(self.pane.current_rel.as_str())
     }
 
     /// Ask before a deleted note's contents are left behind; `retry` runs the
@@ -77,14 +77,14 @@ impl Reader {
             .map_or(Disk::Missing, |deleted| deleted.disk);
         let answer = ask_leave(window, cx, self.selected_title(), disk);
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let generation = self.navigation.preparation_generation;
         cx.spawn_in(window, async move |this, cx| {
             let choice = answer.recv().await.unwrap_or(Leave::Cancel);
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.deleted_note_asking = false;
                 let current = this.vault_root == root
-                    && this.current_rel == rel
+                    && this.pane.current_rel == rel
                     && this.navigation.preparation_generation == generation;
                 if !current {
                     return;
@@ -123,7 +123,7 @@ impl Reader {
     ) {
         self.deleted_note_leaving = Some((
             self.vault_root.clone(),
-            self.current_rel.clone(),
+            self.pane.current_rel.clone(),
             self.navigation.generation,
         ));
         retry(self, window, cx);
