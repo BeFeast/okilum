@@ -38,7 +38,29 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
                 .to_string_lossy()
                 .into_owned()
         };
-        format!("Moved to {folder}")
+        let notes = links
+            .filter(|preview| preview.directory.is_some())
+            .map(|preview| {
+                preview
+                    .editor_paths()
+                    .iter()
+                    .filter(|path| {
+                        Path::new(path).starts_with(from)
+                            && Path::new(path)
+                                .extension()
+                                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if notes > 0 {
+            format!(
+                "Moved {notes} {}",
+                if notes == 1 { "note" } else { "notes" }
+            )
+        } else {
+            format!("Moved to {folder}")
+        }
     };
     if let Some(links) = links.filter(|p| !p.changes.is_empty()) {
         message.push_str(&format!(
@@ -54,6 +76,48 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
     message
 }
 
+/// Notes whose links stayed unchanged, listed once each with folder context.
+/// Repeated unresolved occurrences in one note collapse into one line.
+/// `moved` names notes at their post-move paths, for feedback shown after the
+/// move applied; the pre-move review keeps the source paths.
+fn link_review_names(preview: &Preview, moved: bool) -> Vec<String> {
+    let paths: std::collections::BTreeSet<_> = preview
+        .skipped
+        .iter()
+        .map(|s| &s.path)
+        .chain(preview.skipped_files.iter().map(|s| &s.path))
+        .map(|path| {
+            if moved {
+                okilum_core::link_rewrite::moved_path(path, &preview.from, &preview.to)
+            } else {
+                path.clone()
+            }
+        })
+        .collect();
+    paths
+        .iter()
+        .map(|path| {
+            Path::new(path)
+                .with_extension("")
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" › ")
+        })
+        .collect()
+}
+
+/// Result-toast disclosure, shown only after the move applied.
+fn move_link_review(preview: &Preview) -> Option<String> {
+    let names = link_review_names(preview, true);
+    (!names.is_empty()).then(|| {
+        format!(
+            "Some links could not be updated. Review these notes:\n{}",
+            names.join("\n")
+        )
+    })
+}
+
 fn undo_message(from: &str, to: &str) -> &'static str {
     if Path::new(from).parent() == Path::new(to).parent() {
         "Rename undone"
@@ -63,9 +127,10 @@ fn undo_message(from: &str, to: &str) -> &'static str {
 }
 
 fn needs_move_confirmation(preview: &Preview) -> bool {
-    preview.affected_paths().len() > 20
-        || !preview.skipped.is_empty()
-        || !preview.skipped_files.is_empty()
+    // Unresolved links are information, not writes to approve (#722): note
+    // renames and folder moves apply at once with the journal and Undo. Only a
+    // large rewrite of other notes' links keeps its explicit review.
+    preview.directory.is_none() && preview.affected_paths().len() > 20
 }
 
 struct MoveProgress;
@@ -162,6 +227,7 @@ impl Reader {
         journal: PathBuf,
         message: String,
         undone: &'static str,
+        link_review: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -178,7 +244,27 @@ impl Reader {
                 .placement(Anchor::BottomRight)
                 .py_2()
                 .autohide(false)
-                .message(message)
+                .when(link_review.is_none(), |notice| {
+                    notice.message(message.clone())
+                })
+                .when_some(link_review, |notice, details| {
+                    notice.content(move |_, _, cx| {
+                        h_flex()
+                            .gap_1()
+                            .child(div().text_sm().child(message.clone()))
+                            .child(
+                                reader_icon_button(
+                                    "move-link-review",
+                                    IconName::Info,
+                                    "Links needing review",
+                                    cx,
+                                )
+                                .tooltip(details.clone())
+                                .debug_selector(|| "move-link-review".into()),
+                            )
+                            .into_any_element()
+                    })
+                })
                 .action(move |_, _, cx| {
                     let notice = cx.weak_entity();
                     let reader = reader.clone();
@@ -657,17 +743,7 @@ impl Reader {
             let paths: std::collections::BTreeSet<_> =
                 display.changes.iter().map(|c| c.path.clone()).collect();
             let names: Vec<_> = paths.iter().map(|path| display_name(path)).collect();
-            let skipped: Vec<_> = display
-                .skipped
-                .iter()
-                .map(|s| format!("{} · link unchanged", display_name(&s.path)))
-                .chain(
-                    display
-                        .skipped_files
-                        .iter()
-                        .map(|s| format!("{} · could not read", display_name(&s.path))),
-                )
-                .collect();
+            let skipped = link_review_names(&display, false);
             let show_unchanged = unchanged_expanded.get();
             let toggle_unchanged = unchanged_expanded.clone();
             let show_all = expanded.get();
@@ -929,6 +1005,7 @@ impl Reader {
                                 update.then_some(&pending.links),
                             ),
                             undo_message(&pending.from, &pending.to),
+                            move_link_review(&pending.links),
                             window,
                             cx,
                         );
@@ -972,6 +1049,7 @@ impl Reader {
                         journal,
                         success_message,
                         undo_message(&pending.from, &pending.to),
+                        move_link_review(&pending.links),
                         window,
                         cx,
                     );
@@ -1123,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_is_reserved_for_large_or_unresolved_changes() {
+    fn confirmation_is_reserved_for_large_actual_changes() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("Start.md"), "# Heading").unwrap();
         for index in 0..19 {
@@ -1142,7 +1220,74 @@ mod tests {
         std::fs::write(root.path().join("Another.md"), "[[No such note]]").unwrap();
         let unresolved = Preview::prepare(root.path(), "Start.md", "Next.md").unwrap();
         assert!(!unresolved.skipped.is_empty());
-        assert!(needs_move_confirmation(&unresolved));
+        assert!(!needs_move_confirmation(&unresolved));
+        assert_eq!(
+            move_link_review(&unresolved).unwrap(),
+            "Some links could not be updated. Review these notes:\nAnother"
+        );
+        // Repeated unresolved occurrences are one human note name, not nine rows.
+        std::fs::write(root.path().join("Start.md"), "[[Missing]]\n".repeat(9)).unwrap();
+        let repeated = Preview::prepare(root.path(), "Start.md", "Next.md").unwrap();
+        assert_eq!(
+            repeated
+                .skipped
+                .iter()
+                .filter(|s| s.path == "Start.md")
+                .count(),
+            9
+        );
+        assert!(!needs_move_confirmation(&repeated));
+        let review = move_link_review(&repeated).unwrap();
+        // The toast follows the applied rename; the pre-move review names the source.
+        assert_eq!(review.lines().filter(|line| *line == "Next").count(), 1);
+        assert!(!review.lines().any(|line| line == "Start"), "{review}");
+        assert_eq!(
+            link_review_names(&repeated, false)
+                .iter()
+                .filter(|name| *name == "Start")
+                .count(),
+            1
+        );
+        assert!(!review.contains("link unchanged"));
+    }
+
+    #[test]
+    fn folder_move_with_unresolved_index_links_applies_with_one_review_line_per_note() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("Target")).unwrap();
+        for index in 0..23 {
+            let folder = root.path().join(format!("Folder/Section {index}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join("_index.md"),
+                "[[Missing note]]\n[[Missing note]]",
+            )
+            .unwrap();
+        }
+        let preview = Preview::prepare(root.path(), "Folder", "Target/Folder").unwrap();
+        assert!(preview.directory.is_some());
+        assert!(!preview.skipped.is_empty());
+        assert!(!needs_move_confirmation(&preview));
+        assert_eq!(
+            move_message("Folder", "Target/Folder", Some(&preview)),
+            "Moved 23 notes"
+        );
+        let review = move_link_review(&preview).unwrap();
+        assert!(!review.contains("link unchanged"));
+        let lines: Vec<_> = review.lines().skip(1).collect();
+        assert_eq!(lines.len(), 23, "{review}");
+        assert!(
+            lines.contains(&"Target › Folder › Section 0 › _index"),
+            "toast names notes where they are now: {review}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("Folder ›")),
+            "{review}"
+        );
+        let source = link_review_names(&preview, false);
+        assert!(source.contains(&"Folder › Section 0 › _index".to_owned()));
+        let unique: std::collections::BTreeSet<_> = lines.iter().collect();
+        assert_eq!(unique.len(), lines.len());
     }
 
     #[gpui::test]
@@ -1573,7 +1718,6 @@ mod tests {
             assert_eq!(reader.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
         });
-        let move_index = reader.read_with(visual, |reader, _| reader.move_index.clone());
         // Missing index uses cancellable background fallback, without another dialog.
         reader.update_in(visual, |r, window, cx| {
             r.move_index = None;
@@ -1615,9 +1759,16 @@ mod tests {
         visual.run_until_parked();
         assert!(root.join("Folder/Final.md").exists());
         assert!(!root.join("Folder/Fallback.md").exists());
-        // Rename a selected row without changing the open source editor.
+        // Rename a selected row containing repeated unresolved links: no modal,
+        // one result disclosure, and exact Undo (manager reproduction #722).
+        let reference_before = format!(
+            "{}\r\n{}",
+            std::fs::read_to_string(root.join("target.md")).unwrap(),
+            "[[Missing target]]\r\n".repeat(9)
+        );
+        std::fs::write(root.join("target.md"), &reference_before).unwrap();
         reader.update_in(visual, |reader, window, cx| {
-            reader.move_index = move_index;
+            reader.move_index = None;
             reader.reveal_in_tree("target.md", window, cx);
             reader.tree_focus.focus(window, cx);
         });
@@ -1633,6 +1784,28 @@ mod tests {
         visual.run_until_parked();
         assert!(root.join("Reference.md").exists());
         assert!(!root.join("target.md").exists());
+        assert!(
+            visual.debug_bounds("move-update").is_none(),
+            "unresolved rename is immediate"
+        );
+        assert!(
+            visual.debug_bounds("move-link-review").is_some(),
+            "one result disclosure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Reference.md")).unwrap(),
+            reference_before
+        );
+        let undo = visual
+            .debug_bounds("undo-move")
+            .expect("rename offers Undo");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!root.join("Reference.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("target.md")).unwrap(),
+            reference_before
+        );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
@@ -1733,6 +1906,13 @@ mod tests {
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("Folder/a.md"), "# A\r\nExact bytes\r\n").unwrap();
         std::fs::write(root.join("Ref.md"), "[[Folder/a|alias]]").unwrap();
+        // 22 section indexes with unresolved links: the folder move used to ask
+        // for confirmation and list repeated "_index · link unchanged" rows.
+        for index in 0..22 {
+            let folder = root.join(format!("Folder/Section {index}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("_index.md"), "[[Missing note]]").unwrap();
+        }
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -1925,7 +2105,14 @@ mod tests {
             visual.simulate_click(scan.center(), Modifiers::default());
             visual.run_until_parked();
         }
-        assert!(visual.debug_bounds("move-update").is_none());
+        assert!(
+            visual.debug_bounds("move-update").is_none(),
+            "folder move with unresolved links applies at once"
+        );
+        assert!(
+            visual.debug_bounds("move-link-review").is_some(),
+            "skipped links are one disclosure in the result toast"
+        );
         reader.read_with(visual, |r, _| {
             assert!(!r.note_move_pending, "{:?}", r.link_notice);
             assert_eq!(r.current_rel, "Новое 🧠/a.md", "{:?}", r.link_notice);
@@ -1958,5 +2145,19 @@ mod tests {
             std::fs::read(root.join("Again/asset.bin")).unwrap(),
             [0, 255, 128]
         );
+        let undo = visual
+            .debug_bounds("undo-move")
+            .expect("folder move offers Undo");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!root.join("Again").exists());
+        assert!(root.join("Новое 🧠/asset.bin").exists());
+        for index in 0..22 {
+            assert_eq!(
+                std::fs::read_to_string(root.join(format!("Новое 🧠/Section {index}/_index.md")))
+                    .unwrap(),
+                "[[Missing note]]"
+            );
+        }
     }
 }
