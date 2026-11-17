@@ -1504,6 +1504,127 @@ fn issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary()
     Ok(())
 }
 
+/// #2582 follow-up: a folder whose root disappeared (moved, deleted,
+/// unmounted) is fenced alone; the managed runtime and every other folder
+/// keep working, and the folder resumes only by explicit admitted resume.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_fences_only_that_folder_across_restart() -> Result<()> {
+    use okilum_sync_controller::network_policy::{self, Policy};
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let services = Services::default();
+    let rest = TcpListener::bind("127.0.0.1:0")?;
+    let listen = TcpListener::bind("127.0.0.1:0")?;
+    let request = Preparation {
+        executable: binary()?,
+        rest_address: rest.local_addr()?,
+        listen_address: listen.local_addr()?,
+    };
+    drop((rest, listen));
+    let runtime = Runtime::with_services(
+        root.path().join("runtime"),
+        root.path().join("units"),
+        services.clone(),
+        launcher(),
+    );
+    let identity = runtime
+        .enable(Selection::Managed(request), &[])?
+        .identity
+        .unwrap();
+    let home = identity.config_file.parent().unwrap();
+    services.remember_pid(home)?;
+    let source = Peer::new(root.path(), "source", binary()?)?;
+    let kept = root.path().join("kept");
+    let gone = root.path().join("gone");
+    let source_gone = root.path().join("source-gone");
+    for path in [&kept, &gone, &source_gone] {
+        fs::create_dir(path)?;
+    }
+    let api = identity.connect()?;
+    let address = api.config()?["options"]["listenAddresses"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    source
+        .api
+        .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+    for (id, path, source_path) in [
+        ("kept", &kept, &source.vault),
+        ("gone", &gone, &source_gone),
+    ] {
+        FolderController::new(root.path().join(format!("{id}-state"))).enroll(
+            &identity,
+            std::slice::from_ref(&identity.config_file),
+            &approval(&identity, &source, id),
+            path,
+        )?;
+        add_source(&source, &identity, id, source_path)?;
+        fs::write(source_path.join("control.md"), format!("{id} before"))?;
+    }
+    wait("both folders transfer", || {
+        source.api.scan("kept")?;
+        source.api.scan("gone")?;
+        Ok(kept.join("control.md").exists() && gone.join("control.md").exists())
+    })?;
+
+    // The disk holding one vault disappears; the runtime crashes and the
+    // autonomous launch command starts it again.
+    let away = root.path().join("unmounted");
+    services.crash_runtime()?;
+    fs::rename(&gone, &away)?;
+    services.launch()?;
+    services.remember_pid(home)?;
+    let generation = live_generation(home)?;
+    assert!(generation.paused_at_start.contains(&"gone".into()));
+    assert!(!generation.paused_at_start.contains(&"kept".into()));
+    let api = identity.connect()?;
+    assert_eq!(api.folder("gone")?["paused"], true);
+    assert_eq!(api.folder("kept")?["paused"], false);
+    assert!(!gone.exists(), "the runtime never recreates a missing root");
+    fs::write(
+        source.vault.join("while-gone.md"),
+        b"other vault keeps syncing",
+    )?;
+    wait("other folder transfers while one root is missing", || {
+        source.api.scan("kept")?;
+        Ok(kept.join("while-gone.md").exists())
+    })?;
+    // Runtime-wide effects need no lease on a root that is not there.
+    network_policy::reconcile(
+        home.parent().unwrap(),
+        &identity,
+        Some(Policy::PublicDiscoveryAndRelays),
+    )?;
+    let gone_state = FolderController::new(root.path().join("gone-state"));
+    assert!(
+        gone_state.pause(false).is_err(),
+        "a missing root cannot be resumed"
+    );
+    assert_eq!(api.folder("gone")?["paused"], true);
+
+    // The disk returns. Launch keeps the fence; an explicit resume lifts it.
+    services.crash_runtime()?;
+    fs::rename(&away, &gone)?;
+    services.launch()?;
+    services.remember_pid(home)?;
+    let api = identity.connect()?;
+    assert_eq!(api.folder("gone")?["paused"], true);
+    fs::write(source_gone.join("after-return.md"), b"resumed explicitly")?;
+    for _ in 0..10 {
+        source.api.scan("gone")?;
+        assert!(!gone.join("after-return.md").exists());
+        thread::sleep(Duration::from_millis(100));
+    }
+    gone_state.pause(false)?;
+    wait("returned folder transfers after explicit resume", || {
+        source.api.scan("gone")?;
+        Ok(gone.join("after-return.md").exists())
+    })?;
+    runtime.disable()?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() -> Result<()> {

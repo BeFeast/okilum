@@ -341,6 +341,13 @@ pub(crate) fn initialize(instance: &ManagedInstance) -> Result<Reference> {
     {
         let id = e.attributes.get("id").context("folder ID missing")?;
         let configured = PathBuf::from(e.attributes.get("path").context("folder root missing")?);
+        if !configured.try_exists()? {
+            // A moved, deleted or unmounted root has no identity to bind and no
+            // canonical publisher. Leave it unbound: every launch fences it
+            // offline, and an explicit admitted resume binds it once it returns.
+            // The other folders still upgrade and keep syncing (#2582).
+            continue;
+        }
         let root = configured.canonicalize().with_context(|| {
             format!(
                 "Sync folder {id} at {} is unavailable; reconnect its disk or remove this folder from Sync before retrying the managed runtime upgrade",
@@ -476,9 +483,11 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
             .as_array()
             .context("folder inventory missing")?
         {
-            operations.push(okilum_write_authority::operation(Path::new(
-                folder["path"].as_str().context("folder root missing")?,
-            ))?);
+            let root = Path::new(folder["path"].as_str().context("folder root missing")?);
+            // A missing root has no canonical publisher to admit (#2582).
+            if root.try_exists()? {
+                operations.push(okilum_write_authority::operation(root)?);
+            }
         }
         return Ok(RuntimeConfiguration {
             _operations: operations,
@@ -505,11 +514,16 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
         .context("folder inventory missing")?
     {
         let id = folder["id"].as_str().context("folder ID missing")?;
+        let root = Path::new(folder["path"].as_str().context("folder path missing")?);
+        if !root.try_exists()? {
+            // No canonical publisher can exist under a missing root; launch
+            // keeps it paused. Runtime-wide effects need no lease for it.
+            continue;
+        }
         let saved = b
             .folders
             .get(id)
             .context("managed folder binding missing")?;
-        let root = Path::new(folder["path"].as_str().context("folder path missing")?);
         ensure!(
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
             "managed folder root changed"
@@ -633,6 +647,16 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         .filter(|e| e.name == "folder")
     {
         let id = e.attributes.get("id").context("folder ID missing")?.clone();
+        let root = Path::new(e.attributes.get("path").context("folder root missing")?);
+        if !root.try_exists()? {
+            // Moved, deleted or unmounted: fence only this folder (#2582). Its
+            // authority cannot be verified without the root, so it stays
+            // paused until an explicit admitted resume after it returns.
+            set_paused(e);
+            closed.push(id.clone());
+            paused_at_start.push(id);
+            continue;
+        }
         let saved = b
             .folders
             .get(&id)
@@ -641,7 +665,6 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             !r.directory.starts_with(&saved.root) && !b.home.starts_with(&saved.root),
             "managed launch state must be outside the vault"
         );
-        let root = Path::new(e.attributes.get("path").context("folder root missing")?);
         ensure!(
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
             "managed folder replaced"
