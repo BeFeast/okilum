@@ -603,7 +603,11 @@ fn edited_elements_keep_fields_the_editor_never_loaded() {
         for id in &ids {
             assert_eq!(find(&reread, id)["pluginOnly"], extra, "{name} {id}");
         }
-        assert_eq!(find(&reread, shape)["x"], find(&edited, shape)["x"], "{name}");
+        assert_eq!(
+            find(&reread, shape)["x"],
+            find(&edited, shape)["x"],
+            "{name}"
+        );
         assert!(find(&reread, shape).get("link").is_none(), "{name}");
         assert_eq!(find(&reread, text)["rawText"], "Edited text", "{name}");
         assert_plugin_consistent(&saved);
