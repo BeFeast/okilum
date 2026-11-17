@@ -8912,12 +8912,15 @@ mod quick_view_tests {
     }
 
     fn check_quick_upgrade(cx: &mut TestAppContext, edit_during_scan: bool) {
+        let directory =
+            std::env::temp_dir().join(format!("okilum-upgrade-{}", uuid::Uuid::new_v4()));
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
+            // The per-window session record carries each window's mode.
+            reader_open::install(cx);
+            reader_open_windows::install(directory.join("state"), cx);
         });
-        let directory =
-            std::env::temp_dir().join(format!("okilum-upgrade-{}", uuid::Uuid::new_v4()));
         let root = directory.join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("img.png"), b"image resolution fixture").unwrap();
@@ -9070,11 +9073,18 @@ mod quick_view_tests {
                 .iter()
                 .any(|entry| entry.path == "img.png"));
         });
-        assert_eq!(
-            crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
+        // #3123: the folder stays a known vault after the downgrade; the
+        // window's single-file mode is persisted by its session record, not
+        // by demoting the vault to a quick-viewer root.
+        assert!(
+            crate::reader_history::ReadingHistory::known_vault_roots(&directory.join("state"))
                 .unwrap()
-                .as_deref(),
-            Some("start.md"),
+                .contains(&root),
+            "downgrade keeps the vault known"
+        );
+        assert_eq!(
+            reader_open_windows::load_session_windows(&directory.join("state")),
+            [((root.clone(), Some("start.md".to_owned())), true)],
             "downgrade persists single-file mode"
         );
         assert!(
