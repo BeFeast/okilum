@@ -75,12 +75,44 @@ operations and reconcile from the source; do not delete their local journal or
 create replacement IDs as recovery. Expired/missing requests after an attempted
 send cannot prove rejection and remain uncertain.
 
-Initial pilot limit: up to 20 explicit threads, complete bounded snapshots only.
-Truncated/malformed snapshots stop the synchronization step; they never imply
-withdrawal. Native cancelled/expired records do. Source cursor regression or
-changed journal binding requires operator investigation, not automatic reset.
-Older history traversal, thread discovery and source liveness in the web UI remain
-follow-up work before expanding beyond the bounded pilot. The web question view
+Initial pilot limit: up to 20 explicit threads. Native cancelled/expired records
+withdraw a question; absence or truncation never does. Source cursor regression
+or changed journal binding requires operator investigation, not automatic reset.
+Thread discovery remains follow-up work before expanding beyond the bounded pilot.
+
+### Partial and reconnecting sources (#2344)
+
+T3 bounds `/bounded` snapshots by turn items, not by runtime requests: the
+`runtimeRequests` control state is complete, and rows of **pending** requests
+stay in the window. Rows of answered or withdrawn requests scroll out once a
+thread keeps working. Modern T3 omits the removed `payloadBudgetExceeded` flag;
+a snapshot is complete only with `hasMoreHistory: false` and an explicit null
+`historyCursor` (a present legacy flag must be `false`).
+
+- A question whose row is missing from a bounded snapshot is recovered from
+  `/history?cursor=…`, stopping as soon as every missing row is found. At most
+  20 pages, 8 MiB in total and 4 KiB per cursor; a repeated cursor, a page from a
+  different `snapshotSequence`, an unreachable endpoint or a snapshot that moved
+  while paging leaves the row unrecovered. Inherited rows never answer a request
+  of this thread.
+- An unrecovered question is **held**: it is not re-observed, withdrawn or
+  acknowledged, and its operations are left untouched. Inbox shows it as stale
+  (`source_fresh: false`, "Reconnecting") and refuses new replies after 30 s.
+  Pending questions in the window keep refreshing and stay answerable.
+- A truncated control state (legacy budget flag `true`, unknown history flags)
+  holds the whole thread. Other threads keep progressing; the poll prints
+  `{"event":"bridge_sync","status":"partial","partial_threads":[…]}`.
+- A resolved request acknowledges an operation only when its source identity,
+  attempt/generation and revision (fields plus provider session) are exactly the
+  ones the user consented to, the native answers are identical, and this journal
+  committed a dispatch attempt for it. An identical answer given natively without
+  our dispatch stays `uncertain` (`source_outcome_unconfirmed`). A changed
+  attempt is a different question identity and never receives the answer.
+  Journals written before this change have no attempt rows, so their lost
+  receipts stay `uncertain` for operator review instead of being acknowledged.
+- Queued operations seen in the first listing after a start, and operations of a
+  thread not yet observed by this process, are quarantined as before; a partial
+  startup only delays that quarantine. The web question view
 and deployed end-to-end pilot are the next PR; this adapter alone is not slice-2
 acceptance.
 
