@@ -168,3 +168,146 @@ fn pending_list_accepts_ids_without_a_count_or_thread_wrapper() {
         );
     }
 }
+
+/// #1765: the captured `t3_project_update` schema advertises `projectIcon`
+/// as an object with a required `kind` and no `null` branch. T3 strips the
+/// `null` branch of every optional property when it advertises a tool
+/// (`advertisedJsonSchema.compact`) and decodes the call with its own
+/// payload, `projectIcon: optional(NullOr(ProjectIconOverride))`; its
+/// `project.update` command keeps a `null` and clears the override (source of
+/// upstream 0.1.10-nightly.20261116). So a reset sends `null`, a key the
+/// advertised schema lists as optional, and no guessed default icon.
+#[test]
+fn icon_save_and_reset_fit_the_captured_project_update_schema() {
+    use crate::projects::icon::{IconColor, ProjectIcon};
+    let catalog = current_tools();
+    let schema = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "t3_project_update")
+        .expect("captured catalog has t3_project_update")["inputSchema"]
+        .clone();
+    let advertised = &schema["properties"]["projectIcon"];
+    assert_eq!(advertised["type"], "object");
+    assert!(
+        advertised.get("anyOf").is_none(),
+        "no null branch is advertised"
+    );
+    let required: Vec<String> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(required, ["projectId"], "projectIcon is optional");
+
+    let stored = Arc::new(std::sync::Mutex::new(
+        json!({"kind": "emoji", "emoji": "🧠"}),
+    ));
+    let server = {
+        let stored = stored.clone();
+        let schema = schema.clone();
+        fake_t3(move |name, args| match name {
+            "t3_project_update" => {
+                let fields = args.as_object().unwrap();
+                for field in &required {
+                    assert!(fields.contains_key(field), "missing {field}");
+                }
+                for (field, value) in fields {
+                    let property = &schema["properties"][field];
+                    assert!(property.is_object(), "unadvertised {field}");
+                    if value.is_null() {
+                        assert!(!required.contains(field), "null {field}");
+                        continue;
+                    }
+                    if field == "projectIcon" {
+                        let kinds = property["properties"]["kind"]["enum"].as_array().unwrap();
+                        assert!(kinds.contains(&value["kind"]), "{value}");
+                        for key in value.as_object().unwrap().keys() {
+                            assert!(property["properties"].get(key).is_some(), "icon.{key}");
+                        }
+                    }
+                }
+                *stored.lock().unwrap() = args["projectIcon"].clone();
+                structured(json!({ "sequence": 4 }))
+            }
+            "t3_project_read" => structured(t3_project(stored.lock().unwrap().clone())),
+            other => panic!("unexpected tool {other}"),
+        })
+    };
+    let gateway = gateway(&server, Some(token("good")));
+    let icon = ProjectIcon::Monogram {
+        text: "Ok".into(),
+        color: IconColor::Teal,
+    };
+    assert_eq!(
+        gateway
+            .set_project_icon("okilum", Some(&icon))
+            .unwrap()
+            .project_icon,
+        Some(icon)
+    );
+    assert_eq!(
+        gateway
+            .set_project_icon("okilum", None)
+            .unwrap()
+            .project_icon,
+        None
+    );
+    let updates: Vec<_> = tool_calls(&server.requests())
+        .into_iter()
+        .filter(|call| call["name"] == "t3_project_update")
+        .map(|call| call["arguments"].clone())
+        .collect();
+    assert_eq!(
+        updates.last().unwrap(),
+        &json!({"projectId": "okilum", "projectIcon": null}),
+        "a reset is an explicit null, not a guessed default"
+    );
+}
+
+/// #1765: a client below full access is refused a reset as well; the
+/// error names what Okilum lacks and nothing is written in its place.
+#[test]
+fn a_reset_refused_for_a_client_without_full_access_says_so() {
+    use crate::projects::icon;
+    use crate::projects::Project as VaultProject;
+    let server = fake_t3(|name, args| match name {
+        "t3_project_list" => structured(json!({
+            "projects": [t3_project(json!({"kind": "emoji", "emoji": "🧠"}))], "nextCursor": null
+        })),
+        "t3_project_update" => {
+            assert_eq!(args["projectIcon"], Value::Null);
+            json!({"isError": true, "structuredContent": {
+                "code": "capability_denied",
+                "message": "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client."
+            }})
+        }
+        other => panic!("unexpected tool {other}"),
+    });
+    let gateway: Arc<dyn ManagerGateway> = Arc::new(gateway(&server, Some(token("good"))));
+    let vault = std::env::temp_dir().join(format!("okilum-icon-reset-{}", uuid::Uuid::new_v4()));
+    let ops = vault.join("Dev/Areas/okilum/ops");
+    std::fs::create_dir_all(&ops).unwrap();
+    std::fs::write(
+        ops.join("project.yaml"),
+        "name: Okilum\nt3:\n  environment: test\n  executor: {project_id: okilum}\n",
+    )
+    .unwrap();
+    let okilum = VaultProject::read(&vault.join("Dev/Areas/okilum")).unwrap();
+    let message = format!(
+        "{:#}",
+        icon::save_icon(&vault, &okilum, Some(gateway.as_ref()), None).unwrap_err()
+    );
+    assert!(
+        message.contains("only a full-access client change project icons"),
+        "{message}"
+    );
+    assert!(message.contains("capability_denied"), "{message}");
+    assert!(message.contains("the icon was not changed"), "{message}");
+    assert!(!std::fs::read_to_string(ops.join("project.yaml"))
+        .unwrap()
+        .contains("icon:"));
+    std::fs::remove_dir_all(vault).unwrap();
+}
