@@ -1813,6 +1813,47 @@ mod reader_drop_tests {
         assert_eq!(block_drop_offset(source, rendered, Some(9)), None);
     }
 
+    /// Review of #3078: image data dropped onto a rendered block is saved
+    /// in the background (converted to WebP) and goes in once, as its own
+    /// paragraph; one Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_dropped_image_goes_in_once_and_one_undo_restores_the_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        drop_data_at(visual, next.center(), &[("public.png", &png)]);
+        let (source, embed) = source_and_line(&reader, visual, "![[");
+        let embed = embed.unwrap_or_else(|| panic!("the saved image is embedded: {source:?}"));
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{embed}\n\n## Next\n\nBody.\n")
+        );
+        fn webp(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    webp(&path)
+                } else {
+                    path.extension().is_some_and(|e| e == "webp")
+                }
+            })
+        }
+        assert!(
+            webp(&temp.path().join("vault")),
+            "positive control: the background image import saved a WebP"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "![[");
+        assert_eq!(source, NOTE, "one Undo: byte-identical, no empty slot left");
+    }
+
     #[test]
     fn line_start_is_the_offset_of_a_one_based_line() {
         let text = "a\nbc\r\n\nd";
