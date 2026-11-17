@@ -87,7 +87,14 @@ The managed two-instance control also expires the actual source cache after
 review, proves ordinary validation still refuses it, then requires confirmation
 to reopen unchanged facts and complete the lossless union and both later transfer
 directions. Expired previews with local, remote or runtime changes still publish
-no merge bytes. A compiled negative restores the old live-capability requirement
+no merge bytes.
+
+The same control confirms two reviews of the unchanged folders at once (#2506).
+The destination's transfer lock admits one; it merges the union. The queued one
+reopens after that merge, finds the local revision changed and refuses as stale
+before it creates an operation, journal or hold, so no second set of conflict
+copies appears. Replaying either consumed consent through its retained adapter
+afterwards is stale as well and leaves both folders byte-identical. A compiled negative restores the old live-capability requirement
 and must fail at the real expired-review merge. The 120-second cache lifetime,
 600-second managed-acceptance deadline and every fencing gate stay unchanged.
 

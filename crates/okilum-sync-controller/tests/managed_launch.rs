@@ -786,6 +786,11 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     a.set_device_addresses(&target.device_id, &addresses)?;
     let preview = second.preview_remote_vault(peer, vault, &here)?;
     let plan = preview.plan().clone();
+    // #2506: a second review of the same unchanged folders, e.g. another
+    // Settings window, confirmed at the same moment as the first one.
+    let rival = second.preview_remote_vault(peer, vault, &here)?;
+    let rival_plan = rival.plan().clone();
+    assert_eq!(rival_plan.merged_files(), plan.merged_files());
     let conflicts = plan
         .entries()
         .iter()
@@ -798,7 +803,8 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     );
     #[cfg(feature = "first-sync-fixture")]
     assert!(
-        second.validate_remote_preview(&preview).is_err(),
+        second.validate_remote_preview(&preview).is_err()
+            && second.validate_remote_preview(&rival).is_err(),
         "ordinary inspection must still refuse the expired capability"
     );
     assert_eq!(
@@ -806,14 +812,73 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         before,
         "expiry and read-only validation must not authorize publication"
     );
-    let mut backend = second.first_sync_backend(preview);
-    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
-        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))?;
+    // Both confirmations start together. Exactly one may merge; the queued one
+    // must refuse as stale before it creates an operation or a hold.
+    let plans = [plan, rival_plan];
+    let gate = std::sync::Barrier::new(2);
+    let confirmations: Vec<_> = thread::scope(|scope| {
+        let running: Vec<_> = [
+            second.first_sync_backend(preview),
+            second.first_sync_backend(rival),
+        ]
+        .into_iter()
+        .zip(&plans)
+        .map(|(mut backend, plan)| {
+            let gate = &gate;
+            scope.spawn(move || {
+                gate.wait();
+                let result = plan.apply(plan.consent(true).unwrap(), backend.as_mut());
+                (result, backend)
+            })
+        })
+        .collect();
+        running
+            .into_iter()
+            .map(|confirmation| confirmation.join().expect("confirmation thread"))
+            .collect()
+    });
+    let outcomes: Vec<_> = confirmations
+        .iter()
+        .map(|(result, _)| result.clone())
+        .collect();
+    println!("FIRST_SYNC_CONCURRENT_CONFIRMATIONS outcomes={outcomes:?}");
+    if let [Err(error), Err(_)] = outcomes.as_slice() {
+        anyhow::bail!("first merge: {error:?}");
+    }
+    let stale = Err(okilum_sync_controller::merge_preview::Error::Stale);
+    ensure!(
+        outcomes == [Ok(()), stale.clone()] || outcomes == [stale, Ok(())],
+        "exactly one simultaneous confirmation may merge; the other must be stale: {outcomes:?}"
+    );
     #[cfg(feature = "first-sync-fixture")]
     println!("FIRST_SYNC_EXPIRED_REVIEW_PASS: unchanged complete facts reopened at confirmation");
     let merged = first_sync_files(&here)?;
     assert_eq!(merged, first_sync_files(&there)?);
     assert_eq!(merged.len(), 7);
+    assert_eq!(
+        merged
+            .keys()
+            .filter(|path| path.contains(".okilum-first-sync-conflict-"))
+            .count(),
+        2,
+        "the refused confirmation must not add conflict copies"
+    );
+    assert!(first.pending_first_sync()?.is_empty());
+    assert!(second.pending_first_sync()?.is_empty());
+    // Replaying either consumed consent through its retained backend must not
+    // start another operation or publish anything over the completed union.
+    for ((_, mut backend), plan) in confirmations.into_iter().zip(&plans) {
+        assert_eq!(
+            plan.apply(plan.consent(true).unwrap(), backend.as_mut()),
+            Err(okilum_sync_controller::merge_preview::Error::Stale),
+            "a replayed confirmation must not acquire new authority"
+        );
+    }
+    assert_eq!(merged, first_sync_files(&here)?);
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert!(first.pending_first_sync()?.is_empty());
+    assert!(second.pending_first_sync()?.is_empty());
+    println!("FIRST_SYNC_CONCURRENT_REPLAY_PASS: one union, stale rival and replays wrote nothing");
     for bytes in before.0.values().chain(before.1.values()) {
         let hash = sha2::Sha256::digest(bytes);
         assert!(
@@ -842,7 +907,6 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         b.scan(vault)?;
         Ok(fs::read(here.join("later-there.md")).is_ok_and(|bytes| bytes == b"later source edit"))
     })?;
-    drop(backend);
     drop(first);
     drop(second);
     source_runtime.disable()?;
