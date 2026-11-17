@@ -494,6 +494,11 @@ impl ManagerGateway for McpGateway {
         icon: Option<&crate::projects::icon::ProjectIcon>,
     ) -> GatewayResult<Project> {
         // `null` clears the override; omitted fields stay as they are.
+        // The advertised input schema shows `projectIcon` as an object only:
+        // T3 drops the `null` branch of every optional property when it
+        // advertises a tool, but decodes the call with its own
+        // `optional(NullOr(ProjectIconOverride))` payload, so `null` is the
+        // supported reset (#1765).
         let args = json!({ "projectId": project_id, "projectIcon": icon });
         self.call_value("t3_project_update", args)?;
         let project = self.read_project(project_id)?;
