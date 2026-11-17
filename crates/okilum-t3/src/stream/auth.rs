@@ -56,7 +56,7 @@ impl NativeToken {
             scope: String,
         }
         let started = crate::unix_now();
-        let response = http(timeout)?
+        let response = http(environment, timeout)?
             .post(environment.endpoint("/oauth/token"))
             .form(&[
                 (

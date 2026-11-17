@@ -47,7 +47,7 @@ Every single-origin client in the Windows package now builds through
 | T3 MCP gateway (`McpGateway`) | T3 environment | per gateway |
 | T3 session/native gateway (`SessionGateway`) | T3 environment | per gateway |
 | T3 OAuth discovery/register/token | T3 environment (discovery refuses other origins) | per flow |
-| T3 WebSocket ticket (`stream::auth`) | T3 environment | per native client |
+| T3 native pairing and WebSocket ticket (`stream::auth`) | T3 environment | per pairing / native client |
 | T3 browser identity (`projects::browser_identity`) | T3 environment | per call |
 | Board issues, live reader, issue peek | Forgejo repository origin | per read; live reader per repository |
 | What's new notes | `updates.befeast.com` | per load |
