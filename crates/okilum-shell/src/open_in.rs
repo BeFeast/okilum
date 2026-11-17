@@ -39,6 +39,7 @@ struct Known {
     windows: &'static [&'static str],
     /// Linux desktop-entry ids (`<id>.desktop`) that carry the editor's icon:
     /// distribution packages, Flatpak and Snap (`<snap>_<app>`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     desktop: &'static [&'static str],
 }
 
@@ -127,6 +128,7 @@ pub(crate) struct Editor {
     program: PathBuf,
     /// The `.app` bundle (macOS) or executable (Windows) whose application
     /// icon the menu shows; Linux looks the icon up by desktop-entry id.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     icon_path: PathBuf,
     /// Arguments before the file (`-a App` for `open`, launcher flags).
     prefix: Vec<OsString>,
