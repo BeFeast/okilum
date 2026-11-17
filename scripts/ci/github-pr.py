@@ -17,6 +17,8 @@ LANES = {
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
     'inbox': ('inbox', 'Run Inbox tests', 1800),
+    # #729: ordered Inbox/ingress restart, drift refusal and rollback on hosted Docker.
+    'inbox-restart': ('inbox-restart', 'Run Inbox restart integration', 1800),
     'arch': ('arch', 'Validate Arch package', 5400),
     'windows-release': ('windows-release', 'Build and validate Windows package', 5400),
     'native-core': ('native', 'Run native tests', 3600),

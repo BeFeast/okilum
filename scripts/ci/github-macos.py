@@ -366,7 +366,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
 # All callers of ref_name, including standalone Linux and the generic PR bridge.
 BRIDGE_PREFIXES = (
     "forgejo-pr", "forgejo-linux-pr", "forgejo-shared-pr", "forgejo-linux-binary-pr",
-    "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
+    "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-inbox-restart-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
     "forgejo-native-core-pr", "forgejo-native-sync-pr", "forgejo-native-shell-pr",
     "forgejo-perf-linux-pr", "forgejo-fast-pr", "forgejo-shell-full-pr", "forgejo-check-pr",
     "forgejo-sync-source-sharing-pr", "forgejo-feedback-pr", "forgejo-excalidraw-pr",
