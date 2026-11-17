@@ -73,6 +73,11 @@ jobs:
       - name: Reader inline/file dispatch and Canvas navigation
         shell: bash
         run: python scripts/ci/viewers-native-check.py reader
+      - name: HEIC/HEIF platform decoder controls
+        shell: bash
+        env:
+          OKILUM_HEIC_EXPECT: ${{ runner.os == 'Windows' && 'missing' || 'decoded' }}
+        run: python scripts/ci/viewers-native-check.py heic
       - name: Canvas model and showcase source controls
         shell: bash
         run: |
