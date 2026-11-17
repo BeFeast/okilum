@@ -1364,14 +1364,14 @@ impl Reader {
                         this.link_notice = Some(
                             reader_link_navigation::ambiguous_notice(&resolved.candidates).into(),
                         );
-                        this.link_choices = resolved
+                        this.pane.link_choices = resolved
                             .candidates
                             .into_iter()
                             .map(|path| (path, resolved.heading.clone()))
                             .collect();
                     }
                     _ => {
-                        this.link_choices.clear();
+                        this.pane.link_choices.clear();
                         this.link_notice = Some(
                             resolved
                                 .reason
@@ -3344,8 +3344,8 @@ fn live_blocks(
             let this = this.read(cx);
             (
                 this.vault.clone(),
-                this.link_presentations.clone(),
-                this.link_identities.clone(),
+                this.pane.link_presentations.clone(),
+                this.pane.link_identities.clone(),
                 this.editing
                     .as_ref()
                     .and_then(|editing| editing.live_preview.block_markdown(source)),
@@ -4479,7 +4479,7 @@ mod tests {
                             .open
                     );
                 } else {
-                    assert!(r.find_open);
+                    assert!(r.pane.find_open);
                 }
             });
             visual.simulate_input("okilum");
@@ -4495,7 +4495,8 @@ mod tests {
                     assert_eq!(input.read(cx).value().as_ref(), text);
                 } else {
                     assert_eq!(r.content.read(cx).search_status().1, 3);
-                    r.find_input
+                    r.pane
+                        .find_input
                         .update(cx, |s, cx| s.set_value("заметка", window, cx));
                     r.run_find(window, cx);
                     assert_eq!(r.content.read(cx).search_status().1, 3);

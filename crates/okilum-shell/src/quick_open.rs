@@ -644,7 +644,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.find_open {
+        if self.pane.find_open {
             self.close_find(window, cx);
         }
         // The title-bar menus are drawn above the palette and would keep
@@ -1864,12 +1864,13 @@ mod tests {
         visual.run_until_parked();
         let url = reader.read_with(visual, |v, _| {
             let link = v
+                .pane
                 .link_identities
                 .iter()
                 .find(|l| l.target == "Winter alias")
                 .expect("body alias positive control");
             assert_eq!(
-                v.prepared_links[&link.url].status,
+                v.pane.prepared_links[&link.url].status,
                 okilum_core::document_links::prepared::LinkStatus::Resolved
             );
             link.url.clone()
@@ -1949,12 +1950,13 @@ mod tests {
         reader.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "start.md");
             let link = v
+                .pane
                 .link_identities
                 .iter()
                 .find(|l| l.target == "Winter alias")
                 .unwrap();
             assert_eq!(
-                v.prepared_links[&link.url].status,
+                v.pane.prepared_links[&link.url].status,
                 okilum_core::document_links::prepared::LinkStatus::MissingDocument
             );
         });

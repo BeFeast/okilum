@@ -399,10 +399,11 @@ impl Reader {
         // the vault adds its file actions below them.
         let address = self.link_address(url);
         let text = self.pressed_link_text(url);
-        let resolved = !self.prepared_links.get(url).is_some_and(|state| {
+        let resolved = !self.pane.prepared_links.get(url).is_some_and(|state| {
             state.status != okilum_core::document_links::prepared::LinkStatus::Resolved
         });
         let action_url = self
+            .pane
             .prepared_links
             .get(url)
             .and_then(|s| s.action_url.as_deref())
@@ -655,7 +656,7 @@ impl Reader {
                 self.resolve_json_viewer(tree_had_focus, window, cx);
                 // The notes linking here are this file's, never the last note's (#2885).
                 self.set_backlinks(self.vault.backlinks(rel), true);
-                self.find_open = false;
+                self.pane.find_open = false;
                 self.link_notice = None;
                 self.remember_source_mode();
                 self.editing = None;

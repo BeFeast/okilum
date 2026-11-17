@@ -277,7 +277,7 @@ impl Reader {
                             cx.entity().downgrade(),
                             r.sel_format,
                             states.clone(),
-                            &r.link_identities,
+                            &r.pane.link_identities,
                         false,
 );
                         let content = cx.new(|cx| {
@@ -596,7 +596,7 @@ impl Reader {
                                     cx.weak_entity(),
                                     self.sel_format,
                                     t.states.clone(),
-                                    &self.link_identities,
+                                    &self.pane.link_identities,
                                 false,
 ),
                             ),

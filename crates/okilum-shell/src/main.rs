@@ -121,6 +121,7 @@ mod reader_open;
 mod reader_open_windows;
 mod reader_outline;
 mod reader_owned_windows;
+mod reader_pane;
 #[cfg(target_os = "linux")]
 mod reader_panel_resize;
 mod reader_panes;
@@ -1989,15 +1990,8 @@ struct Reader {
     history_notice_generation: u64,
     notice_generation: u64,
     toast_subscription: Option<Subscription>,
-    link_choices: Vec<(String, Option<String>)>,
-    prepared_links: prepared_links::States,
-    /// Last verified appearance for this exact displayed source. Pending action
-    /// evidence is cleared separately during same-document verification.
-    link_presentations: prepared_links::States,
-    link_preparation_generation: u64,
-    link_original_source: Option<Arc<str>>,
-    link_rendered_source: Option<Arc<str>>,
-    link_identities: Arc<Vec<okilum_core::document_links::prepared::LinkIdentity>>,
+    /// The active document's pane-owned state (#773).
+    pane: reader_pane::Surface,
     backlinks: Vec<Backlink>,
     /// `backlinks` is grouped by source note: one range per card of the «Linked from» list.
     /// Kept with the list state below, which counts exactly these cards (#1135).
@@ -2025,8 +2019,6 @@ struct Reader {
     note_canonical_source: Option<Arc<str>>,
     note_encoding_damaged: bool,
     encoding_repair_pending: Option<PathBuf>,
-    find_input: Entity<InputState>,
-    find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
     /// panel, #337). Prepared with the document; never reparsed on scroll.
     outline: Vec<okilum_core::document_links::HeadingEntry>,
@@ -2369,13 +2361,7 @@ impl Reader {
             history_notice_generation: 0,
             notice_generation: 0,
             toast_subscription: None,
-            link_choices: Vec::new(),
-            prepared_links: Arc::default(),
-            link_presentations: Arc::default(),
-            link_preparation_generation: 0,
-            link_original_source: None,
-            link_rendered_source: None,
-            link_identities: Arc::default(),
+            pane: reader_pane::Surface::new(find_input),
             backlinks: Vec::new(),
             backlink_groups: Vec::new(),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -2391,8 +2377,6 @@ impl Reader {
             note_canonical_source: None,
             note_encoding_damaged: false,
             encoding_repair_pending: None,
-            find_input,
-            find_open: false,
             outline: Vec::new(),
             draft_outline: Default::default(),
             tree: reader_tree::Tree::default(),
@@ -2846,7 +2830,7 @@ impl Reader {
             None
         };
         self.link_notice = None;
-        self.link_choices.clear();
+        self.pane.link_choices.clear();
         // A root publication clears history before replacing its old document;
         // do not attribute that old viewport to the newly published root.
         if self.navigation.history.get(self.navigation.history_ix) == Some(&self.current_rel) {
@@ -2907,17 +2891,17 @@ impl Reader {
             window.focus(&self.content.read(cx).focus_handle().clone(), cx);
         }
         self.invalidate_links();
-        self.link_presentations = Arc::default();
-        self.link_original_source = original_body.as_deref().map(Arc::from);
-        self.link_rendered_source = Some(Arc::from(source.as_str()));
-        self.link_identities = Arc::new(identities);
+        self.pane.link_presentations = Arc::default();
+        self.pane.link_original_source = original_body.as_deref().map(Arc::from);
+        self.pane.link_rendered_source = Some(Arc::from(source.as_str()));
+        self.pane.link_identities = Arc::new(identities);
         let configured = reader_plugins(
             self.vault_root.clone(),
             TextView::new(&self.content),
             cx.entity().downgrade(),
             self.sel_format,
-            self.link_presentations.clone(),
-            &self.link_identities,
+            self.pane.link_presentations.clone(),
+            &self.pane.link_identities,
             self.agent_document_enabled(cx),
         );
         {
@@ -3011,7 +2995,7 @@ impl Reader {
             });
             self.navigation.history_ix = self.navigation.history.len() - 1;
         }
-        if self.find_open {
+        if self.pane.find_open {
             self.run_find(window, cx);
         }
 
@@ -3067,13 +3051,13 @@ impl Reader {
             let active = self.panels.dismiss_target(available);
             self.panels.close(active);
         }
-        self.find_open = true;
-        self.find_input.update(cx, |s, cx| s.focus(window, cx));
+        self.pane.find_open = true;
+        self.pane.find_input.update(cx, |s, cx| s.focus(window, cx));
         self.run_find(window, cx);
     }
 
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.find_open = false;
+        self.pane.find_open = false;
         self.content.update(cx, |s, cx| s.set_search_query("", cx));
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -3088,7 +3072,7 @@ impl Reader {
             cx.notify();
             return;
         }
-        let term = self.find_input.read(cx).value().trim().to_string();
+        let term = self.pane.find_input.read(cx).value().trim().to_string();
         let sensitive = reader_ui_state::find_case_sensitive(cx);
         self.content.update(cx, |s, cx| {
             s.set_search_case_sensitive(sensitive, cx);
@@ -3276,12 +3260,18 @@ impl Reader {
             self.cancel_loading(cx);
             return;
         }
-        let find_focused = self.find_input.read(cx).focus_handle(cx).is_focused(window);
-        if self.find_open && find_focused {
-            if self.find_input.read(cx).value().is_empty() {
+        let find_focused = self
+            .pane
+            .find_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if self.pane.find_open && find_focused {
+            if self.pane.find_input.read(cx).value().is_empty() {
                 self.close_find(window, cx);
             } else {
-                self.find_input
+                self.pane
+                    .find_input
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.run_find(window, cx);
             }
@@ -3294,7 +3284,7 @@ impl Reader {
         if reader_toast::dismiss(window, cx) {
             return;
         }
-        if self.find_open {
+        if self.pane.find_open {
             self.close_find(window, cx);
             return;
         }
@@ -5033,7 +5023,7 @@ impl Reader {
         let count = if native {
             "Filter tasks".to_owned()
         } else if total == 0 {
-            if self.find_input.read(cx).value().trim().is_empty() {
+            if self.pane.find_input.read(cx).value().trim().is_empty() {
                 String::new()
             } else {
                 "No matches".to_string()
@@ -5045,7 +5035,7 @@ impl Reader {
         let case = weak.clone();
         let step = weak.clone();
         let target = reader_find_field::Target {
-            input: self.find_input.clone(),
+            input: self.pane.find_input.clone(),
             focus_override: None,
             scope: "Find in note…".into(),
             count: Some(count.into()),
@@ -6006,8 +5996,8 @@ impl Reader {
                                         .min_h_0(),
                                     entity.clone(),
                                     self.sel_format,
-                                    self.link_presentations.clone(),
-                                    &self.link_identities,
+                                    self.pane.link_presentations.clone(),
+                                    &self.pane.link_identities,
                                     self.agent_document_enabled(cx),
                                 )
                                 .table_actions(
@@ -6052,8 +6042,8 @@ impl Reader {
             TextView::new(&self.content),
             entity,
             self.sel_format,
-            self.link_presentations.clone(),
-            &self.link_identities,
+            self.pane.link_presentations.clone(),
+            &self.pane.link_identities,
             false,
         );
         let markdown = markdown.to_owned();
@@ -6160,8 +6150,8 @@ impl Reader {
                                     .size_full(),
                                 entity,
                                 self.sel_format,
-                                self.link_presentations.clone(),
-                                &self.link_identities,
+                                self.pane.link_presentations.clone(),
+                                &self.pane.link_identities,
                                 false,
                             )),
                         ),
@@ -6940,7 +6930,7 @@ impl Reader {
             }
             Resolution::Ambiguous { candidates } => {
                 self.link_notice = Some(format!("«{path}» names several notes:").into());
-                self.link_choices = candidates
+                self.pane.link_choices = candidates
                     .into_iter()
                     .map(|c| (c, heading.clone()))
                     .collect();
@@ -8329,7 +8319,7 @@ impl Reader {
                 self.project_open || self.project_navigation.active.is_some(),
                 |view| view.children(self.render_agents_rules_offer(cx)),
             )
-            .when(self.find_open, |s| s.child(self.render_find_bar(cx)))
+            .when(self.pane.find_open, |s| s.child(self.render_find_bar(cx)))
             .children(reader_text_zoom::hud(self, cx))
             .into_any_element()
     }
@@ -10710,11 +10700,13 @@ mod document_link_landing_tests {
             assert!(!v.vault.inventory_complete);
             assert_eq!(v.current_rel, "Target.md");
             let link = v
+                .pane
                 .link_identities
                 .iter()
                 .find(|link| link.target == "Other vault")
                 .expect("the wikilink is prepared");
             let state = v
+                .pane
                 .prepared_links
                 .get(&link.url)
                 .expect("its state is published");
@@ -11022,11 +11014,13 @@ mod document_link_landing_tests {
             view.read_with(visual, |v, _| {
                 assert_eq!(v.vault.unreadable.len(), 1, "{launch}: one item unreadable");
                 let link = v
+                    .pane
                     .link_identities
                     .iter()
                     .find(|link| link.target == "Beta")
                     .unwrap_or_else(|| panic!("{launch}: the link is prepared"));
                 let state = v
+                    .pane
                     .prepared_links
                     .get(&link.url)
                     .unwrap_or_else(|| panic!("{launch}: no state for the link"));
@@ -11036,8 +11030,12 @@ mod document_link_landing_tests {
                     "{launch}: the state the hover reads"
                 );
                 assert!(
-                    reader_hover::resolved_target(&link.url, &v.prepared_links, &v.current_rel)
-                        .is_some(),
+                    reader_hover::resolved_target(
+                        &link.url,
+                        &v.pane.prepared_links,
+                        &v.current_rel
+                    )
+                    .is_some(),
                     "{launch}: the hover has a note to preview"
                 );
             });
@@ -11045,11 +11043,12 @@ mod document_link_landing_tests {
             // prepared ones: both must agree, on the note the click lands on as well.
             let first = view.read_with(visual, |v, _| {
                 let link = v
+                    .pane
                     .link_identities
                     .iter()
                     .find(|l| l.target == "Beta")
                     .unwrap();
-                let shown = v.link_presentations.get(&link.url);
+                let shown = v.pane.link_presentations.get(&link.url);
                 assert_eq!(
                     shown.map(|s| (s.status, s.reason.clone())),
                     Some((LinkStatus::Resolved, "Open document".into())),
@@ -11065,13 +11064,14 @@ mod document_link_landing_tests {
             view.read_with(visual, |v, _| {
                 assert_eq!(v.current_rel, "Beta.md", "{launch}: the click opened Beta");
                 let link = v
+                    .pane
                     .link_identities
                     .iter()
                     .find(|l| l.target == "Alpha")
                     .unwrap_or_else(|| panic!("{launch}: Beta's link is prepared"));
                 for (name, states) in [
-                    ("tooltip", &v.link_presentations),
-                    ("click", &v.prepared_links),
+                    ("tooltip", &v.pane.link_presentations),
+                    ("click", &v.pane.prepared_links),
                 ] {
                     let state = states
                         .get(&link.url)
@@ -11083,8 +11083,12 @@ mod document_link_landing_tests {
                     );
                 }
                 assert!(
-                    reader_hover::resolved_target(&link.url, &v.prepared_links, &v.current_rel)
-                        .is_some(),
+                    reader_hover::resolved_target(
+                        &link.url,
+                        &v.pane.prepared_links,
+                        &v.current_rel
+                    )
+                    .is_some(),
                     "{launch}: Beta's hover has a note to preview"
                 );
             });
@@ -12706,29 +12710,32 @@ mod document_link_landing_tests {
             v.open_find(window, cx);
             assert!(v.panels.visible(reader_layout::Panel::Notes, width));
             assert!(v.panels.visible(reader_layout::Panel::Backlinks, width));
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Text", window, cx));
         });
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
-            assert!(v.find_open, "positive control: find is open");
+            assert!(v.pane.find_open, "positive control: find is open");
             v.dismiss(window, cx);
-            assert!(v.find_open);
-            assert!(v.find_input.read(cx).value().is_empty());
+            assert!(v.pane.find_open);
+            assert!(v.pane.find_input.read(cx).value().is_empty());
             v.dismiss(window, cx);
-            assert!(!v.find_open);
+            assert!(!v.pane.find_open);
         });
         view.update_in(visual, |v, window, cx| {
             // Find marks follow the find field the same way.
             v.open_find(window, cx);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Text", window, cx));
             v.run_find(window, cx);
         });
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert!(v.content.read(cx).search_status().1 > 0);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("", window, cx));
             v.run_find(window, cx);
             assert_eq!(v.content.read(cx).search_status().1, 0);
@@ -13570,8 +13577,13 @@ mod document_link_landing_tests {
                 v.panels.dismiss_target(f32::from(v.body_bounds.size.width)),
                 reader_layout::Panel::Closed
             );
-            assert!(v.find_open);
-            assert!(v.find_input.read(cx).focus_handle(cx).is_focused(window));
+            assert!(v.pane.find_open);
+            assert!(v
+                .pane
+                .find_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window));
         });
         #[cfg(target_os = "macos")]
         {
@@ -13583,8 +13595,13 @@ mod document_link_landing_tests {
                     v.panels.dismiss_target(f32::from(v.body_bounds.size.width)),
                     reader_layout::Panel::Closed
                 );
-                assert!(v.find_open);
-                assert!(v.find_input.read(cx).focus_handle(cx).is_focused(window));
+                assert!(v.pane.find_open);
+                assert!(v
+                    .pane
+                    .find_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window));
             });
         }
         assert_eq!(
