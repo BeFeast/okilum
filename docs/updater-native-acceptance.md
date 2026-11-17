@@ -57,6 +57,11 @@ only discover the current beta after relaunch.
   and retain the helper's startup-confirmed/transaction-committed receipt. An
   unarmed stage is not an installed build; a successful process alone is not a
   committed update. Preserve the launcher target and channel preference.
+  If the tester launches Okilum as a transient service (`systemd-run --user`
+  without `--scope`, uwsm `-t service`), pass `-p ExitType=cgroup`: with the
+  default `ExitType=main` systemd stops the unit when Okilum quits for Restart
+  now and kills the update helper with it, so `apply.log` ends in `Terminated`
+  and nothing is installed (#3077).
 - **macOS:** verify the installed bundle/executable, identify the synthetic
   window again after relaunch and retain the attempt's native lifecycle events.
   An empty termination-retry callback can occur while asynchronous quit is

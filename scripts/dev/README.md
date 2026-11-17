@@ -193,7 +193,9 @@ One run:
    alive while their AppImage runtime holds it open, even after
    `previous.AppImage` is pruned.
 6. **Reopen** (only if it was open) in its own unit in `app-graphical.slice`
-   (`systemd-run --user`, as uwsm launchers do), with
+   (`systemd-run --user`, as uwsm launchers do, with `ExitType=cgroup` so a
+   later in-app Restart now does not kill its own update helper together
+   with the unit, #3077), with
    `OKILUM_APPIMAGE_UPDATE_RECEIPT` set to the stage, so the new build itself
    confirms that it started. Only the update lock is held meanwhile, as in the
    updater's APPLY helper. If the build exits before confirming, the previous

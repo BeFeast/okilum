@@ -875,6 +875,9 @@ class Units(unittest.TestCase):
         command = calls[0]
         self.assertEqual(command[:3], ['systemd-run', '--user', '--quiet'])
         self.assertIn('app-graphical.slice', command)
+        # #3077: the unit must outlive Okilum's main process, or in-app
+        # Restart now loses its update helper together with the unit.
+        self.assertEqual(command[command.index('ExitType=cgroup') - 1], '--property')
         self.assertIn('OKILUM_APPIMAGE_UPDATE_RECEIPT=/h/.okilum-update-x', command)
         unset = next(part for part in command if part.startswith('UnsetEnvironment='))
         # systemd applies UnsetEnvironment= after --setenv (14.11 on idunn: the
