@@ -571,7 +571,7 @@ fn data_view_2669_native_standalone_xml_mounts_a_preview_without_markdown_and_ed
             !input.read(cx).is_editable(),
             "the preview itself is read-only"
         );
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert!(reader.code_file_editable(cx), "#2887: XML is editable");
         reader.record_usable_document(cx);
     });
@@ -582,13 +582,13 @@ fn data_view_2669_native_standalone_xml_mounts_a_preview_without_markdown_and_ed
     visual.run_until_parked();
     reader.update_in(visual, |reader, window, cx| {
         assert!(
-            reader.editing.is_some(),
+            reader.pane.editing.is_some(),
             "Edit opens for a standalone XML file"
         );
         reader.toggle_source(window, cx);
     });
     visual.run_until_parked();
-    reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+    reader.read_with(visual, |reader, _| assert!(reader.pane.editing.is_none()));
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
 }
 

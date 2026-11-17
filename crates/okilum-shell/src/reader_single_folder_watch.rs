@@ -327,7 +327,8 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("# My unsaved draft\n", window, cx);
@@ -340,7 +341,8 @@ mod tests {
         });
         reader.read_with(visual, |r, cx| {
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input()
@@ -356,7 +358,8 @@ mod tests {
         reader.read_with(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "start.md");
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input()

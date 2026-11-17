@@ -1598,7 +1598,7 @@ mod tests {
         reader.update(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "Work.md");
             assert_eq!(r.pane.content.read(cx).search_status().1, 1);
-            assert!(r.editing.is_none(), "read-only navigation");
+            assert!(r.pane.editing.is_none(), "read-only navigation");
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Work.md")).unwrap(),

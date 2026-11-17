@@ -47,7 +47,7 @@ impl Target {
     /// no longer being edited (left for Reader, another note, parked).
     fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
         let reader = self.reader.upgrade()?;
-        let editing = reader.read(cx).editing.as_ref()?;
+        let editing = reader.read(cx).pane.editing.as_ref()?;
         let same_note = self
             .path
             .as_deref()
@@ -194,6 +194,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         let path = self
+            .pane
             .editing
             .as_ref()
             .filter(|editing| editing.input == input)

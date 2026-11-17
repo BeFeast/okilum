@@ -374,7 +374,7 @@ mod mounted {
         let original = std::fs::read_to_string(f.root.join("Start.md")).unwrap();
         let input = f.reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         draw(visual);
         input.update_in(visual, |input, window, cx| {
@@ -425,7 +425,7 @@ mod mounted {
                 assert_eq!(reader.pane.navigation.history_ix, history_ix);
                 assert_eq!(reader.pane.content, content);
                 assert!(reader.pane.file_preview.is_none());
-                assert_eq!(reader.editing.as_ref().unwrap().input(), &input);
+                assert_eq!(reader.pane.editing.as_ref().unwrap().input(), &input);
                 assert_eq!(
                     input.read(cx).value().as_ref(),
                     format!("Draft Ω\n{original}")

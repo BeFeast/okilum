@@ -131,7 +131,7 @@ impl HoverProvider for SourceHover {
                         ));
                     }
                     reader.pane.navigation.preparation_generation == generation
-                        && reader.editing.as_ref().is_some_and(|editing| {
+                        && reader.pane.editing.as_ref().is_some_and(|editing| {
                             editing.input().read(cx).source_snapshot().text.rope() == &source
                         })
                 })

@@ -57,6 +57,7 @@ fn table2812_csv_is_lazy_table_then_readonly_raw_and_real_edit(cx: &mut TestAppC
     settle(v);
     reader.read_with(v, |r, cx| {
         let input = r
+            .pane
             .editing
             .as_ref()
             .expect("CSV Edit opens source")
@@ -702,7 +703,11 @@ fn table2812_five_mib_csv_still_opens_the_source_editor(cx: &mut TestAppContext)
     r.update_in(v, |r, w, cx| r.toggle_source(w, cx));
     settle(v);
     r.read_with(v, |r, cx| {
-        let editing = r.editing.as_ref().expect("Edit opens the source editor");
+        let editing = r
+            .pane
+            .editing
+            .as_ref()
+            .expect("Edit opens the source editor");
         assert_eq!(editing.test_input().read(cx).value().len(), source.len());
     });
 }
@@ -877,7 +882,7 @@ fn table2812_edit_stops_table_find_and_read_runs_it_once(cx: &mut TestAppContext
         );
         settle(v);
         assert!(
-            r.read_with(v, |r, _| r.editing.is_some()),
+            r.read_with(v, |r, _| r.pane.editing.is_some()),
             "{name}: editing"
         );
         t.read_with(v, |p, _| {

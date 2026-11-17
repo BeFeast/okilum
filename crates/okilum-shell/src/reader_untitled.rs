@@ -1161,7 +1161,7 @@ impl Reader {
                 // can prove nothing in the draft is newer.
                 this.source_saved_elsewhere(cx);
                 this.remember_source_mode();
-                this.editing = None;
+                this.pane.editing = None;
                 let retirable = match sync_draft_file(&folder, &draft_text, &expected) {
                     Ok(DraftFile::Same | DraftFile::Written) => true,
                     Ok(DraftFile::ChangedElsewhere) => {
@@ -1669,7 +1669,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
                 r.vault_root,
                 r.pane.current_rel,
                 r.single_file,
-                r.editing.is_some(),
+                r.pane.editing.is_some(),
                 r.loading.as_ref().map(|l| l.active),
                 r.link_notice
             )
@@ -1729,7 +1729,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             r.new_untitled(window, cx);
         });
         settle(visual, &reader, "the draft is open for typing", |r, _| {
-            r.current_draft().is_some() && r.editing.is_some()
+            r.current_draft().is_some() && r.pane.editing.is_some()
         });
         let draft = reader.read_with(visual, |r, _| r.vault_root.join(FILE));
         assert!(draft.starts_with(session.canonicalize().unwrap()));

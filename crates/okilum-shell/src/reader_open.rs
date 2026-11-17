@@ -5504,7 +5504,7 @@ mod entry_tests {
             assert_eq!(reader.vault_root, root);
             assert_eq!(reader.pane.current_rel, "missing.md");
             assert!(
-                reader.editing.is_some(),
+                reader.pane.editing.is_some(),
                 "the newly created file opens its editor"
             );
         });

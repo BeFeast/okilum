@@ -885,7 +885,9 @@ mod visual_tests {
         visual.simulate_resize(size(px(1400.), px(960.)));
         reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input().clone());
+        let input = reader.read_with(visual, |v, _| {
+            v.pane.editing.as_ref().unwrap().input().clone()
+        });
         let bounds = input.read_with(visual, |i, _| i.input_bounds());
         assert!(
             bounds.size.width > px(100.),
@@ -894,7 +896,7 @@ mod visual_tests {
         input.update(visual, |i, cx| i.set_selected_range(range, cx));
         visual.run_until_parked();
         let mirrored = reader.read_with(visual, |v, _| {
-            v.editing.as_ref().unwrap().menu_facts().date()
+            v.pane.editing.as_ref().unwrap().menu_facts().date()
         });
         assert_eq!(mirrored, date, "the snapshot follows the selection");
         let before = MENU_BUILDS.with(|builds| builds.get());
@@ -937,7 +939,9 @@ mod visual_tests {
         let (reader, visual) = mount(cx, &root, &state);
         reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input().clone());
+        let input = reader.read_with(visual, |v, _| {
+            v.pane.editing.as_ref().unwrap().input().clone()
+        });
 
         // The menu builder sees the same selection the action will use.
         let offered = |visual: &mut VisualTestContext, range: std::ops::Range<usize>| {
@@ -954,7 +958,14 @@ mod visual_tests {
         // Dispatching the menu's action writes one task and touches nothing else.
         input.update_in(visual, |i, window, cx| i.focus(window, cx));
         let request = reader.read_with(visual, |v, _| {
-            v.editing.as_ref().unwrap().menu_facts().3.borrow().clone()
+            v.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .menu_facts()
+                .3
+                .borrow()
+                .clone()
         });
         visual.dispatch_action(RemindOnSelection { request });
         visual.run_until_parked();
@@ -972,7 +983,14 @@ mod visual_tests {
         std::fs::remove_file(root.join(NOTE)).unwrap();
         input.update(visual, |i, cx| i.set_selected_range(0..6, cx));
         let request = reader.read_with(visual, |v, _| {
-            v.editing.as_ref().unwrap().menu_facts().3.borrow().clone()
+            v.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .menu_facts()
+                .3
+                .borrow()
+                .clone()
         });
         visual.dispatch_action(RemindOnSelection { request });
         visual.run_until_parked();

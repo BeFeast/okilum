@@ -557,7 +557,7 @@ impl Reader {
                 // after any other selection (#1412). The editor takes focus
                 // below.
                 self.dismiss_sidebar_after_selection(window, cx);
-                self.editing = None;
+                self.pane.editing = None;
                 self.pane.navigation.preparation_generation =
                     self.pane.navigation.preparation_generation.wrapping_add(1);
                 let document =
@@ -578,7 +578,7 @@ impl Reader {
                 // Typing starts in the body after the heading, never before
                 // the frontmatter (#1117).
                 let body = okilum_core::note_files::body_start(&source);
-                if let Some(editing) = &self.editing {
+                if let Some(editing) = &self.pane.editing {
                     editing
                         .input()
                         .update(cx, |input, cx| input.set_selected_range(body..body, cx));
@@ -722,7 +722,8 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             assert_eq!(r.selected_file(), note);
             r.toggle_source(window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("# Unsaved שלום\r\n", window, cx);
@@ -737,7 +738,8 @@ mod tests {
             r.refresh_source_from_disk(window, cx);
             assert!(r.deleted_current().is_some());
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input()
@@ -778,7 +780,8 @@ mod tests {
                 r.open_note("start.md", None, window, cx);
                 assert_eq!(r.selected_file(), note);
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .input()
@@ -803,11 +806,11 @@ mod tests {
                     .input
                     .update(cx, |input, cx| input.set_value("Blocked", window, cx));
                 r.commit_creation(window, cx);
-                assert!(r.editing.is_some());
+                assert!(r.pane.editing.is_some());
             });
             visual.run_until_parked();
             confirm_deleted_navigation(visual);
-            reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+            reader.read_with(visual, |r, _| assert!(r.pane.editing.is_some()));
             assert!(!root.join("Blocked.md").exists());
             visual.update(|window, cx| assert!(!window.notifications(cx).is_empty()));
             return;
@@ -1017,7 +1020,8 @@ mod tests {
                 visual.run_until_parked();
                 reader.read_with(visual, |r, cx| {
                     assert_eq!(
-                        r.editing
+                        r.pane
+                            .editing
                             .as_ref()
                             .unwrap()
                             .test_input()
@@ -1079,7 +1083,7 @@ mod tests {
                 );
             } else {
                 reader.update_in(visual, |r, window, cx| {
-                    let input = r.editing.as_ref().unwrap().test_input();
+                    let input = r.pane.editing.as_ref().unwrap().test_input();
                     input.update(cx, |input, cx| input.set_value("Unsaved work", window, cx));
                     assert!(r.source_is_dirty(cx));
                     r.undo_creation(None, window, cx);
@@ -1467,7 +1471,14 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, _, cx| {
             assert_eq!(r.pane.current_rel, "Friend new note.md");
-            let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
+            let value = r
+                .pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .test_input()
+                .read(cx)
+                .value();
             // Positive control: the keystrokes reached the new note's editor.
             assert_eq!(value.as_ref(), "# Friend new note\nBody");
             assert!(r.leave_source(cx));
@@ -1543,7 +1554,14 @@ mod tests {
             visual.simulate_input("Body");
             visual.run_until_parked();
             reader.update_in(visual, |r, _, cx| {
-                let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
+                let value = r
+                    .pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .test_input()
+                    .read(cx)
+                    .value();
                 assert_eq!(value.as_ref(), format!("# {name}\nBody"));
                 assert!(r.leave_source(cx));
             });
@@ -1734,7 +1752,7 @@ mod tests {
                 .iter()
                 .any(|entry| entry.path == "Selected/Target/a"
                     && entry.kind == okilum_core::vault::EntryKind::Directory));
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
             assert_eq!(
                 reader.pane.navigation.history.last().map(String::as_str),
                 Some("Selected/Target/a/Новая 🧠.md")
@@ -1774,7 +1792,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.creation.is_none());
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         reader.update_in(visual, |reader, window, cx| {
             reader.new_note(Some(""), window, cx);
@@ -1855,7 +1873,7 @@ mod tests {
         );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.pane.current_rel, "Selected/Target/a/Meeting.md");
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         std::fs::create_dir_all(root.join("@Schema/Templates")).unwrap();
         std::fs::write(root.join("@Schema/Templates/Note.md"), "Default {{title}}").unwrap();
@@ -2037,7 +2055,7 @@ mod tests {
                 } else {
                     assert!(root.join(&relative).is_file());
                     assert_eq!(r.selected_file(), relative);
-                    assert!(r.editing.is_some(), "new note opens in the editor");
+                    assert!(r.pane.editing.is_some(), "new note opens in the editor");
                     assert!(!r.source_is_dirty(cx));
                 }
             });

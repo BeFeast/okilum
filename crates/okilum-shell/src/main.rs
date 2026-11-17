@@ -1861,7 +1861,6 @@ struct Reader {
     project_request: u64,
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
-    editing: Option<reader_editor::Editing>,
     viewer_save_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::SaveControls>>>,
     viewer_header: std::cell::RefCell<Option<Entity<reader_viewer_chrome::Header>>>,
     viewer_save_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
@@ -1905,11 +1904,6 @@ struct Reader {
     trash_undo: reader_trash::UndoHistory,
     #[cfg(any(unix, windows))]
     move_index: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
-    recovery_offer: bool,
-    recovery_checked: bool,
-    recovery_error: bool,
-    recovery_dismissed: bool,
-    recovery_startup: bool,
     loading: Option<reader_loading::Loading>,
     queued_edit_note: Option<String>,
     /// An external link opened while editing: once its note is accepted, the
@@ -2266,7 +2260,6 @@ impl Reader {
             quick_open,
             shortcut_sheet,
             zoom_hud: Default::default(),
-            editing: None,
             viewer_save_controls: Default::default(),
             viewer_header: Default::default(),
             viewer_save_bounds: Default::default(),
@@ -2307,13 +2300,6 @@ impl Reader {
             trash_undo: reader_trash::UndoHistory::default(),
             #[cfg(any(unix, windows))]
             move_index: None,
-            recovery_offer: false,
-            recovery_checked: false,
-            recovery_error: false,
-            recovery_dismissed: false,
-            recovery_startup: cx
-                .try_global::<reader_recovery::RecoveryStartup>()
-                .is_some_and(|state| state.0),
             link_notice: None,
             deleted_note: None,
             displayed_deleted_notice: None,
@@ -2331,7 +2317,14 @@ impl Reader {
             history_notice_generation: 0,
             notice_generation: 0,
             toast_subscription: None,
-            pane: reader_pane::Surface::new(content, content_sub, find_input, use_html),
+            pane: reader_pane::Surface::new(
+                content,
+                content_sub,
+                find_input,
+                use_html,
+                cx.try_global::<reader_recovery::RecoveryStartup>()
+                    .is_some_and(|state| state.0),
+            ),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
             stignore: None,
             stignore_offered: Default::default(),
@@ -2740,7 +2733,7 @@ impl Reader {
                 return;
             }
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             return;
         }
         self.clear_hover(cx);
@@ -2993,13 +2986,13 @@ impl Reader {
     // --- find in note (#48) ---
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() || self.pane.file_preview.is_some() {
+        if self.pane.editing.is_none() || self.pane.file_preview.is_some() {
             if let Some(target) = self.viewer_find_target(cx) {
                 target.focus(window, cx);
                 return;
             }
         }
-        if self.pane.file_preview.is_some() && self.editing.is_none() {
+        if self.pane.file_preview.is_some() && self.pane.editing.is_none() {
             if let Some(code) = self
                 .pane
                 .file_preview
@@ -3014,7 +3007,7 @@ impl Reader {
         }
         self.quick_open.open = false;
         self.quick_open.invalidate();
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.open_source_find(cx);
             return;
         }
@@ -3143,7 +3136,7 @@ impl Reader {
                             None => false,
                             Some(Err(reason)) => {
                                 this.pane.navigation.pending_landing = None;
-                                if this.editing.is_none() {
+                                if this.pane.editing.is_none() {
                                     this.link_notice = Some(
                                         format!(
                                             "Could not render the requested position: {reason}"
@@ -3286,7 +3279,7 @@ impl Reader {
             return;
         }
         #[cfg(any(unix, windows))]
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.toggle_source(window, cx);
         }
     }
@@ -3439,7 +3432,7 @@ impl Reader {
             // Nothing that owns focus is drawn there; the Reader's handle
             // keeps its key contexts in the dispatch path.
             self.focus_handle.focus(window, cx);
-        } else if let Some(editing) = &self.editing {
+        } else if let Some(editing) = &self.pane.editing {
             editing.input().focus_handle(cx).focus(window, cx);
         } else if let Some(preview) = &self.pane.file_preview {
             preview.focus(&self.focus_handle, window, cx);
@@ -3516,7 +3509,7 @@ impl Reader {
             cx.notify();
             return;
         }
-        if self.editing.is_some()
+        if self.pane.editing.is_some()
             || self.pane.file_preview.is_some()
             || !self.pane.content.read(cx).focus_handle().is_focused(window)
         {
@@ -5880,7 +5873,7 @@ impl Reader {
         if let Some(preview) = &self.pane.file_preview {
             return self.render_file_preview(preview, window, cx);
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             return self.render_source(window, cx);
         }
         if let Some(view) = reader_typed_view::render(self, window, cx) {
@@ -6945,7 +6938,7 @@ impl Reader {
 
     /// Index into `outline` of the section containing the top visible block.
     fn current_section(&self, cx: &App) -> Option<usize> {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             return editing
                 .input()
                 .read(cx)
@@ -8124,7 +8117,7 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             reader_editor::SOURCE_READER_RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
@@ -8480,7 +8473,7 @@ impl Reader {
             .key_context(
                 if self.file_editor_active() && !self.quick_open.open && !self.shortcut_sheet.open {
                     "Reader ReaderCode ReaderFileEdit"
-                } else if self.editing.is_none()
+                } else if self.pane.editing.is_none()
                     && !self.quick_open.open
                     && !self.shortcut_sheet.open
                     && self.project_navigation.section == reader_project_navigation::Section::Reader
@@ -8493,7 +8486,7 @@ impl Reader {
                     "Reader ReaderCode"
                 } else if self
                     .active_timeline()
-                    .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
+                    .is_some_and(|t| t.selected.is_some() || self.pane.editing.is_none())
                     && !self.quick_open.open
                     && !self.shortcut_sheet.open
                 {
@@ -9855,7 +9848,7 @@ mod document_link_landing_tests {
                             "loaded note positive control"
                         );
                         reader.panels.open(panel);
-                        if reader.editing.is_some() != source {
+                        if reader.pane.editing.is_some() != source {
                             reader.toggle_source(window, cx);
                         }
                         if !source {
@@ -9898,7 +9891,7 @@ mod document_link_landing_tests {
                         if !source {
                             assert!(focus.is_focused(window), "Escape preserves Reader focus");
                         }
-                        assert!(reader.editing.is_none(), "Escape returns to Reader");
+                        assert!(reader.pane.editing.is_none(), "Escape returns to Reader");
                     });
                 }
             }

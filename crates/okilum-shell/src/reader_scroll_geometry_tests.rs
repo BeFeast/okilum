@@ -73,7 +73,7 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
     visual.run_until_parked();
     reader.update(visual, |reader, cx| {
         assert_eq!(reader.pane.current_rel, "scroll.md", "loaded-note control");
-        assert!(reader.editing.is_none(), "Read mode control");
+        assert!(reader.pane.editing.is_none(), "Read mode control");
         reader.panels = Default::default();
         cx.notify();
     });

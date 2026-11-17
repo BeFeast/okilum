@@ -108,7 +108,7 @@ impl Target {
     fn matches_accepted(&self, reader: &Reader, cx: &App) -> bool {
         self.matches(reader)
             && self.accepted_source.as_ref().is_none_or(|source| {
-                reader.editing.is_none()
+                reader.pane.editing.is_none()
                     && reader.pane.file_preview.is_none()
                     && !reader.pane.use_html
                     && reader.pane.content.read(cx).document_source().as_ref() == Some(source)
@@ -325,7 +325,7 @@ impl Reader {
         if !target.matches(self) {
             return;
         }
-        if self.editing.is_none() && self.pane.file_preview.is_none() && !self.pane.use_html {
+        if self.pane.editing.is_none() && self.pane.file_preview.is_none() && !self.pane.use_html {
             target.accepted_source = self.pane.content.read(cx).document_source();
         }
         let selection = reader_read_menu::snapshot(self, cx);

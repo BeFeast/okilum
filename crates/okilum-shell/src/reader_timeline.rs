@@ -827,7 +827,7 @@ mod tests {
             assert!(t.content.is_some());
             assert_eq!(t.source.as_ref().unwrap().read(cx).value().as_ref(), old);
             assert!(r.pane.note_source.contains("Current"));
-            assert!(r.editing.is_none());
+            assert!(r.pane.editing.is_none());
         });
         visual.update(|w, cx| w.draw(cx).clear(cx));
         assert!(visual.debug_bounds("source-save").is_none());

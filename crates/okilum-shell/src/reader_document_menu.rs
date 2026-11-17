@@ -167,7 +167,7 @@ impl Reader {
             .is_some_and(|p| reader_delimited::editable(&p.rel))
             && self.code_file_editable(cx);
         #[cfg(any(unix, windows))]
-        let editing = self.editing.is_some();
+        let editing = self.pane.editing.is_some();
         #[cfg(any(unix, windows))]
         let reader = cx.entity().downgrade();
         let available = if self.body_bounds.size.width > px(0.) {
@@ -207,7 +207,7 @@ impl Reader {
             spare -= 32.;
         }
         // One toggle to the other editor mode (#992).
-        let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
+        let show_presentation = !is_file && self.pane.editing.is_some() && spare >= 32.;
         if show_presentation {
             spare -= 32.;
         }
@@ -599,7 +599,7 @@ impl Reader {
         self.pane.note_canonical_source = None;
         self.note_encoding_damaged = false;
         self.pane.file_preview = None;
-        self.editing = None;
+        self.pane.editing = None;
         self.pane.table_overlay = None;
         self.pane.find_open = false;
         self.pane.usable_document = false;

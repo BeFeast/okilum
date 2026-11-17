@@ -209,7 +209,7 @@ impl Request {
             || reader.pane.file_preview.is_some()
             || reader.pane.current_rel.is_empty()
             || reader.pointer_on_link()
-            || reader.editing.is_some()
+            || reader.pane.editing.is_some()
         {
             return None;
         }
@@ -288,7 +288,7 @@ impl Request {
         self.owner.current(reader)
             && match &self.evidence {
                 Evidence::ReadPress { displayed } => {
-                    reader.editing.is_none()
+                    reader.pane.editing.is_none()
                         && reader.pane.content.read(cx).document_source().as_ref()
                             == Some(displayed)
                         && reader
@@ -299,7 +299,7 @@ impl Request {
                             == &*self.source
                 }
                 Evidence::Read => {
-                    reader.editing.is_none()
+                    reader.pane.editing.is_none()
                         // Root clears TextView selection on the menu item's
                         // left press. The immutable menu packet owns that
                         // selection; source/view identity remains authoritative.
@@ -315,6 +315,7 @@ impl Request {
                     range,
                 } => {
                     reader
+                        .pane
                         .editing
                         .as_ref()
                         .is_some_and(|editing| editing.input() == input)

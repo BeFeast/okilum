@@ -197,7 +197,7 @@ impl TableGrid {
         let Some(reader) = self.reader.upgrade() else {
             return false;
         };
-        let Some(editing) = &reader.read(cx).editing else {
+        let Some(editing) = &reader.read(cx).pane.editing else {
             return false;
         };
         if editing.input != self.input
@@ -242,7 +242,7 @@ impl TableGrid {
         });
         self.rebuild(table.rows, window, cx);
         reader.update(cx, |reader, _| {
-            if let Some(editing) = &mut reader.editing {
+            if let Some(editing) = &mut reader.pane.editing {
                 if editing.input == self.input {
                     editing.live_preview.block_focus = None;
                     editing.live_preview.opened_block = None;
@@ -506,7 +506,7 @@ impl TableGrid {
         let Some(reader) = self.reader.upgrade() else {
             return false;
         };
-        let Some(editing) = &reader.read(cx).editing else {
+        let Some(editing) = &reader.read(cx).pane.editing else {
             return false;
         };
         editing.input == self.input && editing.markdown
@@ -1470,10 +1470,10 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let grid = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().table_grid.clone()
+            reader.pane.editing.as_ref().unwrap().table_grid.clone()
         });
         let cell = visual
             .debug_bounds("table-cell-1-0")
@@ -1530,6 +1530,7 @@ mod tests {
         );
         assert_eq!(
             reader.read_with(visual, |reader, _| reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1599,7 +1600,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             assert!(!reader.save_source(cx), "uncommitted text blocks Save");
             reader.set_live_preview(false, window, cx);
-            assert!(reader.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(reader.pane.editing.as_ref().unwrap().live_preview.enabled);
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("uncommitted-table-cell-1-0").is_some());

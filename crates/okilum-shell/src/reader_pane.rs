@@ -98,6 +98,15 @@ pub(super) struct Surface {
     pub typed_navigation: reader_typed_view::Navigation,
     pub hover_preview: reader_hover::HoverPreview,
 
+    // Editor and recovery for this document. The handle is pane-owned; which
+    // pane may edit a note is decided window-wide (stage 3, #773).
+    pub editing: Option<reader_editor::Editing>,
+    pub recovery_offer: bool,
+    pub recovery_checked: bool,
+    pub recovery_error: bool,
+    pub recovery_dismissed: bool,
+    pub recovery_startup: bool,
+
     // Load pipeline: the document being published into this surface and
     // what it has recorded as usable. The vault's own preparation
     // (`Reader::loading`) stays window-level.
@@ -126,6 +135,7 @@ impl Surface {
         content_sub: Subscription,
         find_input: Entity<InputState>,
         use_html: bool,
+        recovery_startup: bool,
     ) -> Self {
         Self {
             id: PaneId::next(),
@@ -158,6 +168,12 @@ impl Surface {
             file_preview: None,
             typed_navigation: Default::default(),
             hover_preview: Default::default(),
+            editing: None,
+            recovery_offer: false,
+            recovery_checked: false,
+            recovery_error: false,
+            recovery_dismissed: false,
+            recovery_startup,
             pending_open_document: None,
             queued_open_note: None,
             queued_landing: None,

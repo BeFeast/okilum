@@ -347,7 +347,8 @@ fn pending_agents_revision(
 impl Reader {
     /// Rules-scope decision for the open source, taken before a save borrows it.
     fn editing_in_rules_scope(&self, cx: &App) -> bool {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .is_some_and(|editing| self.in_rules_scope(editing.store.path(), cx))
     }
@@ -625,35 +626,40 @@ impl Editing {
 impl Reader {
     /// The editor mode on screen now; Find from Live Preview shows Source.
     pub(super) fn live_preview_shown(&self) -> bool {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .is_some_and(|editing| editing.live_preview.enabled)
     }
 
     /// The source editor's input, while editing.
     pub(super) fn source_input(&self) -> Option<Entity<EditorState>> {
-        self.editing.as_ref().map(|editing| editing.input.clone())
+        self.pane
+            .editing
+            .as_ref()
+            .map(|editing| editing.input.clone())
     }
 
     /// The edited file's strict JSON parse, which Contents reads (#2814).
     pub(crate) fn file_editor_parse(&self) -> Option<Entity<FileChrome>> {
-        self.editing.as_ref()?.file_chrome.clone()
+        self.pane.editing.as_ref()?.file_chrome.clone()
     }
 
     #[cfg(test)]
     pub(crate) fn source_paste_outbox(&self) -> crate::note_paste::PasteOutbox {
-        self.editing.as_ref().unwrap().paste_outbox.clone()
+        self.pane.editing.as_ref().unwrap().paste_outbox.clone()
     }
 
     /// The editor's caret line, 1-based, for «Open in ▸» (#873).
     pub(super) fn editing_caret_line(&self, cx: &App) -> Option<usize> {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .map(|editing| editing.input().read(cx).cursor_position().line as usize + 1)
     }
 
     pub(super) fn source_live_preview(&self) -> bool {
-        self.editing.as_ref().is_some_and(|editing| {
+        self.pane.editing.as_ref().is_some_and(|editing| {
             editing.live_preview.enabled || editing.live_preview.restore_after_find
         })
     }
@@ -666,7 +672,7 @@ impl Reader {
             });
             return;
         }
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             if !editing.input.read(cx).search_session().open {
                 editing.live_preview.restore_after_find = editing.live_preview.enabled;
             }
@@ -690,11 +696,11 @@ impl Reader {
     }
 
     pub(super) fn discover_source_recovery(&mut self, cx: &mut Context<Self>) {
-        self.recovery_offer = false;
-        self.recovery_checked = false;
-        self.recovery_error = false;
+        self.pane.recovery_offer = false;
+        self.pane.recovery_checked = false;
+        self.pane.recovery_error = false;
         let Some(directory) = self.session_directory.clone() else {
-            self.recovery_error = true;
+            self.pane.recovery_error = true;
             cx.notify();
             return;
         };
@@ -709,20 +715,20 @@ impl Reader {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.pane.navigation.preparation_generation != generation
-                    || this.editing.is_some()
+                    || this.pane.editing.is_some()
                 {
                     return;
                 }
                 match result {
                     Ok(available) => {
-                        this.recovery_offer = available;
+                        this.pane.recovery_offer = available;
                         if available {
-                            this.recovery_dismissed = false;
+                            this.pane.recovery_dismissed = false;
                         }
-                        this.recovery_checked = true;
+                        this.pane.recovery_checked = true;
                     }
                     Err(error) => {
-                        this.recovery_error = true;
+                        this.pane.recovery_error = true;
                         this.link_notice = Some(
                             format!(
                         "Could not check saved drafts: {error:#}. Draft files have been preserved."
@@ -759,7 +765,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return;
         }
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let snapshot = editing.input.read(cx).source_snapshot();
@@ -783,10 +789,10 @@ impl Reader {
     /// ⌘⇧E / Ctrl+Shift+E (#916): Live Preview from any mode. From Reader it
     /// enters editing first; a note that cannot be edited stays as it is.
     pub(super) fn open_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() {
+        if self.pane.editing.is_none() {
             self.toggle_source(window, cx);
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.set_live_preview(true, window, cx);
         }
     }
@@ -809,10 +815,14 @@ impl Reader {
         if self.pane.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             let presentation = self.file_editor_read_state(cx);
             let file = self.selected_file().to_owned();
-            let input = self.editing.as_ref().map(|editing| editing.input.clone());
+            let input = self
+                .pane
+                .editing
+                .as_ref()
+                .map(|editing| editing.input.clone());
             // The Reader opens where the editor was, not at the top (#1296).
             let place = input
                 .as_ref()
@@ -1082,7 +1092,7 @@ impl Reader {
                 }
             }
 
-            if this.editing.as_ref().is_some_and(|editing| {
+            if this.pane.editing.as_ref().is_some_and(|editing| {
                 editing.input == input
                     && editing.live_preview.restore_after_find
                     && !input.read(cx).search_session().open
@@ -1099,6 +1109,7 @@ impl Reader {
 
             if this.ui_state.source_highlight_pending
                 && this
+                    .pane
                     .editing
                     .as_ref()
                     .is_some_and(|editing| editing.input == input)
@@ -1109,6 +1120,7 @@ impl Reader {
             }
             // #1921: the text or the caret moved; follow a `[[` being typed.
             if this
+                .pane
                 .editing
                 .as_ref()
                 .is_some_and(|editing| editing.input == input)
@@ -1143,7 +1155,7 @@ impl Reader {
                     }).detach();
                 }
             }
-            let Some(editing) = &mut this.editing else {
+            let Some(editing) = &mut this.pane.editing else {
                 return;
             };
             if editing.input.entity_id() != input.entity_id() {
@@ -1156,7 +1168,7 @@ impl Reader {
             }
             // A hover popup describes the text before this edit (#2953).
             this.sync_hover_revision(cx);
-            let Some(editing) = &mut this.editing else {
+            let Some(editing) = &mut this.pane.editing else {
                 return;
             };
             let snapshot = input.read(cx).source_snapshot();
@@ -1266,7 +1278,7 @@ impl Reader {
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    let Some(editing) = &mut this.editing else {
+                    let Some(editing) = &mut this.pane.editing else {
                         return;
                     };
                     if editing.input.entity_id() != input_id
@@ -1311,6 +1323,7 @@ impl Reader {
             move |this, input, click: &SourceClick, window, cx| {
                 if plain_file
                     || this
+                        .pane
                         .editing
                         .as_ref()
                         .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
@@ -1447,6 +1460,7 @@ impl Reader {
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
                         if let Some(editing) = this
+                            .pane
                             .editing
                             .as_ref()
                             .filter(|editing| editing.input == *input)
@@ -1498,7 +1512,7 @@ impl Reader {
         let block_cache = block_context::WorkerCache::default();
         let save_status = cx.new(|cx| status::SaveStatus::new(reader.clone(), &input, cx));
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
-        self.editing = Some(Editing {
+        self.pane.editing = Some(Editing {
             operations: Default::default(),
             file_chrome: None,
             store,
@@ -1591,7 +1605,7 @@ impl Reader {
         if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
             return;
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         editing.save_pending = true;
@@ -1605,6 +1619,7 @@ impl Reader {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this
+                    .pane
                     .editing
                     .as_ref()
                     .is_some_and(|e| e.input.entity_id() == input_id && e.save_pending)
@@ -1617,13 +1632,14 @@ impl Reader {
     }
 
     pub(super) fn render_save_status(&self, _cx: &App) -> AnyElement {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .map(|e| e.save_status.clone().into_any_element())
             .unwrap_or_else(|| div().into_any_element())
     }
     fn save_status_element(&self, cx: &App) -> AnyElement {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             return div().into_any_element();
         };
         let tooltip = match editing.saved_at {
@@ -1662,7 +1678,8 @@ impl Reader {
     }
 
     pub(super) fn owns_source_publication(&self, digest: &[u8; 32]) -> bool {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .is_some_and(|e| e.store.owns_publication(digest))
     }
@@ -1674,7 +1691,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         if editing.autosaving.is_some() {
@@ -1684,7 +1701,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return;
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         let snapshot = editing.input.read(cx).source_snapshot();
@@ -1732,7 +1749,7 @@ impl Reader {
             let (observed, reviewed, refresh) = task.await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.pane.navigation.reconciliation_generation != generation || this.vault_root != root || this.pane.current_rel != rel { return; }
-                let Some(editing) = this.editing.as_mut().filter(|e| e.input.entity_id() == input_id) else { return; };
+                let Some(editing) = this.pane.editing.as_mut().filter(|e| e.input.entity_id() == input_id) else { return; };
                 if editing.autosaving.is_some() { editing.refresh_deferred = true; return; }
                 if editing.saves != saves { this.refresh_source_in_background(window, cx); return; }
                 if editing.input.read(cx).source_stamp() != snapshot.stamp || editing.recovery_epoch != recovery {
@@ -1745,7 +1762,7 @@ impl Reader {
                     Err(_) => false,
                 };
                 let retained_cleared = this.deleted_current().is_none();
-                let editing = this.editing.as_mut().unwrap();
+                let editing = this.pane.editing.as_mut().unwrap();
                 if held {
                     if this.deleted_note.as_ref().is_some_and(|note| note.disk == reader_deleted_note::Disk::Different) {
                         editing.conflict_detected = true;
@@ -1806,7 +1823,7 @@ impl Reader {
             .loading
             .as_ref()
             .and_then(|load| load.opts.diagnostics.clone());
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         // The file may already hold the text an autosave is writing while the
@@ -1821,7 +1838,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return;
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         // Sample native state before looking at disk: a queued mutation event
@@ -1921,14 +1938,16 @@ impl Reader {
     /// What the editor believes is on disk (its last read or write), while
     /// editing: differing disk bytes were written by someone else.
     pub(super) fn source_disk_base(&self) -> Option<String> {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .map(|editing| editing.store.base().to_owned())
     }
 
     /// The editor's current buffer, while editing.
     pub(super) fn source_text(&self, cx: &App) -> Option<String> {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .map(|editing| editing.input.read(cx).value().to_string())
     }
@@ -1945,7 +1964,7 @@ impl Reader {
     /// has already compared it: a different file is a conflict and keeps its
     /// choices; otherwise the earlier «file is gone» failure is over.
     pub(super) fn source_file_returned(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         if !editing.conflict_detected {
@@ -1962,7 +1981,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return true;
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return true;
         };
         let text = editing.input.read(cx).value().to_string();
@@ -1995,7 +2014,7 @@ impl Reader {
     /// The buffer of a deleted note was saved elsewhere (#1986): nothing is
     /// left to protect for the deleted file, so leaving it keeps no draft.
     pub(super) fn source_saved_elsewhere(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         let text = editing.input.read(cx).value().to_string();
@@ -2012,10 +2031,10 @@ impl Reader {
     /// save (or overwrite a returned file) during the authorized navigation.
     pub(super) fn release_deleted_editor(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.own_modified_buffer(cx) {
-            self.editing = None;
+            self.pane.editing = None;
             return true;
         }
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             if let Err(error) = editing
                 .store
                 .set_text(editing.input.read(cx).value().to_string())
@@ -2028,14 +2047,14 @@ impl Reader {
             }
         }
         self.remember_source_mode();
-        self.editing = None;
+        self.pane.editing = None;
         self.resume_code_presentation(cx);
         true
     }
 
     pub(super) fn save_source_for_close(&mut self, cx: &mut Context<Self>) -> bool {
         let (saved, protected) = self.save_source_outcome(cx);
-        saved || (protected && self.editing.as_ref().is_some_and(|e| e.save_failed))
+        saved || (protected && self.pane.editing.as_ref().is_some_and(|e| e.save_failed))
     }
 
     pub(super) fn save_source(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2045,7 +2064,7 @@ impl Reader {
     /// Only a deliberate Save/Keep both may publish a conflict copy. Lifecycle
     /// saves protect the latest recovery draft without adding files to the vault.
     fn save_source_explicit(&mut self, cx: &mut Context<Self>) -> bool {
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             editing.save_pending = false;
         }
         let (saved, protected) = self.save_source_outcome(cx);
@@ -2053,6 +2072,7 @@ impl Reader {
             && protected
             && self.deleted_note.is_none()
             && self
+                .pane
                 .editing
                 .as_ref()
                 .is_some_and(|e| e.conflict_detected && e.conflict.is_some())
@@ -2063,7 +2083,7 @@ impl Reader {
     }
 
     fn save_source_outcome(&mut self, cx: &mut Context<Self>) -> (bool, bool) {
-        if self.editing.as_ref().is_some_and(|editing| {
+        if self.pane.editing.as_ref().is_some_and(|editing| {
             editing
                 .table_grid
                 .update(cx, |grid, cx| grid.retain_pending_cells(cx))
@@ -2079,7 +2099,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return (true, true);
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return (true, true);
         };
         let explicit_pending = std::mem::take(&mut editing.save_pending);
@@ -2179,11 +2199,17 @@ impl Reader {
                 false
             }
         };
-        if !saved && explicit_pending && self.editing.as_ref().is_some_and(|e| e.conflict_detected)
+        if !saved
+            && explicit_pending
+            && self
+                .pane
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected)
         {
             // A blur/deactivate between the Save request and its next-frame
             // callback only protected the draft. It must not consume Save.
-            self.editing.as_mut().unwrap().save_pending = true;
+            self.pane.editing.as_mut().unwrap().save_pending = true;
         }
         if !saved {
             self.describe_source_conflict(cx);
@@ -2198,6 +2224,7 @@ impl Reader {
     /// view opens.
     fn schedule_autosave(&mut self, input_id: EntityId, epoch: u64, cx: &mut Context<Self>) {
         let Some(editing) = self
+            .pane
             .editing
             .as_mut()
             .filter(|e| e.input.entity_id() == input_id)
@@ -2235,7 +2262,7 @@ impl Reader {
             return;
         }
         let rules_scope = self.editing_in_rules_scope(cx);
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         if editing.input.entity_id() != input_id
@@ -2296,7 +2323,7 @@ impl Reader {
             let (result, stamp, rules_revision, conflict) = worker.await;
             let _ = this.update(cx, |this, cx| {
                 let accepted = matches!(&result, Ok(Save::Saved))
-                    && this.editing.as_ref().is_some_and(|editing| {
+                    && this.pane.editing.as_ref().is_some_and(|editing| {
                         editing.input.entity_id() == input_id
                             && editing.saves == saves
                             && editing.autosaving.as_ref() == Some(&text)
@@ -2338,7 +2365,7 @@ impl Reader {
     ) {
         #[cfg(test)]
         let _work = work::scope();
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         if editing.input.entity_id() != input_id || editing.autosaving.as_ref() != Some(&text) {
@@ -2349,7 +2376,7 @@ impl Reader {
         if std::mem::take(&mut editing.refresh_deferred) {
             self.refresh_after_autosave(cx);
         }
-        let editing = self.editing.as_mut().unwrap();
+        let editing = self.pane.editing.as_mut().unwrap();
         // A save on the UI thread came after this one started; it decided.
         editing.source_status.set(None);
         if editing.saves != saves {
@@ -2371,7 +2398,7 @@ impl Reader {
                         .spawn(async move { write.persist() })
                         .await;
                     let _ = this.update(cx, |this, cx| {
-                        let Some(editing) = this.editing.as_mut().filter(|e| {
+                        let Some(editing) = this.pane.editing.as_mut().filter(|e| {
                             e.input.entity_id() == input_id && e.recovery_epoch == epoch
                         }) else {
                             return;
@@ -2402,7 +2429,7 @@ impl Reader {
                 }
                 // Typing during the save: its timer found this save running
                 // and skipped, so the rest is saved after its own pause.
-                let editing = self.editing.as_mut().unwrap();
+                let editing = self.pane.editing.as_mut().unwrap();
                 if editing.input.read(cx).source_snapshot().text.id()
                     != editing.store.snapshot().id()
                     || editing.store.has_pending_revision()
@@ -2451,7 +2478,7 @@ impl Reader {
             return false;
         }
         self.remember_source_mode();
-        self.editing = None;
+        self.pane.editing = None;
         self.resume_code_presentation(cx);
         self.outline_list
             .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
@@ -2465,7 +2492,12 @@ impl Reader {
         // has already closed. That no-op must retain the last presentation.
         // A text, CSV or code editor has no Live Preview; leaving it must not
         // turn the next note's Live Preview into Source (GitHub #6).
-        if let Some(editing) = self.editing.as_ref().filter(|editing| editing.markdown) {
+        if let Some(editing) = self
+            .pane
+            .editing
+            .as_ref()
+            .filter(|editing| editing.markdown)
+        {
             let live = self.source_live_preview();
             self.ui_state.live_preview = match editing.kept_preference {
                 Some(preferred) if live => preferred,
@@ -2487,7 +2519,7 @@ impl Reader {
         let Some(preview) = &self.pane.file_preview else {
             return;
         };
-        if !self.ui_state.source_mode || self.editing.is_some() || !self.file_is_source() {
+        if !self.ui_state.source_mode || self.pane.editing.is_some() || !self.file_is_source() {
             return;
         }
         if let Some(code) = preview.code.clone().filter(|code| code.read(cx).loading()) {
@@ -2513,7 +2545,7 @@ impl Reader {
         }
         self.toggle_source(window, cx);
         // Tree navigation and rename keys stay in the navigator that chose it.
-        if tree_had_focus && self.editing.is_some() {
+        if tree_had_focus && self.pane.editing.is_some() {
             self.tree_focus.focus(window, cx);
         }
     }
@@ -2547,7 +2579,7 @@ impl Reader {
         if reader_ui_state::note_open_mode(cx) != reader_ui_state::NoteOpenMode::Edit
             || self.ui_state.read_chosen.is_some()
             || self.ui_state.source_mode
-            || self.editing.is_some()
+            || self.pane.editing.is_some()
             || self.pane.file_preview.is_some()
             || self.pane.current_rel.is_empty()
         {
@@ -2559,7 +2591,7 @@ impl Reader {
         self.toggle_source(window, cx);
         self.ui_state.opening_by_default = false;
         self.ui_state.source_mode = false;
-        if self.editing.is_none() {
+        if self.pane.editing.is_none() {
             if !std::mem::take(&mut self.ui_state.default_edit_notice) {
                 self.link_notice = notice;
             }
@@ -2577,7 +2609,7 @@ impl Reader {
     /// ownership was refused; the editor returns to Read with the reason and
     /// the caller must not capture.
     pub(super) fn own_modified_buffer(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return true;
         };
         if editing.store.owns_lock() {
@@ -2624,6 +2656,7 @@ impl Reader {
             let _ = handle.update(cx, |_, window, cx| {
                 let _ = this.update(cx, |this, cx| {
                     if this
+                        .pane
                         .editing
                         .as_ref()
                         .is_none_or(|editing| editing.input.entity_id() != input)
@@ -2633,11 +2666,12 @@ impl Reader {
                     // Read opens where the editor was, as an explicit Read does
                     // (#1296); the refused keystroke never reaches the note.
                     let place = this
+                        .pane
                         .editing
                         .as_ref()
                         .and_then(|editing| editing.input.read(cx).top_visible_line())
                         .and_then(|line| u32::try_from(line + 1).ok());
-                    this.editing = None;
+                    this.pane.editing = None;
                     this.ui_state.auto_edit = false;
                     this.outline_list
                         .reset_with_uniform_height(this.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
@@ -2661,7 +2695,7 @@ impl Reader {
             return true;
         }
         if !protected
-            || !self.editing.as_ref().is_some_and(|editing| {
+            || !self.pane.editing.as_ref().is_some_and(|editing| {
                 std::fs::symlink_metadata(editing.store.path())
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
             })
@@ -2690,14 +2724,14 @@ impl Reader {
         let preferred = self.ui_state.live_preview;
         let source_mode = self.ui_state.source_mode;
         let read_chosen = self.ui_state.read_chosen.clone();
-        if self.editing.is_none() {
+        if self.pane.editing.is_none() {
             self.toggle_source(window, cx);
         }
         // Creating a note opens its body for typing, not a new window mode.
         self.ui_state.source_mode = source_mode;
         self.ui_state.read_chosen = read_chosen;
         self.set_live_preview(true, window, cx);
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             editing.kept_preference = Some(preferred);
         }
     }
@@ -2712,6 +2746,7 @@ impl Reader {
         // Revalidate the copy's bytes too: it may have been changed or removed.
         if reload
             && self
+                .pane
                 .editing
                 .as_ref()
                 .is_some_and(|e| e.conflict_detected && e.conflict_copy.is_some())
@@ -2722,7 +2757,7 @@ impl Reader {
             }
         }
         let rules_scope = self.editing_in_rules_scope(cx);
-        let Some(mut editing) = self.editing.take() else {
+        let Some(mut editing) = self.pane.editing.take() else {
             return;
         };
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
@@ -2774,7 +2809,7 @@ impl Reader {
                 self.link_notice = Some(format!("Could not resolve: {error:#}").into());
             }
         }
-        self.editing = Some(editing);
+        self.pane.editing = Some(editing);
         if changed_rules_saved {
             self.deleted_note = None;
             if let Some((absolute_path, saved_revision)) = rules_revision {
@@ -2785,7 +2820,7 @@ impl Reader {
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn describe_source_conflict(&self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_ref().filter(|e| e.conflict_detected) else {
+        let Some(editing) = self.pane.editing.as_ref().filter(|e| e.conflict_detected) else {
             return;
         };
         let Some(reviewed) = editing.conflict.clone() else {
@@ -2817,7 +2852,7 @@ impl Reader {
                 if reader.vault_root != root || reader.pane.current_rel != rel {
                     return;
                 }
-                if reader.editing.as_ref().is_some_and(|e| {
+                if reader.pane.editing.as_ref().is_some_and(|e| {
                     e.input.entity_id() == input
                         && e.conflict_detected
                         && e.conflict.as_ref() == Some(&reviewed)
@@ -2853,7 +2888,7 @@ impl Reader {
     /// conflict note. The incoming canonical note is never replaced. Keep the
     /// conflict open until the person chooses which document to continue with.
     fn keep_both_source(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(editing) = self.editing.as_mut().filter(|e| e.conflict_detected) else {
+        let Some(editing) = self.pane.editing.as_mut().filter(|e| e.conflict_detected) else {
             return false;
         };
         let stamp = editing.input.read(cx).source_stamp();
@@ -2914,7 +2949,7 @@ impl Reader {
         if !self.own_modified_buffer(cx) {
             return;
         }
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         // Explicit exit preserves the latest buffer even if the note was moved,
@@ -2924,7 +2959,7 @@ impl Reader {
             .set_text(editing.input.read(cx).value().to_string())
         {
             Ok(()) => {
-                self.editing = None;
+                self.pane.editing = None;
                 self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
                 self.ui_state.read_chosen = Some(self.pane.current_rel.clone());
@@ -2973,6 +3008,7 @@ impl Reader {
             };
             let _ = this.update_in(cx, |this, _window, cx| {
                 if this
+                    .pane
                     .editing
                     .as_ref()
                     .is_none_or(|editing| editing.input != input)
@@ -3015,7 +3051,7 @@ impl Reader {
         window: &Window,
         _: &mut Context<Self>,
     ) {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             let input = editing.input.clone();
             window.on_next_frame(move |_, cx| {
                 input.update(cx, |input, cx| {
@@ -3027,20 +3063,22 @@ impl Reader {
     }
 
     pub(super) fn source_highlighting_pending(&self, cx: &App) -> bool {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .is_some_and(|editing| editing.input.read(cx).highlighting_pending())
     }
 
     pub(super) fn source_scroll_offset(&self, cx: &App) -> Option<Point<Pixels>> {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .map(|editing| editing.input.read(cx).scroll_offset())
     }
 
     #[inline(never)]
     fn render_source_input(&self, window: &Window, cx: &App) -> AnyElement {
-        let editing = self.editing.as_ref().unwrap();
+        let editing = self.pane.editing.as_ref().unwrap();
         let editor = Editor::new(&editing.input)
             .appearance(false)
             .map(|editor| {
@@ -3091,7 +3129,7 @@ impl Reader {
         self.refresh_live_preview_colors(cx);
         // Room below the last line for toasts, focus and typewriter (#1643).
         self.apply_writing_modes(window, cx);
-        let editing = self.editing.as_ref().unwrap();
+        let editing = self.pane.editing.as_ref().unwrap();
         editing.table_grid.update(cx, |grid, cx| {
             grid.sync_presentation(editing.live_preview.enabled, window, cx);
         });
@@ -3166,7 +3204,7 @@ impl Reader {
                                     )
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            if let Some(editing) = &this.editing {
+                                            if let Some(editing) = &this.pane.editing {
                                                 let text =
                                                     editing.input.read(cx).value().to_string();
                                                 cx.write_to_clipboard(ClipboardItem::new_string(
@@ -3227,7 +3265,7 @@ impl Reader {
                                     )
                                     .on_click(cx.listener(
                                         |this, _, window, cx| {
-                                            if let Some(editing) = &mut this.editing {
+                                            if let Some(editing) = &mut this.pane.editing {
                                                 editing.compare = !editing.compare;
                                                 if let Some(current) = &editing.conflict {
                                                     editing.current_input.update(
@@ -3338,6 +3376,7 @@ fn live_blocks(
         let grid = {
             let reader = this.read(cx);
             reader
+                .pane
                 .editing
                 .as_ref()
                 .filter(|editing| editing.live_preview.enabled)
@@ -3359,7 +3398,8 @@ fn live_blocks(
                 this.vault.clone(),
                 this.pane.link_presentations.clone(),
                 this.pane.link_identities.clone(),
-                this.editing
+                this.pane
+                    .editing
                     .as_ref()
                     .and_then(|editing| editing.live_preview.block_markdown(source)),
                 // The block Esc returned to: Enter or F2 opens it (#1642).
@@ -3691,7 +3731,7 @@ impl Reader {
             self.pane.current_rel == *p || self.pane.current_rel.starts_with(&format!("{p}/"))
         });
         let self_editing = if self_affected {
-            self.editing.take().is_some()
+            self.pane.editing.take().is_some()
         } else {
             false
         };
@@ -3707,7 +3747,7 @@ impl Reader {
                         r.pane.current_rel == *p || r.pane.current_rel.starts_with(&format!("{p}/"))
                     })
                 {
-                    Some(r.editing.take().is_some())
+                    Some(r.pane.editing.take().is_some())
                 } else {
                     None
                 }
@@ -3790,7 +3830,7 @@ impl Reader {
         result
     }
     pub(super) fn sync_move_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(e) = self.editing.as_mut() {
+        if let Some(e) = self.pane.editing.as_mut() {
             e.input.update(cx, |input, cx| {
                 input.set_value(e.store.text().to_owned(), window, cx)
             });
@@ -3807,7 +3847,7 @@ impl Reader {
                     let r = r.read(cx);
                     same_move_root(&r.vault_root, &self.vault_root)
                         && r.pane.current_rel == self.pane.current_rel
-                        && r.editing.is_some()
+                        && r.pane.editing.is_some()
                 })
             })
     }
@@ -3815,7 +3855,7 @@ impl Reader {
     /// This cache paints the dot and Save affordance; action guards deliberately
     /// retain their independent current-buffer check in source_is_dirty.
     fn source_presentation_status(&self, cx: &App) -> Option<SourceStatus> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         let input = editing.input.read(cx);
         let key = SourceStatusKey {
             source: input.source_stamp(),
@@ -3854,7 +3894,7 @@ impl Reader {
     }
 
     pub(super) fn source_is_dirty(&self, cx: &App) -> bool {
-        self.editing.as_ref().is_some_and(|e| {
+        self.pane.editing.as_ref().is_some_and(|e| {
             e.store.has_pending_revision()
                 || e.input.read(cx).source_stamp() != e.draft_stamp
                 || e.conflict_detected
@@ -3897,7 +3937,7 @@ impl Reader {
     }
     pub(super) fn finish_move_editor(&mut self, cx: &mut Context<Self>) {
         self.move_applying = false;
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             editing
                 .input
                 .update(cx, |input, cx| input.set_disabled(false, cx));
@@ -3936,7 +3976,7 @@ impl Reader {
                     r.pane.navigation.preparation_generation =
                         r.pane.navigation.preparation_generation.wrapping_add(1);
                     cx.notify();
-                    Some((r.pane.current_rel.clone(), r.editing.take()))
+                    Some((r.pane.current_rel.clone(), r.pane.editing.take()))
                 } else {
                     None
                 }
@@ -3947,7 +3987,11 @@ impl Reader {
         let root = self.vault_root.clone();
         let preview = preview.clone();
         let park_own = paths.contains(&self.pane.current_rel);
-        let editing = if park_own { self.editing.take() } else { None };
+        let editing = if park_own {
+            self.pane.editing.take()
+        } else {
+            None
+        };
         let (own_store, own_ui) = match editing {
             Some(editing) => {
                 let (store, ui) = editing.park(cx);
@@ -3998,7 +4042,7 @@ impl Reader {
                 // Keep the initiating window frozen until complete_move has
                 // replaced the old source path and synchronized its input.
                 if park_own {
-                    this.editing = own_editing;
+                    this.pane.editing = own_editing;
                 }
                 cx.notify();
             });
@@ -4013,7 +4057,7 @@ impl Reader {
                                 .input
                                 .update(cx, |input, cx| input.set_disabled(false, cx));
                         }
-                        r.editing = editing;
+                        r.pane.editing = editing;
                         if moved {
                             r.tree.note_moved(&preview.from, &preview.to);
                             r.remap_move_sidebar(&preview.from, &preview.to, cx);
@@ -4024,7 +4068,7 @@ impl Reader {
                             &preview.to,
                         );
                         if moved && next_path != path {
-                            r.editing = None;
+                            r.pane.editing = None;
                             r.pane.current_rel = next_path;
                             for p in &mut r.pane.navigation.history {
                                 *p = okilum_core::link_rewrite::moved_path(
@@ -4043,7 +4087,7 @@ impl Reader {
                             if moved && next != file.rel {
                                 r.preview_file(&next, window, cx);
                             }
-                        } else if let Some(e) = r.editing.as_mut() {
+                        } else if let Some(e) = r.pane.editing.as_mut() {
                             e.input.update(cx, |input, cx| {
                                 input.set_value(e.store.text().to_owned(), window, cx)
                             });
@@ -4089,7 +4133,7 @@ impl Reader {
             .session_directory
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
-        let result = if let Some(editing) = self.editing.as_mut() {
+        let result = if let Some(editing) = self.pane.editing.as_mut() {
             okilum_core::source_history::restore(&mut editing.store, reviewed, text)
         } else {
             let mut editor = FileEditor::open(
@@ -4100,7 +4144,7 @@ impl Reader {
         };
         // On a racing write the recovered version remains dirty and visible.
         self.sync_move_input(window, cx);
-        if result.is_ok() && self.editing.is_none() {
+        if result.is_ok() && self.pane.editing.is_none() {
             let rel = self.pane.current_rel.clone();
             self.prepare_document(&rel, None, None, window, cx);
         }
@@ -4343,7 +4387,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            let input = r.editing.as_ref().unwrap().input().clone();
+            let input = r.pane.editing.as_ref().unwrap().input().clone();
             input.update(cx, |input, cx| input.focus_handle(cx).focus(window, cx));
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
@@ -4414,7 +4458,7 @@ mod tests {
         };
         let mode = |visual: &mut VisualTestContext| {
             reader.read_with(visual, |r, _| {
-                r.editing.as_ref().map(|e| e.live_preview.enabled)
+                r.pane.editing.as_ref().map(|e| e.live_preview.enabled)
             })
         };
         assert_eq!(mode(visual), None, "positive control: starts in Reader");
@@ -4482,7 +4526,8 @@ mod tests {
             reader.read_with(visual, |r, cx| {
                 if source {
                     assert!(
-                        r.editing
+                        r.pane
+                            .editing
                             .as_ref()
                             .unwrap()
                             .input
@@ -4498,7 +4543,7 @@ mod tests {
             visual.run_until_parked();
             reader.update_in(visual, |r, window, cx| {
                 if source {
-                    let input = r.editing.as_ref().unwrap().input.clone();
+                    let input = r.pane.editing.as_ref().unwrap().input.clone();
                     assert_eq!(input.read(cx).search_session().matcher.len(), 3);
                     input.update(cx, |s, cx| s.set_search_query("заметка", true, cx));
                     assert_eq!(input.read(cx).search_session().matcher.len(), 3);
@@ -4598,7 +4643,8 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("first draft", window, cx);
@@ -4619,7 +4665,8 @@ mod tests {
         std::fs::remove_file(&journal).unwrap();
         std::fs::create_dir(&journal).unwrap();
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("latest draft", window, cx);
@@ -4642,7 +4689,14 @@ mod tests {
                 DRAFT_WRITE_NOTICE
             );
             assert_eq!(
-                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
                 "latest draft"
             );
         });
@@ -4696,7 +4750,8 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("first draft", window, cx);
@@ -4717,7 +4772,8 @@ mod tests {
         std::fs::remove_file(&journal).unwrap();
         std::fs::create_dir(&journal).unwrap();
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("latest draft", window, cx);
@@ -4740,7 +4796,14 @@ mod tests {
                 DRAFT_WRITE_NOTICE
             );
             assert_eq!(
-                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
                 "latest draft"
             );
         });
@@ -4806,7 +4869,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
         let hold = authority.begin_drain("reader-clean-close").unwrap();
@@ -4814,10 +4877,11 @@ mod tests {
             assert!(reader.save_source_for_navigation(cx));
             assert!(reader.save_source_for_close(cx));
             assert!(reader.leave_source(cx));
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4898,10 +4962,11 @@ mod tests {
             reader.update_in(visual, |reader, window, cx| {
                 reader.toggle_source(window, cx);
                 assert!(
-                    reader.editing.is_some(),
+                    reader.pane.editing.is_some(),
                     "real Source editor positive control"
                 );
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -4933,6 +4998,7 @@ mod tests {
                 assert!(reader.source_is_dirty(cx));
                 assert_eq!(
                     reader
+                        .pane
                         .editing
                         .as_ref()
                         .unwrap()
@@ -5002,7 +5068,8 @@ mod tests {
             visual.run_until_parked();
             reader.update_in(visual, |r, window, cx| {
                 r.toggle_source(window, cx);
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("local edits", window, cx);
@@ -5025,7 +5092,12 @@ mod tests {
         std::fs::remove_file(root.join("first.md")).unwrap();
         std::fs::create_dir(root.join("first.md")).unwrap();
         cx.update(|cx| assert!(save_all_for_quit(cx)));
-        assert!(readers[0].read_with(cx, |reader, _| reader.editing.as_ref().unwrap().save_failed));
+        assert!(readers[0].read_with(cx, |reader, _| reader
+            .pane
+            .editing
+            .as_ref()
+            .unwrap()
+            .save_failed));
         cx.update(|cx| cx.shutdown());
         std::fs::remove_dir(root.join("first.md")).unwrap();
         std::fs::write(root.join("first.md"), "external changes").unwrap();
@@ -5086,7 +5158,8 @@ mod tests {
         // An earlier menu-Quit save cannot stand in for this final guard.
         visual.update(|_, cx| assert!(save_all(cx)));
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("after verification", window, cx);
@@ -5138,7 +5211,8 @@ mod tests {
         std::fs::rename(&drafts, &backup).unwrap();
         std::fs::write(&drafts, "not a directory").unwrap();
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("unprotected newer edit", window, cx);
@@ -5204,7 +5278,8 @@ mod tests {
             visual.run_until_parked();
             reader.update_in(visual, |r, window, cx| {
                 r.toggle_source(window, cx);
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("local edits", window, cx);
@@ -5269,7 +5344,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(0..0), "edit", window, cx)
             });
@@ -5288,7 +5363,14 @@ mod tests {
             r.restore_source_version(&edited, original, window, cx)
                 .unwrap();
             assert_eq!(
-                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
                 original
             );
             r.source_history(false, window, cx);
@@ -5435,7 +5517,9 @@ mod tests {
         for height in [700., 1000.] {
             visual.simulate_resize(size(px(1500.), px(height)));
             visual.run_until_parked();
-            let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+            let input = reader.read_with(visual, |v, _| {
+                v.pane.editing.as_ref().unwrap().input.clone()
+            });
             let bounds = input.read_with(visual, |v, _| v.input_bounds());
             visual.simulate_event(ScrollWheelEvent {
                 position: bounds.center(),
@@ -5536,8 +5620,9 @@ mod tests {
                 });
                 visual.run_until_parked();
                 visual.update(|w, cx| w.draw(cx).clear(cx));
-                let input =
-                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let input = reader.read_with(visual, |v, _| {
+                    v.pane.editing.as_ref().unwrap().input.clone()
+                });
                 let line = input
                     .read_with(visual, |v, _| v.top_visible_line())
                     .unwrap();
@@ -5563,7 +5648,7 @@ mod tests {
                     visual.update(|w, cx| w.draw(cx).clear(cx));
                 }
                 assert!(
-                    reader.read_with(visual, |v, _| v.editing.is_none()),
+                    reader.read_with(visual, |v, _| v.pane.editing.is_none()),
                     "the editor was left"
                 );
                 assert_eq!(
@@ -5579,8 +5664,9 @@ mod tests {
                 });
                 visual.run_until_parked();
                 visual.update(|w, cx| w.draw(cx).clear(cx));
-                let input =
-                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let input = reader.read_with(visual, |v, _| {
+                    v.pane.editing.as_ref().unwrap().input.clone()
+                });
                 let caret_line =
                     input.read_with(visual, |v, _| v.value()[..v.cursor()].matches('\n').count());
                 assert_eq!(
@@ -5632,7 +5718,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |v, _| {
+            v.pane.editing.as_ref().unwrap().input.clone()
+        });
         let scroll_to_bottom = |visual: &mut VisualTestContext| {
             let bounds = input.read_with(visual, |v, _| v.input_bounds());
             visual.simulate_event(ScrollWheelEvent {
@@ -5761,29 +5849,29 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |r, _| {
-            assert_eq!(r.editing.as_ref().unwrap().status(), "Saved");
-            r.editing.as_ref().unwrap().input.clone()
+            assert_eq!(r.pane.editing.as_ref().unwrap().status(), "Saved");
+            r.pane.editing.as_ref().unwrap().input.clone()
         });
         input.update_in(visual, |input, window, cx| {
             input.replace_text_in_range(Some(0..0), "edited ", window, cx)
         });
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, cx| {
-            assert_eq!(reader.editing.as_ref().unwrap().status(), "Edited");
+            assert_eq!(reader.pane.editing.as_ref().unwrap().status(), "Edited");
             reader.request_source_save(cx);
-            assert_eq!(reader.editing.as_ref().unwrap().status(), "Saving…");
+            assert_eq!(reader.pane.editing.as_ref().unwrap().status(), "Saving…");
         });
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(40));
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.editing.as_ref().unwrap().status(), "Saved")
+            assert_eq!(reader.pane.editing.as_ref().unwrap().status(), "Saved")
         });
         // A clean explicit Save also acknowledges the request and updates time.
         reader.update_in(visual, |reader, _, cx| {
             assert!(reader.save_source(cx));
-            assert_eq!(reader.editing.as_ref().unwrap().status(), "Saved");
-            assert!(reader.editing.as_ref().unwrap().saved_at.is_some());
+            assert_eq!(reader.pane.editing.as_ref().unwrap().status(), "Saved");
+            assert!(reader.pane.editing.as_ref().unwrap().saved_at.is_some());
         });
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited original");
         std::fs::write(&path, "external clean").unwrap();
@@ -5811,7 +5899,7 @@ mod tests {
         std::fs::write(&path, "external conflict").unwrap();
         reader.update_in(visual, |reader, window, cx| {
             reader.refresh_source_from_disk(window, cx);
-            assert_eq!(reader.editing.as_ref().unwrap().status(), "Conflict");
+            assert_eq!(reader.pane.editing.as_ref().unwrap().status(), "Conflict");
             assert_eq!(input.read(cx).value().as_ref(), "unsaved external clean");
             assert!(!reader.save_source(cx));
             let selected = reader.selected_file().to_owned();
@@ -5820,7 +5908,7 @@ mod tests {
             assert_eq!(input.read(cx).value().as_ref(), "unsaved external clean");
         });
         reader.update_in(visual, |reader, _, _| {
-            let editing = reader.editing.as_mut().unwrap();
+            let editing = reader.pane.editing.as_mut().unwrap();
             // A file can disappear between conflict detection and snapshot read.
             editing.conflict = None;
             assert_eq!(editing.status(), "Conflict");
@@ -5883,9 +5971,9 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.recovery_startup);
-            assert!(reader.recovery_offer);
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.recovery_startup);
+            assert!(reader.pane.recovery_offer);
+            assert!(reader.pane.editing.is_none());
             assert!(!reader.panels.notes && !reader.panels.backlinks);
             assert_eq!(
                 reader.panel_widths.notes,
@@ -5901,13 +5989,13 @@ mod tests {
         assert!(FileEditor::has_unsaved_draft(&path, &state.join("editor-drafts")).unwrap());
         // Dismissing an earlier banner cannot hide a subsequently discovered draft.
         reader.update_in(visual, |reader, _, cx| {
-            reader.recovery_dismissed = true;
+            reader.pane.recovery_dismissed = true;
             reader.discover_source_recovery(cx);
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.recovery_offer);
-            assert!(!reader.recovery_dismissed);
+            assert!(reader.pane.recovery_offer);
+            assert!(!reader.pane.recovery_dismissed);
         });
         // The Restore unsaved edits button invokes this explicit action.
         reader.update_in(visual, |reader, window, cx| {
@@ -5917,6 +6005,7 @@ mod tests {
         reader.read_with(visual, |reader, cx| {
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -6010,7 +6099,7 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let offset = original.find("ссылка").unwrap();
         let position = input.read_with(visual, |input, _| {
@@ -6102,10 +6191,11 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let shown = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -6210,7 +6300,7 @@ mod tests {
             });
             visual.run_until_parked();
             let input = reader.read_with(visual, |reader, _| {
-                reader.editing.as_ref().unwrap().input.clone()
+                reader.pane.editing.as_ref().unwrap().input.clone()
             });
             let offset = original.find("external site").unwrap();
             let position = input.read_with(visual, |input, _| {
@@ -6292,7 +6382,7 @@ mod tests {
         for live in [false, true] {
             reader.update_in(visual, |reader, window, cx| {
                 // The previous pass navigated while editing: leave it first.
-                if reader.editing.is_some() {
+                if reader.pane.editing.is_some() {
                     reader.toggle_source(window, cx);
                 }
             });
@@ -6311,7 +6401,7 @@ mod tests {
             });
             visual.run_until_parked();
             let input = reader.read_with(visual, |reader, _| {
-                reader.editing.as_ref().unwrap().input.clone()
+                reader.pane.editing.as_ref().unwrap().input.clone()
             });
             let offset = original.find("היעד").unwrap();
             input.read_with(visual, |input, _| assert_eq!(input.value(), original));
@@ -6385,7 +6475,8 @@ mod tests {
         };
         let value = |visual: &mut VisualTestContext| {
             reader.update_in(visual, |r, _, cx| {
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input
@@ -6404,7 +6495,7 @@ mod tests {
         // Edit, type X at the end of the line, save; Reader and back.
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(end..end), "X", window, cx)
             });
@@ -6419,7 +6510,7 @@ mod tests {
         // Control: a file changed outside while in the Reader starts a new
         // history; Undo has nothing from before to apply to it.
         reader.update_in(visual, |r, window, cx| {
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(end..end), "X", window, cx)
             });
@@ -6475,7 +6566,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             window.activate_window();
             reader.toggle_source(window, cx);
-            let input = reader.editing.as_ref().unwrap().input.clone();
+            let input = reader.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(0..0), "mine", window, cx)
             });
@@ -6491,7 +6582,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, cx| {
             assert_eq!(reader.vault_root, first);
-            assert!(reader.editing.as_ref().unwrap().conflict.is_some());
+            assert!(reader.pane.editing.as_ref().unwrap().conflict.is_some());
             assert!(!reader.save_source(cx));
             assert_eq!(
                 std::fs::read_to_string(first.join("note.md")).unwrap(),
@@ -6501,7 +6592,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             // Resolve with the latest disk version, then make a fresh dirty edit.
             reader.resolve_source(true, window, cx);
-            let input = reader.editing.as_ref().unwrap().input.clone();
+            let input = reader.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(0..0), "saved-", window, cx)
             });
@@ -6510,7 +6601,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, _| {
             assert_eq!(reader.vault_root, second);
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
         });
         assert_eq!(
             std::fs::read_to_string(first.join("note.md")).unwrap(),
@@ -6553,7 +6644,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            let input = reader.editing.as_ref().unwrap().input.clone();
+            let input = reader.pane.editing.as_ref().unwrap().input.clone();
             assert_eq!(input.read(cx).value().as_ref(), original);
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(0..0), "edit", window, cx)
@@ -6561,7 +6652,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, cx| {
-            assert!(reader.editing.as_ref().unwrap().store.dirty());
+            assert!(reader.pane.editing.as_ref().unwrap().store.dirty());
             assert!(reader.save_source(cx));
         });
         // Typed at byte zero, the text lands after the BOM: the saved file
@@ -6597,6 +6688,7 @@ mod tests {
         reader.update_in(visual, |reader, _, cx| {
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -6609,7 +6701,7 @@ mod tests {
             assert!(reader.save_source(cx));
         });
         reader.update_in(visual, |reader, window, cx| {
-            let input = reader.editing.as_ref().unwrap().input.clone();
+            let input = reader.pane.editing.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(Some(0..0), "mine", window, cx)
             });
@@ -6619,12 +6711,12 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             reader.open_note("second.md", None, window, cx);
             assert_eq!(reader.pane.current_rel, "first.md");
-            assert!(reader.editing.as_ref().unwrap().conflict.is_some());
+            assert!(reader.pane.editing.as_ref().unwrap().conflict.is_some());
             assert!(!reader.save_source(cx));
             std::fs::write(root.join("first.md"), "external v2").unwrap();
             assert!(!reader.save_source(cx));
             assert_eq!(
-                reader.editing.as_ref().unwrap().conflict.as_deref(),
+                reader.pane.editing.as_ref().unwrap().conflict.as_deref(),
                 Some("external")
             );
             reader.resolve_source(false, window, cx);
@@ -6632,9 +6724,10 @@ mod tests {
                 std::fs::read_to_string(root.join("first.md")).unwrap(),
                 "external v2"
             );
-            assert!(reader.editing.as_ref().unwrap().compare);
+            assert!(reader.pane.editing.as_ref().unwrap().compare);
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -6647,6 +6740,7 @@ mod tests {
             reader.resolve_source(true, window, cx);
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -6662,7 +6756,7 @@ mod tests {
         reader.update_in(visual, |reader, _, _| {
             assert_eq!(reader.pane.current_rel, "second.md");
             assert!(
-                reader.editing.is_some(),
+                reader.pane.editing.is_some(),
                 "successful navigation retains Source"
             );
         });
@@ -6672,6 +6766,7 @@ mod tests {
         );
         reader.update_in(visual, |reader, window, cx| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -6685,10 +6780,10 @@ mod tests {
         std::fs::remove_file(root.join("second.md")).unwrap();
         reader.update_in(visual, |reader, window, cx| {
             assert!(!reader.save_source(cx));
-            assert!(reader.editing.as_ref().unwrap().save_failed);
+            assert!(reader.pane.editing.as_ref().unwrap().save_failed);
             reader.park_source(window, cx);
             assert!(
-                reader.editing.is_none(),
+                reader.pane.editing.is_none(),
                 "failed canonical save can exit with durable recovery"
             );
         });
@@ -6763,6 +6858,7 @@ mod tests {
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, _| {
             assert!(!r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -6771,7 +6867,7 @@ mod tests {
                 .is_empty());
         });
         let input = reference.read_with(reference_visual, |r, _| {
-            r.editing.as_ref().unwrap().input.clone()
+            r.pane.editing.as_ref().unwrap().input.clone()
         });
         input.update_in(reference_visual, |input, window, cx| {
             input.replace_text_in_range(Some(0..0), "edited ", window, cx)
@@ -6798,7 +6894,8 @@ mod tests {
             input.update(cx, |i, cx| i.set_value("edited [[start]] ", window, cx));
             input.update(cx, |i, cx| i.set_value("edited [[start]]", window, cx));
             r.schedule_live_preview(cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -6839,7 +6936,7 @@ mod tests {
         source.update_in(source_visual, |r, _, cx| r.finish_move_editor(cx));
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(
                 editing.input.read(cx).value().as_ref(),
                 "edited [[renamed]]"
@@ -6876,7 +6973,7 @@ mod tests {
         });
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(editing.input.read(cx).value().as_ref(), "edited [[start]]");
             assert!(!editing.store.dirty());
             assert_eq!(r.sidebar.pinned, ["start.md"]);
@@ -7023,8 +7120,9 @@ mod autosave_tests {
     }
 
     fn input(f: &Fixture, visual: &mut VisualTestContext) -> Entity<EditorState> {
-        f.reader
-            .read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone())
+        f.reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        })
     }
 
     fn type_at_start(f: &Fixture, visual: &mut VisualTestContext, text: &str) {
@@ -7098,7 +7196,8 @@ mod autosave_tests {
                 let mut sibling_cx = cx.clone();
                 let (f, visual) = open(cx, &source);
                 let original = f.reader.update_in(visual, |r, window, cx| {
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .input
@@ -7183,7 +7282,7 @@ mod autosave_tests {
                 let same = f.reader.read_with(visual, |r, cx| {
                     assert_eq!(on_disk(&f), format!("x{}", &source[1..]));
                     assert!(!r.source_is_dirty(cx));
-                    assert!(!r.editing.as_ref().unwrap().conflict_detected);
+                    assert!(!r.pane.editing.as_ref().unwrap().conflict_detected);
                     Arc::ptr_eq(&original, &r.vault) && sibling_same
                 });
                 visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -7281,7 +7380,7 @@ mod autosave_tests {
                 visual.run_until_parked();
             }
             f.reader.read_with(visual, |r, _| {
-                assert!(r.editing.as_ref().unwrap().conflict_detected)
+                assert!(r.pane.editing.as_ref().unwrap().conflict_detected)
             });
             assert_eq!(
                 input(&f, visual).read_with(visual, |i, _| i.value().to_string()),
@@ -7361,7 +7460,7 @@ mod autosave_tests {
             assert!(flat.starts_with('x'));
             f.reader.read_with(visual, |r, _| {
                 assert_eq!(
-                    r.editing.as_ref().unwrap().store.text(),
+                    r.pane.editing.as_ref().unwrap().store.text(),
                     flat,
                     "the measured mutation must reach the real persistence subscription"
                 );
@@ -7393,7 +7492,7 @@ mod autosave_tests {
         assert!(FileEditor::has_unsaved_draft(&f.file, &path).unwrap());
         let text = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
         f.reader.update_in(visual, |r, _, _| {
-            r.editing = None;
+            r.pane.editing = None;
         });
         let recovered = FileEditor::open(&f.file, &path).unwrap();
         assert_eq!(recovered.text(), text);
@@ -7425,7 +7524,7 @@ mod autosave_tests {
         visual.update(|_, cx| assert!(protect_all_for_quit(cx)));
         assert_eq!(on_disk(&f), expected);
         f.reader.update_in(visual, |r, _, _| {
-            r.editing = None;
+            r.pane.editing = None;
         });
         assert_eq!(FileEditor::open(&f.file, &path).unwrap().text(), expected);
     }
@@ -7484,7 +7583,7 @@ mod autosave_tests {
         type_at_start(&f, visual, "latest");
         wait(visual, 350);
         f.reader.read_with(visual, |r, _| {
-            assert!(r.editing.as_ref().unwrap().save_failed);
+            assert!(r.pane.editing.as_ref().unwrap().save_failed);
             assert_eq!(r.link_notice.as_deref(), Some(DRAFT_WRITE_NOTICE));
         });
         std::fs::remove_dir(&journal).unwrap();
@@ -7505,7 +7604,7 @@ mod autosave_tests {
         FAIL_AUTOSAVE_COPY.with(|fail| fail.set(true));
         wait(visual, 800);
         f.reader.read_with(visual, |r, _| {
-            assert!(r.editing.as_ref().unwrap().save_failed);
+            assert!(r.pane.editing.as_ref().unwrap().save_failed);
             assert_eq!(r.link_notice.as_deref(), Some(AUTOSAVE_START_NOTICE));
         });
         assert_eq!(on_disk(&f), "base", "failed worker never published");
@@ -7528,7 +7627,7 @@ mod autosave_tests {
             .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
         wait(visual, 350);
         f.reader.read_with(visual, |r, _| {
-            let context = r.editing.as_ref().unwrap().block_context.borrow();
+            let context = r.pane.editing.as_ref().unwrap().block_context.borrow();
             let source = context.with_definitions("[label][id]".into());
             assert!(source.contains("https://example.com/new"));
             assert!(!source.contains("https://example.com/old"));
@@ -7546,9 +7645,9 @@ mod autosave_tests {
         });
         let input_id = input(&f, visual).entity_id();
         f.reader.update(visual, |r, cx| {
-            let before = r.editing.as_ref().unwrap().recovery_epoch;
+            let before = r.pane.editing.as_ref().unwrap().recovery_epoch;
             r.autosaved(input_id, saves, "abase".into(), Ok(Save::Saved), None, cx);
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(editing.protecting);
             assert!(
                 editing.recovery_epoch > before,
@@ -7557,12 +7656,12 @@ mod autosave_tests {
         });
         visual.run_until_parked();
         f.reader.read_with(visual, |r, _| {
-            assert!(!r.editing.as_ref().unwrap().protecting)
+            assert!(!r.pane.editing.as_ref().unwrap().protecting)
         });
         // Crash-style release without Save/close flush. The acknowledged draft
         // must contain the typing made after the canonical save's snapshot.
         f.reader.update(visual, |r, _| {
-            r.editing = None;
+            r.pane.editing = None;
         });
         visual.run_until_parked();
         let recovered = FileEditor::open(&f.file, &path).unwrap();
@@ -7580,7 +7679,7 @@ mod autosave_tests {
         wait(visual, 1200);
         assert_eq!(on_disk(&f), "theirs", "the outside version stays");
         f.reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(editing.conflict_detected);
             assert_eq!(editing.input.read(cx).value().as_ref(), "mine original");
         });
@@ -7612,7 +7711,7 @@ mod autosave_tests {
         });
         visual.run_until_parked();
         f.reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(!editing.conflict_detected, "no conflict from our own save");
             assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
             assert_eq!(editing.input.read(cx).value().as_ref(), "edit original");
@@ -7656,7 +7755,7 @@ mod autosave_tests {
         // A save of «aoriginal» is still in flight.
         let input_id = input(&f, visual).entity_id();
         let saves = f.reader.update(visual, |r, _| {
-            let editing = r.editing.as_mut().unwrap();
+            let editing = r.pane.editing.as_mut().unwrap();
             editing.autosaving = Some("aoriginal".into());
             editing.saves
         });
@@ -7691,7 +7790,7 @@ mod autosave_tests {
             type_at_start(&f, visual, "a");
             let input_id = input(&f, visual).entity_id();
             let saves = f.reader.update(visual, |r, _| {
-                let e = r.editing.as_mut().unwrap();
+                let e = r.pane.editing.as_mut().unwrap();
                 e.autosaving = Some("aoriginal".into());
                 e.saves
             });
@@ -7733,7 +7832,7 @@ mod autosave_tests {
                     "a conflict never overwrites remote bytes"
                 );
             }
-            f.reader.update(visual, |r, _| r.editing = None);
+            f.reader.update(visual, |r, _| r.pane.editing = None);
             visual.run_until_parked();
             let recovered =
                 FileEditor::open(&f.file, &f._temp.path().join("state/editor-drafts")).unwrap();
@@ -7782,7 +7881,7 @@ mod autosave_tests {
     /// way a watcher can see the file before the save is back (#1376).
     fn autosave_in_flight(f: &Fixture, visual: &mut VisualTestContext, text: &str) -> u64 {
         let saves = f.reader.update(visual, |r, _| {
-            let editing = r.editing.as_mut().unwrap();
+            let editing = r.pane.editing.as_mut().unwrap();
             editing.autosaving = Some(text.into());
             editing.saves
         });
@@ -7816,7 +7915,7 @@ mod autosave_tests {
         type_at_start(&f, visual, "b");
         refresh(&f, visual);
         f.reader.read_with(visual, |r, _| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(!editing.conflict_detected, "our own save is not a conflict");
             assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
         });
@@ -7836,7 +7935,7 @@ mod autosave_tests {
         wait(visual, 1200);
         assert_eq!(on_disk(&f), format!("end {}baoriginal", "x".repeat(20)));
         f.reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(!editing.conflict_detected);
             assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
             assert!(!r.source_is_dirty(cx));
@@ -7857,7 +7956,7 @@ mod autosave_tests {
         wait(visual, 1200);
         assert_eq!(on_disk(&f), "theirs", "the outside version stays");
         f.reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(editing.conflict_detected, "the deferred refresh saw it");
             assert_eq!(editing.conflict.as_deref(), Some("theirs"));
             assert_eq!(editing.input.read(cx).value().as_ref(), "baoriginal");
@@ -7874,12 +7973,12 @@ mod autosave_tests {
         std::fs::write(&f.file, "theirs").unwrap();
         wait(visual, 1200);
         f.reader.read_with(visual, |r, _| {
-            assert!(r.editing.as_ref().unwrap().conflict_detected)
+            assert!(r.pane.editing.as_ref().unwrap().conflict_detected)
         });
         std::fs::write(&f.file, "original").unwrap();
         refresh(&f, visual);
         f.reader.read_with(visual, |r, _| {
-            assert!(!r.editing.as_ref().unwrap().conflict_detected);
+            assert!(!r.pane.editing.as_ref().unwrap().conflict_detected);
             assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
         });
         wait(visual, 1200);
@@ -7902,7 +8001,7 @@ mod autosave_tests {
             return;
         }
         f.reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(editing.save_failed, "the failure is shown");
             assert!(r.link_notice.is_some());
             assert_eq!(editing.input.read(cx).value().as_ref(), "mine original");
@@ -7968,9 +8067,13 @@ mod mode_navigation_tests {
             "actual selected file positive control"
         );
         match live {
-            None => assert!(reader.editing.is_none(), "explicit Read must remain Read"),
+            None => assert!(
+                reader.pane.editing.is_none(),
+                "explicit Read must remain Read"
+            ),
             Some(live) => {
                 let editing = reader
+                    .pane
                     .editing
                     .as_ref()
                     .expect("chosen editing mode must survive the real file-switch pipeline");
@@ -7998,6 +8101,7 @@ mod mode_navigation_tests {
         reader.update_in(visual, |r, window, cx| {
             assert_mode(r, "Created from Read.md", Some(true), cx);
             assert!(r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -8051,7 +8155,14 @@ mod mode_navigation_tests {
                 "Enter reaches the actual rename action"
             );
             assert_eq!(
-                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
                 before
             );
             assert!(!r.source_is_dirty(cx), "tree keys must not edit the note");
@@ -8137,7 +8248,7 @@ mod mode_navigation_tests {
                 r.link_notice.is_some(),
                 "failed prepare reports absence rather than fabricating an editor"
             );
-            assert!(r.editing.is_none());
+            assert!(r.pane.editing.is_none());
         });
         reader.update_in(visual, |r, window, cx| {
             r.open_note("third.md", None, window, cx)

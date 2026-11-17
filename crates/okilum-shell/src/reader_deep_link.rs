@@ -80,7 +80,7 @@ impl Reader {
             .clone()
             .or_else(|| position.block.as_ref().map(|block| format!("^{block}")));
         let line = position.line;
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             if self.selected_file() == rel {
                 match line {
                     Some(line) => self.move_caret(line, position.column, window, cx),
@@ -94,7 +94,7 @@ impl Reader {
             }
             // Another note: save this one, open the link's note, then edit it.
             self.open_note_landing(rel, None, None, None, window, cx);
-            if self.editing.is_none() {
+            if self.pane.editing.is_none() {
                 self.pending_link_edit = Some(EditLanding {
                     generation: Some(self.pane.navigation.preparation_generation),
                     rel: rel.to_owned(),
@@ -128,7 +128,7 @@ impl Reader {
         else {
             return;
         };
-        if self.editing.is_some() || self.pane.current_rel != landing.rel {
+        if self.pane.editing.is_some() || self.pane.current_rel != landing.rel {
             return;
         }
         self.toggle_source(window, cx);
@@ -177,7 +177,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing.is_none() {
+        if self.pane.editing.is_none() {
             return;
         }
         match landing.line {
@@ -245,7 +245,8 @@ impl Reader {
     /// bounds; `None` off a heading.
     pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
         // A right-click on a link belongs to the link's own menu (#943).
-        if self.editing.is_some() || self.pane.file_preview.is_some() || self.pointer_on_link() {
+        if self.pane.editing.is_some() || self.pane.file_preview.is_some() || self.pointer_on_link()
+        {
             return None;
         }
         let list = self.pane.content.read(cx).list_state();
@@ -536,7 +537,7 @@ mod tests {
         let caret = |reader: &Entity<Reader>, visual: &mut gpui::VisualTestContext| {
             visual.run_until_parked();
             reader.update_in(visual, |v, window, cx| {
-                assert!(v.editing.is_some(), "the caret needs the editor");
+                assert!(v.pane.editing.is_some(), "the caret needs the editor");
                 v.copy_link_to_line(window, cx);
                 cx.read_from_clipboard().unwrap().text().unwrap()
             })
@@ -658,7 +659,7 @@ mod tests {
         settle(visual);
         reader.read_with(visual, |v, cx| {
             assert_eq!(v.pane.current_rel, "target.md");
-            assert!(v.editing.is_none(), "a link never enters the editor");
+            assert!(v.pane.editing.is_none(), "a link never enters the editor");
             assert!(v.link_notice.is_none());
             assert_eq!(top(v, cx), 39);
             assert_eq!(
@@ -697,7 +698,11 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             v.toggle_source(window, cx);
             let edited = target.replacen("Paragraph 1.", "Paragraph one.", 1);
-            v.editing.as_ref().unwrap().set_value(&edited, window, cx);
+            v.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(&edited, window, cx);
             v.open_link("target.md", at(10, Some(4)), window, cx);
         });
         settle(visual);
@@ -736,7 +741,7 @@ mod tests {
         settle(visual);
         reader.read_with(visual, |v, cx| {
             assert_eq!(v.pane.current_rel, "start.md");
-            assert!(v.editing.is_some(), "the editor stays the mode");
+            assert!(v.pane.editing.is_some(), "the editor stays the mode");
             assert_eq!(v.editing_caret_line(cx), Some(3));
         });
         assert!(std::fs::read_to_string(root.join("target.md"))

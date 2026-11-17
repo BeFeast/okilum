@@ -664,7 +664,7 @@ impl Reader {
                 self.pane.find_open = false;
                 self.link_notice = None;
                 self.remember_source_mode();
-                self.editing = None;
+                self.pane.editing = None;
                 if reader_delimited::editable(rel) {
                     self.discover_source_recovery(cx);
                 }
@@ -695,7 +695,7 @@ impl Reader {
     ) -> AnyElement {
         // Build the nested editor from this small dispatch frame; the read
         // viewers' builder temporaries live in their own frame (#2825).
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             let header = self.render_file_header_viewport(window, cx);
             let source = self.render_source(window, cx);
             return file_edit_column(preview.code.is_some(), header, source);
@@ -1227,6 +1227,7 @@ mod tests {
             assert!(r.code_file_editable(cx));
             r.toggle_source(window, cx);
             let editor = r
+                .pane
                 .editing
                 .as_ref()
                 .expect("Edit opens the file")
@@ -1246,7 +1247,7 @@ mod tests {
             );
             assert!(!r.code_file_editable(cx));
             r.toggle_source(window, cx);
-            assert!(r.editing.is_none(), "Edit stays off over the cap");
+            assert!(r.pane.editing.is_none(), "Edit stays off over the cap");
         });
     }
 
@@ -1297,11 +1298,11 @@ mod tests {
             reader.update_in(visual, |r, window, cx| {
                 // The previous file was left in Edit; that chosen mode carries
                 // to the next editable file (GitHub #6).
-                assert_eq!(r.editing.is_some(), name != "sheet.csv");
-                if r.editing.is_none() {
+                assert_eq!(r.pane.editing.is_some(), name != "sheet.csv");
+                if r.pane.editing.is_none() {
                     r.toggle_source(window, cx);
                 }
-                let input = r.editing.as_ref().unwrap().test_input();
+                let input = r.pane.editing.as_ref().unwrap().test_input();
                 assert_eq!(input.read(cx).value().as_ref(), source);
                 let start = source.find("original").unwrap();
                 input.update(cx, |s, cx| s.set_selected_range(start..start + 8, cx));
@@ -1312,7 +1313,7 @@ mod tests {
             reader.update_in(visual, |r, window, cx| {
                 assert!(r.save_source(cx));
                 r.toggle_source(window, cx);
-                assert!(r.editing.is_none());
+                assert!(r.pane.editing.is_none());
             });
             visual.run_until_parked();
             assert_eq!(std::fs::read(root.join(name)).unwrap(), changed.as_bytes());
@@ -1342,7 +1343,7 @@ mod tests {
                     .file_editor_find_target(cx)
                     .expect("file Edit header Find");
                 assert!(field.input.focus_handle(cx).is_focused(window));
-                let source = r.editing.as_ref().unwrap().test_input().read(cx);
+                let source = r.pane.editing.as_ref().unwrap().test_input().read(cx);
                 assert!(
                     !source.search_session().open,
                     "the old toolkit strip stays closed"
@@ -1359,12 +1360,13 @@ mod tests {
                     r.file_editor_find_target(cx).unwrap().count.as_deref(),
                     Some("1 of 1")
                 );
-                let source = r.editing.as_ref().unwrap().test_input().read(cx);
+                let source = r.pane.editing.as_ref().unwrap().test_input().read(cx);
                 assert!(
                     source.search_session().external_presentation && !source.search_session().open
                 );
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .test_input()
@@ -1374,7 +1376,8 @@ mod tests {
                     changed,
                     "typing the Find query never edits the file buffer"
                 );
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("recoverable local draft", window, cx);
@@ -1390,7 +1393,8 @@ mod tests {
                     "navigation cannot discard a conflicted draft"
                 );
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .test_input()
@@ -1405,7 +1409,7 @@ mod tests {
                 "external change"
             );
             // Release the editor's real writer lock before simulating restart.
-            reader.update(visual, |r, _| r.editing = None);
+            reader.update(visual, |r, _| r.pane.editing = None);
             let store = okilum_core::file_editor::FileEditor::open(
                 &root.join(name),
                 &state.join("editor-drafts"),
@@ -1671,7 +1675,7 @@ mod tests {
             assert_eq!(reader.selected_file(), "diagram.svg");
             assert!(reader.pane.file_preview.as_ref().unwrap().image);
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             reader.file_action(FileAction::Relative, window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),

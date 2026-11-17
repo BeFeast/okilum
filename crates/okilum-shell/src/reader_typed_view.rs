@@ -721,7 +721,7 @@ mod tests {
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
-        view.read_with(visual, |v, _| assert!(v.editing.is_some()));
+        view.read_with(visual, |v, _| assert!(v.pane.editing.is_some()));
         assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
         view.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
