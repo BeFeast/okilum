@@ -205,8 +205,12 @@ impl Workspace {
             target.pod.clone(),
             cancel,
         );
+        let executor = cx.background_executor().clone();
         self.dock._task = Some(cx.spawn(async move |this, cx| {
-            if let Ok(result) = receiver.recv().await {
+            if let Some(result) = backend::next_batch(&receiver, &executor)
+                .await
+                .and_then(|batch| batch.into_iter().next())
+            {
                 let _ = this.update(cx, |this, cx| this.verified(generation, result, cx));
             }
         }));
@@ -280,12 +284,15 @@ impl Workspace {
         let scope = format!("kubernetes-workspace:{}:{generation}", self.vault_scope);
         let (worker, receiver) = (self.dock.starter)(request, scope);
         self.dock.worker = Some(worker);
+        let executor = cx.background_executor().clone();
         self.dock._task = Some(cx.spawn(async move |this, cx| {
-            while let Ok(update) = receiver.recv().await {
-                if this
-                    .update(cx, |this, cx| this.log_update(generation, update, cx))
-                    .is_err()
-                {
+            while let Some(batch) = backend::next_batch(&receiver, &executor).await {
+                let applied = this.update(cx, |this, cx| {
+                    for update in batch {
+                        this.log_update(generation, update, cx);
+                    }
+                });
+                if applied.is_err() {
                     break;
                 }
             }

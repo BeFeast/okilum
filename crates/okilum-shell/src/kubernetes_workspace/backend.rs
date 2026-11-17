@@ -71,6 +71,36 @@ impl<T: Transport + Send + Sync + 'static> Reader for Client<T> {
     }
 }
 
+/// How often the UI side looks for results from the read threads.
+pub(crate) const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The next batch from a read thread, or `None` once it closed and is empty.
+/// The UI side never awaits the channel itself: a reply from an OS thread
+/// would then wake a GPUI foreground task from a foreign thread, which the
+/// test scheduler rejects as nondeterministic. It polls with a
+/// scheduler-aware timer instead; the threads and their reads are unchanged.
+pub(crate) async fn next_batch<T>(
+    receiver: &async_channel::Receiver<T>,
+    executor: &gpui::BackgroundExecutor,
+) -> Option<Vec<T>> {
+    loop {
+        let mut batch = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(item) => batch.push(item),
+                Err(async_channel::TryRecvError::Empty) => break,
+                Err(async_channel::TryRecvError::Closed) => {
+                    return (!batch.is_empty()).then_some(batch);
+                }
+            }
+        }
+        if !batch.is_empty() {
+            return Some(batch);
+        }
+        executor.timer(POLL).await;
+    }
+}
+
 pub(crate) fn production() -> Arc<dyn Reader> {
     Arc::new(Client::<Kubectl>::default())
 }

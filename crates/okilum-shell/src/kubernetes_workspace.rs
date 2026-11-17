@@ -141,8 +141,12 @@ impl Workspace {
             }),
         ];
         let receiver = backend::contexts(reader.clone());
+        let executor = cx.background_executor().clone();
         let task = cx.spawn(async move |this, cx| {
-            if let Ok(result) = receiver.recv().await {
+            if let Some(result) = backend::next_batch(&receiver, &executor)
+                .await
+                .and_then(|batch| batch.into_iter().next())
+            {
                 let _ = this.update(cx, |this, cx| {
                     this.chosen_context = result.as_ref().ok().and_then(|c| c.current.clone());
                     this.contexts = Some(result);
@@ -267,14 +271,15 @@ impl Workspace {
             cancel,
             !typed.is_empty(),
         );
+        let executor = cx.background_executor().clone();
         self._tasks.push(cx.spawn(async move |this, cx| {
-            while let Ok(loaded) = receiver.recv().await {
-                if this
-                    .update(cx, |this, cx| {
-                        this.loaded(generation, typed.clone(), loaded, cx)
-                    })
-                    .is_err()
-                {
+            while let Some(batch) = backend::next_batch(&receiver, &executor).await {
+                let applied = this.update(cx, |this, cx| {
+                    for loaded in batch {
+                        this.loaded(generation, typed.clone(), loaded, cx);
+                    }
+                });
+                if applied.is_err() {
                     break;
                 }
             }

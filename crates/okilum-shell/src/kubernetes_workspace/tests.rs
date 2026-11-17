@@ -206,10 +206,16 @@ fn open<'a>(cx: &'a mut TestAppContext, routes: Vec<(&'static str, Raw)>) -> Har
 }
 
 impl Harness<'_> {
+    /// Fires the UI side's poll timer and runs everything it scheduled.
+    fn settle(&mut self) {
+        self.visual.run_until_parked();
+        self.visual.executor().advance_clock(backend::POLL * 2);
+        self.visual.run_until_parked();
+    }
     /// Reads run on OS threads (as in production); poll their completion.
     fn wait(&mut self, what: &str, done: impl Fn(&Workspace) -> bool) {
         for _ in 0..400 {
-            self.visual.run_until_parked();
+            self.settle();
             if self.workspace.read_with(&*self.visual, |ws, _| done(ws)) {
                 return;
             }
@@ -243,7 +249,7 @@ impl Harness<'_> {
             .unwrap_or_else(|| panic!("{selector} is rendered"));
         self.visual
             .simulate_click(bounds.center(), Modifiers::default());
-        self.visual.run_until_parked();
+        self.settle();
     }
     fn send(&mut self, index: usize, bytes: &[u8], status: worker::Status) {
         let mut assembler = Assembler::new("pod.log".into(), format!("fixture-{index}")).unwrap();
@@ -257,7 +263,7 @@ impl Harness<'_> {
                 pending: 0,
             })
             .unwrap();
-        self.visual.run_until_parked();
+        self.settle();
     }
 }
 
