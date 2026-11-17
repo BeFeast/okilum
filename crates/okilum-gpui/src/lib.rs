@@ -62,9 +62,6 @@ pub mod __test_support {
             // Anything more is a VisualTestContext that gpui-pre's teardown
             // never freed, so its leak detector never ran for this app.
             // Keep it that way by never releasing the detector's counts.
-            if std::rc::Rc::strong_count(&self.0.app) > 2 {
-                std::mem::forget(self.0.app.borrow().ref_counts_drop_handle());
-            }
             self.0.quit();
         }
     }
