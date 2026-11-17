@@ -176,10 +176,11 @@ for it, and lets the runtime start only when all of these hold:
 - the folder is unpaused, so Syncthing only reports `ErrPathMissing`, publishes
   nothing and propagates no deletion;
 - its local sequence was non-zero in the last live authenticated generation.
-  Each launch records this in the private `indexed-folders.json`. Evidence
-  only grows for a configured instance (a paused folder reports no sequence). While the runtime runs,
-  the launcher's supervision loop adds a folder as soon as it has index history,
-  so a folder added or first filled after launch needs no restart. Creating a
+  Each launch records this in the private `indexed-folders.json`. Evidence only
+  grows for a configured instance, because a paused folder reports no sequence.
+  While the runtime runs, the launcher's supervision loop adds a folder as soon
+  as it has index history, so a folder added or first filled after launch needs
+  no restart. Creating a
   folder instance (`add_paused_folder`, under configuration admission and the
   launch gate) revokes it, so a re-added ID never inherits the old instance's
   history. No-op reconciliation (the 2-second Sync refresh) and a failed
