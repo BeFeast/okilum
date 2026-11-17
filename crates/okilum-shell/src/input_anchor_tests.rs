@@ -125,8 +125,13 @@ impl SourceProjection for HeadingProjection {
     fn styles(&self) -> &[ProjectionStyle] {
         &[]
     }
+    /// Like Live Preview, an offset inside a CRLF is not a boundary.
     fn to_projected(&self, source: SourceByte, _: ConcealBias) -> Option<ProjectedByte> {
-        (source.0 <= self.source.text.len()).then_some(ProjectedByte(source.0))
+        let text = self.source.text.as_bytes();
+        let inside_crlf = source.0 > 0
+            && text.get(source.0 - 1) == Some(&b'\r')
+            && text.get(source.0) == Some(&b'\n');
+        (source.0 <= text.len() && !inside_crlf).then_some(ProjectedByte(source.0))
     }
     fn to_source(&self, projected: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
         (projected.0 <= self.source.text.len()).then_some(SourceByte(projected.0))
@@ -406,4 +411,42 @@ fn undo_at_the_top_through_a_raw_frame_keeps_the_view(cx: &mut TestAppContext) {
         },
         "Undo",
     );
+}
+
+/// #1304: the classified frame before the raw ones showed a lone `\r`; its
+/// `\n` was typed while the note drew raw. The edit since that frame starts
+/// inside the CRLF, which the projection does not map: the adoption must not
+/// anchor there (it panicked in `project_offset`, #1320's outline test).
+#[gpui::test]
+fn a_reference_edit_start_inside_a_crlf_is_not_an_anchor(cx: &mut TestAppContext) {
+    let headings: String = (0..HEADINGS).map(|i| format!("Heading {i}\n")).collect();
+    let body: String = (0..60).map(|i| format!("body line {i}\n")).collect();
+    let text = format!("{headings}{body}");
+    let provider = Arc::new(Headings {
+        raw: AtomicBool::new(false),
+    });
+    // Typed at a line start, the `\r` stays alone until its `\n` comes.
+    let at = text.find("Heading 5").unwrap();
+    let heading = text.find("Heading 4").unwrap();
+    let (input, visual) = editor_at(cx, &text, provider.clone(), at);
+    let provider_ref = provider.clone() as Arc<dyn ProjectionProvider>;
+    visual.simulate_input("\r");
+    draw(&input, heading, visual);
+    draw(&input, heading, visual);
+    provider.raw.store(true, Ordering::SeqCst);
+    visual.simulate_input("\n");
+    draw(&input, heading, visual);
+    input.read_with(visual, |state, _| {
+        assert_eq!(
+            &state.value()[at..at + 3],
+            "\r\nH",
+            "control: the CRLF was completed in the raw frame"
+        )
+    });
+    provider.raw.store(false, Ordering::SeqCst);
+    input.update(visual, |state, cx| {
+        state.set_projection_provider(Some(provider_ref), cx)
+    });
+    let adopted = draw(&input, heading, visual);
+    assert!(adopted.reference.is_some(), "the heading stays in view");
 }
