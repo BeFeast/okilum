@@ -6,6 +6,14 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
+mod icons;
+
+/// Start loading the editors' application icons on a background thread, so
+/// the first «Open in ▸» already has them (#1400). Never blocks the caller.
+pub(crate) fn warm_icons() {
+    icons::warm();
+}
+
 /// How an editor takes "open this file at line N".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineArg {
@@ -29,6 +37,9 @@ struct Known {
     unix: &'static [&'static str],
     /// Relative to `%LOCALAPPDATA%` or `%ProgramFiles%`.
     windows: &'static [&'static str],
+    /// Linux desktop-entry ids (`<id>.desktop`) that carry the editor's icon:
+    /// distribution packages, Flatpak and Snap (`<snap>_<app>`).
+    desktop: &'static [&'static str],
 }
 
 const KNOWN: &[Known] = &[
@@ -40,6 +51,7 @@ const KNOWN: &[Known] = &[
         mac: &[("Zed.app", "Contents/MacOS/cli")],
         unix: &["zed", "zeditor", "dev.zed.Zed"],
         windows: &["Programs\\Zed\\zed.exe"],
+        desktop: &["dev.zed.Zed", "zed", "dev.zed.Zed-Preview"],
     },
     Known {
         id: "cursor",
@@ -53,6 +65,7 @@ const KNOWN: &[Known] = &[
         mac: &[("Cursor.app", "Contents/Resources/app/bin/cursor")],
         unix: &["cursor"],
         windows: &["Programs\\cursor\\Cursor.exe"],
+        desktop: &["cursor", "co.anysphere.cursor"],
     },
     Known {
         id: "vscode",
@@ -64,6 +77,12 @@ const KNOWN: &[Known] = &[
         windows: &[
             "Programs\\Microsoft VS Code\\Code.exe",
             "Microsoft VS Code\\Code.exe",
+        ],
+        desktop: &[
+            "code",
+            "com.visualstudio.code",
+            "code_code",
+            "visual-studio-code",
         ],
     },
     Known {
@@ -77,6 +96,7 @@ const KNOWN: &[Known] = &[
         )],
         unix: &["code-insiders"],
         windows: &["Programs\\Microsoft VS Code Insiders\\Code - Insiders.exe"],
+        desktop: &["code-insiders", "code-insiders_code-insiders"],
     },
     Known {
         id: "windsurf",
@@ -86,6 +106,7 @@ const KNOWN: &[Known] = &[
         mac: &[("Windsurf.app", "Contents/Resources/app/bin/windsurf")],
         unix: &["windsurf"],
         windows: &["Programs\\Windsurf\\Windsurf.exe"],
+        desktop: &["windsurf"],
     },
     Known {
         id: "sublime",
@@ -95,6 +116,7 @@ const KNOWN: &[Known] = &[
         mac: &[("Sublime Text.app", "Contents/SharedSupport/bin/subl")],
         unix: &["subl", "com.sublimetext.three"],
         windows: &["Sublime Text\\subl.exe", "Sublime Text\\sublime_text.exe"],
+        desktop: &["sublime_text", "com.sublimetext.three", "sublime-text_subl"],
     },
 ];
 
@@ -103,6 +125,9 @@ pub(crate) struct Editor {
     pub id: &'static str,
     pub label: &'static str,
     program: PathBuf,
+    /// The `.app` bundle (macOS) or executable (Windows) whose application
+    /// icon the menu shows; Linux looks the icon up by desktop-entry id.
+    icon_path: PathBuf,
     /// Arguments before the file (`-a App` for `open`, launcher flags).
     prefix: Vec<OsString>,
     line: LineArg,
@@ -214,6 +239,7 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
             let editor = |program: PathBuf, prefix: Vec<OsString>, line| Editor {
                 id: known.id,
                 label: known.label,
+                icon_path: program.clone(),
                 program,
                 prefix,
                 line,
@@ -225,16 +251,18 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
                         continue;
                     }
                     let cli = app.join(cli);
-                    return Some(if executable(&cli) {
+                    let mut detected = if executable(&cli) {
                         editor(cli, flags(), known.line)
                     } else {
                         // The bundle without its launcher: Finder's `open`.
                         editor(
                             "/usr/bin/open".into(),
-                            vec!["-a".into(), app.into_os_string()],
+                            vec!["-a".into(), app.clone().into_os_string()],
                             LineArg::None,
                         )
-                    });
+                    };
+                    detected.icon_path = app;
+                    return Some(detected);
                 }
             }
             for root in &probe.windows_roots {
@@ -295,12 +323,35 @@ pub(crate) fn submenu(
         for editor in &editors {
             let (root, rel, editor) = (root.clone(), rel.clone(), *editor);
             menu = menu.item(
-                PopupMenuItem::new(editor.label)
-                    .on_click(move |_, window, cx| open(editor, &root, &rel, window, cx)),
+                PopupMenuItem::element(move |_, cx| {
+                    h_flex()
+                        .debug_selector(move || format!("open-in-{}", editor.id))
+                        .items_center()
+                        .gap_2()
+                        .child(icon_element(icons::get(editor.id), cx))
+                        .child(editor.label)
+                })
+                .on_click(move |_, window, cx| open(editor, &root, &rel, window, cx)),
             );
         }
         menu
     })
+}
+
+/// The editor's application icon, or a neutral file glyph while icons are
+/// still loading or when none could be read.
+fn icon_element(image: Option<Arc<RenderImage>>, cx: &App) -> AnyElement {
+    match image {
+        Some(image) => img(ImageSource::Render(image))
+            .size_4()
+            .flex_none()
+            .into_any_element(),
+        None => Icon::new(IconName::File)
+            .size_4()
+            .flex_none()
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element(),
+    }
 }
 
 fn open(editor: &'static Editor, root: &Path, rel: &str, window: &mut Window, cx: &mut App) {
@@ -431,6 +482,9 @@ mod tests {
         assert_eq!(ids(&editors), ["zed", "vscode"]);
         let zed = &editors[0];
         assert_eq!(zed.program, PathBuf::from("/usr/bin/open"));
+        // #1400: the menu icon comes from the bundle, launcher or not.
+        assert_eq!(zed.icon_path, apps.join("Zed.app"));
+        assert_eq!(editors[1].icon_path, apps.join("Visual Studio Code.app"));
         let file = Path::new("/v/Note.md");
         assert_eq!(
             zed.args(file, Some(12)),
@@ -461,6 +515,11 @@ mod tests {
         };
         let editors = detect_with(&probe);
         assert_eq!(ids(&editors), ["cursor"]);
+        assert_eq!(
+            editors[0].icon_path,
+            local.join("Programs").join("cursor").join("Cursor.exe"),
+            "#1400: the executable carries the icon"
+        );
     }
 
     /// #1398: Cursor gets `--new-window` before `--goto`, so the note opens
@@ -528,6 +587,7 @@ mod tests {
             id: "x",
             label: "X",
             program: "/bin/x".into(),
+            icon_path: "/bin/x".into(),
             prefix: vec![],
             line,
         };

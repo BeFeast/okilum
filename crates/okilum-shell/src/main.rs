@@ -9321,6 +9321,8 @@ fn main() {
             conflict_startup_messages,
         ));
         diagnostics.event("app_run_callback", serde_json::json!({}));
+        // Editor icons for «Open in ▸» load on their own thread (#1400).
+        open_in::warm_icons();
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));
         diagnostics.record_exits(cx);

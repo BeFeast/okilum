@@ -1137,6 +1137,9 @@ mod tests {
         ("crates/okilum-shell/src/brain.rs", 2),
         // Looks for installed editors in ~/Applications; reads only.
         ("crates/okilum-shell/src/open_in.rs", 1),
+        // Linux editor icons (#1400): reads desktop entries, icon themes and
+        // the GTK/KDE icon-theme setting; writes nothing.
+        ("crates/okilum-shell/src/open_in/icons/desktop.rs", 3),
         ("crates/okilum-shell/src/reader_history.rs", 4),
         ("crates/okilum-shell/src/reader_layout.rs", 3),
         // Two more: Create a new vault suggests ~/Documents in the save
