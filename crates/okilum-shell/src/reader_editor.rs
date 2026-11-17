@@ -699,7 +699,7 @@ impl Reader {
             return;
         };
         let path = self.vault_root.join(self.selected_file());
-        let generation = self.navigation.preparation_generation;
+        let generation = self.pane.navigation.preparation_generation;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -708,7 +708,9 @@ impl Reader {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.navigation.preparation_generation != generation || this.editing.is_some() {
+                if this.pane.navigation.preparation_generation != generation
+                    || this.editing.is_some()
+                {
                     return;
                 }
                 match result {
@@ -934,9 +936,10 @@ impl Reader {
         let reader_place = (!plain_file)
             .then(|| {
                 let top = self
+                    .pane
                     .navigation
                     .pending_landing
-                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
+                    .unwrap_or_else(|| self.pane.content.read(cx).list_state().logical_scroll_top())
                     .item_ix;
                 Some((
                     top,
@@ -949,8 +952,8 @@ impl Reader {
         self.close_find(window, cx);
         self.clear_landing_notice();
         // Cancel a pending navigation before exposing an editable snapshot.
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         // A note takes images as attachments and embeds; a plain file takes
         // text only (#1602).
         let paste_notice = crate::note_paste::PasteNotice::default();
@@ -1709,9 +1712,12 @@ impl Reader {
         let retained = self.deleted_current().is_some();
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
-        let generation = self.navigation.reconciliation_generation;
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
+        let generation = self.pane.navigation.reconciliation_generation;
         let task = cx.background_executor().spawn(async move {
             let observed = copy.current();
             let reviewed = retained.then(|| observed.as_ref().ok().cloned()).flatten();
@@ -1725,7 +1731,7 @@ impl Reader {
         cx.spawn_in(window, async move |this, cx| {
             let (observed, reviewed, refresh) = task.await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.navigation.reconciliation_generation != generation || this.vault_root != root || this.pane.current_rel != rel { return; }
+                if this.pane.navigation.reconciliation_generation != generation || this.vault_root != root || this.pane.current_rel != rel { return; }
                 let Some(editing) = this.editing.as_mut().filter(|e| e.input.entity_id() == input_id) else { return; };
                 if editing.autosaving.is_some() { editing.refresh_deferred = true; return; }
                 if editing.saves != saves { this.refresh_source_in_background(window, cx); return; }
@@ -3719,7 +3725,7 @@ impl Reader {
                             &operation.to,
                             &operation.from,
                         );
-                        for p in &mut r.navigation.history {
+                        for p in &mut r.pane.navigation.history {
                             *p = okilum_core::link_rewrite::moved_path(
                                 p,
                                 &operation.to,
@@ -3743,7 +3749,7 @@ impl Reader {
                     &operation.to,
                     &operation.from,
                 );
-                for p in &mut self.navigation.history {
+                for p in &mut self.pane.navigation.history {
                     *p = okilum_core::link_rewrite::moved_path(p, &operation.to, &operation.from);
                 }
             }
@@ -3927,8 +3933,8 @@ impl Reader {
                         ) != r.selected_file())
                 {
                     r.move_applying = true;
-                    r.navigation.preparation_generation =
-                        r.navigation.preparation_generation.wrapping_add(1);
+                    r.pane.navigation.preparation_generation =
+                        r.pane.navigation.preparation_generation.wrapping_add(1);
                     cx.notify();
                     Some((r.pane.current_rel.clone(), r.editing.take()))
                 } else {
@@ -3965,8 +3971,8 @@ impl Reader {
             })
             .collect();
         self.move_applying = true;
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         let worker_preview = preview.clone();
         let worker = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
@@ -4020,7 +4026,7 @@ impl Reader {
                         if moved && next_path != path {
                             r.editing = None;
                             r.pane.current_rel = next_path;
-                            for p in &mut r.navigation.history {
+                            for p in &mut r.pane.navigation.history {
                                 *p = okilum_core::link_rewrite::moved_path(
                                     p,
                                     &preview.from,
@@ -4500,15 +4506,15 @@ mod tests {
                     assert_eq!(input.read(cx).search_session().matcher.len(), 1);
                     assert_eq!(input.read(cx).value().as_ref(), text);
                 } else {
-                    assert_eq!(r.content.read(cx).search_status().1, 3);
+                    assert_eq!(r.pane.content.read(cx).search_status().1, 3);
                     r.pane
                         .find_input
                         .update(cx, |s, cx| s.set_value("заметка", window, cx));
                     r.run_find(window, cx);
-                    assert_eq!(r.content.read(cx).search_status().1, 3);
+                    assert_eq!(r.pane.content.read(cx).search_status().1, 3);
                     reader_ui_state::set_find_case_sensitive(true, cx);
                     r.run_find(window, cx);
-                    assert_eq!(r.content.read(cx).search_status().1, 1);
+                    assert_eq!(r.pane.content.read(cx).search_status().1, 1);
                     reader_ui_state::set_find_case_sensitive(false, cx);
                 }
             });
@@ -5372,13 +5378,13 @@ mod tests {
             visual.simulate_resize(size(px(1500.), px(height)));
             visual.run_until_parked();
             reader.update_in(visual, |v, _, cx| {
-                v.content.read(cx).list_state().scroll_to_end();
+                v.pane.content.read(cx).list_state().scroll_to_end();
                 cx.notify();
             });
             visual.run_until_parked();
             visual.update(|w, cx| w.draw(cx).clear(cx));
             reader.read_with(visual, |v, cx| {
-                let list = v.content.read(cx).list_state();
+                let list = v.pane.content.read(cx).list_state();
                 assert!(
                     list.logical_scroll_top().item_ix > 0,
                     "document actually scrolled"
@@ -5407,13 +5413,13 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |v, _, cx| {
-            v.content.read(cx).list_state().scroll_to_end();
+            v.pane.content.read(cx).list_state().scroll_to_end();
             cx.notify();
         });
         visual.run_until_parked();
         let toast = visual.debug_bounds("end-space-toast").unwrap();
         reader.read_with(visual, |v, cx| {
-            let list = v.content.read(cx).list_state();
+            let list = v.pane.content.read(cx).list_state();
             let last = list.bounds_for_item(list.item_count() - 1).unwrap();
             assert!(
                 last.bottom() < toast.top(),
@@ -5502,15 +5508,24 @@ mod tests {
                 visual.run_until_parked();
                 let top = |visual: &mut VisualTestContext| {
                     reader.read_with(visual, |v, cx| {
-                        v.content.read(cx).list_state().logical_scroll_top().item_ix
+                        v.pane
+                            .content
+                            .read(cx)
+                            .list_state()
+                            .logical_scroll_top()
+                            .item_ix
                     })
                 };
                 // Reader at block `block`: its paragraph starts at file line 2*block+1.
                 reader.update_in(visual, |v, _, cx| {
-                    v.content.read(cx).list_state().scroll_to(gpui::ListOffset {
-                        item_ix: block,
-                        offset_in_item: px(0.),
-                    });
+                    v.pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .scroll_to(gpui::ListOffset {
+                            item_ix: block,
+                            offset_in_item: px(0.),
+                        });
                 });
                 visual.run_until_parked();
                 visual.update(|w, cx| w.draw(cx).clear(cx));

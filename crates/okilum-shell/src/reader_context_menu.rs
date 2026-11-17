@@ -118,7 +118,7 @@ impl Reader {
     fn record_press(&mut self, position: Point<Pixels>, target: PressTarget) {
         self.read_press = Some(ReadPress {
             position,
-            generation: self.navigation.preparation_generation,
+            generation: self.pane.navigation.preparation_generation,
             target,
         });
     }
@@ -126,7 +126,8 @@ impl Reader {
     /// The code block pressed at `position` in this document.
     fn pressed_code(&self, position: Point<Pixels>) -> Option<SharedString> {
         let press = self.read_press.as_ref().filter(|press| {
-            press.position == position && press.generation == self.navigation.preparation_generation
+            press.position == position
+                && press.generation == self.pane.navigation.preparation_generation
         })?;
         match &press.target {
             PressTarget::Code(code) => Some(code.clone()),
@@ -138,7 +139,8 @@ impl Reader {
     /// press offset in it, for a date under the pointer (#724).
     pub(crate) fn pressed_text(&self, position: Point<Pixels>) -> Option<(SharedString, usize)> {
         let press = self.read_press.as_ref().filter(|press| {
-            press.position == position && press.generation == self.navigation.preparation_generation
+            press.position == position
+                && press.generation == self.pane.navigation.preparation_generation
         })?;
         match &press.target {
             PressTarget::Text { text, offset } => Some((text.clone(), *offset)),
@@ -151,7 +153,7 @@ impl Reader {
         let press = self
             .read_press
             .as_ref()
-            .filter(|press| press.generation == self.navigation.preparation_generation)?;
+            .filter(|press| press.generation == self.pane.navigation.preparation_generation)?;
         match &press.target {
             PressTarget::Link { url: pressed, text } if pressed.as_ref() == url => {
                 Some(text.clone())
@@ -359,6 +361,7 @@ mod tests {
             self.visual.update(|window, cx| window.draw(cx).clear(cx));
             self.reader.read_with(self.visual, |reader, cx| {
                 reader
+                    .pane
                     .content
                     .read(cx)
                     .list_state()
@@ -478,7 +481,7 @@ mod tests {
         f.pick(last, "Select all");
         let selected = f
             .reader
-            .read_with(f.visual, |r, cx| r.content.read(cx).selected_text());
+            .read_with(f.visual, |r, cx| r.pane.content.read(cx).selected_text());
         assert!(selected.contains("Last"), "{selected:?}");
 
         let plain = f.pick(last, "Copy");
@@ -489,7 +492,7 @@ mod tests {
         assert!(!plain.contains("**"), "{plain:?}");
         // The clipboard payload is snapshotted without changing selection.
         f.reader.update(f.visual, |r, cx| {
-            r.content.update(cx, |c, cx| c.select_all(cx))
+            r.pane.content.update(cx, |c, cx| c.select_all(cx))
         });
         f.visual.run_until_parked();
         let markdown = f.pick(last, "Copy as Markdown");
@@ -557,7 +560,7 @@ mod tests {
 
         // With text selected the link keeps its own menu and its text.
         f.reader.update(f.visual, |r, cx| {
-            r.content.update(cx, |c, cx| c.select_all(cx))
+            r.pane.content.update(cx, |c, cx| c.select_all(cx))
         });
         f.visual.run_until_parked();
         assert_eq!(f.link_menu(web, "down down enter"), "Example");

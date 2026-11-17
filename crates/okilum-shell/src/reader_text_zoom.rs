@@ -441,7 +441,8 @@ fn change(
             return;
         }
     } else {
-        this.content
+        this.pane
+            .content
             .update(cx, |state, _| state.preserve_zoom_anchor(pointer));
     }
     reader_ui_state::set_text_zoom(zoom, cx);
@@ -572,19 +573,25 @@ mod tests {
         visual.simulate_keystrokes("secondary-0");
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
-            reader.content.read(cx).list_state().scroll_to(ListOffset {
-                item_ix: 8,
-                offset_in_item: px(24.),
-            });
+            reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .scroll_to(ListOffset {
+                    item_ix: 8,
+                    offset_in_item: px(24.),
+                });
             cx.notify();
         });
         visual.update(|window, cx| window.simulate_next_frame(cx));
         visual.run_until_parked();
         let position = reader.read_with(visual, |reader, cx| {
-            reader.content.read(cx).bounds().center()
+            reader.pane.content.read(cx).bounds().center()
         });
         let anchor = reader.read_with(visual, |reader, cx| {
             reader
+                .pane
                 .content
                 .read(cx)
                 .rendered_source_at(Some(position))
@@ -619,6 +626,7 @@ mod tests {
         visual.run_until_parked();
         let anchored = reader.read_with(visual, |reader, cx| {
             reader
+                .pane
                 .content
                 .read(cx)
                 .rendered_position_for_source(anchor.0, anchor.1)
@@ -773,7 +781,7 @@ mod tests {
 
     /// Measure actual shaped text, including the mixed-font inline paragraph.
     fn read_code_widths(reader: &Reader, cx: &App) -> [Pixels; 3] {
-        let state = reader.content.read(cx);
+        let state = reader.pane.content.read(cx);
         let bounds = state.bounds();
         let mut segments = std::collections::BTreeSet::new();
         for y in (0..f32::from(bounds.size.height).min(500.) as usize).step_by(4) {
@@ -988,7 +996,7 @@ mod tests {
 
     /// Width of the first four rendered characters of every visible segment.
     fn segment_widths(reader: &Reader, cx: &App) -> std::collections::BTreeMap<usize, Pixels> {
-        let state = reader.content.read(cx);
+        let state = reader.pane.content.read(cx);
         let bounds = state.bounds();
         let mut widths = std::collections::BTreeMap::new();
         for y in (0..f32::from(bounds.size.height) as usize).step_by(2) {

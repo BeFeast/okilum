@@ -231,11 +231,11 @@ mod tests {
             r.tree_focus.focus(window, cx);
         });
         visual.run_until_parked();
-        let history = reader.read_with(visual, |r, _| r.navigation.history.clone());
+        let history = reader.read_with(visual, |r, _| r.pane.navigation.history.clone());
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
-            assert_eq!(r.navigation.history, history);
+            assert_eq!(r.pane.navigation.history, history);
             assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.pane.file_preview.is_none());
             assert!(r.tree_preview.is_open());

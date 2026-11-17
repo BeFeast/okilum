@@ -416,15 +416,15 @@ impl Reader {
     /// A link hovered in this document; one left over from a document that
     /// navigation replaced does not count.
     pub(super) fn pointer_on_link(&self) -> bool {
-        self.pointer_link
-            .as_ref()
-            .is_some_and(|(_, generation)| *generation == self.navigation.preparation_generation)
+        self.pointer_link.as_ref().is_some_and(|(_, generation)| {
+            *generation == self.pane.navigation.preparation_generation
+        })
     }
 
     /// The hovered link when text is selected: the only case where the
     /// TextView's own link click does not run (#943).
     pub(super) fn hovered_link_with_selection(&self, cx: &App) -> Option<String> {
-        if !self.pointer_on_link() || self.content.read(cx).selected_text().is_empty() {
+        if !self.pointer_on_link() || self.pane.content.read(cx).selected_text().is_empty() {
             return None;
         }
         self.pointer_link.as_ref().map(|(url, _)| url.clone())
@@ -439,7 +439,7 @@ impl Reader {
         {
             return None;
         }
-        let selection = self.content.read(cx).selected_text();
+        let selection = self.pane.content.read(cx).selected_text();
         let date = reminder_dates::parse(&selection, today())?;
         Some((selection, date))
     }
@@ -687,7 +687,9 @@ mod visual_tests {
         // A selection that is more than a date must not offer the action. The
         // positive case below proves this probe would see the item if present.
         reader.update(visual, |v, cx| {
-            v.content.update(cx, |content, cx| content.select_all(cx))
+            v.pane
+                .content
+                .update(cx, |content, cx| content.select_all(cx))
         });
         let at = origin + point(px(20.), px(10.));
         visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
@@ -704,7 +706,7 @@ mod visual_tests {
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        let selected = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let selected = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert_eq!(selected.trim(), "2026-11-01", "drag precondition");
 
         // The right click that opens the menu must not discard the selection.
@@ -746,10 +748,12 @@ mod visual_tests {
 
         // Negative control: a selection that is more than a date offers nothing.
         reader.update(visual, |v, cx| {
-            v.content.update(cx, |content, cx| content.select_all(cx))
+            v.pane
+                .content
+                .update(cx, |content, cx| content.select_all(cx))
         });
         visual.run_until_parked();
-        let everything = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let everything = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(everything.contains("second paragraph"), "{everything:?}");
         assert!(reader
             .read_with(visual, |v, cx| v.reminder_for_selection(cx))
@@ -772,7 +776,7 @@ mod visual_tests {
         )
         .unwrap();
         let (reader, visual) = mount(cx, &root, &state);
-        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let bounds = reader.read_with(visual, |v, cx| v.pane.content.read(cx).bounds());
         let origin = reader.read_with(visual, |v, cx| {
             crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
         });
@@ -782,7 +786,7 @@ mod visual_tests {
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        let selected = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let selected = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert_eq!(selected.trim(), "2026-11-01", "drag precondition");
         // Find the link by real hover events, not by guessed coordinates.
         let link = (20..200).step_by(4).find_map(|y| {
@@ -809,13 +813,13 @@ mod visual_tests {
         visual.run_until_parked();
         // A link left under the pointer by navigation is stale (review).
         reader.update(visual, |v, _| {
-            v.navigation.preparation_generation =
-                v.navigation.preparation_generation.wrapping_add(1)
+            v.pane.navigation.preparation_generation =
+                v.pane.navigation.preparation_generation.wrapping_add(1)
         });
         assert!(!reader.read_with(visual, |v, _| v.pointer_on_link()));
         reader.update(visual, |v, _| {
-            v.navigation.preparation_generation =
-                v.navigation.preparation_generation.wrapping_sub(1)
+            v.pane.navigation.preparation_generation =
+                v.pane.navigation.preparation_generation.wrapping_sub(1)
         });
         // Positive control: on the selection the reminder is still offered.
         let inside = origin + point(px(20.), px(10.));

@@ -423,7 +423,12 @@ mod tests {
                 if let Some(editing) = &r.editing {
                     editing.input().focus_handle(cx).focus(window, cx);
                 } else {
-                    r.content.read(cx).focus_handle().clone().focus(window, cx);
+                    r.pane
+                        .content
+                        .read(cx)
+                        .focus_handle()
+                        .clone()
+                        .focus(window, cx);
                 }
                 cx.notify();
             });

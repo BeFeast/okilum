@@ -138,7 +138,8 @@ impl Reader {
     ) {
         let Some(editing) = &self.editing else {
             self.scroll_to_block(heading.target.block, cx);
-            self.content
+            self.pane
+                .content
                 .read(cx)
                 .focus_handle()
                 .clone()
@@ -155,12 +156,12 @@ impl Reader {
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
         self.cancel_pending_landing();
-        let request = self.navigation.landing_generation;
+        let request = self.pane.navigation.landing_generation;
         input.read(cx).focus_handle(cx).focus(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = line;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.navigation.landing_generation != request
+                if this.pane.navigation.landing_generation != request
                     || this.vault_root != root
                     || this.pane.current_rel != rel
                     || this
@@ -192,7 +193,7 @@ impl Reader {
                 let reader = cx.weak_entity();
                 window.on_next_frame(move |window, cx| {
                     let _ = reader.update(cx, |reader, cx| {
-                        if reader.navigation.landing_generation != request
+                        if reader.pane.navigation.landing_generation != request
                             || reader.vault_root != root
                             || reader.pane.current_rel != rel
                             || reader
@@ -305,6 +306,7 @@ mod tests {
                 );
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -591,6 +593,7 @@ mod tests {
             assert!(reader.link_notice.is_none());
             assert_eq!(
                 reader
+                    .pane
                     .content
                     .read(cx)
                     .list_state()
@@ -900,6 +903,7 @@ mod tests {
                 assert_eq!(input.value().as_ref(), original);
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -911,6 +915,7 @@ mod tests {
             } else {
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
