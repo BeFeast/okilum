@@ -1375,9 +1375,15 @@ impl Reader {
             .gap_3();
         match section {
             Section::Projects => {
-                body = body
-                    .overflow_hidden()
-                    .child(div().text_lg().child("Projects"));
+                body = body.overflow_hidden().child(
+                    h_flex()
+                        .w_full()
+                        .max_w(px(760.))
+                        .justify_between()
+                        .items_center()
+                        .child(div().text_lg().child("Projects"))
+                        .child(crate::reader_projects_help::entry()),
+                );
                 body = match &self.project_navigation.picker {
                     Some(picker) => body.child(div().flex_1().min_h_0().child(picker.clone())),
                     None => body.child("Loading projects…"),

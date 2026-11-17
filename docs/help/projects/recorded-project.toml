@@ -1,0 +1,7 @@
+# Okilum project manifest, created in Okilum (okilum#1475).
+schema_version = 1
+slug = "kitchen-remodel"
+name = "Kitchen remodel"
+kind = "knowledge"
+domain = "Kitchen remodel"
+index = "Kitchen remodel/@index.md"

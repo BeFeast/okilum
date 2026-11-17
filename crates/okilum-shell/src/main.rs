@@ -172,6 +172,7 @@ mod url_protocol;
 mod vault_name;
 mod version_info;
 use reader_link_navigation::handle_link;
+mod contextual_help;
 #[cfg(test)]
 mod input_anchor_tests;
 #[cfg(test)]
@@ -193,6 +194,7 @@ mod reader_document_decorations;
 mod reader_features;
 mod reader_file_access_notice;
 mod reader_help_assets;
+mod reader_projects_help;
 mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;

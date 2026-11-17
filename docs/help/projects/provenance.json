@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "recorded_on": "2026-11-17",
+  "platform": "Linux x86_64",
+  "build": "0.1.7838",
+  "source_commit": "aef9f091571c5c1367509b05ef6fe0ce2ea5052e",
+  "artifact_url": "https://updates.befeast.com/okilum/linux/builds/7838/Okilum-x86_64.AppImage",
+  "artifact_sha256": "6870b950292908270b73a19ade71a453240503360f34f5f41a8997abedba684f",
+  "capture": "Real production GPUI application from the published, checksum-verified beta AppImage; private Xvfb display, isolated HOME/XDG/state and software Vulkan (lavapipe) on maestro. The practice vault, notes and records are synthetic tutorial content created by session.sh. No source fixture, T3 server, Manager or repository was used.",
+  "editing": "Continuous 15 fps x11grab with the real cursor, driven by actions.py. No cuts or speed changes. English action captions were added in a band below the unmodified 1440x960 UI; no audio. Raw recording and per-step frames retained at /home/god/work/qa-evidence/issue-2356/take/ (1-day scratch).",
+  "saved_state": {
+    "manifest": "recorded-project.toml",
+    "cards": "recorded-board-local.toml",
+    "card_title": "Order tile samples",
+    "card_state": "todo",
+    "cards_sha256_after_reopen": "f562867bc8e62fa70c2195576d4dc907c375903a38b0eeb85ad7eaac37be797a"
+  },
+  "website": "https://okilum.app/help/projects/",
+  "video": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1440,
+        "height": 1056
+      }
+    ],
+    "format": {
+      "duration": "135.333333",
+      "size": "855840"
+    }
+  },
+  "files": {
+    "index.html": "414ba61d28f3d88e1eb2a4a33c86ae475b9b66f9fdc5ac00cf46748b14503057",
+    "setup.md": "cb6098a6adb46059e31c3b705bce3ed7b8b9ce0bd1a16cee5b840003489d80b3",
+    "captions.vtt": "7b70995bc789d23d2b95d4fa795ff46bb6c1310b12def1b7285d14d96e0466b7",
+    "assets/projects-tutorial.mp4": "2aade75c3557cf4e2854609df651fb9a1d65d2f27c1c751fa50b43c10804801d",
+    "assets/projects-board.png": "0e064c48b85608796bb73597dda669eb795c420bf3e127ba0e629afe6bda0a04",
+    "assets/Manrope.ttf": "3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6",
+    "assets/OFL.txt": "58172e0c0fac2cda8a37b348164bb55e44b0e69051e557e92b1d3f6910141f7b",
+    "recorded-project.toml": "0e448f764075551598824cb9c0e27810b21bac8ea7d24465f84c067e292f87db",
+    "recorded-board-local.toml": "f562867bc8e62fa70c2195576d4dc907c375903a38b0eeb85ad7eaac37be797a",
+    "events.json": "7851c173d3581dee498e3724983221522ddbc33f1e609bf25f07e010e1cfc83e",
+    "actions.py": "660d2c0d6c8b1f75a2a7e033e5fadd650db0e5454b74bf3ca70ca1d6243497f0",
+    "session.sh": "dc54a38aaec8afd5bdc9f5d04a128479ceff54eda841cfd16ece4a598562ee35"
+  }
+}
