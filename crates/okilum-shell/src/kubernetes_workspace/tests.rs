@@ -1186,3 +1186,58 @@ fn export_labels_rows_by_their_own_session_across_retarget_failure_and_restart(
     );
     assert_eq!(m["log_session"]["has_sent_rows"], false);
 }
+
+/// Review (terra) item 3: the copied command's note states the session's
+/// actual UID state, never a verification that did not happen.
+#[test]
+fn copy_note_reflects_pending_failed_replaced_and_verified_checks() {
+    let data = fixtures::fixture();
+    let pod = data.pods().iter().find(|p| p.meta.uid == "pod-a").unwrap();
+    let target = model::LogTarget::new(&data.scope, pod, "api", false).unwrap();
+    let note = |phase: dock::Phase, verified_at: Option<std::time::SystemTime>| {
+        dock::copy_note(&dock::Session {
+            target: target.clone(),
+            phase,
+            follow: true,
+            verified_at,
+            received: false,
+            diagnostic: String::new(),
+            pending_bytes: 0,
+        })
+    };
+    let pending = note(dock::Phase::Verifying, None);
+    assert!(
+        pending.contains("still running") && !pending.contains("verified UID"),
+        "{pending}"
+    );
+    let failed = note(
+        dock::Phase::NotStarted(okilum_core::kubernetes::Failure::Forbidden {
+            detail: "pods is forbidden".into(),
+        }),
+        None,
+    );
+    assert!(
+        failed.contains("failed") && !failed.contains("verified UID"),
+        "{failed}"
+    );
+    let replaced = note(
+        dock::Phase::Replaced {
+            uid: "pod-a2".into(),
+        },
+        None,
+    );
+    assert!(
+        replaced.contains("now refers to Pod UID pod-a2"),
+        "{replaced}"
+    );
+    let stopped = note(dock::Phase::Stopped, None);
+    assert!(stopped.contains("was not verified"), "{stopped}");
+    let verified = note(
+        dock::Phase::Receiving,
+        Some(std::time::SystemTime::UNIX_EPOCH),
+    );
+    assert!(verified.contains("verified UID pod-a"), "{verified}");
+    for text in [&pending, &failed, &replaced, &stopped, &verified] {
+        assert!(text.contains("by name"), "{text}");
+    }
+}
