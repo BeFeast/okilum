@@ -251,7 +251,7 @@ pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<std::ops::Range
             from = end;
         }
     }
-    ranges.sort_by(|a, b| b.start.cmp(&a.start));
+    ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
     ranges
 }
 
