@@ -38,7 +38,9 @@ jobs:
       matrix:
         os: [macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    # macOS runs every compiled control suite in sequence: 74 min on 14.11
+    # with a warm cache, past 75 min with a cold one.
+    timeout-minutes: 100
     steps:
       - name: Keep source and vendor patches in LF format
         shell: bash

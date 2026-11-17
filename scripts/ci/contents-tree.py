@@ -60,7 +60,7 @@ CONTROLS = [
  ('timer-survives-switch', 'contents2814_reading_timer_restarts_for_each_file'),
  ('click-by-index', 'contents2814_a_click_on_old_rows_reaches_the_same_node_in_a_newer_document'),
  ('linked-from-everywhere', 'linked2885_data_files_hide_linked_from_and_notes_keep_it'),
- ('hide-linked-backlinks', 'linked2885_a_linked_data_file_keeps_linked_from'),
+ ('hide-linked-backlinks', 'linked2905_a_linked_data_file_keeps_linked_from'),
  ('json-only-contents', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('no-current-mark', 'contents2814_yaml_toml_xml_rows_states_and_where_you_are'),
  ('indent-current', 'contents2814_a_caret_move_opens_the_path_and_scrolling_never_opens'),

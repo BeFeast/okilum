@@ -169,8 +169,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
     edit(base, 'if language_bounds.get().is_none() && scope.as_ref().is_some_and(|s| !s.fixed) {',
          'if language_bounds.get().is_none() && !crate::file2811_control("language-fallback")'
          ' && (scope.as_ref().is_some_and(|s| !s.fixed) || crate::file2811_control("fixed-language-menu")) {')
-    edit(base, 'if !super::file_language_is_fixed(self.selected_file()) {',
-         'if !super::file_language_is_fixed(self.selected_file()) || crate::file2811_control("fixed-language-button") {')
+    edit(base, '&& !super::file_language_is_fixed(self.selected_file())\n        {',
+         '&& (!super::file_language_is_fixed(self.selected_file())\n            || crate::file2811_control("fixed-language-button"))\n        {')
     edit('reader_editor/code_operations.rs', 'if !editing.markdown {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);',
          'if !editing.markdown && !crate::file2811_control("stale-conflict-sheet") {\n                editing.operations.preview = None;\n                self.publish_file_operation_notice(window, cx);')
     edit('reader_editor/code_operations.rs', 'usize::from(input.text().bytes().take(3).eq("\\u{feff}".bytes())) * 3',
@@ -195,6 +195,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
                 assert 'same-font native batching preserves exact geometry' in result.stdout, result.stdout
             elif control == 'restore-overrides-choice':
                 assert 'pending Read restoration never overrides a newer header view choice' in result.stdout, result.stdout
+            elif control == 'bom-body':
+                assert 'the BOM stays outside the Format span' in result.stdout, result.stdout
             elif control == 'cancel-status':
                 assert 'Cancel restores the live invalid JSON bottom line' in result.stdout, result.stdout
             print('FILE2811_COMPILED_NEGATIVE_FIRED', control, flush=True)
