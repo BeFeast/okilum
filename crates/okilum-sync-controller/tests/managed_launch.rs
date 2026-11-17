@@ -9,6 +9,10 @@ mod direct_daemon;
 use anyhow::{ensure, Context, Result};
 use direct_daemon::fixture_process;
 use direct_daemon::{wait, Peer};
+use okilum_core::{
+    file_editor::{FileEditor, Save},
+    note_files::{self, PreparedCopy},
+};
 use okilum_sync_controller::{
     daemon::{DaemonIdentity, Preparation},
     direct::Controller,
@@ -18,10 +22,6 @@ use okilum_sync_controller::{
     managed_launch::live_generation,
     pairing::{Descriptor, Registration, State},
     runtime::{Runtime, Selection},
-};
-use okilum_core::{
-    file_editor::{FileEditor, Save},
-    note_files::{self, PreparedCopy},
 };
 use okilum_write_authority::{Authority, Phase};
 use serde_json::{json, Value};
