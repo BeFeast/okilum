@@ -576,7 +576,12 @@ mod tests {
         let pasted = "![[shot.png]]";
         let note = format!("```\n{pasted}\n```\nintro {pasted} outro\n{pasted}\n");
         let start = note.find("intro ").unwrap() + "intro ".len();
-        let links = inserted_links(&note, start..start + pasted.len(), root, &[file.clone()]);
+        let links = inserted_links(
+            &note,
+            start..start + pasted.len(),
+            root,
+            std::slice::from_ref(&file),
+        );
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].locate(&note), Some(start..start + pasted.len()));
         // Typed elsewhere: the same link is found where it moved to.
