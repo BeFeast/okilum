@@ -81,18 +81,17 @@ impl Anchor {
     }
 
     /// For a drop before a block (#1615): the anchor's position only while
-    /// the block that followed it is still there, its first line starting
-    /// at that position. When the block was deleted, [`Self::locate`] may
-    /// still find the text before it and land before another block.
+    /// the block that followed it is still there, that is, while all of the
+    /// text captured after the anchor still follows it. When the block was
+    /// deleted, [`Self::locate`] may still find the text before it and land
+    /// before another block, even one with the same first line (two
+    /// `## Notes`).
     pub fn locate_block(&self, current: &str) -> Option<usize> {
         let at = self.locate(current)?;
-        let first_line = self
-            .after
-            .split('\n')
-            .next()
-            .unwrap_or_default()
-            .trim_end_matches('\r');
-        current[at..].starts_with(first_line).then_some(at)
+        let rest = current.get(at..)?;
+        let intact =
+            rest.starts_with(&self.after) && (!self.to_end || rest.len() == self.after.len());
+        intact.then_some(at)
     }
 
     /// The position of `expected` text that was inserted at the anchor, if it
@@ -197,6 +196,16 @@ mod tests {
             "positive control: locate alone"
         );
         assert_eq!(anchor.locate_block(&deleted), None);
+        // Two blocks with the same first line: deleting the target must not
+        // place the drop before the other one.
+        let twice = "# Title\n\nIntro.\n\n## Notes\n\nFirst notes.\n\n## Notes\n\nSecond notes.\n";
+        let target = Anchor::at(twice, twice.find("## Notes").unwrap());
+        let deleted = twice.replacen("## Notes\n\nFirst notes.\n\n", "", 1);
+        assert!(
+            target.locate(&deleted).is_some(),
+            "positive control: locate alone"
+        );
+        assert_eq!(target.locate_block(&deleted), None);
         // The end of the note: no block to keep.
         let end = Anchor::at(source, source.len());
         assert_eq!(
