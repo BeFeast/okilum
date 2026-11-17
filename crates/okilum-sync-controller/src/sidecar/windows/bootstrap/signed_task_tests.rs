@@ -148,9 +148,13 @@ fn windows_signed_task_survives_package_move_and_owns_stop() -> Result<()> {
     same_identity(&before, &refreshed);
     assert_ne!(before.generation.id, refreshed.generation.id);
     assert_eq!(selection, private::read(&state.join("runtime.json"))?);
+    // Each helper start re-serializes config.xml with its own attribute order;
+    // devices, folders and options must be the same document.
     assert_eq!(
-        configuration,
-        private::public_file(&state.join("config").join("config.xml"))?
+        xmltree::Element::parse(configuration.as_slice())?,
+        xmltree::Element::parse(
+            private::public_file(&state.join("config").join("config.xml"))?.as_slice()
+        )?
     );
     let new_journal = store
         .begin(Instant::now() + Duration::from_secs(5))?
