@@ -153,7 +153,7 @@ impl Host for Fake {
         m.selected = b.supervisor.clone();
         m.after()
     }
-    fn ready(&mut self, _: &Binding, _: Instant) -> Result<()> {
+    fn ready(&mut self, _: &mut Fake, _: &Binding, _: Instant) -> Result<()> {
         let mut m = self.0.borrow_mut();
         m.before("authenticated ready identity")?;
         ensure!(m.running, "helper not running");
