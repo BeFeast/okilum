@@ -79,7 +79,7 @@ impl Worker {
         self.0.store(true, Ordering::Release);
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "kubernetes-ui-harness"))]
 impl Worker {
     /// A worker without a process for UI tests, with its cancel flag.
     pub(crate) fn detached() -> (Self, Arc<AtomicBool>) {

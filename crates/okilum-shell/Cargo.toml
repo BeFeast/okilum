@@ -26,6 +26,9 @@ embed-native-harness = []
 data-view-native-harness = ["gpui/bench-support"]
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
+# Non-publishing Kubernetes Workspace visual harness (#3012): synthetic
+# in-process data, no kubectl; opened only by OKILUM_KUBERNETES_HARNESS.
+kubernetes-ui-harness = []
 
 [dependencies]
 okilum-write-authority = { path = "../okilum-write-authority" }
