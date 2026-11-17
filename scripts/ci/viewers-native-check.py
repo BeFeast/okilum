@@ -26,6 +26,25 @@ GROUPS = {
         "showcase_virtual_log_selects_both_sources_without_mutating_them",
         "showcase_jpeg_and_bmp_embeds_resolve_to_real_files",
     ]),
+    # HEIC/HEIF platform decoders (#2177): macOS sips/ImageIO decodes real
+    # pixels; the hosted Windows runner has no Store HEIF/HEVC extensions, so
+    # the workflow pins the named missing-codec fallback.
+    "heic": ("okilum-shell", None, "heic", [
+        "issue2177_non_heif_bytes_never_reach_a_decoder",
+        "issue2177_missing_decoder_messages_name_the_component",
+        "issue2984_oversized_source_is_rejected_before_decoding",
+        "issue2984_heic_and_heif_open_the_image_viewer_and_embed_decoder",
+    ] + ([
+        "issue2177_windows_wic_decodes_or_names_the_missing_extensions",
+        "issue2177_windows_job_child_failure_and_timeout_are_errors",
+    ] if sys.platform == "win32" else [
+        "issue2984_real_decoder_reads_hevc_without_changing_the_source",
+        "issue2984_decoder_failure_and_timeout_are_errors",
+        "issue2984_native_heic_preview_reports_errors_and_refreshes_assets",
+    ] + ([
+        "issue2984_multi_image_container_uses_first_still",
+        "issue2984_bundled_decoder_wins_over_the_host",
+    ] if sys.platform.startswith("linux") else []))),
 }
 
 
