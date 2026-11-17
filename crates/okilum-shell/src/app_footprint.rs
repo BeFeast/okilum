@@ -179,6 +179,8 @@ pub(crate) struct Report {
     pub exported_drafts: Vec<PathBuf>,
     pub kept_holding_vault: Vec<PathBuf>,
     pub failed: Vec<(PathBuf, String)>,
+    /// Roots emptied around Sync's retained identity instead of removed (#588).
+    pub kept_for_sync: Vec<PathBuf>,
 }
 
 /// Vault roots recorded in the state dir. Windows stores verbatim prefixes.
@@ -270,6 +272,20 @@ pub(crate) fn purge(
     temp: &Path,
     documents: &Path,
 ) -> Report {
+    purge_keeping(roots, &[], state, temp, documents)
+}
+
+/// `purge`, but every path in `keep` survives even when a root contains it.
+/// Matching ignores case where the filesystem usually does: on macOS
+/// `Application Support/okilum` (config) is the same folder as
+/// `Application Support/Okilum`, the parent of Sync's identity (#588).
+pub(crate) fn purge_keeping(
+    roots: &[PathBuf],
+    keep: &[PathBuf],
+    state: Option<&Path>,
+    temp: &Path,
+    documents: &Path,
+) -> Report {
     let mut report = Report::default();
     let vaults = state.map(recorded_vaults).unwrap_or_default();
     if let Some(state) = state {
@@ -289,6 +305,11 @@ pub(crate) fn purge(
             report.kept_holding_vault.push(root.clone());
             continue;
         }
+        if keep.iter().any(|kept| inside(kept, root, IGNORE_CASE)) {
+            remove_except(root, keep, &mut report);
+            report.kept_for_sync.push(root.clone());
+            continue;
+        }
         match std::fs::remove_dir_all(root) {
             Ok(()) => report.removed.push(root.clone()),
             Err(error) => report.failed.push((root.clone(), error.to_string())),
@@ -301,6 +322,31 @@ pub(crate) fn purge(
         }
     }
     report
+}
+
+/// macOS (APFS default) and Windows compare names without case.
+const IGNORE_CASE: bool = cfg!(any(windows, target_os = "macos"));
+
+/// Remove everything in `dir` except the paths in `keep` and their ancestors.
+fn remove_except(dir: &Path, keep: &[PathBuf], report: &mut Report) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if keep.iter().any(|kept| inside(&path, kept, IGNORE_CASE)) {
+            continue;
+        }
+        if keep.iter().any(|kept| inside(kept, &path, IGNORE_CASE)) {
+            remove_except(&path, keep, report);
+            continue;
+        }
+        let removed = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
+        match removed {
+            Ok(()) => report.removed.push(path),
+            Err(error) => report.failed.push((path, error.to_string())),
+        }
+    }
 }
 
 /// Whether `path` is `root` or below it. NTFS paths are case-insensitive, so
@@ -619,27 +665,35 @@ const SYNC_STOP_FAILED: &str = "Sync on this Mac could not be stopped, so nothin
 /// The account's Sync helper and its login agent belong to this app bundle
 /// (#588). Stop and unregister them before uninstall removes anything; Sync's
 /// identity and journal stay. An isolated Reader profile never touches them.
+/// Returns Sync's retained identity folders, which the purge must keep: the
+/// config root `Application Support/okilum` is the same folder as their
+/// parent `Application Support/Okilum` on a case-insensitive volume.
 #[cfg(target_os = "macos")]
-fn stop_sync_for_uninstall() -> anyhow::Result<()> {
-    if crate::reader_history::isolated_state_directory().is_some() {
-        return Ok(());
+fn stop_sync_for_uninstall() -> anyhow::Result<Vec<PathBuf>> {
+    use anyhow::Context as _;
+    let sync = okilum_sync_controller::sidecar::macos::account_state_directory()?;
+    let direct = sync
+        .parent()
+        .context("Sync state parent unavailable")?
+        .join("SyncDirect");
+    if crate::reader_history::isolated_state_directory().is_none() {
+        // Checks the login agent even when Sync's state folder is gone; the
+        // signing policy is needed only when a journal exists.
+        okilum_sync_controller::sidecar::macos::bootstrap::disable_current_app(
+            crate::reader_settings_sync::native_signing_policy,
+        )?;
     }
-    // Checks the login agent even when Sync's state folder is gone; the
-    // signing policy is needed only when a journal exists.
-    okilum_sync_controller::sidecar::macos::bootstrap::disable_current_app(
-        crate::reader_settings_sync::native_signing_policy,
-    )
+    Ok(vec![sync, direct])
 }
 
 /// Uninstall order (#588): Sync is stopped first, and when that fails nothing
 /// is purged, exported or moved to the Trash.
 #[cfg(any(target_os = "macos", test))]
-fn stop_then_remove<T>(
-    stop: impl FnOnce() -> anyhow::Result<()>,
-    remove: impl FnOnce() -> T,
+fn stop_then_remove<K, T>(
+    stop: impl FnOnce() -> anyhow::Result<K>,
+    remove: impl FnOnce(K) -> T,
 ) -> anyhow::Result<T> {
-    stop()?;
-    Ok(remove())
+    Ok(remove(stop()?))
 }
 
 /// Settings → About → Uninstall Okilum…: one confirmation, then remove
@@ -688,17 +742,23 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
         if answer.recv().await != Ok(true) {
             return;
         }
+        // No Sync action of this app (Settings, Fix, forwarded `okilum sync`
+        // commands) may run between the helper's stop and the quit.
+        cx.update(crate::reader_settings_sync::suspend);
         // The Sync helper runs from inside the bundle that goes to the Trash.
         // Stop it and unregister its agent first; otherwise remove nothing.
         let removed = cx
             .background_executor()
             .spawn(async move {
-                stop_then_remove(stop_sync_for_uninstall, || {
+                // Waits for an in-flight Sync action and blocks new ones.
+                let _serial = crate::reader_settings_sync::serial_actions();
+                stop_then_remove(stop_sync_for_uninstall, |keep| {
                     let home = std::env::var_os("HOME")
                         .map(PathBuf::from)
                         .unwrap_or_default();
-                    let report = purge(
+                    let report = purge_keeping(
                         &roots(),
+                        &keep,
                         state.as_deref(),
                         &std::env::temp_dir(),
                         &home.join("Documents"),
@@ -733,6 +793,8 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
                     cx,
                 )
             });
+            // Okilum stays: serve paired computers again.
+            cx.update(crate::reader_settings_sync::serve_paired);
             if let Ok(answer) = shown {
                 let _ = answer.await;
             }
@@ -1018,8 +1080,10 @@ mod tests {
         let documents = state.parent().unwrap().join("Documents");
         let mut stopped = false;
         let outcome = stop_then_remove(
-            || anyhow::bail!("recovery pending: Sync helper is not answering"),
-            || purge(&fixture_roots, Some(&state), &documents, &documents),
+            || -> anyhow::Result<()> {
+                anyhow::bail!("recovery pending: Sync helper is not answering")
+            },
+            |()| purge(&fixture_roots, Some(&state), &documents, &documents),
         );
         assert!(outcome.is_err());
         assert!(state.join("settings.json").exists(), "nothing was purged");
@@ -1029,12 +1093,53 @@ mod tests {
                 stopped = true;
                 Ok(())
             },
-            || purge(&fixture_roots, Some(&state), &documents, &documents),
+            |()| purge(&fixture_roots, Some(&state), &documents, &documents),
         )
         .unwrap();
         assert!(stopped);
         assert_eq!(report.removed, vec![state.clone()]);
         assert!(!state.exists());
+    }
+
+    #[test]
+    fn purge_keeps_sync_identity_inside_a_config_root_that_shares_its_folder() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().join("Application Support");
+        // The config root as `roots()` names it on macOS.
+        let config = base.join("okilum");
+        write(&config.join("reader-layout.json"), "{}");
+        write(&config.join("profiles/brain.json"), "{}");
+        write(&config.join("Sync/journal.json"), "{}");
+        write(&config.join("Sync/config/cert.pem"), "certificate");
+        write(&config.join("SyncDirect/journal.json"), "{}");
+        let documents = fixture.path().join("Documents");
+        // Sync's own spelling; on a case-insensitive volume the same folder.
+        let spelled = if IGNORE_CASE { "Okilum" } else { "okilum" };
+        let keep = vec![
+            base.join(spelled).join("Sync"),
+            base.join(spelled).join("SyncDirect"),
+        ];
+        let report = purge_keeping(
+            std::slice::from_ref(&config),
+            &keep,
+            None,
+            &documents,
+            &documents,
+        );
+        assert!(!config.join("reader-layout.json").exists());
+        assert!(!config.join("profiles").exists());
+        assert_eq!(
+            std::fs::read_to_string(config.join("Sync/config/cert.pem")).unwrap(),
+            "certificate"
+        );
+        assert!(config.join("Sync/journal.json").exists());
+        assert!(config.join("SyncDirect/journal.json").exists());
+        assert_eq!(report.kept_for_sync, vec![config.clone()]);
+        assert!(report.failed.is_empty(), "{report:?}");
+        // Positive control: without a kept path the root goes as before.
+        let report = purge(std::slice::from_ref(&config), None, &documents, &documents);
+        assert_eq!(report.removed, vec![config.clone()]);
+        assert!(!config.exists());
     }
 
     #[cfg(unix)]
