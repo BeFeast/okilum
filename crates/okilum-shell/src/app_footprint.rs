@@ -611,6 +611,28 @@ case "$app" in
 esac
 "#;
 
+/// Shown when uninstall stops before removing anything (#588).
+#[cfg(target_os = "macos")]
+const SYNC_STOP_FAILED: &str = "Sync on this Mac could not be stopped, so nothing was removed. \
+     Open Settings → Sync, press Fix if Sync needs attention, then try again.";
+
+/// The account's Sync helper and its login agent belong to this app bundle
+/// (#588). Stop and unregister them before uninstall removes anything; Sync's
+/// identity and journal stay. An isolated Reader profile never touches them.
+#[cfg(target_os = "macos")]
+fn stop_sync_for_uninstall() -> anyhow::Result<()> {
+    use okilum_sync_controller::sidecar::macos::{account_state_directory, bootstrap};
+    if crate::reader_history::isolated_state_directory().is_some() {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(account_state_directory()?) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    bootstrap::disable_current_app(crate::reader_settings_sync::native_signing_policy()?)
+}
+
 /// Settings → About → Uninstall Okilum…: one confirmation, then remove
 /// everything Okilum created for this user, move the app to the Trash and quit.
 #[cfg(target_os = "macos")]
@@ -652,8 +674,28 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
         },
         "Uninstall",
     );
+    let asking = window.window_handle();
     cx.spawn(async move |cx| {
         if answer.recv().await != Ok(true) {
+            return;
+        }
+        // The Sync helper runs from inside the bundle that goes to the Trash.
+        // Stop it and unregister its agent first; otherwise remove nothing.
+        let stopped = cx
+            .background_executor()
+            .spawn(async { stop_sync_for_uninstall() })
+            .await;
+        if let Err(error) = stopped {
+            diagnostic_error!("Okilum uninstall cancelled, Sync could not be stopped: {error:#}");
+            let _ = asking.update(cx, |_, window, cx| {
+                let _ = window.prompt(
+                    gpui::PromptLevel::Critical,
+                    "Okilum was not uninstalled",
+                    Some(SYNC_STOP_FAILED),
+                    &["OK"],
+                    cx,
+                );
+            });
             return;
         }
         cx.update(|cx| {

@@ -1378,7 +1378,7 @@ fn perform_with_locations(
     })?
 }
 #[cfg(target_os = "macos")]
-fn native_signing_policy(
+pub(crate) fn native_signing_policy(
 ) -> anyhow::Result<okilum_sync_controller::sidecar::macos::bootstrap::SigningPolicy> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{

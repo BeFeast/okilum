@@ -136,6 +136,14 @@ account uninstall does not discover or remove QA profiles or their vaults.
 Okilum → Settings → About → **Uninstall Okilum…** shows one confirmation with
 what goes and which vaults stay, then:
 
+0. stops Sync on this Mac if it was set up (#588): the signed helper gets an
+   authenticated Stop, its exit is captured, the retirement is recorded and the
+   `com.befeast.okilum.sync` login agent is unregistered
+   (`sidecar::macos::bootstrap::disable_current_app`). Sync's identity, Syncthing
+   configuration and journal in `~/Library/Application Support/Okilum/Sync/`
+   stay, and the hub is not told. If Sync cannot be stopped (helper not
+   answering, unconfirmed registration, unfinished update or another pending
+   operation), the uninstall stops here and **nothing** is removed;
 1. exports unsaved drafts to `~/Documents/Okilum unsaved drafts/` and removes the
    roots: `~/Library/Application Support/com.befeast.okilum/` (state),
    `~/Library/Application Support/okilum/` (config), `~/Library/Caches/okilum/`
@@ -154,9 +162,9 @@ The bundle id is read from the app's `Info.plist` (a build that is not inside an
 `.app` bundle cleans nothing after quitting), so the QA build
 (`com.befeast.okilum.intel-qa`) cleans its own domain; anything that is not
 `com.befeast.okilum[.*]` is left alone. Moving the app to the Trash alone
-cannot clean these up. There are no LaunchAgents or keychain items;
-LaunchServices forgets the document types and the `okilum:` URL scheme with
-the app.
+cannot clean these up. The only login agent is Sync's, unregistered in step 0;
+there are no keychain items. LaunchServices forgets the document types and the
+`okilum:` URL scheme with the app.
 
 ### AppImage desktop payload (#1716)
 

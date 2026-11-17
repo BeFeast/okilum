@@ -136,7 +136,7 @@ fn service(plist: &str) -> Result<Retained<SMAppService>> {
     // Only our current app's fixed bundled plist, after checking runtime OS.
     Ok(unsafe { SMAppService::agentServiceWithPlistName(&NSString::from_str(plist)) })
 }
-fn service_status(plist: &str) -> Result<Status> {
+pub(super) fn service_status(plist: &str) -> Result<Status> {
     let status = unsafe { service(plist)?.status() };
     Ok(match status {
         SMAppServiceStatus::NotRegistered => Status::NotRegistered,

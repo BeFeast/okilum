@@ -120,6 +120,19 @@ pub(super) fn check_successor(current: &Envelope, next: &Envelope) -> Result<()>
     );
     Ok(())
 }
+/// What Settings → Uninstall Okilum… must do on macOS before anything is
+/// removed (#588). Uninstall never leaves the helper running or its agent
+/// registered; a state that cannot prove either refuses the uninstall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UninstallStop {
+    /// No ServiceManagement registration was ever attempted for this generation.
+    NotLaunched,
+    /// The claimed helper needs an authenticated Stop, captured exit and
+    /// durable retirement before its agent may be unregistered.
+    Retire,
+    /// A verified retirement is recorded; only the agent registration may remain.
+    Unregister,
+}
 impl Envelope {
     /// Only for a NEW explicit enrollment at the one native account state root.
     /// Legacy migration and repeated Enable must never call this to recover.
@@ -139,6 +152,45 @@ impl Envelope {
         self.launch
             .as_ref()
             .is_some_and(|launch| launch.retired.is_some())
+    }
+    /// Never re-arms, never infers a stopped helper from absence: an unconfirmed
+    /// registration, a different pending operation or an unfinished runtime
+    /// update is recovery pending and the uninstall removes nothing.
+    pub fn uninstall_stop(&self) -> Result<UninstallStop> {
+        ensure!(
+            self.update.is_none(),
+            "recovery pending: a Sync runtime update is unfinished"
+        );
+        let launch = self
+            .launch
+            .as_ref()
+            .context("recovery pending: this Sync connection has no launch record")?;
+        if launch.retired.is_some() {
+            ensure!(
+                self.intent == Intent::Disabled && self.stop.is_none(),
+                "recovery pending: the retired Sync helper changed state"
+            );
+            return Ok(UninstallStop::Unregister);
+        }
+        match launch.phase {
+            Phase::Ready => Ok(UninstallStop::NotLaunched),
+            Phase::Dispatched => {
+                anyhow::bail!("recovery pending: the Sync helper registration was never confirmed")
+            }
+            Phase::Claimed => {
+                match &self.stop {
+                    Some(operation) => ensure!(
+                        operation.reason == super::Reason::Disable,
+                        "recovery pending: a different Sync operation is unfinished"
+                    ),
+                    None => ensure!(
+                        self.intent == Intent::Enabled,
+                        "recovery pending: Sync was stopped without retiring its helper"
+                    ),
+                }
+                Ok(UninstallStop::Retire)
+            }
+        }
     }
     #[cfg(any(target_os = "macos", test))]
     pub(crate) fn complete_native_retirement(&self, proof: VerifiedExit) -> Result<Self> {
@@ -312,6 +364,48 @@ mod tests {
                 generation: saved.launch.as_ref().unwrap().generation,
             })
             .unwrap()
+    }
+    #[test]
+    fn uninstall_stops_a_claimed_helper_and_unregisters_only_after_verified_retirement(
+    ) -> Result<()> {
+        let claimed = claimed();
+        assert_eq!(claimed.uninstall_stop()?, UninstallStop::Retire);
+        // An interrupted uninstall resumes its own Disable, never a new one.
+        let (stopping, token) = stopping(&claimed);
+        assert_eq!(stopping.uninstall_stop()?, UninstallStop::Retire);
+        let retired = stopping.complete_native_retirement(VerifiedExit {
+            binding: claimed.binding.clone(),
+            token: token.clone(),
+        })?;
+        assert_eq!(retired.uninstall_stop()?, UninstallStop::Unregister);
+        // A generic stop completion is not retirement: the agent stays.
+        let completed = stopping.complete_stop(&token, &token.operation.scope)?;
+        assert!(completed.uninstall_stop().is_err());
+        // A re-armed generation after retirement has not registered yet.
+        let ready = retired.enable_retired_native_launch()?;
+        assert_eq!(ready.uninstall_stop()?, UninstallStop::NotLaunched);
+        Ok(())
+    }
+    #[test]
+    fn uninstall_refuses_unconfirmed_registration_foreign_operations_and_legacy_journals(
+    ) -> Result<()> {
+        let fresh = Envelope::first_with_launch(claimed().binding.clone());
+        assert_eq!(fresh.uninstall_stop()?, UninstallStop::NotLaunched);
+        let dispatched =
+            fresh.advance_launch(Phase::Ready, Phase::Dispatched, &fresh.binding.clone())?;
+        assert!(dispatched.uninstall_stop().is_err());
+        let claimed = claimed();
+        let scope = Scope {
+            installation: claimed.binding.installation,
+            instance: claimed.binding.instance,
+            generation: claimed.launch.as_ref().unwrap().generation,
+        };
+        let (removing, _) = claimed.remove(scope)?;
+        assert!(removing.uninstall_stop().is_err());
+        let mut legacy = claimed.clone();
+        legacy.launch = None;
+        assert!(legacy.uninstall_stop().is_err());
+        Ok(())
     }
     #[test]
     fn only_verified_retirement_can_grant_one_new_generation_without_changing_identity(

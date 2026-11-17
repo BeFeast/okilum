@@ -522,6 +522,153 @@ pub fn stop_isolated_current_app(policy: SigningPolicy) -> Result<()> {
     Ok(())
 }
 
+/// Authenticated owned-tree Stop of the live claimed generation, captured
+/// supervisor exit, then the durable verified retirement. Resumes its own
+/// interrupted Disable; no missing hint, PID or absence grants this.
+fn retire_live_generation(
+    store: &UnixStore,
+    saved: &crate::sidecar::authority::Envelope,
+    app: &Path,
+    executable: &str,
+    policy: &SigningPolicy,
+    deadline: Instant,
+) -> Result<()> {
+    use super::connection::NativeSupervisor;
+    use crate::sidecar::{
+        authority::{Reason, StopToken},
+        discovery::Discovered,
+    };
+    let binding = saved.binding();
+    let supervisor = NativeSupervisor::open(
+        app,
+        executable,
+        binding.clone(),
+        policy.app.clone(),
+        policy.helper.clone(),
+        std::time::Duration::from_secs(20),
+    )?;
+    let Discovered::Live(scope) = supervisor.inspect_until(deadline)? else {
+        anyhow::bail!(
+            "existing native Sync helper needs verified recovery; no replacement was started"
+        );
+    };
+    let token = {
+        let mut tx = store.begin(deadline)?;
+        ensure!(
+            tx.current()? == Some(saved),
+            "native journal changed during upgrade inspection"
+        );
+        if let Some(operation) = saved.stop() {
+            ensure!(
+                operation.reason == Reason::Disable && operation.scope == scope,
+                "a different native operation needs recovery"
+            );
+            StopToken {
+                journal_epoch: saved.journal_epoch(),
+                operation: operation.clone(),
+            }
+        } else {
+            let (next, token) = saved.disable(scope)?;
+            tx.commit(next)?;
+            token
+        }
+    };
+    let proof = supervisor.retire_for_upgrade(&token)?;
+    let mut tx = store.begin(deadline)?;
+    let retired = tx
+        .current()?
+        .context("native stop journal missing")?
+        .complete_native_retirement(proof)?;
+    tx.commit(retired)?;
+    Ok(())
+}
+
+/// Settings → Uninstall Okilum… (#588), the macOS counterpart of Windows
+/// `disable_current_app`: stop the account helper and unregister its agent
+/// before anything is removed. Identity, configuration and journal stay; hub
+/// revocation is not part of uninstall. Any state that cannot prove the helper
+/// stopped is an error, and the caller must then remove nothing.
+pub fn disable_current_app(policy: SigningPolicy) -> Result<()> {
+    use crate::sidecar::authority::launch::UninstallStop;
+    ensure!(
+        super::isolation::selected()?.is_none(),
+        "an isolated Sync profile is stopped with qa-stop"
+    );
+    let state = super::account_state_directory()?;
+    match fs::symlink_metadata(&state) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    let (app, executable) = installed_app()?;
+    let store = UnixStore::open_existing(&state)?;
+    // Serialises with Connect's retirement and re-arm of a native generation.
+    let _upgrade_lock = {
+        let path = state.join("native-upgrade");
+        private::directory(&path)?;
+        private::lock(&path)?
+    };
+    let saved = {
+        let tx = store.begin(deadline)?;
+        tx.current()?
+            .context("recovery pending: the Sync journal is missing")?
+            .clone()
+    };
+    let binding = saved.binding().clone();
+    ensure!(
+        Path::new(&binding.state_directory) == state,
+        "recovery pending: the Sync state folder changed"
+    );
+    let bundle = BundleGuard::new(
+        &app,
+        &executable,
+        binding.clone(),
+        policy.app.clone(),
+        policy.helper.clone(),
+        NativeSignature,
+    )?;
+    bundle.verify(&binding)?;
+    match saved.uninstall_stop()? {
+        UninstallStop::NotLaunched => ensure!(
+            matches!(
+                super::native::service_status(super::PLIST)?,
+                Status::NotRegistered | Status::NotFound
+            ),
+            "recovery pending: the Sync agent is registered without a confirmed helper"
+        ),
+        UninstallStop::Retire => {
+            retire_live_generation(&store, &saved, &app, &executable, &policy, deadline)?;
+            bundle.verify(&binding)?;
+            super::native::unregister_retired(&binding, deadline)?;
+        }
+        UninstallStop::Unregister => super::native::unregister_retired(&binding, deadline)?,
+    }
+    Ok(())
+}
+
+/// The signed installed app running this process: its bundle and executable name.
+fn installed_app() -> Result<(std::path::PathBuf, String)> {
+    let own = std::env::current_exe()?.canonicalize()?;
+    let executable = own
+        .file_name()
+        .and_then(|s| s.to_str())
+        .context("app executable unavailable")?
+        .to_owned();
+    let app = own
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .context("app bundle unavailable")?
+        .to_path_buf();
+    ensure!(
+        app.extension().is_some_and(|s| s == "app")
+            && own == app.join("Contents/MacOS").join(&executable),
+        "Sync requires its signed installed app"
+    );
+    Ok((app, executable))
+}
+
 pub(crate) fn managed_launch_reference(
     state: &Path,
 ) -> Result<Option<crate::managed_launch::Reference>> {
@@ -576,11 +723,7 @@ fn prepare_launch_ownership(
     policy: &SigningPolicy,
     deadline: Instant,
 ) -> Result<()> {
-    use super::connection::NativeSupervisor;
-    use crate::sidecar::{
-        authority::{launch::Phase, Reason, StopToken},
-        discovery::Discovered,
-    };
+    use crate::sidecar::authority::launch::Phase;
     let store = UnixStore::open_existing(state)?;
     let saved = {
         let tx = store.begin(deadline)?;
@@ -613,47 +756,7 @@ fn prepare_launch_ownership(
         return Ok(());
     }
     if !saved.native_launch_retired() {
-        let supervisor = NativeSupervisor::open(
-            app,
-            executable,
-            binding.clone(),
-            policy.app.clone(),
-            policy.helper.clone(),
-            std::time::Duration::from_secs(20),
-        )?;
-        let Discovered::Live(scope) = supervisor.inspect_until(deadline)? else {
-            anyhow::bail!(
-                "existing native Sync helper needs verified recovery; no replacement was started"
-            );
-        };
-        let token = {
-            let mut tx = store.begin(deadline)?;
-            ensure!(
-                tx.current()? == Some(&saved),
-                "native journal changed during upgrade inspection"
-            );
-            if let Some(operation) = saved.stop() {
-                ensure!(
-                    operation.reason == Reason::Disable && operation.scope == scope,
-                    "a different native operation needs recovery"
-                );
-                StopToken {
-                    journal_epoch: saved.journal_epoch(),
-                    operation: operation.clone(),
-                }
-            } else {
-                let (next, token) = saved.disable(scope)?;
-                tx.commit(next)?;
-                token
-            }
-        };
-        let proof = supervisor.retire_for_upgrade(&token)?;
-        let mut tx = store.begin(deadline)?;
-        let retired = tx
-            .current()?
-            .context("native stop journal missing")?
-            .complete_native_retirement(proof)?;
-        tx.commit(retired)?;
+        retire_live_generation(&store, &saved, app, executable, policy, deadline)?;
     }
     // The durable retirement can resume after interruption. No missing hint,
     // REST pause, process name or PID provides this permission.
