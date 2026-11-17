@@ -52,6 +52,8 @@ PHASES = {
     "note_open_core_preparation": "worker_ms",
     "note_open_rendered": "since_open_ms",
     "note_open_accept": "duration_ms",
+    "note_open_parse": "duration_ms",
+    "note_open_prepare": "duration_ms",
     "note_open_set_text": "duration_ms",
     "note_open_heading_inventory": "duration_ms",
     "note_open_parsed": "since_open_ms",

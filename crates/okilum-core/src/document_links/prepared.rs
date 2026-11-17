@@ -50,7 +50,7 @@ impl LinkState {
 
 /// Authored interpretation paired with the exact URL emitted into a rendered
 /// snapshot. Refresh never reconstructs this identity from a newer filesystem.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LinkIdentity {
     pub from: String,
     pub target: String,
