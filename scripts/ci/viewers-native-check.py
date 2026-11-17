@@ -40,11 +40,18 @@ GROUPS = {
     ] if sys.platform == "win32" else [
         "issue2984_real_decoder_reads_hevc_without_changing_the_source",
         "issue2984_decoder_failure_and_timeout_are_errors",
-        "issue2984_native_heic_preview_reports_errors_and_refreshes_assets",
-    ] + ([
+    ] + (["issue2984_native_heic_preview_reports_errors_and_refreshes_assets"]
+         if sys.platform.startswith("linux") else []) + ([
         "issue2984_multi_image_container_uses_first_still",
         "issue2984_bundled_decoder_wins_over_the_host",
     ] if sys.platform.startswith("linux") else []))),
+}
+
+# Known failures excluded from a group on one platform, each with its issue.
+SKIPS = {
+    # #3064: fails identically on unchanged main (viewers-native run 44037169749):
+    # after the file is overwritten, no image/fallback is drawn on macOS.
+    ("heic", "darwin"): ["issue2984_native_heic_preview_reports_errors_and_refreshes_assets"],
 }
 
 
@@ -57,14 +64,16 @@ def check(group):
         command += ["--test", target]
     if prefix:
         command.append(prefix)
-    listed = subprocess.run(command + ["--", "--list"], check=True,
+    skips = [arg for name in SKIPS.get((group, sys.platform), [])
+             for arg in ("--skip", name)]
+    listed = subprocess.run(command + ["--", "--list"] + skips, check=True,
                             stdout=subprocess.PIPE, text=True).stdout
     print(listed, flush=True)
     inventory = {line.removesuffix(": test").rsplit("::", 1)[-1]
                  for line in listed.splitlines() if line.endswith(": test")}
     if inventory != set(expected):
         raise RuntimeError(f"{group}: expected {expected}, discovered {sorted(inventory)}")
-    subprocess.run(command + ["--", "--test-threads=1"], check=True)
+    subprocess.run(command + ["--", "--test-threads=1"] + skips, check=True)
 
 
 if __name__ == "__main__":
