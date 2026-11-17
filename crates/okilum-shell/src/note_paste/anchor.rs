@@ -36,6 +36,40 @@ impl Anchor {
         }
     }
 
+    /// The position `offset` before a block in `source`, for a drop onto
+    /// that block (#1615). The text kept after it is the shortest start of
+    /// the rest of the note that occurs only once in it (the whole rest when
+    /// no start is unique), not just [`CONTEXT`] bytes: two sections that
+    /// share a longer opening (two `## Notes` with the same first lines) are
+    /// still told apart by [`Self::locate_block`].
+    pub fn at_block(source: &str, offset: usize) -> Self {
+        let mut anchor = Self::at(source, offset);
+        let rest = &source[anchor.offset..];
+        let once = |len: usize| occurs_once(source, &rest[..len]);
+        let len = if rest.is_empty() || !once(rest.len()) {
+            rest.len()
+        } else {
+            // A longer start of a unique start is unique too: search the
+            // shortest one.
+            let (mut low, mut high) = (1, rest.len());
+            while low < high {
+                let mid = ceil(rest, low + (high - low) / 2);
+                if mid >= high {
+                    break;
+                }
+                if once(mid) {
+                    high = mid;
+                } else {
+                    low = ceil(rest, mid + 1);
+                }
+            }
+            ceil(rest, high.min(rest.len()))
+        };
+        anchor.after = rest[..len].to_string();
+        anchor.to_end = anchor.offset + len == source.len();
+        anchor
+    }
+
     /// Whether text was typed right at the anchor since (#1611): what follows
     /// `at` (from [`Self::locate`]) in `current` is no longer what followed
     /// the anchor, and it starts with a visible character. A result inserted
@@ -170,6 +204,25 @@ fn unique(haystack: &str, needle: &str) -> Option<usize> {
     found.next().is_none().then_some(first)
 }
 
+/// Whether `needle` occurs exactly once in `haystack`, overlaps counted.
+fn occurs_once(haystack: &str, needle: &str) -> bool {
+    let Some(first) = haystack.find(needle) else {
+        return false;
+    };
+    let step = needle.chars().next().map_or(1, char::len_utf8);
+    haystack
+        .get(first + step..)
+        .is_none_or(|later| !later.contains(needle))
+}
+
+fn ceil(text: &str, mut at: usize) -> usize {
+    at = at.min(text.len());
+    while at < text.len() && !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
 fn floor(text: &str, mut at: usize) -> usize {
     while at > 0 && !text.is_char_boundary(at) {
         at -= 1;
@@ -196,6 +249,34 @@ mod tests {
             "positive control: locate alone"
         );
         assert_eq!(anchor.locate_block(&deleted), None);
+        // Two sections sharing more than the 48 bytes of context: the
+        // block anchor keeps text until it is unique.
+        let shared = "## Notes\n\nThe same long opening that both of these sections share, ";
+        assert!(shared.len() > 48);
+        let long = format!("# Title\n\nIntro.\n\n{shared}first.\n\n{shared}second.\n\nEnd.\n");
+        let at = long.find("## Notes").unwrap();
+        let block = Anchor::at_block(&long, at);
+        let gone = long.replacen(&format!("{shared}first.\n\n"), "", 1);
+        assert!(
+            block.locate(&gone).is_some(),
+            "positive control: locate alone"
+        );
+        assert_eq!(
+            block.locate_block(&gone),
+            None,
+            "not before the other section"
+        );
+        assert!(
+            Anchor::at(&long, at).locate_block(&gone).is_some(),
+            "positive control: 48 bytes of context alone accept the other section"
+        );
+        // An edit past the unique start: still the same block.
+        let edited = long.replacen("first.", "fIRST, edited.", 1);
+        assert_eq!(block.locate_block(&edited), Some(at));
+        // Unique from the first byte, or not at all.
+        assert_eq!(Anchor::at_block("a\nb\n", 2).after, "b");
+        assert_eq!(Anchor::at_block("x\nx\n", 2).after, "x\n");
+        assert_eq!(Anchor::at_block("x\n", 2).after, "");
         // Two blocks with the same first line: deleting the target must not
         // place the drop before the other one.
         let twice = "# Title\n\nIntro.\n\n## Notes\n\nFirst notes.\n\n## Notes\n\nSecond notes.\n";
