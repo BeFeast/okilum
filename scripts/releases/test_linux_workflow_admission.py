@@ -36,7 +36,10 @@ class LinuxAdmission(unittest.TestCase):
         stable = yaml.safe_load((workflows / 'releases.yml').read_text())
         self.assertTrue(stable['concurrency']['group'].startswith(
             "${{ (inputs.build != '' || inputs.sync_stable) && 'okilum-macos-release' ||"))
-        self.assertEqual(publication['concurrency']['group'], 'okilum-macos-release')
+        # Arch (`linux`) still publishes under the stable-promotion lock; only the
+        # AppImage beta, which shares no state with it, has its own group (#3043).
+        self.assertEqual(publication['concurrency']['group'],
+                         "${{ inputs.platform == 'appimage' && 'okilum-publish-appimage' || 'okilum-macos-release' }}")
         self.assertIs(publication['concurrency']['cancel-in-progress'], False)
         self.assertIs(stable['concurrency']['cancel-in-progress'], False)
 
