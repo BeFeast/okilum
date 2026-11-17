@@ -437,6 +437,14 @@ mod native_tests {
                 .get("reader-block-image")
                 .is_some_and(|b| (b.size.height - px(48.)).abs() < px(1.))
         });
+        reader.read_with(visual, |r, _| {
+            // #3064: a macOS Quick Look thumbnail would draw the same 48 px
+            // block, then never show the decoder's unreadable-image message.
+            assert!(
+                r.file_preview.as_ref().unwrap().thumbnail.is_none(),
+                "HEIC uses the image viewer's decoder, not Quick Look"
+            );
+        });
         std::fs::write(&path, b"broken HEIC").unwrap();
         settle(visual, &reader, |_, _, bounds| {
             bounds.contains_key("reader-image-unreadable")
