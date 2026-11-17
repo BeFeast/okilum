@@ -275,6 +275,9 @@ mod tests {
         // Two roots with the same identity (a copied vault): select nothing.
         std::fs::write(other.join(FILE), std::fs::read(work.join(FILE)).unwrap()).unwrap();
         let ambiguous = link.resolve_vault(&known, state.path()).unwrap_err();
-        assert!(ambiguous.to_string().contains("Several vaults"), "{ambiguous}");
+        assert!(
+            ambiguous.to_string().contains("Several vaults"),
+            "{ambiguous}"
+        );
     }
 }
