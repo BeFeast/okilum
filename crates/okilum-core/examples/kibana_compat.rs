@@ -109,7 +109,7 @@ mod compat {
         };
         Doc {
             id: format!("doc-{i:04}"),
-            index: if i % 2 == 0 {
+            index: if i.is_multiple_of(2) {
                 "okilum-compat-a"
             } else {
                 "okilum-compat-b"
@@ -117,8 +117,8 @@ mod compat {
             nanos,
             service: ["checkout", "auth", "search", "billing"][i % 4],
             level: ["info", "warn", "error"][i % 3],
-            phrase: i % 10 == 0,
-            status: (i % 5 != 0).then_some([200, 404, 500][(i / 2) % 3]),
+            phrase: i.is_multiple_of(10),
+            status: (!i.is_multiple_of(5)).then_some([200, 404, 500][(i / 2) % 3]),
             flag: i % 7 < 3,
             seq: i,
         }
@@ -188,6 +188,43 @@ mod compat {
         fn json(&self, method: reqwest::Method, path: &str, body: &Value) -> Result<Value> {
             self.call(method, path, body.to_string(), "application/json")
         }
+    }
+
+    /// Diagnostic only: the HTTP status and Kibana's error message for a route,
+    /// with the product's headers, so a failed check names its server-side cause.
+    /// Never prints credentials or response rows.
+    fn probe(es: &Elasticsearch, kibana: &url::Url, path: &str, api_key: &str) -> String {
+        probe_route(es, kibana, path, api_key)
+            .unwrap_or_else(|error| format!("probe failed: {error:#}"))
+    }
+    fn probe_route(
+        es: &Elasticsearch,
+        kibana: &url::Url,
+        path: &str,
+        api_key: &str,
+    ) -> Result<String> {
+        let response = es
+            .client
+            .get(kibana.join(path)?)
+            .header("Authorization", format!("ApiKey {api_key}"))
+            .header("kbn-xsrf", "true")
+            .header("x-elastic-internal-origin", "Kibana")
+            .header("elastic-api-version", "1")
+            .send()?;
+        let status = response.status().as_u16();
+        let body: Value = serde_json::from_str(&response.text()?).unwrap_or(Value::Null);
+        let message = match body["message"].as_str() {
+            Some(message) => message.chars().take(200).collect::<String>(),
+            None => {
+                let keys: Vec<&String> = body
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|o| o.keys())
+                    .collect();
+                format!("keys {keys:?}")
+            }
+        };
+        Ok(format!("HTTP {status}: {message}"))
     }
 
     fn seed(es: &Elasticsearch) -> Result<()> {
@@ -723,7 +760,7 @@ mod compat {
         });
         let env = |name: &str| std::env::var(name).with_context(|| format!("{name} is not set"));
         let kibana_url = env("OKC_KIBANA_URL")?;
-        loopback(&kibana_url)?;
+        let kibana_base = loopback(&kibana_url)?;
         let es = Elasticsearch {
             client: reqwest::blocking::Client::builder()
                 .no_proxy()
@@ -733,7 +770,8 @@ mod compat {
             base: loopback(&env("OKC_ES_URL")?)?,
             password: env("OKC_ES_PASSWORD")?,
         };
-        let key = ApiKey::new(env("OKC_API_KEY")?.into_bytes())?;
+        let api_key = env("OKC_API_KEY")?;
+        let key = ApiKey::new(api_key.clone().into_bytes())?;
         let data_view = env("OKC_DATA_VIEW")?;
         let version = env("OKC_VERSION")?;
         let report_path = env("OKC_REPORT")?;
@@ -753,7 +791,14 @@ mod compat {
             let mut legacy = base.clone();
             legacy.index_pattern = None;
             legacy.discover.data_view = data_view.clone();
-            let resolved = kibana.resolve_source(&legacy)?;
+            let resolved = kibana.resolve_source(&legacy).with_context(|| {
+                probe(
+                    &es,
+                    &kibana_base,
+                    &format!("api/data_views/data_view/{data_view}"),
+                    &api_key,
+                )
+            })?;
             ensure!(
                 resolved.index_pattern.as_deref() == Some(PATTERN)
                     && resolved.time_field == "@timestamp",
@@ -776,7 +821,10 @@ mod compat {
                 Some(seen) => bail!("/api/status reports {seen}, image is {version}"),
                 None => Ok((
                     Outcome::Info,
-                    "/api/status version not readable with the read-only key".into(),
+                    format!(
+                        "/api/status version not readable with the read-only key ({})",
+                        probe(&es, &kibana_base, "api/status", &api_key)
+                    ),
                 )),
             }
         });
