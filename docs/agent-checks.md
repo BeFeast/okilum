@@ -347,6 +347,17 @@ coverage cannot pass with zero tests. The helper requires both
 jobs and their required steps; native test failures remain check failures.
 Forgejo PR CI and native release/signing policy are unchanged.
 
+The same job runs the `okilum-cored` CLI and MCP integration suites natively
+(#2060) through `scripts/ci/windows-cored-suites.py`. Each suite is built,
+listed and run on its own; the listing must hold the exact Windows count (CLI
+12, including the `cfg(not(unix))` Brain refusal control; MCP 7) and named
+controls, and libtest must report that many passes with nothing ignored or
+filtered. The step records build and run wall time, free disk and bounded
+`target/` and Cargo-home sizes before and after each suite, refuses to start
+below a free-disk floor, and names an exhausted disk as `No space left on
+device` with the largest `target/debug` directories, so the helper classifies
+it as infrastructure rather than a code verdict.
+
 The `forgejo-native-core-pr/**` Windows lane also runs the complete deleted-note
 Reader group. Its #2700 controls reproduce the three old test failures at
 runtime, restore the current tests and require a nonempty pass for each.
