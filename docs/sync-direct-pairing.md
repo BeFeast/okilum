@@ -93,6 +93,44 @@ acknowledgements remain visible; files already copied cannot be recalled.
 A removed pairing retains only
 the credentials needed for its recorded removal replay, scoped pull and ACK;
 it cannot read a catalog, exchange transport hints or grant new membership.
+
+A removal record carries the pairing that readmitted its device, if any (#3079).
+`approve()` closes every open removal of the requesting Syncthing device, and
+tombstones the removal IDs the request lists as applied on the joiner. Its
+`Approved` reply names the removals that approval closed. The joiner closes the
+same IDs, moves its other pairings with that inviter's key to the revoked set,
+and clears `local_removed` once no open removal of its own device remains.
+Closed removals are not applied and no longer block peer address exchange. They
+are delivered as `superseded`; a receiver closes the matching record without
+entering its effects, whether it has not seen it yet or journalled it without
+applying it. An approval that closes nothing leaves earlier pairings untouched.
+Each removal effect (preimage, PATCH, revocation) runs under one effects lock
+and first rechecks that the removal is still open; closing a removal takes the
+same lock, so once a close is saved no further effect of that removal starts.
+Ordering across computers uses an admission epoch per Syncthing device, not
+timing: every readmission raises the device's epoch above all of its known
+removals, each removal records the epoch it removes, and every removal message
+carries that epoch plus the sender's current one. A computer raises its epoch
+when it learns a newer one and closes every older removal of that device,
+journalled or arriving later, also when replayed after a restart, so none of
+them takes effect there. A delivery stays pending until its current version is
+acknowledged; receivers that acknowledged the open version get the closed one
+again when the removal closes. A receiver that applied the open version before
+it could know the readmission keeps those effects: introduced memberships come
+back through the sharing computer's introduction, a direct pairing with the
+returning computer needs a new invitation. Queueing rechecks the removal ID
+under the journal lock after its daemon inspection, so a closed delivery that
+arrived meanwhile stays the only record. No network call waits under a lock.
+The `Approved` reply carries each closed removal with its vaults. On acceptance
+the computer records, per closed removal of itself, the earlier pairings it
+received those vaults through (`released`) — from its own revocation if it
+applied the removal, otherwise computed at that moment, including for journals
+written before the field existed. Only those vaults' transfers stop; such a
+pairing is revoked only when it carries no other vault, so unrelated vaults
+received through it keep syncing. On refresh it removes each owned folder received through a
+released pairing (or a pairing the same inviter replaced) from its Syncthing
+configuration and drops the transfer and association records. The kept files are then an ordinary
+non-empty directory for the first-merge review, whichever computer invited it back.
 The introducer mesh carries folder membership removals to plain Syncthing peers
 that trust the introducer with introduction removals enabled. No device list is
 stored in the vault. Settings shows pending delivery until acknowledgement.

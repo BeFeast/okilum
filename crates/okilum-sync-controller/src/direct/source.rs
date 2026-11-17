@@ -33,6 +33,11 @@ pub(super) struct Source {
     witness: Option<Value>,
     pub(super) active: bool,
 }
+impl Source {
+    pub(super) fn vault(&self) -> &str {
+        &self.id
+    }
+}
 impl Controller {
     /// User consent to share this ordinary vault with this computer's approved
     /// peers, including computers paired before enrollment. `prepared` is the

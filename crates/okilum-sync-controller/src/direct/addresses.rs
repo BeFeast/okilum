@@ -153,6 +153,7 @@ pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
         name: peer.peer.name.clone(),
         public: peer.public.clone(),
         syncthing_device: Some(transport.device.clone()),
+        removals: vec![],
     }
     .validate(&peer.public)?;
     peer.syncthing_device = Some(transport.device.clone());
@@ -263,6 +264,9 @@ impl Controller {
                     Err(error) if transfer::offline(&error) || closed_channel(&error) => {}
                     Err(error) => return Err(error),
                     _ if !live() => {}
+                    // The other side may not have re-established this pairing
+                    // yet after a readmission (#3079); keep the saved hints.
+                    Ok(Reply::Error { .. }) => {}
                     _ => anyhow::bail!("authenticated peer catalog unavailable"),
                 }
             }

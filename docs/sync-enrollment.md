@@ -316,14 +316,49 @@ the request pauses its own associated vaults while retaining its copy. Plain
 Syncthing peers follow introduction removals; manually configured relationships
 outside that introduction still require their administrator's explicit action.
 
+A removal stops only the memberships of the vaults it covers on the removed
+computer: pairings and transfers that carry other vaults keep syncing, and the
+computer shows itself as removed only when no pairing is left (#3079).
+
 Okilum sends the removal through its authenticated paired connections and the
 sharing/introducer computer to the other peers. A disconnected computer follows
 when it reconnects. Pending delivery is visible; requests and acknowledgements
 survive restarts outside the index. Old credentials retained for lost-reply
 recovery can replay that recorded removal, pull only pending deliveries scoped
 to the same pairing and acknowledge them; they cannot read a catalog, share a
-vault or change transport settings. A fresh invitation is needed
-before a removed computer can be approved again.
+vault or change transport settings.
+
+### Rejoin after removal (#3079)
+
+A removed computer comes back only through a fresh invitation from a computer
+that still syncs the vault; the old pairing stays revoked. A removed computer
+cannot create invitations itself. It keeps its Syncthing device ID, and approval
+of its new request readmits it:
+
+- Every removal of that device the inviter has recorded, plus every removal the
+  returning computer reports it applied, is closed by that approval. Closed
+  removals stay as small replay tombstones. A delayed delivery of one, for
+  example to a computer that was offline or had recorded the removal without
+  applying it yet, closes it there too and is acknowledged without removing the
+  computer again. A removal recorded after the approval is a new decision and
+  applies normally. A computer whose removal is still being applied on the
+  inviter cannot be approved until that removal finishes.
+- The returning computer leaves the removed state and retires its older
+  pairings with the inviter. Each kept copy of a vault the closed removal
+  covered, received through an earlier pairing, is released from its Syncthing
+  runtime, whichever computer invited it back and whether or not the removal
+  had reached it; its files stay where they are. Copies of other vaults keep
+  their pairings.
+- A kept copy, with any edits made while removed, joins again only through the
+  lossless first merge (#2043): Settings shows the review, and confirmation
+  publishes the union on both computers. Nothing resumes the old membership
+  automatically.
+- Vaults the returning computer shared from here stay unshared until it shares
+  them again. External folders associated with Okilum stay paused; resume them
+  in Syncthing.
+
+A remaining computer that applied the removal before the approval learns the
+returning computer again through its sharing computer's introduction.
 
 There is no device list in the vault. First setup, common-folder authorization,
 selected daemon/root checks, exact membership PATCH/readback and existing
