@@ -195,6 +195,9 @@ fn main() {
 
 /// The VERSIONINFO numeric form of a release version (#1104): `0.1.33094` becomes
 /// `0,1,33094,0`, so file properties show the build, not `0.1.0.0`.
+/// This is the version the binary was compiled as: a Stable re-sign packs an earlier
+/// build's exact payload under a new number and keeps that build's VERSIONINFO
+/// (docs/windows-delivery.md, "VERSIONINFO").
 /// Each field is the leading digits of a dot-separated part; a field above 65535
 /// cannot be represented, and the package version is used instead.
 fn numeric_version(version: &str) -> String {

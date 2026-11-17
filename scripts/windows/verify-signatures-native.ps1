@@ -11,6 +11,10 @@
 #   - signtool verify /pa /all /v /tw exits 0 (2 = warnings, e.g. no timestamp = fail);
 #   - Get-AuthenticodeSignature Status Valid with a timestamper certificate;
 #   - the signer certificate SHA-256 equals -CertSha256.
+# It also reads the VERSIONINFO of okilum.exe (package and ZIP) and the sync supervisor:
+# all must agree, and the build field must be N, or an earlier build B of the same
+# source (a Stable re-sign signs B's exact payload as N); 0,1,0,0 only warns.
+# See docs/windows-delivery.md, "VERSIONINFO".
 # This complements scripts/windows/verify-signatures.py (osslsigncode on Linux) with
 # Windows' own verifier: required for the first signed build and before each stable promotion.
 param(
@@ -105,6 +109,47 @@ $portable = Join-Path $Work 'portable'
 $exe = @(Get-ChildItem -LiteralPath $portable -Recurse -File -Filter 'okilum.exe')
 if ($exe.Count -ne 1) { throw "Expected one okilum.exe in the portable ZIP, found $($exe.Count)" }
 $targets.Add([pscustomobject]@{Label = 'Okilum-windows-portable.zip!okilum.exe'; Path = $exe[0].FullName})
+
+# VERSIONINFO (#1104). A signed main build compiles as build N, so both executables carry
+# 0,1,N,0. A Stable re-sign (windows-diagnostic.yml `resign`) signs the exact payload of
+# an earlier published build B of the same source and packs it as N: the executables keep
+# 0,1,B,0 by design (no tested binary is rewritten). Accept exactly those two.
+$fileVersions = @{}
+foreach ($v in @(
+        @{Label = "$name!lib/app/okilum.exe"; Path = (Join-Path $app 'okilum.exe')},
+        @{Label = "$name!lib/app/okilum-sync-supervisor.exe"; Path = (Join-Path $app 'okilum-sync-supervisor.exe')},
+        @{Label = 'Okilum-windows-portable.zip!okilum.exe'; Path = $exe[0].FullName})) {
+    if (-not (Test-Path -LiteralPath $v.Path)) { throw "$($v.Label) is missing" }
+    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($v.Path)
+    $file = '{0}.{1}.{2}.{3}' -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+    $product = '{0}.{1}.{2}.{3}' -f $info.ProductMajorPart, $info.ProductMinorPart, $info.ProductBuildPart, $info.ProductPrivatePart
+    if ($product -ne $file) { throw "$($v.Label): PRODUCTVERSION $product differs from FILEVERSION $file" }
+    Write-Host ('FILEVERSION {0}: {1} (string "{2}")' -f $v.Label, $file, $info.FileVersion)
+    $fileVersions[$file] = $true
+}
+if ($fileVersions.Count -ne 1) {
+    throw "okilum.exe and the sync supervisor carry different FILEVERSIONs: $(@($fileVersions.Keys) -join ', ')"
+}
+$fileVersion = @($fileVersions.Keys)[0]
+if ($fileVersion -eq "0.1.$Build.0") {
+    Write-Host ('FILEVERSION {0}: compiled as build {1}' -f $fileVersion, $Build)
+}
+elseif ($fileVersion -eq '0.1.0.0') {
+    Write-Host ('::warning::FILEVERSION {0} names no build: payload compiled before #1104 VERSIONINFO, or a build above 65535' -f $fileVersion)
+}
+elseif ($fileVersion -match '^0\.1\.([0-9]+)\.0$' -and [int64]$Matches[1] -lt [int64]$Build) {
+    $payloadBuild = $Matches[1]
+    $payloadPath = Join-Path $Work "release-$payloadBuild.json"
+    Save-Url "$Base/builds/$payloadBuild/release.json" $payloadPath
+    $payloadRelease = Get-Content -Raw -LiteralPath $payloadPath | ConvertFrom-Json
+    if ("$($payloadRelease.build)" -ne $payloadBuild -or "$($payloadRelease.source)" -ne $source) {
+        throw ('FILEVERSION {0} names build {1}, which is not a published build of source {2}' -f $fileVersion, $payloadBuild, $source)
+    }
+    Write-Host ('FILEVERSION {0}: re-signed payload of build {1}, same source {2}' -f $fileVersion, $payloadBuild, $source)
+}
+else {
+    throw ('FILEVERSION {0} is neither build {1} nor an earlier build of source {2}' -f $fileVersion, $Build, $source)
+}
 
 $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
     Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1

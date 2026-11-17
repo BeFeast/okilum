@@ -125,8 +125,21 @@ sign commercially distributed software.
   /pa /all /v /tw` exit 0 (2, a warning, fails), `Get-AuthenticodeSignature` Valid with
   a timestamper, and the pinned signer SHA-256. Run it for each build before Stable
   promotion.
-- The numeric VERSIONINFO (`FILEVERSION`/`PRODUCTVERSION`) of both executables carries
-  the release version, e.g. `0,1,33094,0`, so file properties show the build.
+- **VERSIONINFO:** the numeric `FILEVERSION`/`PRODUCTVERSION` of `okilum.exe` and
+  `okilum-sync-supervisor.exe` carry the version they were *compiled* as, e.g.
+  `0,1,33094,0`, so file properties show a build instead of `0,1,0,0`. A signed main
+  build compiles as its own build N, so the numbers match N. A Stable **re-sign**
+  (`windows-diagnostic.yml` with `resign_build`) is different: it signs the exact
+  published payload of an earlier build B of the same source and packs it as a new
+  build N. Both executables then keep B's VERSIONINFO, like their string `FileVersion`
+  and the version the app itself reports; only the package (`sq.version`, the feed,
+  Setup.exe) says N. This is deliberate: re-sign never rewrites a binary QA already
+  ran, and patching its resources would ship bytes nobody tested. Read a signed
+  Stable's file properties as "payload of build B". The native check accepts exactly
+  that: FILEVERSION `0,1,N,0`, or `0,1,B,0` with B < N where `builds/B/release.json`
+  records the same source as N. It warns, without failing, on `0,1,0,0` (a payload
+  compiled before this change, or a build number above 65535, which VERSIONINFO cannot
+  hold). Any other value, or executables that disagree, fails the check.
 
 ## Owner acceptance on bragi
 
