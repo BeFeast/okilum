@@ -28,6 +28,15 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run exact commit in hosted CI
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
@@ -58,6 +67,15 @@ jobs:
           sha=$(git rev-parse HEAD)
           echo "Baseline source SHA: $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Build exact main baseline without publication
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}

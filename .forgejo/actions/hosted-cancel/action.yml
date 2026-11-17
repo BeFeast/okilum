@@ -1,0 +1,11 @@
+name: Owned hosted run cancellation
+description: >-
+  #844. Registers a receipt for the hosted bridge step that follows, and after
+  the job cancels the GitHub run that step dispatched when the step never reached
+  its verdict (Forgejo cancelled, superseded or killed the job). Never used by
+  release or publication producers.
+runs:
+  using: node20
+  main: index.js
+  post: index.js
+  post-if: always()

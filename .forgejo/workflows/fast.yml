@@ -54,6 +54,17 @@ jobs:
           OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
           echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
           bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        # Certification may check out a source older than the hook.
+        if: inputs.certification_source == ''
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run the fast check on GitHub
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
@@ -120,6 +131,17 @@ jobs:
           OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
           echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
           bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        # Certification may check out a source older than the hook.
+        if: inputs.certification_source == ''
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run the complete Linux shell binary suite on GitHub
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
@@ -210,6 +232,17 @@ jobs:
           cp scripts/ci/github-pr.py scripts/ci/github-macos.py scripts/ci/github_auth.py \
             scripts/ci/gate_log_evidence.py scripts/ci/fast_evidence.py "$bridge_root/"
           echo "OKILUM_HOSTED_BRIDGE=$bridge_root" >> "$GITHUB_ENV"
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        # Certification may check out a source older than the hook.
+        if: inputs.certification_source == ''
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run source sharing and network policy on GitHub
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
