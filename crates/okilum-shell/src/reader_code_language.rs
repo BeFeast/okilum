@@ -363,4 +363,62 @@ mod rendered_tests {
         assert!(visual.debug_bounds("reader-code-language-0").is_none());
         assert_eq!(seen.lock().unwrap().last().unwrap(), &None);
     }
+
+    /// #3119: an unlabelled block has no empty header row above its code.
+    struct Measured {
+        text: Entity<TextViewState>,
+        decorated: bool,
+    }
+    impl Render for Measured {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let view = gpui_base::text::TextView::new(&self.text);
+            let view = if self.decorated {
+                view.code_block_language(resolver())
+                    .code_block_actions(reader_code::actions)
+            } else {
+                view
+            };
+            div()
+                .w(px(600.))
+                .child(div().debug_selector(|| "measured-doc".into()).child(view))
+        }
+    }
+
+    fn measured_height(cx: &mut gpui::TestAppContext, source: &str, decorated: bool) -> Pixels {
+        let source = source.to_owned();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let text = cx.new(|cx| TextViewState::markdown(&source, cx));
+            let view = cx.new(|_| Measured { text, decorated });
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        // Lazy inference refreshes once after the first paint.
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        visual.debug_bounds("measured-doc").unwrap().size.height
+    }
+
+    #[gpui::test]
+    fn only_a_labelled_block_reserves_a_header_row(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::test_init);
+        let unlabelled = "```\nordinary words\n```";
+        let bare = measured_height(cx, unlabelled, false);
+        assert_eq!(
+            measured_height(cx, unlabelled, true),
+            bare,
+            "no empty row above unlabelled code"
+        );
+        let explicit = "```rs\nordinary words\n```";
+        assert_eq!(
+            measured_height(cx, explicit, true),
+            measured_height(cx, explicit, false) + px(24.),
+            "positive control: a label keeps its header"
+        );
+        let inferred = "```\n{\"value\":42}\n```";
+        assert_eq!(
+            measured_height(cx, inferred, true),
+            measured_height(cx, inferred, false) + px(24.),
+            "an inferred label gets the header too"
+        );
+    }
 }

@@ -794,8 +794,12 @@ Copy action. This does not change the document's selection-copy format.
 
 ## Code block language (#430)
 
-Code blocks reserve a 24 px header above the code; a quiet language label sits
-next to Copy. Explicit fence languages win, with aliases normalised (cs/c# →
+A code block with a language label gets a 24 px header above the code; the quiet
+label sits next to Copy. A block without a label has no header row (an empty
+row read as a stray leading newline, #3119): its code starts at the top and Copy
+sits in the top-right corner, with a right gutter that keeps the first line from
+running under it. An explicit fence language reserves the header from the first
+frame; an inferred label adds it once inference finds one. Explicit fence languages win, with aliases normalised (cs/c# →
 csharp, sh/shell →
 bash, yml → yaml, js → javascript, ts → typescript, py → python, rs → rust).
 Unknown explicit languages retain their label and the highlighter's plain fallback.
