@@ -52,7 +52,7 @@ impl Workspace {
                     .small()
                     .ghost()
                     .label(lens.label())
-                    .selected(self.lens == lens)
+                    .map(|b| segment(b, self.lens == lens, cx))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_lens(lens, cx)))
             }))
             .into_any_element()
