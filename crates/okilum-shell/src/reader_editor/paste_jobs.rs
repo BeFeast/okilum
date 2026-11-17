@@ -2643,31 +2643,41 @@ mod reader_drop_tests {
     }
 
     /// Review of #3078: a missed drop's saved files are removed under their
-    /// writer lease; while a writer drain holds the lease they stay and are
-    /// named, never left unnamed.
+    /// writer lease. When the lease cannot be entered (here: the vault folder
+    /// was replaced at its path), they stay and are named, never left
+    /// unnamed.
     #[test]
-    fn leftovers_are_removed_or_named_when_the_lease_is_held() {
-        let vault = tempfile::tempdir().unwrap();
-        let authority = okilum_write_authority::Authority::for_root(vault.path()).unwrap();
+    fn leftovers_are_removed_or_named_when_the_lease_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let authority = okilum_write_authority::Authority::for_root(&vault).unwrap();
         let lease = authority.admit().unwrap();
-        let removed = vault.path().join("removed.png");
-        let kept = vault.path().join("kept.png");
+        let removed = vault.join("removed.png");
         std::fs::write(&removed, b"png").unwrap();
-        std::fs::write(&kept, b"png").unwrap();
         assert_eq!(
             Leftovers::new(Some(lease.clone()), vec![removed.clone()]).remove(),
             ""
         );
-        assert!(!removed.exists());
-        let hold = authority.begin_drain("leftovers-test").unwrap();
+        assert!(
+            !removed.exists(),
+            "positive control: removed under the lease"
+        );
+        // The folder replaced at the same path: the lease is refused.
+        std::fs::rename(&vault, temp.path().join("vault.old")).unwrap();
+        std::fs::create_dir(&vault).unwrap();
+        let kept = vault.join("kept.png");
+        std::fs::write(&kept, b"png").unwrap();
+        assert!(
+            lease.enter().is_err(),
+            "positive control: the lease is refused"
+        );
         assert_eq!(
             Leftovers::new(Some(lease), vec![kept.clone()]).remove(),
             "kept.png",
-            "a held lease: kept and named"
+            "a refused lease: kept and named"
         );
         assert!(kept.exists());
-        let token = hold.token().clone();
-        hold.release(&token).unwrap();
     }
 
     #[test]
