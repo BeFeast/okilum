@@ -1476,14 +1476,20 @@ sync() {
 
     #[test]
     fn confirmed_long_lived_child_does_not_retain_transaction_lock_or_trigger_late_rollback() {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        use std::os::{
+            fd::AsRawFd,
+            unix::{ffi::OsStrExt, process::CommandExt},
+        };
         let dir = tempfile::tempdir().unwrap();
         let stage = dir.path().join("stage");
         fs::create_dir(&stage).unwrap();
         let target = dir.path().join("original.AppImage");
         executable(&target, b"original");
         fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
-        let payload = b"#!/bin/sh\necho $$ > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/child-pid\"\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\nexec sleep 30\n";
+        // The long-lived app blocks on a FIFO this test holds open, not on a
+        // timer: it stays alive exactly until the test drops `hold`, and exits
+        // on EOF even if the test panics, so no fixture process can leak.
+        let payload = b"#!/bin/sh\necho $$ > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/child-pid\"\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\nexec cat -- \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/hold\"\n";
         let payload = [
             b"#!/bin/sh\nif [ \"$1\" = --probe-exec ]; then exit 0; fi\n".as_slice(),
             &payload[b"#!/bin/sh\n".len()..],
@@ -1512,6 +1518,17 @@ sync() {
                 .permissions()
                 .mode()
         );
+        let hold_path = stage.join("hold");
+        let hold_cpath = std::ffi::CString::new(hold_path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(hold_cpath.as_ptr(), 0o600) }, 0);
+        // O_RDWR opens a FIFO without waiting for a peer and keeps a writer
+        // alive, so the app's read-only open never blocks (O_CLOEXEC: the
+        // helper and the app do not inherit it).
+        let hold = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&hold_path)
+            .unwrap();
         let lockpath = dir.path().join("lock");
         let lock = OpenOptions::new()
             .read(true)
@@ -1608,34 +1625,23 @@ trace_stage shell-start
             log_path
         );
         drop(lock);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(status) = helper.try_wait().unwrap() {
-                let output = fs::read_to_string(&log_path).unwrap_or_default();
-                eprintln!(
-                    "helper trace: exit {status} at {:?}\n{output}",
-                    clock.elapsed()
-                );
-                assert!(status.success(), "helper exit {status}: {output}");
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                let output = fs::read_to_string(&log_path).unwrap_or_default();
-                let started = stage.join("started").exists();
-                let completed = stage.join("completed").exists();
-                let _ = helper.kill();
-                let _ = helper.wait();
-                if let Ok(pid) = fs::read_to_string(stage.join("child-pid")) {
-                    if let Ok(pid) = pid.trim().parse::<i32>() {
-                        unsafe {
-                            libc::kill(pid, libc::SIGTERM);
-                        }
-                    }
-                }
-                panic!("helper did not finish within 10s; started={started}, completed={completed}; apply log: {output}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // #1676: wait for the helper's own verdict. A test-side wall clock
+        // also timed the real file/directory fsyncs and the helper's 1 s
+        // startup poll, and failed on a loaded shared runner without any
+        // defect. The helper bounds itself: the app is alive and confirms at
+        // once, and its startup wait exits non-zero after 60 polls otherwise.
+        let status = helper.wait().unwrap();
+        let output = fs::read_to_string(&log_path).unwrap_or_default();
+        eprintln!(
+            "helper trace: exit {status} at {:?}\n{output}",
+            clock.elapsed()
+        );
+        assert!(
+            status.success(),
+            "helper exit {status}; started={}, completed={}; apply log: {output}",
+            stage.join("started").exists(),
+            stage.join("completed").exists()
+        );
         let sync_calls = fs::read_to_string(stage.join("sync-calls")).unwrap();
         let synced: Vec<_> = sync_calls.lines().map(PathBuf::from).collect();
         assert_eq!(
@@ -1664,9 +1670,11 @@ trace_stage shell-start
             .open(lockpath)
             .unwrap();
         let reacquired = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        // A later session failure: the committed helper has already exited.
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
+        drop(hold);
         assert_eq!(
             reacquired, 0,
             "another update can stage while the new app is open"
