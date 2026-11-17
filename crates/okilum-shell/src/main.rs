@@ -125,6 +125,7 @@ mod reader_owned_windows;
 mod reader_panel_resize;
 mod reader_panes;
 mod reader_pdf;
+mod reader_perf_probe;
 mod reader_pin_row;
 mod reader_plain_text;
 mod reader_project_create;
@@ -2007,6 +2008,8 @@ struct Reader {
     stignore_busy: bool,
     /// The «On this page» rows; only the ones in view are built (#1004).
     outline_list: ListState,
+    /// Opt-in large-note timing probe (#653); `None` on ordinary launches.
+    perf_probe: Option<reader_perf_probe::Probe>,
     use_html: bool,
     sel_format: SelectionFormat,
     /// Focus of the reader root: what receives the key bindings when no
@@ -2375,6 +2378,7 @@ impl Reader {
             stignore_offered: Default::default(),
             stignore_busy: false,
             outline_list: ListState::new(0, ListAlignment::Top, px(200.)),
+            perf_probe: reader_perf_probe::Probe::from_env(),
             use_html,
             sel_format,
             focus_handle: cx.focus_handle(),
@@ -6964,6 +6968,56 @@ impl Reader {
         after.checked_sub(1)
     }
 
+    /// Advance the opt-in timing probe after a painted frame (#653).
+    fn drive_perf_probe(
+        &mut self,
+        document_ready: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.perf_probe.is_none() {
+            return;
+        }
+        let elapsed_ms = reader_diagnostics::trace(cx).map_or(0., |trace| trace.elapsed_ms());
+        let list = self.content.read(cx).list_state().clone();
+        let blocks = if document_ready { list.item_count() } else { 0 };
+        let top = list.logical_scroll_top().item_ix;
+        let targets: Vec<usize> = self
+            .visible_outline()
+            .iter()
+            .map(|heading| heading.target.block)
+            .collect();
+        let content = self.content.clone();
+        let reader = cx.entity().downgrade();
+        let Some(probe) = self.perf_probe.as_mut() else {
+            return;
+        };
+        match probe.painted(blocks, top, &targets, elapsed_ms) {
+            reader_perf_probe::Step::Idle => {}
+            reader_perf_probe::Step::ScrollBy(distance) => window.on_next_frame(move |_, cx| {
+                // As a wheel event does: move the list, notify its view.
+                list.scroll_by(distance);
+                content.update(cx, |_, cx| cx.notify());
+                let _ = reader.update(cx, |_, cx| cx.notify());
+            }),
+            reader_perf_probe::Step::Jump(row) => window.on_next_frame(move |window, cx| {
+                // As a click on the «On this page» row does.
+                let _ = reader.update(cx, |this, cx| {
+                    if let Some(heading) = this.visible_outline().get(row).cloned() {
+                        this.open_outline_heading(heading, window, cx);
+                    }
+                    cx.notify();
+                });
+            }),
+            reader_perf_probe::Step::Finish => {
+                if let Err(error) = probe.write_report(targets.len()) {
+                    diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
+                }
+                cx.quit();
+            }
+        }
+    }
+
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(outline) = reader_typed_view::outline(self, cx) {
             return outline;
@@ -8088,6 +8142,9 @@ impl Render for Reader {
                 self.release_panel_pointer(window);
             }
         }
+        if let Some(probe) = &mut self.perf_probe {
+            probe.render_started();
+        }
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
@@ -8906,6 +8963,9 @@ impl Reader {
                                             cx.notify();
                                             window.refresh();
                                         });
+                                    }
+                                    if this.perf_probe.is_some() {
+                                        this.drive_perf_probe(document_ready, window, cx);
                                     }
                                 });
                                 let drag_view = view.clone();

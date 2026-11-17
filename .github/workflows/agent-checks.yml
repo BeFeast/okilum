@@ -319,6 +319,9 @@ jobs:
           cp vendor/gpui-component/Cargo.lock "$vendor_lock"
           trap 'cp "$vendor_lock" vendor/gpui-component/Cargo.lock; unlink "$vendor_lock"' EXIT
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
+          # The same workspace on our patched gpui-pre family (#653), as
+          # vendor-tests.sh builds it offline.
+          (source scripts/ci/vendor-gpui.sh && cargo fetch --manifest-path vendor/gpui-component/Cargo.toml "${VENDOR_GPUI[@]}")
       - name: Prepare isolated Python test dependencies
         run: bash scripts/ci/setup-python-tests.sh
       - name: Verify agent helper controls
