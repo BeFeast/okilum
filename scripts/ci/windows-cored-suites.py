@@ -40,10 +40,12 @@ SUITES = {
         "a_notification_gets_no_reply_and_the_next_call_still_works")},
 }
 
-# Measured on windows-2022 (see #2060): both suites together add well under the
-# floor below to target/. The floor stops a doomed build up front with a disk
+# Measured on windows-2022 (run 43999838876, after the job's earlier okilum-core
+# builds): cli build 30 s + run 1 s, mcp build 1 s + run 2 s; target/ grew
+# 0.30 GiB (5.31 -> 5.60 GiB) with 214 GiB free on the workspace drive. The
+# floor is ~7x that growth: it stops a doomed build up front with a disk
 # message instead of a linker error several minutes later.
-MIN_FREE_GIB = 6.0
+MIN_FREE_GIB = 2.0
 ACCOUNTING_SECONDS = 45
 ACCOUNTING_ENTRIES = 1_500_000
 

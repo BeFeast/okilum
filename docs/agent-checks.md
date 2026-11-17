@@ -357,6 +357,10 @@ filtered. The step records build and run wall time, free disk and bounded
 below a free-disk floor, and names an exhausted disk as `No space left on
 device` with the largest `target/debug` directories, so the helper classifies
 it as infrastructure rather than a code verdict.
+Measured on `windows-2022` (run `43999838876`): 37 s for both suites (CLI
+build 30 s on top of the job's earlier `okilum-core` builds, MCP build 1 s,
+runs 3 s), `target/` +0.30 GiB, 214 GiB free; the job took 17.3 of its 30
+minutes. The step deadline is 10 minutes and the free-disk floor 2 GiB.
 
 The `forgejo-native-core-pr/**` Windows lane also runs the complete deleted-note
 Reader group. Its #2700 controls reproduce the three old test failures at

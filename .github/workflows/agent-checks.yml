@@ -67,7 +67,7 @@ jobs:
   windows-recovery:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -127,7 +127,9 @@ jobs:
           exit $LASTEXITCODE
       - name: Run native Windows okilum-cored CLI and MCP suites
         # Exact counts and named controls; build/run time and disk per suite (#2060).
-        timeout-minutes: 15
+        # Measured on windows-2022 (run 43999838876): 37 s, +0.30 GiB target/,
+        # job 17.3 of its 30 min. The step deadline allows a cold cored build.
+        timeout-minutes: 10
         shell: pwsh
         run: |
           python scripts/ci/windows-cored-suites.py
