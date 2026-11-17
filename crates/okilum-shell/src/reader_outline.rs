@@ -230,6 +230,104 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    #[gpui::test]
+    fn yaml_document_end_preserves_read_contents_and_source(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let body = "# Introduction\n\nEarly body.\n\nWhat is Markdown?\n=================\n\n```markdown\n---\n# Fenced example\n```\n\n# Later section\n";
+        for (name, yaml, closing) in [
+            ("ordinary.md", "title: CommonMark\n", "---"),
+            ("document-end.md", "title: CommonMark\n", "..."),
+            ("invalid.md", "broken: [\n", "..."),
+            ("unsupported.md", "- sequence\n", "..."),
+        ] {
+            std::fs::write(
+                fixture.path().join(name),
+                format!("---\n{yaml}{closing}\n{body}"),
+            )
+            .unwrap();
+        }
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(fixture.path().to_owned()),
+                        note: Some("ordinary.md".into()),
+                        session_directory: Some(state.path().to_owned()),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for (name, valid) in [
+            ("ordinary.md", true),
+            ("document-end.md", true),
+            ("invalid.md", false),
+            ("unsupported.md", false),
+        ] {
+            let source = std::fs::read_to_string(fixture.path().join(name)).unwrap();
+            reader.update_in(visual, |reader, window, cx| {
+                reader.open_note(name, None, window, cx);
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                assert_eq!(reader.current_rel, name);
+                assert!(reader.editing.is_none(), "Read is active");
+                assert_eq!(reader.note_source, body);
+                assert_eq!(
+                    reader.note_canonical_source.as_deref(),
+                    Some(source.as_str())
+                );
+                assert_eq!(
+                    reader
+                        .visible_outline()
+                        .iter()
+                        .map(|h| h.text.as_str())
+                        .collect::<Vec<_>>(),
+                    ["Introduction", "What is Markdown?", "Later section"]
+                );
+                assert_eq!(
+                    reader.properties.is_ok(),
+                    valid,
+                    "{name}: {:?}",
+                    reader.properties
+                );
+                assert_eq!(
+                    reader
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix,
+                    0
+                );
+                reader.toggle_source(window, cx);
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                let input = reader.editing.as_ref().expect("Source is active").input();
+                assert_eq!(input.read(cx).value().as_ref(), source);
+                reader.toggle_source(window, cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                std::fs::read_to_string(fixture.path().join(name)).unwrap(),
+                source
+            );
+        }
+    }
+
     #[test]
     fn draft_outline_tracks_added_renamed_removed_and_duplicate_headings() {
         let old = "---\ntitle: Note\n---\n# Old\n\nBody\n";
