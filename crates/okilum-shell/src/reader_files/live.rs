@@ -149,7 +149,7 @@ impl Reader {
         if let Some(cache) = &preview.image_cache {
             cache.update(cx, |cache, cx| cache.clear(window, cx));
         }
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         cx.remove_asset::<heic::HeicImage>(&preview.path);
         match fresh {
             Ok(fresh) => {
