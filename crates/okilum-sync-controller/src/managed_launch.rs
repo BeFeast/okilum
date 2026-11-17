@@ -866,7 +866,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
     );
     let FencedFolders {
         leases,
-        mut closed,
+        closed,
         paused_at_start,
         returning,
     } = fence_folders(r, &b)?;
