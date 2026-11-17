@@ -2,7 +2,7 @@
 use super::*;
 use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod heic;
 mod json_associations;
 mod live;
@@ -311,7 +311,7 @@ impl FilePreview {
             path,
             details: live::metadata_label(&ext, &meta),
             image: ["svg", "png", "jpg", "jpeg", "gif", "webp", "bmp"].contains(&ext.as_str())
-                || (cfg!(any(target_os = "macos", target_os = "linux"))
+                || (cfg!(any(target_os = "macos", target_os = "linux", windows))
                     && ["heic", "heif"].contains(&ext.as_str())),
         })
     }
@@ -919,7 +919,7 @@ impl Reader {
             );
         if preview.image {
             let image = super::reader_image::ReaderImage::new(image_source(preview.path.clone()))
-                .with_error_message("This image couldn’t be read.");
+                .with_error_message(image_error_message(&preview.path));
             if let Some(cache) = &preview.image_cache {
                 view = view.child(image.with_cache(cache.clone()));
             } else {
@@ -960,17 +960,29 @@ fn file_edit_column(code: bool, header: AnyElement, source: AnyElement) -> AnyEl
 /// HEIC uses a platform decoder off the UI thread; the temporary PNG is
 /// derived data and never lives beside the user's files.
 pub(crate) fn image_source(path: PathBuf) -> ImageSource {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if path
-        .extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif"))
-    {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    if is_heic(&path) {
         return ImageSource::Custom(Arc::new(move |window, cx| {
             window.use_asset::<heic::HeicImage>(&path, cx)
         }));
     }
     ImageSource::from(path)
+}
+
+fn is_heic(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif"))
+}
+
+/// A HEIC that fails because the system has no decoder says which component
+/// to install (#2177); every other failed image keeps the plain message.
+fn image_error_message(path: &Path) -> &'static str {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    if is_heic(path) {
+        return heic::unreadable_message();
+    }
+    "This image couldn’t be read."
 }
 
 /// What a failed preview tells the reader: the authored reason, or plain
@@ -1026,7 +1038,7 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     #[test]
     fn issue2984_heic_and_heif_open_the_image_viewer_and_embed_decoder() {
         let directory = tempfile::tempdir().unwrap();
@@ -1035,8 +1047,13 @@ mod tests {
             std::fs::write(&path, b"dispatch checks only; not decoded here").unwrap();
             let preview = FilePreview::load(directory.path(), name).unwrap();
             assert!(preview.image, "HEIC must open the existing image viewer");
-            assert!(matches!(image_source(path), ImageSource::Custom(_)));
+            assert!(matches!(image_source(path.clone()), ImageSource::Custom(_)));
+            assert_eq!(image_error_message(&path), heic::unreadable_message());
         }
+        assert_eq!(
+            image_error_message(Path::new("ordinary.png")),
+            "This image couldn’t be read."
+        );
         assert!(matches!(
             image_source(directory.path().join("ordinary.png")),
             ImageSource::Resource(_)

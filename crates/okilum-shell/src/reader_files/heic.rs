@@ -1,8 +1,17 @@
 //! Read-only HEIC/HEIF decoding shared by file previews and Markdown embeds.
-//! The Linux AppImage carries its decoder; native packages use libheif's CLI.
+//!
+//! Every platform decodes in a separate, bounded child process with the
+//! system's own codec: macOS `sips` (ImageIO), Linux libheif's `heif-convert`
+//! (bundled in the AppImage, from PATH otherwise) and Windows WIC through
+//! PowerShell/WPF, which needs Microsoft's HEIF and HEVC extensions (#2177).
+//! A missing decoder is reported in words the reader can act on.
 use super::*;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
+
+#[cfg(windows)]
+mod windows;
 
 pub(super) struct HeicImage;
 
@@ -23,16 +32,88 @@ impl Asset for HeicImage {
     }
 }
 
+/// Why the platform could not decode at all, independent of the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum Missing {
+    LinuxTool = 1,
+    LinuxCodec = 2,
+    WindowsCodec = 3,
+}
+
+/// The last decoder verdict. A missing codec is a property of the system, so
+/// the most recent decode that reached a decoder decides the fallback text.
+static MISSING: AtomicU8 = AtomicU8::new(0);
+
+// macOS always has `sips`; only Linux and Windows report a missing decoder.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[derive(Debug)]
+struct MissingDecoder(Missing);
+
+impl std::fmt::Display for MissingDecoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(message(Some(self.0)))
+    }
+}
+
+impl std::error::Error for MissingDecoder {}
+
+fn message(missing: Option<Missing>) -> &'static str {
+    match missing {
+        None => "This image couldn’t be read.",
+        Some(Missing::LinuxTool) => {
+            "HEIC/HEIF images need libheif’s heif-convert (package libheif-examples or libheif)."
+        }
+        Some(Missing::LinuxCodec) => {
+            "This HEIC/HEIF image needs a libheif decoder plugin for its codec (HEVC: libheif-plugin-libde265)."
+        }
+        Some(Missing::WindowsCodec) => {
+            "HEIC/HEIF images need Microsoft’s HEIF Image Extensions and HEVC Video Extensions from the Microsoft Store."
+        }
+    }
+}
+
+/// Fallback text for a HEIC preview that failed: names the missing system
+/// decoder when that is the cause, otherwise the ordinary unreadable message.
+pub(super) fn unreadable_message() -> &'static str {
+    message(match MISSING.load(Ordering::Relaxed) {
+        1 => Some(Missing::LinuxTool),
+        2 => Some(Missing::LinuxCodec),
+        3 => Some(Missing::WindowsCodec),
+        _ => None,
+    })
+}
+
 #[cfg(target_os = "linux")]
-fn linux_tool(executable: &Path, tool: &str) -> PathBuf {
+fn linux_tool(
+    executable: &Path,
+    tool: &str,
+    search: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
     // Prefer our sibling even when the host has a different libheif version.
     // linuxdeploy gives this executable its own relative library search path.
     let bundled = executable.with_file_name(tool);
     if bundled.is_file() {
-        bundled
-    } else {
-        PathBuf::from(tool)
+        return Some(bundled);
     }
+    std::env::split_paths(&search?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(tool))
+        .find(|candidate| candidate.is_file())
+}
+
+/// libheif names an absent codec plugin; anything else is a file problem.
+#[cfg(any(target_os = "linux", test))]
+fn linux_codec_missing(stderr: &str) -> bool {
+    stderr.contains("Unsupported codec") || stderr.contains("No decoding plugin")
+}
+
+/// ISO-BMFF files start with an `ftyp` box. Anything else is not HEIF, so a
+/// codec error on such input never blames the system decoder.
+fn looks_like_heif(source: &[u8]) -> bool {
+    source.len() >= 16
+        && &source[4..8] == b"ftyp"
+        && u32::from_be_bytes([source[0], source[1], source[2], source[3]]) >= 16
 }
 
 fn decode(path: &Path) -> anyhow::Result<Vec<u8>> {
@@ -54,38 +135,21 @@ fn decode(path: &Path) -> anyhow::Result<Vec<u8>> {
         source.len() <= 50 * 1024 * 1024,
         "HEIC image exceeds the 50 MiB preview limit"
     );
+    anyhow::ensure!(looks_like_heif(&source), "Not a HEIC/HEIF file");
     let snapshot = directory.path().join("source.heic");
     std::fs::write(&snapshot, source)?;
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("/usr/bin/sips");
-        command
-            .args(["-s", "format", "png"])
-            .arg(&snapshot)
-            .args(["--out", "preview.png"]);
-        command
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let executable = std::env::current_exe()?;
-        let mut command = Command::new(linux_tool(&executable, "prlimit"));
-        // Limits apply before libheif parses any metadata or HEVC bitstream.
-        // The CLI remains isolated even if native decoding aborts on bad input.
-        command
-            .args([
-                "--as=1073741824",
-                "--fsize=268435456",
-                "--cpu=20",
-                "--core=0",
-                "--",
-            ])
-            .arg(linux_tool(&executable, "heif-convert"))
-            .arg(&snapshot)
-            .arg("preview.png");
-        command
-    };
-    command.current_dir(directory.path());
-    run_decoder(&mut command, Duration::from_secs(30))?;
+    let result = run_platform_decoder(directory.path(), &snapshot);
+    match &result {
+        Ok(()) => MISSING.store(0, Ordering::Relaxed),
+        Err(error) => match error.downcast_ref::<MissingDecoder>() {
+            Some(MissingDecoder(missing)) => MISSING.store(*missing as u8, Ordering::Relaxed),
+            None if error.downcast_ref::<DecoderFailed>().is_some() => {
+                MISSING.store(0, Ordering::Relaxed)
+            }
+            None => {}
+        },
+    }
+    result?;
     let png = directory.path().join("preview.png");
     #[cfg(target_os = "linux")]
     let png = if png.is_file() {
@@ -117,20 +181,111 @@ fn decode(path: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(png)
 }
 
+#[cfg(target_os = "macos")]
+fn run_platform_decoder(directory: &Path, snapshot: &Path) -> anyhow::Result<()> {
+    let mut command = Command::new("/usr/bin/sips");
+    command
+        .args(["-s", "format", "png"])
+        .arg(snapshot)
+        .args(["--out", "preview.png"])
+        .current_dir(directory)
+        .stderr(Stdio::null());
+    run_decoder(&mut command, Duration::from_secs(30))
+}
+
+#[cfg(target_os = "linux")]
+fn run_platform_decoder(directory: &Path, snapshot: &Path) -> anyhow::Result<()> {
+    let executable = std::env::current_exe()?;
+    let search = std::env::var_os("PATH");
+    let Some(converter) = linux_tool(&executable, "heif-convert", search.clone()) else {
+        return Err(MissingDecoder(Missing::LinuxTool).into());
+    };
+    let prlimit =
+        linux_tool(&executable, "prlimit", search).unwrap_or_else(|| PathBuf::from("prlimit"));
+    let mut command = Command::new(prlimit);
+    // Limits apply before libheif parses any metadata or HEVC bitstream.
+    // The CLI remains isolated even if native decoding aborts on bad input.
+    command
+        .args([
+            "--as=1073741824",
+            "--fsize=268435456",
+            "--cpu=20",
+            "--core=0",
+            "--",
+        ])
+        .arg(converter)
+        .arg(snapshot)
+        .arg("preview.png")
+        .current_dir(directory);
+    // A file, not a pipe: a chatty decoder can never block on a full pipe.
+    let log = directory.join("decoder.log");
+    command.stderr(std::fs::File::create(&log)?);
+    let result = run_decoder(&mut command, Duration::from_secs(30));
+    if result.is_err() {
+        use std::io::Read as _;
+        let mut text = String::new();
+        if let Ok(file) = std::fs::File::open(&log) {
+            let _ = file.take(16 * 1024).read_to_string(&mut text);
+        }
+        if linux_codec_missing(&text) {
+            return Err(MissingDecoder(Missing::LinuxCodec).into());
+        }
+    }
+    result
+}
+
+#[cfg(windows)]
+fn run_platform_decoder(directory: &Path, _snapshot: &Path) -> anyhow::Result<()> {
+    windows::decode(directory)
+}
+
+/// The decoder ran and exited unsuccessfully (or was killed).
+#[derive(Debug)]
+struct DecoderFailed {
+    // Windows maps its codec-missing exit code; elsewhere only tests read it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    code: Option<i32>,
+    timed_out: bool,
+}
+
+impl std::fmt::Display for DecoderFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.timed_out {
+            f.write_str("HEIC image decoding timed out")
+        } else {
+            f.write_str("Cannot decode HEIC image")
+        }
+    }
+}
+
+impl std::error::Error for DecoderFailed {}
+
 fn run_decoder(command: &mut Command, budget: Duration) -> anyhow::Result<()> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+    command.stdin(Stdio::null()).stdout(Stdio::null());
+    #[cfg(windows)]
+    let (mut child, _job) = windows::spawn_limited(command)?;
+    #[cfg(not(windows))]
+    let mut child = command.spawn()?;
     let deadline = Instant::now() + budget;
     let result = (|| loop {
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(status.success(), "Cannot decode HEIC image");
-            return Ok(());
+            if status.success() {
+                return Ok(());
+            }
+            return Err(DecoderFailed {
+                code: status.code(),
+                timed_out: false,
+            }
+            .into());
         }
         let left = deadline.saturating_duration_since(Instant::now());
-        anyhow::ensure!(!left.is_zero(), "HEIC image decoding timed out");
+        if left.is_zero() {
+            return Err(DecoderFailed {
+                code: None,
+                timed_out: true,
+            }
+            .into());
+        }
         std::thread::sleep(left.min(Duration::from_millis(25)));
     })();
     if result.is_err() {
@@ -148,13 +303,8 @@ mod tests {
     const FIXTURE: &[u8] =
         include_bytes!("../../../okilum-core/tests/fixtures/viewers/images/still.heic");
 
-    #[test]
-    fn issue2984_real_decoder_reads_hevc_without_changing_the_source() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("- café 'photo'.HEIF");
-        std::fs::write(&path, FIXTURE).unwrap();
-        let png = decode(&path).unwrap();
-        let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+    fn assert_still_pixels(png: &[u8]) {
+        let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
             .unwrap()
             .to_rgb8();
         assert_eq!(image.dimensions(), (64, 48));
@@ -165,6 +315,15 @@ mod tests {
             green[1] > 180 && green[0] < 80 && green[2] < 80,
             "{green:?}"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn issue2984_real_decoder_reads_hevc_without_changing_the_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("- café 'photo'.HEIF");
+        std::fs::write(&path, FIXTURE).unwrap();
+        assert_still_pixels(&decode(&path).unwrap());
         assert_eq!(std::fs::read(&path).unwrap(), FIXTURE);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
         std::fs::write(&path, b"broken HEIC").unwrap();
@@ -174,6 +333,69 @@ mod tests {
         );
         std::fs::write(&path, FIXTURE).unwrap();
         assert!(decode(&path).is_ok(), "A repaired file must decode again");
+        assert_eq!(unreadable_message(), message(None));
+    }
+
+    /// The hosted Windows runner has no HEIF/HEVC Store extensions, so CI sets
+    /// `OKILUM_HEIC_EXPECT=missing` and pins the fallback; with the extensions
+    /// installed (`decoded`) the same control checks real pixels.
+    #[cfg(windows)]
+    #[test]
+    fn issue2177_windows_wic_decodes_or_names_the_missing_extensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("- café 'photo'.HEIF");
+        std::fs::write(&path, FIXTURE).unwrap();
+        let expect = std::env::var("OKILUM_HEIC_EXPECT").unwrap_or_default();
+        match decode(&path) {
+            Ok(png) => {
+                assert_ne!(expect, "missing", "expected the missing-codec fallback");
+                assert_still_pixels(&png);
+                assert_eq!(unreadable_message(), message(None));
+            }
+            Err(error) => {
+                assert_ne!(expect, "decoded", "{error:#}");
+                assert!(
+                    matches!(
+                        error.downcast_ref::<MissingDecoder>(),
+                        Some(MissingDecoder(Missing::WindowsCodec))
+                    ),
+                    "a valid HEIC must decode or name the missing codec: {error:#}"
+                );
+                assert!(unreadable_message().contains("HEIF Image Extensions"));
+            }
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), FIXTURE);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn issue2177_non_heif_bytes_never_reach_a_decoder() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fake.heic");
+        std::fs::write(&path, b"broken HEIC, longer than sixteen bytes").unwrap();
+        let error = decode(&path).unwrap_err();
+        assert!(
+            error.to_string().contains("Not a HEIC/HEIF file"),
+            "{error}"
+        );
+        assert!(looks_like_heif(FIXTURE));
+        assert!(!looks_like_heif(&FIXTURE[..15]));
+        let mut zero_length = FIXTURE.to_vec();
+        zero_length[..4].copy_from_slice(&[0, 0, 0, 0]);
+        assert!(!looks_like_heif(&zero_length));
+    }
+
+    #[test]
+    fn issue2177_missing_decoder_messages_name_the_component() {
+        assert!(message(Some(Missing::LinuxTool)).contains("heif-convert"));
+        assert!(message(Some(Missing::LinuxCodec)).contains("libheif-plugin-libde265"));
+        assert!(message(Some(Missing::WindowsCodec)).contains("HEVC Video Extensions"));
+        assert!(linux_codec_missing(
+            "Could not decode image: Unsupported feature: Unsupported codec\n"
+        ));
+        assert!(!linux_codec_missing(
+            "Could not read HEIF/AVIF file: Invalid input: No 'ftyp' box\n"
+        ));
     }
 
     #[test]
@@ -207,13 +429,18 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[cfg(unix)]
     #[test]
     fn issue2984_decoder_failure_and_timeout_are_errors() {
-        assert!(run_decoder(
+        let error = run_decoder(
             Command::new("/bin/sh").args(["-c", "exit 7"]),
-            Duration::from_secs(1)
+            Duration::from_secs(1),
         )
-        .is_err());
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DecoderFailed>(),
+            Some(DecoderFailed { code: Some(7), .. })
+        ));
         let start = Instant::now();
         let error = run_decoder(
             Command::new("/bin/sh").args(["-c", "exec sleep 10"]),
@@ -229,17 +456,58 @@ mod tests {
         .unwrap();
     }
 
+    /// Exercises the suspended spawn, Job Object assignment and resume path.
+    #[cfg(windows)]
+    #[test]
+    fn issue2177_windows_job_child_failure_and_timeout_are_errors() {
+        let cmd = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let error = run_decoder(
+            Command::new(&cmd).args(["/d", "/c", "exit 7"]),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DecoderFailed>(),
+            Some(DecoderFailed { code: Some(7), .. })
+        ));
+        let start = Instant::now();
+        let error = run_decoder(
+            Command::new(&cmd).args(["/d", "/c", "ping -n 30 127.0.0.1 >NUL"]),
+            Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        run_decoder(
+            Command::new(&cmd).args(["/d", "/c", "exit 0"]),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn issue2984_bundled_decoder_wins_over_the_host() {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("okilum");
+        let host = tempfile::tempdir().unwrap();
+        let search = std::env::join_paths([host.path()]).unwrap();
         assert_eq!(
-            linux_tool(&executable, "heif-convert"),
-            PathBuf::from("heif-convert")
+            linux_tool(&executable, "heif-convert", Some(search.clone())),
+            None,
+            "no bundled or host decoder"
+        );
+        let installed = host.path().join("heif-convert");
+        std::fs::write(&installed, b"host decoder").unwrap();
+        assert_eq!(
+            linux_tool(&executable, "heif-convert", Some(search.clone())),
+            Some(installed)
         );
         let bundled = directory.path().join("heif-convert");
         std::fs::write(&bundled, b"bundled decoder").unwrap();
-        assert_eq!(linux_tool(&executable, "heif-convert"), bundled);
+        assert_eq!(
+            linux_tool(&executable, "heif-convert", Some(search)),
+            Some(bundled)
+        );
     }
 }

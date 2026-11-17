@@ -6,9 +6,11 @@ rendering never launch an external application. The explicit button uses the
 existing vault-checked file action and the OS default file association; codecs
 and playback remain the system player's responsibility.
 
-Linux HEIC/HEIF files and local embeds use a bundled, bounded decoder in the
-AppImage (#2984); macOS uses its system decoder. See
-[Linux HEIC/HEIF previews](linux-heic-viewer.md) for limits, packaging and the
+HEIC/HEIF files and local embeds decode in a bounded child process with the
+platform's codec: libheif in the Linux AppImage or from PATH (#2984), macOS
+`sips`/ImageIO, and Windows WIC when Microsoft's HEIF and HEVC Store
+extensions are installed (#2177). A missing decoder is named in the viewer.
+See [HEIC/HEIF previews](linux-heic-viewer.md) for limits, packaging and the
 separate open broader-HEIF scope (#2177).
 
 Public synthetic JPEG/BMP and virtual-log examples live in

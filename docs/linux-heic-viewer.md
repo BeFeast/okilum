@@ -1,4 +1,46 @@
-# Linux HEIC/HEIF previews (#2984)
+# HEIC/HEIF previews (#2984, #2177)
+
+Linux, macOS and Windows open `.heic`/`.heif` in the image viewer with the
+platform's own codec, always in a separate bounded process and off the UI
+thread. Before any decoder runs, the snapshot must start with an ISO-BMFF
+`ftyp` box; other bytes are an ordinary unreadable image.
+
+| Platform | Decoder | Missing decoder message |
+|---|---|---|
+| Linux | `heif-convert` bundled in the AppImage, else from PATH | names `heif-convert` (libheif-examples/libheif), or the libheif HEVC plugin when libheif reports `Unsupported codec` |
+| macOS | `/usr/bin/sips` (ImageIO) | none; always present |
+| Windows | Windows PowerShell 5.1 + WPF `BitmapDecoder` (WIC) | names Microsoft's HEIF Image Extensions and HEVC Video Extensions |
+
+The viewer's fallback text comes from the last decode that reached a decoder:
+a missing codec is a property of the system, and the next successful or
+ordinary failed decode clears it.
+
+## Windows (#2177)
+
+Windows has no built-in HEIF codec. With the Store extensions installed, WIC
+decodes HEIC for desktop processes. Okilum starts the system
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` with an
+`-EncodedCommand` script (not subject to the script execution policy), in the
+private temporary directory holding the snapshot. The child is created
+suspended, placed in a Job Object (1.5 GiB committed memory per process, 20 s
+user CPU, kill on close, no error dialogs) and only then resumed; the 30 s
+wall deadline kills it. The script checks the frame size before decoding
+pixels (same 16384/64,000,000 limits), applies `System.Photo.Orientation`
+and writes `preview.png`; Okilum repeats the PNG checks below.
+`WINCODEC_ERR_COMPONENTNOTFOUND`, `WINCODEC_ERR_COMPONENTINITIALIZEFAILURE`
+(the inbox HEIF container decoder without the Store codec, as seen on the
+hosted `windows-2022` runner), `WINCODEC_ERR_UNKNOWNIMAGEFORMAT` (after the
+`ftyp` check) and Media Foundation errors exit with code 3, shown as the
+missing-extensions message.
+
+Verified: the hosted `windows-2022` runner (no extensions) pins that message
+for a valid HEVC fixture, and the suspended spawn, job and timeout path. Not
+verified: real pixels on a Windows host with the extensions installed, and
+how Microsoft's codec reports `irot`/`imir` (it is not documented; the
+script assumes unrotated pixels plus `System.Photo.Orientation`). Run
+`OKILUM_HEIC_EXPECT=decoded` with the extensions installed to check both.
+
+## Linux
 
 Linux opens `.heic`/`.heif` (case insensitive) in the existing read-only image
 viewer. Local Markdown embeds use the same asynchronous image asset. The
@@ -40,9 +82,8 @@ rerunning the same controls; no experimental decoder branch is imported.
 
 Native Linux installs use `heif-convert` and `prlimit` from PATH. Arch's
 optional dependencies name libheif and its libde265 plugin. A development
-or native-package installation without a decoder reports the existing
-unreadable-image message. macOS retains its system `sips` decoder; Windows
-HEIC viewing is unchanged.
+or native-package installation without `heif-convert` names it in the
+viewer instead of the generic unreadable-image message (#2177).
 
 ## Bounds and failures
 
@@ -76,7 +117,14 @@ Reader's visible error/replacement/deletion/restoration lifecycle. Those Rust
 controls run on the exact source through hosted checks; installed beta evidence
 is separate.
 
-This is bounded Linux product-viewer support, not a whole-HEIF-corpus or T3
+Host libheif 1.21.2 `heif-convert`, under the viewer's `prlimit` bounds,
+decodes the three valid controls that the pinned T3 CSP decoder rejects
+(SHA-256 matching `docs/evidence/composer-heif-parity/fixtures.json`):
+Nokia `C013` (two 300×300 cropped stills, primary first), Nokia `MIAF007`
+(360×640) and libheif `clap_cropped` (64×64) (checked 2026-11-17). This shows
+that the viewer path accepts them; it is not an independent pixel reference.
+
+This is bounded product-viewer support, not a whole-HEIF-corpus or T3
 pixel-parity certification. [#2177](https://git.oklabs.uk/BeFeast/okilum/issues/2177)
 remains open for the broader valid corpus and its independent pixel references.
 The historical [HEIF reports](evidence/composer-heif-parity/README.md), failed
