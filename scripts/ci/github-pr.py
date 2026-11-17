@@ -55,6 +55,7 @@ def main():
     started = time.monotonic()
     result, branch, api = 'failure', None, None
     pushed = False
+    receipt = None
     token = ''
     try:
         lane = os.environ['CI_LANE']
@@ -71,20 +72,29 @@ def main():
         api = transport.GitHub()
         api.log_quota()
         token = api.token
+        workflow = f'.github/workflows/forgejo-{lane}.yml'
+        # #844: None for release producers and the shared fast ref.
+        receipt = transport.Receipt.open(branch, sha, workflow)
         transport.push_head(branch, sha, token)
         pushed = True
         if lane == 'fast':
             result, message = fast_evidence.wait(api, branch, sha, timeout=max(1, 540 - (time.monotonic() - started)))
         else:
             limits = dict(queue_timeout=1800, run_timeout=timeout)
+            if receipt:
+                limits.update(on_run=receipt.observed)
             if lane in BRIDGE_BUDGETS:
                 limits.update(queue_timeout=BRIDGE_BUDGETS[lane], deadline=started + BRIDGE_BUDGETS[lane])
             if lane in ALSO_REQUIRED:
                 limits.update(also_required=ALSO_REQUIRED[lane])
-            result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
+            result, message = transport.wait_for_run(api, branch, sha, workflow=workflow,
                 job_name=job, build_step=step, **limits)
+        if receipt:
+            receipt.finish()
         print(message)
     except transport.Unavailable as error:
+        if receipt:
+            receipt.finish()
         print(f'Hosted CI unavailable; no fallback success: {error}')
     finally:
         if os.environ.get('CI_LANE') == 'shared':

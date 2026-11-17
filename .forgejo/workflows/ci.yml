@@ -124,6 +124,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run exact shared source on GitHub
         id: remote
         env:
@@ -149,6 +158,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run exact shared source on GitHub
         id: remote
         env:
@@ -196,6 +214,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run exact source on GitHub Linux
         id: remote
         env:
@@ -277,6 +304,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run the exact PR head on GitHub macOS
         id: remote
         env:
@@ -391,6 +427,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run the exact PR head's first-run tests on GitHub Windows
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
@@ -418,6 +463,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # #844: if this job is cancelled or superseded, cancel only the GitHub
+      # run its bridge step below dispatched (never release producers).
+      - name: Register owned hosted run cancellation
+        uses: ./.forgejo/actions/hosted-cancel
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
       - name: Run main and PR input A/B in one GitHub Linux job
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}

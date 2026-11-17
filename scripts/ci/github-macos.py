@@ -51,6 +51,8 @@ def poll_delay():
 class GitHub:
     def __init__(self, token=None):
         self.quota_exhausted = False
+        # Seconds per API request; the post-job cancellation hook lowers it (#844).
+        self.timeout = 30
         try:
             self.credentials = auth.Credentials(fallback=token) if token is None or isinstance(token, str) else token
         except auth.CredentialError as error:
@@ -91,7 +93,7 @@ class GitHub:
             data=json.dumps(data).encode() if data is not None else None,
             method=method, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 self.credentials.note_quota(getattr(response, 'headers', {}))
                 body = response.read()
                 return json.loads(body) if body else None
@@ -249,11 +251,12 @@ def executed_step(jobs, job_name, step_name):
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT, workflow=WORKFLOW,
                  job_name="macos", build_step=BUILD_STEP, log=print, deadline=None,
-                 also_required=()):
+                 also_required=(), on_run=None):
     """`deadline` (same clock) caps both the queue and the run for a fixed caller budget.
 
     `also_required` lists further (job, step) pairs of the same run that must each
     have executed and passed; they are proven by the jobs API only, never by logs.
+    `on_run` receives the single matching run as soon as it is listed (#844).
     """
     def capped(moment):
         return moment if deadline is None else min(moment, deadline)
@@ -274,6 +277,8 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
             return "failure", "Ambiguous GitHub workflow runs"
         if matches:
             run = matches[0]
+            if on_run is not None:
+                on_run(run)
             url = run["html_url"]
             if run["status"] == "completed":
                 if run["conclusion"] == "startup_failure":
@@ -383,6 +388,77 @@ def cleanup(api, number):
                 print(f"Deleted {ref['ref']}")
 
 
+# #844: a cancelled or superseded Forgejo job cancels the one GitHub run its own
+# bridge invocation dispatched. The Forgejo runner kills the bridge step, skips
+# ordinary always() steps and then runs action post steps, so the bridge keeps a
+# credential-free receipt and .forgejo/actions/hosted-cancel cancels from it
+# (scripts/ci/github-cancel.py). Release and publication producers never take
+# part (#2891: producers are not cancelled automatically), nor does the shared
+# fast-forward `forgejo-fast-pr/<n>` ref, which identifies no single invocation.
+RECEIPT_ENV = "OKILUM_HOSTED_RECEIPT"
+NEVER_CANCELLED_PREFIXES = ("forgejo-arch-pr", "forgejo-windows-release-pr", "forgejo-fast-pr")
+CANCELLABLE_PREFIXES = tuple(p for p in BRIDGE_PREFIXES if p not in NEVER_CANCELLED_PREFIXES)
+NEVER_CANCELLED_WORKFLOWS = frozenset(f".github/workflows/{name}.yml" for name in (
+    "forgejo-arch", "forgejo-arch-release", "forgejo-windows-release",
+    "forgejo-macos-shipping", "forgejo-macos-depot", "forgejo-fast"))
+
+
+def owned_identity(branch, sha, workflow):
+    """(Forgejo run id, attempt) of a cancellable unique invocation ref, else None."""
+    if (not isinstance(branch, str) or not isinstance(sha, str) or not isinstance(workflow, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", sha)
+            or workflow in NEVER_CANCELLED_WORKFLOWS
+            or not re.fullmatch(r"\.github/workflows/forgejo-[a-z0-9-]+\.yml", workflow)):
+        return None
+    prefixes = "|".join(re.escape(prefix) for prefix in CANCELLABLE_PREFIXES)
+    match = re.fullmatch(rf"(?:{prefixes})/[1-9][0-9]*-{sha}-([1-9][0-9]*)-([1-9][0-9]*)-[0-9a-f]{{32}}",
+                         branch)
+    return match.groups() if match else None
+
+
+class Receipt:
+    """What this invocation owns, written atomically for the post-job hook.
+
+    Holds no credentials. `finished` is set only once the bridge reached its own
+    verdict; an interrupted, killed or crashed bridge leaves it unset.
+    """
+
+    def __init__(self, path, branch, sha, workflow):
+        self.path = Path(path)
+        self.data = dict(version=1, branch=branch, sha=sha, workflow=workflow,
+                         run_id=None, finished=False)
+        self.write()
+
+    @classmethod
+    def open(cls, branch, sha, workflow, env=None):
+        env = os.environ if env is None else env
+        if not env.get(RECEIPT_ENV) or owned_identity(branch, sha, workflow) is None:
+            return None
+        return cls(env[RECEIPT_ENV], branch, sha, workflow)
+
+    def write(self):
+        # A receipt failure only loses cleanup; it never changes the gate result.
+        try:
+            temporary = self.path.with_name(self.path.name + ".tmp")
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(self.data, handle)
+            os.replace(temporary, self.path)
+        except OSError as error:
+            print(f"::warning::Hosted cancellation receipt not written: {type(error).__name__}", flush=True)
+
+    def observed(self, run):
+        run_id = run.get("id")
+        if type(run_id) is int and run_id > 0 and run_id != self.data["run_id"]:
+            self.data["run_id"] = run_id
+            self.write()
+
+    def finish(self):
+        if not self.data["finished"]:
+            self.data["finished"] = True
+            self.write()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["run", "cleanup"])
@@ -393,16 +469,23 @@ def main():
         cleanup(api, os.environ["PR_NUMBER"])
         return
     result = "failure"
+    receipt = None
     try:
         api = GitHub()
         sha = os.environ["PR_HEAD_SHA"]
         branch = ref_name(os.environ["PR_NUMBER"], sha, os.environ["GITHUB_RUN_ID"],
                           (os.environ.get("GITHUB_RUN_ATTEMPT") or "1"), uuid.uuid4().hex)
         api.log_quota()
+        receipt = Receipt.open(branch, sha, WORKFLOW)
         push_head(branch, sha, api.token)
-        result, message = wait_for_run(api, branch, sha)
+        result, message = wait_for_run(api, branch, sha,
+                                       **(dict(on_run=receipt.observed) if receipt else {}))
+        if receipt:
+            receipt.finish()
         print(message)
     except Unavailable as error:
+        if receipt:
+            receipt.finish()
         result = "unavailable"
         print(f"GitHub macOS unavailable — rerun later: {error}")
     finally:

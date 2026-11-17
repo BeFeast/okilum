@@ -48,6 +48,39 @@ needed. Linux/Brain consume the existing main cache; new lanes do not save
 large per-branch target caches into the shared 10 GiB quota. Missing caches
 fall back to cold builds. Capacity incidents are reported, not retried in a loop.
 
+## Cancelled or superseded bridge jobs (#844)
+
+A Forgejo job that waits on a hosted run (shared, Linux, macOS, Windows, perf,
+the nightly Brain/Inbox/Feedback/Excalidraw lanes, `commit-ci`, and ordinary
+`fast.yml` runs) registers `.forgejo/actions/hosted-cancel` right before its
+bridge step. When Forgejo cancels or supersedes the job, the runner kills the
+bridge step and skips ordinary `always()` steps, but it still runs action post
+steps. The post step reads a receipt the bridge wrote in `RUNNER_TEMP`: the
+unique invocation ref, source SHA, workflow and, once listed, the GitHub run ID.
+It holds no credentials.
+
+`scripts/ci/github-cancel.py` acts only if the bridge never reached its own
+verdict. It cancels a run only when the run's ID, ref, SHA, `push` event and
+workflow all match the receipt, and the ref carries this Forgejo run's ID and
+attempt. A replacement invocation of the same PR or source has a different
+ref and is never selected. Completed runs are left alone. If the run is not
+listed yet, the hook reads the list at most five times, 3 s apart. Each request
+has a 10 s timeout; a refused cancel is not retried. The hook then deletes the
+unique ref and prints one `Hosted cancellation outcome=…` line: `accepted`,
+`already-completed`, `not-found`, `refused` or `failed`. The hook never fails
+the job.
+
+Release and publication producers never take part. The release workflows do not
+register the hook, and the ref and workflow rules exclude the `arch` and
+`windows-release` lanes, the Mac shipping and depot workflows, and the shared
+`forgejo-fast-pr/<n>` ref. Hosted producers are not cancelled automatically
+(#2891). Source-pinned `fast.yml` certification skips the hook, because its
+checkout may predate it. A wait timeout, or a refused cancel while the Forgejo
+job is still live, keeps the #802 behavior: the bridge goes on waiting for the
+same run.
+
+Rollback: revert the hook and the receipt. The exact-source gates do not change.
+
 ## Logs of failed jobs
 
 Hosted Linux dependency setup uses `scripts/ci/apt-bounded.sh` on both build
