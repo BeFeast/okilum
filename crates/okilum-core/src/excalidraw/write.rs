@@ -4,7 +4,8 @@
 //! to new file bytes. It changes only what the edit changed:
 //!
 //! - Unchanged elements keep the file's own JSON object, so plugin-only fields
-//!   such as `rawText` survive an editor that drops them.
+//!   such as `rawText` survive an editor that drops them. Changed elements keep
+//!   the file's fields that the editor never loaded (missing from its baseline).
 //! - `## Text Elements` and `## Element Links` entries are rewritten only for
 //!   elements whose text or link changed. The Obsidian Excalidraw plugin reads
 //!   those Markdown entries as authoritative over the JSON, so leaving a stale
@@ -248,6 +249,9 @@ fn merge_elements(
         }
         let mut element = element.clone();
         if let Some(file) = file {
+            if baseline.is_some() {
+                keep_unloaded_fields(&mut element, file, before);
+            }
             bump_version(&mut element, file);
         }
         let deleted = is_deleted(&element);
@@ -322,6 +326,29 @@ fn merge_elements(
         merge.links.push((id.to_owned(), Entry::Remove));
     }
     Ok(merge)
+}
+
+/// Copies onto a changed element the file's fields that the editor never
+/// loaded: those missing from the element in the editor's baseline. Upstream
+/// Excalidraw rebuilds each element from the fields it knows, so plugin and
+/// newer-format fields vanish on load; that is not a user deletion. A field the
+/// editor did load and the edit removed stays removed, and a value the edit
+/// sets wins. Without a baseline element nothing can be told apart, so nothing
+/// is copied. `rawText` is derived from the text and set by the caller: a copy
+/// of the old one would contradict a text edit.
+fn keep_unloaded_fields(element: &mut Value, file: &Value, before: Option<&Value>) {
+    let (Some(fields), Some(file), Some(before)) = (
+        element.as_object_mut(),
+        file.as_object(),
+        before.and_then(Value::as_object),
+    ) else {
+        return;
+    };
+    for (key, value) in file {
+        if key != "rawText" && !before.contains_key(key) {
+            fields.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
 }
 
 /// The plugin's incremental sync takes an incoming element only when its

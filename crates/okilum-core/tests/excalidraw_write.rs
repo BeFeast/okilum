@@ -550,6 +550,91 @@ fn plain_excalidraw_files_keep_bom_and_unknown_keys() {
     assert!(find(&saved, "element-6").get("rawText").is_none());
 }
 
+/// Upstream Excalidraw rebuilds every element from the fields it knows, so
+/// plugin and newer-format fields vanish on load. Editing such an element must
+/// not delete them, while a field the editor did load can still be removed.
+#[test]
+fn edited_elements_keep_fields_the_editor_never_loaded() {
+    let extra = json!({"nested": [1, 2, 3], "flag": true});
+    let mut cases = variants();
+    cases.push(("minimal", MINIMAL.to_owned()));
+    for (name, file) in cases {
+        // A file whose shape and text carry a field upstream does not know.
+        let mut seeded = scene(&file);
+        let ids: Vec<String> = ["rectangle", "text"]
+            .iter()
+            .map(|kind| {
+                seeded["elements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|element| element["type"] == *kind && element["isDeleted"] != true)
+                    .unwrap_or_else(|| panic!("{name}: no {kind}"))["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let (shape, text) = (&ids[0], &ids[1]);
+        for id in &ids {
+            element(&mut seeded, id)["pluginOnly"] = extra.clone();
+        }
+        element(&mut seeded, shape)["link"] = json!("[[Daily Note]]");
+        let file = updated(write(&file, None, &seeded).unwrap());
+        assert_eq!(find(&scene(&file), shape)["pluginOnly"], extra, "{name}");
+
+        // The editor drops `rawText` and the unknown field on load.
+        let mut baseline = restored(&file);
+        for id in &ids {
+            element(&mut baseline, id)
+                .as_object_mut()
+                .unwrap()
+                .remove("pluginOnly");
+        }
+        let mut edited = baseline.clone();
+        edit(&mut edited, shape, |element| {
+            element["x"] = json!(element["x"].as_f64().unwrap() + 30.);
+            // A field the editor loaded is removed on purpose.
+            element.as_object_mut().unwrap().remove("link");
+        });
+        set_text(&mut edited, text, "Edited text");
+        let saved = updated(write(&file, Some(&baseline), &edited).unwrap());
+        let reread = scene(&saved);
+        for id in &ids {
+            assert_eq!(find(&reread, id)["pluginOnly"], extra, "{name} {id}");
+        }
+        assert_eq!(find(&reread, shape)["x"], find(&edited, shape)["x"], "{name}");
+        assert!(find(&reread, shape).get("link").is_none(), "{name}");
+        assert_eq!(find(&reread, text)["rawText"], "Edited text", "{name}");
+        assert_plugin_consistent(&saved);
+        // Re-saving the result unchanged writes nothing.
+        assert_eq!(
+            write(&saved, None, &restored(&saved)).unwrap(),
+            WriteOutcome::Unchanged,
+            "{name}"
+        );
+    }
+}
+
+/// `rawText` derives from the text, so an edited text never inherits the old
+/// one, even in a plain file whose editor dropped it on load.
+#[test]
+fn edited_plain_text_does_not_inherit_a_stale_raw_text() {
+    let mut original = scene(PLAIN_FILE);
+    element(&mut original, "element-6")["rawText"] = json!("Old [[link]]");
+    let file = serde_json::to_string_pretty(&original).unwrap();
+    let mut baseline = scene(&file);
+    element(&mut baseline, "element-6")
+        .as_object_mut()
+        .unwrap()
+        .remove("rawText");
+    let mut edited = baseline.clone();
+    set_text(&mut edited, "element-6", "New text");
+    let saved = scene(&updated(write(&file, Some(&baseline), &edited).unwrap()));
+    assert_eq!(find(&saved, "element-6")["text"], "New text");
+    assert!(find(&saved, "element-6").get("rawText").is_none());
+}
+
 #[test]
 fn invalid_edits_are_rejected_without_output() {
     let baseline = restored(COMPRESSED);
