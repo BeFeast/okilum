@@ -76,7 +76,7 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     for file in ["tone.mp3", "tone.wav"] {
         reader.update_in(visual, |r, window, cx| {
             r.preview_file(file, window, cx);
-            assert!(r.file_preview.as_ref().unwrap().audio.is_some());
+            assert!(r.pane.file_preview.as_ref().unwrap().audio.is_some());
             r.toggle_source(window, cx);
             assert!(r.editing.is_none());
         });
@@ -93,7 +93,13 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     });
     visual.run_until_parked();
     let view = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().canvas.clone().unwrap()
+        r.pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .canvas
+            .clone()
+            .unwrap()
     });
     // Test windows do not run a platform frame loop. Deliver the frame requested
     // by first measurement, without simulating an input or pressing Fit.

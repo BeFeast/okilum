@@ -255,7 +255,7 @@ impl Reader {
     /// opened on its Overdue chip. Navigating to another note ends it.
     pub(super) fn show_reminders_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let note = self.reminder_prefs.note.clone();
-        if self.current_rel != note || self.file_preview.is_some() {
+        if self.current_rel != note || self.pane.file_preview.is_some() {
             self.open_note(&note, None, window, cx);
         }
         self.reminders_view = true;

@@ -997,7 +997,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = self.file_preview.as_mut() else {
+        let Some(preview) = self.pane.file_preview.as_mut() else {
             return;
         };
         let Some(har) = preview.har.clone() else {

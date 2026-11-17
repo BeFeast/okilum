@@ -27,10 +27,35 @@ pub(super) struct Surface {
     pub link_original_source: Option<Arc<str>>,
     pub link_rendered_source: Option<Arc<str>>,
     pub link_identities: Arc<Vec<okilum_core::document_links::prepared::LinkIdentity>>,
+
+    // Rendered document: what the right panel and the document chrome show
+    // for this note.
+    pub use_html: bool,
+    /// Top-level headings of the open document (docs/design/reader.md §Right
+    /// panel, #337). Prepared with the document; never reparsed on scroll.
+    pub outline: Vec<okilum_core::document_links::HeadingEntry>,
+    /// Read-only properties of the open note (#386); `Err` carries a YAML
+    /// error to show instead of silently hiding the block.
+    pub properties: Result<Vec<okilum_core::properties::Property>, String>,
+    /// Inline properties expanded above the document (right panel closed).
+    pub properties_open: bool,
+    pub show_hidden_properties: bool,
+    pub backlinks: Vec<Backlink>,
+    /// `backlinks` is grouped by source note: one range per card of the «Linked from» list.
+    /// Kept with `Reader::backlinks_list`, which counts exactly these cards (#1135).
+    pub backlink_groups: Vec<std::ops::Range<usize>>,
+    /// Linking notes whose places are all shown (#394, «Show N more»).
+    pub backlinks_expanded: std::collections::HashSet<String>,
+    /// A wide table shown at window width over the document (#368).
+    pub table_overlay: Option<Entity<TextViewState>>,
+    pub timeline: Option<reader_timeline::Timeline>,
+    pub file_preview: Option<reader_files::FilePreview>,
+    pub typed_navigation: reader_typed_view::Navigation,
+    pub hover_preview: reader_hover::HoverPreview,
 }
 
 impl Surface {
-    pub(super) fn new(find_input: Entity<InputState>) -> Self {
+    pub(super) fn new(find_input: Entity<InputState>, use_html: bool) -> Self {
         Self {
             find_input,
             find_open: false,
@@ -41,6 +66,19 @@ impl Surface {
             link_original_source: None,
             link_rendered_source: None,
             link_identities: Arc::default(),
+            use_html,
+            outline: Vec::new(),
+            properties: Ok(Vec::new()),
+            properties_open: false,
+            show_hidden_properties: false,
+            backlinks: Vec::new(),
+            backlink_groups: Vec::new(),
+            backlinks_expanded: std::collections::HashSet::new(),
+            table_overlay: None,
+            timeline: None,
+            file_preview: None,
+            typed_navigation: Default::default(),
+            hover_preview: Default::default(),
         }
     }
 }

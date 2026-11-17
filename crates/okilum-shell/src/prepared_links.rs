@@ -375,7 +375,7 @@ impl Reader {
         };
         let vault = self.vault.clone();
         let rel = rel.to_owned();
-        let html = self.use_html;
+        let html = self.pane.use_html;
         let landing_line = match &landing {
             Some(Landing::Line(line)) => Some(*line),
             _ => None,
@@ -698,7 +698,7 @@ impl Reader {
                 // TextView caches its entity render independently of Reader.
                 // Refresh paint without replacing the parse, scroll or selection.
                 this.content.update(cx, |_, cx| cx.notify());
-                if let Some(overlay) = &this.table_overlay {
+                if let Some(overlay) = &this.pane.table_overlay {
                     overlay.update(cx, |_, cx| cx.notify());
                 }
                 cx.notify();

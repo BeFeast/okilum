@@ -43,7 +43,7 @@ impl Reader {
     fn render_reader_surface(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Nested file/note draws start from this small frame; the surrounding
         // builders get their own frames before or after it (#2825).
-        if self.file_preview.is_some() {
+        if self.pane.file_preview.is_some() {
             let status = self.file_surface_status(cx);
             let main = self.render_main(window, cx);
             return file_surface(main, status);
@@ -142,7 +142,7 @@ impl Reader {
             .when(labels, |button| button.label(label))
             .accessibility_label(label)
             .tooltip(reader_shortcuts::hint(label, &ToggleSource, cx))
-            .disabled(self.note_encoding_damaged && self.file_preview.is_none())
+            .disabled(self.note_encoding_damaged && self.pane.file_preview.is_none())
             .debug_selector(move || id.into())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.toggle_source(window, cx);
@@ -155,12 +155,13 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        if self.file_preview.is_some() {
+        if self.pane.file_preview.is_some() {
             return self.render_file_header(window, cx);
         }
         use gpui_component::menu::PopupMenuItem;
-        let is_file = self.file_preview.is_some();
+        let is_file = self.pane.file_preview.is_some();
         let file_editable = self
+            .pane
             .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel))
@@ -220,6 +221,7 @@ impl Reader {
         }
         // Normal or full note width, wherever the page is text.
         let width_applies = self
+            .pane
             .file_preview
             .as_ref()
             .is_none_or(|p| p.code.is_some() || p.text.is_some());
@@ -586,22 +588,22 @@ impl Reader {
             self.navigation.preparation_generation.wrapping_add(1);
         self.navigation.generation = self.navigation.generation.wrapping_add(1);
         self.pending_open_document = None;
-        self.timeline = None;
+        self.pane.timeline = None;
         self.current_rel.clear();
         self.current_title.clear();
         self.note_source.clear();
         self.note_canonical_source = None;
         self.note_encoding_damaged = false;
-        self.file_preview = None;
+        self.pane.file_preview = None;
         self.editing = None;
-        self.table_overlay = None;
+        self.pane.table_overlay = None;
         self.pane.find_open = false;
         self.usable_document = false;
-        self.outline.clear();
+        self.pane.outline.clear();
         self.outline_list.reset(0);
         // Through set_backlinks: the cards' ranges and the list must change with it (#1313).
         self.set_backlinks(Vec::new(), true);
-        self.properties = Ok(Vec::new());
+        self.pane.properties = Ok(Vec::new());
         self.link_notice = None;
         self.pane.link_choices.clear();
         self.invalidate_links();

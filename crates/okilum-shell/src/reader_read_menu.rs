@@ -9,9 +9,9 @@ pub(super) const COPY_MARKDOWN_KEY: &str = "secondary-shift-c";
 impl Reader {
     pub(super) fn read_copy_available(&self) -> bool {
         self.editing.is_none()
-            && self.file_preview.is_none()
+            && self.pane.file_preview.is_none()
             && !self.selected_file().is_empty()
-            && !self.typed_navigation.active.get()
+            && !self.pane.typed_navigation.active.get()
             && !self.tree_preview.is_open()
             && self
                 .active_timeline()
@@ -109,7 +109,7 @@ impl Snapshot {
 }
 
 pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
-    if state.editing.is_some() || state.file_preview.is_some() {
+    if state.editing.is_some() || state.pane.file_preview.is_some() {
         return None;
     }
     let content = state.content.read(cx);
@@ -118,7 +118,7 @@ pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
         markdown: content.selected_text_as(SelectionFormat::Source),
         document: content.document_source(),
         generation: state.navigation.preparation_generation,
-        rich_markdown: !state.use_html,
+        rich_markdown: !state.pane.use_html,
     })
 }
 

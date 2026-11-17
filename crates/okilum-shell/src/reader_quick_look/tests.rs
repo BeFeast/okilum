@@ -384,7 +384,7 @@ mod mounted {
         let (history, history_ix, content, stamp, range) =
             f.reader.read_with(visual, |reader, cx| {
                 assert!(reader.source_is_dirty(cx), "dirty draft positive control");
-                assert!(reader.file_preview.is_none());
+                assert!(reader.pane.file_preview.is_none());
                 (
                     reader.navigation.history.clone(),
                     reader.navigation.history_ix,
@@ -424,7 +424,7 @@ mod mounted {
                 assert_eq!(reader.navigation.history, history);
                 assert_eq!(reader.navigation.history_ix, history_ix);
                 assert_eq!(reader.content, content);
-                assert!(reader.file_preview.is_none());
+                assert!(reader.pane.file_preview.is_none());
                 assert_eq!(reader.editing.as_ref().unwrap().input(), &input);
                 assert_eq!(
                     input.read(cx).value().as_ref(),
@@ -520,7 +520,7 @@ mod mounted {
         f.reader.read_with(visual, |reader, _| {
             assert_eq!(reader.current_rel, "Start.md");
             assert_eq!(reader.navigation.history, history);
-            assert!(reader.file_preview.is_none());
+            assert!(reader.pane.file_preview.is_none());
         });
         assert_eq!(std::fs::read(f.root.join("Start.md")).unwrap(), saved);
     }

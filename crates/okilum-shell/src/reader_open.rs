@@ -1536,7 +1536,7 @@ pub(crate) fn duplicate_window(
                 vault: Some(reader.vault_root.clone()),
                 note: Some(note.clone().unwrap_or_else(|| reader.current_rel.clone())),
                 session_directory: reader.session_directory.clone(),
-                use_html: reader.use_html,
+                use_html: reader.pane.use_html,
                 defer_loading: true,
                 ..Default::default()
             };
@@ -4479,6 +4479,7 @@ mod entry_tests {
             let reader = readers(cx).last().unwrap().clone();
             let reader = reader.read(cx);
             let block = reader
+                .pane
                 .outline
                 .iter()
                 .find(|h| h.text == "Distant checkpoint")
@@ -4825,7 +4826,7 @@ mod entry_tests {
                 .update(cx, |_, window, _| window.activate_window())
                 .unwrap();
             first.update(cx, |reader, _| {
-                reader.properties_open = true;
+                reader.pane.properties_open = true;
                 reader.recent_expanded = true;
             });
             new_window(cx);
@@ -4844,7 +4845,7 @@ mod entry_tests {
             assert_ne!(first.entity_id(), second.entity_id());
             assert_eq!(second.read(cx).current_rel, "a.md");
             assert!(
-                second.read(cx).properties_open,
+                second.read(cx).pane.properties_open,
                 "snapshot reaches duplicate restore"
             );
             assert!(second.read(cx).recent_expanded);

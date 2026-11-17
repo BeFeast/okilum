@@ -133,6 +133,7 @@ impl View {
     /// unsupported files cost no parse; no text is copied on scroll notifications.
     pub(crate) fn bind(view: &Entity<Self>, reader: &Reader, cx: &mut App) {
         let code = reader
+            .pane
             .file_preview
             .as_ref()
             .and_then(|file| file.code.clone());
@@ -162,6 +163,7 @@ impl View {
         }
         view.update(cx, |this, cx| this.leave_snapshot(cx));
         let language = reader
+            .pane
             .file_preview
             .as_ref()
             .and_then(|file| reader_code_file::language(&file.rel))

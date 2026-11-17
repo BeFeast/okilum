@@ -52,7 +52,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     view.update(visual, |v, cx| {
         assert_eq!(v.single_file, folder, "positive control: actual open mode");
         assert_eq!(v.current_rel, "A.md");
-        assert_eq!(v.outline.len(), 4);
+        assert_eq!(v.pane.outline.len(), 4);
         assert_eq!(v.current_section(cx), Some(0));
         v.panels.open(reader_layout::Panel::Backlinks);
         cx.notify();
@@ -71,7 +71,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     });
     // Preserve an intra-block offset too, not just the heading number.
     view.update(visual, |v, cx| {
-        let block = v.outline[2].target.block;
+        let block = v.pane.outline[2].target.block;
         v.content.read(cx).list_state().scroll_to(ListOffset {
             item_ix: block + 1,
             offset_in_item: px(7.),
@@ -82,7 +82,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     let position = view.read_with(visual, |v, cx| {
         assert_eq!(v.current_section(cx), Some(2));
         let position = v.content.read(cx).list_state().logical_scroll_top();
-        assert!(position.item_ix > v.outline[2].target.block);
+        assert!(position.item_ix > v.pane.outline[2].target.block);
         assert_ne!(position.offset_in_item, px(0.));
         position
     });

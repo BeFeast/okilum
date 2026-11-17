@@ -31,7 +31,7 @@ impl Owner {
 
     pub(super) fn current(&self, reader: &Reader) -> bool {
         !reader.single_file
-            && reader.file_preview.is_none()
+            && reader.pane.file_preview.is_none()
             && !self.document.is_empty()
             && self.root == reader.vault_root
             && self.state == reader.session_directory

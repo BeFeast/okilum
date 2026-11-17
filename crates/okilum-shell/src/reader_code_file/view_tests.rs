@@ -576,7 +576,14 @@ fn code2809_find_and_paging_render_zero_header_slots_and_notify_zero_side_panels
         reader_viewer_chrome::tests::fixture_with_files(cx, "find.json", &[("find.json", &source)]);
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     let started = Instant::now();
     while code.read_with(visual, |code, _| code.document.is_none()) {

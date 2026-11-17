@@ -43,8 +43,8 @@ impl SidePanel {
             reader: reader.downgrade(),
             left,
             _reader: cx.observe(reader, |this, reader, cx| {
-                let clear =
-                    reader.read(cx).file_preview.is_none() || !reader.read(cx).panels.backlinks;
+                let clear = reader.read(cx).pane.file_preview.is_none()
+                    || !reader.read(cx).panels.backlinks;
                 if clear {
                     if let Some(outline) = &this.file_outline {
                         outline.update(cx, |outline, cx| outline.clear(cx));
@@ -66,6 +66,7 @@ impl SidePanel {
     fn watch_har(&mut self, reader: &Entity<Reader>, cx: &mut Context<Self>) {
         let har = reader
             .read(cx)
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.har.clone());
@@ -107,9 +108,9 @@ impl Render for SidePanel {
             .update(cx, |reader, cx| {
                 if left {
                     reader.render_sidebar(window, cx)
-                } else if let Some(outline) = file_outline
-                    .filter(|_| reader.file_preview.is_some() && reader.active_timeline().is_none())
-                {
+                } else if let Some(outline) = file_outline.filter(|_| {
+                    reader.pane.file_preview.is_some() && reader.active_timeline().is_none()
+                }) {
                     reader_right_panel::render_file(reader, outline, cx)
                 } else {
                     if let Some(outline) = &self.file_outline {
@@ -262,7 +263,7 @@ pub(super) mod tests {
         visual.simulate_resize(size(px(1400.), px(800.)));
         visual.run_until_parked();
         view.update(visual, |v, cx| {
-            assert_eq!(v.outline.len(), 40, "outline positive control");
+            assert_eq!(v.pane.outline.len(), 40, "outline positive control");
             v.panels.open(reader_layout::Panel::Notes);
             v.panels.open(reader_layout::Panel::Backlinks);
             cx.notify();

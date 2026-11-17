@@ -937,6 +937,7 @@ impl Reader {
     }
     pub(super) fn resume_code_presentation(&self, cx: &mut App) {
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -990,7 +991,7 @@ impl Reader {
         if self.editing.is_some() {
             return None;
         }
-        self.file_preview.as_ref()?.code.clone()
+        self.pane.file_preview.as_ref()?.code.clone()
     }
     fn change_code_view(&self, view: View, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(code) = self.read_code_view() {
@@ -1008,24 +1009,33 @@ impl Reader {
     /// Native regression tests inspect the loaded read-only editor directly.
     #[cfg(test)]
     pub(crate) fn code_view_input(&self, cx: &App) -> Option<Entity<EditorState>> {
-        self.file_preview.as_ref()?.code.as_ref()?.read(cx).input()
+        self.pane
+            .file_preview
+            .as_ref()?
+            .code
+            .as_ref()?
+            .read(cx)
+            .input()
     }
 
     pub(crate) fn file_is_source(&self) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel) || p.code.is_some())
     }
 
     pub(crate) fn selected_json_association(&self, cx: &App) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|p| p.code.as_ref())
             .is_some_and(|code| code.read(cx).json_routed)
     }
 
     pub(crate) fn selected_code_language(&self, cx: &App) -> Option<&'static str> {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|p| p.code.as_ref())
             .map(|code| code.read(cx).source_language())
@@ -1034,7 +1044,8 @@ impl Reader {
 
     /// Code files open in the editor only within the size cap.
     pub(crate) fn code_file_editable(&self, cx: &App) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
             .is_none_or(|code| code.read(cx).editable())
@@ -1044,7 +1055,7 @@ impl Reader {
     pub(crate) fn toggle_code_soft_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wrap = !reader_ui_state::code_soft_wrap(cx);
         reader_ui_state::set_code_soft_wrap(wrap, cx);
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             cx.notify();
             return;
         };

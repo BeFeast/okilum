@@ -177,10 +177,10 @@ impl Reader {
     }
 
     pub(super) fn clear_hover(&mut self, cx: &mut Context<Self>) {
-        let generation = self.hover_preview.generation.wrapping_add(1);
-        self.hover_preview = HoverPreview {
+        let generation = self.pane.hover_preview.generation.wrapping_add(1);
+        self.pane.hover_preview = HoverPreview {
             generation,
-            scrolled_at: self.hover_preview.scrolled_at,
+            scrolled_at: self.pane.hover_preview.scrolled_at,
             ..Default::default()
         };
         cx.notify();
@@ -216,7 +216,7 @@ impl Reader {
                 window,
                 cx,
             );
-            self.hover_preview.missing = true;
+            self.pane.hover_preview.missing = true;
         }
     }
 
@@ -248,8 +248,8 @@ impl Reader {
     /// A wheel scroll over a side-panel list closes the preview and keeps new
     /// ones away until scrolling stops (#1101). The list still scrolls.
     pub(super) fn panel_scrolled(&mut self, cx: &mut Context<Self>) {
-        self.hover_preview.scrolled_at = Some(cx.background_executor().now());
-        if self.hover_preview.is_active() {
+        self.pane.hover_preview.scrolled_at = Some(cx.background_executor().now());
+        if self.pane.hover_preview.is_active() {
             self.clear_hover(cx);
         }
     }
@@ -267,21 +267,21 @@ impl Reader {
             return;
         }
         let immediate = command(window.modifiers());
-        if self.hover_preview.source.as_ref() == Some(&source)
-            && self.hover_preview.target.as_ref() == Some(&target)
+        if self.pane.hover_preview.source.as_ref() == Some(&source)
+            && self.pane.hover_preview.target.as_ref() == Some(&target)
         {
-            self.hover_preview.over_source = true;
-            if immediate && !self.hover_preview.loading && !self.hover_preview.visible {
+            self.pane.hover_preview.over_source = true;
+            if immediate && !self.pane.hover_preview.loading && !self.pane.hover_preview.visible {
                 self.schedule_hover(Duration::ZERO, window, cx);
             }
             return;
         }
         self.clear_hover(cx);
-        self.hover_preview.source = Some(source);
-        self.hover_preview.target = Some(target);
-        self.hover_preview.anchor = position;
-        self.hover_preview.beside = beside;
-        self.hover_preview.over_source = true;
+        self.pane.hover_preview.source = Some(source);
+        self.pane.hover_preview.target = Some(target);
+        self.pane.hover_preview.anchor = position;
+        self.pane.hover_preview.beside = beside;
+        self.pane.hover_preview.over_source = true;
         let delay = if immediate {
             Duration::ZERO
         } else {
@@ -290,7 +290,7 @@ impl Reader {
         // After a panel scroll the pointer must rest QUIET_AFTER_SCROLL once
         // scrolling has stopped; any further scroll cancels this wait.
         let quiet = beside
-            .and(self.hover_preview.scrolled_at)
+            .and(self.pane.hover_preview.scrolled_at)
             .map(|at| {
                 let elapsed = cx.background_executor().now().saturating_duration_since(at);
                 QUIET_AFTER_SCROLL.saturating_sub(elapsed) + QUIET_AFTER_SCROLL
@@ -301,32 +301,33 @@ impl Reader {
 
     pub(super) fn hover_modifiers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if command(window.modifiers())
-            && self.hover_preview.over_source
-            && !self.hover_preview.visible
-            && !self.hover_preview.loading
+            && self.pane.hover_preview.over_source
+            && !self.pane.hover_preview.visible
+            && !self.pane.hover_preview.loading
         {
             self.schedule_hover(Duration::ZERO, window, cx);
         }
     }
 
     pub(super) fn leave_hover(&mut self, source: &str, cx: &mut Context<Self>) {
-        if self.hover_preview.source.as_deref() != Some(source) {
+        if self.pane.hover_preview.source.as_deref() != Some(source) {
             return;
         }
-        self.hover_preview.over_source = false;
+        self.pane.hover_preview.over_source = false;
         self.defer_hover_close(cx);
     }
 
     fn defer_hover_close(&mut self, cx: &mut Context<Self>) {
-        self.hover_preview.leave_generation = self.hover_preview.leave_generation.wrapping_add(1);
-        let leave = self.hover_preview.leave_generation;
-        let generation = self.hover_preview.generation;
+        self.pane.hover_preview.leave_generation =
+            self.pane.hover_preview.leave_generation.wrapping_add(1);
+        let leave = self.pane.hover_preview.leave_generation;
+        let generation = self.pane.hover_preview.generation;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(220))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let h = &this.hover_preview;
+                let h = &this.pane.hover_preview;
                 if h.generation == generation
                     && h.leave_generation == leave
                     && !h.over_source
@@ -340,9 +341,9 @@ impl Reader {
     }
 
     fn schedule_hover(&mut self, delay: Duration, window: &mut Window, cx: &mut Context<Self>) {
-        self.hover_preview.generation = self.hover_preview.generation.wrapping_add(1);
-        let generation = self.hover_preview.generation;
-        let Some(target) = self.hover_preview.target.clone() else {
+        self.pane.hover_preview.generation = self.pane.hover_preview.generation.wrapping_add(1);
+        let generation = self.pane.hover_preview.generation;
+        let Some(target) = self.pane.hover_preview.target.clone() else {
             return;
         };
         let vault = self.vault.clone();
@@ -352,18 +353,19 @@ impl Reader {
             cx.background_executor().timer(delay).await;
             let proceed = this
                 .update_in_own_window(cx, |this, _, cx| {
-                    if this.hover_preview.generation != generation
-                        || !this.hover_preview.over_source
+                    if this.pane.hover_preview.generation != generation
+                        || !this.pane.hover_preview.over_source
                     {
                         return false;
                     }
-                    this.hover_preview.visible = true;
-                    if this.hover_preview.missing {
-                        this.hover_preview.message = Some("This note does not exist yet.".into());
+                    this.pane.hover_preview.visible = true;
+                    if this.pane.hover_preview.missing {
+                        this.pane.hover_preview.message =
+                            Some("This note does not exist yet.".into());
                         cx.notify();
                         return false;
                     }
-                    this.hover_preview.loading = true;
+                    this.pane.hover_preview.loading = true;
                     cx.notify();
                     true
                 })
@@ -403,16 +405,17 @@ impl Reader {
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.hover_preview.generation != generation
+                if this.pane.hover_preview.generation != generation
                     || this.navigation.generation != navigation
                     || this.vault_root != root
                 {
                     return;
                 }
-                this.hover_preview.loading = false;
+                this.pane.hover_preview.loading = false;
                 match loaded {
                     Err(error) => {
-                        this.hover_preview.message = Some(format!("Preview unavailable: {error}"))
+                        this.pane.hover_preview.message =
+                            Some(format!("Preview unavailable: {error}"))
                     }
                     Ok((document, states, heading)) => {
                         let configured = preview_plugins(
@@ -432,10 +435,10 @@ impl Reader {
                             );
                             state
                         });
-                        this.hover_preview._subscription =
+                        this.pane.hover_preview._subscription =
                             Some(cx.observe(&state, |_, _, cx| cx.notify()));
-                        this.hover_preview.states = states;
-                        this.hover_preview.content = Some(state);
+                        this.pane.hover_preview.states = states;
+                        this.pane.hover_preview.content = Some(state);
                         if let Some(block) = heading {
                             this.land_hover(block, generation, cx);
                         }
@@ -455,10 +458,10 @@ impl Reader {
                     .await;
                 let done = this
                     .update(cx, |this, cx| {
-                        if this.hover_preview.generation != generation {
+                        if this.pane.hover_preview.generation != generation {
                             return true;
                         }
-                        let Some(state) = this.hover_preview.content.clone() else {
+                        let Some(state) = this.pane.hover_preview.content.clone() else {
                             return true;
                         };
                         if state
@@ -482,8 +485,8 @@ impl Reader {
                                 .preparation_status()
                                 .is_some_and(|r| r.is_err())
                         {
-                            this.hover_preview.content = None;
-                            this.hover_preview.message =
+                            this.pane.hover_preview.content = None;
+                            this.pane.hover_preview.message =
                                 Some("The preview could not render the requested heading.".into());
                             cx.notify();
                             return true;
@@ -505,7 +508,7 @@ impl Reader {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let h = &self.hover_preview;
+        let h = &self.pane.hover_preview;
         if !h.visible {
             return None;
         }
@@ -591,7 +594,7 @@ impl Reader {
                         .border_color(palette.border)
                         .shadow_lg()
                         .on_hover(cx.listener(|this, active, _, cx| {
-                            this.hover_preview.over_preview = *active;
+                            this.pane.hover_preview.over_preview = *active;
                             if !active {
                                 this.defer_hover_close(cx);
                             }
@@ -704,6 +707,7 @@ fn preview_plugins(
         Arc::new(move |url, _, window, cx| {
             let _ = entity.update(cx, |this, cx| {
                 let current = this
+                    .pane
                     .hover_preview
                     .target
                     .as_ref()
@@ -718,7 +722,7 @@ fn preview_plugins(
                 } else if prepared_links::external_tooltip(url).is_some() {
                     cx.open_url(url);
                 } else {
-                    this.hover_preview.message =
+                    this.pane.hover_preview.message =
                         Some("This link cannot be resolved unambiguously.".into());
                     cx.notify();
                 }
@@ -1138,7 +1142,7 @@ mod tests {
         });
         visual.run_until_parked();
         let visible = |visual: &mut gpui::VisualTestContext| {
-            reader.read_with(visual, |v, _| v.hover_preview.visible)
+            reader.read_with(visual, |v, _| v.pane.hover_preview.visible)
         };
         let settle = |visual: &mut gpui::VisualTestContext, ms: u64| {
             visual.executor().advance_clock(Duration::from_millis(ms));
@@ -1233,19 +1237,20 @@ mod tests {
             v.hover_link(&url, true, point(px(650.), px(250.)), window, cx);
         });
         visual.run_until_parked();
-        reader.read_with(visual, |v, _| assert!(!v.hover_preview.visible));
+        reader.read_with(visual, |v, _| assert!(!v.pane.hover_preview.visible));
         visual.executor().advance_clock(Duration::from_millis(350));
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(60));
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert!(v.hover_preview.visible);
+            assert!(v.pane.hover_preview.visible);
             assert!(
-                v.hover_preview.message.is_none(),
+                v.pane.hover_preview.message.is_none(),
                 "{:?}",
-                v.hover_preview.message
+                v.pane.hover_preview.message
             );
             let text = v
+                .pane
                 .hover_preview
                 .content
                 .as_ref()
@@ -1262,14 +1267,14 @@ mod tests {
         });
         assert!(visual.debug_bounds("note-hover-preview").is_some());
         reader.update_in(visual, |v, _, cx| {
-            let key = v.hover_preview.source.clone().unwrap();
+            let key = v.pane.hover_preview.source.clone().unwrap();
             v.leave_hover(&key, cx);
-            v.hover_preview.over_preview = true;
+            v.pane.hover_preview.over_preview = true;
         });
         visual.executor().advance_clock(Duration::from_millis(250));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert!(v.hover_preview.visible, "moving into preview keeps it")
+            assert!(v.pane.hover_preview.visible, "moving into preview keeps it")
         });
         reader.update_in(visual, |v, window, cx| v.dismiss(window, cx));
         visual.run_until_parked();
@@ -1305,9 +1310,9 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(400));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.hover_preview.source.as_deref(), Some("new"));
-            assert!(v.hover_preview.content.is_none());
-            assert!(v.hover_preview.message.is_some());
+            assert_eq!(v.pane.hover_preview.source.as_deref(), Some("new"));
+            assert!(v.pane.hover_preview.content.is_none());
+            assert!(v.pane.hover_preview.message.is_some());
         });
         reader.update_in(visual, |v, _, cx| {
             v.clear_hover(cx);
@@ -1341,7 +1346,7 @@ mod tests {
         visual.simulate_mouse_move(row.center(), None, modifiers);
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert!(v.hover_preview.visible, "held command skips delay");
+            assert!(v.pane.hover_preview.visible, "held command skips delay");
             assert_eq!(v.quick_open.input.read(cx).value(), "Target");
         });
         reader.update_in(visual, |v, window, cx| {
@@ -1357,7 +1362,7 @@ mod tests {
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert!(!v.hover_preview.is_active());
+            assert!(!v.pane.hover_preview.is_active());
             assert!(v.quick_open.open);
             assert_eq!(v.quick_open.input.read(cx).value(), "Target");
         });

@@ -5188,6 +5188,7 @@ impl Reader {
             }
         };
         let filters = self
+            .pane
             .file_preview
             .as_ref()
             .filter(|previous| previous.path == document.file.path())
@@ -5202,7 +5203,7 @@ impl Reader {
         });
         view.read(cx).focus_handle().clone().focus(window, cx);
         preview.log = Some(view);
-        self.file_preview = Some(preview);
+        self.pane.file_preview = Some(preview);
         self.navigation.history = vec![rel.clone()];
         self.navigation.history_positions = vec![ListOffset {
             item_ix: 0,
@@ -5226,6 +5227,7 @@ impl Reader {
         invoke: impl FnOnce(&mut LogView, &mut Window, &mut Context<LogView>),
     ) {
         let Some(view) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.log.clone())
@@ -5431,7 +5433,14 @@ mod tests {
 
     fn log_view(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Entity<LogView> {
         reader.read_with(visual, |reader, _| {
-            reader.file_preview.as_ref().unwrap().log.clone().unwrap()
+            reader
+                .pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .log
+                .clone()
+                .unwrap()
         })
     }
 
@@ -5646,7 +5655,7 @@ mod tests {
                     .clone();
                 assert_eq!(row.kind, okilum_core::vault::EntryKind::Attachment);
                 reader.activate_tree_row(&row, window, cx);
-                let preview = reader.file_preview.as_ref().unwrap();
+                let preview = reader.pane.file_preview.as_ref().unwrap();
                 assert!(preview.log.is_some());
                 assert!(preview.text.is_none());
                 assert_eq!(reader.selected_file(), name);
@@ -5680,7 +5689,7 @@ mod tests {
             });
             visual.run_until_parked();
             reader.read_with(visual, |reader, _| {
-                assert!(reader.file_preview.is_none());
+                assert!(reader.pane.file_preview.is_none());
                 assert_eq!(reader.current_rel, "start.md");
             });
             assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), text);
@@ -5726,7 +5735,7 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert!(reader.single_file && reader.searcher.is_none());
             assert_eq!(reader.selected_file(), "app.jsonl");
-            assert!(reader.file_preview.as_ref().unwrap().text.is_none());
+            assert!(reader.pane.file_preview.as_ref().unwrap().text.is_none());
             assert_eq!(reader.navigation.history, ["app.jsonl"]);
             assert!(reader.vault.entries.iter().any(|e| e.path == "older.log"));
         });
@@ -5762,7 +5771,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.file_preview.as_ref().unwrap().text.is_none());
+            assert!(reader.pane.file_preview.as_ref().unwrap().text.is_none());
         });
         let sibling = log_view(&reader, visual);
         sibling.read_with(visual, |view, _| {
@@ -5773,7 +5782,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.file_preview.is_none());
+            assert!(reader.pane.file_preview.is_none());
             assert_eq!(reader.current_rel, "notes.md");
         });
         assert_eq!(
@@ -5810,7 +5819,7 @@ mod tests {
             });
             reader.update(cx, |reader, _| {
                 assert!(!reader.loading.as_ref().unwrap().published);
-                assert!(reader.file_preview.is_none());
+                assert!(reader.pane.file_preview.is_none());
                 reader.queued_open_note = Some("notes.md".into());
             });
             entity = Some(reader.clone());
@@ -5825,7 +5834,7 @@ mod tests {
             );
             assert_eq!(reader.selected_file(), "notes.md");
             assert!(
-                reader.file_preview.is_none(),
+                reader.pane.file_preview.is_none(),
                 "the initial log cannot replace the newer note"
             );
             assert!(reader.document_ready());
@@ -5944,7 +5953,7 @@ mod tests {
             let loading = reader.loading.as_ref().unwrap();
             assert!(!loading.active);
             assert_eq!(loading.phase, "UTF-16LE log encoding is not supported. Open a UTF-8 copy; the original file is unchanged.");
-            assert!(reader.file_preview.is_none(), "no RAW rows were published");
+            assert!(reader.pane.file_preview.is_none(), "no RAW rows were published");
         });
         assert!(
             reader_viewer_chrome::tests::measured_bounds(visual, "reader-loading-phase").is_some()

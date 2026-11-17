@@ -873,7 +873,7 @@ pub(crate) fn is_pdf(rel: &str) -> bool {
 
 impl Reader {
     pub(crate) fn pdf_viewer(&self) -> Option<&Entity<PdfViewer>> {
-        self.file_preview.as_ref()?.pdf.as_ref()
+        self.pane.file_preview.as_ref()?.pdf.as_ref()
     }
 
     pub(crate) fn pdf_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {

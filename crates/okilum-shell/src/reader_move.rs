@@ -318,7 +318,7 @@ impl Reader {
     }
 
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_preview.is_some() {
+        if self.pane.file_preview.is_some() {
             self.file_operation_blocked(
                 "rename",
                 &self.current_rel.clone(),
@@ -977,8 +977,8 @@ impl Reader {
                     &pending.from,
                     &pending.to,
                 );
-                let showing_file = self.file_preview.is_some();
-                if let Some(file) = &self.file_preview {
+                let showing_file = self.pane.file_preview.is_some();
+                if let Some(file) = &self.pane.file_preview {
                     let next = okilum_core::link_rewrite::moved_path(
                         &file.rel,
                         &pending.from,
@@ -2139,7 +2139,7 @@ mod tests {
         assert!(visual.debug_bounds("move-update").is_none());
         reader.read_with(visual, |r, _| {
             assert_eq!(r.selected_file(), "Again/asset.bin", "{:?}", r.link_notice);
-            assert!(r.file_preview.is_some());
+            assert!(r.pane.file_preview.is_some());
         });
         assert_eq!(
             std::fs::read(root.join("Again/asset.bin")).unwrap(),

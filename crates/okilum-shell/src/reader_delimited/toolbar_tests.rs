@@ -17,7 +17,8 @@ fn settle(v: &mut VisualTestContext) {
 
 fn code(reader: &Entity<Reader>, v: &VisualTestContext) -> Entity<CodePreview> {
     reader.read_with(v, |r, _| {
-        r.file_preview
+        r.pane
+            .file_preview
             .as_ref()
             .unwrap()
             .code

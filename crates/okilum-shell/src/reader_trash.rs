@@ -524,7 +524,7 @@ impl Reader {
                 // An already retained external version is still the only copy
                 // of that displayed text. Explicit Trash must not discard it.
                 let clear_document = (this.deleted_current().is_none()
-                    && this.file_preview.is_none()
+                    && this.pane.file_preview.is_none()
                     && !this.current_rel.is_empty()
                     && under(&this.current_rel, &relative))
                 .then(|| (this.current_rel.clone(), this.navigation.generation));
