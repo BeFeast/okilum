@@ -226,7 +226,7 @@ impl Controller {
                 "first Sync handoff ownership changed"
             );
             if transfer.active {
-                validate_owned(&transfer, &api.folder(vault)?)?;
+                validate_owned(&transfer, &self.granted(&transfer), &api.folder(vault)?)?;
                 return Ok(());
             }
             transfer
@@ -312,7 +312,7 @@ impl Controller {
             transfer.witness = Some(folder.clone());
             self.save_transfer(&transfer)?;
         }
-        validate_owned(&transfer, &folder)?;
+        validate_owned(&transfer, &self.granted(&transfer), &folder)?;
         if folder["paused"] == true {
             ensure!(
                 connection.policy.is_none(),
@@ -449,7 +449,7 @@ impl Controller {
             "legacy first receive has no ownership witness; cannot acquire promotion authority"
         );
         if transfer.active {
-            validate_owned(&transfer, &api.folder(vault_id)?)?;
+            validate_owned(&transfer, &self.granted(&transfer), &api.folder(vault_id)?)?;
             return Ok(());
         }
         let connection = match &transfer.connection {
@@ -514,7 +514,7 @@ impl Controller {
                 "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
         }
         let folder = api.folder(vault_id)?;
-        validate_owned(&transfer, &folder)?;
+        validate_owned(&transfer, &self.granted(&transfer), &folder)?;
         // Capture the complete expanded configuration before the first unpause.
         // The UUID label predates folder creation and scopes lost-create recovery.
         if transfer.witness.is_none() {
@@ -634,7 +634,11 @@ impl Controller {
             // a boot-stable identity or refreshing its diagnostic device hint.
             let api = transfer.daemon.connect()?;
             transfer.destination_identity = Some(current);
-            validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+            validate_owned(
+                &transfer,
+                &self.granted(&transfer),
+                &api.folder(&transfer.vault)?,
+            )?;
             self.save_transfer(&transfer)?;
         }
         Ok(())
@@ -687,7 +691,7 @@ impl std::fmt::Display for MembershipChanged {
 }
 impl std::error::Error for MembershipChanged {}
 
-fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
+fn validate_owned(transfer: &Transfer, granted: &[String], folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
         "legacy replica has no ownership witness"
@@ -716,9 +720,10 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         .connection
         .as_ref()
         .context("owned connection missing")?;
-    // Members that Syncthing added for the introducing share peer are not part
-    // of the owned configuration; any other change is still refused below.
-    let owned = owned_view(transfer, folder)?;
+    // Members that Syncthing added for the introducing share peer, and members
+    // this computer added for its own durable share grants, are not part of the
+    // owned configuration; any other change is still refused below.
+    let owned = owned_view(transfer, granted, folder)?;
     let mut actual_peers = owned["devices"]
         .as_array()
         .context("folder peers missing")?
@@ -749,8 +754,8 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         "owned replica mode changed outside its promotion intent"
     );
     if let Some(expected) = &transfer.witness {
-        let mut expected = owned_view(transfer, expected)?;
-        let mut actual = owned_view(transfer, &transfer.history.witness_folder(folder)?)?;
+        let mut expected = owned_view(transfer, granted, expected)?;
+        let mut actual = owned_view(transfer, granted, &transfer.history.witness_folder(folder)?)?;
         // Label changes require a durable authorized intent above; all other
         // fields still match the full preparation/promotion witness.
         expected["label"] = actual["label"].clone();
@@ -779,11 +784,18 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     Ok(())
 }
 /// The folder without members that Syncthing introduced on behalf of the share
-/// peer (#2589). The receiver and the share peer themselves are always kept.
-fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
-    owned_view_keeping(transfer, folder, None)
+/// peer (#2589) and without the members in `granted`, which this computer added
+/// itself when it shared the vault onward (#3105). The receiver and the share
+/// peer themselves are always kept.
+fn owned_view(transfer: &Transfer, granted: &[String], folder: &Value) -> Result<Value> {
+    owned_view_keeping(transfer, granted, folder, None)
 }
-fn owned_view_keeping(transfer: &Transfer, folder: &Value, keep: Option<&str>) -> Result<Value> {
+fn owned_view_keeping(
+    transfer: &Transfer,
+    granted: &[String],
+    folder: &Value,
+    keep: Option<&str>,
+) -> Result<Value> {
     let peer = &transfer
         .connection
         .as_ref()
@@ -800,7 +812,8 @@ fn owned_view_keeping(transfer: &Transfer, folder: &Value, keep: Option<&str>) -
                 member["deviceID"] == transfer.daemon.device_id.as_str()
                     || member["deviceID"] == peer.as_str()
                     || keep.is_some_and(|id| member["deviceID"] == id)
-                    || !introduced_by(members, member, peer)
+                    || !(introduced_by(members, member, peer)
+                        || granted.iter().any(|id| member["deviceID"] == id.as_str()))
             })
             .cloned()
             .collect(),
@@ -827,6 +840,28 @@ fn introduced_by(members: &[Value], member: &Value, peer: &str) -> bool {
         }
     }
     false
+}
+/// The Syncthing members this computer added to the received vault itself: a
+/// receiver can share the vault onward (#3105), and its `Share` reply records a
+/// durable grant for the exact vault, daemon and folder before it adds the new
+/// member. Only those exact grant receivers count; any other member stays
+/// refused.
+fn granted(db: &Database, transfer: &Transfer) -> Vec<String> {
+    db.share_grants
+        .iter()
+        .filter(|g| {
+            g.vault == transfer.vault
+                && g.source.folder_id == transfer.vault
+                && g.source.daemon == transfer.daemon
+                && g.source.path == transfer.path
+        })
+        .map(|g| g.receiver.clone())
+        .collect()
+}
+impl Controller {
+    fn granted(&self, transfer: &Transfer) -> Vec<String> {
+        granted(&self.shared.db.lock().unwrap(), transfer)
+    }
 }
 /// The paired computer that shared this vault, as the Syncthing device that may
 /// introduce this receiver to every computer it shares the vault with (#2589).
@@ -1194,7 +1229,8 @@ impl Controller {
     fn relabel_transfer(&self, transfer: &mut Transfer) -> Result<()> {
         let api = transfer.daemon.connect()?;
         let before = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &before)?;
+        let granted = self.granted(transfer);
+        validate_owned(transfer, &granted, &before)?;
         if transfer.label.is_none() {
             let cached = {
                 let db = self.shared.db.lock().unwrap();
@@ -1250,18 +1286,18 @@ impl Controller {
         if before["label"] != *label {
             self.check()?;
             ensure!(
-                owned_view(transfer, &api.folder(&transfer.vault)?)?
-                    == owned_view(transfer, &before)?,
+                owned_view(transfer, &granted, &api.folder(&transfer.vault)?)?
+                    == owned_view(transfer, &granted, &before)?,
                 "receiver changed before relabel"
             );
             api.patch_folder(&transfer.vault, &json!({"label":label}))?;
         }
         let after = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &after)?;
+        validate_owned(transfer, &granted, &after)?;
         let mut expected = before;
         expected["label"] = json!(label);
         ensure!(
-            owned_view(transfer, &after)? == owned_view(transfer, &expected)?,
+            owned_view(transfer, &granted, &after)? == owned_view(transfer, &granted, &expected)?,
             "receiver label readback changed configuration"
         );
         if transfer.witness.as_ref() != Some(&after) {
@@ -1284,7 +1320,7 @@ impl Controller {
         self.relabel_transfer(transfer)?;
         let api = transfer.daemon.connect()?;
         let folder = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &folder)?;
+        validate_owned(transfer, &self.granted(transfer), &folder)?;
         if transfer.phase == Phase::Bidirectional {
             return Ok(());
         }
@@ -1325,7 +1361,7 @@ impl Controller {
         api.scan(&transfer.vault)?;
         let local = api.status(&transfer.vault)?;
         let current = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &current)?;
+        validate_owned(transfer, &self.granted(transfer), &current)?;
         if current != folder
             || ignore_lines(&api.ignores(&transfer.vault)?)? != connection.ignores
             || !interval_complete(&first, &second, &local)?
@@ -1340,7 +1376,7 @@ impl Controller {
         api.scan(&transfer.vault)?;
         let latest = api.status(&transfer.vault)?;
         let latest_folder = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &latest_folder)?;
+        validate_owned(transfer, &self.granted(transfer), &latest_folder)?;
         if latest_folder != current
             || ignore_lines(&api.ignores(&transfer.vault)?)? != connection.ignores
             || !interval_complete(&first, &second, &latest)?
@@ -1350,7 +1386,7 @@ impl Controller {
         self.check()?;
         api.patch_folder(&transfer.vault, &json!({"type":"sendreceive"}))?;
         let promoted = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &promoted)?;
+        validate_owned(transfer, &self.granted(transfer), &promoted)?;
         ensure!(
             promoted["type"] == "sendreceive",
             "promotion readback failed"
@@ -1426,7 +1462,7 @@ impl Controller {
         );
         let api = self.history_daemon(&transfer.daemon)?;
         let folder = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &folder)?;
+        validate_owned(transfer, &self.granted(transfer), &folder)?;
         let identity = transfer
             .destination_identity
             .as_ref()
@@ -1482,7 +1518,11 @@ impl Controller {
             .cloned();
         if let Some(mut transfer) = transfer {
             let api = self.history_daemon(&transfer.daemon)?;
-            validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+            validate_owned(
+                &transfer,
+                &self.granted(&transfer),
+                &api.folder(&transfer.vault)?,
+            )?;
             transfer
                 .connection
                 .as_mut()
@@ -1505,7 +1545,11 @@ impl Controller {
         {
             let result = (|| -> Result<Option<Vec<u8>>> {
                 let api = self.history_daemon(&transfer.daemon)?;
-                validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+                validate_owned(
+                    &transfer,
+                    &self.granted(&transfer),
+                    &api.folder(&transfer.vault)?,
+                )?;
                 let identity = transfer
                     .destination_identity
                     .as_ref()
@@ -1543,7 +1587,7 @@ impl Controller {
     fn apply_transfer_history(&self, transfer: &mut Transfer) -> Result<()> {
         let api = self.history_daemon(&transfer.daemon)?;
         let folder = api.folder(&transfer.vault)?;
-        validate_owned(transfer, &folder)?;
+        validate_owned(transfer, &self.granted(transfer), &folder)?;
         if transfer.history.prepare(&folder)? {
             self.save_transfer(transfer)?;
             self.check()?;
@@ -1615,7 +1659,7 @@ pub(super) fn validate_removal(db: &Database, vault: &ExistingVault, before: &Va
             !transfer.history.has_pending() && !transfer.create_ignores.has_pending(),
             "Removal waits for the existing receiver policy intent"
         );
-        validate_owned(transfer, before)?;
+        validate_owned(transfer, &granted(db, transfer), before)?;
     }
     Ok(())
 }
@@ -1634,7 +1678,9 @@ pub(super) fn removal_view(
             && t.daemon == vault.daemon
             && t.vault == vault.folder_id
     }) {
-        Some(transfer) => owned_view_keeping(transfer, folder, Some(removed))?,
+        Some(transfer) => {
+            owned_view_keeping(transfer, &granted(db, transfer), folder, Some(removed))?
+        }
         None => folder.clone(),
     };
     // Syncthing normalizes membership order when a missing sibling is added.
@@ -1872,19 +1918,19 @@ mod tests {
     fn ownership_and_durable_phase_never_adopt_an_external_receiveonly_folder() -> Result<()> {
         let (_root, mut transfer, mut folder, _observation, _local) = fixture()?;
         transfer.witness = Some(folder.clone());
-        validate_owned(&transfer, &folder)?;
+        validate_owned(&transfer, &[], &folder)?;
         let mut forged = folder.clone();
         forged["label"] = json!("external receiveonly");
-        assert!(validate_owned(&transfer, &forged).is_err());
+        assert!(validate_owned(&transfer, &[], &forged).is_err());
         folder["type"] = json!("sendreceive");
         assert!(
-            validate_owned(&transfer, &folder).is_err(),
+            validate_owned(&transfer, &[], &folder).is_err(),
             "Receiving adopted an external mode change"
         );
         transfer.phase = Phase::Promoting;
-        validate_owned(&transfer, &folder)?; // exact owned lost-ACK readback
+        validate_owned(&transfer, &[], &folder)?; // exact owned lost-ACK readback
         transfer.owner = None;
-        assert!(validate_owned(&transfer, &folder).is_err());
+        assert!(validate_owned(&transfer, &[], &folder).is_err());
         let mut legacy = serde_json::to_value(&transfer)?;
         for field in ["owner", "phase", "witness", "destination_identity"] {
             legacy.as_object_mut().unwrap().remove(field);
@@ -1901,12 +1947,12 @@ mod tests {
         let mut renamed = folder.clone();
         renamed["label"] = json!("Notes");
         assert!(
-            validate_owned(&transfer, &renamed).is_err(),
+            validate_owned(&transfer, &[], &renamed).is_err(),
             "unrecorded label change refused"
         );
         transfer.label = Some("Notes".into());
-        validate_owned(&transfer, &folder)?;
-        validate_owned(&transfer, &renamed)?;
+        validate_owned(&transfer, &[], &folder)?;
+        validate_owned(&transfer, &[], &renamed)?;
         for (field, value) in [
             ("rescanIntervalS", json!(99)),
             ("path", json!("/other")),
@@ -1916,21 +1962,21 @@ mod tests {
             let mut changed = renamed.clone();
             changed[field] = value;
             assert!(
-                validate_owned(&transfer, &changed).is_err(),
+                validate_owned(&transfer, &[], &changed).is_err(),
                 "relabel accepted {field}"
             );
         }
         transfer.witness = Some(renamed.clone());
-        validate_owned(&transfer, &renamed)?;
+        validate_owned(&transfer, &[], &renamed)?;
         assert!(
-            validate_owned(&transfer, &folder).is_err(),
+            validate_owned(&transfer, &[], &folder).is_err(),
             "completed relabel cannot revert to UUID"
         );
         transfer.witness = None;
         transfer.phase = Phase::Preparing;
         renamed["paused"] = json!(true);
         assert!(
-            validate_owned(&transfer, &renamed).is_err(),
+            validate_owned(&transfer, &[], &renamed).is_err(),
             "name alone cannot authorize lost-create recovery"
         );
         Ok(())
@@ -1984,7 +2030,7 @@ mod tests {
             .unwrap()
             .retain(|m| m["deviceID"] != "hub");
         assert_ne!(actual, planned, "real introduction-removal drift control");
-        let view = |folder: &Value| owned_view_keeping(&transfer, folder, Some("sender"));
+        let view = |folder: &Value| owned_view_keeping(&transfer, &[], folder, Some("sender"));
         assert_eq!(view(&actual)?, view(&planned)?);
         assert_ne!(
             view(&before)?,
@@ -2014,13 +2060,13 @@ mod tests {
             .unwrap()
             .retain(|m| m["deviceID"] != "hub");
         assert_eq!(
-            owned_view(&transfer, &before)?,
-            owned_view(&transfer, &without_hub)?,
+            owned_view(&transfer, &[], &before)?,
+            owned_view(&transfer, &[], &without_hub)?,
             "ordinary ownership ignores the introduced peer"
         );
         assert_ne!(
-            owned_view_keeping(&transfer, &before, Some("hub"))?,
-            owned_view_keeping(&transfer, &without_hub, Some("hub"))?,
+            owned_view_keeping(&transfer, &[], &before, Some("hub"))?,
+            owned_view_keeping(&transfer, &[], &without_hub, Some("hub"))?,
             "an introduced removal target must remain visible to the mutation guard"
         );
         Ok(())
@@ -2065,6 +2111,96 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn issue3105_members_shared_onward_from_here_keep_the_vault_owned() -> Result<()> {
+        // C receives the vault from the share peer ("sender") and then shares
+        // it onward to another computer ("onward"). Its own `Share` reply
+        // records a durable grant first and then adds the plain member.
+        let (root, mut transfer, mut folder, _, _) = fixture()?;
+        transfer.phase = Phase::Bidirectional;
+        folder["type"] = json!("sendreceive");
+        transfer.witness = Some(folder.clone());
+        let source = ExistingVault {
+            daemon: transfer.daemon.clone(),
+            version: "v2.1.6".into(),
+            folder_id: transfer.vault.clone(),
+            path: transfer.path.clone(),
+            label: "Fixture".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            stable_root_identity: None,
+        };
+        let mut shared = folder.clone();
+        shared["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"onward","introducedBy":"","encryptionPassword":""}));
+        let controller = Controller::open(root.path().join("onward-controller"), vec![])?;
+        let mut db = controller.shared.db.lock().unwrap();
+        db.transfers.push(transfer.clone());
+        validate_owned(&transfer, &granted(&db, &transfer), &folder)?; // positive control
+        let error = validate_owned(&transfer, &granted(&db, &transfer), &shared).unwrap_err();
+        assert!(
+            error.is::<MembershipChanged>(),
+            "without a grant the member is foreign: {error}"
+        );
+        // Grants for another vault, daemon or folder path never admit it.
+        let mut other = source.clone();
+        other.folder_id = "other-vault".into();
+        db.share_grants
+            .push(ShareGrant::new(Uuid::new_v4(), &other, "onward"));
+        let mut other = source.clone();
+        other.daemon.device_id = "another-daemon".into();
+        db.share_grants
+            .push(ShareGrant::new(Uuid::new_v4(), &other, "onward"));
+        let mut other = source.clone();
+        other.path = root.path().join("elsewhere");
+        db.share_grants
+            .push(ShareGrant::new(Uuid::new_v4(), &other, "onward"));
+        assert!(validate_owned(&transfer, &granted(&db, &transfer), &shared).is_err());
+        // The exact durable grant from this computer's own Share keeps it owned:
+        // refresh, relabel and removal validation all pass.
+        let onward = Uuid::new_v4();
+        db.share_grants
+            .push(ShareGrant::new(onward, &source, "onward"));
+        validate_owned(&transfer, &granted(&db, &transfer), &shared)?;
+        validate_removal(&db, &source, &shared)?;
+        // Every other member stays refused, and the grant never replaces the
+        // share peer itself.
+        let mut stranger = shared.clone();
+        stranger["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"stranger","introducedBy":""}));
+        assert!(validate_owned(&transfer, &granted(&db, &transfer), &stranger).is_err());
+        let mut replaced = shared.clone();
+        replaced["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "sender");
+        assert!(validate_owned(&transfer, &granted(&db, &transfer), &replaced).is_err());
+        // Removing the onward computer stays visible to the removal guard.
+        let mut removed = shared.clone();
+        removed["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "onward");
+        assert_ne!(
+            removal_view(&db, &source, "onward", &shared)?,
+            removal_view(&db, &source, "onward", &removed)?,
+            "the removal target must remain visible"
+        );
+        validate_owned(&transfer, &granted(&db, &transfer), &removed)?;
+        // Once the removal revokes the grant, the member is foreign again.
+        db.share_grants.retain(|g| !g.for_peer(onward));
+        assert!(validate_owned(&transfer, &granted(&db, &transfer), &shared).is_err());
+        drop(db);
+        controller.shutdown();
+        Ok(())
+    }
+    #[test]
     fn members_introduced_by_the_share_peer_keep_the_vault_owned() -> Result<()> {
         let (_root, mut transfer, folder, _, _) = fixture()?;
         transfer.witness = Some(folder.clone());
@@ -2075,17 +2211,17 @@ mod tests {
             json!({"deviceID":"hub","introducedBy":"sender","encryptionPassword":""}),
             json!({"deviceID":"nas","introducedBy":"hub","encryptionPassword":""}),
         ]);
-        validate_owned(&transfer, &folder)?; // positive control
-        validate_owned(&transfer, &meshed)?;
+        validate_owned(&transfer, &[], &folder)?; // positive control
+        validate_owned(&transfer, &[], &meshed)?;
         transfer.phase = Phase::Bidirectional;
         meshed["type"] = json!("sendreceive");
-        validate_owned(&transfer, &meshed)?;
+        validate_owned(&transfer, &[], &meshed)?;
         // A witness read back after introduction still matches once the peer
         // stops sharing with those computers and Syncthing removes them.
         transfer.witness = Some(meshed);
         let mut removed = folder;
         removed["type"] = json!("sendreceive");
-        validate_owned(&transfer, &removed)?;
+        validate_owned(&transfer, &[], &removed)?;
         Ok(())
     }
     #[test]
@@ -2098,35 +2234,35 @@ mod tests {
         transfer.witness = Some(folder.clone());
         transfer.history.days = RetentionDays::try_from(90)?;
         assert!(transfer.history.prepare(&folder)?);
-        validate_owned(&transfer, &folder)?;
+        validate_owned(&transfer, &[], &folder)?;
         // Simulate a lost acknowledgement of the journaled history PATCH.
         let mut after = folder.clone();
         after["versioning"]["type"] = json!("staggered");
         after["versioning"]["params"]["maxAge"] = json!("7776000");
-        validate_owned(&transfer, &after)?;
+        validate_owned(&transfer, &[], &after)?;
         let mut unrelated = after.clone();
         unrelated["paused"] = json!(true);
-        assert!(validate_owned(&transfer, &unrelated).is_err());
+        assert!(validate_owned(&transfer, &[], &unrelated).is_err());
         transfer.witness = Some(after.clone());
         transfer.history.finish();
-        validate_owned(&transfer, &after)?;
+        validate_owned(&transfer, &[], &after)?;
         after["devices"]
             .as_array_mut()
             .unwrap()
             .retain(|d| d["deviceID"] != "hub");
-        validate_owned(&transfer, &after)?;
+        validate_owned(&transfer, &[], &after)?;
         after["devices"]
             .as_array_mut()
             .unwrap()
             .push(json!({"deviceID":"stranger"}));
-        assert!(validate_owned(&transfer, &after).is_err());
+        assert!(validate_owned(&transfer, &[], &after).is_err());
         Ok(())
     }
     #[test]
     fn members_without_the_share_peer_as_introducer_are_refused() -> Result<()> {
         let (_root, mut transfer, folder, _, _) = fixture()?;
         transfer.witness = Some(folder.clone());
-        validate_owned(&transfer, &folder)?; // positive control
+        validate_owned(&transfer, &[], &folder)?; // positive control
         for extra in [
             vec![json!({"deviceID":"stranger"})],
             vec![json!({"deviceID":"stranger","introducedBy":""})],
@@ -2143,7 +2279,7 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .extend(extra.clone());
-            let error = validate_owned(&transfer, &changed).unwrap_err();
+            let error = validate_owned(&transfer, &[], &changed).unwrap_err();
             assert!(
                 error.to_string().contains("membership"),
                 "{extra:?}: {error}"
@@ -2153,7 +2289,7 @@ mod tests {
         let mut replaced = folder;
         replaced["devices"] =
             json!([{"deviceID":"receiver"},{"deviceID":"hub","introducedBy":"sender"}]);
-        assert!(validate_owned(&transfer, &replaced).is_err());
+        assert!(validate_owned(&transfer, &[], &replaced).is_err());
         Ok(())
     }
     #[test]
