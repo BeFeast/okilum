@@ -165,6 +165,38 @@ impl Dock {
     }
 }
 
+/// What the copied command is known to address. It reads the Pod by name;
+/// whether that name was confirmed to be the pinned UID depends on this
+/// session's own check, which may be pending, failed or never started.
+pub(crate) fn copy_note(session: &Session) -> String {
+    let target = &session.target;
+    let state = match (&session.phase, session.verified_at) {
+        (Phase::Replaced { uid }, _) => format!(
+            "the name now refers to Pod UID {}, not the pinned {}",
+            model::short_uid(uid),
+            target.short_uid()
+        ),
+        (_, Some(at)) => format!(
+            "this session verified UID {} at {} before kubectl started; a later replacement is not detected by the command",
+            target.short_uid(),
+            model::clock(at)
+        ),
+        (Phase::Verifying, None) => format!(
+            "the UID check for {} is still running",
+            target.short_uid()
+        ),
+        (Phase::NotStarted(_), None) => format!(
+            "the UID check for {} failed; nothing confirms the name refers to it",
+            target.short_uid()
+        ),
+        (_, None) => format!("UID {} was not verified by this session", target.short_uid()),
+    };
+    format!(
+        "Copied the kubectl command. It reads Pod {} by name; {state}.",
+        target.pod
+    )
+}
+
 impl Workspace {
     /// The only way logs start. A different target while a session holds
     /// rows or runs needs an explicit confirmation; selection never calls it.
@@ -405,11 +437,7 @@ impl Workspace {
             Ok(args) => {
                 let line = shell_words::join(std::iter::once("kubectl".to_string()).chain(args));
                 cx.write_to_clipboard(ClipboardItem::new_string(line));
-                format!(
-                    "Copied the kubectl command. It reads Pod {} by name; this session verified UID {}.",
-                    target.pod,
-                    target.short_uid()
-                )
+                copy_note(session)
             }
             Err(error) => format!("No command: {error}"),
         });
