@@ -80,6 +80,21 @@ impl Anchor {
         None
     }
 
+    /// For a drop before a block (#1615): the anchor's position only while
+    /// the block that followed it is still there, its first line starting
+    /// at that position. When the block was deleted, [`Self::locate`] may
+    /// still find the text before it and land before another block.
+    pub fn locate_block(&self, current: &str) -> Option<usize> {
+        let at = self.locate(current)?;
+        let first_line = self
+            .after
+            .split('\n')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('\r');
+        current[at..].starts_with(first_line).then_some(at)
+    }
+
     /// The position of `expected` text that was inserted at the anchor, if it
     /// is still there untouched.
     pub fn locate_text(&self, current: &str, expected: &str) -> Option<usize> {
@@ -166,6 +181,29 @@ fn floor(text: &str, mut at: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_anchor_needs_its_block() {
+        let source = "# Title\n\nFirst paragraph.\n\n## Next\n\nBody.\n";
+        let at = source.find("## Next").unwrap();
+        let anchor = Anchor::at(source, at);
+        // Text typed elsewhere: the block is still there.
+        let edited = source.replace("First paragraph.", "First paragraph, edited.");
+        assert_eq!(anchor.locate_block(&edited), edited.find("## Next"));
+        // The block deleted: the text before it is still found, the block is not.
+        let deleted = source.replace("## Next\n\n", "");
+        assert!(
+            anchor.locate(&deleted).is_some(),
+            "positive control: locate alone"
+        );
+        assert_eq!(anchor.locate_block(&deleted), None);
+        // The end of the note: no block to keep.
+        let end = Anchor::at(source, source.len());
+        assert_eq!(
+            end.locate_block(&format!("Typed.\n{source}")),
+            Some(source.len() + 7)
+        );
+    }
 
     #[test]
     fn unchanged_text_keeps_the_offset() {

@@ -76,6 +76,10 @@ struct Target {
     root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
+    /// #1615: a drop (onto the editor or the rendered note). Its result goes
+    /// only into the editor it was dropped on, and never to the caret when
+    /// its place is gone; a paste may go to a reopened editor or the caret.
+    drop: bool,
     /// #1615: a drop onto a rendered block, whose result has not gone in
     /// yet. It goes in as its own paragraph before the block at the anchor,
     /// in one edit with its blank lines; until then the note is untouched.
@@ -102,9 +106,9 @@ impl Target {
             .path
             .as_deref()
             .is_some_and(|path| editing.store.path() == path);
-        // A block drop's place belongs to the editor it was dropped on
-        // (#1615): a reopened editor of the same note gets nothing.
-        (editing.input == self.input || (same_note && !self.slot)).then(|| editing.input.clone())
+        // A drop's place belongs to the editor it was dropped on (#1615): a
+        // reopened editor of the same note gets nothing.
+        (editing.input == self.input || (same_note && !self.drop)).then(|| editing.input.clone())
     }
 }
 
@@ -269,7 +273,7 @@ impl Reader {
                     if state.source_stamp() == stamp {
                         Some(offset)
                     } else {
-                        Anchor::at(&snapshot, offset).locate(state.value().as_ref())
+                        Anchor::at(&snapshot, offset).locate_block(state.value().as_ref())
                     }
                 };
                 let Some(offset) = offset else {
@@ -410,7 +414,8 @@ impl Reader {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
-            self.run_follow_up(input, follow_up, slot, window, cx);
+            // Only drops come here.
+            self.run_follow_up(input, follow_up, slot, true, window, cx);
         }
     }
 
@@ -422,7 +427,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_follow_up(input, follow_up, false, window, cx);
+        self.run_follow_up(input, follow_up, false, false, window, cx);
     }
 
     fn run_follow_up(
@@ -430,6 +435,7 @@ impl Reader {
         input: Entity<EditorState>,
         follow_up: FollowUp,
         slot: bool,
+        drop: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -443,6 +449,7 @@ impl Reader {
             input,
             root: self.vault_root.clone(),
             path,
+            drop,
             slot,
         };
         match follow_up {
@@ -770,10 +777,16 @@ fn insert_at_anchor(
         );
         return Err(Missed::Closed);
     };
-    let located = anchor.locate(input.read(cx).value().as_ref());
-    if located.is_none() && target.slot {
-        // A block drop never goes to the caret: that could be inside any
-        // block of the note (#1615).
+    let current = input.read(cx).value().to_string();
+    // A block drop only while its block is still there (#1615).
+    let located = if target.slot {
+        anchor.locate_block(&current)
+    } else {
+        anchor.locate(&current)
+    };
+    if located.is_none() && target.drop {
+        // A drop never goes to the caret: that could be inside any block of
+        // the note (#1615). A paste does, and says so.
         diagnostic_error!("Drop: background result not inserted (the drop point is gone)");
         return Err(Missed::Moved);
     }
@@ -1669,18 +1682,27 @@ mod reader_drop_tests {
         visual: &mut VisualTestContext,
         temp: &tempfile::TempDir,
     ) {
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        pending_copy_at(visual, temp, next.center());
+    }
+
+    /// The same question for a drop at `position` (in Edit: onto the editor).
+    fn pending_copy_at(
+        visual: &mut VisualTestContext,
+        temp: &tempfile::TempDir,
+        position: Point<Pixels>,
+    ) {
         let ui_state = temp.path().join("ui-state");
         std::fs::create_dir_all(&ui_state).unwrap();
         visual.update(|_, cx| {
             crate::reader_ui_state::install(&ui_state, cx);
             crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
         });
-        let next = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
-        });
         let large = temp.path().join("large.bin");
         std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
-        drop_at(visual, next.center(), large);
+        drop_at(visual, position, large);
         assert!(
             visual.has_pending_prompt(),
             "positive control: Copy into Vault? is asked"
@@ -1746,6 +1768,97 @@ mod reader_drop_tests {
         visual.run_until_parked();
         let (source, _) = source_and_line(&reader, visual, "large");
         assert_eq!(source, NOTE, "the reopened editor got nothing");
+    }
+
+    /// The target block was deleted while the copy question was open: the
+    /// text before it is still there, but the file must not go before the
+    /// next block.
+    #[gpui::test]
+    fn a_deleted_target_block_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let without = "# Title\n\nFirst paragraph.\n\nBody.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let at = state.value().find("## Next\n\n").unwrap();
+                assert!(state.replace_source_range(at..at + 9, "", window, cx));
+                assert_eq!(state.value().as_ref(), without);
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, without, "not before another block");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
+    }
+
+    /// In Edit, the drop point of the editor (not the Reader).
+    fn editor_point(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Point<Pixels> {
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.source_input()
+                    .expect("positive control: Edit")
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                NOTE
+            );
+            r.body_bounds.center()
+        })
+    }
+
+    /// A drop in Edit, pending in the copy question, while the note leaves
+    /// Edit and comes back: the reopened editor gets nothing.
+    #[gpui::test]
+    fn an_edit_drop_does_not_go_to_a_reopened_editor(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let point = editor_point(&reader, visual);
+        pending_copy_at(visual, &temp, point);
+        let first = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let second = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        assert!(
+            first != second,
+            "positive control: a new editor of the same note"
+        );
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "the reopened editor got nothing");
+    }
+
+    /// A drop in Edit whose place is gone when its file is copied: nothing
+    /// goes in at the caret (a paste would, with a notice).
+    #[gpui::test]
+    fn an_edit_drop_that_lost_its_place_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let point = editor_point(&reader, visual);
+        pending_copy_at(visual, &temp, point);
+        let rewritten = "Rewritten.\n\nAnother paragraph.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let end = state.value().len();
+                assert!(state.replace_source_range(0..end, rewritten, window, cx));
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, rewritten, "nothing at the caret");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
     }
 
     #[test]
