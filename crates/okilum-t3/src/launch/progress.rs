@@ -336,9 +336,18 @@ impl Tracker {
                     self.manager_run_ended = observation.manager_status.clone();
                 }
                 if let Some(status) = &self.manager_run_ended {
-                    note = Some(format!(
-                        "The manager's run for this request is no longer active (manager thread: {status}) and no T3 thread carries this request yet. Check the manager chat; do not request another executor."
-                    ));
+                    // "No thread carries it" only once every new thread was
+                    // read: an unread one may be this very launch.
+                    note = Some(if observation.unchecked == 0 {
+                        format!(
+                            "The manager's run for this request is no longer active (manager thread: {status}) and no T3 thread carries this request yet. Check the manager chat; do not request another executor."
+                        )
+                    } else {
+                        format!(
+                            "The manager's run for this request is no longer active (manager thread: {status}); {} new T3 threads are not read yet and may carry this request. Do not request another executor.",
+                            observation.unchecked
+                        )
+                    });
                 }
             }
             1 => {
@@ -384,9 +393,11 @@ impl Tracker {
                         });
                     }
                     None => {
-                        // So does a matched thread that left the listing.
+                        // So does a matched thread that left the listing; its
+                        // last T3 status is no longer shown (the id is in the note).
                         self.progress.outcome = None;
                         self.progress.provisional = false;
+                        self.progress.executor = None;
                         note = Some(format!(
                             "Executor thread {id} is missing from the executor project's T3 listing."
                         ))

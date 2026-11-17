@@ -738,5 +738,81 @@ fn review6_an_unknown_status_or_a_vanished_executor_withdraws_a_provisional_outc
     step(&mut launch, &t3);
     assert!(launch.progress.outcome.is_none() && !launch.progress.provisional);
     assert!(!launch.progress.finished());
-    assert!(launch.progress.note.as_deref().unwrap().contains("missing"));
+    assert!(
+        launch.progress.executor.is_none(),
+        "the vanished thread's last T3 status is not shown"
+    );
+    let note = launch.progress.note.clone().unwrap();
+    assert!(
+        note.contains("missing") && note.contains("mcp:fixture-executor-new"),
+        "{note}"
+    );
+}
+
+#[test]
+fn review7_an_ended_manager_run_with_unread_new_threads_never_claims_no_thread_carries_it() {
+    let ended = |t3: &Recorded| {
+        let mut manager = t3.fixture["frames"][1]["manager"].clone();
+        manager["status"] = json!("completed");
+        manager["activeRunId"] = Value::Null;
+        *t3.manager.lock().unwrap() = manager;
+    };
+    for failing in [false, true] {
+        // The executor is listed, but its first message is not there yet
+        // (or its read fails) when the manager's run has already ended.
+        let mut fixture = Recorded::new().fixture;
+        fixture["timelines"]["mcp:fixture-executor-new"] = json!([]);
+        let t3 = Recorded {
+            fixture,
+            ..Recorded::new()
+        };
+        if failing {
+            t3.failing
+                .lock()
+                .unwrap()
+                .insert("mcp:fixture-executor-new".into());
+        }
+        let mut launch = tracker(&t3, true);
+        t3.frame(1);
+        step(&mut launch, &t3);
+        assert_eq!(launch.progress.reached, Stage::Accepted);
+        let mut rows = t3.fixture["frames"][2]["executors"].clone();
+        rows.as_array_mut().unwrap().remove(1);
+        t3.executors(rows);
+        ended(&t3);
+        step(&mut launch, &t3);
+        assert_eq!(
+            launch.progress.line(),
+            "requested → [accepted] → preparing → running → completed",
+            "the current step is kept"
+        );
+        let note = launch.progress.note.clone().unwrap();
+        assert!(
+            !note.contains("no T3 thread carries"),
+            "failing={failing}: {note}"
+        );
+        assert!(
+            note.contains("1 new T3 threads are not read yet")
+                && note.contains("Do not request another executor"),
+            "failing={failing}: {note}"
+        );
+    }
+
+    // With every new thread read and none carrying the marker, the manager
+    // run's end is reported as such.
+    let t3 = Recorded::new();
+    let mut launch = tracker(&t3, true);
+    t3.frame(1);
+    step(&mut launch, &t3);
+    let mut rows = t3.fixture["frames"][2]["executors"].clone();
+    rows.as_array_mut().unwrap().remove(2);
+    t3.executors(rows);
+    ended(&t3);
+    step(&mut launch, &t3);
+    assert!(launch
+        .progress
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("no T3 thread carries this request yet"));
 }
