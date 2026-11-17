@@ -188,7 +188,11 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
             if let Some(intent) = restore {
                 let last = intent.root.clone();
                 // Folder intent revalidates the last document and falls back if it disappeared.
-                if intent.single_file {
+                if intent.single_file && intent.note.is_none() {
+                    // A folder view comes back as a folder view (#3098).
+                    opts.vault = Some(intent.root);
+                    opts.single_file = true;
+                } else if intent.single_file {
                     opts.open_path = intent.note.map(|note| intent.root.join(note));
                 } else {
                     opts.vault = Some(intent.root);
@@ -227,8 +231,15 @@ fn history(
     let last = reader_history::ReadingHistory::default_vault(&directory)?.or(last);
     let restore = last.map(|root| {
         let intent = match reader_history::ReadingHistory::quick_document(&directory, &root) {
+            // A folder view (#3098): the folder again, still not a vault.
+            Ok(Some(note)) if note.is_empty() && root.is_dir() => Ok(reader_open::OpenIntent {
+                root: root.clone(),
+                single_file: true,
+                note: None,
+                created_note: false,
+            }),
             Ok(Some(note)) if note.is_empty() => Err(anyhow::anyhow!(
-                "The last quick viewer has no selected document"
+                "The last folder view is missing or inaccessible"
             )),
             Ok(Some(note)) => reader_open::OpenIntent::validate(&root.join(note), None, None),
             Ok(None) => reader_open::OpenIntent::validate(&root, Some(&root), None),
@@ -283,10 +294,8 @@ fn restore_session_windows(
         let mut opened = 0;
         let mut skipped = Vec::new();
         for ((root, note), single_file) in windows {
-            if single_file && note.is_none() {
-                skipped.push(root);
-                continue;
-            }
+            // A single-file window without a file is a folder view (#3098);
+            // `resolve` refuses a folder that is gone, and it is skipped below.
             // A second window of a vault already back: New Window's path,
             // sharing that window's session, not a second open (#1335).
             if let Some(source) = cx.update(|cx| {
@@ -844,6 +853,29 @@ mod tests {
     #[gpui::test]
     fn explicit_open_supersedes_saved_windows_and_default_vault(cx: &mut TestAppContext) {
         default_priority(cx, true);
+    }
+
+    /// #3098: the last window was a folder view (a quick viewer with no
+    /// file). Startup reopens that folder view instead of refusing it, and
+    /// never as a vault.
+    #[test]
+    fn the_last_folder_view_reopens_as_a_folder_view() {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let folder = fixture.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        ReadingHistory::record_document_mode(&state, &folder, "", true).unwrap();
+        let (_, _, selected) = history(Ok(state.clone())).unwrap();
+        let (root, intent) = selected.unwrap();
+        assert_eq!(root, folder);
+        let intent = intent.unwrap();
+        assert!(intent.single_file && intent.note.is_none());
+        assert_eq!(intent.root, folder);
+        // Gone: a visible failure, not a silent vault or another folder.
+        std::fs::remove_dir(&folder).unwrap();
+        let (_, _, selected) = history(Ok(state)).unwrap();
+        assert!(selected.unwrap().1.is_err());
     }
 
     #[test]

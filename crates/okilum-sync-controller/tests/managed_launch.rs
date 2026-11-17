@@ -643,10 +643,14 @@ struct FirstSyncFixture {
     vault: String,
 }
 fn first_sync_fixture(root: &Path) -> Result<FirstSyncFixture> {
+    first_sync_fixture_at(root, &root.join("here"))
+}
+/// `here`, the destination, may live on a separate volume (#3080).
+fn first_sync_fixture_at(root: &Path, here: &Path) -> Result<FirstSyncFixture> {
     let (source_runtime, source, source_services) = first_sync_runtime(root, "source-runtime")?;
     let (target_runtime, target, target_services) = first_sync_runtime(root, "target-runtime")?;
     let there = root.join("there");
-    let here = root.join("here");
+    let here = here.to_owned();
     fs::create_dir(&there)?;
     fs::create_dir(&here)?;
     fs::write(there.join("same.md"), b"same\r\n")?;
@@ -946,6 +950,360 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
     })?;
     drop(first);
     drop(second);
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
+
+/// #3080: a private, small tmpfs mounted by scripts/ci/sync-disk-full.sh. The
+/// control proves it is that volume before filling it for a real ENOSPC.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
+fn disk_full_volume(variable: &str) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = PathBuf::from(std::env::var_os(variable).with_context(|| {
+        format!("{variable} must name a private tmpfs; run scripts/ci/sync-disk-full.sh")
+    })?)
+    .canonicalize()?;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { libc::statfs(name.as_ptr(), &mut stat) } == 0,
+        "statfs {}",
+        path.display()
+    );
+    ensure!(
+        stat.f_type as i64 == 0x0102_1994,
+        "{} is not a tmpfs mount",
+        path.display()
+    );
+    ensure!(
+        stat.f_blocks as u64 * stat.f_bsize as u64 <= 64 << 20,
+        "disk-full volume is too large to fill"
+    );
+    ensure!(
+        fs::read_dir(&path)?.next().is_none(),
+        "disk-full volume is not empty"
+    );
+    // Only the dedicated mount that sync-disk-full.sh created for this test:
+    // its own mount point (not a directory inside some other tmpfs), named
+    // okilum-disk-full, private to the fixture user.
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    let dedicated = mountinfo.lines().any(|line| {
+        let fields: Vec<_> = line.split(' ').collect();
+        let separator = fields.iter().position(|field| *field == "-");
+        fields.get(4).is_some_and(|point| Path::new(point) == path)
+            && separator.is_some_and(|at| {
+                fields.get(at + 1) == Some(&"tmpfs")
+                    && fields.get(at + 2) == Some(&"okilum-disk-full")
+            })
+    });
+    ensure!(
+        dedicated,
+        "{} is not a dedicated okilum-disk-full tmpfs mount point",
+        path.display()
+    );
+    use std::os::unix::fs::MetadataExt;
+    let owner = fs::metadata(&path)?;
+    ensure!(
+        owner.uid() == unsafe { libc::getuid() } && owner.mode() & 0o777 == 0o700,
+        "disk-full volume is not private to this fixture user"
+    );
+    Ok(path)
+}
+/// The real filesystem error, not any other failure (#3080).
+fn is_enospc(message: &str) -> bool {
+    message.contains("No space left on device (os error 28)")
+}
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
+fn free_bytes(path: &Path) -> Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { libc::statvfs(name.as_ptr(), &mut stat) } == 0,
+        "statvfs"
+    );
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+/// Allocate real, non-sparse filler until only `leave` bytes stay free.
+fn fill(volume: &Path, leave: u64) -> Result<PathBuf> {
+    let filler = volume.join("filler.bin");
+    let mut file = fs::File::create_new(&filler)?;
+    let chunk = vec![0x5a; 64 << 10];
+    while free_bytes(volume)? > leave + chunk.len() as u64 {
+        file.write_all(&chunk)?;
+    }
+    file.sync_all()?;
+    ensure!(free_bytes(volume)? <= leave + chunk.len() as u64);
+    Ok(filler)
+}
+/// Every regular file under `root`, including retained `.okilum-save-*`
+/// originals, except Syncthing's own metadata.
+fn every_version(root: &Path) -> Result<Vec<Vec<u8>>> {
+    fn walk(path: &Path, out: &mut Vec<Vec<u8>>) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if matches!(name.to_str(), Some(".stfolder" | ".stversions")) {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                walk(&entry.path(), out)?;
+            } else if entry.file_type()?.is_file() {
+                out.push(fs::read(entry.path())?);
+            }
+        }
+        Ok(())
+    }
+    let mut out = vec![];
+    walk(root, &mut out)?;
+    Ok(out)
+}
+fn large_note() -> Vec<u8> {
+    (0..3usize << 20).map(|i| (i * 7 % 251) as u8).collect()
+}
+/// Confirm one complete lossless first-Sync review of `here` (#2043).
+fn confirm_first_sync(controller: &Controller, peer: Uuid, vault: &str, here: &Path) -> Result<()> {
+    let preview = controller.preview_remote_vault(peer, vault, here)?;
+    let plan = preview.plan().clone();
+    let mut backend = controller.first_sync_backend(preview);
+    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))
+}
+/// #3080: the first merge publishes into a destination whose disk is full.
+/// Nothing is lost, the operation stays visible as pending first Sync, and
+/// explicit recovery completes it once space is freed.
+#[test]
+#[ignore = "requires a private small tmpfs; run scripts/ci/sync-disk-full.sh"]
+fn issue3080_first_merge_disk_full_keeps_every_version_and_recovers() -> Result<()> {
+    subreaper()?;
+    let volume = disk_full_volume("OKILUM_SYNC_DISK_FULL_MERGE")?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture_at(root.path(), &volume.join("here"))?;
+    let vault = &vault;
+    let large = large_note();
+    fs::write(there.join("large.bin"), &large)?;
+    let originals = (first_sync_files(&here)?, first_sync_files(&there)?);
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    let mut backend = second.first_sync_backend(preview);
+    let filler = fill(&volume, 1 << 20)?;
+    ensure!(
+        free_bytes(&volume)? < large.len() as u64,
+        "positive control: the note to receive must not fit"
+    );
+    let outcome = plan.apply(plan.consent(true).unwrap(), backend.as_mut());
+    println!("ISSUE3080_FIRST_MERGE_DISK_FULL outcome={outcome:?}");
+    // The failure must be the destination's own ENOSPC while writing, after
+    // the operation was created (checked below), not an earlier refusal.
+    match &outcome {
+        Err(okilum_sync_controller::merge_preview::Error::Backend(message)) => ensure!(
+            is_enospc(message),
+            "first merge failed for another reason than a full disk: {message}"
+        ),
+        other => anyhow::bail!("first merge into a full disk did not fail with ENOSPC: {other:?}"),
+    }
+    // No byte version is lost on either computer, and nothing half-written
+    // appears under a canonical name.
+    let kept: Vec<_> = every_version(&here)?
+        .into_iter()
+        .chain(every_version(&there)?)
+        .collect();
+    for bytes in originals.0.values().chain(originals.1.values()) {
+        assert!(kept.contains(bytes), "an original was lost on a full disk");
+    }
+    assert!(
+        fs::read(here.join("large.bin")).map_or(true, |bytes| bytes == large),
+        "a partial note was published under its canonical name"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    // The user sees an unfinished first Sync for this vault, not success.
+    let pending = second.pending_first_sync()?;
+    let operation = pending
+        .iter()
+        .find(|p| p.path == here && p.vault == *vault)
+        .with_context(|| format!("no pending first Sync is visible: {pending:?}"))?
+        .operation;
+    let refused = second
+        .recover_first_sync(operation)
+        .expect_err("recovery cannot complete while the disk is still full");
+    ensure!(
+        is_enospc(&format!("{refused:#}")),
+        "recovery on a full disk failed for another reason: {refused:#}"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    fs::remove_file(filler)?;
+    second.recover_first_sync(operation)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(merged.get("large.bin"), Some(&large));
+    for bytes in originals.0.values().chain(originals.1.values()) {
+        assert!(
+            merged.values().any(|value| value == bytes),
+            "an original was lost by recovery"
+        );
+    }
+    assert!(second.pending_first_sync()?.is_empty());
+    assert!(first.pending_first_sync()?.is_empty());
+    let a = source.connect()?;
+    let b = target.connect()?;
+    fs::write(here.join("after-disk-full.md"), b"destination edit")?;
+    wait("transfer after disk-full recovery", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-disk-full.md"))
+            .is_ok_and(|bytes| bytes == b"destination edit"))
+    })?;
+    println!(
+        "ISSUE3080_FIRST_MERGE_DISK_FULL_PASS: real ENOSPC kept every version; recovery completed"
+    );
+    drop((first, second));
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
+/// Disposable fixture runtime only: new folders take no free-space reserve,
+/// so Syncthing's admission check cannot mask the filesystem error.
+fn without_free_space_reserve(daemon: &DaemonIdentity) -> Result<()> {
+    let xml = xmltree::Element::parse(fs::read(&daemon.config_file)?.as_slice())?;
+    let gui = xml.get_child("gui").context("fixture GUI missing")?;
+    let address = gui
+        .get_child("address")
+        .and_then(xmltree::Element::get_text)
+        .context("fixture REST address missing")?
+        .into_owned();
+    let key = gui
+        .get_child("apikey")
+        .and_then(xmltree::Element::get_text)
+        .context("fixture key missing")?
+        .into_owned();
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()?
+        .patch(format!("http://{address}/rest/config/defaults/folder"))
+        .header("X-API-Key", key)
+        .json(&json!({"minDiskFree":{"value":0,"unit":"%"}}))
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+/// #3080: a real transfer into a full disk. The destination keeps its files,
+/// shows that the vault needs attention with the actual ENOSPC error, and
+/// receives the complete note once space is freed.
+#[test]
+#[ignore = "requires a private small tmpfs; run scripts/ci/sync-disk-full.sh"]
+fn issue3080_transfer_disk_full_needs_attention_keeps_files_and_resumes() -> Result<()> {
+    subreaper()?;
+    let volume = disk_full_volume("OKILUM_SYNC_DISK_FULL_TRANSFER")?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture_at(root.path(), &volume.join("here"))?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    without_free_space_reserve(&target)?;
+    confirm_first_sync(&second, peer, vault, &here)?;
+    assert_eq!(
+        b.folder(vault)?["minDiskFree"]["value"],
+        json!(0),
+        "the free-space reserve would mask the filesystem error"
+    );
+    fs::write(there.join("canary.md"), b"received before the disk filled")?;
+    wait("positive control: ordinary transfer", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(here.join("canary.md"))
+            .is_ok_and(|bytes| bytes == b"received before the disk filled"))
+    })?;
+    let before = first_sync_files(&here)?;
+    let filler = fill(&volume, 1 << 20)?;
+    let large = large_note();
+    ensure!(free_bytes(&volume)? < large.len() as u64);
+    fs::write(there.join("large.bin"), &large)?;
+    let mut observed = String::new();
+    wait("real ENOSPC while receiving", || {
+        a.scan(vault)?;
+        observed = b.errors(vault)?.to_string();
+        Ok(observed.contains("no space left on device"))
+    })?;
+    println!("ISSUE3080_TRANSFER_DISK_FULL errors={observed}");
+    let state = |second: &Controller| -> Result<(bool, String)> {
+        let overview = second.overview()?;
+        let vault = overview
+            .vaults
+            .get(&here)
+            .context("vault missing from Sync overview")?;
+        Ok((vault.errors, vault.state.clone()))
+    };
+    // Settings shows this vault's row state and the main-window banner.
+    wait("the vault shows that its disk is full", || {
+        let (errors, state) = state(&second)?;
+        Ok(errors && state.contains("not enough disk space"))
+    })?;
+    let mut current = first_sync_files(&here)?;
+    assert!(
+        !current.contains_key("large.bin"),
+        "a partial note was published"
+    );
+    current.retain(|path, _| before.contains_key(path));
+    assert_eq!(
+        current, before,
+        "existing files changed while the disk was full"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    fs::remove_file(filler)?;
+    fs::write(there.join("after-space.md"), b"space freed")?;
+    wait("the complete note arrives once space is freed", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(
+            fs::read(here.join("large.bin")).is_ok_and(|bytes| bytes == large)
+                && here.join("after-space.md").exists(),
+        )
+    })?;
+    wait("attention clears after recovery", || Ok(!state(&second)?.0))?;
+    assert_eq!(
+        fs::read(here.join("canary.md"))?,
+        b"received before the disk filled"
+    );
+    println!(
+        "ISSUE3080_TRANSFER_DISK_FULL_PASS: real ENOSPC kept files, showed attention and resumed"
+    );
+    drop((first, second));
     source_runtime.disable()?;
     target_runtime.disable()?;
     drop((source_services, target_services));

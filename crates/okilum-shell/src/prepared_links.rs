@@ -189,6 +189,9 @@ pub(crate) struct PreparedDocument {
     pub identities: Vec<document_links::prepared::LinkIdentity>,
     /// Leading frontmatter YAML for the Properties view (#386).
     pub frontmatter: Option<String>,
+    /// The «On this page» headings of `source`, when they were prepared off
+    /// the UI thread; a 10 MiB note takes over 100 ms to scan (#3073).
+    pub outline: Option<Vec<document_links::HeadingEntry>>,
 }
 
 impl From<okilum_core::render::ReaderDocument> for PreparedDocument {
@@ -200,6 +203,7 @@ impl From<okilum_core::render::ReaderDocument> for PreparedDocument {
             original: Some(document.original_body),
             identities: document.links,
             frontmatter: document.frontmatter,
+            outline: None,
         }
     }
 }
@@ -225,6 +229,7 @@ impl PreparedDocument {
             original: None,
             identities: Vec::new(),
             frontmatter: None,
+            outline: None,
         })
     }
 }

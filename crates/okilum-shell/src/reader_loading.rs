@@ -176,6 +176,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
                 original: Some(String::new()),
                 identities: Vec::new(),
                 frontmatter: None,
+                outline: None,
             },
         )),
         published: None,
@@ -185,6 +186,45 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
             file: Arc::new(file),
             elapsed,
         }),
+    })
+}
+
+/// A folder opened like a file (#3098): the quick viewer of that folder with
+/// no document selected yet. Nothing is indexed, cached or recorded as a
+/// vault; the siblings listing follows publication as for a single file, and
+/// «Open folder as vault» converts the window.
+fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
+    std::fs::read_dir(root).context("The requested directory cannot be read")?;
+    cancel.check()?;
+    let intent = reader_open::OpenIntent {
+        root: root.to_path_buf(),
+        single_file: true,
+        note: None,
+        created_note: false,
+    };
+    let mut vault = Vault::from_note_paths(std::iter::empty::<String>());
+    vault.root = intent.root.clone();
+    vault.single_file = true;
+    Ok(Event::First {
+        intent,
+        vault,
+        cache_lease: None,
+        searcher: None,
+        snapshot: None,
+        document: Some((
+            String::new(),
+            prepared_links::PreparedDocument {
+                encoding_damaged: false,
+                canonical_source: None,
+                source: String::new(),
+                original: Some(String::new()),
+                identities: Vec::new(),
+                frontmatter: None,
+            },
+        )),
+        published: None,
+        recovery_notice: None,
+        log: None,
     })
 }
 
@@ -217,6 +257,7 @@ fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -
                 original: Some(String::new()),
                 identities: Vec::new(),
                 frontmatter: None,
+                outline: None,
             },
         )),
         published: None,
@@ -285,6 +326,9 @@ fn prepare_first_existing_document(
         && reader_delimited::previewable(&canonical_path.to_string_lossy())
     {
         return prepare_plain_file(&canonical_path, root, cancel);
+    }
+    if opts.single_file && canonical_path.is_dir() {
+        return prepare_folder_view(&canonical_path, cancel);
     }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
         let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
@@ -489,6 +533,7 @@ fn prepare_first_existing_document(
                     original: Some(String::new()),
                     identities: Vec::new(),
                     frontmatter: None,
+                    outline: None,
                 }
             } else if opts.use_html {
                 prepared_links::PreparedDocument::html(&vault, &rel, saved.clone())?
@@ -1429,6 +1474,9 @@ fn existing_cache_ancestor(
     })
 }
 
+/// A document's outline and the milliseconds its scan took.
+type PreparedOutline = (Vec<okilum_core::document_links::HeadingEntry>, f64);
+
 pub(crate) struct PendingDocument {
     intent: reader_open::OpenIntent,
     vault: Vault,
@@ -1441,6 +1489,11 @@ pub(crate) struct PendingDocument {
     _observer: Subscription,
     languages_prepared: bool,
     language_task: Option<Task<()>>,
+    /// The outline, scanned while the TextView parses (#3073).
+    outline_task: Option<Task<Option<PreparedOutline>>>,
+    /// When this document was staged: the open's `note_open_prepare`
+    /// diagnostic (#3073).
+    staged_at: std::time::Instant,
 }
 
 impl Reader {
@@ -1507,6 +1560,16 @@ impl Reader {
         let observer = cx.observe_in(&content, window, |this, _, window, cx| {
             this.publish_pending_document(window, cx)
         });
+        // The outline scan is linear but slow on a long note; run it beside
+        // the parse rather than on the UI thread at publication (#3073).
+        let outline_task = (!self.use_html).then(|| {
+            let source = document.source.clone();
+            cx.background_executor().spawn(async move {
+                let started = std::time::Instant::now();
+                let outline = crate::note_outline(&source);
+                Some((outline, started.elapsed().as_secs_f64() * 1000.))
+            })
+        });
         self.pending_open_document = Some(PendingDocument {
             intent,
             vault,
@@ -1519,6 +1582,8 @@ impl Reader {
             _observer: observer,
             languages_prepared: false,
             language_task: None,
+            outline_task,
+            staged_at: std::time::Instant::now(),
         });
         self.publish_pending_document(window, cx);
     }
@@ -1532,15 +1597,35 @@ impl Reader {
             return;
         };
         if status.is_ok() {
+            let trace = self
+                .loading
+                .as_ref()
+                .and_then(|load| load.opts.diagnostics.clone());
             let pending = self.pending_open_document.as_mut().unwrap();
             if !pending.languages_prepared {
                 if pending.language_task.is_none() {
+                    let parsed_at = std::time::Instant::now();
+                    if let Some(trace) = &trace {
+                        trace.event(
+                            "note_open_parse",
+                            serde_json::json!({
+                                "duration_ms": (parsed_at - pending.staged_at).as_secs_f64() * 1000.,
+                                "bytes": pending.document.source.len(),
+                            }),
+                        );
+                    }
                     let content = pending.content.clone();
                     let work = content
                         .read(cx)
                         .prepare_code_languages(reader_code_language::resolver(), cx);
+                    let outline = pending.outline_task.take();
                     pending.language_task = Some(cx.spawn_in(window, async move |this, cx| {
                         work.await;
+                        let languages_ms = parsed_at.elapsed().as_secs_f64() * 1000.;
+                        let outline = match outline {
+                            Some(task) => task.await,
+                            None => None,
+                        };
                         let _ = this.update_in_own_window(cx, |this, window, cx| {
                             let Some(pending) = this.pending_open_document.as_mut() else {
                                 return;
@@ -1548,7 +1633,23 @@ impl Reader {
                             if pending.content != content {
                                 return;
                             }
+                            let outline_ms = outline.as_ref().map(|(_, ms)| *ms);
+                            pending.document.outline = outline.map(|(outline, _)| outline);
                             pending.languages_prepared = true;
+                            if let Some(trace) = &trace {
+                                // The whole wait between staging the document
+                                // and publishing it, split by cause (#3073).
+                                trace.event(
+                                    "note_open_prepare",
+                                    serde_json::json!({
+                                        "duration_ms": pending.staged_at.elapsed().as_secs_f64() * 1000.,
+                                        "parse_ms": (parsed_at - pending.staged_at).as_secs_f64() * 1000.,
+                                        "code_languages_ms": languages_ms,
+                                        "outline_ms": outline_ms,
+                                        "bytes": pending.document.source.len(),
+                                    }),
+                                );
+                            }
                             this.publish_pending_document(window, cx);
                         });
                     }));
@@ -3829,6 +3930,77 @@ mod tests {
             release.try_send(()).unwrap();
             visual.run_until_parked();
         }
+    }
+
+    /// The wait between staging the first note and publishing it has its own
+    /// diagnostic, split by cause, and the outline is scanned beside the
+    /// parse instead of on the UI thread at publication (#3073).
+    #[gpui::test]
+    fn first_note_preparation_is_traced_and_publishes_the_background_outline(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        let note = "# Outline control\n\nText.\n\n```text\nplain\n```\n\n> # Quoted heading\n\n## Second section\n";
+        std::fs::write(root.join("first.md"), note).unwrap();
+        let trace = reader_diagnostics::Trace::new(Some(state.clone()), None);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("first.md".into()),
+                        diagnostics: Some(trace),
+                        index_dir: Some(temp.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        let mut prepare = None;
+        for _ in 0..500 {
+            visual.run_until_parked();
+            let text =
+                std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap_or_default();
+            prepare = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|event| event["phase"] == "note_open_prepare");
+            if prepare.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let details = prepare.expect("note_open_prepare logged")["details"].clone();
+        for key in ["duration_ms", "parse_ms", "code_languages_ms", "outline_ms"] {
+            assert!(
+                details[key].as_f64().is_some_and(|ms| ms >= 0.),
+                "{key}: {details}"
+            );
+        }
+        assert!(details["duration_ms"].as_f64() >= details["parse_ms"].as_f64());
+        assert!(details["bytes"].as_u64().is_some_and(|bytes| bytes > 0));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "first.md");
+            // The background outline is the one published, container filter included.
+            assert_eq!(
+                r.outline
+                    .iter()
+                    .map(|h| h.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["Outline control", "Second section"]
+            );
+            assert_eq!(r.outline, crate::note_outline(&r.note_source));
+        });
     }
 
     #[gpui::test]
@@ -7806,14 +7978,17 @@ impl Reader {
     }
 
     pub(super) fn switch_window_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_file().is_empty() || self.loading.as_ref().is_some_and(|load| load.active)
+        // A folder view has no file yet and still converts to a vault (#3098);
+        // single-file mode needs the file it will show.
+        if (!self.single_file && self.selected_file().is_empty())
+            || self.loading.as_ref().is_some_and(|load| load.active)
         {
             return;
         }
         self.start_loading(
             Opts {
                 vault: Some(self.vault_root.clone()),
-                note: Some(self.selected_file().to_owned()),
+                note: Some(self.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 single_file: !self.single_file,
                 use_html: self.use_html,
                 index_dir: self

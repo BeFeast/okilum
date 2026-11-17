@@ -36,7 +36,12 @@ pub(crate) enum Phase {
     Truncated(String),
     /// A followed stream failed after data arrived (connection, Pod gone).
     Disconnected(String),
+    /// The session's own failure (worker/transport text, never kubectl stderr).
     Failed(String),
+    /// The UID check or the request before `kubectl logs` failed: nothing
+    /// was started. Kept typed, so an export can show only its safe parts;
+    /// the UI shows its summary.
+    NotStarted(Failure),
     /// The name now refers to another Pod UID: nothing was started.
     Replaced {
         uid: String,
@@ -47,7 +52,7 @@ impl Phase {
     pub(crate) fn active(&self) -> bool {
         matches!(self, Self::Verifying | Self::Receiving | Self::Stopping)
     }
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         match self {
             Self::Verifying => "Verifying Pod UID…".into(),
             Self::Receiving => "Receiving".into(),
@@ -57,6 +62,7 @@ impl Phase {
             Self::Truncated(_) => "Stopped at a loading limit".into(),
             Self::Disconnected(_) => "Disconnected".into(),
             Self::Failed(_) => "Failed".into(),
+            Self::NotStarted(_) => "Not started".into(),
             Self::Replaced { .. } => "Not started: Pod replaced".into(),
         }
     }
@@ -65,17 +71,30 @@ impl Phase {
             Self::Receiving => Tone::Good,
             Self::Verifying | Self::Stopping | Self::Ended | Self::Stopped => Tone::Neutral,
             Self::Truncated(_) | Self::Disconnected(_) | Self::Replaced { .. } => Tone::Warning,
-            Self::Failed(_) => Tone::Danger,
+            Self::Failed(_) | Self::NotStarted(_) => Tone::Danger,
         }
     }
     fn detail(&self) -> Option<String> {
         match self {
             Self::Truncated(e) | Self::Disconnected(e) | Self::Failed(e) => Some(e.clone()),
+            Self::NotStarted(failure) => Some(failure.summary()),
             _ => None,
         }
     }
 }
 
+/// Where the rows in the log view came from: the session that sent them,
+/// kept with them, so a retarget or restart cannot relabel old bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Shown {
+    pub target: LogTarget,
+    pub generation: u64,
+    pub verified_at: Option<SystemTime>,
+    pub follow: bool,
+    pub tail_lines: u32,
+}
+
+#[derive(Clone)]
 pub(crate) struct Session {
     pub target: LogTarget,
     pub phase: Phase,
@@ -94,7 +113,10 @@ pub(crate) struct Dock {
     pub pending_retarget: Option<LogTarget>,
     pub message: Option<String>,
     /// The target whose rows the view currently shows.
-    pub displayed: Option<LogTarget>,
+    pub displayed: Option<Shown>,
+    /// Who sent the rows the view shows now: `displayed` as of the frame
+    /// that handed its snapshot to the view.
+    pub in_view: Option<Shown>,
     pub follow_stream: bool,
     pub tail: u32,
     pub generation: u64,
@@ -114,6 +136,7 @@ impl Default for Dock {
             pending_retarget: None,
             message: None,
             displayed: None,
+            in_view: None,
             follow_stream: true,
             tail: DEFAULT_TAIL,
             generation: 0,
@@ -141,6 +164,111 @@ impl Dock {
         }
         self._task = None;
     }
+}
+
+/// What the copied command is known to address. It reads the Pod by name;
+/// whether that name was confirmed to be the pinned UID depends on this
+/// session's own check, which may be pending, failed or never started.
+/// The shell a copied command is written for. Each has its own quoting;
+/// a command quoted for one is not safe to paste into another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shell {
+    /// sh, bash, zsh: POSIX quoting.
+    Posix,
+    /// Windows PowerShell 5.1 and PowerShell 7: single-quoted literals.
+    /// Not cmd.exe, which has no safe quoting for every argument.
+    PowerShell,
+}
+
+impl Shell {
+    pub(crate) const NATIVE: Shell = if cfg!(windows) {
+        Shell::PowerShell
+    } else {
+        Shell::Posix
+    };
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Shell::Posix => "POSIX shell (sh, bash, zsh)",
+            Shell::PowerShell => "PowerShell (not cmd.exe)",
+        }
+    }
+}
+
+/// Characters every supported shell passes through unquoted and unchanged.
+/// No `,` (a PowerShell array), `@` (splatting), `$`, quotes, spaces or
+/// cmd/sh metacharacters.
+fn plain(arg: &str) -> bool {
+    !arg.is_empty()
+        && arg.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'=' | b':')
+        })
+}
+
+/// PowerShell treats these as single quotes too; each is doubled inside a
+/// single-quoted literal.
+const POWERSHELL_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// `kubectl` and its arguments for `shell`, or why it cannot be written
+/// safely. Windows PowerShell 5.1 passes native arguments containing `"`
+/// incorrectly, so such an argument is refused rather than mangled.
+pub(crate) fn command_line(args: &[String], shell: Shell) -> Result<String, String> {
+    let mut words = vec!["kubectl".to_string()];
+    for arg in args {
+        if plain(arg) {
+            words.push(arg.clone());
+            continue;
+        }
+        words.push(match shell {
+            Shell::Posix => shell_words::quote(arg).into_owned(),
+            Shell::PowerShell => {
+                if arg.contains('"') {
+                    return Err(format!(
+                        "an argument contains a double quote, which PowerShell 5.1 passes to kubectl incorrectly: {arg}"
+                    ));
+                }
+                let mut quoted = String::from("'");
+                for c in arg.chars() {
+                    if POWERSHELL_QUOTES.contains(&c) {
+                        quoted.push(c);
+                    }
+                    quoted.push(c);
+                }
+                quoted.push('\'');
+                quoted
+            }
+        });
+    }
+    Ok(words.join(" "))
+}
+
+pub(crate) fn copy_note(session: &Session, shell: Shell) -> String {
+    let target = &session.target;
+    let state = match (&session.phase, session.verified_at) {
+        (Phase::Replaced { uid }, _) => format!(
+            "the name now refers to Pod UID {}, not the pinned {}",
+            model::short_uid(uid),
+            target.short_uid()
+        ),
+        (_, Some(at)) => format!(
+            "this session verified UID {} at {} before kubectl started; a later replacement is not detected by the command",
+            target.short_uid(),
+            model::clock(at)
+        ),
+        (Phase::Verifying, None) => format!(
+            "the UID check for {} is still running",
+            target.short_uid()
+        ),
+        (Phase::NotStarted(_), None) => format!(
+            "the UID check for {} failed; nothing confirms the name refers to it",
+            target.short_uid()
+        ),
+        (_, None) => format!("UID {} was not verified by this session", target.short_uid()),
+    };
+    format!(
+        "Copied a kubectl command for {}. It reads Pod {} by name; {state}.",
+        shell.name(),
+        target.pod
+    )
 }
 
 impl Workspace {
@@ -237,16 +365,8 @@ impl Workspace {
                 cx.notify();
                 return;
             }
-            Err(Failure::NotFound { .. }) => {
-                session.phase = Phase::Failed(format!(
-                    "Pod {} no longer exists; nothing was started.",
-                    session.target.pod
-                ));
-                cx.notify();
-                return;
-            }
             Err(failure) => {
-                session.phase = Phase::Failed(failure.summary());
+                session.phase = Phase::NotStarted(failure);
                 cx.notify();
                 return;
             }
@@ -275,7 +395,7 @@ impl Workspace {
         ) {
             Ok(request) => request,
             Err(failure) => {
-                session.phase = Phase::Failed(failure.summary());
+                session.phase = Phase::NotStarted(failure);
                 cx.notify();
                 return;
             }
@@ -314,7 +434,13 @@ impl Workspace {
         };
         if let Some(snapshot) = update.snapshot {
             self.dock.pending = Some(snapshot);
-            self.dock.displayed = Some(session.target.clone());
+            self.dock.displayed = Some(Shown {
+                target: session.target.clone(),
+                generation,
+                verified_at: session.verified_at,
+                follow: session.follow,
+                tail_lines: self.dock.tail,
+            });
             session.received = true;
         }
         session.diagnostic = update.diagnostic;
@@ -365,6 +491,35 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Terminal handoff: the exact kubectl argv of the pinned target. It
+    /// addresses the Pod by name, as the session does.
+    pub(crate) fn copy_command(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.dock.session else {
+            return;
+        };
+        let target = &session.target;
+        let request = okilum_core::log::kubernetes::Request {
+            context: Some(target.context.clone()),
+            namespace: target.namespace.clone(),
+            pod: target.pod.clone(),
+            container: target.container.clone(),
+            previous: target.previous,
+            follow: session.follow,
+            tail_lines: self.dock.tail,
+        };
+        self.dock.message = Some(match request.args() {
+            Ok(args) => match command_line(&args, Shell::NATIVE) {
+                Ok(line) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(line));
+                    copy_note(session, Shell::NATIVE)
+                }
+                Err(why) => format!("Nothing copied: {why}"),
+            },
+            Err(error) => format!("No command: {error}"),
+        });
+        cx.notify();
+    }
+
     /// Start the pinned target again (a fresh UID check first).
     fn restart_logs(&mut self, cx: &mut Context<Self>) {
         if let Some(target) = self.dock.session.as_ref().map(|s| s.target.clone()) {
@@ -387,6 +542,7 @@ impl Workspace {
         let Some(snapshot) = self.dock.pending.take() else {
             return;
         };
+        self.dock.in_view = self.dock.displayed.clone();
         if let Some(view) = &self.dock.view {
             view.update(cx, |view, cx| view.replace_stream(snapshot, cx));
             return;
@@ -529,6 +685,16 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_follow_bottom(cx))),
             )
             .child(
+                Button::new("k8s-dock-copy-command")
+                    .debug_selector(|| "k8s-dock-copy-command".into())
+                    .small()
+                    .ghost()
+                    .label("Copy command")
+                    .disabled(session.is_none())
+                    .tooltip("Copy the exact kubectl logs command of the pinned target for a terminal")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_command(cx))),
+            )
+            .child(
                 Button::new("k8s-dock-start")
                     .debug_selector(|| "k8s-dock-start".into())
                     .small()
@@ -569,12 +735,12 @@ impl Workspace {
                     ));
                 }
             }
-            if let Some(displayed) = &self.dock.displayed {
-                if displayed != &session.target {
+            if let Some(shown) = &self.dock.displayed {
+                if shown.generation != self.dock.generation {
                     notes.push((
                         format!(
-                            "Rows below are from {} until the new session sends data.",
-                            displayed.label()
+                            "Rows below are from an earlier session of {} until the new session sends data.",
+                            shown.target.label()
                         ),
                         Tone::Warning,
                     ));

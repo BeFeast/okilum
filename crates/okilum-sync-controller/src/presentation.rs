@@ -90,6 +90,46 @@ impl FolderState {
     }
 }
 
+/// The fallback for a folder problem no specific explanation covers.
+pub const FOLDER_PROBLEM: &str =
+    "Syncthing reported a folder problem. Check its diagnostics before continuing.";
+/// Explain one raw Syncthing folder error without exposing its paths.
+pub fn explain(raw: &str) -> &'static str {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("folder marker missing") {
+        "The sync folder marker is missing. Check that the correct drive is mounted before recovering this folder."
+    } else if lower.contains("folder path missing") || lower.contains("no such file or directory") {
+        "A required file or folder is unavailable. Check its location and connected drives."
+    } else if lower.contains("permission denied") || lower.contains("access is denied") {
+        "Syncthing cannot access some files. Check the folder’s access permissions."
+    } else if lower.contains("insufficient space in folder") {
+        "The folder’s free-space reserve prevents receiving files. Free space on its drive or review the reserve in Syncthing."
+    } else if lower.contains("no space left") || lower.contains("disk full") {
+        "There is not enough disk space to receive files. Free space on the destination drive."
+    } else {
+        FOLDER_PROBLEM
+    }
+}
+/// The specific explanation of a folder's current errors (`/rest/folder/errors`
+/// and its status), if one applies (#3080).
+pub fn folder_problem(
+    status: &serde_json::Value,
+    errors: &serde_json::Value,
+) -> Option<&'static str> {
+    ["error", "invalid", "watchError"]
+        .iter()
+        .filter_map(|field| status[field].as_str())
+        .chain(
+            errors["errors"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|error| error["error"].as_str()),
+        )
+        .filter(|raw| !raw.is_empty())
+        .map(explain)
+        .find(|message| *message != FOLDER_PROBLEM)
+}
 /// Explain observed folder problems without exposing raw filesystem paths or
 /// treating unavailable error snapshots as a clean bill of health.
 pub fn attention_messages(local: &LocalStatus) -> Vec<&'static str> {
@@ -101,22 +141,7 @@ pub fn attention_messages(local: &LocalStatus) -> Vec<&'static str> {
         if raw.is_empty() {
             return;
         }
-        let lower = raw.to_ascii_lowercase();
-        let message = if lower.contains("folder marker missing") {
-            "The sync folder marker is missing. Check that the correct drive is mounted before recovering this folder."
-        } else if lower.contains("folder path missing")
-            || lower.contains("no such file or directory")
-        {
-            "A required file or folder is unavailable. Check its location and connected drives."
-        } else if lower.contains("permission denied") || lower.contains("access is denied") {
-            "Syncthing cannot access some files. Check the folder’s access permissions."
-        } else if lower.contains("insufficient space in folder") {
-            "The folder’s free-space reserve prevents receiving files. Free space on its drive or review the reserve in Syncthing."
-        } else if lower.contains("no space left") || lower.contains("disk full") {
-            "There is not enough disk space to receive files. Free space on the destination drive."
-        } else {
-            "Syncthing reported a folder problem. Check its diagnostics before continuing."
-        };
+        let message = explain(raw);
         if !messages.contains(&message) {
             messages.push(message);
         }
@@ -153,6 +178,19 @@ pub fn attention_messages(local: &LocalStatus) -> Vec<&'static str> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn issue3080_disk_full_folder_error_is_explained_without_paths() {
+        // Syncthing 2.1.6 pull error shape for a real ENOSPC (#3080).
+        let errors = json!({"errors":[{"path":"large.bin","error":"writing to temporary file: write /vault/.syncthing.large.bin.tmp: no space left on device"}]});
+        let problem = folder_problem(&json!({"error":""}), &errors).unwrap();
+        assert!(problem.contains("not enough disk space") && !problem.contains("/vault"));
+        assert_eq!(
+            folder_problem(&json!({}), &json!({"errors":[{"error":"unexpected"}]})),
+            None,
+            "an unexplained error keeps the generic state"
+        );
+        assert_eq!(folder_problem(&json!({}), &json!({"errors":null})), None);
+    }
     fn local() -> LocalStatus {
         LocalStatus {
             reused: false,
