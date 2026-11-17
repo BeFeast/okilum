@@ -176,9 +176,13 @@ impl Reader {
             worker_cancel.check()?;
             working.store(false, std::sync::atomic::Ordering::Release);
             let titles = Arc::new(titles);
+            // Inventory-wide link lookup is built here, never by a UI render (#2803).
+            // Unchanged inventories keep the index they already share.
+            state.vault.warm_attachment_index();
             let published = if previous_vault.publish_semantics(&state.vault) {
                 previous_vault
             } else { Arc::new(state.vault.clone()) };
+            published.warm_attachment_index();
             let sources: reader_publication::Sources = sources.into_iter()
                 .map(|(path, raw)| {
                     let verified = !state.vault.unreadable.iter().any(|entry| entry.path == state.vault.root.join(&path))
@@ -842,3 +846,6 @@ mod reconcile_tests;
 
 #[cfg(all(test, unix))]
 mod save_work_tests;
+
+#[cfg(all(test, unix))]
+mod attachment_index_tests;

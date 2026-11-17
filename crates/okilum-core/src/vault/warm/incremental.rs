@@ -441,6 +441,9 @@ impl State {
             }
             identities.push((path.clone(), present, placeholder));
         }
+        if !directories.is_empty() {
+            self.vault.invalidate_attachment_index();
+        }
         for (path, present) in &directories {
             self.vault.entries.retain(|entry| entry.path != *path);
             if *present {

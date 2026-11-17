@@ -921,6 +921,9 @@ fn prepare_rest_with_io_and_snapshot(
         } else {
             Arc::new(vault.clone())
         };
+        // The Ready inventory and its incremental baseline share this index, so
+        // note opens and Live Preview blocks never build it on the UI (#2803).
+        published.warm_attachment_index();
         send.send_blocking(Event::SearchInventory {
             notes: okilum_core::quick_open::inventory(readable, &vault.entries),
             // Publish cold and warm trees before search preparation; a usable

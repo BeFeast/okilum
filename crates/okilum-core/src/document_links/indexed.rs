@@ -1,11 +1,13 @@
 //! Rendering consumes captured identities. Filesystem verification belongs to
 //! the separate, lazy/background LinkPreparation job, never this resolver.
 use super::*;
-use std::{borrow::Cow, collections::HashMap, path::Path};
+use std::{borrow::Cow, path::Path};
 
 pub struct IndexedResolver<'a> {
     vault: &'a Vault,
-    assets: std::sync::OnceLock<HashMap<String, Vec<String>>>,
+    /// The inventory-wide index, fetched lazily: links that never name a file
+    /// do not touch it. It is built once per inventory, not per resolver (#2803).
+    assets: std::sync::OnceLock<std::sync::Arc<crate::vault::AttachmentIndex>>,
 }
 impl<'a> IndexedResolver<'a> {
     pub fn new(vault: &'a Vault) -> Self {
@@ -15,32 +17,8 @@ impl<'a> IndexedResolver<'a> {
         }
     }
 
-    fn assets(&self) -> &HashMap<String, Vec<String>> {
-        self.assets.get_or_init(|| {
-            let vault = self.vault;
-            let _phase = crate::open_diagnostics::phase("link_index_build");
-            let mut assets: HashMap<String, Vec<String>> = HashMap::new();
-            for entry in &vault.entries {
-                if entry.kind != crate::vault::EntryKind::Attachment
-                    || vault.graph_alias_path(Path::new(&entry.path))
-                {
-                    continue;
-                }
-                let key = entry.path.to_lowercase();
-                let parts: Vec<_> = key.split('/').collect();
-                for i in 0..parts.len() {
-                    assets
-                        .entry(parts[i..].join("/"))
-                        .or_default()
-                        .push(entry.path.clone());
-                }
-            }
-            for paths in assets.values_mut() {
-                paths.sort();
-                paths.dedup();
-            }
-            assets
-        })
+    fn assets(&self) -> &crate::vault::AttachmentIndex {
+        self.assets.get_or_init(|| self.vault.attachment_index())
     }
 
     pub(crate) fn vault_root(&self) -> &Path {
@@ -92,9 +70,7 @@ impl<'a> IndexedResolver<'a> {
         let exact = |key: &str| {
             let matches: Vec<_> = self
                 .assets()
-                .get(key)
-                .into_iter()
-                .flatten()
+                .paths(self.vault, key)
                 .filter(|path| path.eq_ignore_ascii_case(key))
                 .cloned()
                 .collect();
@@ -124,17 +100,11 @@ impl<'a> IndexedResolver<'a> {
         if self.vault.indexed_occupied(&key) {
             return Resolution::Unresolved;
         }
-        match self
-            .assets()
-            .get(&key)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
+        let paths: Vec<_> = self.assets().paths(self.vault, &key).cloned().collect();
+        match paths.as_slice() {
             [path] => Resolution::Resolved { path: path.clone() },
             [] => Resolution::Unresolved,
-            paths => Resolution::Ambiguous {
-                candidates: paths.to_vec(),
-            },
+            _ => Resolution::Ambiguous { candidates: paths },
         }
     }
 
