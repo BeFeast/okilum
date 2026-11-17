@@ -35,12 +35,9 @@ impl BlockSlot {
         let head = &source[..at];
         let before = if head.is_empty() || head.ends_with("\n\n") || head.ends_with("\n\r\n") {
             ""
-        } else if head.ends_with('\n') {
+        } else if let Some(above) = head.strip_suffix('\n') {
             // A line right above: a blank line first, or the drop joins it.
-            let previous = head[..head.len() - 1]
-                .rsplit('\n')
-                .next()
-                .unwrap_or_default();
+            let previous = above.rsplit('\n').next().unwrap_or_default();
             if previous.trim().is_empty() {
                 ""
             } else {
